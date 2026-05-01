@@ -2,14 +2,15 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { clearAccountFailureState, createAccount, deleteAccount, listAccounts, updateAccount } from '../../storage/repositories.js'
+import { addAccountToGroup, clearAccountFailureState, createAccount, deleteAccount, listAccounts, listProviders, updateAccount } from '../../storage/repositories.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 export const accountsRouter = Router()
 
 const accountCreateSchema = z.object({
+  providerCode: z.string().min(1).optional(),
   name: z.string().min(1),
-  type: z.enum(['oauth', 'api_key']),
+  type: z.string().min(1),
   credentials: z.record(z.unknown()).optional(),
   status: z.enum(['active', 'disabled', 'error']).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -17,6 +18,7 @@ const accountCreateSchema = z.object({
   proxyProfileId: z.string().optional(),
   passthroughEnabled: z.boolean().optional(),
   schedulable: z.boolean().optional(),
+  groupId: z.string().optional(),
   notes: z.string().optional()
 })
 
@@ -30,7 +32,31 @@ accountsRouter.post('/', (req, res) => {
     res.status(400).json(badRequest('Invalid account payload'))
     return
   }
-  res.status(201).json(ok(createAccount(parsed.data)))
+
+  const providerCode = parsed.data.providerCode?.trim() || 'openai'
+  const provider = listProviders().find((item) => item.code === providerCode)
+  if (!provider) {
+    res.status(400).json(badRequest(`Unsupported provider: ${providerCode}`))
+    return
+  }
+  if (!provider.enabled) {
+    res.status(400).json(badRequest(`Provider is disabled: ${providerCode}`))
+    return
+  }
+  if (!provider.accountTypes.includes(parsed.data.type)) {
+    res.status(400).json(badRequest(`Provider ${providerCode} does not support account type ${parsed.data.type}`))
+    return
+  }
+
+  const account = createAccount({
+    ...parsed.data,
+    providerCode
+  })
+  if (parsed.data.groupId) {
+    addAccountToGroup(parsed.data.groupId, account.id)
+  }
+
+  res.status(201).json(ok(account))
 })
 
 accountsRouter.patch('/:id', (req, res) => {

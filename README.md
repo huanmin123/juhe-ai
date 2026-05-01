@@ -22,6 +22,10 @@
 - 第一阶段计划：`docs/phase-1-plan.md`
 - Mac 数据库同步：`docs/sub2api-migration.md`
 - 参考笔记：`docs/sub2api-reference-notes.md`
+- 前端样式规范：`docs/前端样式规范指导.md`
+- 功能开发指导：`docs/功能开发指导.md`
+- 大文件重构指南：`docs/大文件重构指南.md`
+- 问题修复指导：`docs/问题修复指导.md`
 
 ## 本地运行
 

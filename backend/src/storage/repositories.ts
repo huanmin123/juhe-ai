@@ -259,20 +259,22 @@ export function listAccounts(): AccountSummary[] {
 export function createAccount(input: Record<string, unknown>): AccountSummary {
   const now = nowIso()
   const id = newId('acc')
+  const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai')
+  const provider = listProviders().find((item) => item.code === providerCode)
   const credentials = typeof input.credentials === 'object' && input.credentials !== null ? input.credentials as Record<string, unknown> : {}
   const credentialMap = credentials as Record<string, unknown>
-  const accountType = input.type === 'oauth' ? 'oauth' : 'api_key'
+  const accountType = String(input.type ?? 'api_key')
   const credentialSource = accountType === 'oauth'
     ? credentialMap.refresh_token ?? credentialMap.access_token ?? ''
     : credentialMap.api_key ?? ''
-  const baseUrl = String(credentialMap.base_url ?? 'https://api.openai.com/v1')
+  const baseUrl = String(credentialMap.base_url ?? provider?.baseUrl ?? 'https://api.openai.com/v1')
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
-    ? accountFingerprint('openai', accountType, baseUrl, credentialSource)
+    ? accountFingerprint(providerCode, accountType, baseUrl, credentialSource)
     : null
   const account: AccountSummary = {
     id,
-    providerCode: 'openai',
-    name: String(input.name ?? '未命名 OpenAI 账户'),
+    providerCode,
+    name: String(input.name ?? `未命名 ${provider?.name ?? providerCode.toUpperCase()} 账户`),
     notes: optionalString(input.notes),
     type: accountType,
     credentials,

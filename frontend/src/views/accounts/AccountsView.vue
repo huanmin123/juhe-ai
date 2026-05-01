@@ -9,8 +9,7 @@
         <a-button @click="resetFilters">重置筛选</a-button>
       </div>
       <div class="page-toolbar-actions">
-        <a-button @click="openOAuthAuthorization">OpenAI 账户授权</a-button>
-        <a-button type="primary" @click="openCreate('api_key')">新建 OpenAI API Key</a-button>
+        <a-button type="primary" @click="openCreate">添加账户</a-button>
       </div>
     </div>
 
@@ -32,14 +31,14 @@
 
     <a-table class="account-table" size="middle" :columns="columns" :data-source="filteredAccounts" row-key="id" :loading="loading" :scroll="{ x: 1700 }" :row-selection="rowSelection">
       <template #emptyText>
-        <a-empty class="page-empty-card" description="还没有账户。先创建 OpenAI API Key，或者通过 OAuth 授权导入账户。" />
+        <a-empty class="page-empty-card" description="还没有账户。点击「添加账户」，再选择供应商和账户类型。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'type'">
           <a-tag color="processing">{{ accountTypeText(record.type) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'providerCode'">
-          <a-tag color="geekblue">{{ record.providerCode }}</a-tag>
+          <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'status'">
           <div class="status-cell">
@@ -77,56 +76,132 @@
       </template>
     </a-table>
 
-    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑账户' : `新建 ${form.type === 'oauth' ? 'OpenAI OAuth' : 'OpenAI API Key'} 账户`" width="860px" :ok-button-props="{ type: 'primary' }" @ok="saveAccount">
+    <a-modal v-model:open="modalOpen" :title="modalTitle" width="920px" :confirm-loading="modalConfirmLoading" :ok-button-props="modalOkButtonProps" @ok="saveAccount" @cancel="handleModalCancel">
       <a-form layout="vertical" class="account-form">
-        <section class="form-section">
+        <div v-if="!editingId" class="setup-progress">
+          <div class="setup-step" :class="{ active: !form.providerCode, done: Boolean(form.providerCode) }">
+            <span>1</span>
+            <strong>选择供应商</strong>
+          </div>
+          <div class="setup-step" :class="{ active: Boolean(form.providerCode) && !form.type, done: Boolean(form.type) }">
+            <span>2</span>
+            <strong>选择类型</strong>
+          </div>
+          <div class="setup-step" :class="{ active: Boolean(form.providerCode && form.type) }">
+            <span>3</span>
+            <strong>填写配置</strong>
+          </div>
+        </div>
+
+        <a-alert v-if="editingId" class="form-alert" type="info" show-icon message="编辑账户时不修改供应商和账户类型；Access/API Key 与 Refresh Token 只在这里展示和修改。" />
+
+        <section class="form-section selector-section">
+          <div class="form-section-head">
+            <div>
+              <h4>选择供应商</h4>
+              <p>未来接入 Claude Code、Gemini 等供应商时，也会从这里进入。</p>
+            </div>
+          </div>
+          <div class="choice-grid provider-choice-grid">
+            <button
+              v-for="provider in availableProviders"
+              :key="provider.code"
+              type="button"
+              class="choice-card provider-choice-card"
+              :class="{ active: form.providerCode === provider.code, disabled: editingId || !provider.enabled }"
+              :disabled="Boolean(editingId) || !provider.enabled"
+              @click="selectProvider(provider.code)"
+            >
+              <span class="choice-card-icon">{{ provider.name.slice(0, 1).toUpperCase() }}</span>
+              <span class="choice-card-content">
+                <strong>{{ provider.name }}</strong>
+                <small>{{ provider.baseUrl }}</small>
+              </span>
+              <a-tag :color="provider.enabled ? 'green' : 'default'">{{ provider.enabled ? '可用' : '停用' }}</a-tag>
+            </button>
+          </div>
+        </section>
+
+        <section v-if="selectedProvider" class="form-section selector-section">
+          <div class="form-section-head">
+            <div>
+              <h4>选择账户类型</h4>
+              <p>{{ selectedProvider.name }} 当前支持 {{ accountTypeChoices.length }} 种账户创建方式。</p>
+            </div>
+          </div>
+          <div class="choice-grid type-choice-grid">
+            <button
+              v-for="item in accountTypeChoices"
+              :key="item.value"
+              type="button"
+              class="choice-card type-choice-card"
+              :class="{ active: form.type === item.value, disabled: Boolean(editingId) }"
+              :disabled="Boolean(editingId)"
+              @click="selectAccountType(item.value)"
+            >
+              <span class="choice-card-content">
+                <strong>{{ item.label }}</strong>
+                <small>{{ item.description }}</small>
+              </span>
+              <a-tag color="blue">{{ item.tag }}</a-tag>
+            </button>
+          </div>
+        </section>
+
+        <section v-if="hasAccountType" class="form-section">
           <div class="form-section-head">
             <div>
               <h4>基础信息</h4>
-              <p>账户的显示名称、类型和备注信息。</p>
+              <p>账户名称用于列表识别；分组只在创建时绑定，后续可到分组页面调整。</p>
             </div>
           </div>
           <div class="form-grid">
-            <a-form-item label="账户名称" required>
-              <a-input v-model:value="form.name" placeholder="例如 openai-main" />
+            <a-form-item label="账户名称" :required="form.type === 'api_key' || Boolean(editingId)">
+              <a-input v-model:value="form.name" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
             </a-form-item>
-            <a-form-item label="账户类型">
-              <a-segmented v-model:value="form.type" :options="accountTypeOptions" :disabled="Boolean(editingId)" block />
+            <a-form-item v-if="!editingId" label="绑定分组">
+              <a-select v-model:value="form.groupId" allow-clear :options="groupOptions" placeholder="可选，创建后自动加入分组" />
             </a-form-item>
           </div>
           <a-form-item label="备注">
-            <a-textarea v-model:value="form.notes" :rows="3" />
+            <a-textarea v-model:value="form.notes" :rows="2" placeholder="可填写来源、用途或额度说明" />
           </a-form-item>
         </section>
 
-        <section class="form-section">
+        <section v-if="isApiKeyForm" class="form-section credential-section">
           <div class="form-section-head">
             <div>
-              <h4>凭据</h4>
-              <p>API Key 或 OAuth 凭据只保存在编辑弹窗里，列表和详情不会展开明文。</p>
+              <h4>{{ accountTypeTitle(form.providerCode, form.type) }} 配置</h4>
+              <p>API Key 会完整保存在本地；列表不展示，编辑弹窗可直接查看和修改。</p>
+            </div>
+          </div>
+          <a-form-item label="API Key" required>
+            <a-input v-model:value="form.apiKey" placeholder="粘贴完整 API Key" />
+          </a-form-item>
+          <div class="form-grid">
+            <a-form-item label="Base URL">
+              <a-input v-model:value="form.baseUrl" :placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'" />
+            </a-form-item>
+            <a-form-item label="Organization ID">
+              <a-input v-model:value="form.organizationId" placeholder="可选" />
+            </a-form-item>
+          </div>
+        </section>
+
+        <section v-else-if="isOAuthForm" class="form-section credential-section">
+          <div class="form-section-head">
+            <div>
+              <h4>{{ accountTypeTitle(form.providerCode, form.type) }} 配置</h4>
+              <p>Refresh Token 不在列表展示；创建时可手动授权，也可直接粘贴 Refresh Token。</p>
             </div>
           </div>
 
-          <template v-if="form.type === 'api_key'">
-            <a-form-item label="OpenAI API Key" required>
-              <a-input v-model:value="form.apiKey" placeholder="粘贴完整 OpenAI API Key" />
-            </a-form-item>
-            <div class="form-grid">
-              <a-form-item label="Base URL">
-                <a-input v-model:value="form.baseUrl" placeholder="https://api.openai.com/v1" />
-              </a-form-item>
-              <a-form-item label="Organization ID">
-                <a-input v-model:value="form.organizationId" placeholder="可选" />
-              </a-form-item>
-            </div>
-          </template>
-
-          <template v-else>
-            <a-form-item label="Access Token" required>
-              <a-input v-model:value="form.accessToken" />
+          <template v-if="editingId">
+            <a-form-item label="Access Token">
+              <a-textarea v-model:value="form.accessToken" :rows="3" placeholder="可直接查看和修改 Access Token" />
             </a-form-item>
             <a-form-item label="Refresh Token">
-              <a-input v-model:value="form.refreshToken" />
+              <a-textarea v-model:value="form.refreshToken" :rows="3" placeholder="可直接查看和修改 Refresh Token" />
             </a-form-item>
             <div class="form-grid">
               <a-form-item label="Client ID">
@@ -145,13 +220,50 @@
               </a-form-item>
             </div>
           </template>
+
+          <template v-else-if="isOpenAIOAuthForm">
+            <a-form-item label="授权方式">
+              <a-segmented v-model:value="form.oauthMode" :options="[{ label: '手动授权', value: 'manual' }, { label: 'Refresh Token', value: 'refresh_token' }]" block />
+            </a-form-item>
+            <div class="form-grid">
+              <a-form-item label="Client ID">
+                <a-input v-model:value="form.clientId" placeholder="默认使用 Codex CLI Client ID" />
+              </a-form-item>
+              <a-form-item label="Redirect URI" v-if="form.oauthMode === 'manual'">
+                <a-input v-model:value="form.redirectUri" />
+              </a-form-item>
+            </div>
+
+            <template v-if="form.oauthMode === 'manual'">
+              <a-alert class="form-alert" type="info" show-icon message="先生成授权链接；浏览器跳转 localhost 失败后，复制地址栏完整回调 URL 粘贴回来即可。" />
+              <a-space class="oauth-actions" wrap>
+                <a-button :loading="authLoading" @click="generateOAuthUrl">生成授权链接</a-button>
+                <a-button :disabled="!authResult?.authUrl" @click="openAuthUrl">打开授权链接</a-button>
+                <a-button :disabled="!authResult?.authUrl" @click="copyText(authResult?.authUrl || '')">复制授权链接</a-button>
+              </a-space>
+              <a-form-item v-if="authResult" label="授权链接">
+                <a-textarea :value="authResult.authUrl" :rows="3" readonly />
+              </a-form-item>
+              <a-form-item label="回调 URL" required>
+                <a-textarea v-model:value="form.callbackUrl" :rows="3" placeholder="粘贴浏览器地址栏里的 http://localhost:1455/auth/callback?code=...&state=..." />
+              </a-form-item>
+            </template>
+
+            <template v-else>
+              <a-form-item label="Refresh Token" required>
+                <a-textarea v-model:value="form.refreshToken" :rows="4" placeholder="粘贴 OpenAI refresh_token" />
+              </a-form-item>
+            </template>
+          </template>
+
+          <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，第一期先支持 OpenAI OAuth。" />
         </section>
 
-        <section class="form-section">
+        <section v-if="hasAccountType" class="form-section">
           <div class="form-section-head">
             <div>
               <h4>调度与策略</h4>
-              <p>并发、优先级、代理和透传这些字段直接影响后续请求转发。</p>
+              <p>并发、优先级、代理和透传会影响后续请求转发与账户选择。</p>
             </div>
           </div>
           <div class="form-grid">
@@ -179,95 +291,6 @@
         </section>
       </a-form>
     </a-modal>
-
-    <a-modal v-model:open="oauthModalOpen" title="OpenAI 账户授权" width="860px" :confirm-loading="oauthLoading" :ok-button-props="{ type: 'primary' }" @ok="createAuthorizedAccount">
-      <a-form layout="vertical" class="account-form">
-        <a-alert class="form-alert" type="info" show-icon message="手动授权会生成 OpenAI OAuth 链接；浏览器跳转到 localhost 失败后，复制地址栏完整回调 URL 粘贴回来即可。" />
-        <section class="form-section">
-          <div class="form-section-head">
-            <div>
-              <h4>基础信息</h4>
-              <p>创建账户时会自动进入分组，并可设置并发上限。</p>
-            </div>
-          </div>
-          <div class="form-grid">
-            <a-form-item label="账户名称">
-              <a-input v-model:value="oauthForm.name" placeholder="留空则使用邮箱或默认名称" />
-            </a-form-item>
-            <a-form-item label="绑定分组">
-              <a-select v-model:value="oauthForm.groupId" allow-clear :options="groupOptions" placeholder="可选，创建后自动加入分组" />
-            </a-form-item>
-            <a-form-item label="并发上限">
-              <a-input-number v-model:value="oauthForm.concurrencyLimit" :min="1" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="Client ID">
-              <a-input v-model:value="oauthForm.clientId" placeholder="默认使用 Codex CLI Client ID" />
-            </a-form-item>
-          </div>
-        </section>
-
-        <section class="form-section">
-          <div class="form-section-head">
-            <div>
-              <h4>代理与授权方式</h4>
-              <p>OAuth 路径和 Refresh Token 路径使用同一套代理配置。</p>
-            </div>
-          </div>
-          <a-form-item label="授权方式">
-            <a-segmented v-model:value="oauthMode" :options="[{ label: '手动授权', value: 'manual' }, { label: 'Refresh Token', value: 'refresh_token' }]" block />
-          </a-form-item>
-          <a-form-item label="代理">
-            <a-select v-model:value="oauthForm.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
-          </a-form-item>
-        </section>
-
-        <section v-if="oauthMode === 'manual'" class="form-section">
-          <div class="form-section-head">
-            <div>
-              <h4>手动授权</h4>
-              <p>先生成授权链接，再把回调 URL 粘贴回来创建账户。</p>
-            </div>
-          </div>
-          <a-form-item label="Redirect URI">
-            <a-input v-model:value="oauthForm.redirectUri" />
-          </a-form-item>
-          <a-space class="oauth-actions" wrap>
-            <a-button :loading="oauthLoading" @click="generateOAuthUrl">生成授权链接</a-button>
-            <a-button :disabled="!authResult?.authUrl" @click="openAuthUrl">打开授权链接</a-button>
-            <a-button :disabled="!authResult?.authUrl" @click="copyText(authResult?.authUrl || '')">复制授权链接</a-button>
-          </a-space>
-          <a-form-item v-if="authResult" label="授权链接">
-            <a-textarea :value="authResult.authUrl" :rows="3" readonly />
-          </a-form-item>
-          <a-form-item label="回调 URL">
-            <a-textarea v-model:value="oauthForm.callbackUrl" :rows="3" placeholder="粘贴浏览器地址栏里的 http://localhost:1455/auth/callback?code=...&state=..." />
-          </a-form-item>
-        </section>
-
-        <section v-else class="form-section">
-          <div class="form-section-head">
-            <div>
-              <h4>Refresh Token</h4>
-              <p>直接粘贴已有 Refresh Token 进行创建，不会在列表里展示。</p>
-            </div>
-          </div>
-          <a-form-item label="Refresh Token" required>
-            <a-textarea v-model:value="oauthForm.refreshToken" :rows="4" placeholder="粘贴 OpenAI refresh_token" />
-          </a-form-item>
-        </section>
-
-        <section class="form-section">
-          <div class="form-section-head">
-            <div>
-              <h4>备注</h4>
-            </div>
-          </div>
-          <a-form-item label="备注">
-            <a-textarea v-model:value="oauthForm.notes" :rows="2" />
-          </a-form-item>
-        </section>
-      </a-form>
-    </a-modal>
   </a-card>
 </template>
 
@@ -277,7 +300,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountStatus, AccountSummary, AccountType, GroupSummary, OpenAIAuthURLResult, ProxyProfileSummary } from '@/types/domain'
+import type { AccountStatus, AccountSummary, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProxyProfileSummary } from '@/types/domain'
 
 type SchedulableFilter = 'all' | 'schedulable' | 'paused' | 'cooling'
 
@@ -295,8 +318,10 @@ interface AccountMenuItem {
 }
 
 interface AccountForm {
+  providerCode: string
   name: string
   type: AccountType
+  groupId?: string
   apiKey: string
   baseUrl: string
   accessToken: string
@@ -305,6 +330,9 @@ interface AccountForm {
   expiresAt?: Dayjs
   accountId: string
   organizationId: string
+  oauthMode: 'manual' | 'refresh_token'
+  redirectUri: string
+  callbackUrl: string
   status: AccountStatus
   concurrencyLimit: number
   priority: number
@@ -314,31 +342,30 @@ interface AccountForm {
   notes: string
 }
 
+const FALLBACK_PROVIDER: ProviderDefinition = {
+  id: 'openai',
+  code: 'openai',
+  name: 'OpenAI',
+  enabled: true,
+  baseUrl: 'https://api.openai.com/v1',
+  accountTypes: ['oauth', 'api_key'],
+  capabilities: ['models', 'responses', 'stream', 'passthrough']
+}
+
 const loading = ref(false)
+const saving = ref(false)
+const authLoading = ref(false)
 const modalOpen = ref(false)
-const oauthModalOpen = ref(false)
-const oauthLoading = ref(false)
-const oauthMode = ref<'manual' | 'refresh_token'>('manual')
 const authResult = ref<OpenAIAuthURLResult>()
 const editingId = ref<string>()
 const selectedAccountIds = ref<string[]>([])
 const accounts = ref<AccountSummary[]>([])
+const providers = ref<ProviderDefinition[]>([])
 const proxies = ref<ProxyProfileSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all' })
 
-const form = reactive<AccountForm>(defaultForm('api_key'))
-const oauthForm = reactive({
-  name: '',
-  groupId: undefined as string | undefined,
-  concurrencyLimit: 3,
-  clientId: '',
-  proxyProfileId: undefined as string | undefined,
-  redirectUri: 'http://localhost:1455/auth/callback',
-  callbackUrl: '',
-  refreshToken: '',
-  notes: ''
-})
+const form = reactive<AccountForm>(defaultForm())
 
 const typeOptions = [
   { label: '全部类型', value: 'all' },
@@ -352,11 +379,6 @@ const schedulableOptions = [
   { label: '已暂停', value: 'paused' },
   { label: '冷却中', value: 'cooling' }
 ] as const
-
-const accountTypeOptions = [
-  { label: 'API Key', value: 'api_key' },
-  { label: 'OAuth', value: 'oauth' }
-]
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
@@ -406,29 +428,61 @@ const rowSelection = computed(() => ({
 
 const proxyOptions = computed(() => proxies.value.map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
 const groupOptions = computed(() => groups.value.map((group) => ({ label: group.name, value: group.id })))
+const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
+const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
+const accountTypeChoices = computed(() => (selectedProvider.value?.accountTypes ?? []).map((type) => ({
+  value: type,
+  label: accountTypeTitle(selectedProvider.value?.code ?? form.providerCode, type),
+  description: accountTypeDescription(selectedProvider.value?.code ?? form.providerCode, type),
+  tag: accountTypeText(type)
+})))
+const hasAccountType = computed(() => Boolean(form.providerCode && form.type))
+const isApiKeyForm = computed(() => hasAccountType.value && form.type === 'api_key')
+const isOAuthForm = computed(() => hasAccountType.value && form.type === 'oauth')
+const isOpenAIOAuthForm = computed(() => form.providerCode === 'openai' && form.type === 'oauth')
+const modalTitle = computed(() => {
+  if (editingId.value) return '编辑账户'
+  if (!form.providerCode) return '添加账户'
+  if (!form.type) return `添加 ${providerName(form.providerCode)} 账户`
+  return `添加 ${accountTypeTitle(form.providerCode, form.type)} 账户`
+})
+const modalConfirmLoading = computed(() => saving.value)
+const modalOkButtonProps = computed(() => ({
+  type: 'primary' as const,
+  disabled: !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
+}))
 
-function defaultForm(type: AccountType): AccountForm {
+function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
+  const providerList = providers.value.length ? providers.value : [FALLBACK_PROVIDER]
+  const provider = providerList.find((item) => item.code === providerCode) ?? (providerCode ? FALLBACK_PROVIDER : undefined)
   return {
+    providerCode,
     name: '',
     type,
+    groupId: groups.value[0]?.id,
     apiKey: '',
-    baseUrl: 'https://api.openai.com/v1',
+    baseUrl: provider?.baseUrl ?? 'https://api.openai.com/v1',
     accessToken: '',
     refreshToken: '',
     clientId: '',
     accountId: '',
     organizationId: '',
+    oauthMode: 'manual',
+    redirectUri: 'http://localhost:1455/auth/callback',
+    callbackUrl: '',
     status: 'active',
     concurrencyLimit: 3,
     priority: 0,
+    proxyProfileId: defaultProxyProfileId(),
     passthroughEnabled: true,
     schedulable: true,
     notes: ''
   }
 }
 
-function resetForm(type: AccountType) {
-  Object.assign(form, defaultForm(type))
+function resetForm(providerCode = '', type: AccountType = '') {
+  Object.assign(form, defaultForm(providerCode, type))
+  authResult.value = undefined
 }
 
 function statusColor(status: AccountStatus) {
@@ -457,7 +511,31 @@ function isCoolingDown(account: AccountSummary) {
 }
 
 function accountTypeText(type: AccountType) {
-  return type === 'oauth' ? 'OAuth' : 'API Key'
+  if (type === 'oauth') return 'OAuth'
+  if (type === 'api_key') return 'API Key'
+  return type || '-'
+}
+
+function accountTypeTitle(providerCode: string, type: AccountType) {
+  const provider = providerName(providerCode)
+  if (type === 'oauth') return `${provider} OAuth`
+  if (type === 'api_key') return `${provider} API Key`
+  return `${provider} ${type}`.trim()
+}
+
+function accountTypeDescription(providerCode: string, type: AccountType) {
+  if (providerCode === 'openai' && type === 'oauth') return '适合 Codex / ChatGPT OAuth 授权账户，支持手动授权或 Refresh Token。'
+  if (providerCode === 'openai' && type === 'api_key') return '适合直接粘贴 OpenAI API Key，可配置 Base URL 和组织 ID。'
+  return '该账户类型会使用供应商定义的创建流程。'
+}
+
+function providerName(providerCode?: string) {
+  if (!providerCode) return '未知供应商'
+  return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
+}
+
+function defaultProxyProfileId() {
+  return proxies.value.find((proxy) => proxy.type === 'socks5h' && proxy.host === '127.0.0.1' && proxy.port === 7897)?.id
 }
 
 function asString(value: unknown): string {
@@ -528,8 +606,9 @@ async function copyText(value: string) {
 async function loadData() {
   loading.value = true
   try {
-    const [accountList, proxyList, groupList] = await Promise.all([api.accounts.list(), api.proxies.list(), api.groups.list()])
+    const [accountList, providerList, proxyList, groupList] = await Promise.all([api.accounts.list(), api.providers.list(), api.proxies.list(), api.groups.list()])
     accounts.value = accountList
+    providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
     proxies.value = proxyList
     groups.value = groupList
     selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id))
@@ -558,33 +637,43 @@ function clearSelection() {
   selectedAccountIds.value = []
 }
 
-function openCreate(type: AccountType) {
+function openCreate() {
   editingId.value = undefined
-  resetForm(type)
+  resetForm('', '')
   modalOpen.value = true
 }
 
-function openOAuthAuthorization() {
-  Object.assign(oauthForm, {
-    name: '',
-    groupId: groups.value[0]?.id,
-    concurrencyLimit: 3,
-    clientId: '',
-    proxyProfileId: proxies.value.find((proxy) => proxy.type === 'socks5h' && proxy.host === '127.0.0.1' && proxy.port === 7897)?.id,
-    redirectUri: 'http://localhost:1455/auth/callback',
-    callbackUrl: '',
-    refreshToken: '',
-    notes: ''
+function handleModalCancel() {
+  authResult.value = undefined
+}
+
+function selectProvider(providerCode: string) {
+  if (editingId.value || form.providerCode === providerCode) return
+  resetForm(providerCode, '')
+}
+
+function selectAccountType(type: AccountType) {
+  if (editingId.value || form.type === type) return
+  const providerCode = form.providerCode
+  Object.assign(form, {
+    ...defaultForm(providerCode, type),
+    groupId: form.groupId,
+    proxyProfileId: form.proxyProfileId,
+    notes: form.notes,
+    concurrencyLimit: form.concurrencyLimit,
+    priority: form.priority,
+    passthroughEnabled: form.passthroughEnabled,
+    schedulable: form.schedulable
   })
   authResult.value = undefined
-  oauthMode.value = 'manual'
-  oauthModalOpen.value = true
 }
 
 function openEdit(account: AccountSummary) {
   editingId.value = account.id
-  Object.assign(form, defaultForm(account.type), {
+  Object.assign(form, defaultForm(account.providerCode, account.type), {
+    providerCode: account.providerCode,
     name: account.name,
+    type: account.type,
     status: account.status,
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
@@ -598,8 +687,10 @@ function openEdit(account: AccountSummary) {
     clientId: asString(account.credentials.client_id),
     accountId: asString(account.credentials.account_id),
     organizationId: asString(account.credentials.organization_id),
+    expiresAt: undefined,
     notes: account.notes ?? ''
   })
+  authResult.value = undefined
   modalOpen.value = true
 }
 
@@ -622,20 +713,46 @@ function buildCredentials() {
 }
 
 async function saveAccount() {
-  if (!form.name.trim()) {
+  if (!form.providerCode) {
+    message.warning('请先选择供应商')
+    return
+  }
+  if (!form.type) {
+    message.warning('请先选择账户类型')
+    return
+  }
+  if ((editingId.value || form.type === 'api_key') && !form.name.trim()) {
     message.warning('请填写账户名称')
     return
   }
   if (form.type === 'api_key' && !form.apiKey.trim()) {
-    message.warning('请填写 OpenAI API Key')
+    message.warning('请填写 API Key')
     return
   }
-  if (form.type === 'oauth' && !form.accessToken.trim()) {
-    message.warning('请填写 Access Token')
+  if (editingId.value && form.type === 'oauth' && !form.accessToken.trim() && !form.refreshToken.trim()) {
+    message.warning('请至少填写 Access Token 或 Refresh Token')
     return
   }
+  if (!editingId.value && form.type === 'oauth' && form.providerCode !== 'openai') {
+    message.warning('第一期只支持创建 OpenAI OAuth 账户')
+    return
+  }
+  if (!editingId.value && form.type === 'oauth' && form.oauthMode === 'manual' && !authResult.value?.sessionId) {
+    message.warning('请先生成授权链接')
+    return
+  }
+  if (!editingId.value && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) {
+    message.warning('请粘贴回调 URL')
+    return
+  }
+  if (!editingId.value && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) {
+    message.warning('请填写 Refresh Token')
+    return
+  }
+
   const payload = {
-    name: form.name,
+    providerCode: form.providerCode,
+    name: form.name.trim() || undefined,
     type: form.type,
     credentials: buildCredentials(),
     status: form.status,
@@ -644,12 +761,18 @@ async function saveAccount() {
     proxyProfileId: form.proxyProfileId,
     passthroughEnabled: form.passthroughEnabled,
     schedulable: form.schedulable,
+    groupId: form.groupId,
     notes: form.notes
   }
+
+  saving.value = true
   try {
     if (editingId.value) {
       await api.accounts.update(editingId.value, payload)
       message.success('账户已更新')
+    } else if (form.type === 'oauth') {
+      await createOAuthAccountFromUnifiedForm()
+      message.success('OAuth 账户已创建')
     } else {
       await api.accounts.create(payload)
       message.success('账户已创建')
@@ -659,22 +782,24 @@ async function saveAccount() {
   } catch (error) {
     console.error(error)
     message.error('保存账户失败')
+  } finally {
+    saving.value = false
   }
 }
 
 async function generateOAuthUrl() {
-  oauthLoading.value = true
+  authLoading.value = true
   try {
     authResult.value = await api.openaiOAuth.authUrl({
-      redirectUri: oauthForm.redirectUri,
-      clientId: oauthForm.clientId || undefined
+      redirectUri: form.redirectUri,
+      clientId: form.clientId || undefined
     })
     message.success('授权链接已生成')
   } catch (error) {
     console.error(error)
     message.error('生成授权链接失败')
   } finally {
-    oauthLoading.value = false
+    authLoading.value = false
   }
 }
 
@@ -683,52 +808,30 @@ function openAuthUrl() {
   window.open(authResult.value.authUrl, '_blank', 'noopener,noreferrer')
 }
 
-async function createAuthorizedAccount() {
-  oauthLoading.value = true
-  try {
-    if (oauthMode.value === 'manual') {
-      if (!authResult.value?.sessionId) {
-        message.warning('请先生成授权链接')
-        return
-      }
-      if (!oauthForm.callbackUrl.trim()) {
-        message.warning('请粘贴回调 URL')
-        return
-      }
-      await api.openaiOAuth.createFromCode({
-        sessionId: authResult.value.sessionId,
-        callbackUrl: oauthForm.callbackUrl,
-        redirectUri: oauthForm.redirectUri,
-        name: oauthForm.name || undefined,
-        groupId: oauthForm.groupId,
-        concurrencyLimit: oauthForm.concurrencyLimit,
-        proxyProfileId: oauthForm.proxyProfileId,
-        notes: oauthForm.notes || undefined
-      })
-    } else {
-      if (!oauthForm.refreshToken.trim()) {
-        message.warning('请填写 Refresh Token')
-        return
-      }
-      await api.openaiOAuth.createFromRefreshToken({
-        refreshToken: oauthForm.refreshToken,
-        clientId: oauthForm.clientId || undefined,
-        name: oauthForm.name || undefined,
-        groupId: oauthForm.groupId,
-        concurrencyLimit: oauthForm.concurrencyLimit,
-        proxyProfileId: oauthForm.proxyProfileId,
-        notes: oauthForm.notes || undefined
-      })
-    }
-    message.success('OpenAI OAuth 账户已创建')
-    oauthModalOpen.value = false
-    await loadData()
-  } catch (error) {
-    console.error(error)
-    message.error('OpenAI 授权失败')
-  } finally {
-    oauthLoading.value = false
+async function createOAuthAccountFromUnifiedForm() {
+  const commonPayload = {
+    clientId: form.clientId || undefined,
+    name: form.name.trim() || undefined,
+    groupId: form.groupId,
+    concurrencyLimit: form.concurrencyLimit,
+    proxyProfileId: form.proxyProfileId,
+    notes: form.notes || undefined
   }
+
+  if (form.oauthMode === 'manual') {
+    await api.openaiOAuth.createFromCode({
+      ...commonPayload,
+      sessionId: authResult.value?.sessionId,
+      callbackUrl: form.callbackUrl,
+      redirectUri: form.redirectUri
+    })
+    return
+  }
+
+  await api.openaiOAuth.createFromRefreshToken({
+    ...commonPayload,
+    refreshToken: form.refreshToken
+  })
 }
 
 async function refreshOAuthAccount(id: string) {
@@ -1036,6 +1139,145 @@ onMounted(loadData)
   margin-bottom: 16px;
 }
 
+.setup-progress {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.setup-step {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  color: #64748b;
+  border: 1px solid #e8edf5;
+  border-radius: 14px;
+  background: #f8fafc;
+}
+
+.setup-step span {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: #64748b;
+  font-weight: 700;
+  border-radius: 999px;
+  background: #e2e8f0;
+}
+
+.setup-step.active {
+  color: #1d4ed8;
+  border-color: #bfdbfe;
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
+}
+
+.setup-step.active span,
+.setup-step.done span {
+  color: #fff;
+  background: #2563eb;
+}
+
+.setup-step.done {
+  color: #0f172a;
+  border-color: #bbf7d0;
+  background: #f0fdf4;
+}
+
+.selector-section {
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+}
+
+.choice-grid {
+  display: grid;
+  gap: 12px;
+}
+
+.provider-choice-grid {
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.type-choice-grid {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.choice-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  min-height: 82px;
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid #dbe3ef;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.choice-card:hover:not(.disabled) {
+  border-color: #93c5fd;
+  box-shadow: 0 14px 32px rgba(37, 99, 235, 0.12);
+  transform: translateY(-1px);
+}
+
+.choice-card.active {
+  border-color: #2563eb;
+  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 78%);
+  box-shadow: 0 16px 34px rgba(37, 99, 235, 0.14);
+}
+
+.choice-card.disabled {
+  cursor: not-allowed;
+  opacity: 0.68;
+}
+
+.choice-card-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  color: #fff;
+  font-size: 18px;
+  font-weight: 800;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
+}
+
+.choice-card-content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.choice-card-content strong {
+  color: #0f172a;
+  font-size: 15px;
+}
+
+.choice-card-content small {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.credential-section {
+  border-color: #dbeafe;
+  background: #f8fbff;
+}
+
 .account-table :deep(.ant-empty) {
   margin: 12px 0;
 }
@@ -1095,6 +1337,10 @@ onMounted(loadData)
 }
 
 @media (max-width: 992px) {
+  .setup-progress {
+    grid-template-columns: 1fr;
+  }
+
   .form-grid,
   .form-toggle-grid {
     grid-template-columns: 1fr;
@@ -1102,6 +1348,14 @@ onMounted(loadData)
 }
 
 @media (max-width: 768px) {
+  .choice-card {
+    align-items: flex-start;
+  }
+
+  .provider-choice-card {
+    flex-wrap: wrap;
+  }
+
   .form-grid,
   .form-toggle-grid {
     grid-template-columns: 1fr;
