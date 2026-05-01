@@ -232,14 +232,13 @@ export function seedDefaults(database: DatabaseSync): void {
     ['defaultOpenAIBaseUrl', 'https://api.openai.com/v1'],
     ['defaultAccountConcurrencyLimit', 3],
     ['defaultErrorPolicyId', 'ep_default_passthrough'],
-    ['streamCircuitBreakerEnabled', false],
+    ['defaultTemporaryUnschedulableMinutes', 5],
+    ['temporaryUnschedulableRetryIntervalSeconds', 3],
+    ['temporaryUnschedulableRetryAttempts', 3],
+    ['streamCircuitBreakerEnabled', true],
     ['streamIdleTimeoutSeconds', 180],
-    ['streamFailureAction', 'cooldown'],
-    ['streamAccountCooldownMinutes', 5],
     ['streamFailureThresholdCount', 3],
     ['streamFailureThresholdWindowMinutes', 10],
-    ['overloadCooldownEnabled', true],
-    ['overloadCooldownMinutes', 10],
   ] as const
 
   const statement = database.prepare(`
@@ -251,5 +250,12 @@ export function seedDefaults(database: DatabaseSync): void {
     statement.run(key, JSON.stringify(value), now)
   }
 
-  database.prepare("DELETE FROM system_settings WHERE key = 'apiKeyPrefix'").run()
+  const streamDefaultMigration = database
+    .prepare("SELECT key FROM system_settings WHERE key = '_migration_stream_circuit_default_enabled_20260502'")
+    .get() as unknown
+  if (!streamDefaultMigration) {
+    statement.run('streamCircuitBreakerEnabled', JSON.stringify(true), now)
+    statement.run('_migration_stream_circuit_default_enabled_20260502', JSON.stringify(true), now)
+  }
+  database.prepare("DELETE FROM system_settings WHERE key IN ('apiKeyPrefix', 'streamFailureAction', 'streamAccountCooldownMinutes', 'overloadCooldownEnabled', 'overloadCooldownMinutes')").run()
 }

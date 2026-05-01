@@ -8,13 +8,16 @@ import {
   clearAccountFailureState,
   createUsageRecord,
   getSettings,
+  listErrorPolicies,
   listOpenAIAccountsForGroup,
+  markAccountDisabledByFailure,
   markAccountCooldown,
   recordAccountStreamFailure,
   updateAccount,
   validateGatewayApiKey,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
+import { estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
 import { buildOpenAIOAuthCredentials, createProxyAgent, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 
 export const openAIGatewayRouter = Router()
@@ -98,7 +101,8 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       inputTokens: usage.inputTokens,
       outputTokens: usage.outputTokens,
       cacheReadTokens: usage.cacheReadTokens,
-      costUsd: estimateOpenAICost({
+      costUsd: estimateProviderCostUsd({
+        providerCode: 'openai',
         model: typeof req.body?.model === 'string' ? req.body.model : undefined,
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
@@ -128,17 +132,13 @@ openAIGatewayRouter.all('/*', async (req, res) => {
 
 type UpstreamAccount = OpenAIAccountSecret
 
-type StreamFailureAction = 'cooldown' | 'disable' | 'none'
-
 interface GatewaySettings {
+  defaultErrorPolicyId: string
+  defaultTemporaryUnschedulableMinutes: number
   streamCircuitBreakerEnabled: boolean
   streamIdleTimeoutSeconds: number
-  streamFailureAction: StreamFailureAction
-  streamAccountCooldownMinutes: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
-  overloadCooldownEnabled: boolean
-  overloadCooldownMinutes: number
 }
 
 interface UpstreamAttempt {
@@ -158,19 +158,21 @@ class UpstreamAttemptError extends Error {
 function readGatewaySettings(): GatewaySettings {
   const settings = getSettings()
   return {
-    streamCircuitBreakerEnabled: booleanSetting(settings.streamCircuitBreakerEnabled, false),
+    defaultErrorPolicyId: stringSetting(settings.defaultErrorPolicyId, 'ep_default_passthrough'),
+    defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 5, 1, 1440),
+    streamCircuitBreakerEnabled: booleanSetting(settings.streamCircuitBreakerEnabled, true),
     streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 180, 10, 3600),
-    streamFailureAction: actionSetting(settings.streamFailureAction),
-    streamAccountCooldownMinutes: numberSetting(settings.streamAccountCooldownMinutes, 5, 1, 1440),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 3, 1, 100),
-    streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 10, 1, 1440),
-    overloadCooldownEnabled: booleanSetting(settings.overloadCooldownEnabled, true),
-    overloadCooldownMinutes: numberSetting(settings.overloadCooldownMinutes, 10, 1, 1440)
+    streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 10, 1, 1440)
   }
 }
 
 function booleanSetting(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
+}
+
+function stringSetting(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
 function numberSetting(value: unknown, fallback: number, min: number, max: number): number {
@@ -179,9 +181,6 @@ function numberSetting(value: unknown, fallback: number, min: number, max: numbe
   return Math.min(Math.max(Math.trunc(number), min), max)
 }
 
-function actionSetting(value: unknown): StreamFailureAction {
-  return value === 'disable' || value === 'none' || value === 'cooldown' ? value : 'cooldown'
-}
 
 function extractBearerToken(authorization?: string): string | undefined {
   if (!authorization) return undefined
@@ -222,25 +221,44 @@ async function fetchFirstAvailableUpstream(req: Request, accounts: UpstreamAccou
           timeoutMs: upstreamSocketTimeoutMs(req, settings)
         })
         lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
-        if (response.ok || !shouldTryNextUpstream(response.status)) {
+        if (response.ok) {
           return { account, response, upstreamUrl }
         }
-        handleRetryableUpstreamStatus(account, response.status, settings)
-        await response.arrayBuffer().catch(() => undefined)
+
+        const responseBody = Buffer.from(await response.arrayBuffer())
+        const bufferedResponse = new BufferedGatewayUpstreamResponse(response.status, response.headers, responseBody)
+        const policyDecision = decideAccountErrorPolicy(account, response.status, response.headers, responseBody, settings)
+        if (policyDecision?.action === 'passthrough') {
+          return { account, response: bufferedResponse, upstreamUrl }
+        }
+        if (policyDecision?.action === 'custom_error') {
+          return { account, response: buildCustomErrorResponse(policyDecision), upstreamUrl }
+        }
+        const shouldTryNextByPolicy = policyDecision?.action === 'retry_next' || policyDecision?.action === 'cooldown' || policyDecision?.action === 'disable'
+        if (!shouldTryNextByPolicy && !shouldTryNextUpstream(response.status)) {
+          return { account, response: bufferedResponse, upstreamUrl }
+        }
+        if (policyDecision) {
+          applyAccountErrorPolicySideEffect(account, response.status, policyDecision, settings)
+        } else {
+          markDefaultTemporaryUnschedulable(account, settings, 'Unhandled upstream status ' + response.status)
+        }
       } catch (error) {
+        const message = error instanceof Error ? error.message : 'request failed'
         lastAttempt = {
           accountId: account.id,
           accountName: account.name,
           upstreamUrl,
-          message: error instanceof Error ? error.message : 'request failed'
+          message
         }
+        markDefaultTemporaryUnschedulable(account, settings, 'Unhandled upstream exception: ' + message)
       }
     }
   }
 
   throw new UpstreamAttemptError(
     lastAttempt
-      ? `All upstream accounts failed; last attempt ${lastAttempt.accountName} ${lastAttempt.upstreamUrl} returned ${lastAttempt.status ?? lastAttempt.message}`
+      ? 'All upstream accounts failed; last attempt ' + lastAttempt.accountName + ' ' + lastAttempt.upstreamUrl + ' returned ' + (lastAttempt.status ?? lastAttempt.message)
       : 'All upstream accounts failed',
     lastAttempt
   )
@@ -286,6 +304,30 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
     const arrayBuffer = new ArrayBuffer(buffer.byteLength)
     new Uint8Array(arrayBuffer).set(buffer)
     return arrayBuffer
+  }
+}
+
+class BufferedGatewayUpstreamResponse implements GatewayUpstreamResponse {
+  constructor(readonly status: number, readonly headers: Headers, private readonly buffer: Buffer) {}
+
+  get ok(): boolean {
+    return this.status >= 200 && this.status < 300
+  }
+
+  get body(): AsyncIterable<Uint8Array> | null {
+    return iterateBuffer(this.buffer)
+  }
+
+  async arrayBuffer(): Promise<ArrayBuffer> {
+    const arrayBuffer = new ArrayBuffer(this.buffer.byteLength)
+    new Uint8Array(arrayBuffer).set(this.buffer)
+    return arrayBuffer
+  }
+}
+
+async function* iterateBuffer(buffer: Buffer): AsyncIterable<Uint8Array> {
+  if (buffer.byteLength > 0) {
+    yield buffer
   }
 }
 
@@ -410,6 +452,185 @@ async function readStreamChunkWithIdleTimeout(
   }
 }
 
+interface AccountErrorPolicyDecision {
+  action: 'passthrough' | 'custom_error' | 'retry_next' | 'cooldown' | 'disable'
+  ruleName?: string
+  statusCode?: number
+  message?: string
+  cooldownMinutes?: number
+}
+
+function decideAccountErrorPolicy(
+  account: UpstreamAccount,
+  statusCode: number,
+  headers: Headers,
+  body: Buffer,
+  settings: GatewaySettings
+): AccountErrorPolicyDecision | undefined {
+  const policyId = account.errorPolicyId ?? settings.defaultErrorPolicyId
+  const policy = listErrorPolicies().find((item) => item.enabled && item.id === policyId)
+  if (!policy) {
+    return undefined
+  }
+
+  const bodyText = body.toString('utf8')
+  const errorPayload = parseErrorPayload(bodyText, headers)
+  const rules = [...policy.rules]
+    .filter((rule) => rule.enabled !== false)
+    .sort((left, right) => numericRuleValue(left.priority, Number.MAX_SAFE_INTEGER) - numericRuleValue(right.priority, Number.MAX_SAFE_INTEGER))
+
+  for (const rule of rules) {
+    if (!matchesErrorPolicyRule(rule, statusCode, bodyText, errorPayload)) {
+      continue
+    }
+    const action = normalizePolicyAction(rule.action)
+    const ruleName = typeof rule.name === 'string' ? rule.name : policy.name
+    if (action === 'custom_error') {
+      return {
+        action,
+        ruleName,
+        statusCode: boundedStatusCode(rule.statusCode ?? rule.status_code, 502),
+        message: stringRuleValue(rule.message ?? rule.errorMessage ?? rule.error_message, 'Upstream request failed')
+      }
+    }
+    if (action === 'cooldown') {
+      return {
+        action,
+        ruleName,
+        cooldownMinutes: numericRuleValue(rule.durationMinutes ?? rule.duration_minutes, settings.defaultTemporaryUnschedulableMinutes)
+      }
+    }
+    return { action, ruleName }
+  }
+
+  return undefined
+}
+
+function matchesErrorPolicyRule(rule: Record<string, unknown>, statusCode: number, bodyText: string, errorPayload: Record<string, unknown>): boolean {
+  const match = typeof rule.match === 'object' && rule.match !== null && !Array.isArray(rule.match)
+    ? rule.match as Record<string, unknown>
+    : {}
+  const statusSpec = rule.statusCode ?? rule.status_code ?? rule.statusCodes ?? rule.status_codes ?? match.statusCode ?? match.status_code ?? match.statusCodes ?? match.status_codes
+  const keywordSpec = rule.keywords ?? match.keywords
+  const codeSpec = rule.errorCode ?? rule.error_code ?? rule.errorCodes ?? rule.error_codes ?? match.errorCode ?? match.error_code ?? match.errorCodes ?? match.error_codes
+  const typeSpec = rule.errorType ?? rule.error_type ?? rule.errorTypes ?? rule.error_types ?? match.errorType ?? match.error_type ?? match.errorTypes ?? match.error_types
+
+  if (statusSpec !== undefined && !matchesStatusCode(statusCode, statusSpec)) return false
+  if (keywordSpec !== undefined && !matchesTextList(bodyText, keywordSpec)) return false
+  if (codeSpec !== undefined && !matchesValueList(errorPayload.code, codeSpec)) return false
+  if (typeSpec !== undefined && !matchesValueList(errorPayload.type, typeSpec)) return false
+  return true
+}
+
+function matchesStatusCode(statusCode: number, spec: unknown): boolean {
+  const items = listRuleValues(spec)
+  if (!items.length) return true
+  return items.some((item) => {
+    const token = item.toLowerCase()
+    if (token === '*' || token === 'all') return true
+    const range = token.match(/^(\d{3})\s*-\s*(\d{3})$/)
+    if (range) return statusCode >= Number(range[1]) && statusCode <= Number(range[2])
+    const family = token.match(/^([1-5])xx$/)
+    if (family) return Math.floor(statusCode / 100) === Number(family[1])
+    return Number(token) === statusCode
+  })
+}
+
+function matchesTextList(text: string, spec: unknown): boolean {
+  const items = listRuleValues(spec)
+  if (!items.length) return true
+  const normalized = text.toLowerCase()
+  return items.some((item) => normalized.includes(item.toLowerCase()))
+}
+
+function matchesValueList(value: unknown, spec: unknown): boolean {
+  const items = listRuleValues(spec)
+  if (!items.length) return true
+  const normalized = String(value ?? '').toLowerCase()
+  return Boolean(normalized) && items.some((item) => normalized === item.toLowerCase())
+}
+
+function listRuleValues(spec: unknown): string[] {
+  if (Array.isArray(spec)) {
+    return spec.flatMap((item) => listRuleValues(item))
+  }
+  if (typeof spec === 'number') {
+    return [String(spec)]
+  }
+  if (typeof spec !== 'string') {
+    return []
+  }
+  return spec
+    .split(/[,;，；\n\/]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+function parseErrorPayload(text: string, headers: Headers): Record<string, unknown> {
+  if (!headers.get('content-type')?.includes('json')) return {}
+  try {
+    const payload = JSON.parse(text) as Record<string, unknown>
+    const error = typeof payload.error === 'object' && payload.error !== null ? payload.error as Record<string, unknown> : payload
+    return {
+      code: error.code,
+      type: error.type,
+      message: error.message
+    }
+  } catch {
+    return {}
+  }
+}
+
+function normalizePolicyAction(value: unknown): AccountErrorPolicyDecision['action'] {
+  if (value === 'custom_error' || value === 'customError' || value === 'custom_response') return 'custom_error'
+  if (value === 'retry_next' || value === 'switch_account' || value === 'next') return 'retry_next'
+  if (value === 'temp_unschedulable' || value === 'overloaded' || value === 'rate_limited') return 'cooldown'
+  if (value === 'error_disabled' || value === 'disable') return 'disable'
+  return 'passthrough'
+}
+
+function applyAccountErrorPolicySideEffect(account: UpstreamAccount, statusCode: number, decision: AccountErrorPolicyDecision, settings: GatewaySettings): void {
+  const reason = decision.ruleName
+    ? 'Error policy matched: ' + decision.ruleName + ' (HTTP ' + statusCode + ')'
+    : 'Error policy matched HTTP ' + statusCode
+  if (decision.action === 'cooldown') {
+    const minutes = Math.max(1, decision.cooldownMinutes ?? settings.defaultTemporaryUnschedulableMinutes)
+    const until = new Date(Date.now() + minutes * 60_000).toISOString()
+    markAccountCooldown(account.id, until, reason)
+  }
+  if (decision.action === 'disable') {
+    markAccountDisabledByFailure(account.id, reason)
+  }
+}
+
+function buildCustomErrorResponse(decision: AccountErrorPolicyDecision): GatewayUpstreamResponse {
+  const status = boundedStatusCode(decision.statusCode, 502)
+  const payload = Buffer.from(JSON.stringify({ error: { message: decision.message ?? 'Upstream request failed', type: 'upstream_error' } }))
+  const headers = new Headers()
+  headers.set('content-type', 'application/json; charset=utf-8')
+  return new BufferedGatewayUpstreamResponse(status, headers, payload)
+}
+
+function boundedStatusCode(value: unknown, fallback: number): number {
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isInteger(number) && number >= 400 && number <= 599 ? number : fallback
+}
+
+function numericRuleValue(value: unknown, fallback: number): number {
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(number) ? number : fallback
+}
+
+function stringRuleValue(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+}
+
+function markDefaultTemporaryUnschedulable(account: UpstreamAccount, settings: GatewaySettings, reason: string): void {
+  const minutes = Math.max(1, settings.defaultTemporaryUnschedulableMinutes)
+  const until = new Date(Date.now() + minutes * 60_000).toISOString()
+  markAccountCooldown(account.id, until, reason)
+}
+
 function handleStreamFailure(account: UpstreamAccount, reason: string, settings: GatewaySettings): void {
   if (!settings.streamCircuitBreakerEnabled) {
     return
@@ -419,19 +640,10 @@ function handleStreamFailure(account: UpstreamAccount, reason: string, settings:
     accountId: account.id,
     thresholdCount: settings.streamFailureThresholdCount,
     thresholdWindowMinutes: settings.streamFailureThresholdWindowMinutes,
-    action: settings.streamFailureAction,
-    cooldownMinutes: settings.streamAccountCooldownMinutes,
+    action: 'cooldown',
+    cooldownMinutes: settings.defaultTemporaryUnschedulableMinutes,
     reason
   })
-}
-
-function handleRetryableUpstreamStatus(account: UpstreamAccount, status: number, settings: GatewaySettings): void {
-  if (!settings.overloadCooldownEnabled || (status !== 429 && status !== 503)) {
-    return
-  }
-
-  const until = new Date(Date.now() + settings.overloadCooldownMinutes * 60_000).toISOString()
-  markAccountCooldown(account.id, until, `Upstream returned ${status}; temporary cooldown`)
 }
 
 function formatSseError(message: string): string {
@@ -581,47 +793,3 @@ function numberValue(value: unknown): number | undefined {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : undefined
 }
-
-interface CostInput {
-  model?: string
-  inputTokens?: number
-  outputTokens?: number
-  cacheReadTokens?: number
-}
-
-interface OpenAIModelPricing {
-  inputPerMillion: number
-  outputPerMillion: number
-  cachedInputPerMillion?: number
-}
-
-const openAIPricing: Array<{ pattern: RegExp; pricing: OpenAIModelPricing }> = [
-  { pattern: /^gpt-5\.4-mini($|-)/i, pricing: { inputPerMillion: 0.75, outputPerMillion: 4.5, cachedInputPerMillion: 0.075 } },
-  { pattern: /^gpt-5\.4-nano($|-)/i, pricing: { inputPerMillion: 0.2, outputPerMillion: 1.25, cachedInputPerMillion: 0.02 } },
-  { pattern: /^gpt-5\.4($|-)/i, pricing: { inputPerMillion: 2.5, outputPerMillion: 15, cachedInputPerMillion: 0.25 } },
-  { pattern: /^gpt-5-mini($|-)/i, pricing: { inputPerMillion: 0.25, outputPerMillion: 2, cachedInputPerMillion: 0.025 } },
-  { pattern: /^gpt-5-nano($|-)/i, pricing: { inputPerMillion: 0.05, outputPerMillion: 0.4, cachedInputPerMillion: 0.005 } },
-  { pattern: /^gpt-5($|-)/i, pricing: { inputPerMillion: 1.25, outputPerMillion: 10, cachedInputPerMillion: 0.125 } },
-  { pattern: /^gpt-4\.1-mini($|-)/i, pricing: { inputPerMillion: 0.4, outputPerMillion: 1.6, cachedInputPerMillion: 0.1 } },
-  { pattern: /^gpt-4\.1-nano($|-)/i, pricing: { inputPerMillion: 0.1, outputPerMillion: 0.4, cachedInputPerMillion: 0.025 } },
-  { pattern: /^gpt-4\.1($|-)/i, pricing: { inputPerMillion: 2, outputPerMillion: 8, cachedInputPerMillion: 0.5 } },
-  { pattern: /^gpt-4o-mini($|-)/i, pricing: { inputPerMillion: 0.15, outputPerMillion: 0.6, cachedInputPerMillion: 0.075 } },
-  { pattern: /^gpt-4o($|-)/i, pricing: { inputPerMillion: 2.5, outputPerMillion: 10, cachedInputPerMillion: 1.25 } }
-]
-
-function estimateOpenAICost(input: CostInput): number | undefined {
-  if (!input.model || (input.inputTokens === undefined && input.outputTokens === undefined && input.cacheReadTokens === undefined)) {
-    return undefined
-  }
-  const pricing = openAIPricing.find((item) => item.pattern.test(input.model ?? ''))?.pricing
-  if (!pricing) return undefined
-  const cacheReadTokens = Math.min(input.cacheReadTokens ?? 0, input.inputTokens ?? 0)
-  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens, 0)
-  const cost = (uncachedInputTokens * pricing.inputPerMillion
-    + cacheReadTokens * (pricing.cachedInputPerMillion ?? pricing.inputPerMillion)
-    + (input.outputTokens ?? 0) * pricing.outputPerMillion) / 1_000_000
-  return Number(cost.toFixed(10))
-}
-
-
-

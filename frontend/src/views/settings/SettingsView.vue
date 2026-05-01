@@ -10,7 +10,7 @@
       </div>
 
       <a-alert class="setting-alert" type="info" show-icon>
-        <template #message>流熔断默认关闭；启用后只在流式响应长时间无数据或异常中断时累计失败次数。</template>
+        <template #message>流熔断默认开启；未知异常和流式失败都会按全局临时不可调用时长冷却账号。</template>
       </a-alert>
 
       <a-form layout="vertical" class="settings-form">
@@ -37,6 +37,11 @@
                 <a-select v-model:value="form.defaultErrorPolicyId" :options="errorPolicyOptions" placeholder="选择默认策略" />
               </a-form-item>
             </div>
+            <div class="setting-item">
+              <a-form-item label="默认临时不可调用（分钟）" extra="未知异常、策略冷却和流熔断都会使用这个时长。">
+                <a-input-number v-model:value="form.defaultTemporaryUnschedulableMinutes" :min="1" :max="1440" style="width: 100%" />
+              </a-form-item>
+            </div>
           </div>
         </section>
 
@@ -44,7 +49,7 @@
           <div class="section-heading">
             <div>
               <h3>流熔断与账号处理</h3>
-              <p>参考 sub2api 的流超时处理语义，轻量版只做本地计数、临时冷却和标记错误。</p>
+              <p>参考 sub2api 的流超时处理语义，轻量版只做本地计数，达到阈值后一律临时不可调用。</p>
             </div>
             <a-switch v-model:checked="form.streamCircuitBreakerEnabled" checked-children="启用" un-checked-children="关闭" />
           </div>
@@ -56,11 +61,6 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="失败后账号处理" extra="达到阈值后执行：临时冷却、标记错误，或仅记录失败。">
-                <a-select v-model:value="form.streamFailureAction" :options="streamActionOptions" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
               <a-form-item label="阈值次数" extra="同一账号在统计窗口内累计到该次数后触发处理。">
                 <a-input-number v-model:value="form.streamFailureThresholdCount" :min="1" :max="100" style="width: 100%" />
               </a-form-item>
@@ -68,21 +68,6 @@
             <div class="setting-item">
               <a-form-item label="统计窗口（分钟）" extra="超过窗口后失败次数重新计算。">
                 <a-input-number v-model:value="form.streamFailureThresholdWindowMinutes" :min="1" :max="1440" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="账号冷却时长（分钟）" extra="处理方式为临时冷却时，账号在冷却结束前不参与调度。">
-                <a-input-number v-model:value="form.streamAccountCooldownMinutes" :min="1" :max="1440" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item setting-switch-item">
-              <a-form-item label="上游过载自动冷却" extra="上游返回 429/503 时，可临时冷却该账号并尝试下一个账号。">
-                <a-switch v-model:checked="form.overloadCooldownEnabled" checked-children="启用" un-checked-children="关闭" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="过载冷却时长（分钟）" extra="用于 429/503 这类过载或限流响应。">
-                <a-input-number v-model:value="form.overloadCooldownMinutes" :min="1" :max="1440" style="width: 100%" />
               </a-form-item>
             </div>
           </div>
@@ -106,41 +91,29 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '@/api/client'
 import type { ErrorPolicySummary, SystemSettings } from '@/types/domain'
 
-type StreamFailureAction = NonNullable<SystemSettings['streamFailureAction']>
 
 interface SettingsForm {
   defaultOpenAIBaseUrl: string
   defaultAccountConcurrencyLimit: number
   defaultErrorPolicyId: string
+  defaultTemporaryUnschedulableMinutes: number
   streamCircuitBreakerEnabled: boolean
   streamIdleTimeoutSeconds: number
-  streamFailureAction: StreamFailureAction
-  streamAccountCooldownMinutes: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
-  overloadCooldownEnabled: boolean
-  overloadCooldownMinutes: number
 }
 
 const defaultSettings: SettingsForm = {
   defaultOpenAIBaseUrl: 'https://api.openai.com/v1',
   defaultAccountConcurrencyLimit: 3,
   defaultErrorPolicyId: 'ep_default_passthrough',
-  streamCircuitBreakerEnabled: false,
+  defaultTemporaryUnschedulableMinutes: 5,
+  streamCircuitBreakerEnabled: true,
   streamIdleTimeoutSeconds: 180,
-  streamFailureAction: 'cooldown',
-  streamAccountCooldownMinutes: 5,
   streamFailureThresholdCount: 3,
-  streamFailureThresholdWindowMinutes: 10,
-  overloadCooldownEnabled: true,
-  overloadCooldownMinutes: 10
+  streamFailureThresholdWindowMinutes: 10
 }
 
-const streamActionOptions = [
-  { label: '临时冷却账号', value: 'cooldown' },
-  { label: '标记错误并停调度', value: 'disable' },
-  { label: '只记录失败', value: 'none' }
-]
 
 const saving = ref(false)
 const errorPolicies = ref<ErrorPolicySummary[]>([])
@@ -186,14 +159,11 @@ function normalizeSettings(settings: SystemSettings | SettingsForm): SettingsFor
     defaultOpenAIBaseUrl: stringValue(settings.defaultOpenAIBaseUrl, defaultSettings.defaultOpenAIBaseUrl),
     defaultAccountConcurrencyLimit: numberValue(settings.defaultAccountConcurrencyLimit, defaultSettings.defaultAccountConcurrencyLimit, 1, 999),
     defaultErrorPolicyId: errorPolicyValue(settings.defaultErrorPolicyId),
+    defaultTemporaryUnschedulableMinutes: numberValue(settings.defaultTemporaryUnschedulableMinutes, defaultSettings.defaultTemporaryUnschedulableMinutes, 1, 1440),
     streamCircuitBreakerEnabled: booleanValue(settings.streamCircuitBreakerEnabled, defaultSettings.streamCircuitBreakerEnabled),
     streamIdleTimeoutSeconds: numberValue(settings.streamIdleTimeoutSeconds, defaultSettings.streamIdleTimeoutSeconds, 10, 3600),
-    streamFailureAction: actionValue(settings.streamFailureAction),
-    streamAccountCooldownMinutes: numberValue(settings.streamAccountCooldownMinutes, defaultSettings.streamAccountCooldownMinutes, 1, 1440),
     streamFailureThresholdCount: numberValue(settings.streamFailureThresholdCount, defaultSettings.streamFailureThresholdCount, 1, 100),
-    streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSettings.streamFailureThresholdWindowMinutes, 1, 1440),
-    overloadCooldownEnabled: booleanValue(settings.overloadCooldownEnabled, defaultSettings.overloadCooldownEnabled),
-    overloadCooldownMinutes: numberValue(settings.overloadCooldownMinutes, defaultSettings.overloadCooldownMinutes, 1, 1440)
+    streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSettings.streamFailureThresholdWindowMinutes, 1, 1440)
   }
 }
 
@@ -216,9 +186,6 @@ function errorPolicyValue(value: unknown): string {
   return errorPolicies.value.find((policy) => policy.enabled)?.id ?? defaultSettings.defaultErrorPolicyId
 }
 
-function actionValue(value: unknown): StreamFailureAction {
-  return value === 'disable' || value === 'none' || value === 'cooldown' ? value : defaultSettings.streamFailureAction
-}
 
 onMounted(loadSettings)
 </script>

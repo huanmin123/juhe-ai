@@ -82,7 +82,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 ## 页面优先级
 
-1. 供应商页：展示 OpenAI 及支持的账户类型
+1. 供应商页：展示 OpenAI、支持的账户类型和模型价格目录
 2. 账户页：OpenAI OAuth / API Key 创建、编辑、状态切换
 3. 分组页：维护分组并绑定账户
 4. API Key 页：创建密钥并绑定分组
@@ -93,15 +93,16 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 ## 接口优先级
 
 1. `GET /api/providers`
-2. `GET /api/accounts`
-3. `POST /api/accounts`
-4. `PATCH /api/accounts/:id`
-5. `DELETE /api/accounts/:id`
-6. `GET /api/groups`
-7. `POST /api/groups`
-8. `PATCH /api/groups/:id/accounts`
-9. `GET /api/api-keys`
-10. `POST /api/api-keys`
+2. `GET /api/providers/:code/models`
+3. `GET /api/accounts`
+4. `POST /api/accounts`
+5. `PATCH /api/accounts/:id`
+6. `DELETE /api/accounts/:id`
+7. `GET /api/groups`
+8. `POST /api/groups`
+9. `PATCH /api/groups/:id/accounts`
+10. `GET /api/api-keys`
+11. `POST /api/api-keys`
 11. `PATCH /api/api-keys/:id`
 12. `DELETE /api/api-keys/:id`
 13. `GET /api/proxies`

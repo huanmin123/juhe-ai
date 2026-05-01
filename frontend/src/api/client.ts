@@ -9,6 +9,7 @@ import type {
   GroupSummary,
   OpenAIAuthURLResult,
   ProviderDefinition,
+  ProviderModelPricing,
   ProxyProfileSummary,
   SystemSettings,
   UsageRecordSummary
@@ -31,7 +32,8 @@ async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T>
 
 export const api = {
   providers: {
-    list: () => unwrap<ProviderDefinition[]>(http.get('/providers'))
+    list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
+    models: (code: string) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`))
   },
   errorPolicies: {
     list: () => unwrap<ErrorPolicySummary[]>(http.get('/error-policies'))
@@ -76,4 +78,3 @@ export const api = {
     update: (payload: SystemSettings) => unwrap<SystemSettings>(http.patch('/settings', payload))
   }
 }
-

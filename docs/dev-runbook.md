@@ -134,31 +134,38 @@ $env:SMOKE_MODEL = "gpt-5.4-mini"
 pnpm test:smoke
 ```
 
-烟测还会检查系统设置里流熔断相关字段是否存在：`streamCircuitBreakerEnabled`、`streamIdleTimeoutSeconds`、`streamFailureAction`、`overloadCooldownEnabled`。
+烟测还会检查默认错误策略存在且启用，以及系统设置里这些字段是否存在：`defaultErrorPolicyId`、`defaultTemporaryUnschedulableMinutes`、`streamCircuitBreakerEnabled`、`streamIdleTimeoutSeconds`、`streamFailureThresholdCount`、`streamFailureThresholdWindowMinutes`。
+
+### 错误策略验证
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:3000/api/error-policies
+$settings = Invoke-RestMethod http://127.0.0.1:3000/api/settings
+$settings.data.defaultErrorPolicyId
+```
+
+检查点：默认应存在 `ep_default_passthrough` 和 `ep_default_safe`；账户编辑弹窗的“错误处理策略”可切换，清空后运行时回落到系统默认策略。
 
 ### 流熔断设置验证
 
 ```powershell
 $settings = Invoke-RestMethod http://127.0.0.1:3000/api/settings
+$settings.data.defaultTemporaryUnschedulableMinutes
 $settings.data.streamCircuitBreakerEnabled
-$settings.data.streamFailureAction
 
 Invoke-RestMethod -Method Patch `
   -Uri "http://127.0.0.1:3000/api/settings" `
   -ContentType "application/json" `
   -Body (@{
+    defaultTemporaryUnschedulableMinutes = 5
     streamCircuitBreakerEnabled = $true
     streamIdleTimeoutSeconds = 180
-    streamFailureAction = "cooldown"
-    streamAccountCooldownMinutes = 5
     streamFailureThresholdCount = 3
     streamFailureThresholdWindowMinutes = 10
-    overloadCooldownEnabled = $true
-    overloadCooldownMinutes = 10
   } | ConvertTo-Json -Compress)
 ```
 
-检查点：系统设置页能保存并回显；流式异常达到阈值后账号列表会显示冷却或错误摘要，更多菜单可执行“清理冷却/错误”。
+检查点：系统设置页能保存并回显；流式异常达到阈值后账号列表会显示临时不可调用/错误摘要，更多菜单可执行“清理冷却/错误”。
 
 ### 代码级验证
 

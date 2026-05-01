@@ -28,7 +28,7 @@ const createFromCodeSchema = z.object({
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   proxyProfileId: z.string().optional(),
-  errorPolicyId: z.string().optional(),
+  errorPolicyId: z.string().nullable().optional(),
   notes: z.string().optional()
 })
 
@@ -39,7 +39,7 @@ const createFromRefreshTokenSchema = z.object({
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   proxyProfileId: z.string().optional(),
-  errorPolicyId: z.string().optional(),
+  errorPolicyId: z.string().nullable().optional(),
   notes: z.string().optional()
 })
 

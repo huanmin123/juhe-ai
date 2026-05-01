@@ -693,7 +693,7 @@ function selectAccountType(type: AccountType) {
     ...defaultForm(providerCode, type),
     groupId: form.groupId,
     proxyProfileId: form.proxyProfileId,
-    errorPolicyId: form.errorPolicyId,
+    errorPolicyId: form.errorPolicyId ?? null,
     notes: form.notes,
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
@@ -795,7 +795,7 @@ async function saveAccount() {
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
     proxyProfileId: form.proxyProfileId,
-    errorPolicyId: form.errorPolicyId,
+    errorPolicyId: form.errorPolicyId ?? null,
     passthroughEnabled: form.passthroughEnabled,
     schedulable: form.schedulable,
     groupId: form.groupId,
@@ -852,7 +852,7 @@ async function createOAuthAccountFromUnifiedForm() {
     groupId: form.groupId,
     concurrencyLimit: form.concurrencyLimit,
     proxyProfileId: form.proxyProfileId,
-    errorPolicyId: form.errorPolicyId,
+    errorPolicyId: form.errorPolicyId ?? null,
     notes: form.notes || undefined
   }
 

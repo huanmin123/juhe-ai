@@ -130,6 +130,7 @@ export interface OpenAIAccountSecret {
   refreshToken?: string
   clientId?: string
   proxyUrl?: string
+  errorPolicyId?: string
   expiresAt?: string
   credentials: Record<string, unknown>
 }
@@ -204,6 +205,19 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
+const accountStatusValues: readonly AccountStatus[] = ['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
+const coolingAccountStatusValues: readonly AccountStatus[] = ['rate_limited', 'temporary_unavailable']
+
+function normalizeAccountStatus(value: unknown, fallback: AccountStatus): AccountStatus {
+  return typeof value === 'string' && accountStatusValues.includes(value as AccountStatus)
+    ? value as AccountStatus
+    : fallback
+}
+
+function isCoolingAccountStatus(status: AccountStatus): boolean {
+  return coolingAccountStatusValues.includes(status)
+}
+
 function boolInt(value: unknown, fallback: boolean): number {
   return typeof value === 'boolean' ? (value ? 1 : 0) : fallback ? 1 : 0
 }
@@ -228,6 +242,30 @@ function defaultErrorPolicyId(): string | undefined {
   return optionalString(getSettings().defaultErrorPolicyId) ?? 'ep_default_passthrough'
 }
 
+function defaultTemporaryUnschedulableMinutes(): number {
+  const value = getSettings().defaultTemporaryUnschedulableMinutes
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  if (!Number.isFinite(number)) return 5
+  return Math.min(Math.max(Math.trunc(number), 1), 1440)
+}
+
+function releaseExpiredAccountCooldowns(): void {
+  getDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET status = 'active',
+          cooldown_until = NULL,
+          last_error_message = NULL,
+          stream_failure_count = 0,
+          stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE status IN ('rate_limited', 'temporary_unavailable')
+        AND cooldown_until IS NOT NULL
+        AND cooldown_until <= ?
+    `)
+    .run(nowIso(), nowIso())
+}
+
 export function listProviders(): ProviderDefinition[] {
   const rows = getDatabase().prepare('SELECT * FROM providers ORDER BY name ASC').all() as unknown as ProviderRow[]
   return rows.map((row) => ({
@@ -242,6 +280,7 @@ export function listProviders(): ProviderDefinition[] {
 }
 
 export function listAccounts(): AccountSummary[] {
+  releaseExpiredAccountCooldowns()
   const rows = getDatabase().prepare('SELECT * FROM accounts ORDER BY updated_at DESC').all() as unknown as AccountRow[]
   const usageByAccount = loadAccountUsageSummaries()
   return rows.map((row) => ({
@@ -309,6 +348,10 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountFingerprint(providerCode, accountType, baseUrl, credentialSource)
     : null
+  const initialStatus = normalizeAccountStatus(input.status, 'active')
+  const initialCooldownUntil = isCoolingAccountStatus(initialStatus)
+    ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+    : undefined
   const account: AccountSummary = {
     id,
     providerCode,
@@ -316,7 +359,7 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     notes: optionalString(input.notes),
     type: accountType,
     credentials,
-    status: input.status === 'disabled' || input.status === 'error' ? input.status : 'active',
+    status: initialStatus,
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? defaultAccountConcurrencyLimit()),
     currentConcurrency: 0,
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? 0),
@@ -324,8 +367,8 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     passthroughEnabled: Boolean(input.passthroughEnabled ?? input.passthrough_enabled),
     errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id) ?? defaultErrorPolicyId(),
     schedulable: input.schedulable !== false,
-    cooldownUntil: undefined,
-    lastErrorMessage: undefined,
+    cooldownUntil: initialCooldownUntil,
+    lastErrorMessage: initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     lastUsedAt: undefined,
     usage: {
       requestCount: 0,
@@ -362,8 +405,8 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
       account.priority,
       account.schedulable ? 1 : 0,
       optionalString(input.notes) ?? null,
-      null,
-      null,
+      account.cooldownUntil ?? null,
+      account.lastErrorMessage ?? null,
       0,
       null,
       now,
@@ -399,20 +442,42 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
     ? accountFingerprint(current.providerCode, current.type, baseUrl, credentialSource)
     : null
 
+  const rawErrorPolicyId = Object.prototype.hasOwnProperty.call(input, 'errorPolicyId')
+    ? input.errorPolicyId
+    : Object.prototype.hasOwnProperty.call(input, 'error_policy_id')
+      ? input.error_policy_id
+      : undefined
+
+  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
+  const nextStatus = hasStatusInput ? normalizeAccountStatus(input.status, current.status) : current.status
+  let nextCooldownUntil = current.cooldownUntil
+  let nextLastErrorMessage = current.lastErrorMessage
+  if (hasStatusInput) {
+    if (nextStatus === 'active') {
+      nextCooldownUntil = undefined
+      nextLastErrorMessage = undefined
+    } else if (nextStatus === 'disabled' || nextStatus === 'error') {
+      nextCooldownUntil = undefined
+    } else if (isCoolingAccountStatus(nextStatus) && !nextCooldownUntil) {
+      nextCooldownUntil = new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+      nextLastErrorMessage = nextLastErrorMessage ?? '手动设置为临时不可调用'
+    }
+  }
+
   const next: AccountSummary = {
     ...current,
     name: typeof input.name === 'string' ? input.name : current.name,
     notes: optionalString(input.notes) ?? current.notes,
     credentials,
-    status: input.status === 'active' || input.status === 'disabled' || input.status === 'error' ? input.status : current.status,
+    status: nextStatus,
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? current.concurrencyLimit),
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? current.priority),
     proxyProfileId: optionalString(input.proxyProfileId ?? input.proxy_profile_id) ?? current.proxyProfileId,
     passthroughEnabled: typeof input.passthroughEnabled === 'boolean' ? input.passthroughEnabled : current.passthroughEnabled,
-    errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id) ?? current.errorPolicyId,
+    errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
     schedulable: typeof input.schedulable === 'boolean' ? input.schedulable : current.schedulable,
-    cooldownUntil: current.cooldownUntil,
-    lastErrorMessage: current.lastErrorMessage,
+    cooldownUntil: nextCooldownUntil,
+    lastErrorMessage: nextLastErrorMessage,
     lastUsedAt: current.lastUsedAt,
     usage: current.usage
   }
@@ -422,7 +487,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
       UPDATE accounts
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
           proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
-          error_policy_id = ?, priority = ?, schedulable = ?, updated_at = ?
+          error_policy_id = ?, priority = ?, schedulable = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
       WHERE id = ?
     `)
     .run(
@@ -438,6 +503,8 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
       next.errorPolicyId ?? null,
       next.priority,
       next.schedulable ? 1 : 0,
+      next.cooldownUntil ?? null,
+      next.lastErrorMessage ?? null,
       nowIso(),
       id
     )
@@ -459,7 +526,8 @@ export function clearAccountFailureState(id: string): AccountSummary | undefined
   getDatabase()
     .prepare(`
       UPDATE accounts
-      SET cooldown_until = NULL,
+      SET status = 'active',
+          cooldown_until = NULL,
           last_error_message = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
@@ -471,23 +539,26 @@ export function clearAccountFailureState(id: string): AccountSummary | undefined
   return listAccounts().find((account) => account.id === id)
 }
 
-export function markAccountCooldown(id: string, until: string, reason: string): AccountSummary | undefined {
+export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
   const current = listAccounts().find((account) => account.id === id)
   if (!current) {
     return undefined
   }
 
+  const cooldownStatus: AccountStatus = status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
+
   getDatabase()
     .prepare(`
       UPDATE accounts
-      SET cooldown_until = ?,
+      SET status = ?,
+          cooldown_until = ?,
           last_error_message = ?,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
           updated_at = ?
       WHERE id = ?
     `)
-    .run(until, reason || null, nowIso(), id)
+    .run(cooldownStatus, until, reason || null, nowIso(), id)
 
   return listAccounts().find((account) => account.id === id)
 }
@@ -868,6 +939,7 @@ export function selectOpenAIAccountForGroup(groupId: string): OpenAIAccountSecre
 }
 
 export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret[] {
+  releaseExpiredAccountCooldowns()
   const database = getDatabase()
   const groupAccountRows = database
     .prepare('SELECT account_id FROM group_accounts WHERE group_id = ? AND enabled = 1 ORDER BY weight DESC, created_at ASC')
@@ -877,11 +949,11 @@ export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret
   for (const groupAccount of groupAccountRows) {
     const row = database
       .prepare(`
-        SELECT id, name, type, credentials_encrypted, proxy_profile_id, cooldown_until
+        SELECT id, name, type, credentials_encrypted, proxy_profile_id, error_policy_id, cooldown_until
         FROM accounts
         WHERE id = ? AND provider_code = 'openai' AND type IN ('api_key', 'oauth') AND status = 'active' AND schedulable = 1 AND (cooldown_until IS NULL OR cooldown_until <= ?)
       `)
-      .get(groupAccount.account_id, nowIso()) as unknown as { id: string; name: string; type: AccountType; credentials_encrypted: string; proxy_profile_id: string | null; cooldown_until: string | null } | undefined
+      .get(groupAccount.account_id, nowIso()) as unknown as { id: string; name: string; type: AccountType; credentials_encrypted: string; proxy_profile_id: string | null; error_policy_id: string | null; cooldown_until: string | null } | undefined
     if (!row) {
       continue
     }
@@ -901,6 +973,7 @@ export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret
       refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
       clientId: typeof credentials.client_id === 'string' ? credentials.client_id : undefined,
       proxyUrl: proxyUrlForProfile(row.proxy_profile_id),
+      errorPolicyId: row.error_policy_id ?? undefined,
       expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
       credentials
     })
@@ -1149,7 +1222,7 @@ export function importOpenAIApiKeyAccounts(input: {
 
 export function getSettings(): Record<string, unknown> {
   const rows = getDatabase().prepare('SELECT key, value_json FROM system_settings ORDER BY key ASC').all() as Array<{ key: string; value_json: string }>
-  return Object.fromEntries(rows.filter((row) => row.key !== 'apiKeyPrefix').map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
+  return Object.fromEntries(rows.filter((row) => row.key !== 'apiKeyPrefix' && !row.key.startsWith('_migration')).map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
 }
 
 export function updateSettings(input: Record<string, unknown>): Record<string, unknown> {

@@ -31,12 +31,12 @@ flowchart LR
 
 - 供应商定义账户创建方式，例如 OpenAI 支持 OAuth 和 API Key。
 - 账户属于某个供应商，并选择一种账户类型。
-- 分组绑定多个账户，代表一组可调度资源。
+- 分组归属于一个供应商并绑定该供应商下的多个账户，代表一组可调度资源。
 - API Key 绑定分组，请求进入后只能使用该分组内的账户。
 - 代理独立管理，账户按需绑定代理。
 - 使用记录记录 API Key、分组、账户、供应商、模型、状态、耗时和错误。
 - 系统设置保存全局默认值，不直接替代账号级配置。
-- 流熔断只作用于流式响应异常：超过空闲超时没有新数据或流被异常中断时，按账号累计失败并执行冷却/禁用/仅记录。
+- 流熔断只作用于流式响应异常：超过空闲超时没有新数据或流被异常中断时，按账号累计失败并临时不可调用。
 
 ## SQLite 存储策略
 
@@ -82,6 +82,13 @@ flowchart LR
 
 - `openai`：支持 `oauth` 和 `api_key`
 
+供应商模型目录：
+
+- 模型价格应归属于供应商，而不是散落在网关代码里。
+- 第一阶段内置 OpenAI 模型价格快照，字段采用 LiteLLM / `model-price-repo` 的语义，token 单价以 USD/token 存储，接口展示时换算为 USD/1M tokens。
+- 供应商页提供“查看模型”入口，展示模型版本、输入/输出/缓存读写/图片价格、上下文窗口和能力标签。
+- 网关成本估算复用供应商模型目录；未命中模型时只记录 token，不猜测成本。
+
 ## 账户管理
 
 账户是上游凭据和调度配置的承载对象。
@@ -105,7 +112,7 @@ flowchart LR
 - `notes`
 - `last_used_at`
 - `cooldown_until`：账号临时冷却截止时间；未来时间内不参与调度
-- `last_error_message`：最近一次熔断、过载冷却或失败原因摘要
+- `last_error_message`：最近一次熔断、临时不可调用或失败原因摘要
 - `stream_failure_count`：流失败窗口内累计次数
 - `stream_failure_window_started_at`：流失败统计窗口起始时间
 - `created_at` / `updated_at`
@@ -113,6 +120,8 @@ flowchart LR
 账户列表第一期展示：账户名称、账户类型、供应商、并发数、状态、用量情况、优先级、最近使用时间、操作。`Access/API Key` 与 `Refresh Token` 不在列表展示，只在编辑弹窗里查看和修改；`Refresh Token` 只对 OAuth 账户有意义。
 
 账户创建入口保持统一：页面只提供“添加账户”，弹窗内先选择供应商，再按供应商能力展示账户类型，最后渐进展开具体配置。第一期 OpenAI 支持 `oauth` 与 `api_key` 两种类型；后续 Claude Code、Gemini 等供应商只扩展供应商定义和对应创建表单，不再新增外部入口按钮。
+
+账号级错误处理通过 `error_policy_id` 引用策略；新建账号默认使用系统设置 `defaultErrorPolicyId`，编辑弹窗可改成指定策略或清空后回到运行时默认。列表不额外展示策略，避免挤占用户关心的状态、并发、用量和最近使用时间。
 
 OpenAI OAuth 建议凭据：
 
@@ -136,6 +145,7 @@ OpenAI API Key 建议凭据：
 
 - `id`
 - `name`
+- `provider_code`：分组所属供应商，默认 `openai`；只允许绑定同一供应商的账户
 - `description`
 - `enabled`
 - `account_count`
@@ -152,6 +162,7 @@ OpenAI API Key 建议凭据：
 
 - 一个账户可以加入多个分组
 - 一个分组可以绑定多个账户
+- 一个分组只绑定同一 `provider_code` 下的账户，列表只展示数量与聚合状态，不展开账户名称
 - 一个 API Key 先绑定一个分组
 
 ## API Key 管理
@@ -221,7 +232,18 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 - `error_message`
 - `created_at`
 
-第一阶段网关已写入请求记录，并从 OpenAI 响应里的 `usage.input_tokens`、`usage.output_tokens`、`usage.input_tokens_details.cached_tokens` 统计 token。成本统计按 OpenAI 官方 API 价格表做轻量 1:1 估算；未覆盖的模型先只记录 token，不强行猜价格。
+第一阶段网关已写入请求记录，并从 OpenAI 响应里的 `usage.input_tokens`、`usage.output_tokens`、`usage.input_tokens_details.cached_tokens` 统计 token。成本统计复用供应商模型目录里的 OpenAI 价格快照做轻量 1:1 估算；未覆盖的模型先只记录 token，不强行猜价格。
+
+## 错误处理策略
+
+错误处理策略是账号调度和上游错误返回的轻量规则集合，参考 `sub2api` 的“透传 / 自定义错误 / 临时不可调度”语义，但第一阶段只保留可验证的必要动作。
+
+当前内置策略：
+
+- `ep_default_passthrough`：默认透传策略，命中 `4xx/5xx` 后把上游状态码和响应体原样返回，便于排查真实错误。
+- `ep_default_safe`：默认安全策略，命中 `4xx/5xx` 后返回本地自定义 `502` 与 `Upstream request failed`，避免把上游细节直接暴露给客户端。
+
+策略规则字段保持 JSON 扩展：`match.statusCode` 支持 `4xx/5xx`、具体状态码和范围；可继续扩展 `keywords`、`error_codes`、`error_types`、`priority`。当前网关已支持动作 `passthrough`、`custom_error`、`retry_next`、`temp_unschedulable/rate_limited/overloaded`（冷却账号）和 `error_disabled`（标记错误并停调度）。
 
 ## 系统设置
 
@@ -232,6 +254,7 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 - 默认上游请求超时
 - 默认账号并发上限
 - 默认错误处理策略
+- 默认临时不可调用时长
 - 默认代理策略
 - API Key 自动生成规则（内部固定，不在系统设置暴露）
 - 自用后台完整密钥展示规则
@@ -241,20 +264,16 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 
 轻量版参考 `sub2api` 的流超时处理语义，但不引入复杂运行时调度器。当前实现完全基于 SQLite 字段和请求时判断：
 
-- `streamCircuitBreakerEnabled`：默认 `false`。关闭时不累计流式空闲/中断失败。
+- `defaultTemporaryUnschedulableMinutes`：默认 `5` 分钟。未知异常、策略冷却和流熔断都使用这个全局时长。
+- `streamCircuitBreakerEnabled`：默认 `true`。启用后累计流式空闲/中断失败。
 - `streamIdleTimeoutSeconds`：默认 `180` 秒。流式响应超过该时间没有新数据，记录一次失败。
-- `streamFailureAction`：默认 `cooldown`，可选 `cooldown`、`disable`、`none`。
-- `streamAccountCooldownMinutes`：默认 `5` 分钟。触发 `cooldown` 时写入 `accounts.cooldown_until`。
 - `streamFailureThresholdCount`：默认 `3` 次。
 - `streamFailureThresholdWindowMinutes`：默认 `10` 分钟。
-- `overloadCooldownEnabled`：默认 `true`。上游返回 `429` 或 `503` 且会切换下个账号时，临时冷却当前账号。
-- `overloadCooldownMinutes`：默认 `10` 分钟。
 
 处理方式：
 
-- `cooldown`：账号状态保持不变，只在冷却截止前不参与调度。
-- `disable`：账号标记为 `error` 并设置 `schedulable = false`，需要人工清理后恢复。
-- `none`：只记录失败原因和窗口计数，不改变调度状态。
+- 流熔断达到阈值后一律写入 `accounts.cooldown_until`，账号状态保持不变，只在冷却截止前不参与调度。
+- 未被账户错误处理策略截获的未知异常，也会按 `defaultTemporaryUnschedulableMinutes` 临时不可调用。
 - 网关请求成功后会清理该账号的失败计数、冷却时间和最近错误。
 - 账户列表展示状态、冷却截止时间和错误摘要；完整 token 仍只在编辑弹窗中查看。
 

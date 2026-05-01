@@ -45,14 +45,19 @@ interface UsageRecordSummary {
 }
 
 interface SystemSettings {
+  defaultErrorPolicyId?: string
+  defaultTemporaryUnschedulableMinutes?: number
   streamCircuitBreakerEnabled?: boolean
   streamIdleTimeoutSeconds?: number
-  streamFailureAction?: string
-  streamAccountCooldownMinutes?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
-  overloadCooldownEnabled?: boolean
-  overloadCooldownMinutes?: number
+}
+
+interface ErrorPolicySummary {
+  id: string
+  name: string
+  enabled: boolean
+  rules: Array<Record<string, unknown>>
 }
 
 interface ResponsePayload {
@@ -75,11 +80,15 @@ async function main(): Promise<void> {
   summary.push('health ok')
 
   const settings = await getEnvelope<SystemSettings>('/api/settings')
+  const errorPolicies = await getEnvelope<ErrorPolicySummary[]>('/api/error-policies')
+  assert(typeof settings.defaultErrorPolicyId === 'string' && settings.defaultErrorPolicyId.length > 0, '系统设置缺少 defaultErrorPolicyId')
+  assert(errorPolicies.some((policy) => policy.id === settings.defaultErrorPolicyId && policy.enabled && policy.rules.length > 0), '默认错误处理策略不存在或未启用')
+  assert(typeof settings.defaultTemporaryUnschedulableMinutes === 'number', '系统设置缺少 defaultTemporaryUnschedulableMinutes')
   assert(typeof settings.streamCircuitBreakerEnabled === 'boolean', '系统设置缺少 streamCircuitBreakerEnabled')
   assert(typeof settings.streamIdleTimeoutSeconds === 'number', '系统设置缺少 streamIdleTimeoutSeconds')
-  assert(['cooldown', 'disable', 'none'].includes(String(settings.streamFailureAction)), `系统设置 streamFailureAction 异常：${settings.streamFailureAction ?? 'unknown'}`)
-  assert(typeof settings.overloadCooldownEnabled === 'boolean', '系统设置缺少 overloadCooldownEnabled')
-  summary.push('settings ok')
+  assert(typeof settings.streamFailureThresholdCount === 'number', '系统设置缺少 streamFailureThresholdCount')
+  assert(typeof settings.streamFailureThresholdWindowMinutes === 'number', '系统设置缺少 streamFailureThresholdWindowMinutes')
+  summary.push('settings and error policies ok')
 
   const accounts = await getEnvelope<AccountSummary[]>('/api/accounts')
   assert(accounts.length > 0, '账户列表为空')

@@ -42,8 +42,8 @@
 
 `sub2api-lite` 的简化实现：
 
-- 设置项映射为 `streamCircuitBreakerEnabled`、`streamIdleTimeoutSeconds`、`streamFailureAction`、`streamAccountCooldownMinutes`、`streamFailureThresholdCount`、`streamFailureThresholdWindowMinutes`。
+- 设置项映射为 `streamCircuitBreakerEnabled`、`streamIdleTimeoutSeconds`、`streamFailureThresholdCount`、`streamFailureThresholdWindowMinutes` 和 `defaultTemporaryUnschedulableMinutes`。
 - 账号字段只保留 `cooldown_until`、`last_error_message`、`stream_failure_count`、`stream_failure_window_started_at`。
 - 不做独立调度器，请求时直接过滤仍在冷却中的账号。
-- 上游 `429` / `503` 作为过载场景，默认临时冷却当前账号后尝试下一个账号。
+- 上游未被账号错误策略截获的未知异常统一按默认临时不可调用时长冷却当前账号后尝试下一个账号。
 - 网关成功请求会清理账号失败状态，减少人工处理成本。
