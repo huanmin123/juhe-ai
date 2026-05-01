@@ -1,0 +1,170 @@
+# 第一期：OpenAI OAuth + API Key
+
+## 范围
+
+第一期只实现 OpenAI 供应商，账户类型只支持：
+
+- OpenAI OAuth
+- OpenAI API Key
+
+其他供应商先只保留架构扩展位，不实现页面和接口。
+
+## OpenAI 供应商定义
+
+```ts
+type ProviderCode = 'openai'
+
+type OpenAIAccountType = 'oauth' | 'api_key'
+```
+
+默认能力：
+
+- 模型列表
+- Responses API 预留
+- 流式响应预留
+- 透传预留
+
+## OpenAI OAuth 创建方式
+
+第一阶段建议先支持“手动录入 OAuth 凭据”，后续再补完整授权跳转和 callback。
+
+表单字段：
+
+- 账户名称
+- `access_token`
+- `refresh_token`
+- `expires_at`
+- `account_id`
+- `organization_id`
+- 代理
+- 并发上限
+- 是否启用透传
+- 错误策略
+- 备注
+
+保存要求：
+
+- token 加密存储
+- 列表不展示 Access Token 与 Refresh Token，编辑弹窗可查看和修改
+- 可设置过期时间
+- 可手动启用 / 停用
+- `refresh_token` 只对 OAuth 账户需要，账户列表不展示
+
+## OpenAI API Key 创建方式
+
+表单字段：
+
+- 账户名称
+- `api_key`
+- `base_url`
+- `organization_id`
+- 代理
+- 并发上限
+- 是否启用透传
+- 错误策略
+- 备注
+
+保存要求：
+
+- API Key 加密存储
+- 列表不展示 API Key，编辑弹窗可查看和修改
+- `base_url` 默认使用 OpenAI 官方地址
+- 可手动启用 / 停用
+
+## 分组绑定
+
+第一期的关系规则：
+
+- 账户可以加入一个或多个分组
+- 分组可以包含多个 OpenAI 账户
+- API Key 绑定一个分组
+- 请求进入后只能使用该 API Key 对应分组内的账户
+
+## 页面优先级
+
+1. 供应商页：展示 OpenAI 及支持的账户类型
+2. 账户页：OpenAI OAuth / API Key 创建、编辑、状态切换
+3. 分组页：维护分组并绑定账户
+4. API Key 页：创建密钥并绑定分组
+5. 代理页：维护代理并给账户选择
+6. 使用记录页：先做空状态和列表结构
+7. 系统设置页：先做基础配置占位
+
+## 接口优先级
+
+1. `GET /api/providers`
+2. `GET /api/accounts`
+3. `POST /api/accounts`
+4. `PATCH /api/accounts/:id`
+5. `DELETE /api/accounts/:id`
+6. `GET /api/groups`
+7. `POST /api/groups`
+8. `PATCH /api/groups/:id/accounts`
+9. `GET /api/api-keys`
+10. `POST /api/api-keys`
+11. `PATCH /api/api-keys/:id`
+12. `DELETE /api/api-keys/:id`
+13. `GET /api/proxies`
+14. `POST /api/proxies`
+
+## 暂不做
+
+- 其他供应商
+- 完整 OAuth 授权 callback
+- 真正请求中转
+- 复杂计费
+- 多租户用户体系
+- 自动账号健康检测
+
+
+
+## OpenAI OAuth 授权方式
+
+参考 `sub2api` 的 OpenAI OAuth 账户语义，`sub2api-lite` 第一阶段实现两种轻量授权方式：
+
+### 手动授权
+
+1. 后端生成 `state`、`code_verifier`、`code_challenge` 和授权链接。
+2. 前端打开 `https://auth.openai.com/oauth/authorize`。
+3. 用户登录 OpenAI 后浏览器会跳转到 `http://localhost:1455/auth/callback`。
+4. 如果本机没有监听该端口，浏览器显示连接失败也没关系，复制地址栏完整 URL。
+5. 前端把回调 URL 提交给后端，后端校验 `state` 并用 PKCE `code_verifier` 换取 token。
+6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱和组织信息。
+
+### Refresh Token 授权
+
+1. 用户直接粘贴已有 `refresh_token`。
+2. 后端使用 `grant_type=refresh_token` 向 OpenAI token endpoint 刷新。
+3. 刷新成功后创建 OpenAI OAuth 账户。
+4. 如果 OpenAI 没返回新的 `refresh_token`，继续保留用户输入的原始 `refresh_token`。
+
+### 调度与刷新
+
+- API Key 账户使用 `credentials.api_key` 作为上游 Bearer token。
+- OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
+- 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户。
+- 账户页提供“刷新授权”按钮，可手动刷新某个 OAuth 账户。
+- OAuth token 刷新和账户测试会优先使用账户绑定的代理；Mac 迁移过来的 OAuth 账户默认绑定本地 `socks5h://127.0.0.1:7897` 代理配置。
+
+## 账户列表字段
+
+账户列表只展示运维判断需要的信息：
+
+- 账户名称
+- 账户类型
+- 供应商
+- 并发数
+- 状态
+- 用量情况
+- 优先级
+- 最近使用时间
+- 操作
+
+操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、启用/停用、暂停/恢复调度、OAuth 刷新、切换客户端和复制 Base URL。
+
+## 统计口径
+
+- 网关会记录命中账户、API Key、分组、模型、状态、耗时、错误和 token。
+- OpenAI JSON 响应读取 `usage.input_tokens`、`usage.output_tokens` 和 `usage.input_tokens_details.cached_tokens`。
+- OpenAI SSE 响应读取 `response.completed` / `response.done` / `response.failed` 事件里的 `response.usage`。
+- 成本按 OpenAI 官方 API 价格表做轻量估算；没有覆盖的模型先只记 token。

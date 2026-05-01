@@ -1,0 +1,44 @@
+import { Router } from 'express'
+import { z } from 'zod'
+
+import { badRequest, ok } from '../../shared/http.js'
+import { createApiKeyRecord, deleteApiKey, listApiKeys, updateApiKey } from '../../storage/repositories.js'
+
+export const apiKeysRouter = Router()
+
+const apiKeyCreateSchema = z.object({
+  name: z.string().min(1),
+  groupId: z.string().min(1),
+  status: z.enum(['active', 'disabled']).optional(),
+  expiresAt: z.string().optional()
+})
+
+apiKeysRouter.get('/', (_req, res) => {
+  res.json(ok(listApiKeys()))
+})
+
+apiKeysRouter.post('/', (req, res) => {
+  const parsed = apiKeyCreateSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('Invalid API key payload'))
+    return
+  }
+  res.status(201).json(ok(createApiKeyRecord(parsed.data), '明文密钥已保存，列表中可直接查看'))
+})
+
+apiKeysRouter.patch('/:id', (req, res) => {
+  const apiKey = updateApiKey(req.params.id, req.body as Record<string, unknown>)
+  if (!apiKey) {
+    res.status(404).json({ message: 'API key not found' })
+    return
+  }
+  res.json(ok(apiKey))
+})
+
+apiKeysRouter.delete('/:id', (req, res) => {
+  if (!deleteApiKey(req.params.id)) {
+    res.status(404).json({ message: 'API key not found' })
+    return
+  }
+  res.status(204).send()
+})
