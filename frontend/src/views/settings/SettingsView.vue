@@ -32,6 +32,11 @@
                 <a-input-number v-model:value="form.defaultAccountConcurrencyLimit" :min="1" :max="999" style="width: 100%" />
               </a-form-item>
             </div>
+            <div class="setting-item">
+              <a-form-item label="默认错误处理策略" extra="新建账户默认引用该策略；账号编辑里可以单独覆盖。">
+                <a-select v-model:value="form.defaultErrorPolicyId" :options="errorPolicyOptions" placeholder="选择默认策略" />
+              </a-form-item>
+            </div>
           </div>
         </section>
 
@@ -96,16 +101,17 @@
 
 <script setup lang="ts">
 import { message } from 'ant-design-vue'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { SystemSettings } from '@/types/domain'
+import type { ErrorPolicySummary, SystemSettings } from '@/types/domain'
 
 type StreamFailureAction = NonNullable<SystemSettings['streamFailureAction']>
 
 interface SettingsForm {
   defaultOpenAIBaseUrl: string
   defaultAccountConcurrencyLimit: number
+  defaultErrorPolicyId: string
   streamCircuitBreakerEnabled: boolean
   streamIdleTimeoutSeconds: number
   streamFailureAction: StreamFailureAction
@@ -119,6 +125,7 @@ interface SettingsForm {
 const defaultSettings: SettingsForm = {
   defaultOpenAIBaseUrl: 'https://api.openai.com/v1',
   defaultAccountConcurrencyLimit: 3,
+  defaultErrorPolicyId: 'ep_default_passthrough',
   streamCircuitBreakerEnabled: false,
   streamIdleTimeoutSeconds: 180,
   streamFailureAction: 'cooldown',
@@ -136,11 +143,19 @@ const streamActionOptions = [
 ]
 
 const saving = ref(false)
+const errorPolicies = ref<ErrorPolicySummary[]>([])
 const form = reactive<SettingsForm>({ ...defaultSettings })
+
+const errorPolicyOptions = computed(() => errorPolicies.value.map((policy) => ({
+  label: `${policy.name}${policy.enabled ? '' : '（停用）'}`,
+  value: policy.id,
+  disabled: !policy.enabled
+})))
 
 async function loadSettings() {
   try {
-    const settings = await api.settings.get()
+    const [settings, policies] = await Promise.all([api.settings.get(), api.errorPolicies.list()])
+    errorPolicies.value = policies
     Object.assign(form, normalizeSettings(settings))
   } catch (error) {
     console.error(error)
@@ -170,6 +185,7 @@ function normalizeSettings(settings: SystemSettings | SettingsForm): SettingsFor
   return {
     defaultOpenAIBaseUrl: stringValue(settings.defaultOpenAIBaseUrl, defaultSettings.defaultOpenAIBaseUrl),
     defaultAccountConcurrencyLimit: numberValue(settings.defaultAccountConcurrencyLimit, defaultSettings.defaultAccountConcurrencyLimit, 1, 999),
+    defaultErrorPolicyId: errorPolicyValue(settings.defaultErrorPolicyId),
     streamCircuitBreakerEnabled: booleanValue(settings.streamCircuitBreakerEnabled, defaultSettings.streamCircuitBreakerEnabled),
     streamIdleTimeoutSeconds: numberValue(settings.streamIdleTimeoutSeconds, defaultSettings.streamIdleTimeoutSeconds, 10, 3600),
     streamFailureAction: actionValue(settings.streamFailureAction),
@@ -193,6 +209,11 @@ function numberValue(value: unknown, fallback: number, min: number, max: number)
 
 function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
+}
+
+function errorPolicyValue(value: unknown): string {
+  if (typeof value === 'string' && errorPolicies.value.some((policy) => policy.id === value)) return value
+  return errorPolicies.value.find((policy) => policy.enabled)?.id ?? defaultSettings.defaultErrorPolicyId
 }
 
 function actionValue(value: unknown): StreamFailureAction {

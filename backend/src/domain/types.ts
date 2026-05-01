@@ -69,6 +69,13 @@ export interface AccountTestResult {
   tokenRefreshed?: boolean
 }
 
+export interface ErrorPolicySummary {
+  id: string
+  name: string
+  enabled: boolean
+  rules: Array<Record<string, unknown>>
+}
+
 export interface GroupSummary {
   id: string
   name: string

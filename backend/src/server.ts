@@ -3,6 +3,7 @@ import express from 'express'
 
 import { accountsRouter } from './modules/accounts/accounts.routes.js'
 import { apiKeysRouter } from './modules/api-keys/api-keys.routes.js'
+import { errorPoliciesRouter } from './modules/error-policies/error-policies.routes.js'
 import { groupsRouter } from './modules/groups/groups.routes.js'
 import { providersRouter } from './modules/providers/providers.routes.js'
 import { proxiesRouter } from './modules/proxies/proxies.routes.js'
@@ -29,6 +30,7 @@ app.get('/api/health', (_req, res) => {
 })
 
 app.use('/api/providers', providersRouter)
+app.use('/api/error-policies', errorPoliciesRouter)
 app.use('/api/accounts', accountsRouter)
 app.use('/api/groups', groupsRouter)
 app.use('/api/api-keys', apiKeysRouter)

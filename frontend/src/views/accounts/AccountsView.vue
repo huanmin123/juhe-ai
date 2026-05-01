@@ -279,6 +279,9 @@
             <a-form-item label="代理">
               <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
             </a-form-item>
+            <a-form-item label="错误处理策略">
+              <a-select v-model:value="form.errorPolicyId" allow-clear placeholder="使用系统默认策略" :options="errorPolicyOptions" />
+            </a-form-item>
           </div>
           <div class="form-toggle-grid">
             <a-form-item label="调度">
@@ -300,7 +303,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountStatus, AccountSummary, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProxyProfileSummary } from '@/types/domain'
+import type { AccountStatus, AccountSummary, AccountType, ErrorPolicySummary, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProxyProfileSummary, SystemSettings } from '@/types/domain'
 
 type SchedulableFilter = 'all' | 'schedulable' | 'paused' | 'cooling'
 
@@ -337,6 +340,7 @@ interface AccountForm {
   concurrencyLimit: number
   priority: number
   proxyProfileId?: string
+  errorPolicyId?: string
   passthroughEnabled: boolean
   schedulable: boolean
   notes: string
@@ -362,7 +366,9 @@ const selectedAccountIds = ref<string[]>([])
 const accounts = ref<AccountSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const proxies = ref<ProxyProfileSummary[]>([])
+const errorPolicies = ref<ErrorPolicySummary[]>([])
 const groups = ref<GroupSummary[]>([])
+const systemSettings = ref<SystemSettings>({ defaultAccountConcurrencyLimit: 3 })
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all' })
 
 const form = reactive<AccountForm>(defaultForm())
@@ -427,6 +433,11 @@ const rowSelection = computed(() => ({
 }))
 
 const proxyOptions = computed(() => proxies.value.map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
+const errorPolicyOptions = computed(() => errorPolicies.value.map((policy) => ({
+  label: `${policy.name}${policy.enabled ? '' : '（停用）'}`,
+  value: policy.id,
+  disabled: !policy.enabled
+})))
 const groupOptions = computed(() => groups.value.map((group) => ({ label: group.name, value: group.id })))
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
@@ -471,9 +482,10 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     redirectUri: 'http://localhost:1455/auth/callback',
     callbackUrl: '',
     status: 'active',
-    concurrencyLimit: 3,
+    concurrencyLimit: defaultAccountConcurrencyLimit(),
     priority: 0,
     proxyProfileId: defaultProxyProfileId(),
+    errorPolicyId: defaultErrorPolicyId(),
     passthroughEnabled: true,
     schedulable: true,
     notes: ''
@@ -536,6 +548,19 @@ function providerName(providerCode?: string) {
 
 function defaultProxyProfileId() {
   return proxies.value.find((proxy) => proxy.type === 'socks5h' && proxy.host === '127.0.0.1' && proxy.port === 7897)?.id
+}
+
+function defaultAccountConcurrencyLimit() {
+  const value = systemSettings.value.defaultAccountConcurrencyLimit
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  if (!Number.isFinite(number)) return 3
+  return Math.min(Math.max(Math.trunc(number), 1), 999)
+}
+
+function defaultErrorPolicyId() {
+  return typeof systemSettings.value.defaultErrorPolicyId === 'string'
+    ? systemSettings.value.defaultErrorPolicyId
+    : errorPolicies.value.find((policy) => policy.enabled)?.id
 }
 
 function asString(value: unknown): string {
@@ -606,11 +631,20 @@ async function copyText(value: string) {
 async function loadData() {
   loading.value = true
   try {
-    const [accountList, providerList, proxyList, groupList] = await Promise.all([api.accounts.list(), api.providers.list(), api.proxies.list(), api.groups.list()])
+    const [accountList, providerList, proxyList, errorPolicyList, groupList, settings] = await Promise.all([
+      api.accounts.list(),
+      api.providers.list(),
+      api.proxies.list(),
+      api.errorPolicies.list(),
+      api.groups.list(),
+      api.settings.get()
+    ])
     accounts.value = accountList
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
     proxies.value = proxyList
+    errorPolicies.value = errorPolicyList
     groups.value = groupList
+    systemSettings.value = settings
     selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id))
   } catch (error) {
     console.error(error)
@@ -659,6 +693,7 @@ function selectAccountType(type: AccountType) {
     ...defaultForm(providerCode, type),
     groupId: form.groupId,
     proxyProfileId: form.proxyProfileId,
+    errorPolicyId: form.errorPolicyId,
     notes: form.notes,
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
@@ -678,6 +713,7 @@ function openEdit(account: AccountSummary) {
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
     proxyProfileId: account.proxyProfileId,
+    errorPolicyId: account.errorPolicyId,
     passthroughEnabled: account.passthroughEnabled,
     schedulable: account.schedulable,
     apiKey: asString(account.credentials.api_key),
@@ -759,6 +795,7 @@ async function saveAccount() {
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
     proxyProfileId: form.proxyProfileId,
+    errorPolicyId: form.errorPolicyId,
     passthroughEnabled: form.passthroughEnabled,
     schedulable: form.schedulable,
     groupId: form.groupId,
@@ -815,6 +852,7 @@ async function createOAuthAccountFromUnifiedForm() {
     groupId: form.groupId,
     concurrencyLimit: form.concurrencyLimit,
     proxyProfileId: form.proxyProfileId,
+    errorPolicyId: form.errorPolicyId,
     notes: form.notes || undefined
   }
 

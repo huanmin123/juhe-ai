@@ -23,10 +23,12 @@
           <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'key'">
-          <a-input-group compact class="key-cell">
-            <a-input :value="record.key || '旧数据未回填，需重新创建或回填'" readonly class="key-input" />
-            <a-button :disabled="!record.key" @click="copyText(record.key)">复制</a-button>
-          </a-input-group>
+          <div class="key-preview-cell">
+            <span class="key-preview" :title="record.key || '旧数据未回填，需重新创建或回填'">{{ formatKeyPreview(record.key) }}</span>
+            <a-button class="key-copy-button" type="text" size="small" :disabled="!record.key" @click="copyText(record.key)">
+              <template #icon><copy-outlined /></template>
+            </a-button>
+          </div>
         </template>
         <template v-else-if="column.key === 'group'">
           <a-tag color="purple">{{ groupName(record.groupId) }}</a-tag>
@@ -72,6 +74,7 @@
 
 <script setup lang="ts">
 import type { Dayjs } from 'dayjs'
+import { CopyOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
@@ -89,7 +92,7 @@ const form = reactive({ name: '', groupId: '', status: 'active' as 'active' | 'd
 
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
-  { title: '完整密钥', key: 'key', width: 560 },
+  { title: '秘钥', key: 'key', width: 180 },
   { title: '绑定分组', key: 'group', width: 220 },
   { title: '状态', key: 'status', width: 100 },
   { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
@@ -118,6 +121,12 @@ const keySummaryCards = computed(() => {
 
 function groupName(groupId: string) {
   return groups.value.find((group) => group.id === groupId)?.name ?? groupId
+}
+
+function formatKeyPreview(value?: string) {
+  if (!value) return '未回填'
+  if (value.length <= 14) return value
+  return `${value.slice(0, 6)}...${value.slice(-4)}`
 }
 
 async function loadData() {
@@ -237,13 +246,35 @@ onMounted(loadData)
   white-space: nowrap;
 }
 
-.key-cell {
-  width: 100%;
+.key-preview-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
-.key-input {
-  width: calc(100% - 64px);
+.key-preview {
+  display: inline-flex;
+  align-items: center;
+  max-width: 120px;
+  padding: 3px 8px;
+  overflow: hidden;
+  color: #008b8b;
   font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 4px;
+  background: #eefafa;
+}
+
+.key-copy-button {
+  color: #94a3b8;
+}
+
+.key-copy-button:hover:not(:disabled) {
+  color: #1677ff;
+  background: #eff6ff;
 }
 
 @media (max-width: 992px) {

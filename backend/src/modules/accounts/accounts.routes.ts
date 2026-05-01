@@ -17,6 +17,7 @@ const accountCreateSchema = z.object({
   priority: z.number().int().optional(),
   proxyProfileId: z.string().optional(),
   passthroughEnabled: z.boolean().optional(),
+  errorPolicyId: z.string().optional(),
   schedulable: z.boolean().optional(),
   groupId: z.string().optional(),
   notes: z.string().optional()

@@ -190,9 +190,48 @@ export function seedDefaults(database: DatabaseSync): void {
     `)
     .run('grp_default_openai', '默认 OpenAI 分组', '第一期默认分组', 1, now, now)
 
+  const errorPolicyStatement = database.prepare(`
+    INSERT OR IGNORE INTO error_policies (id, name, enabled, rules_json, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+
+  errorPolicyStatement.run(
+    'ep_default_passthrough',
+    '默认透传策略',
+    1,
+    JSON.stringify([
+      {
+        name: '上游错误原样透传',
+        match: { statusCode: '4xx/5xx' },
+        action: 'passthrough',
+        description: '第一期默认把上游错误状态和错误内容原样返回，便于排查。'
+      }
+    ]),
+    now,
+    now
+  )
+
+  errorPolicyStatement.run(
+    'ep_default_safe',
+    '默认安全策略',
+    1,
+    JSON.stringify([
+      {
+        name: '隐藏上游敏感错误',
+        match: { statusCode: '4xx/5xx' },
+        action: 'custom_error',
+        statusCode: 502,
+        message: 'Upstream request failed'
+      }
+    ]),
+    now,
+    now
+  )
+
   const settings = [
     ['defaultOpenAIBaseUrl', 'https://api.openai.com/v1'],
     ['defaultAccountConcurrencyLimit', 3],
+    ['defaultErrorPolicyId', 'ep_default_passthrough'],
     ['streamCircuitBreakerEnabled', false],
     ['streamIdleTimeoutSeconds', 180],
     ['streamFailureAction', 'cooldown'],

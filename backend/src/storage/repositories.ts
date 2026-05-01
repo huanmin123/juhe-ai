@@ -1,4 +1,4 @@
-import type { AccountStatus, AccountSummary, AccountType, ApiKeySummary, GroupSummary, ProviderCode, ProviderDefinition } from '../domain/types.js'
+import type { AccountStatus, AccountSummary, AccountType, ApiKeySummary, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition } from '../domain/types.js'
 import { createApiKey, decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 
@@ -79,6 +79,13 @@ interface ProxyRow {
   enabled: number
   test_status: string
   last_tested_at: string | null
+}
+
+interface ErrorPolicyRow {
+  id: string
+  name: string
+  enabled: number
+  rules_json: string
 }
 
 export interface ProxyProfileSummary {
@@ -210,6 +217,17 @@ function accountFingerprint(providerCode: string, type: string, baseUrl: string,
   return hashSecret(`${providerCode}:${type}:${baseUrl.trim().replace(/\/+$/, '')}:${secret.trim()}`)
 }
 
+function defaultAccountConcurrencyLimit(): number {
+  const value = getSettings().defaultAccountConcurrencyLimit
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  if (!Number.isFinite(number)) return 3
+  return Math.min(Math.max(Math.trunc(number), 1), 999)
+}
+
+function defaultErrorPolicyId(): string | undefined {
+  return optionalString(getSettings().defaultErrorPolicyId) ?? 'ep_default_passthrough'
+}
+
 export function listProviders(): ProviderDefinition[] {
   const rows = getDatabase().prepare('SELECT * FROM providers ORDER BY name ASC').all() as unknown as ProviderRow[]
   return rows.map((row) => ({
@@ -256,6 +274,26 @@ export function listAccounts(): AccountSummary[] {
   }))
 }
 
+export function listErrorPolicies(): ErrorPolicySummary[] {
+  const rows = getDatabase().prepare('SELECT id, name, enabled, rules_json FROM error_policies ORDER BY name ASC').all() as unknown as ErrorPolicyRow[]
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    enabled: row.enabled === 1,
+    rules: parseJsonRules(row.rules_json)
+  }))
+}
+
+function parseJsonRules(value: string): Array<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item))
+  } catch {
+    return []
+  }
+}
+
 export function createAccount(input: Record<string, unknown>): AccountSummary {
   const now = nowIso()
   const id = newId('acc')
@@ -279,12 +317,12 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     type: accountType,
     credentials,
     status: input.status === 'disabled' || input.status === 'error' ? input.status : 'active',
-    concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? 1),
+    concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? defaultAccountConcurrencyLimit()),
     currentConcurrency: 0,
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? 0),
     proxyProfileId: optionalString(input.proxyProfileId ?? input.proxy_profile_id),
     passthroughEnabled: Boolean(input.passthroughEnabled ?? input.passthrough_enabled),
-    errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
+    errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id) ?? defaultErrorPolicyId(),
     schedulable: input.schedulable !== false,
     cooldownUntil: undefined,
     lastErrorMessage: undefined,

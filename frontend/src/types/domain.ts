@@ -69,6 +69,13 @@ export interface AccountTestResult {
   tokenRefreshed?: boolean
 }
 
+export interface ErrorPolicySummary {
+  id: string
+  name: string
+  enabled: boolean
+  rules: Array<Record<string, unknown>>
+}
+
 export interface GroupSummary {
   id: string
   name: string
@@ -134,6 +141,7 @@ export interface UsageRecordSummary {
 export interface SystemSettings {
   defaultOpenAIBaseUrl?: string
   defaultAccountConcurrencyLimit?: number
+  defaultErrorPolicyId?: string
   streamCircuitBreakerEnabled?: boolean
   streamIdleTimeoutSeconds?: number
   streamFailureAction?: 'cooldown' | 'disable' | 'none'

@@ -5,6 +5,7 @@ import type {
   AccountTestResult,
   ApiKeySummary,
   CreatedApiKey,
+  ErrorPolicySummary,
   GroupSummary,
   OpenAIAuthURLResult,
   ProviderDefinition,
@@ -31,6 +32,9 @@ async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T>
 export const api = {
   providers: {
     list: () => unwrap<ProviderDefinition[]>(http.get('/providers'))
+  },
+  errorPolicies: {
+    list: () => unwrap<ErrorPolicySummary[]>(http.get('/error-policies'))
   },
   accounts: {
     list: () => unwrap<AccountSummary[]>(http.get('/accounts')),

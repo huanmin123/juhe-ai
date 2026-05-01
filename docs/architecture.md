@@ -89,7 +89,7 @@ flowchart LR
 建议字段：
 
 - `id`
-- `provider_id`
+- `provider_code`：供应商稳定编码，例如 `openai`
 - `name`
 - `type`：`oauth` 或 `api_key`
 - `status`：`active`、`disabled`、`error`
@@ -111,6 +111,8 @@ flowchart LR
 - `created_at` / `updated_at`
 
 账户列表第一期展示：账户名称、账户类型、供应商、并发数、状态、用量情况、优先级、最近使用时间、操作。`Access/API Key` 与 `Refresh Token` 不在列表展示，只在编辑弹窗里查看和修改；`Refresh Token` 只对 OAuth 账户有意义。
+
+账户创建入口保持统一：页面只提供“添加账户”，弹窗内先选择供应商，再按供应商能力展示账户类型，最后渐进展开具体配置。第一期 OpenAI 支持 `oauth` 与 `api_key` 两种类型；后续 Claude Code、Gemini 等供应商只扩展供应商定义和对应创建表单，不再新增外部入口按钮。
 
 OpenAI OAuth 建议凭据：
 
