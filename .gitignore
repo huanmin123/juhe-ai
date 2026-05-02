@@ -3,6 +3,8 @@ dist/
 coverage/
 .env
 .env.*
+!backend/.env
+!frontend/.env
 !.env.example
 !**/.env.example
 *.log
