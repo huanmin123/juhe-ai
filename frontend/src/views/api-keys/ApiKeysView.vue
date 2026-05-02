@@ -153,7 +153,7 @@ const statusOptions = [
 ]
 
 const groupOptions = computed(() => groups.value.map((group) => ({ label: group.name, value: group.id })))
-const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
+const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`base_url = ${gatewayBaseUrl.value}`, 'api_key = <这里填本页 API Key>', 'protocol = OpenAI-compatible /v1'].join('\n'))
 
 function groupName(groupId: string) {

@@ -3,7 +3,7 @@
 ## 启动
 
 ```powershell
-cd F:\sub2api-lite
+cd F:\juhe-ai
 pnpm install
 pnpm dev
 ```
@@ -31,14 +31,13 @@ curl.exe http://127.0.0.1:3000/api/settings
 默认数据库：
 
 ```text
-F:\sub2api-lite\backend\data\sub2api-lite.sqlite3
+F:\juhe-ai\backend\data\juhe-ai.sqlite3
 ```
 
-指定数据库位置：
+指定数据库位置：编辑 `backend/.env`，不设置系统环境变量。
 
-```powershell
-$env:SQLITE_PATH = "F:\sub2api-lite-data\sub2api-lite.sqlite3"
-pnpm --filter sub2api-lite-backend dev
+```dotenv
+JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 ```
 
 ## 验证
@@ -101,7 +100,7 @@ Invoke-RestMethod -Method Post `
   -Body "{}"
 ```
 
-OAuth token 交换、刷新、账户测试会使用账户绑定代理；网关真实转发也会使用账号绑定代理。Mac 同步过来的 OAuth 账户已默认绑定本地 `socks5h://127.0.0.1:7897`。
+OAuth token 交换、刷新、账户测试会使用账户绑定代理；网关真实转发也会使用账号绑定代理。
 
 ### 账户测试
 
@@ -109,17 +108,8 @@ OAuth token 交换、刷新、账户测试会使用账户绑定代理；网关�
 
 ### 代理绑定
 
-Mac 同步过来的 OAuth 账户默认可绑定本地 `socks5h://127.0.0.1:7897` 代理配置。若本机没有该代理，刷新 token 和测试会失败，需要先补代理。
+OAuth 账户如需代理，可在账户编辑弹窗中绑定代理配置；若代理不可用，刷新 token 和测试会失败。
 
-## 从 Mac 同步 OpenAI 账户
-
-```powershell
-cd F:\sub2api-lite
-pnpm --filter sub2api-lite-backend sync:openai-from-mac -- --dry-run
-pnpm --filter sub2api-lite-backend sync:openai-from-mac
-```
-
-同步只读取 Mac `192.168.1.156` 的 `sub2api-postgres` 容器，把 OpenAI API Key 与 OAuth 账户写入本地 SQLite。API Key 同步名称、备注、`base_url`、`api_key`；OAuth 同步名称、备注、`access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱和组织信息。
 
 ## 完整测试方案
 
@@ -127,16 +117,19 @@ pnpm --filter sub2api-lite-backend sync:openai-from-mac
 ### 自动烟测
 
 ```powershell
-cd F:\sub2api-lite
+cd F:\juhe-ai
 pnpm test:smoke
 ```
 
-默认检查 `dli.li-300-15`、可见网关 API Key、`/v1/models`、`/v1/responses` 非流式和流式、使用记录 token/cost 入库。可通过环境变量覆盖：
+默认检查 `dli.li-300-15`、可见网关 API Key、`/v1/models`、`/v1/responses` 非流式和流式、使用记录 token/cost 入库。覆盖烟测参数时编辑 `backend/.env`：
+
+```dotenv
+JUHE_AI_BACKEND_URL=http://127.0.0.1:3000
+JUHE_AI_SMOKE_ACCOUNT_NAME=dli.li-300-15
+JUHE_AI_SMOKE_MODEL=gpt-5.4-mini
+```
 
 ```powershell
-$env:BACKEND_URL = "http://127.0.0.1:3000"
-$env:SMOKE_ACCOUNT_NAME = "dli.li-300-15"
-$env:SMOKE_MODEL = "gpt-5.4-mini"
 pnpm test:smoke
 ```
 
@@ -181,7 +174,7 @@ Invoke-RestMethod -Method Patch `
 ### 代码级验证
 
 ```powershell
-cd F:\sub2api-lite
+cd F:\juhe-ai
 pnpm typecheck
 pnpm build
 pnpm test:smoke
@@ -250,3 +243,4 @@ curl.exe -sS -N -X POST "http://127.0.0.1:3000/v1/responses" `
 - 非流式 `/v1/responses` 返回 `status = completed`。
 - 流式 `/v1/responses` 返回 `response.completed`。
 - `http://127.0.0.1:3000/api/usage-records` 能看到 `endpoint`、`inputTokens`、`outputTokens`、`cacheReadTokens`、`costUsd`。
+

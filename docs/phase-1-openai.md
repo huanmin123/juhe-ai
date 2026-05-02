@@ -73,12 +73,13 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `base_url` 默认使用 OpenAI 官方地址
 - 可手动启用 / 停用
 
-## 分组绑定
+## 账户归属分组
 
 第一期的关系规则：
 
-- 账户可以加入一个或多个分组
-- 分组可以包含多个 OpenAI 账户
+- 账户在创建 / 编辑时主动选择归属分组
+- 一个账户同一时间归属零个或一个分组
+- 分组可以汇总多个 OpenAI 账户
 - API Key 绑定一个分组
 - 请求进入后只能使用该 API Key 对应分组内的账户
 
@@ -86,7 +87,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 1. 供应商页：展示 OpenAI、支持的账户类型和模型价格目录
 2. 账户页：OpenAI OAuth / API Key 创建、编辑、状态切换
-3. 分组页：维护分组并绑定账户
+3. 分组页：维护分组基础信息并查看账户数量与聚合状态
 4. API Key 页：创建密钥并绑定分组
 5. 代理页：维护代理并给账户选择
 6. 使用记录页：先做空状态和列表结构
@@ -102,13 +103,14 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 6. `DELETE /api/accounts/:id`
 7. `GET /api/groups`
 8. `POST /api/groups`
-9. `PATCH /api/groups/:id/accounts`
-10. `GET /api/api-keys`
-11. `POST /api/api-keys`
-11. `PATCH /api/api-keys/:id`
-12. `DELETE /api/api-keys/:id`
-13. `GET /api/proxies`
-14. `POST /api/proxies`
+9. `PATCH /api/groups/:id`
+10. `DELETE /api/groups/:id`
+11. `GET /api/api-keys`
+12. `POST /api/api-keys`
+13. `PATCH /api/api-keys/:id`
+14. `DELETE /api/api-keys/:id`
+15. `GET /api/proxies`
+16. `POST /api/proxies`
 
 ## 暂不做
 
@@ -123,7 +125,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 ## OpenAI OAuth 授权方式
 
-参考 `sub2api` 的 OpenAI OAuth 账户语义，`sub2api-lite` 第一阶段实现两种轻量授权方式：
+参考 `sub2api` 的 OpenAI OAuth 账户语义，`juhe-ai` 第一阶段实现两种轻量授权方式：
 
 ### 手动授权
 
@@ -163,7 +165,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 最近使用时间
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、恢复正常/停用、暂停/恢复调度、OAuth 刷新、切换客户端和复制 Base URL。
+操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、恢复正常/停用、暂停/恢复调度、OAuth 刷新和切换客户端。测试会打开结果弹窗，可选择模型并查看模型返回内容、请求 URL、状态码、耗时、代理、原始响应正文和完整 JSON，便于排查上游错误。
 
 ## 统计口径
 

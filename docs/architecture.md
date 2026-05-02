@@ -2,7 +2,7 @@
 
 ## 产品目标
 
-`sub2api-lite` 要做成一个轻量、易扩展的中转管理系统。整体模块先设计完整，但每期只落必要能力，避免一开始就变成重型系统。
+`juhe-ai` 要做成一个轻量、易扩展的中转管理系统。整体模块先设计完整，但每期只落必要能力，避免一开始就变成重型系统。
 
 ## 技术架构
 
@@ -18,7 +18,7 @@
 ```mermaid
 flowchart LR
   APIKey["API Key"] --> Group["分组"]
-  Group --> Account["账户"]
+  Account["账户"] --> Group
   Account --> Provider["供应商"]
   Account --> Proxy["代理"]
   Account --> ErrorPolicy["错误策略"]
@@ -32,7 +32,7 @@ flowchart LR
 
 - 供应商定义账户创建方式，例如 OpenAI 支持 OAuth 和 API Key；对外请求协议仍统一收敛为 OpenAI 兼容协议。
 - 账户属于某个供应商，并选择一种账户类型。
-- 分组归属于一个供应商并绑定该供应商下的多个账户，代表一组可调度资源。
+- 分组归属于一个供应商；账户主动选择归属分组，分组汇总同供应商账户并代表一组可调度资源。
 - API Key 绑定分组，请求进入后只能使用该分组内的账户。
 - 代理独立管理，账户按需绑定代理。
 - 使用记录记录 API Key、分组、账户、接口、供应商、模型、状态、IP、首 token、总耗时和错误；上游请求每一次尝试都会记录，包含重试过程中的失败。
@@ -45,8 +45,8 @@ flowchart LR
 
 设计原则：
 
-- 数据库文件默认放在 `backend/data/sub2api-lite.sqlite3`
-- 可通过 `SQLITE_PATH` 或 `DATABASE_PATH` 指定数据库文件
+- 数据库文件默认放在 `backend/data/juhe-ai.sqlite3`
+- 运行配置读取项目内 `backend/.env`；数据库文件可通过 `JUHE_AI_DATABASE_PATH` 指定，不要求系统环境变量
 - 使用 WAL 模式提升本地读写体验
 - 不引入复杂 ORM，先用简单 repository 封装 SQL
 - 敏感字段加密后存储；自用后台接口按页面需要返回完整密钥
@@ -118,7 +118,7 @@ flowchart LR
 - `stream_failure_window_started_at`：流失败统计窗口起始时间
 - `created_at` / `updated_at`
 
-账户列表第一期展示：账户名称、账户类型、供应商、并发数、状态、用量情况、优先级、最近使用时间、操作。`Access/API Key` 与 `Refresh Token` 不在列表展示，只在编辑弹窗里查看和修改；`Refresh Token` 只对 OAuth 账户有意义。状态语义统一为：正常、停用、错误、限流中、临时不可调用。
+账户列表第一期展示：账户名称、账户类型、供应商、并发数、状态、用量情况、优先级、最近使用时间、操作。账号优先级按数字从小到大生效，`0` 优先于 `10`；同分组调度时先尝试优先级更高的账号，当前账号失败或进入冷却后再切换到下一个可用账号。`Access/API Key` 与 `Refresh Token` 不在列表展示，只在编辑弹窗里查看和修改；`Refresh Token` 只对 OAuth 账户有意义。状态语义统一为：正常、停用、错误、限流中、临时不可调用。
 
 账户创建入口保持统一：页面只提供“添加账户”，弹窗内先选择供应商，再按供应商能力展示账户类型，最后渐进展开具体配置。第一期 OpenAI 支持 `oauth` 与 `api_key` 两种类型；后续 Claude Code、Gemini 等供应商只扩展供应商定义和对应创建表单，不再新增外部入口按钮。
 
@@ -140,13 +140,13 @@ OpenAI API Key 建议凭据：
 
 ## 分组
 
-分组是调度和授权边界。分组绑定账户，API Key 绑定分组。
+分组是调度和授权边界。账户主动选择归属分组，API Key 绑定分组。
 
 建议字段：
 
 - `id`
 - `name`
-- `provider_code`：分组所属供应商，默认 `openai`；只允许绑定同一供应商的账户
+- `provider_code`：分组所属供应商，默认 `openai`；只允许同一供应商的账户归入该分组
 - `description`
 - `enabled`
 - `account_count`
@@ -159,11 +159,13 @@ OpenAI API Key 建议凭据：
 - `group_account.weight`
 - `group_account.enabled`
 
+调度顺序以账号 `priority` 升序为主；`group_account.weight` 只作为同优先级下的辅助排序字段。
+
 第一阶段建议：
 
-- 一个账户可以加入多个分组
-- 一个分组可以绑定多个账户
-- 一个分组只绑定同一 `provider_code` 下的账户，列表只展示数量与聚合状态，不展开账户名称
+- 一个账户主动归属到零个或一个分组；调整入口在账户创建 / 编辑表单中
+- 一个分组可以汇总多个同供应商账户
+- 一个分组只汇总同一 `provider_code` 下的账户，列表只展示数量与聚合状态，不展开账户名称
 - 一个 API Key 先绑定一个分组
 
 ## API Key 管理

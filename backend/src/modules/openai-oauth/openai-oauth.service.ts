@@ -1,5 +1,7 @@
-﻿import { createHash, randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { request as httpsRequest } from 'node:https'
+
+import { runtimeConfig } from '../../config/runtime.js'
 import { HttpsProxyAgent } from 'https-proxy-agent'
 import { SocksProxyAgent } from 'socks-proxy-agent'
 
@@ -216,7 +218,7 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
 }
 
 async function performTokenRequest(bodyText: string, proxyUrl?: string): Promise<{ statusCode: number; body: string }> {
-  const resolvedProxyUrl = normalizeString(proxyUrl) || normalizeString(process.env.SUB2API_LITE_OAUTH_PROXY_URL) || 'socks5h://127.0.0.1:7897'
+  const resolvedProxyUrl = normalizeString(proxyUrl) || runtimeConfig.oauthProxyUrl
   const agent = createProxyAgent(resolvedProxyUrl)
   const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
     const request = httpsRequest(OPENAI_OAUTH_TOKEN_URL, {

@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createGroup, deleteGroup, listGroups, listProviders, setGroupAccounts, updateGroup } from '../../storage/repositories.js'
+import { createGroup, deleteGroup, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
 
 export const groupsRouter = Router()
 
@@ -52,16 +52,6 @@ groupsRouter.patch('/:id', (req, res) => {
     }
   }
   const group = updateGroup(req.params.id, req.body as Record<string, unknown>)
-  if (!group) {
-    res.status(404).json({ message: 'Group not found' })
-    return
-  }
-  res.json(ok(group))
-})
-
-groupsRouter.patch('/:id/accounts', (req, res) => {
-  const accountIds = Array.isArray(req.body.accountIds) ? req.body.accountIds.map(String) : []
-  const group = setGroupAccounts(req.params.id, accountIds)
   if (!group) {
     res.status(404).json({ message: 'Group not found' })
     return

@@ -10,7 +10,10 @@
       theme="dark"
       class="sidebar"
     >
-      <div class="brand">sub2api-lite</div>
+      <div class="brand">
+        <img class="brand-icon" :src="appBrand.appIcon" :alt="`${appBrand.appName} 图标`" />
+        <span class="brand-text">{{ appBrand.appName }}</span>
+      </div>
       <a-menu :selectedKeys="selectedKeys" theme="dark" mode="inline" :items="menuItems" @click="handleMenuClick" />
       <button class="collapse-toggle" type="button" @click="sidebarCollapsed = !sidebarCollapsed">
         <MenuUnfoldOutlined v-if="sidebarCollapsed" />
@@ -27,7 +30,10 @@
       class="mobile-drawer"
       :body-style="{ padding: '0', background: 'transparent' }"
     >
-      <div class="brand brand-drawer">sub2api-lite</div>
+      <div class="brand brand-drawer">
+        <img class="brand-icon" :src="appBrand.appIcon" :alt="`${appBrand.appName} 图标`" />
+        <span class="brand-text">{{ appBrand.appName }}</span>
+      </div>
       <a-menu :selectedKeys="selectedKeys" theme="dark" mode="inline" :items="menuItems" @click="handleMenuClick" />
     </a-drawer>
     <a-layout class="main-shell">
@@ -52,20 +58,20 @@
 <script setup lang="ts">
 import {
   ApartmentOutlined,
-  BarChartOutlined,
-  CloudServerOutlined,
   GlobalOutlined,
-  KeyOutlined,
+  HistoryOutlined,
   MenuFoldOutlined,
   MenuOutlined,
   MenuUnfoldOutlined,
+  NodeIndexOutlined,
   SettingOutlined,
-  UserOutlined
+  UserSwitchOutlined
 } from '@ant-design/icons-vue'
 import type { ItemType } from 'ant-design-vue'
 import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { appBrand, loadAppBrandSettings } from '@/composables/useAppBrand'
 import { menuRoutes } from '@/router'
 
 const router = useRouter()
@@ -78,13 +84,38 @@ const selectedKeys = computed(() => [route.path])
 const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
 const currentPageDescription = computed(() => route.meta.description || '第一期：OpenAI OAuth + API Key')
 
+const ApiKeyMenuIcon = () =>
+  h('span', { class: 'anticon menu-api-key-icon', role: 'img', 'aria-hidden': 'true' }, [
+    h(
+      'svg',
+      {
+        viewBox: '0 0 1024 1024',
+        width: '1em',
+        height: '1em',
+        fill: 'none',
+        focusable: 'false'
+      },
+      [
+        h('circle', { cx: '336', cy: '512', r: '152', stroke: 'currentColor', 'stroke-width': '72' }),
+        h('circle', { cx: '336', cy: '512', r: '42', fill: 'currentColor' }),
+        h('path', {
+          d: 'M488 512h360M648 512v112M768 512v96',
+          stroke: 'currentColor',
+          'stroke-width': '72',
+          'stroke-linecap': 'round',
+          'stroke-linejoin': 'round'
+        })
+      ]
+    )
+  ])
+
 const menuIconMap = {
   '/providers': GlobalOutlined,
-  '/accounts': UserOutlined,
+  '/accounts': UserSwitchOutlined,
   '/groups': ApartmentOutlined,
-  '/api-keys': KeyOutlined,
-  '/proxies': CloudServerOutlined,
-  '/usage-records': BarChartOutlined,
+  '/api-keys': ApiKeyMenuIcon,
+  '/proxies': NodeIndexOutlined,
+  '/usage-records': HistoryOutlined,
   '/settings': SettingOutlined
 }
 
@@ -112,6 +143,9 @@ function handleResize() {
 
 onMounted(() => {
   updateViewport()
+  loadAppBrandSettings().catch((error) => {
+    console.error(error)
+  })
   window.addEventListener('resize', handleResize, { passive: true })
 })
 
@@ -166,6 +200,7 @@ watch(
   height: 76px;
   display: flex;
   align-items: center;
+  gap: 10px;
   padding: 10px 22px 0;
   color: #fff;
   font-size: 18px;
@@ -174,6 +209,22 @@ watch(
   line-height: 1;
   white-space: nowrap;
   overflow: hidden;
+}
+
+.brand-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  padding: 5px;
+  background: rgba(255, 255, 255, 0.92);
+  border-radius: 9px;
+  box-shadow: 0 8px 20px rgba(22, 119, 255, 0.2);
+}
+
+.brand-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .collapse-toggle {

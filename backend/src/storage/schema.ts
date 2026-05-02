@@ -205,6 +205,8 @@ export function seedDefaults(database: DatabaseSync): void {
     .run('grp_default_openai', '默认 OpenAI 分组', 'openai', '第一期默认分组', 1, now, now)
 
   const settings = [
+    ['appName', '聚合 AI'],
+    ['appIcon', '/brand-icon.svg'],
     ['defaultAccountConcurrencyLimit', 3],
     ['defaultTemporaryUnschedulableMinutes', 5],
     ['temporaryUnschedulableRetryIntervalSeconds', 3],

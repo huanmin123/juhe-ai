@@ -138,12 +138,15 @@ export interface OpenAIAccountSecret {
   id: string
   name: string
   type: AccountType
+  status: AccountStatus
   baseUrl: string
   apiKey: string
   refreshToken?: string
   clientId?: string
   proxyUrl?: string
   errorPolicyId?: string
+  cooldownUntil?: string
+  lastErrorMessage?: string
   expiresAt?: string
   credentials: Record<string, unknown>
 }
@@ -364,23 +367,6 @@ function defaultTemporaryUnschedulableMinutes(): number {
   return Math.min(Math.max(Math.trunc(number), 1), 1440)
 }
 
-function releaseExpiredAccountCooldowns(): void {
-  getDatabase()
-    .prepare(`
-      UPDATE accounts
-      SET status = 'active',
-          cooldown_until = NULL,
-          last_error_message = NULL,
-          stream_failure_count = 0,
-          stream_failure_window_started_at = NULL,
-          updated_at = ?
-      WHERE status IN ('rate_limited', 'temporary_unavailable')
-        AND cooldown_until IS NOT NULL
-        AND cooldown_until <= ?
-    `)
-    .run(nowIso(), nowIso())
-}
-
 export function listProviders(): ProviderDefinition[] {
   const rows = getDatabase().prepare('SELECT * FROM providers ORDER BY name ASC').all() as unknown as ProviderRow[]
   return rows.map((row) => ({
@@ -395,8 +381,7 @@ export function listProviders(): ProviderDefinition[] {
 }
 
 export function listAccounts(): AccountSummary[] {
-  releaseExpiredAccountCooldowns()
-  const rows = getDatabase().prepare('SELECT * FROM accounts ORDER BY updated_at DESC').all() as unknown as AccountRow[]
+  const rows = getDatabase().prepare('SELECT * FROM accounts ORDER BY priority ASC, updated_at DESC').all() as unknown as AccountRow[]
   const usageByAccount = loadAccountUsageSummaries()
   return rows.map((row) => ({
     id: row.id,
@@ -824,19 +809,32 @@ export function deleteGroup(id: string): boolean {
   return runDelete('DELETE FROM groups WHERE id = ?', id)
 }
 
-export function setGroupAccounts(groupId: string, accountIds: string[]): GroupSummary | undefined {
+export function setAccountGroup(accountId: string, groupId: string | null): AccountSummary | undefined {
   const database = getDatabase()
-  const current = listGroups().find((group) => group.id === groupId)
+  const current = listAccounts().find((account) => account.id === accountId)
   if (!current) {
     return undefined
   }
-  const now = nowIso()
-  database.prepare('DELETE FROM group_accounts WHERE group_id = ?').run(groupId)
-  const statement = database.prepare('INSERT INTO group_accounts (group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-  for (const accountId of validAccountIdsForGroup(current.providerCode, accountIds)) {
-    statement.run(groupId, accountId, 1, 1, now, now)
+
+  if (groupId) {
+    const group = listGroups().find((item) => item.id === groupId)
+    if (!group) {
+      return undefined
+    }
+    if (group.providerCode !== current.providerCode) {
+      return undefined
+    }
   }
-  return listGroups().find((group) => group.id === groupId)
+
+  database.prepare('DELETE FROM group_accounts WHERE account_id = ?').run(accountId)
+  if (groupId) {
+    const now = nowIso()
+    database
+      .prepare('INSERT INTO group_accounts (group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)')
+      .run(groupId, accountId, 1, now, now)
+  }
+
+  return listAccounts().find((account) => account.id === accountId)
 }
 
 export function addAccountToGroup(groupId: string, accountId: string, weight = 1): GroupSummary | undefined {
@@ -849,6 +847,7 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
     return undefined
   }
   const now = nowIso()
+  database.prepare('DELETE FROM group_accounts WHERE account_id = ?').run(accountId)
   database
     .prepare(`
       INSERT INTO group_accounts (group_id, account_id, weight, enabled, created_at, updated_at)
@@ -1122,21 +1121,34 @@ export function selectOpenAIAccountForGroup(groupId: string): OpenAIAccountSecre
 }
 
 export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret[] {
-  releaseExpiredAccountCooldowns()
   const database = getDatabase()
+  const now = nowIso()
   const groupAccountRows = database
-    .prepare('SELECT account_id FROM group_accounts WHERE group_id = ? AND enabled = 1 ORDER BY weight DESC, created_at ASC')
+    .prepare(`
+      SELECT group_accounts.account_id
+      FROM group_accounts
+      INNER JOIN accounts ON accounts.id = group_accounts.account_id
+      WHERE group_accounts.group_id = ? AND group_accounts.enabled = 1
+      ORDER BY accounts.priority ASC, group_accounts.weight DESC, group_accounts.created_at ASC
+    `)
     .all(groupId) as unknown as GroupAccountRow[]
 
   const accounts: OpenAIAccountSecret[] = []
   for (const groupAccount of groupAccountRows) {
     const row = database
       .prepare(`
-        SELECT id, name, type, credentials_encrypted, proxy_profile_id, error_policy_id, cooldown_until
+        SELECT id, name, type, status, credentials_encrypted, proxy_profile_id, error_policy_id, cooldown_until, last_error_message
         FROM accounts
-        WHERE id = ? AND provider_code = 'openai' AND type IN ('api_key', 'oauth') AND status = 'active' AND schedulable = 1 AND (cooldown_until IS NULL OR cooldown_until <= ?)
+        WHERE id = ?
+          AND provider_code = 'openai'
+          AND type IN ('api_key', 'oauth')
+          AND schedulable = 1
+          AND (
+            (status = 'active' AND (cooldown_until IS NULL OR cooldown_until <= ?))
+            OR (status IN ('rate_limited', 'temporary_unavailable') AND cooldown_until IS NOT NULL AND cooldown_until <= ?)
+          )
       `)
-      .get(groupAccount.account_id, nowIso()) as unknown as { id: string; name: string; type: AccountType; credentials_encrypted: string; proxy_profile_id: string | null; error_policy_id: string | null; cooldown_until: string | null } | undefined
+      .get(groupAccount.account_id, now, now) as unknown as { id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
     if (!row) {
       continue
     }
@@ -1151,12 +1163,15 @@ export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret
       id: row.id,
       name: row.name,
       type: row.type,
+      status: row.status,
       baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
       apiKey,
       refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
       clientId: typeof credentials.client_id === 'string' ? credentials.client_id : undefined,
       proxyUrl: proxyUrlForProfile(row.proxy_profile_id),
       errorPolicyId: row.error_policy_id ?? undefined,
+      cooldownUntil: row.cooldown_until ?? undefined,
+      lastErrorMessage: row.last_error_message ?? undefined,
       expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
       credentials
     })

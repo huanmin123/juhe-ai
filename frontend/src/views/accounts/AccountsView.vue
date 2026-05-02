@@ -25,11 +25,10 @@
         <a-button danger @click="batchSetStatus('disabled')">批量停用</a-button>
         <a-button @click="batchSetSchedulable(true)">恢复调度</a-button>
         <a-button @click="batchSetSchedulable(false)">暂停调度</a-button>
-        <a-button @click="batchClearFailure">清理错误/临时状态</a-button>
       </div>
     </div>
 
-    <a-table class="account-table" size="middle" :columns="columns" :data-source="filteredAccounts" row-key="id" :loading="loading" :scroll="{ x: 1700 }" :row-selection="rowSelection">
+    <a-table class="account-table" size="middle" :columns="columns" :data-source="filteredAccounts" row-key="id" :loading="loading" :scroll="{ x: 1840 }" :row-selection="rowSelection">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有账户。点击「添加账户」，再选择供应商和账户类型。" />
       </template>
@@ -40,11 +39,23 @@
         <template v-else-if="column.key === 'providerCode'">
           <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
         </template>
+        <template v-else-if="column.key === 'group'">
+          <a-tooltip v-if="groupNameForAccount(record.id)" :title="groupNameForAccount(record.id)">
+            <a-tag class="account-group-tag" color="purple">{{ groupNameForAccount(record.id) }}</a-tag>
+          </a-tooltip>
+          <span v-else class="muted-cell">未归属</span>
+        </template>
         <template v-else-if="column.key === 'status'">
           <div class="status-cell">
-            <a-tag class="status-tag" :color="accountStatusColor(record)">{{ accountStatusText(record) }}</a-tag>
-            <span v-if="accountCooldownText(record)" class="status-message status-cooldown">{{ accountCooldownText(record) }}</span>
-            <span v-if="record.lastErrorMessage" class="status-message" :title="record.lastErrorMessage">{{ record.lastErrorMessage }}</span>
+            <a-tooltip v-if="accountStatusTooltipLines(record).length" placement="topLeft">
+              <template #title>
+                <div class="status-tooltip">
+                  <div v-for="line in accountStatusTooltipLines(record)" :key="line">{{ line }}</div>
+                </div>
+              </template>
+              <a-tag class="status-tag" :color="accountStatusColor(record)">{{ accountStatusText(record) }}</a-tag>
+            </a-tooltip>
+            <a-tag v-else class="status-tag" :color="accountStatusColor(record)">{{ accountStatusText(record) }}</a-tag>
           </div>
         </template>
         <template v-else-if="column.key === 'concurrency'">
@@ -76,6 +87,70 @@
         </template>
       </template>
     </a-table>
+
+    <a-modal v-model:open="testModalOpen" title="测试账号连接" width="620px" :footer="null" :closable="!testRunning" :keyboard="!testRunning" :mask-closable="!testRunning" @cancel="closeTestModal">
+      <div v-if="testingAccount" class="test-modal">
+        <div class="test-account-card">
+          <div class="test-account-main">
+            <div class="test-account-icon">▶</div>
+            <div>
+              <div class="test-account-name">{{ testingAccount.name }}</div>
+              <div class="test-account-meta">
+                <a-tag color="processing">{{ accountTypeText(testingAccount.type) }}</a-tag>
+                <span>账号</span>
+              </div>
+            </div>
+          </div>
+          <a-tag :color="accountStatusColor(testingAccount)">{{ testingAccount.status }}</a-tag>
+        </div>
+
+        <a-form layout="vertical" class="test-form">
+          <a-form-item label="选择测试模型">
+            <a-select
+              v-model:value="testForm.model"
+              show-search
+              :loading="testModelsLoading"
+              :disabled="testRunning"
+              :options="testModelOptions"
+              placeholder="选择测试模型"
+            />
+          </a-form-item>
+        </a-form>
+
+        <div class="test-terminal">
+          <div v-if="!testOutputLines.length" class="test-output-line muted">准备开始测试</div>
+          <div v-for="(line, index) in testOutputLines" :key="index" class="test-output-line" :class="line.tone">{{ line.text }}</div>
+        </div>
+
+        <div v-if="testResult" class="test-result-meta">
+          <a-descriptions size="small" bordered :column="2">
+            <a-descriptions-item label="状态码">{{ testResult.statusCode ?? '-' }}</a-descriptions-item>
+            <a-descriptions-item label="耗时">{{ formatDuration(testResult.durationMs) }}</a-descriptions-item>
+            <a-descriptions-item label="模型">{{ testResult.model || testForm.model }}</a-descriptions-item>
+            <a-descriptions-item label="Token 刷新">{{ testResult.tokenRefreshed ? '已刷新' : '未刷新' }}</a-descriptions-item>
+            <a-descriptions-item label="请求 URL" :span="2">{{ testResult.requestUrl || '-' }}</a-descriptions-item>
+            <a-descriptions-item label="代理" :span="2">{{ testResult.proxyUrl || '未使用' }}</a-descriptions-item>
+          </a-descriptions>
+          <a-collapse class="test-result-collapse" ghost>
+            <a-collapse-panel key="result" header="完整测试结果 JSON">
+              <a-textarea :value="testResultJson" :rows="8" readonly />
+            </a-collapse-panel>
+          </a-collapse>
+        </div>
+
+        <div class="test-modal-footer">
+          <div class="test-footer-hint">
+            <span>⌘ 测试模型</span>
+            <span>提示词："{{ testForm.prompt }}"</span>
+          </div>
+          <a-space>
+            <a-button :disabled="!testResult" @click="copyTestResult">复制完整结果</a-button>
+            <a-button @click="closeTestModal">关闭</a-button>
+            <a-button type="primary" :loading="testRunning" @click="runAccountTest">{{ testResult ? '重试' : '开始测试' }}</a-button>
+          </a-space>
+        </div>
+      </div>
+    </a-modal>
 
     <a-modal v-model:open="modalOpen" :title="modalTitle" width="920px" :confirm-loading="modalConfirmLoading" :ok-button-props="modalOkButtonProps" @ok="saveAccount" @cancel="handleModalCancel">
       <a-form layout="vertical" class="account-form">
@@ -153,14 +228,14 @@
           <div class="form-section-head">
             <div>
               <h4>基础信息</h4>
-              <p>账户名称用于列表识别；分组只在创建时绑定，后续可到分组页面调整。</p>
+              <p>账户主动选择归属分组；API Key 再绑定分组来统一调度该组账户。</p>
             </div>
           </div>
           <div class="form-grid">
             <a-form-item label="账户名称" :required="form.type === 'api_key' || Boolean(editingId)">
               <a-input v-model:value="form.name" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
             </a-form-item>
-            <a-form-item v-if="!editingId" label="绑定分组">
+            <a-form-item label="归属分组">
               <a-select v-model:value="form.groupId" allow-clear :options="groupOptions" placeholder="可选，只显示同供应商分组" />
             </a-form-item>
           </div>
@@ -274,7 +349,7 @@
             <a-form-item label="并发上限">
               <a-input-number v-model:value="form.concurrencyLimit" :min="1" style="width: 100%" />
             </a-form-item>
-            <a-form-item label="优先级">
+            <a-form-item label="优先级" extra="数字越小越优先；当前账号失败后会切换到下一个可用账号。">
               <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
             </a-form-item>
             <a-form-item label="代理">
@@ -303,7 +378,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountStatus, AccountSummary, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProxyProfileSummary, SystemSettings } from '@/types/domain'
+import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemSettings } from '@/types/domain'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import {
   loadAccountErrorPolicyRules,
@@ -325,6 +400,11 @@ interface AccountMenuItem {
   key: string
   label: string
   danger?: boolean
+}
+
+interface TestOutputLine {
+  text: string
+  tone?: 'muted' | 'info' | 'success' | 'warning' | 'error' | 'label' | 'divider'
 }
 
 interface AccountForm {
@@ -365,16 +445,23 @@ const FALLBACK_PROVIDER: ProviderDefinition = {
 const loading = ref(false)
 const saving = ref(false)
 const authLoading = ref(false)
+const testModalOpen = ref(false)
+const testRunning = ref(false)
+const testModelsLoading = ref(false)
 const modalOpen = ref(false)
 const authResult = ref<OpenAIAuthURLResult>()
 const editingId = ref<string>()
+const testingAccount = ref<AccountSummary>()
+const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
 const accounts = ref<AccountSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
+const providerModels = ref<ProviderModelPricing[]>([])
 const proxies = ref<ProxyProfileSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemSettings = ref<SystemSettings>({ defaultAccountConcurrencyLimit: 3 })
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all' })
+const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
 
 const form = reactive<AccountForm>(defaultForm())
 const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
@@ -407,7 +494,8 @@ const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 230 },
   { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
   { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 },
-  { title: '并发数', key: 'concurrency', width: 90 },
+  { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
+  { title: '并发数', key: 'concurrency', width: 100, align: 'center' },
   { title: '状态', key: 'status', width: 190 },
   { title: '用量情况', key: 'usage', width: 280 },
   { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
@@ -421,6 +509,7 @@ const filteredAccounts = computed(() => accounts.value.filter((account) => {
     account.name,
     account.notes ?? '',
     account.providerCode,
+    groupNameForAccount(account.id) ?? '',
     account.type,
     accountBaseUrl(account),
     account.id
@@ -430,6 +519,66 @@ const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const schedulableMatched = matchesSchedulableFilter(account, filters.schedulable)
   return keywordMatched && typeMatched && statusMatched && schedulableMatched
 }))
+
+const defaultTestModelOptions = [
+  'gpt-5.5',
+  'gpt-5.4',
+  'gpt-5.4-mini',
+  'gpt-5.3-codex',
+  'gpt-5.2',
+  'gpt-4.1',
+  'gpt-4.1-mini'
+]
+
+const testModelOptions = computed(() => {
+  const models = providerModels.value.length ? providerModels.value.map((item) => item.model) : defaultTestModelOptions
+  return [...new Set(models)].map((model) => ({ label: model, value: model }))
+})
+
+const testResultJson = computed(() => testResult.value ? JSON.stringify(testResult.value, null, 2) : '')
+
+const testOutputLines = computed<TestOutputLine[]>(() => {
+  const account = testingAccount.value
+  if (!account || (!testRunning.value && !testResult.value)) return []
+  const lines: TestOutputLine[] = [
+    { text: `开始测试账号：${account.name}`, tone: 'info' },
+    { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' }
+  ]
+
+  if (testRunning.value) {
+    lines.push({ text: '正在连接 OpenAI API...', tone: 'warning' })
+    lines.push({ text: `使用模型：${testForm.model}`, tone: 'success' })
+    lines.push({ text: `发送测试消息："${testForm.prompt}"`, tone: 'muted' })
+    return lines
+  }
+
+  if (!testResult.value) {
+    lines.push({ text: '点击「开始测试」后会显示完整返回结果。', tone: 'muted' })
+    return lines
+  }
+
+  lines.push({ text: testResult.value.statusCode && testResult.value.statusCode >= 200 && testResult.value.statusCode < 300 ? '已连接到 API' : 'API 返回错误', tone: testResult.value.success ? 'success' : 'error' })
+  lines.push({ text: `使用模型：${testResult.value.model || testForm.model}`, tone: 'success' })
+  lines.push({ text: `发送测试消息："${testForm.prompt}"`, tone: 'muted' })
+  lines.push({ text: '响应：', tone: 'label' })
+  const outputText = formatTestTerminalResult(testResult.value)
+  if (outputText) {
+    lines.push({ text: outputText, tone: testResult.value.success ? 'success' : 'error' })
+  } else {
+    lines.push({ text: testResult.value.message, tone: testResult.value.success ? 'success' : 'error' })
+  }
+  if (testResult.value.errorPolicyAction && testResult.value.errorPolicyAction !== 'none') {
+    const reason = testResult.value.errorPolicyReason ? `，原因：${testResult.value.errorPolicyReason}` : ''
+    lines.push({ text: `错误处理策略：${formatErrorPolicyAction(testResult.value.errorPolicyAction)}${reason}`, tone: 'warning' })
+  }
+  if (testResult.value.accountStatusChanged || testResult.value.accountStatus) {
+    const status = testResult.value.accountStatus ? statusText(testResult.value.accountStatus) : '未变化'
+    lines.push({ text: `账号状态：${status}`, tone: testResult.value.accountStatusChanged ? 'warning' : 'muted' })
+  }
+  lines.push({ text: '', tone: 'divider' })
+  lines.push({ text: testResult.value.success ? '✓ 测试完成！' : '✕ 测试失败！', tone: testResult.value.success ? 'success' : 'error' })
+  return lines
+})
 
 const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIds.value.includes(account.id)))
 
@@ -475,7 +624,7 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     providerCode,
     name: '',
     type,
-    groupId: groups.value.find((group) => group.providerCode === providerCode)?.id,
+    groupId: undefined,
     apiKey: '',
     baseUrl: provider?.baseUrl ?? 'https://api.openai.com/v1',
     accessToken: '',
@@ -518,6 +667,14 @@ function statusText(status: AccountStatus) {
   return '停用'
 }
 
+function formatErrorPolicyAction(action: NonNullable<AccountTestResult['errorPolicyAction']>): string {
+  if (action === 'retry_next') return '切换下一个账号'
+  if (action === 'cooldown') return '账号冷却'
+  if (action === 'disable') return '标记错误'
+  if (action === 'default_cooldown') return '默认临时不可调用'
+  return '无'
+}
+
 function accountStatusColor(account: AccountSummary) {
   return statusColor(account.status)
 }
@@ -529,6 +686,21 @@ function accountStatusText(account: AccountSummary) {
 function accountCooldownText(account: AccountSummary) {
   if (!isCoolingDown(account)) return ''
   return `暂停至 ${formatDateTime(account.cooldownUntil)}`
+}
+
+function accountStatusTooltipLines(account: AccountSummary): string[] {
+  const lines: string[] = []
+  const cooldownText = accountCooldownText(account)
+  if (cooldownText) {
+    lines.push(cooldownText)
+  } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
+    lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
+    lines.push('等待下一次真实请求验证，成功后恢复正常')
+  }
+  if (account.lastErrorMessage) {
+    lines.push(`原因：${account.lastErrorMessage}`)
+  }
+  return lines
 }
 
 function isTemporaryAccountStatus(account: AccountSummary) {
@@ -565,6 +737,14 @@ function providerName(providerCode?: string) {
   return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
 }
 
+function groupIdForAccount(accountId: string) {
+  return groups.value.find((group) => group.accountIds.includes(accountId))?.id
+}
+
+function groupNameForAccount(accountId: string) {
+  return groups.value.find((group) => group.accountIds.includes(accountId))?.name
+}
+
 function defaultProxyProfileId() {
   return proxies.value.find((proxy) => proxy.type === 'socks5h' && proxy.host === '127.0.0.1' && proxy.port === 7897)?.id
 }
@@ -599,13 +779,10 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   return [
     { key: 'test', label: '测试' },
     { key: 'toggle-status', label: account.status === 'active' ? '停用账户' : '恢复正常', danger: account.status === 'active' },
-    { key: 'toggle-schedulable', label: account.schedulable ? '暂停调度' : '恢复调度' },
-    ...(account.status === 'error' || account.status === 'rate_limited' || account.status === 'temporary_unavailable' || account.cooldownUntil || account.lastErrorMessage
-      ? [{ key: 'clear-failure', label: '清理错误/临时状态' }]
+    ...(!isTemporaryAccountStatus(account)
+      ? [{ key: 'toggle-schedulable', label: account.schedulable ? '暂停调度' : '恢复调度' }]
       : []),
-    ...(account.type === 'oauth' ? [{ key: 'refresh-oauth', label: '刷新授权' }] : []),
-    { key: 'switch-client', label: account.type === 'oauth' ? '切换客户端' : '编辑 API Key' },
-    { key: 'copy-base-url', label: '复制 Base URL' }
+    ...(account.type === 'oauth' ? [{ key: 'refresh-oauth', label: '刷新授权' }] : [])
   ]
 }
 
@@ -633,6 +810,18 @@ function formatDateTime(value?: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+function formatDuration(value?: number): string {
+  return typeof value === 'number' ? `${value} ms` : '-'
+}
+
+function formatTestTerminalResult(result: AccountTestResult): string {
+  if (result.outputText?.trim()) return result.outputText.trim()
+  if (result.success) return ''
+  const rawText = result.responseText?.trim()
+  if (!rawText || rawText === result.message.trim()) return ''
+  return rawText
 }
 
 async function copyText(value: string) {
@@ -725,6 +914,7 @@ function openEdit(account: AccountSummary) {
     proxyProfileId: account.proxyProfileId,
     passthroughEnabled: account.passthroughEnabled,
     schedulable: account.schedulable,
+    groupId: groupIdForAccount(account.id),
     apiKey: asString(account.credentials.api_key),
     baseUrl: asString(account.credentials.base_url) || 'https://api.openai.com/v1',
     accessToken: asString(account.credentials.access_token),
@@ -813,7 +1003,7 @@ async function saveAccount() {
     proxyProfileId: form.proxyProfileId,
     passthroughEnabled: form.passthroughEnabled,
     schedulable: form.schedulable,
-    groupId: form.groupId,
+    groupId: form.groupId ?? null,
     notes: form.notes
   }
 
@@ -864,7 +1054,7 @@ async function createOAuthAccountFromUnifiedForm() {
   const commonPayload = {
     clientId: form.clientId || undefined,
     name: form.name.trim() || undefined,
-    groupId: form.groupId,
+    groupId: form.groupId || undefined,
     concurrencyLimit: form.concurrencyLimit,
     proxyProfileId: form.proxyProfileId,
     credentialsPatch: { error_handling_rules: buildCredentials().error_handling_rules },
@@ -898,17 +1088,81 @@ async function refreshOAuthAccount(id: string) {
   }
 }
 
-async function testAccount(account: AccountSummary) {
-  const hide = message.loading(`正在测试 ${account.name}...`, 0)
+async function loadTestModels() {
+  if (providerModels.value.length || testModelsLoading.value) return
+  testModelsLoading.value = true
   try {
-    const result = await api.accounts.test(account.id)
-    message.success(`${account.name}: ${result.message}${result.tokenRefreshed ? '，并已刷新 token' : ''}`)
+    providerModels.value = await api.providers.models('openai')
+  } catch (error) {
+    console.error(error)
+    message.warning('测试模型列表加载失败，已使用默认模型')
+  } finally {
+    testModelsLoading.value = false
+  }
+}
+
+async function openTestModal(account: AccountSummary) {
+  testingAccount.value = account
+  testResult.value = undefined
+  testForm.model = testForm.model || 'gpt-5.5'
+  testModalOpen.value = true
+  void loadTestModels()
+}
+
+async function runAccountTest() {
+  if (!testingAccount.value || testRunning.value) return
+  testResult.value = undefined
+  testRunning.value = true
+  try {
+    const result = await api.accounts.test(testingAccount.value.id, {
+      model: testForm.model,
+      prompt: testForm.prompt
+    })
+    testResult.value = result
+    if (result.success) {
+      message.success(`${testingAccount.value.name}: ${result.message}${result.tokenRefreshed ? '，并已刷新 token' : ''}`)
+    } else {
+      message.error(`${testingAccount.value.name}: ${result.message}`)
+    }
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error(`${account.name}: 测试失败`)
+    const fallbackMessage = error instanceof Error ? error.message : '测试失败'
+    testResult.value = {
+      accountId: testingAccount.value.id,
+      accountName: testingAccount.value.name,
+      providerCode: testingAccount.value.providerCode,
+      type: testingAccount.value.type,
+      success: false,
+      message: fallbackMessage,
+      model: testForm.model,
+      responseText: fallbackMessage
+    }
+    message.error(`${testingAccount.value.name}: 测试失败`)
   } finally {
-    hide()
+    testRunning.value = false
+  }
+}
+
+function closeTestModal() {
+  if (testRunning.value) return
+  testModalOpen.value = false
+}
+
+async function copyTestResult() {
+  await copyText(testResultJson.value)
+}
+
+async function testAccount(account: AccountSummary) {
+  await openTestModal(account)
+}
+
+async function testAccountSilently(account: AccountSummary) {
+  try {
+    return await api.accounts.test(account.id, { model: testForm.model, prompt: testForm.prompt })
+  } catch (error) {
+    console.error(error)
+    return undefined
   }
 }
 
@@ -949,8 +1203,8 @@ async function batchTestSelected() {
   }
   const hide = message.loading(`正在批量测试 ${selected.length} 个账户...`, 0)
   try {
-    const results = await Promise.allSettled(selected.map((account) => api.accounts.test(account.id)))
-    const successCount = results.filter((result) => result.status === 'fulfilled').length
+    const results = await Promise.all(selected.map((account) => testAccountSilently(account)))
+    const successCount = results.filter((result) => result?.success).length
     const failedCount = results.length - successCount
     if (failedCount === 0) {
       message.success(`批量测试完成，${successCount} 个账户全部通过`)
@@ -983,14 +1237,6 @@ async function batchSetSchedulable(schedulable: boolean) {
   )
 }
 
-async function batchClearFailure() {
-  await batchUpdateAccounts(
-    () => ({ status: 'active', schedulable: true, clearFailureState: true }),
-    '正在清理错误/临时状态',
-    '账户错误/临时状态已批量清理'
-  )
-}
-
 async function updateAccountState(account: AccountSummary, payload: Record<string, unknown>, successText: string) {
   try {
     await api.accounts.update(account.id, payload)
@@ -1016,21 +1262,9 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
     await updateAccountState(account, { schedulable: !account.schedulable }, account.schedulable ? '账户已暂停调度' : '账户已恢复调度')
     return
   }
-  if (key === 'clear-failure') {
-    await updateAccountState(account, { status: 'active', schedulable: true, clearFailureState: true }, '账户错误/临时状态已清理')
-    return
-  }
   if (key === 'refresh-oauth') {
     await refreshOAuthAccount(account.id)
     return
-  }
-  if (key === 'switch-client') {
-    openEdit(account)
-    message.info('请在编辑弹窗里修改 OAuth Client ID 或代理配置')
-    return
-  }
-  if (key === 'copy-base-url') {
-    await copyText(accountBaseUrl(account) || 'https://api.openai.com/v1')
   }
 }
 
@@ -1140,6 +1374,16 @@ onMounted(loadData)
   white-space: nowrap;
 }
 
+.account-group-tag {
+  display: inline-block;
+  max-width: 210px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  vertical-align: bottom;
+  white-space: nowrap;
+  margin-inline-end: 0;
+}
+
 .usage-cell {
   display: block;
   line-height: 1.4;
@@ -1153,11 +1397,8 @@ onMounted(loadData)
 }
 
 .status-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 5px;
-  max-width: 210px;
+  display: inline-flex;
+  align-items: center;
 }
 
 .status-tag {
@@ -1167,21 +1408,148 @@ onMounted(loadData)
   white-space: nowrap;
 }
 
-.status-message {
-  overflow: hidden;
-  color: #f97316;
-  font-size: 12px;
-  line-height: 18px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.status-cooldown {
-  color: #64748b;
+.status-tooltip {
+  max-width: 320px;
+  line-height: 1.7;
+  white-space: pre-wrap;
 }
 
 .row-actions :deep(.ant-btn-link) {
   padding-inline: 2px;
+}
+
+.test-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.test-account-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 14px;
+  background: linear-gradient(135deg, #f8fafc 0%, #ffffff 100%);
+}
+
+.test-account-main {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.test-account-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  color: #fff;
+  border-radius: 10px;
+  background: #14b8a6;
+}
+
+.test-account-name {
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.test-account-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.test-form :deep(.ant-form-item) {
+  margin-bottom: 0;
+}
+
+.test-terminal {
+  min-height: 112px;
+  max-height: 300px;
+  overflow: auto;
+  padding: 14px 16px;
+  color: #dbeafe;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 13px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  border: 1px solid #334155;
+  border-radius: 14px;
+  background: #0f172a;
+}
+
+.test-output-line.muted {
+  color: #94a3b8;
+}
+
+.test-output-line.info {
+  color: #60a5fa;
+}
+
+.test-output-line.success {
+  color: #34d399;
+}
+
+.test-output-line.warning {
+  color: #facc15;
+}
+
+.test-output-line.error {
+  color: #f87171;
+}
+
+.test-output-line.label {
+  color: #facc15;
+  font-weight: 700;
+}
+
+.test-output-line.divider {
+  height: 1px;
+  padding: 0;
+  margin: 10px 0;
+  overflow: hidden;
+  background: #334155;
+}
+
+.test-result-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.test-result-collapse {
+  border-radius: 12px;
+  background: #f8fafc;
+}
+
+.test-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.test-footer-hint {
+  display: flex;
+  gap: 16px;
+  color: #64748b;
+  font-size: 12px;
 }
 
 .secret-cell {

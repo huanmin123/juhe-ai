@@ -1,8 +1,8 @@
-﻿import { Router } from 'express'
+import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { addAccountToGroup, createAccount, listAccounts, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
+import { addAccountToGroup, createAccount, listAccounts, listGroups, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -60,6 +60,10 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
     res.status(400).json(badRequest('Invalid OpenAI OAuth code payload'))
     return
   }
+  if (parsed.data.groupId && !isOpenAIGroup(parsed.data.groupId)) {
+    res.status(400).json(badRequest('Invalid account group'))
+    return
+  }
 
   try {
     const { code, state } = extractCodeAndState(parsed.data)
@@ -100,6 +104,10 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
     res.status(400).json(badRequest('Invalid OpenAI refresh token payload'))
     return
   }
+  if (parsed.data.groupId && !isOpenAIGroup(parsed.data.groupId)) {
+    res.status(400).json(badRequest('Invalid account group'))
+    return
+  }
 
   try {
     const tokenInfo = await refreshOpenAIOAuthToken({
@@ -130,6 +138,10 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
     res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI refresh token authorization failed' })
   }
 })
+
+function isOpenAIGroup(groupId: string): boolean {
+  return listGroups().some((group) => group.id === groupId && group.providerCode === 'openai')
+}
 
 openAIOAuthRouter.post('/accounts/:id/refresh', async (req, res) => {
   const account = listAccounts().find((item) => item.id === req.params.id)

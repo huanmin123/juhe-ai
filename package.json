@@ -1,5 +1,5 @@
 {
-  "name": "sub2api-lite",
+  "name": "juhe-ai",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -8,7 +8,7 @@
     "build": "pnpm -r build",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
-    "test:smoke": "pnpm --filter sub2api-lite-backend test:smoke"
+    "test:smoke": "pnpm --filter juhe-ai-backend test:smoke"
   },
   "engines": {
     "node": ">=20.0.0",

@@ -1,6 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 
-const secret = process.env.SUB2API_LITE_SECRET ?? process.env.APP_SECRET ?? 'sub2api-lite-dev-secret-change-me'
+import { runtimeConfig } from '../config/runtime.js'
+
+const secret = runtimeConfig.secret
 const key = createHash('sha256').update(secret).digest()
 
 export function encryptJson(value: unknown): string {

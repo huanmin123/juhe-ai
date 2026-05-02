@@ -1,32 +1,30 @@
 <template>
   <a-card class="page-card">
-    <div class="page-toolbar page-toolbar-end">
+    <div class="usage-toolbar">
+      <div class="usage-toolbar-filters">
+        <a-input
+          v-model:value="accountNameFilter"
+          allow-clear
+          class="filter-input"
+          placeholder="按账户名称筛选"
+        />
+        <a-select
+          v-model:value="resultFilter"
+          class="filter-select"
+          :options="resultOptions"
+        />
+        <a-select
+          v-model:value="statusCodeFilter"
+          allow-clear
+          class="filter-select"
+          :options="statusCodeOptions"
+          placeholder="状态码"
+        />
+        <a-button @click="resetFilters">重置</a-button>
+      </div>
       <div class="page-toolbar-actions">
         <a-button :loading="loading" @click="loadData">刷新</a-button>
       </div>
-    </div>
-
-    <div class="usage-filters">
-      <a-input
-        v-model:value="accountNameFilter"
-        allow-clear
-        class="filter-input"
-        placeholder="按账户名称筛选"
-      />
-      <a-select
-        v-model:value="resultFilter"
-        class="filter-select"
-        :options="resultOptions"
-      />
-      <a-select
-        v-model:value="statusCodeFilter"
-        allow-clear
-        class="filter-select"
-        :options="statusCodeOptions"
-        placeholder="状态码"
-      />
-      <a-button @click="resetFilters">重置</a-button>
-      <span class="filter-count">{{ filteredRecords.length }} / {{ records.length }}</span>
     </div>
 
     <a-table
@@ -131,50 +129,6 @@
     </a-table>
   </a-card>
 
-  <a-modal v-model:open="logModalOpen" title="失败请求日志" width="980px" :footer="null" destroy-on-close>
-    <template v-if="selectedRecord">
-      <div class="log-summary">
-        <a-tag color="red">失败</a-tag>
-        <span>{{ selectedRecord.endpoint ?? '-' }}</span>
-        <span>{{ displayName(selectedRecord.apiKeyName, selectedRecord.apiKeyId) }}</span>
-        <span>{{ displayName(selectedRecord.groupName, selectedRecord.groupId) }}</span>
-        <span>{{ displayName(selectedRecord.accountName, selectedRecord.accountId) }}</span>
-      </div>
-
-      <a-descriptions class="log-descriptions" size="small" bordered :column="{ xxl: 4, xl: 4, lg: 3, md: 2, sm: 1, xs: 1 }">
-        <a-descriptions-item label="模型">{{ selectedRecord.model ?? '-' }}</a-descriptions-item>
-        <a-descriptions-item label="接口">{{ selectedRecord.endpoint ?? '-' }}</a-descriptions-item>
-        <a-descriptions-item label="状态码">{{ selectedRecord.statusCode ?? '-' }}</a-descriptions-item>
-        <a-descriptions-item label="IP">{{ selectedRecord.clientIp ?? '-' }}</a-descriptions-item>
-        <a-descriptions-item label="时间">{{ formatDateTime(selectedRecord.createdAt) }}</a-descriptions-item>
-        <a-descriptions-item label="首 token">{{ formatDuration(selectedRecord.firstTokenMs) }}</a-descriptions-item>
-        <a-descriptions-item label="总耗时">{{ formatDuration(selectedRecord.durationMs) }}</a-descriptions-item>
-        <a-descriptions-item label="错误码">{{ selectedRecord.errorCode ?? '-' }}</a-descriptions-item>
-        <a-descriptions-item label="错误信息">{{ selectedRecord.errorMessage ?? '-' }}</a-descriptions-item>
-      </a-descriptions>
-
-      <a-tabs class="log-tabs">
-        <a-tab-pane key="request" tab="请求信息">
-          <div class="log-pane-toolbar">
-            <span>客户端请求快照</span>
-            <a-button size="small" @click="copyLog(formatSnapshot(selectedRecord.requestSnapshot), '请求日志')">复制</a-button>
-          </div>
-          <pre class="log-pre">{{ formatSnapshot(selectedRecord.requestSnapshot) }}</pre>
-        </a-tab-pane>
-        <a-tab-pane key="response" tab="返回信息">
-          <div class="log-pane-toolbar">
-            <span>网关返回 / 上游响应快照</span>
-            <a-button size="small" @click="copyLog(formatSnapshot(selectedRecord.responseSnapshot), '返回日志')">复制</a-button>
-          </div>
-          <pre class="log-pre">{{ formatSnapshot(selectedRecord.responseSnapshot) }}</pre>
-          <div v-if="responseBodyText(selectedRecord)" class="raw-body-block">
-            <div class="raw-body-title">响应体原文</div>
-            <pre class="raw-body-pre">{{ responseBodyText(selectedRecord) }}</pre>
-          </div>
-        </a-tab-pane>
-      </a-tabs>
-    </template>
-  </a-modal>
 </template>
 
 <script setup lang="ts">
@@ -187,8 +141,6 @@ import type { UsageRecordSummary } from '@/types/domain'
 
 const loading = ref(false)
 const records = ref<UsageRecordSummary[]>([])
-const logModalOpen = ref(false)
-const selectedRecord = ref<UsageRecordSummary | null>(null)
 const accountNameFilter = ref('')
 const resultFilter = ref<'all' | 'success' | 'failed'>('all')
 const statusCodeFilter = ref<string>('')
@@ -281,34 +233,10 @@ function formatDateTime(value?: string): string {
   return new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
-function openLog(record: UsageRecordSummary): void {
-  selectedRecord.value = record
-  logModalOpen.value = true
-}
-
-function formatSnapshot(snapshot?: Record<string, unknown>): string {
-  return snapshot ? JSON.stringify(snapshot, null, 2) : '暂无日志快照'
-}
-
-function responseBodyText(record: UsageRecordSummary): string {
-  const value = record.responseSnapshot?.bodyText
-  return typeof value === 'string' ? value : ''
-}
-
 function resetFilters(): void {
   accountNameFilter.value = ''
   resultFilter.value = 'all'
   statusCodeFilter.value = ''
-}
-
-async function copyLog(text: string, label: string): Promise<void> {
-  try {
-    await navigator.clipboard.writeText(text)
-    message.success(`${label}已复制`)
-  } catch (error) {
-    console.error(error)
-    message.error('复制失败')
-  }
 }
 
 async function loadData() {
@@ -335,12 +263,20 @@ onMounted(loadData)
   margin: 12px 0;
 }
 
-.usage-filters {
+.usage-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+}
+
+.usage-toolbar-filters {
   display: flex;
   flex-wrap: wrap;
   gap: 10px;
   align-items: center;
-  margin-bottom: 14px;
 }
 
 .filter-input {
@@ -349,12 +285,6 @@ onMounted(loadData)
 
 .filter-select {
   width: 150px;
-}
-
-.filter-count {
-  margin-left: auto;
-  color: #64748b;
-  font-size: 12px;
 }
 
 .token-cell {
@@ -371,7 +301,6 @@ onMounted(loadData)
   max-width: 160px;
   overflow: hidden;
   color: #0f172a;
-  font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
@@ -398,7 +327,6 @@ onMounted(loadData)
 .cost-cell {
   color: #059669;
   font-family: Consolas, 'Courier New', monospace;
-  font-weight: 700;
 }
 
 .cost-cell-wrap {
@@ -426,7 +354,6 @@ onMounted(loadData)
 .cost-detail-title {
   margin-bottom: 6px;
   color: #f8fafc;
-  font-weight: 700;
 }
 
 .cost-detail-row {
@@ -436,7 +363,7 @@ onMounted(loadData)
   line-height: 1.8;
 }
 
-.cost-detail-row strong {
+.cost-detail-value {
   color: #60a5fa;
   font-family: Consolas, 'Courier New', monospace;
 }
@@ -451,75 +378,24 @@ onMounted(loadData)
   background: #0f172a;
 }
 
-.log-action {
-  height: 24px;
-  padding: 0;
-  font-size: 12px;
+.usage-toolbar .page-toolbar-actions {
+  justify-content: flex-end;
 }
 
-.log-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  align-items: center;
-  margin-bottom: 12px;
-  color: #334155;
-  font-size: 13px;
+@media (max-width: 768px) {
+  .usage-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .usage-toolbar-filters {
+    width: 100%;
+  }
+
+  .usage-toolbar .page-toolbar-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
 }
 
-.log-descriptions {
-  margin-bottom: 12px;
-}
-
-.log-tabs {
-  margin-top: 4px;
-}
-
-.log-pane-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 8px;
-  color: #475569;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.log-pre,
-.raw-body-pre {
-  max-height: 420px;
-  margin: 0;
-  overflow: auto;
-  border: 1px solid #e2e8f0;
-  border-radius: 12px;
-  background: #0f172a;
-  color: #dbeafe;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-.log-pre {
-  padding: 14px;
-}
-
-.raw-body-block {
-  margin-top: 12px;
-}
-
-.raw-body-title {
-  margin-bottom: 8px;
-  color: #475569;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.raw-body-pre {
-  max-height: 260px;
-  padding: 12px;
-  background: #111827;
-}
 </style>

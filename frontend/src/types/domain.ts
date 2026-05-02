@@ -97,9 +97,21 @@ export interface AccountTestResult {
   success: boolean
   statusCode?: number
   message: string
+  model?: string
+  requestUrl?: string
+  requestBody?: unknown
+  responseHeaders?: Record<string, string | string[]>
+  responseBody?: unknown
+  responseText?: string
+  outputText?: string
   modelsUrl?: string
   proxyUrl?: string
   tokenRefreshed?: boolean
+  durationMs?: number
+  accountStatusChanged?: boolean
+  accountStatus?: AccountStatus
+  errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable' | 'default_cooldown'
+  errorPolicyReason?: string
 }
 
 export interface ErrorPolicySummary {
@@ -197,6 +209,8 @@ export interface UsageRecordSummary {
 }
 
 export interface SystemSettings {
+  appName?: string
+  appIcon?: string
   defaultAccountConcurrencyLimit?: number
   defaultTemporaryUnschedulableMinutes?: number
   temporaryUnschedulableRetryIntervalSeconds?: number

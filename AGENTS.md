@@ -2,7 +2,7 @@
 
 ## 项目定位
 
-- 这里是 `sub2api-lite`，不是 `sub2api` 的直接重写，也不是把重型模块原样搬过来。
+- 这里是 `juhe-ai`，不是 `sub2api` 的直接重写，也不是把重型模块原样搬过来。
 - 前端使用 Vue 3 + TypeScript + Ant Design Vue。
 - 后端使用 Node.js + TypeScript。
 - 产品完整架构包含供应商、账户管理、API 密钥、代理管理、使用记录、系统设置、分组。

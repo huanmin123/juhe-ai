@@ -1,7 +1,9 @@
-﻿const backendUrl = trimTrailingSlash(process.env.BACKEND_URL ?? 'http://127.0.0.1:3000')
-const accountName = process.env.SMOKE_ACCOUNT_NAME ?? 'dli.li-300-15'
-const model = process.env.SMOKE_MODEL ?? 'gpt-5.4-mini'
-const prompt = process.env.SMOKE_PROMPT ?? '只输出 OK'
+import { runtimeConfig } from '../config/runtime.js'
+
+const backendUrl = trimTrailingSlash(runtimeConfig.smokeTest.backendUrl)
+const accountName = runtimeConfig.smokeTest.accountName
+const model = runtimeConfig.smokeTest.model
+const prompt = runtimeConfig.smokeTest.prompt
 
 interface ApiEnvelope<T> {
   data: T
@@ -144,7 +146,7 @@ async function main(): Promise<void> {
   assert(modelUsageRecords.some((record) => !record.stream && typeof record.inputTokens === 'number' && typeof record.outputTokens === 'number' && typeof record.costUsd === 'number'), '找不到非流式 token/cost 使用记录')
   summary.push('usage records ok')
 
-  console.log('\nsub2api-lite smoke test passed')
+  console.log('\njuhe-ai smoke test passed')
   for (const item of summary) {
     console.log(`- ${item}`)
   }
@@ -200,7 +202,7 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 main().catch((error) => {
-  console.error('\nsub2api-lite smoke test failed')
+  console.error('\njuhe-ai smoke test failed')
   console.error(error instanceof Error ? error.message : error)
   process.exitCode = 1
 })

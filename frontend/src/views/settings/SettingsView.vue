@@ -5,6 +5,37 @@
         <section class="settings-section">
           <div class="section-heading">
             <div>
+              <h3>系统品牌</h3>
+              <p>用于左侧菜单标题和浏览器标签页；默认图标使用仓库内置资源。</p>
+            </div>
+            <div class="brand-preview">
+              <img class="brand-preview-icon" :src="form.appIcon" :alt="`${form.appName} 图标`" />
+              <span>{{ form.appName }}</span>
+            </div>
+          </div>
+          <div class="settings-grid">
+            <div class="setting-item">
+              <a-form-item label="系统名称" extra="保存后会同步显示到左侧菜单标题和浏览器 tab。">
+                <a-input v-model:value="form.appName" placeholder="请输入系统名称" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="系统图标路径" extra="默认使用 /brand-icon.svg；可填写 public 目录下的本地路径或后续上传后的资源路径。">
+                <a-input v-model:value="form.appIcon" placeholder="/brand-icon.svg" />
+                <a-space class="brand-icon-actions">
+                  <a-upload accept="image/svg+xml,image/png,image/jpeg,image/webp" :before-upload="handleIconUpload" :show-upload-list="false">
+                    <a-button>上传图标</a-button>
+                  </a-upload>
+                  <a-button type="link" @click="restoreDefaultIcon">恢复默认图标</a-button>
+                </a-space>
+              </a-form-item>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-heading">
+            <div>
               <h3>账户调度默认值</h3>
               <p>用于新建账户和网关调度的默认策略；供应商 Base URL 由供应商定义维护。</p>
             </div>
@@ -86,10 +117,13 @@ import { message } from 'ant-design-vue'
 import { onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
+import { applyAppBrand, defaultAppBrand } from '@/composables/useAppBrand'
 import type { SystemSettings } from '@/types/domain'
 
 
 interface SettingsForm {
+  appName: string
+  appIcon: string
   defaultAccountConcurrencyLimit: number
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
@@ -102,6 +136,8 @@ interface SettingsForm {
 }
 
 const defaultSettings: SettingsForm = {
+  appName: defaultAppBrand.appName,
+  appIcon: defaultAppBrand.appIcon,
   defaultAccountConcurrencyLimit: 3,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
@@ -121,6 +157,7 @@ async function loadSettings() {
   try {
     const settings = await api.settings.get()
     Object.assign(form, normalizeSettings(settings))
+    applyAppBrand(settings)
   } catch (error) {
     console.error(error)
     message.error('加载系统设置失败')
@@ -132,6 +169,7 @@ async function saveSettings() {
   try {
     const next = await api.settings.update({ ...normalizeSettings(form) })
     Object.assign(form, normalizeSettings(next))
+    applyAppBrand(next)
     message.success('系统设置已保存')
   } catch (error) {
     console.error(error)
@@ -145,8 +183,38 @@ function resetDefaults() {
   Object.assign(form, defaultSettings)
 }
 
+function restoreDefaultIcon() {
+  form.appIcon = defaultSettings.appIcon
+}
+
+function handleIconUpload(file: File): boolean {
+  if (!file.type.startsWith('image/')) {
+    message.warning('请上传图片格式的图标')
+    return false
+  }
+  if (file.size > 256 * 1024) {
+    message.warning('图标文件不能超过 256KB')
+    return false
+  }
+
+  const reader = new FileReader()
+  reader.onload = () => {
+    if (typeof reader.result === 'string') {
+      form.appIcon = reader.result
+      message.success('图标已读取，保存设置后生效')
+    }
+  }
+  reader.onerror = () => {
+    message.error('读取图标失败')
+  }
+  reader.readAsDataURL(file)
+  return false
+}
+
 function normalizeSettings(settings: SystemSettings | SettingsForm): SettingsForm {
   return {
+    appName: stringValue(settings.appName, defaultSettings.appName),
+    appIcon: stringValue(settings.appIcon, defaultSettings.appIcon),
     defaultAccountConcurrencyLimit: numberValue(settings.defaultAccountConcurrencyLimit, defaultSettings.defaultAccountConcurrencyLimit, 1, 999),
     defaultTemporaryUnschedulableMinutes: numberValue(settings.defaultTemporaryUnschedulableMinutes, defaultSettings.defaultTemporaryUnschedulableMinutes, 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberValue(settings.temporaryUnschedulableRetryIntervalSeconds, defaultSettings.temporaryUnschedulableRetryIntervalSeconds, 0, 3600),
@@ -167,6 +235,10 @@ function numberValue(value: unknown, fallback: number, min: number, max: number)
 
 function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
+}
+
+function stringValue(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
 
@@ -227,6 +299,29 @@ onMounted(loadSettings)
   color: #64748b;
   font-size: 13px;
   line-height: 20px;
+}
+
+.brand-preview {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  max-width: 260px;
+  padding: 10px 14px;
+  color: #0f172a;
+  font-weight: 700;
+  background: #f8fafc;
+  border: 1px solid #edf1f7;
+  border-radius: 12px;
+}
+
+.brand-preview-icon {
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+}
+
+.brand-icon-actions {
+  margin-top: 10px;
 }
 
 .settings-grid {

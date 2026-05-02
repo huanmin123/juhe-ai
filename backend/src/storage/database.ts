@@ -1,7 +1,8 @@
 import { mkdirSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
+import { runtimeConfig } from '../config/runtime.js'
 import { applySchema, seedDefaults } from './schema.js'
 
 let database: DatabaseSync | undefined
@@ -11,7 +12,7 @@ export function getDatabase(): DatabaseSync {
     return database
   }
 
-  const databasePath = process.env.SQLITE_PATH ?? process.env.DATABASE_PATH ?? resolve(process.cwd(), 'data', 'sub2api-lite.sqlite3')
+  const databasePath = runtimeConfig.databasePath
   mkdirSync(dirname(databasePath), { recursive: true })
 
   database = new DatabaseSync(databasePath)
@@ -27,4 +28,3 @@ export function nowIso(): string {
 export function newId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
 }
-

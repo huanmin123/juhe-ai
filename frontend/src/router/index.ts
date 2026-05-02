@@ -29,7 +29,7 @@ export const menuRoutes = [
     component: () => import('@/views/groups/GroupsView.vue'),
     meta: {
       title: '分组',
-      description: '按供应商组织账户，绑定账户时仅允许选择同供应商账户。'
+      description: '按供应商划分账户，账户主动选择归属分组，API Key 再绑定分组统一调度。'
     }
   },
   {

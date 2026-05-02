@@ -9,20 +9,16 @@
 后端默认数据库文件：
 
 ```text
-backend/data/sub2api-lite.sqlite3
+backend/data/juhe-ai.sqlite3
 ```
 
-可以通过环境变量指定：
+如需调整位置，编辑项目内本地配置文件 `backend/.env`，不设置系统环境变量：
 
-```powershell
-$env:SQLITE_PATH = "F:\sub2api-lite-data\sub2api-lite.sqlite3"
+```dotenv
+JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 ```
 
-也兼容：
-
-```powershell
-$env:DATABASE_PATH = "F:\sub2api-lite-data\sub2api-lite.sqlite3"
-```
+相对路径按 `backend/` 目录解析；也可以填写绝对路径，例如 `F:\juhe-ai-data\juhe-ai.sqlite3`。
 
 ## 当前实现
 
@@ -61,4 +57,3 @@ $env:DATABASE_PATH = "F:\sub2api-lite-data\sub2api-lite.sqlite3"
 这是单人自用系统，接口会返回前端需要展示的完整密钥；数据库中仍尽量加密保存。
 
 API Key 明文只在创建时返回一次。
-
