@@ -106,7 +106,7 @@ Invoke-RestMethod -Method Post `
   -Body $payload
 ```
 
-当前已验证 `dli.li-300-15` 可用，并已作为同步分组的优先账户。PowerShell 的 POST 请求也已覆盖验证，网关会过滤 `Expect: 100-continue` 等不应透传的请求头。
+PowerShell 的 POST 请求已覆盖验证，网关会过滤 `Expect: 100-continue` 等不应透传的请求头。实际验证账号以账户页已有的启用 OpenAI 账号为准。
 
 
 
@@ -152,13 +152,17 @@ OAuth 账户如需代理，可在账户编辑弹窗中绑定代理配置；若�
 pnpm test:smoke
 ```
 
-默认检查 `dli.li-300-15`、可见网关 API Key、`/v1/models`、`/v1/responses` 非流式和流式、使用记录 token/cost 入库。覆盖烟测参数时编辑 `backend/.env`：
+默认会自动选择第一个启用的 OpenAI 账户，并检查可见网关 API Key、`/v1/models`、`/v1/responses` 非流式和流式、使用记录 token/cost 入库。需要固定测试账号或模型时编辑 `backend/.env`：
 
 ```dotenv
+# 只影响 pnpm test:smoke，不影响正常启动和网关转发。
 JUHE_AI_BACKEND_URL=http://127.0.0.1:3000
-JUHE_AI_SMOKE_ACCOUNT_NAME=dli.li-300-15
+JUHE_AI_SMOKE_ACCOUNT_NAME=
 JUHE_AI_SMOKE_MODEL=gpt-5.4-mini
+JUHE_AI_SMOKE_PROMPT=只输出 OK
 ```
+
+`JUHE_AI_SMOKE_ACCOUNT_NAME` 留空时自动选第一个启用的 OpenAI 账号；填写后必须和账户页里的账号名称完全一致。
 
 ```powershell
 pnpm test:smoke
@@ -230,13 +234,13 @@ Invoke-RestMethod http://127.0.0.1:3000/api/usage-records
 
 ```powershell
 $account = (Invoke-RestMethod http://127.0.0.1:3000/api/accounts).data |
-  Where-Object { $_.name -eq "dli.li-300-15" } |
+  Where-Object { $_.providerCode -eq "openai" -and $_.status -eq "active" } |
   Select-Object -First 1
 
 Invoke-RestMethod -Method Post "http://127.0.0.1:3000/api/accounts/$($account.id)/test"
 ```
 
-检查点：`dli.li-300-15` 应返回 `success = true`。
+检查点：选中的启用 OpenAI 账户应返回 `success = true`。如需固定账号，可按账户页名称加上 `Where-Object { $_.name -eq "你的账号名称" }` 条件。
 
 ### 网关验证
 

@@ -75,5 +75,5 @@ pnpm build
 pnpm test:smoke
 ```
 
-本地真实网关验证见 `docs/dev-runbook.md`，当前已验证 `dli.li-300-15`、`/v1/models`、`/v1/responses` 非流式与流式、用量和成本入库。
+本地真实网关验证见 `docs/dev-runbook.md`，烟测会使用启用的 OpenAI 账户验证 `/v1/models`、`/v1/responses` 非流式与流式、用量和成本入库。
 

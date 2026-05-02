@@ -91,8 +91,10 @@ async function main(): Promise<void> {
 
   const accounts = await getEnvelope<AccountSummary[]>('/api/accounts')
   assert(accounts.length > 0, '账户列表为空')
-  const targetAccount = accounts.find((account) => account.name === accountName)
-  assert(targetAccount, `找不到目标账户：${accountName}`)
+  const targetAccount = accountName
+    ? accounts.find((account) => account.name === accountName)
+    : accounts.find((account) => account.providerCode === 'openai' && account.status === 'active')
+  assert(targetAccount, accountName ? `找不到目标账户：${accountName}` : '找不到可用于烟测的启用 OpenAI 账户')
   assert(targetAccount.providerCode === 'openai', `目标账户供应商不是 openai：${targetAccount.providerCode}`)
   assert(targetAccount.status === 'active', `目标账户状态不是正常：${targetAccount.status}`)
   summary.push(`account ok: ${targetAccount.name}`)

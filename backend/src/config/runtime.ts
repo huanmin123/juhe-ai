@@ -31,7 +31,7 @@ export const runtimeConfig: RuntimeConfig = {
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   smokeTest: {
     backendUrl: stringConfig('JUHE_AI_BACKEND_URL', 'http://127.0.0.1:3000'),
-    accountName: stringConfig('JUHE_AI_SMOKE_ACCOUNT_NAME', 'dli.li-300-15'),
+    accountName: stringConfig('JUHE_AI_SMOKE_ACCOUNT_NAME', ''),
     model: stringConfig('JUHE_AI_SMOKE_MODEL', 'gpt-5.4-mini'),
     prompt: stringConfig('JUHE_AI_SMOKE_PROMPT', '只输出 OK')
   }
