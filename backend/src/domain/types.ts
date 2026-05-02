@@ -55,6 +55,21 @@ export interface AccountUsageSummary {
   lastUsedAt?: string
 }
 
+export interface AccountOAuthUsageWindow {
+  utilization: number
+  resetsAt?: string
+  remainingSeconds: number
+  windowMinutes?: number
+}
+
+export interface AccountOAuthUsageSnapshot {
+  kind: 'openai_codex'
+  source?: string
+  updatedAt?: string
+  fiveHour?: AccountOAuthUsageWindow
+  sevenDay?: AccountOAuthUsageWindow
+}
+
 export interface GroupAccountStats {
   total: number
   available: number
@@ -87,6 +102,7 @@ export interface AccountSummary {
   lastErrorMessage?: string
   lastUsedAt?: string
   usage: AccountUsageSummary
+  oauthUsage?: AccountOAuthUsageSnapshot
 }
 
 export interface AccountTestResult {

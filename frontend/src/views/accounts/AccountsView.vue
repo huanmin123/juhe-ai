@@ -28,7 +28,7 @@
       </div>
     </div>
 
-    <a-table class="account-table" size="middle" :columns="columns" :data-source="filteredAccounts" row-key="id" :loading="loading" :scroll="{ x: 1840 }" :row-selection="rowSelection">
+    <a-table class="account-table" size="middle" :columns="columns" :data-source="filteredAccounts" row-key="id" :loading="loading" :scroll="{ x: 1940 }" :row-selection="rowSelection">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有账户。点击「添加账户」，再选择供应商和账户类型。" />
       </template>
@@ -64,6 +64,15 @@
         <template v-else-if="column.key === 'usage'">
           <div class="usage-cell">
             <span class="usage-summary">{{ `${record.usage.requestCount}req/${formatUsageAmount(record.usage.totalTokens)}/${formatCost(record.usage.totalCost)}` }}</span>
+            <div v-if="oauthUsageBars(record).length" class="oauth-usage-bars">
+              <div v-for="bar in oauthUsageBars(record)" :key="bar.key" class="oauth-usage-row">
+                <span class="oauth-usage-label">{{ bar.label }}</span>
+                <a-progress class="oauth-usage-progress" size="small" :percent="bar.percent" :stroke-color="bar.color" :show-info="false" />
+                <span class="oauth-usage-percent" :class="bar.tone">{{ bar.displayPercent }}</span>
+                <span class="oauth-usage-reset">{{ bar.resetText }}</span>
+              </div>
+              <div v-if="record.oauthUsage?.updatedAt" class="oauth-usage-updated">快照 {{ formatRelativeReset(record.oauthUsage.updatedAt, true) }}</div>
+            </div>
           </div>
         </template>
         <template v-else-if="column.key === 'lastUsedAt'">
@@ -402,6 +411,16 @@ interface AccountMenuItem {
   danger?: boolean
 }
 
+interface OAuthUsageBar {
+  key: string
+  label: string
+  percent: number
+  displayPercent: string
+  resetText: string
+  color: string
+  tone: string
+}
+
 interface TestOutputLine {
   text: string
   tone?: 'muted' | 'info' | 'success' | 'warning' | 'error' | 'label' | 'divider'
@@ -496,7 +515,7 @@ const columns = [
   { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 },
   { title: '并发数', key: 'concurrency', width: 100, align: 'center' },
   { title: '状态', key: 'status', width: 190 },
-  { title: '用量情况', key: 'usage', width: 280 },
+  { title: '用量情况', key: 'usage', width: 380 },
   { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
   { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
   { title: '最近使用时间', key: 'lastUsedAt', width: 180 },
@@ -799,6 +818,55 @@ function formatUsageAmount(value?: number): string {
 
 function formatCost(value?: number): string {
   return `$${(value ?? 0).toFixed(2)}`
+}
+
+function oauthUsageBars(account: AccountSummary): OAuthUsageBar[] {
+  if (account.providerCode !== 'openai' || account.type !== 'oauth' || !account.oauthUsage) return []
+  return [
+    oauthUsageBar('5h', '5h', account.oauthUsage.fiveHour),
+    oauthUsageBar('7d', '7d', account.oauthUsage.sevenDay)
+  ].filter((item): item is OAuthUsageBar => Boolean(item))
+}
+
+function oauthUsageBar(key: string, label: string, window?: { utilization: number; resetsAt?: string; remainingSeconds: number }): OAuthUsageBar | undefined {
+  if (!window) return undefined
+  const rawPercent = Math.max(0, window.utilization)
+  const percent = Math.min(Math.round(rawPercent), 100)
+  return {
+    key,
+    label,
+    percent,
+    displayPercent: rawPercent > 999 ? '>999%' : `${Math.round(rawPercent)}%`,
+    resetText: window.resetsAt ? formatRelativeReset(window.resetsAt) : '刷新未知',
+    color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
+    tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal'
+  }
+}
+
+function formatRelativeReset(value: string, pastOnly = false): string {
+  const time = Date.parse(value)
+  if (!Number.isFinite(time)) return value
+  const diffMs = time - Date.now()
+  if (pastOnly) return formatPastDuration(Math.max(0, -diffMs))
+  if (diffMs <= 0) return '现在'
+  const totalMinutes = Math.ceil(diffMs / 60_000)
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  if (days > 0) return `${days}d ${hours}h 后`
+  if (hours > 0) return `${hours}h ${minutes}m 后`
+  return `${minutes}m 后`
+}
+
+function formatPastDuration(diffMs: number): string {
+  const totalMinutes = Math.floor(diffMs / 60_000)
+  if (totalMinutes <= 0) return '刚刚'
+  const days = Math.floor(totalMinutes / 1440)
+  const hours = Math.floor((totalMinutes % 1440) / 60)
+  const minutes = totalMinutes % 60
+  if (days > 0) return `${days}d ${hours}h 前`
+  if (hours > 0) return `${hours}h ${minutes}m 前`
+  return `${minutes}m 前`
 }
 
 function formatDateTime(value?: string): string {
@@ -1379,15 +1447,71 @@ onMounted(loadData)
 }
 
 .usage-cell {
-  display: block;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
   line-height: 1.4;
-  white-space: nowrap;
+  white-space: normal;
 }
 
 .usage-summary {
   color: #0f172a;
   font-family: Consolas, 'Courier New', monospace;
   font-weight: 400;
+  white-space: nowrap;
+}
+
+.oauth-usage-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 260px;
+}
+
+.oauth-usage-row {
+  display: grid;
+  grid-template-columns: 34px minmax(90px, 1fr) 44px 62px;
+  align-items: center;
+  column-gap: 6px;
+}
+
+.oauth-usage-label {
+  display: inline-flex;
+  justify-content: center;
+  border-radius: 999px;
+  background: #eef2ff;
+  color: #4338ca;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.oauth-usage-progress {
+  line-height: 1;
+}
+
+.oauth-usage-percent {
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  text-align: right;
+}
+
+.oauth-usage-percent.normal {
+  color: #475569;
+}
+
+.oauth-usage-percent.warning {
+  color: #d97706;
+}
+
+.oauth-usage-percent.danger {
+  color: #dc2626;
+}
+
+.oauth-usage-reset,
+.oauth-usage-updated {
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .status-cell {

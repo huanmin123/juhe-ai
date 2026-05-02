@@ -120,6 +120,10 @@ flowchart LR
 
 账户列表第一期展示：账户名称、账户类型、供应商、并发数、状态、用量情况、优先级、最近使用时间、操作。账号优先级按数字从小到大生效，`0` 优先于 `10`；同分组调度时先尝试优先级更高的账号，当前账号失败或进入冷却后再切换到下一个可用账号。`Access/API Key` 与 `Refresh Token` 不在列表展示，只在编辑弹窗里查看和修改；`Refresh Token` 只对 OAuth 账户有意义。状态语义统一为：正常、停用、错误、限流中、临时不可调用。
 
+OpenAI OAuth 账户还有上游 Codex/ChatGPT 使用窗口限制，不能和 OpenAI API Key 的本地 token / 成本用量混为一类。账户列表的“用量情况”应分两层展示：本地网关统计仍来自 `usage_records`，用于请求数、token、成本；OAuth 专属额度进度来自上游返回的 Codex rate-limit 快照，用独立进度条展示 `5h` 与 `7d` 窗口百分比和刷新时间。该进度只表示上游 OAuth 额度占用，不参与 API Key 计费口径。
+
+OpenAI OAuth 额度快照建议单独存储为非敏感运行态，不写进 `credentials`。第一阶段采用 `account_usage_snapshots` 这类轻量表或等价 repository 对象，按 `account_id + kind` 保存 `openai_codex` 快照：原始 primary/secondary header、归一化后的 `codex_5h_*` / `codex_7d_*` 字段、`reset_at`、`window_minutes`、`updated_at` 和 `source`。列表接口只返回可展示摘要，不返回 access token、refresh token 或完整请求内容。
+
 账户创建入口保持统一：页面只提供“添加账户”，弹窗内先选择供应商，再按供应商能力展示账户类型，最后渐进展开具体配置。第一期 OpenAI 支持 `oauth` 与 `api_key` 两种类型；后续 Claude Code、Gemini 等供应商只扩展供应商定义和对应创建表单，不再新增外部入口按钮。
 
 账号级错误处理通过 `credentials.error_handling_rules` 保存为账户内嵌规则；新建和编辑账户都在弹窗内维护规则列表。网关不会把未命中的上游错误透传给客户端：未命中账号规则时，当前账号会临时不可调用并切换到同分组内下一个可用账号。列表不额外展示规则明细，避免挤占用户关心的状态、并发、用量和最近使用时间。
@@ -241,6 +245,8 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 - `created_at`
 
 第一阶段网关已写入请求记录，并从 OpenAI 响应里的 `usage.input_tokens`、`usage.output_tokens`、`usage.input_tokens_details.cached_tokens` 统计 token。使用记录会保存 `METHOD /v1/path` 形式的接口，便于区分 `/v1/models` 这类成功但没有模型和 token 用量的请求。成本统计复用供应商模型目录里的 OpenAI 价格快照做轻量 1:1 估算；未覆盖的模型先只记录 token，不强行猜价格。使用记录接口会派生输入成本、输出成本、输入单价、输出单价、缓存读取成本、账户计费和固定 1x 倍率，用于前端悬浮明细展示，不额外写入数据库。失败记录额外保存请求/响应快照，便于在使用记录页查看当时的请求体、响应体和最后一次上游错误。
+
+OpenAI OAuth 额度进度的获取优先级：网关真实转发时被动读取响应头并保存快照；账号测试、手动刷新用量或列表缺失快照时，才允许用同一 OAuth access token 对 ChatGPT Codex responses 端点做节流探测。探测不得在账户列表批量自动触发，避免为了展示进度额外消耗上游额度。遇到 OAuth 429 时，优先用 Codex header 计算命中的窗口恢复时间；header 不足时再读取响应体里的 `resets_at` / `resets_in_seconds`，并把账号标记为 `rate_limited` 到该时间。
 
 ## 错误处理策略
 

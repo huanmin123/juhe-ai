@@ -1,4 +1,4 @@
-import type { AccountStatus, AccountSummary, AccountType, ApiKeySummary, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition } from '../domain/types.js'
+import type { AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, ApiKeySummary, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition } from '../domain/types.js'
 import { createApiKey, decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 
@@ -209,6 +209,14 @@ interface AccountUsageAggregateRow {
   last_used_at: string | null
 }
 
+interface AccountUsageSnapshotRow {
+  account_id: string
+  kind: string
+  source: string | null
+  snapshot_json: string
+  updated_at: string
+}
+
 export interface MigrationResult {
   imported: number
   skipped: number
@@ -383,6 +391,7 @@ export function listProviders(): ProviderDefinition[] {
 export function listAccounts(): AccountSummary[] {
   const rows = getDatabase().prepare('SELECT * FROM accounts ORDER BY priority ASC, updated_at DESC').all() as unknown as AccountRow[]
   const usageByAccount = loadAccountUsageSummaries()
+  const oauthUsageByAccount = loadOpenAICodexUsageSnapshots()
   return rows.map((row) => ({
     id: row.id,
     providerCode: row.provider_code,
@@ -401,7 +410,8 @@ export function listAccounts(): AccountSummary[] {
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
     lastUsedAt: row.last_used_at ?? usageByAccount.get(row.id)?.lastUsedAt,
-    usage: usageByAccount.get(row.id) ?? emptyAccountUsageSummary()
+    usage: usageByAccount.get(row.id) ?? emptyAccountUsageSummary(),
+    oauthUsage: row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined
   }))
 }
 
@@ -1229,6 +1239,34 @@ export function createUsageRecord(input: {
   }
 }
 
+export function upsertAccountUsageSnapshot(input: {
+  accountId: string
+  kind: 'openai_codex'
+  source?: string
+  snapshot: Record<string, unknown>
+  updatedAt?: string
+}): void {
+  const now = nowIso()
+  const updatedAt = input.updatedAt ?? now
+  getDatabase()
+    .prepare(`
+      INSERT INTO account_usage_snapshots (account_id, kind, source, snapshot_json, updated_at, created_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(account_id, kind) DO UPDATE SET
+        source = excluded.source,
+        snapshot_json = excluded.snapshot_json,
+        updated_at = excluded.updated_at
+    `)
+    .run(
+      input.accountId,
+      input.kind,
+      input.source ?? null,
+      JSON.stringify(input.snapshot),
+      updatedAt,
+      now
+    )
+}
+
 export function resolveProxyUrlForProfile(proxyProfileId?: string | null): string | undefined {
   if (!proxyProfileId) return undefined
   const row = getDatabase()
@@ -1288,6 +1326,28 @@ function loadTodayGroupUsageSummaries(): Map<string, AccountUsageSummary> {
   return result
 }
 
+function loadOpenAICodexUsageSnapshots(): Map<string, AccountOAuthUsageSnapshot> {
+  const rows = getDatabase().prepare(`
+    SELECT account_id, kind, source, snapshot_json, updated_at
+    FROM account_usage_snapshots
+    WHERE kind = 'openai_codex'
+  `).all() as unknown as AccountUsageSnapshotRow[]
+
+  const result = new Map<string, AccountOAuthUsageSnapshot>()
+  for (const row of rows) {
+    const snapshot = parseOptionalJsonObject(row.snapshot_json)
+    if (!snapshot) continue
+    result.set(row.account_id, {
+      kind: 'openai_codex',
+      source: row.source ?? optionalString(snapshot.source),
+      updatedAt: row.updated_at,
+      fiveHour: oauthUsageWindowFromSnapshot(snapshot, '5h', row.updated_at),
+      sevenDay: oauthUsageWindowFromSnapshot(snapshot, '7d', row.updated_at)
+    })
+  }
+  return result
+}
+
 function usageSummaryFromAggregate(row: AccountUsageAggregateRow): AccountUsageSummary {
   const inputTokens = Number(row.input_tokens ?? 0)
   const outputTokens = Number(row.output_tokens ?? 0)
@@ -1302,6 +1362,32 @@ function usageSummaryFromAggregate(row: AccountUsageAggregateRow): AccountUsageS
     totalCost: Number(row.total_cost ?? 0),
     lastUsedAt: row.last_used_at ?? undefined
   }
+}
+
+function oauthUsageWindowFromSnapshot(snapshot: Record<string, unknown>, window: '5h' | '7d', updatedAt: string): AccountOAuthUsageWindow | undefined {
+  const utilization = numberFromUnknown(snapshot[`codex_${window}_used_percent`])
+  if (utilization === undefined) return undefined
+  const resetAt = optionalString(snapshot[`codex_${window}_reset_at`]) ?? resetAtFromSeconds(updatedAt, numberFromUnknown(snapshot[`codex_${window}_reset_after_seconds`]))
+  const remainingSeconds = resetAt ? Math.max(0, Math.ceil((Date.parse(resetAt) - Date.now()) / 1000)) : 0
+  const isExpired = resetAt ? Date.parse(resetAt) <= Date.now() : false
+  return {
+    utilization: isExpired ? 0 : utilization,
+    resetsAt: resetAt,
+    remainingSeconds,
+    windowMinutes: numberFromUnknown(snapshot[`codex_${window}_window_minutes`])
+  }
+}
+
+function resetAtFromSeconds(updatedAt: string, seconds?: number): string | undefined {
+  if (seconds === undefined || seconds <= 0) return undefined
+  const baseTime = Date.parse(updatedAt)
+  if (!Number.isFinite(baseTime)) return undefined
+  return new Date(baseTime + seconds * 1000).toISOString()
+}
+
+function numberFromUnknown(value: unknown): number | undefined {
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(number) ? number : undefined
 }
 
 function startOfTodayIso(): string {

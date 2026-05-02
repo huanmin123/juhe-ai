@@ -1,5 +1,6 @@
 import type { AccountStatus } from '../../domain/types.js'
 import { clearAccountFailureState, getSettings, markAccountCooldown, markAccountDisabledByFailure } from '../../storage/repositories.js'
+import { calculateOpenAICodexRateLimitResetAt } from './openai-codex-usage.service.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
@@ -16,6 +17,7 @@ export interface GatewaySettings {
 
 export interface AccountErrorPolicyAccount {
   id: string
+  type?: string
   credentials: Record<string, unknown>
 }
 
@@ -104,6 +106,17 @@ export function decideAccountErrorPolicy(
 ): AccountErrorPolicyDecision | undefined {
   const bodyText = body.toString('utf8')
   const errorPayload = parseErrorPayload(bodyText, headers)
+
+  const codexOAuthResetAt = openAIOAuthCodexResetAt(account, statusCode, headers, bodyText)
+  if (codexOAuthResetAt) {
+    return {
+      action: 'cooldown',
+      ruleName: 'OpenAI OAuth Codex 429',
+      cooldownUntil: codexOAuthResetAt,
+      cooldownStatus: 'rate_limited'
+    }
+  }
+
   const rules = accountErrorRules(account.credentials)
 
   for (const rule of rules
@@ -183,6 +196,11 @@ function accountErrorRules(credentials: Record<string, unknown>): Array<Record<s
   return Array.isArray(credentials.error_handling_rules)
     ? credentials.error_handling_rules.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item))
     : []
+}
+
+function openAIOAuthCodexResetAt(account: AccountErrorPolicyAccount, statusCode: number, headers: Headers, bodyText: string): string | undefined {
+  if (statusCode !== 429 || account.type !== 'oauth') return undefined
+  return calculateOpenAICodexRateLimitResetAt(headers, bodyText)
 }
 
 function resolveAccountErrorRuleCooldownUntil(rule: Record<string, unknown>): string | undefined {

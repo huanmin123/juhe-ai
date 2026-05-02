@@ -136,6 +136,17 @@ export function applySchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS account_usage_snapshots (
+      account_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      source TEXT,
+      snapshot_json TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, kind),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS system_settings (
       key TEXT PRIMARY KEY,
       value_json TEXT NOT NULL,
@@ -167,6 +178,7 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'usage_records', 'response_snapshot_json', 'TEXT')
   database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);')
 }
 
 function ensureColumn(database: DatabaseSync, tableName: string, columnName: string, columnDefinition: string): void {

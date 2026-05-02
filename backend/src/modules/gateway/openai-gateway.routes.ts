@@ -20,6 +20,7 @@ import {
   readGatewaySettings,
   type GatewaySettings
 } from './account-error-policy.service.js'
+import { persistOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -81,6 +82,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     const contentType = upstreamResponse.headers.get('content-type') ?? ''
     res.status(upstreamResponse.status)
     copyResponseHeaders(upstreamResponse, res)
+    persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, 'gateway')
 
     let usage = emptyUsage()
     let firstTokenMs: number | undefined
@@ -476,6 +478,7 @@ async function fetchFirstAvailableUpstream(
             headers: response.headers,
             bodyText: responseBodyText
           })
+          persistOpenAICodexHeadersIfNeeded(account, response.headers, 'gateway_error')
           applyAccountErrorHandling(account, {
             success: false,
             statusCode: response.status,
@@ -941,6 +944,11 @@ function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | u
   headers.set('authorization', `Bearer ${apiKey}`)
   headers.set('content-type', headers.get('content-type') ?? 'application/json')
   return headers
+}
+
+function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: Headers, source: string): void {
+  if (account.type !== 'oauth') return
+  persistOpenAICodexUsageHeaders(account.id, headers, source)
 }
 
 function copyResponseHeaders(upstreamResponse: GatewayUpstreamResponse, res: { setHeader: (name: string, value: string) => void }): void {

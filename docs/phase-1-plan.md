@@ -48,6 +48,7 @@
 - 透传开关
 - 错误处理策略：创建和编辑弹窗内维护账号自己的规则列表，保存到 `credentials.error_handling_rules`
 - 调度相关的基础标记位
+- OpenAI OAuth 专属额度进度：列表在本地 token / 成本用量之外，单独展示上游 `5h` 与 `7d` 窗口进度、刷新时间和快照更新时间
 - 账户测试动作
 - 更多下拉动作：测试、停用/启用、暂停/恢复调度、OAuth 刷新、切换客户端等
 - 账户列表不展示 `Access/API Key` 与 `Refresh Token`；这两个字段只在编辑弹窗中查看和修改
@@ -74,6 +75,7 @@
 - 从 OpenAI 响应解析 `usage.input_tokens`、`usage.output_tokens`、`usage.input_tokens_details.cached_tokens`
 - 轻量计费按 OpenAI 官方价格表估算，未覆盖模型只记录 token 不强行猜价格
 - 失败记录可在操作列查看请求快照、网关返回和上游响应日志
+- OpenAI OAuth 的上游额度快照不写入 `usage_record`，而是作为账号运行态保存；来源优先使用真实转发响应头，被动更新 `5h` / `7d` 使用百分比和 reset 时间
 
 ### 系统设置
 
@@ -139,6 +141,7 @@
 - `api_key`：对外访问密钥
 - `proxy_profile`：代理配置
 - `usage_record`：使用记录
+- `account_usage_snapshot`：账号级上游额度快照，第一阶段只用于 OpenAI OAuth 的 Codex `5h` / `7d` 进度
 - `system_setting`：系统设置
 - `error_passthrough_rule`：错误透传策略
 
@@ -148,7 +151,7 @@
 2. 固化 OpenAI 供应商与账户类型定义
 3. 实现分组、账户、API Key、代理基础 CRUD
 4. 再补筛选、详情、状态切换和复制能力
-5. 补齐透传、错误策略、并发和代理字段
+5. 补齐透传、错误策略、并发、代理字段和 OAuth 额度快照
 6. 接入 OpenAI 兼容 `/v1` 中转和轻量调度逻辑
 
 ## 第一阶段完成标准
@@ -162,6 +165,7 @@
 - API Key 页面展示本地网关 Base URL，默认 `http://127.0.0.1:3000/v1`
 - 代理可以完整增删改查并绑定到账户
 - 页面能展示基础状态和配置字段
+- OpenAI OAuth 账户能单独展示上游 `5h` / `7d` 额度进度；API Key 账户仍只展示本地请求、token 和成本用量
 - 后端接口有统一结构
 - 文档能说明每个关键字段的作用
 - 系统设置可配置默认临时不可调用时长、临时状态短暂重试参数、请求熔断时间和流熔断阈值；未命中账号规则的上游错误、未知异常和流式中断都会写入账号临时不可调用状态

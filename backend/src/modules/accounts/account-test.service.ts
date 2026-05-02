@@ -5,6 +5,7 @@ import { request as httpsRequest } from 'node:https'
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
 import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
+import { persistOpenAICodexUsageHeaders } from '../gateway/openai-codex-usage.service.js'
 import {
   buildOpenAIOAuthCredentials,
   createProxyAgent,
@@ -35,6 +36,9 @@ export async function testOpenAIAccount(account: AccountSummary, input: { model?
     const streamFailureMessage = parseOpenAIStreamFailureMessage(response.bodyText)
     const outputText = extractOpenAIResponseOutputText(response.bodyText)
     const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
+    if (isOAuth) {
+      persistOpenAICodexUsageHeaders(account.id, response.headers, 'account_test')
+    }
     const policyResult = applyAccountErrorHandling(account, {
       success,
       statusCode: response.statusCode,
