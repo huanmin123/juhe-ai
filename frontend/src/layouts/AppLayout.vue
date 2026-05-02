@@ -1,8 +1,22 @@
 <template>
   <a-layout class="app-shell" :class="{ 'app-shell-mobile': isMobile }">
-    <a-layout-sider v-if="!isMobile" width="232" theme="dark" class="sidebar">
+    <a-layout-sider
+      v-if="!isMobile"
+      width="232"
+      :collapsed-width="80"
+      :collapsed="sidebarCollapsed"
+      :trigger="null"
+      collapsible
+      theme="dark"
+      class="sidebar"
+    >
       <div class="brand">sub2api-lite</div>
       <a-menu :selectedKeys="selectedKeys" theme="dark" mode="inline" :items="menuItems" @click="handleMenuClick" />
+      <button class="collapse-toggle" type="button" @click="sidebarCollapsed = !sidebarCollapsed">
+        <MenuUnfoldOutlined v-if="sidebarCollapsed" />
+        <MenuFoldOutlined v-else />
+        <span v-if="!sidebarCollapsed">收起</span>
+      </button>
     </a-layout-sider>
     <a-drawer
       v-else
@@ -36,9 +50,20 @@
 </template>
 
 <script setup lang="ts">
-import { MenuOutlined } from '@ant-design/icons-vue'
+import {
+  ApartmentOutlined,
+  BarChartOutlined,
+  CloudServerOutlined,
+  GlobalOutlined,
+  KeyOutlined,
+  MenuFoldOutlined,
+  MenuOutlined,
+  MenuUnfoldOutlined,
+  SettingOutlined,
+  UserOutlined
+} from '@ant-design/icons-vue'
 import type { ItemType } from 'ant-design-vue'
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { menuRoutes } from '@/router'
@@ -47,12 +72,27 @@ const router = useRouter()
 const route = useRoute()
 const isMobile = ref(false)
 const sidebarOpen = ref(false)
+const sidebarCollapsed = ref(false)
 
 const selectedKeys = computed(() => [route.path])
 const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
 const currentPageDescription = computed(() => route.meta.description || '第一期：OpenAI OAuth + API Key')
 
-const menuItems: ItemType[] = menuRoutes.map((item) => ({ key: item.path, label: item.meta.title }))
+const menuIconMap = {
+  '/providers': GlobalOutlined,
+  '/accounts': UserOutlined,
+  '/groups': ApartmentOutlined,
+  '/api-keys': KeyOutlined,
+  '/proxies': CloudServerOutlined,
+  '/usage-records': BarChartOutlined,
+  '/settings': SettingOutlined
+}
+
+const menuItems: ItemType[] = menuRoutes.map((item) => ({
+  key: item.path,
+  label: item.meta.title,
+  icon: () => h(menuIconMap[item.path as keyof typeof menuIconMap])
+}))
 
 function handleMenuClick(event: { key: string }) {
   router.push(event.key)
@@ -104,9 +144,22 @@ watch(
   position: sticky;
   top: 0;
   height: 100vh;
-  overflow: auto;
+  overflow: hidden;
   background: linear-gradient(180deg, #061a2e 0%, #03111f 100%) !important;
   box-shadow: 8px 0 24px rgba(3, 17, 31, 0.08);
+}
+
+:deep(.sidebar .ant-layout-sider-children) {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+:deep(.sidebar .ant-menu) {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .brand {
@@ -119,6 +172,38 @@ watch(
   font-weight: 800;
   letter-spacing: 0.2px;
   line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.collapse-toggle {
+  width: calc(100% - 12px);
+  height: 40px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin: 10px 6px 14px;
+  padding: 0 12px;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    color 0.2s,
+    background 0.2s,
+    border-color 0.2s;
+}
+
+.collapse-toggle:hover {
+  color: #fff;
+  background: rgba(22, 119, 255, 0.18);
+  border-color: rgba(22, 119, 255, 0.32);
+}
+
+.collapse-toggle span {
+  font-size: 14px;
 }
 
 .header {

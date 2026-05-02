@@ -1064,6 +1064,8 @@ export function listUsageRecords(): UsageRecordSummary[] {
     const cacheReadTokens = typeof row.cache_read_tokens === 'number' ? row.cache_read_tokens : undefined
     const model = optionalString(row.model)
     const stream = row.stream === 1
+    const statusCode = typeof row.status_code === 'number' ? row.status_code : undefined
+    const success = row.success === 1
     return {
       id: String(row.id),
       requestId: String(row.request_id),
@@ -1074,12 +1076,12 @@ export function listUsageRecords(): UsageRecordSummary[] {
       groupName: optionalString(row.group_name),
       accountId: optionalString(row.account_id),
       accountName: optionalString(row.account_name),
-      endpoint: optionalString(row.endpoint) ?? endpointFromSnapshot(requestSnapshot) ?? inferLegacyEndpoint({ model, stream, inputTokens, outputTokens, cacheReadTokens }),
+      endpoint: optionalString(row.endpoint) ?? endpointFromSnapshot(requestSnapshot) ?? inferLegacyEndpoint({ model, success, statusCode, inputTokens, outputTokens, cacheReadTokens }),
       providerCode: optionalString(row.provider_code),
       model,
       stream,
-      statusCode: typeof row.status_code === 'number' ? row.status_code : undefined,
-      success: row.success === 1,
+      statusCode,
+      success,
       firstTokenMs: typeof row.first_token_ms === 'number' ? row.first_token_ms : undefined,
       durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : undefined,
       inputTokens,
@@ -1105,12 +1107,13 @@ function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | unde
 
 function inferLegacyEndpoint(input: {
   model?: string
-  stream: boolean
+  success: boolean
+  statusCode?: number
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
 }): string | undefined {
-  if (input.inputTokens === undefined && input.outputTokens === undefined && input.cacheReadTokens === undefined) return 'GET /v1/models'
+  if (input.success && input.statusCode === 200 && !input.model && input.inputTokens === undefined && input.outputTokens === undefined && input.cacheReadTokens === undefined) return 'GET /v1/models'
   return undefined
 }
 

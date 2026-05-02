@@ -36,7 +36,7 @@
       :data-source="filteredRecords"
       row-key="id"
       :loading="loading"
-      :scroll="{ x: 1920 }"
+      :scroll="{ x: 1850 }"
     >
       <template #emptyText>
         <a-empty class="page-empty-card" description="中转网关接入后开始产生使用记录。" />
@@ -86,31 +86,31 @@
                   <div class="cost-detail-title">成本明细</div>
                   <div class="cost-detail-row">
                     <span>输入成本</span>
-                    <strong>{{ formatCost(record.costBreakdown.inputCostUsd) }}</strong>
+                    <span class="cost-detail-value">{{ formatCost(record.costBreakdown.inputCostUsd) }}</span>
                   </div>
                   <div class="cost-detail-row">
                     <span>输出成本</span>
-                    <strong>{{ formatCost(record.costBreakdown.outputCostUsd) }}</strong>
+                    <span class="cost-detail-value">{{ formatCost(record.costBreakdown.outputCostUsd) }}</span>
                   </div>
                   <div class="cost-detail-row">
                     <span>输入单价</span>
-                    <strong>{{ formatUnitPrice(record.costBreakdown.inputUsdPer1M) }}</strong>
+                    <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.inputUsdPer1M) }}</span>
                   </div>
                   <div class="cost-detail-row">
                     <span>输出单价</span>
-                    <strong>{{ formatUnitPrice(record.costBreakdown.outputUsdPer1M) }}</strong>
+                    <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.outputUsdPer1M) }}</span>
                   </div>
                   <div class="cost-detail-row">
                     <span>缓存读取成本</span>
-                    <strong>{{ formatCost(record.costBreakdown.cacheReadCostUsd) }}</strong>
+                    <span class="cost-detail-value">{{ formatCost(record.costBreakdown.cacheReadCostUsd) }}</span>
                   </div>
                   <div class="cost-detail-row">
                     <span>账户计费</span>
-                    <strong>{{ formatCost(record.costBreakdown.accountChargeUsd) }}</strong>
+                    <span class="cost-detail-value">{{ formatCost(record.costBreakdown.accountChargeUsd) }}</span>
                   </div>
                   <div class="cost-detail-row">
                     <span>倍率</span>
-                    <strong>{{ record.costBreakdown.multiplier }}x</strong>
+                    <span class="cost-detail-value">{{ record.costBreakdown.multiplier }}x</span>
                   </div>
                 </div>
               </template>
@@ -126,10 +126,6 @@
         </template>
         <template v-else-if="column.key === 'createdAt'">
           <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
-        </template>
-        <template v-else-if="column.key === 'actions'">
-          <a-button v-if="!record.success" size="small" type="link" class="log-action" @click="openLog(record)">查看日志</a-button>
-          <span v-else class="muted-cell">-</span>
         </template>
       </template>
     </a-table>
@@ -230,10 +226,7 @@ const filteredRecords = computed(() => {
 })
 
 const columns = [
-  { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
-  { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
   { title: '账户', dataIndex: 'accountName', key: 'account', width: 170 },
-  { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 },
   { title: '接口', dataIndex: 'endpoint', key: 'endpoint', width: 150 },
   { title: '模型', dataIndex: 'model', key: 'model', width: 170 },
   { title: '类型', key: 'stream', width: 90 },
@@ -244,7 +237,9 @@ const columns = [
   { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100 },
   { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100 },
   { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180 },
-  { title: '操作', key: 'actions', width: 100, fixed: 'right' }
+  { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
+  { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
+  { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 }
 ]
 
 function displayName(name?: string, id?: string): string {
