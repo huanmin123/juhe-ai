@@ -1,26 +1,31 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
+
+import { loadCurrentUser } from '@/composables/useAuth'
 
 declare module 'vue-router' {
   interface RouteMeta {
     title: string
     description: string
+    public?: boolean
+    roles?: Array<'admin' | 'user'>
   }
 }
 
-export const menuRoutes = [
+export const menuRoutes: RouteRecordRaw[] = [
   {
     path: '/providers',
     component: () => import('@/views/providers/ProvidersView.vue'),
     meta: {
       title: '供应商',
-      description: '管理当前支持的供应商能力与模型定价，第一期仅启用 OpenAI。'
+      description: '管理当前支持的供应商能力与模型定价，第一期仅启用 OpenAI。',
+      roles: ['admin']
     }
   },
   {
     path: '/accounts',
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {
-      title: '账户管理',
+      title: 'AI账户管理',
       description: '创建和维护 OpenAI OAuth / API Key 账户，统一管理状态、并发、代理和错误策略。'
     }
   },
@@ -45,7 +50,8 @@ export const menuRoutes = [
     component: () => import('@/views/proxies/ProxiesView.vue'),
     meta: {
       title: '代理管理',
-      description: '管理可绑定到账户的代理配置，支持刷新、测试和后续转发。'
+      description: '管理可绑定到账户的代理配置，支持刷新、测试和后续转发。',
+      roles: ['admin']
     }
   },
   {
@@ -54,6 +60,15 @@ export const menuRoutes = [
     meta: {
       title: '使用记录',
       description: '记录网关请求、命中账户、token 用量、成本和错误状态。'
+    }
+  },
+  {
+    path: '/system-accounts',
+    component: () => import('@/views/system-accounts/SystemAccountsView.vue'),
+    meta: {
+      title: '系统账户管理',
+      description: '管理后台登录账号、角色、状态和初始密码。',
+      roles: ['admin']
     }
   },
   {
@@ -69,7 +84,31 @@ export const menuRoutes = [
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/providers' },
+    {
+      path: '/login',
+      component: () => import('@/views/login/LoginView.vue'),
+      meta: {
+        title: '登录',
+        description: '登录聚合 AI 控制台',
+        public: true
+      }
+    },
+    { path: '/', redirect: '/accounts' },
     ...menuRoutes
   ]
+})
+
+router.beforeEach(async (to) => {
+  const user = await loadCurrentUser()
+  if (to.meta.public) {
+    if (to.path === '/login' && user) return '/accounts'
+    return true
+  }
+  if (!user) {
+    return { path: '/login', query: { redirect: to.fullPath } }
+  }
+  if (to.meta.roles?.length && !to.meta.roles.includes(user.role)) {
+    return '/accounts'
+  }
+  return true
 })

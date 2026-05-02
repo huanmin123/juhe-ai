@@ -1,7 +1,7 @@
-﻿import { reactive } from 'vue'
+import { reactive } from 'vue'
 
 import { api } from '@/api/client'
-import type { SystemSettings } from '@/types/domain'
+import type { GlobalSettings } from '@/types/domain'
 
 export interface AppBrandSettings {
   appName: string
@@ -15,14 +15,14 @@ export const defaultAppBrand: AppBrandSettings = {
 
 export const appBrand = reactive<AppBrandSettings>({ ...defaultAppBrand })
 
-export function normalizeAppBrand(settings: Pick<SystemSettings, 'appName' | 'appIcon'>): AppBrandSettings {
+export function normalizeAppBrand(settings: Pick<GlobalSettings, 'appName' | 'appIcon'>): AppBrandSettings {
   return {
     appName: stringValue(settings.appName, defaultAppBrand.appName),
     appIcon: stringValue(settings.appIcon, defaultAppBrand.appIcon)
   }
 }
 
-export function applyAppBrand(settings: Pick<SystemSettings, 'appName' | 'appIcon'>): AppBrandSettings {
+export function applyAppBrand(settings: Pick<GlobalSettings, 'appName' | 'appIcon'>): AppBrandSettings {
   const next = normalizeAppBrand(settings)
   appBrand.appName = next.appName
   appBrand.appIcon = next.appIcon
@@ -30,8 +30,14 @@ export function applyAppBrand(settings: Pick<SystemSettings, 'appName' | 'appIco
   return next
 }
 
-export async function loadAppBrandSettings(): Promise<SystemSettings> {
-  const settings = await api.settings.get()
+export async function loadAppBrandSettings(): Promise<GlobalSettings> {
+  const settings = await api.settings.public()
+  applyAppBrand(settings)
+  return settings
+}
+
+export async function loadGlobalBrandSettings(): Promise<GlobalSettings> {
+  const settings = await api.settings.public()
   applyAppBrand(settings)
   return settings
 }

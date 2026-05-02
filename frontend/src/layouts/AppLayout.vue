@@ -47,17 +47,47 @@
             <div class="subtitle">{{ currentPageDescription }}</div>
           </div>
         </a-space>
+        <a-space class="header-actions" align="center">
+          <a-tag v-if="currentUser?.mustChangePassword" color="warning">请修改初始密码</a-tag>
+          <a-dropdown :trigger="['click']">
+            <button class="user-trigger" type="button" aria-label="打开用户菜单">
+              <span class="user-avatar">{{ userAvatarText }}</span>
+              <span class="user-meta">
+                <span class="user-name">{{ userDisplayName }}</span>
+                <span class="user-role">{{ userRoleLabel }}</span>
+              </span>
+              <DownOutlined class="user-arrow" />
+            </button>
+            <template #overlay>
+              <a-menu @click="handleUserMenuClick">
+                <a-menu-item key="password">修改密码</a-menu-item>
+                <a-menu-item key="logout" danger>退出登录</a-menu-item>
+              </a-menu>
+            </template>
+          </a-dropdown>
+        </a-space>
       </a-layout-header>
       <a-layout-content class="content">
         <router-view />
       </a-layout-content>
     </a-layout>
+    <a-modal v-model:open="passwordModalOpen" title="修改登录密码" :confirm-loading="passwordSaving" @ok="handleChangePassword">
+      <a-form layout="vertical">
+        <a-form-item label="新密码" extra="至少 4 位，保存后会解除初始密码提醒。">
+          <a-input-password v-model:value="passwordForm.newPassword" autocomplete="new-password" placeholder="请输入新密码" />
+        </a-form-item>
+        <a-form-item label="确认密码">
+          <a-input-password v-model:value="passwordForm.confirmPassword" autocomplete="new-password" placeholder="请再次输入新密码" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </a-layout>
 </template>
 
 <script setup lang="ts">
 import {
   ApartmentOutlined,
+  DownOutlined,
   GlobalOutlined,
   HistoryOutlined,
   MenuFoldOutlined,
@@ -65,12 +95,15 @@ import {
   MenuUnfoldOutlined,
   NodeIndexOutlined,
   SettingOutlined,
+  TeamOutlined,
   UserSwitchOutlined
 } from '@ant-design/icons-vue'
+import { message, type MenuProps } from 'ant-design-vue'
 import type { ItemType } from 'ant-design-vue'
-import { computed, h, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { authState, changePassword, logout } from '@/composables/useAuth'
 import { appBrand, loadAppBrandSettings } from '@/composables/useAppBrand'
 import { menuRoutes } from '@/router'
 
@@ -79,10 +112,28 @@ const route = useRoute()
 const isMobile = ref(false)
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(false)
+const passwordModalOpen = ref(false)
+const passwordSaving = ref(false)
+const passwordForm = reactive({ newPassword: '', confirmPassword: '' })
 
 const selectedKeys = computed(() => [route.path])
 const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
 const currentPageDescription = computed(() => route.meta.description || '第一期：OpenAI OAuth + API Key')
+const currentUser = authState.currentUser
+const userDisplayName = computed(() => currentUser.value?.displayName || currentUser.value?.username || '用户')
+const userRoleLabel = computed(() => {
+  if (currentUser.value?.role === 'admin') {
+    return '管理员'
+  }
+  return '普通用户'
+})
+const userAvatarText = computed(() => {
+  const name = userDisplayName.value.trim()
+  if (!name) {
+    return '用'
+  }
+  return /^[\x00-\x7F]+$/.test(name) ? name.slice(0, 2).toUpperCase() : name.slice(0, 1)
+})
 
 const ApiKeyMenuIcon = () =>
   h('span', { class: 'anticon menu-api-key-icon', role: 'img', 'aria-hidden': 'true' }, [
@@ -116,18 +167,56 @@ const menuIconMap = {
   '/api-keys': ApiKeyMenuIcon,
   '/proxies': NodeIndexOutlined,
   '/usage-records': HistoryOutlined,
-  '/settings': SettingOutlined
+  '/settings': SettingOutlined,
+  '/system-accounts': TeamOutlined
 }
 
-const menuItems: ItemType[] = menuRoutes.map((item) => ({
-  key: item.path,
-  label: item.meta.title,
-  icon: () => h(menuIconMap[item.path as keyof typeof menuIconMap])
-}))
+const menuItems = computed<ItemType[]>(() => menuRoutes
+  .filter((item) => !item.meta?.roles?.length || (currentUser.value && item.meta.roles.includes(currentUser.value.role)))
+  .map((item) => ({
+    key: item.path,
+    label: item.meta?.title ?? '',
+    icon: () => h(menuIconMap[item.path as keyof typeof menuIconMap])
+  })))
 
 function handleMenuClick(event: { key: string }) {
   router.push(event.key)
   sidebarOpen.value = false
+}
+
+async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) {
+  if (event.key === 'password') {
+    passwordForm.newPassword = ''
+    passwordForm.confirmPassword = ''
+    passwordModalOpen.value = true
+    return
+  }
+  if (event.key === 'logout') {
+    await logout()
+    await router.replace('/login')
+  }
+}
+
+async function handleChangePassword() {
+  if (passwordForm.newPassword.length < 4) {
+    message.warning('新密码至少 4 位')
+    return
+  }
+  if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+    message.warning('两次输入的密码不一致')
+    return
+  }
+  passwordSaving.value = true
+  try {
+    await changePassword({ newPassword: passwordForm.newPassword })
+    message.success('密码已修改')
+    passwordModalOpen.value = false
+  } catch (error) {
+    console.error(error)
+    message.error('修改密码失败')
+  } finally {
+    passwordSaving.value = false
+  }
 }
 
 function updateViewport() {
@@ -262,12 +351,86 @@ watch(
   height: auto;
   display: flex;
   align-items: center;
+  justify-content: space-between;
+  gap: 16px;
   padding: 18px 28px 16px;
   line-height: normal;
   background: rgba(255, 255, 255, 0.96);
   border-bottom: 1px solid #edf1f7;
   box-shadow: 0 8px 24px rgba(15, 23, 42, 0.04);
   z-index: 2;
+}
+
+.header-actions {
+  flex: 0 0 auto;
+}
+
+.user-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  padding: 2px 2px;
+  color: #0f172a;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.user-trigger:hover .user-name,
+.user-trigger:focus-visible .user-name {
+  color: #1677ff;
+}
+
+.user-trigger:focus-visible {
+  outline: 2px solid rgba(22, 119, 255, 0.28);
+  outline-offset: 4px;
+  border-radius: 10px;
+}
+
+.user-avatar {
+  width: 34px;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 34px;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  background: #14b8a6;
+  border-radius: 50%;
+}
+
+.user-meta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  min-width: 0;
+  line-height: 1.15;
+}
+
+.user-name {
+  max-width: 120px;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transition: color 0.2s ease;
+}
+
+.user-role {
+  margin-top: 3px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.user-arrow {
+  color: #94a3b8;
+  font-size: 11px;
 }
 
 .header-copy {
@@ -349,6 +512,14 @@ watch(
   .header-copy {
     align-items: center;
     width: 100%;
+  }
+
+  .header-actions {
+    margin-left: auto;
+  }
+
+  .user-meta {
+    display: none;
   }
 
   .title {

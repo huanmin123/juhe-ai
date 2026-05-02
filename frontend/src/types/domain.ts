@@ -1,6 +1,28 @@
 export type ProviderCode = string
 export type AccountType = string
 export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
+export type SystemAccountRole = 'admin' | 'user'
+export type SystemAccountStatus = 'active' | 'disabled'
+
+export interface CurrentUserSummary {
+  id: string
+  username: string
+  displayName: string
+  role: SystemAccountRole
+  mustChangePassword: boolean
+}
+
+export interface SystemAccountSummary {
+  id: string
+  username: string
+  displayName: string
+  role: SystemAccountRole
+  status: SystemAccountStatus
+  mustChangePassword: boolean
+  lastLoginAt?: string
+  createdAt: string
+  updatedAt: string
+}
 
 export interface ProviderDefinition {
   id: string
@@ -85,6 +107,8 @@ export interface GroupAccountStats {
 
 export interface AccountSummary {
   id: string
+  systemAccountId?: string
+  systemAccountName?: string
   providerCode: ProviderCode
   name: string
   notes?: string
@@ -139,6 +163,8 @@ export interface ErrorPolicySummary {
 
 export interface GroupSummary {
   id: string
+  systemAccountId?: string
+  systemAccountName?: string
   name: string
   providerCode: ProviderCode
   description?: string
@@ -149,6 +175,8 @@ export interface GroupSummary {
 
 export interface ApiKeySummary {
   id: string
+  systemAccountId?: string
+  systemAccountName?: string
   name: string
   keyPrefix: string
   key: string
@@ -170,6 +198,8 @@ export interface OpenAIAuthURLResult {
 
 export interface ProxyProfileSummary {
   id: string
+  systemAccountId?: string
+  systemAccountName?: string
   name: string
   type: 'http' | 'https' | 'socks5' | string
   host: string
@@ -196,6 +226,8 @@ export interface UsageRecordCostBreakdown {
 
 export interface UsageRecordSummary {
   id: string
+  systemAccountId?: string
+  systemAccountName?: string
   requestId: string
   clientIp?: string
   apiKeyId?: string
@@ -236,5 +268,14 @@ export interface SystemSettings {
   streamIdleTimeoutSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
+  [key: string]: unknown
+}
+
+export interface GlobalSettings {
+  appName?: string
+  appIcon?: string
+  loginTitle?: string
+  loginSubtitle?: string
+  loginBadge?: string
   [key: string]: unknown
 }

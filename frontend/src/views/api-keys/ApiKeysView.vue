@@ -10,7 +10,7 @@
       </div>
     </div>
 
-    <a-table class="page-table api-keys-table" size="middle" :columns="columns" :data-source="apiKeys" row-key="id" :loading="loading" :scroll="{ x: 1200 }">
+    <a-table class="page-table api-keys-table" size="middle" :columns="columns" :data-source="apiKeys" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1380 : 1200 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
@@ -28,6 +28,9 @@
         </template>
         <template v-else-if="column.key === 'group'">
           <a-tag color="purple">{{ groupName(record.groupId) }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'systemAccount'">
+          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ record.systemAccountName || record.systemAccountId || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
@@ -125,6 +128,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import type { ApiKeySummary, GroupSummary } from '@/types/domain'
 
 const loading = ref(false)
@@ -136,16 +140,25 @@ const createdKey = ref('')
 const apiKeys = ref<ApiKeySummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const form = reactive({ name: '', groupId: '', status: 'active' as 'active' | 'disabled', expiresAt: undefined as Dayjs | undefined })
+const isAdmin = authState.isAdmin
 const gatewayEndpoints = ['/chat/completions', '/responses', '/models']
 
-const columns = [
-  { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
-  { title: '密钥', key: 'key', width: 180 },
-  { title: '绑定分组', key: 'group', width: 220 },
-  { title: '状态', key: 'status', width: 100 },
-  { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
-  { title: '操作', key: 'actions', width: 140 }
-]
+const columns = computed(() => {
+  const baseColumns: Array<Record<string, unknown>> = [
+    { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
+    { title: '密钥', key: 'key', width: 180 }
+  ]
+  if (isAdmin.value) {
+    baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
+  }
+  baseColumns.push(
+    { title: '绑定分组', key: 'group', width: 220 },
+    { title: '状态', key: 'status', width: 100 },
+    { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
+    { title: '操作', key: 'actions', width: 140 }
+  )
+  return baseColumns
+})
 
 const statusOptions = [
   { label: '启用', value: 'active' },
@@ -169,7 +182,10 @@ function formatKeyPreview(value?: string) {
 async function loadData() {
   loading.value = true
   try {
-    const [keyList, groupList] = await Promise.all([api.apiKeys.list(), api.groups.list()])
+    const [keyList, groupList] = await Promise.all([
+      api.apiKeys.list(),
+      api.groups.list()
+    ])
     apiKeys.value = keyList
     groups.value = groupList
   } catch (error) {

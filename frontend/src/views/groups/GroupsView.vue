@@ -6,7 +6,7 @@
       </div>
     </div>
 
-    <a-table class="page-table groups-table" size="middle" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :scroll="{ x: 1380 }">
+    <a-table class="page-table groups-table" size="middle" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1560 : 1380 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页选择账户的归属分组。" />
       </template>
@@ -18,6 +18,9 @@
         </template>
         <template v-else-if="column.key === 'providerCode'">
           <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'systemAccount'">
+          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ groupSystemAccountText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'accountCount'">
           <div class="account-count-cell">
@@ -106,6 +109,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import type { GroupSummary, ProviderDefinition } from '@/types/domain'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
@@ -124,17 +128,26 @@ const editingId = ref<string>()
 const groups = ref<GroupSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const form = reactive({ name: '', providerCode: 'openai', description: '', enabled: true })
+const isAdmin = authState.isAdmin
 
-const columns = [
-  { title: '分组名称', dataIndex: 'name', key: 'name', width: 240 },
-  { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 },
-  { title: '账户数', key: 'accountCount', width: 130 },
-  { title: '当前并发', key: 'concurrency', width: 100 },
-  { title: '用量', key: 'usage', width: 280 },
-  { title: '账号数', key: 'accountStatusCount', width: 130 },
-  { title: '状态', key: 'status', width: 100 },
-  { title: '操作', key: 'actions', width: 150, fixed: 'right' }
-]
+const columns = computed(() => {
+  const baseColumns: Array<Record<string, unknown>> = [
+    { title: '分组名称', dataIndex: 'name', key: 'name', width: 240 },
+    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 }
+  ]
+  if (isAdmin.value) {
+    baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
+  }
+  baseColumns.push(
+    { title: '账户数', key: 'accountCount', width: 130 },
+    { title: '当前并发', key: 'concurrency', width: 100 },
+    { title: '用量', key: 'usage', width: 280 },
+    { title: '账号数', key: 'accountStatusCount', width: 130 },
+    { title: '状态', key: 'status', width: 100 },
+    { title: '操作', key: 'actions', width: 150, fixed: 'right' }
+  )
+  return baseColumns
+})
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const providerOptions = computed(() => availableProviders.value.map((provider) => ({
@@ -166,6 +179,10 @@ function groupStatusColor(group: GroupSummary) {
 function providerName(providerCode?: string) {
   if (!providerCode) return '未知供应商'
   return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
+}
+
+function groupSystemAccountText(group: GroupSummary) {
+  return group.systemAccountName || group.systemAccountId || '-'
 }
 
 function formatUsageSummary(usage: GroupSummary['accountStats']['usage']) {
@@ -202,7 +219,10 @@ function defaultProviderCode() {
 async function loadData() {
   loading.value = true
   try {
-    const [groupList, providerList] = await Promise.all([api.groups.list(), api.providers.list()])
+    const [groupList, providerList] = await Promise.all([
+      api.groups.list(),
+      isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[])
+    ])
     groups.value = groupList
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
   } catch (error) {

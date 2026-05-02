@@ -51,6 +51,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     createUsageRecord({
       requestId,
       clientIp,
+      systemAccountId: apiKeyRecord.system_account_id,
       apiKeyId: apiKeyRecord.id,
       groupId: apiKeyRecord.group_id,
       endpoint,
@@ -72,6 +73,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     const upstreamResult = await fetchFirstAvailableUpstream(req, accounts, gatewaySettings, {
       requestId,
       clientIp,
+      systemAccountId: apiKeyRecord.system_account_id,
       apiKeyId: apiKeyRecord.id,
       groupId: apiKeyRecord.group_id,
       endpoint,
@@ -100,6 +102,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
         createUsageRecord({
           requestId,
           clientIp,
+          systemAccountId: apiKeyRecord.system_account_id,
           apiKeyId: apiKeyRecord.id,
           groupId: apiKeyRecord.group_id,
           accountId: account.id,
@@ -142,6 +145,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     createUsageRecord({
       requestId,
       clientIp,
+      systemAccountId: apiKeyRecord.system_account_id,
       apiKeyId: apiKeyRecord.id,
       groupId: apiKeyRecord.group_id,
       accountId: account.id,
@@ -184,6 +188,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       createUsageRecord({
         requestId,
         clientIp,
+        systemAccountId: apiKeyRecord.system_account_id,
         apiKeyId: apiKeyRecord.id,
         groupId: apiKeyRecord.group_id,
         endpoint,
@@ -225,6 +230,7 @@ class UpstreamRequestTimeoutError extends Error {}
 interface GatewayUsageContext {
   requestId: string
   clientIp?: string
+  systemAccountId: string
   apiKeyId: string
   groupId: string
   endpoint: string
@@ -390,6 +396,7 @@ function recordFailedUpstreamAttempt(
   createUsageRecord({
     requestId: usageContext.requestId,
     clientIp: usageContext.clientIp,
+    systemAccountId: usageContext.systemAccountId,
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
     accountId: account.id,

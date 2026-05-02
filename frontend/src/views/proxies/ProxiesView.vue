@@ -5,7 +5,7 @@
         <a-button type="primary" @click="openCreate">新建代理</a-button>
       </div>
     </div>
-    <a-table class="page-table proxy-table" size="middle" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :scroll="{ x: 1120 }">
+    <a-table class="page-table proxy-table" size="middle" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :scroll="{ x: 1300 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建代理，再在 OAuth 账户里选择绑定。" />
       </template>
@@ -21,6 +21,11 @@
         </template>
         <template v-else-if="column.key === 'username'">
           <span :class="record.username ? 'mono-cell' : 'muted-cell'">{{ record.username || '-' }}</span>
+        </template>
+        <template v-else-if="column.key === 'systemAccount'">
+          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">
+            {{ record.systemAccountName || record.systemAccountId || '-' }}
+          </span>
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
@@ -95,6 +100,7 @@ const columns = [
   { title: '地址', dataIndex: 'host', key: 'host', width: 200 },
   { title: '端口', dataIndex: 'port', key: 'port', width: 90 },
   { title: '用户', dataIndex: 'username', key: 'username', width: 160 },
+  { title: '系统账户', key: 'systemAccount', width: 180 },
   { title: '状态', key: 'status', width: 100 },
   { title: '操作', key: 'actions', width: 140, fixed: 'right' }
 ]

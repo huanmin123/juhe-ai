@@ -37,7 +37,6 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `refresh_token`
 - `expires_at`
 - `account_id`
-- `organization_id`
 - 代理
 - 并发上限
 - 是否启用透传
@@ -51,6 +50,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 可设置过期时间
 - 可手动启用 / 停用
 - `refresh_token` 只对 OAuth 账户需要，账户列表不展示
+- 创建表单不要求用户填写 `organization_id`；如授权响应返回组织信息，可由后端保存并在编辑时兼容展示
 
 ## OpenAI API Key 创建方式
 
@@ -59,7 +59,6 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 账户名称
 - `api_key`
 - `base_url`
-- `organization_id`
 - 代理
 - 并发上限
 - 是否启用透传
@@ -72,6 +71,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
 - 可手动启用 / 停用
+- 创建表单不要求用户填写 `organization_id`；历史或编辑态已有值继续兼容
 
 ## 账户归属分组
 
@@ -134,7 +134,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 3. 用户登录 OpenAI 后浏览器会跳转到 `http://localhost:1455/auth/callback`。
 4. 如果本机没有监听该端口，浏览器显示连接失败也没关系，复制地址栏完整 URL。
 5. 前端把回调 URL 提交给后端，后端校验 `state` 并用 PKCE `code_verifier` 换取 token。
-6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱和组织信息。
+6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱；如果上游返回组织信息则一并保存。
 
 ### Refresh Token 授权
 
@@ -143,13 +143,14 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 3. 刷新成功后创建 OpenAI OAuth 账户。
 4. 如果 OpenAI 没返回新的 `refresh_token`，继续保留用户输入的原始 `refresh_token`。
 
-### 调度与刷新
+### 调度与授权刷新
 
 - API Key 账户使用 `credentials.api_key` 作为上游 Bearer token。
 - OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
 - 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户。
-- 账户页提供“刷新授权”按钮，可手动刷新某个 OAuth 账户。
-- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。迁移旧账户时不再自动创建或绑定本机固定端口代理，避免换电脑或服务器部署后误连本机端口。
+- 后台 OAuth 额度快照刷新任务探测前，如果发现 access token 即将过期，也会先自动刷新授权。
+- 账户页不提供常驻“刷新授权”或“刷新用量”按钮；授权续期和额度快照都由真实请求与后台任务维护。
+- OAuth token 刷新、账户测试和后台额度探测会优先使用账户绑定的代理；没有绑定代理时默认直连。迁移旧账户时不再自动创建或绑定本机固定端口代理，避免换电脑或服务器部署后误连本机端口。
 
 ### OpenAI OAuth 额度进度
 
@@ -157,10 +158,12 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 
 - 数据来源优先使用真实网关请求或账号测试返回的 Codex rate-limit 响应头：`x-codex-primary-used-percent`、`x-codex-primary-reset-after-seconds`、`x-codex-primary-window-minutes`、`x-codex-secondary-used-percent`、`x-codex-secondary-reset-after-seconds`、`x-codex-secondary-window-minutes`。
 - 归一化规则：优先按 `window_minutes` 判断窗口，较小窗口映射为 `5h`，较大窗口映射为 `7d`；只有单侧窗口时，`<= 360` 分钟归为 `5h`，更长归为 `7d`；没有窗口长度时兼容旧语义，默认 primary 为 `7d`、secondary 为 `5h`。
-- 存储字段建议保存为账号运行态快照：`codex_5h_used_percent`、`codex_5h_reset_after_seconds`、`codex_5h_reset_at`、`codex_5h_window_minutes`、`codex_7d_used_percent`、`codex_7d_reset_after_seconds`、`codex_7d_reset_at`、`codex_7d_window_minutes`、`codex_usage_updated_at`。
-- 获取策略：列表只读已缓存快照，不因展示批量探测；手动刷新用量或缺失快照时，可对 `https://chatgpt.com/backend-api/codex/responses` 做节流探测，使用 `stream: true`、`store: false`、Codex CLI 相关 header，并复用账号代理。
-- 429 处理：收到 OAuth Codex 429 时，先解析 header 里已耗尽窗口的 reset 时间；如果 header 不足，再解析响应体 `error.resets_at` 或 `error.resets_in_seconds`；计算出的时间写入账号 `rate_limited` 冷却截止时间。
-- UI 展示：OAuth 行在“用量情况”里显示本地请求/token/成本摘要，同时额外显示 `5h`、`7d` 两条进度条、百分比、倒计时/刷新时间和快照更新时间；API Key 行不显示这两条 OAuth 额度进度。
+- 存储字段建议保存为账号运行态快照，并按 `system_account_id + account_id + kind` 隔离：`codex_5h_used_percent`、`codex_5h_reset_after_seconds`、`codex_5h_reset_at`、`codex_5h_window_minutes`、`codex_7d_used_percent`、`codex_7d_reset_after_seconds`、`codex_7d_reset_at`、`codex_7d_window_minutes`、`codex_usage_updated_at`、`last_attempt_at`、`last_success_at`、`next_refresh_after`、`refresh_status`、`last_error_message`。
+- 获取策略：列表只读已缓存快照，不因展示批量探测；缺失、过期或接近恢复点的快照由后台定时器统一探测，可对 `https://chatgpt.com/backend-api/codex/responses` 做节流探测，使用 `stream: true`、`store: false`、Codex CLI 相关 header，并复用账号代理。
+- 后台策略：按系统账户分批处理，每个系统账户内默认并发为 1；快照未过期不探测，失败后按退避时间更新 `next_refresh_after`，保留旧快照继续展示。
+- 429 处理：收到 OAuth Codex 429 时，先解析 header 里已耗尽窗口的 reset 时间；如果 header 不足，再解析响应体 `error.resets_at` 或 `error.resets_in_seconds`；计算出的时间写入账号 `rate_limited` 冷却截止时间，后台下次刷新不早于 reset 时间。
+- UI 展示：OAuth 行在“用量情况”里显示本地请求/token/成本摘要，同时额外显示 `5h`、`7d` 两条进度条、百分比、倒计时/刷新时间、快照更新时间、后台刷新状态和下次刷新时间；API Key 行不显示这两条 OAuth 额度进度。
+- UI 限制：更多菜单不提供“刷新用量”按钮；快照缺失或过期时显示“等待后台刷新”或“暂无快照”，不触发前端即时探测。
 
 ## 账户列表字段
 
@@ -176,7 +179,7 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - 最近使用时间
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、恢复正常/停用、暂停/恢复调度、OAuth 刷新和切换客户端。测试会打开结果弹窗，可选择模型并查看模型返回内容、请求 URL、状态码、耗时、代理、原始响应正文和完整 JSON，便于排查上游错误。
+操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、恢复正常/停用、暂停/恢复调度和切换客户端，不提供“刷新用量”按钮。测试会打开结果弹窗，可选择模型并查看模型返回内容、请求 URL、状态码、耗时、代理、原始响应正文和完整 JSON，便于排查上游错误；如果测试响应里带有 Codex rate-limit header，可作为副作用更新 OAuth 额度快照。
 
 ## 统计口径
 

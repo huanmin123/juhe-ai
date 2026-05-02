@@ -28,7 +28,7 @@
       </div>
     </div>
 
-    <a-table class="account-table" size="middle" :columns="columns" :data-source="filteredAccounts" row-key="id" :loading="loading" :scroll="{ x: 1940 }" :row-selection="rowSelection">
+    <a-table class="account-table" size="middle" :columns="columns" :data-source="filteredAccounts" row-key="id" :loading="loading" :scroll="{ x: tableScrollX }" :row-selection="rowSelection">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有账户。点击「添加账户」，再选择供应商和账户类型。" />
       </template>
@@ -38,6 +38,9 @@
         </template>
         <template v-else-if="column.key === 'providerCode'">
           <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'systemAccount'">
+          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ record.systemAccountName || record.systemAccountId || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'group'">
           <a-tooltip v-if="groupNameForAccount(record.id)" :title="groupNameForAccount(record.id)">
@@ -63,7 +66,11 @@
         </template>
         <template v-else-if="column.key === 'usage'">
           <div class="usage-cell">
-            <span class="usage-summary">{{ `${record.usage.requestCount}req/${formatUsageAmount(record.usage.totalTokens)}/${formatCost(record.usage.totalCost)}` }}</span>
+            <div class="usage-summary-tags">
+              <a-tag class="usage-summary-tag">{{ `${record.usage.requestCount}req` }}</a-tag>
+              <a-tag class="usage-summary-tag">{{ formatUsageAmount(record.usage.totalTokens) }}</a-tag>
+              <a-tag class="usage-summary-tag">{{ formatCost(record.usage.totalCost) }}</a-tag>
+            </div>
             <div v-if="oauthUsageBars(record).length" class="oauth-usage-bars">
               <div v-for="bar in oauthUsageBars(record)" :key="bar.key" class="oauth-usage-row">
                 <span class="oauth-usage-label">{{ bar.label }}</span>
@@ -71,7 +78,6 @@
                 <span class="oauth-usage-percent" :class="bar.tone">{{ bar.displayPercent }}</span>
                 <span class="oauth-usage-reset">{{ bar.resetText }}</span>
               </div>
-              <div v-if="record.oauthUsage?.updatedAt" class="oauth-usage-updated">快照 {{ formatRelativeReset(record.oauthUsage.updatedAt, true) }}</div>
             </div>
           </div>
         </template>
@@ -267,7 +273,7 @@
             <a-form-item label="Base URL">
               <a-input v-model:value="form.baseUrl" :placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'" />
             </a-form-item>
-            <a-form-item label="Organization ID">
+            <a-form-item v-if="editingId" label="Organization ID">
               <a-input v-model:value="form.organizationId" placeholder="可选" />
             </a-form-item>
           </div>
@@ -361,7 +367,7 @@
             <a-form-item label="优先级" extra="数字越小越优先；当前账号失败后会切换到下一个可用账号。">
               <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
             </a-form-item>
-            <a-form-item label="代理">
+            <a-form-item v-if="isAdmin" label="代理">
               <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
             </a-form-item>
           </div>
@@ -387,6 +393,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemSettings } from '@/types/domain'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import {
@@ -481,6 +488,7 @@ const groups = ref<GroupSummary[]>([])
 const systemSettings = ref<SystemSettings>({ defaultAccountConcurrencyLimit: 3 })
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all' })
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
+const isAdmin = authState.isAdmin
 
 const form = reactive<AccountForm>(defaultForm())
 const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
@@ -509,18 +517,27 @@ const statusOptions = [
 
 const statusEditOptions = statusOptions.filter((item) => item.value !== 'all')
 
-const columns = [
-  { title: '名称', dataIndex: 'name', key: 'name', width: 230 },
-  { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
-  { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 },
-  { title: '并发数', key: 'concurrency', width: 100, align: 'center' },
-  { title: '状态', key: 'status', width: 190 },
-  { title: '用量情况', key: 'usage', width: 380 },
-  { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
-  { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
-  { title: '最近使用时间', key: 'lastUsedAt', width: 180 },
-  { title: '操作', key: 'actions', width: 220, fixed: 'right' }
-]
+const columns = computed(() => {
+  const baseColumns: Array<Record<string, unknown>> = [
+    { title: '名称', dataIndex: 'name', key: 'name', width: 230 },
+    { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
+    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }
+  ]
+  if (isAdmin.value) {
+    baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
+  }
+  baseColumns.push(
+    { title: '并发数', key: 'concurrency', width: 100, align: 'center' },
+    { title: '状态', key: 'status', width: 190 },
+    { title: '用量情况', key: 'usage', width: 380 },
+    { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
+    { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
+    { title: '最近使用时间', key: 'lastUsedAt', width: 180 },
+    { title: '操作', key: 'actions', width: 220, fixed: 'right' }
+  )
+  return baseColumns
+})
+const tableScrollX = computed(() => (isAdmin.value ? 2120 : 1940))
 
 const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const keyword = normalizeKeyword(filters.keyword)
@@ -608,7 +625,7 @@ const rowSelection = computed(() => ({
   }
 }))
 
-const proxyOptions = computed(() => proxies.value.map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
+const proxyOptions = computed(() => (isAdmin.value ? proxies.value : []).map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
 const groupOptions = computed(() => groups.value
   .filter((group) => !form.providerCode || group.providerCode === form.providerCode)
   .map((group) => ({ label: group.name, value: group.id })))
@@ -747,7 +764,7 @@ function accountTypeTitle(providerCode: string, type: AccountType) {
 
 function accountTypeDescription(providerCode: string, type: AccountType) {
   if (providerCode === 'openai' && type === 'oauth') return '适合 Codex / ChatGPT OAuth 授权账户，支持手动授权或 Refresh Token。'
-  if (providerCode === 'openai' && type === 'api_key') return '适合直接粘贴 OpenAI API Key，可配置 Base URL 和组织 ID。'
+  if (providerCode === 'openai' && type === 'api_key') return '适合直接粘贴 OpenAI API Key，可配置 Base URL。'
   return '该账户类型会使用供应商定义的创建流程。'
 }
 
@@ -797,7 +814,12 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     ...(!isTemporaryAccountStatus(account)
       ? [{ key: 'toggle-schedulable', label: account.schedulable ? '暂停调度' : '恢复调度' }]
       : []),
-    ...(account.type === 'oauth' ? [{ key: 'refresh-oauth', label: '刷新授权' }] : [])
+    ...(account.type === 'oauth'
+      ? [
+          { key: 'refresh-oauth', label: '刷新授权' },
+          { key: 'refresh-oauth-usage', label: '刷新用量' }
+        ]
+      : [])
   ]
 }
 
@@ -821,11 +843,11 @@ function formatCost(value?: number): string {
 }
 
 function oauthUsageBars(account: AccountSummary): OAuthUsageBar[] {
-  if (account.providerCode !== 'openai' || account.type !== 'oauth' || !account.oauthUsage) return []
+  if (account.providerCode !== 'openai' || account.type !== 'oauth') return []
   return [
-    oauthUsageBar('5h', '5h', account.oauthUsage.fiveHour),
-    oauthUsageBar('7d', '7d', account.oauthUsage.sevenDay)
-  ].filter((item): item is OAuthUsageBar => Boolean(item))
+    oauthUsageBar('5h', '5h', account.oauthUsage?.fiveHour) ?? oauthUsagePlaceholder('5h'),
+    oauthUsageBar('7d', '7d', account.oauthUsage?.sevenDay) ?? oauthUsagePlaceholder('7d')
+  ]
 }
 
 function oauthUsageBar(key: string, label: string, window?: { utilization: number; resetsAt?: string; remainingSeconds: number }): OAuthUsageBar | undefined {
@@ -837,36 +859,36 @@ function oauthUsageBar(key: string, label: string, window?: { utilization: numbe
     label,
     percent,
     displayPercent: rawPercent > 999 ? '>999%' : `${Math.round(rawPercent)}%`,
-    resetText: window.resetsAt ? formatRelativeReset(window.resetsAt) : '刷新未知',
+    resetText: window.resetsAt ? formatRelativeReset(window.resetsAt) : '现在',
     color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
     tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal'
   }
 }
 
-function formatRelativeReset(value: string, pastOnly = false): string {
+function oauthUsagePlaceholder(key: string): OAuthUsageBar {
+  return {
+    key,
+    label: key,
+    percent: 0,
+    displayPercent: '--',
+    resetText: '未获取',
+    color: '#d1d5db',
+    tone: 'normal'
+  }
+}
+
+function formatRelativeReset(value: string): string {
   const time = Date.parse(value)
   if (!Number.isFinite(time)) return value
   const diffMs = time - Date.now()
-  if (pastOnly) return formatPastDuration(Math.max(0, -diffMs))
   if (diffMs <= 0) return '现在'
   const totalMinutes = Math.ceil(diffMs / 60_000)
   const days = Math.floor(totalMinutes / 1440)
   const hours = Math.floor((totalMinutes % 1440) / 60)
   const minutes = totalMinutes % 60
-  if (days > 0) return `${days}d ${hours}h 后`
-  if (hours > 0) return `${hours}h ${minutes}m 后`
-  return `${minutes}m 后`
-}
-
-function formatPastDuration(diffMs: number): string {
-  const totalMinutes = Math.floor(diffMs / 60_000)
-  if (totalMinutes <= 0) return '刚刚'
-  const days = Math.floor(totalMinutes / 1440)
-  const hours = Math.floor((totalMinutes % 1440) / 60)
-  const minutes = totalMinutes % 60
-  if (days > 0) return `${days}d ${hours}h 前`
-  if (hours > 0) return `${hours}h ${minutes}m 前`
-  return `${minutes}m 前`
+  if (days > 0) return `${days}d ${hours}h`
+  if (hours > 0) return `${hours}h ${minutes}m`
+  return `${minutes}m`
 }
 
 function formatDateTime(value?: string): string {
@@ -899,8 +921,8 @@ async function loadData() {
   try {
     const [accountList, providerList, proxyList, groupList, settings] = await Promise.all([
       api.accounts.list(),
-      api.providers.list(),
-      api.proxies.list(),
+      isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
+      isAdmin.value ? api.proxies.list() : Promise.resolve([] as ProxyProfileSummary[]),
       api.groups.list(),
       api.settings.get()
     ])
@@ -998,17 +1020,18 @@ function buildCredentials() {
   const credentials: Record<string, unknown> = form.type === 'api_key'
     ? {
         api_key: form.apiKey,
-        base_url: form.baseUrl,
-        organization_id: form.organizationId
+        base_url: form.baseUrl
       }
     : {
         access_token: form.accessToken,
         refresh_token: form.refreshToken,
         client_id: form.clientId,
         expires_at: form.expiresAt?.toISOString(),
-        account_id: form.accountId,
-        organization_id: form.organizationId
+        account_id: form.accountId
       }
+  if (editingId.value && form.organizationId.trim()) {
+    credentials.organization_id = form.organizationId.trim()
+  }
   writeAccountErrorPolicyToCredentials(credentials, accountErrorPolicyRules.value)
   return credentials
 }
@@ -1152,8 +1175,25 @@ async function refreshOAuthAccount(id: string) {
   }
 }
 
+async function refreshOAuthUsage(account: AccountSummary) {
+  const hide = message.loading('刷新 OAuth 用量中...', 0)
+  try {
+    const result = await testAccountSilently(account)
+    await loadData()
+    if (result?.success) {
+      message.success(`${account.name} 的 OAuth 用量已刷新`)
+    } else if (result) {
+      message.warning(`${account.name} 的 OAuth 用量已刷新，但请求未成功：${result.message}`)
+    } else {
+      message.error(`${account.name} 的 OAuth 用量刷新失败`)
+    }
+  } finally {
+    hide()
+  }
+}
+
 async function loadTestModels() {
-  if (providerModels.value.length || testModelsLoading.value) return
+  if (!isAdmin.value || providerModels.value.length || testModelsLoading.value) return
   testModelsLoading.value = true
   try {
     providerModels.value = await api.providers.models('openai')
@@ -1330,6 +1370,10 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
     await refreshOAuthAccount(account.id)
     return
   }
+  if (key === 'refresh-oauth-usage') {
+    await refreshOAuthUsage(account)
+    return
+  }
 }
 
 function handleAccountMenuClick(event: { key: string | number }, account: AccountSummary) {
@@ -1447,17 +1491,30 @@ onMounted(loadData)
 }
 
 .usage-cell {
+  --usage-meter-width: 150px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  align-items: flex-start;
+  gap: 5px;
   line-height: 1.4;
   white-space: normal;
 }
 
-.usage-summary {
+.usage-summary-tags {
+  display: inline-grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  width: var(--usage-meter-width);
+}
+
+.usage-summary-tag {
+  min-width: 0;
+  margin-inline-end: 0;
+  padding-inline: 5px;
   color: #0f172a;
   font-family: Consolas, 'Courier New', monospace;
-  font-weight: 400;
+  font-size: 12px;
+  text-align: center;
   white-space: nowrap;
 }
 
@@ -1465,14 +1522,14 @@ onMounted(loadData)
   display: flex;
   flex-direction: column;
   gap: 3px;
-  min-width: 260px;
+  width: var(--usage-meter-width);
 }
 
 .oauth-usage-row {
   display: grid;
-  grid-template-columns: 34px minmax(90px, 1fr) 44px 62px;
+  grid-template-columns: 24px minmax(0, 1fr) 36px 44px;
   align-items: center;
-  column-gap: 6px;
+  column-gap: 4px;
 }
 
 .oauth-usage-label {
@@ -1487,6 +1544,7 @@ onMounted(loadData)
 
 .oauth-usage-progress {
   line-height: 1;
+  min-width: 0;
 }
 
 .oauth-usage-percent {

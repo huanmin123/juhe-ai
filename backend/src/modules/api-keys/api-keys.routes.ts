@@ -23,7 +23,11 @@ apiKeysRouter.post('/', (req, res) => {
     res.status(400).json(badRequest('Invalid API key payload'))
     return
   }
-  res.status(201).json(ok(createApiKeyRecord(parsed.data), '明文密钥已保存，列表中可直接查看'))
+  try {
+    res.status(201).json(ok(createApiKeyRecord(parsed.data), '明文密钥已保存，列表中可直接查看'))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Invalid API key payload'))
+  }
 })
 
 apiKeysRouter.patch('/:id', (req, res) => {

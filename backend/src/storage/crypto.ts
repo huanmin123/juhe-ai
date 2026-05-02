@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, pbkdf2Sync, randomBytes, timingSafeEqual } from 'node:crypto'
 
 import { runtimeConfig } from '../config/runtime.js'
 
@@ -41,4 +41,29 @@ export function hashSecret(value: string): string {
 
 export function createApiKey(): string {
   return randomBytes(32).toString('hex')
+}
+
+const passwordIterations = 120_000
+
+export function hashPassword(value: string): string {
+  const salt = randomBytes(16).toString('base64url')
+  const derived = pbkdf2Sync(value, salt, passwordIterations, 32, 'sha512')
+  return ['pbkdf2', 'sha512', String(passwordIterations), salt, derived.toString('base64url')].join('$')
+}
+
+export function verifyPassword(value: string, passwordHash: string): boolean {
+  const parts = passwordHash.split('$')
+  if (parts.length !== 5 || parts[0] !== 'pbkdf2' || parts[1] !== 'sha512') {
+    return false
+  }
+
+  const iterations = Number(parts[2])
+  if (!Number.isFinite(iterations) || iterations < 1) {
+    return false
+  }
+
+  const salt = parts[3]
+  const expected = Buffer.from(parts[4], 'base64url')
+  const actual = pbkdf2Sync(value, salt, Math.trunc(iterations), expected.length, 'sha512')
+  return expected.length === actual.length && timingSafeEqual(expected, actual)
 }

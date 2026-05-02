@@ -34,7 +34,7 @@
       :data-source="filteredRecords"
       row-key="id"
       :loading="loading"
-      :scroll="{ x: 1850 }"
+      :scroll="{ x: isAdmin ? 2030 : 1850 }"
     >
       <template #emptyText>
         <a-empty class="page-empty-card" description="中转网关接入后开始产生使用记录。" />
@@ -48,6 +48,11 @@
         </template>
         <template v-else-if="column.key === 'account'">
           <span :class="record.accountName ? 'name-cell' : 'muted-cell'">{{ displayName(record.accountName, record.accountId) }}</span>
+        </template>
+        <template v-else-if="column.key === 'systemAccount'">
+          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">
+            {{ record.systemAccountName || record.systemAccountId || '-' }}
+          </span>
         </template>
         <template v-else-if="column.key === 'clientIp'">
           <span :class="record.clientIp ? 'ip-cell' : 'muted-cell'">{{ record.clientIp ?? '-' }}</span>
@@ -137,6 +142,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import type { UsageRecordSummary } from '@/types/domain'
 
 const loading = ref(false)
@@ -144,6 +150,7 @@ const records = ref<UsageRecordSummary[]>([])
 const accountNameFilter = ref('')
 const resultFilter = ref<'all' | 'success' | 'failed'>('all')
 const statusCodeFilter = ref<string>('')
+const isAdmin = authState.isAdmin
 
 const resultOptions = [
   { label: '全部结果', value: 'all' },
@@ -177,22 +184,30 @@ const filteredRecords = computed(() => {
   })
 })
 
-const columns = [
-  { title: '账户', dataIndex: 'accountName', key: 'account', width: 170 },
-  { title: '接口', dataIndex: 'endpoint', key: 'endpoint', width: 150 },
-  { title: '模型', dataIndex: 'model', key: 'model', width: 170 },
-  { title: '类型', key: 'stream', width: 90 },
-  { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 90 },
-  { title: '结果', key: 'success', width: 90 },
-  { title: 'Tokens', key: 'tokens', width: 150 },
-  { title: '成本', key: 'cost', width: 110 },
-  { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100 },
-  { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100 },
-  { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180 },
-  { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
-  { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
-  { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 }
-]
+const columns = computed(() => {
+  const baseColumns: Array<Record<string, unknown>> = [
+    { title: '账户', dataIndex: 'accountName', key: 'account', width: 170 }
+  ]
+  if (isAdmin.value) {
+    baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
+  }
+  baseColumns.push(
+    { title: '接口', dataIndex: 'endpoint', key: 'endpoint', width: 150 },
+    { title: '模型', dataIndex: 'model', key: 'model', width: 170 },
+    { title: '类型', key: 'stream', width: 90 },
+    { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 90 },
+    { title: '结果', key: 'success', width: 90 },
+    { title: 'Tokens', key: 'tokens', width: 150 },
+    { title: '成本', key: 'cost', width: 110 },
+    { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100 },
+    { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100 },
+    { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180 },
+    { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
+    { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
+    { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 }
+  )
+  return baseColumns
+})
 
 function displayName(name?: string, id?: string): string {
   if (name) return name

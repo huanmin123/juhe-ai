@@ -13,30 +13,64 @@
 - 存储：SQLite，适合单人自用、低复杂度、低运维成本的场景
 - 敏感字段：OAuth token、上游 API Key、本地网关 API Key 加密存储；账户列表不展示上游凭据，编辑弹窗可查看和修改完整凭据；API Key 管理页仍完整展示本地网关 Key 方便自用复制
 
+## 访问控制
+
+- 系统登录账号称为 `系统账户`，负责后台登录、角色控制和数据隔离。
+- 第一阶段只保留两种角色：`admin` 和 `user`。
+- 默认初始化一个 `admin/admin` 账号，首次登录后必须修改密码。
+- `admin` 可以查看全部系统账户、全部业务数据、全部使用记录和全部系统级配置。
+- `user` 只能访问自己名下的数据，看不到其他系统账户的归属维度，也不能进入 `系统账户管理`。
+- 所有业务数据都必须按 `system_account_id` 做作用域隔离，后端写入和查询都以登录态为准，前端不传系统账户归属字段。
+- 登录态建议使用服务端会话加 `HttpOnly Cookie`，便于后续封禁、改角色和强制下线。
+
+## 设置分层
+
+- `global_settings`：平台全局配置，未登录也需要读取，只允许 `admin` 修改。
+- `system_settings`：系统账户自己的配置，按 `system_account_id` 隔离，登录后读取和修改。
+- 登录页品牌、站点名称、登录文案和视觉主题属于全局配置，不参与用户级隔离。
+- 网关调度相关的默认值、偏好和运行参数属于用户级系统设置。
+
 ## 模块总览
 
 ```mermaid
 flowchart LR
-  APIKey["API Key"] --> Group["分组"]
-  Account["账户"] --> Group
-  Account --> Provider["供应商"]
-  Account --> Proxy["代理"]
-  Account --> ErrorPolicy["错误策略"]
+  SystemAccount["系统账户"] --> GlobalSettings["全局设置"]
+  SystemAccount --> SystemSettings["系统设置"]
+  SystemAccount --> AIAccount["AI账户"]
+  SystemAccount --> Group["分组"]
+  SystemAccount --> APIKey["API Key"]
+  SystemAccount --> Proxy["代理"]
+  SystemAccount --> Usage["使用记录"]
+  SystemAccount --> Stats["统计缓存与监控"]
+  SystemAccount --> ErrorPolicy["错误策略"]
+  GlobalSettings --> LoginBrand["登录页品牌"]
+  AIAccount --> Provider["供应商"]
+  AIAccount --> Proxy
+  AIAccount --> ErrorPolicy
+  APIKey --> Group
   Gateway["OpenAI 兼容中转网关"] --> APIKey
   Gateway --> Usage["使用记录"]
-  Settings["系统设置"] --> Gateway
-  Settings --> Account
+  Usage --> Stats["统计缓存与监控"]
+  SystemSettings --> Gateway
+  SystemSettings --> AIAccount
+  SystemSettings --> Stats
 ```
 
 ## 核心关系
 
+- 系统账户是登录和隔离边界，业务数据默认都归属某个系统账户。
+- `admin` 可以看所有系统账户的数据；`user` 只能看自己的数据。
+- 登录页品牌和平台级文案由全局设置控制，只有管理员能改。
 - 供应商定义账户创建方式，例如 OpenAI 支持 OAuth 和 API Key；对外请求协议仍统一收敛为 OpenAI 兼容协议。
 - 账户属于某个供应商，并选择一种账户类型。
+- AI 账户属于某个系统账户，并选择一种账户类型；管理员视角列表需要额外显示系统账户维度，用户视角不显示该列。
 - 分组归属于一个供应商；账户主动选择归属分组，分组汇总同供应商账户并代表一组可调度资源。
 - API Key 绑定分组，请求进入后只能使用该分组内的账户。
 - 代理独立管理，账户按需绑定代理。
-- 使用记录记录 API Key、分组、账户、接口、供应商、模型、状态、IP、首 token、总耗时和错误；上游请求每一次尝试都会记录，包含重试过程中的失败。
-- 系统设置保存全局默认值，不直接替代账号级配置。
+- 账号级错误处理策略也按系统账户隔离；AI 账户创建和编辑时只可选择本系统账户内可见的规则。
+- 使用记录记录 API Key、分组、账户、接口、供应商、模型、状态、IP、首 token、总耗时和错误；上游请求每一次尝试都会记录，包含重试过程中的失败，并冗余 `system_account_id` 便于隔离查询。
+- 使用记录是事实源，统计缓存按 `system_account_id` 分区并由后台定时任务增量汇总，列表页和图表页不直接实时扫描 `usage_records`。
+- 全局设置只保存登录页和平台级展示信息；系统设置保存系统账户自己的默认值和运行偏好，不直接替代账号级配置。
 - 流熔断只作用于流式响应异常：首包前请求超时、超过空闲超时没有新数据或流被异常中断时，按账号累计失败并临时不可调用。
 
 ## SQLite 存储策略
@@ -55,6 +89,9 @@ flowchart LR
 当前表：
 
 - `providers`
+- `system_accounts`
+- `sessions`
+- `global_settings`
 - `accounts`
 - `groups`
 - `group_accounts`
@@ -62,7 +99,21 @@ flowchart LR
 - `proxy_profiles`
 - `error_policies`
 - `usage_records`
+- `account_usage_snapshots`
 - `system_settings`
+
+其中 `accounts`、`groups`、`group_accounts`、`api_keys`、`proxy_profiles`、`error_policies`、`usage_records`、`account_usage_snapshots`、`system_settings` 都需要按 `system_account_id` 隔离；`providers` 和 `global_settings` 维持全局共享。统计缓存表也属于业务数据缓存，必须冗余 `system_account_id` 并按登录态过滤；系统 CPU / 内存这类主机级监控属于全局运维数据，默认仅管理员可见。
+
+统计缓存建议新增：
+
+- `usage_stats_totals`
+- `usage_stats_daily`
+- `usage_stats_hourly`
+- `usage_model_daily`
+- `usage_error_daily`
+- `system_metrics_samples`
+- `system_metrics_hourly`
+- `stats_job_state`
 
 ## 供应商管理
 
@@ -90,13 +141,32 @@ flowchart LR
 - 供应商页提供“查看模型”入口，展示模型版本、输入/输出/缓存读写/图片价格、上下文窗口和能力标签。
 - 网关成本估算复用供应商模型目录；未命中模型时只记录 token，不猜测成本。
 
-## 账户管理
+## 系统账户管理
 
-账户是上游凭据和调度配置的承载对象。
+系统账户是后台登录账号，负责权限控制和数据隔离。
 
 建议字段：
 
 - `id`
+- `username`
+- `display_name`
+- `password_hash`
+- `role`：第一阶段仅 `admin` / `user`
+- `status`：`active`、`disabled`
+- `must_change_password`
+- `last_login_at`
+- `created_at` / `updated_at`
+
+系统账户管理页主要给 `admin` 使用，用来查看、创建、停用、重置密码和分配角色。
+
+## AI账户管理
+
+AI 账户是上游凭据和调度配置的承载对象，归属某个系统账户。
+
+建议字段：
+
+- `id`
+- `system_account_id`
 - `provider_code`：供应商稳定编码，例如 `openai`
 - `name`
 - `type`：`oauth` 或 `api_key`
@@ -118,13 +188,13 @@ flowchart LR
 - `stream_failure_window_started_at`：流失败统计窗口起始时间
 - `created_at` / `updated_at`
 
-账户列表第一期展示：账户名称、账户类型、供应商、并发数、状态、用量情况、优先级、最近使用时间、操作。账号优先级按数字从小到大生效，`0` 优先于 `10`；同分组调度时先尝试优先级更高的账号，当前账号失败或进入冷却后再切换到下一个可用账号。`Access/API Key` 与 `Refresh Token` 不在列表展示，只在编辑弹窗里查看和修改；`Refresh Token` 只对 OAuth 账户有意义。状态语义统一为：正常、停用、错误、限流中、临时不可调用。
+账户列表第一期展示：账户名称、账户类型、供应商、并发数、状态、用量情况、优先级、最近使用时间、操作。管理员视角额外展示 `系统账户` 列；用户视角不展示该列。账号优先级按数字从小到大生效，`0` 优先于 `10`；同分组调度时先尝试优先级更高的账号，当前账号失败或进入冷却后再切换到下一个可用账号。`Access/API Key` 与 `Refresh Token` 不在列表展示，只在编辑弹窗里查看和修改；`Refresh Token` 只对 OAuth 账户有意义。状态语义统一为：正常、停用、错误、限流中、临时不可调用。
 
-OpenAI OAuth 账户还有上游 Codex/ChatGPT 使用窗口限制，不能和 OpenAI API Key 的本地 token / 成本用量混为一类。账户列表的“用量情况”应分两层展示：本地网关统计仍来自 `usage_records`，用于请求数、token、成本；OAuth 专属额度进度来自上游返回的 Codex rate-limit 快照，用独立进度条展示 `5h` 与 `7d` 窗口百分比和刷新时间。该进度只表示上游 OAuth 额度占用，不参与 API Key 计费口径。
+OpenAI OAuth 账户还有上游 Codex/ChatGPT 使用窗口限制，不能和 OpenAI API Key 的本地 token / 成本用量混为一类。账户列表的“用量情况”应分两层展示：本地网关统计从统计缓存读取，事实源仍是 `usage_records`，用于请求数、token、成本；OAuth 专属额度进度来自上游返回的 Codex rate-limit 快照，用独立进度条展示 `5h` 与 `7d` 窗口百分比、预计恢复时间和快照更新时间。该进度只表示上游 OAuth 额度占用，不参与 API Key 计费口径。
 
-OpenAI OAuth 额度快照建议单独存储为非敏感运行态，不写进 `credentials`。第一阶段采用 `account_usage_snapshots` 这类轻量表或等价 repository 对象，按 `account_id + kind` 保存 `openai_codex` 快照：原始 primary/secondary header、归一化后的 `codex_5h_*` / `codex_7d_*` 字段、`reset_at`、`window_minutes`、`updated_at` 和 `source`。列表接口只返回可展示摘要，不返回 access token、refresh token 或完整请求内容。
+OpenAI OAuth 额度快照建议单独存储为非敏感运行态，不写进 `credentials`。第一阶段采用 `account_usage_snapshots` 这类轻量表或等价 repository 对象，按 `system_account_id + account_id + kind` 保存 `openai_codex` 快照：原始 primary/secondary header、归一化后的 `codex_5h_*` / `codex_7d_*` 字段、`reset_at`、`window_minutes`、`updated_at`、`source`、`last_attempt_at`、`last_success_at`、`next_refresh_after`、`refresh_status` 和 `last_error_message`。列表接口只返回可展示摘要，不返回 access token、refresh token 或完整请求内容。
 
-账户创建入口保持统一：页面只提供“添加账户”，弹窗内先选择供应商，再按供应商能力展示账户类型，最后渐进展开具体配置。第一期 OpenAI 支持 `oauth` 与 `api_key` 两种类型；后续 Claude Code、Gemini 等供应商只扩展供应商定义和对应创建表单，不再新增外部入口按钮。
+账户创建入口保持统一：页面只提供“添加 AI 账户”，弹窗内先选择供应商，再按供应商能力展示账户类型，最后渐进展开具体配置。第一期 OpenAI 支持 `oauth` 与 `api_key` 两种类型；后续 Claude Code、Gemini 等供应商只扩展供应商定义和对应创建表单，不再新增外部入口按钮。
 
 账号级错误处理通过 `credentials.error_handling_rules` 保存为账户内嵌规则；新建和编辑账户都在弹窗内维护规则列表。网关不会把未命中的上游错误透传给客户端：未命中账号规则时，当前账号会临时不可调用并切换到同分组内下一个可用账号。列表不额外展示规则明细，避免挤占用户关心的状态、并发、用量和最近使用时间。
 
@@ -134,13 +204,13 @@ OpenAI OAuth 建议凭据：
 - `refresh_token`
 - `expires_at`
 - `account_id`
-- `organization_id`
+- `organization_id`：可选，创建表单不要求填写；如授权响应返回则保存，编辑态兼容展示
 
 OpenAI API Key 建议凭据：
 
 - `api_key`
 - `base_url`
-- `organization_id`
+- `organization_id`：可选兼容字段，创建表单不要求填写
 
 ## 分组
 
@@ -149,6 +219,7 @@ OpenAI API Key 建议凭据：
 建议字段：
 
 - `id`
+- `system_account_id`
 - `name`
 - `provider_code`：分组所属供应商，默认 `openai`；只允许同一供应商的账户归入该分组
 - `description`
@@ -179,6 +250,7 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 建议字段：
 
 - `id`
+- `system_account_id`
 - `name`
 - `key_hash`
 - `key_prefix`
@@ -203,6 +275,7 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 建议字段：
 
 - `id`
+- `system_account_id`
 - `name`
 - `type`：`http`、`https`、`socks5`
 - `host`
@@ -221,6 +294,7 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 建议字段：
 
 - `id`
+- `system_account_id`
 - `request_id`
 - `api_key_id`
 - `group_id`
@@ -244,9 +318,78 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 - `response_snapshot_json`：失败请求的网关返回与最后一次上游响应快照
 - `created_at`
 
-第一阶段网关已写入请求记录，并从 OpenAI 响应里的 `usage.input_tokens`、`usage.output_tokens`、`usage.input_tokens_details.cached_tokens` 统计 token。使用记录会保存 `METHOD /v1/path` 形式的接口，便于区分 `/v1/models` 这类成功但没有模型和 token 用量的请求。成本统计复用供应商模型目录里的 OpenAI 价格快照做轻量 1:1 估算；未覆盖的模型先只记录 token，不强行猜价格。使用记录接口会派生输入成本、输出成本、输入单价、输出单价、缓存读取成本、账户计费和固定 1x 倍率，用于前端悬浮明细展示，不额外写入数据库。失败记录额外保存请求/响应快照，便于在使用记录页查看当时的请求体、响应体和最后一次上游错误。
+第一阶段网关已写入请求记录，并从 OpenAI 响应里的 `usage.input_tokens`、`usage.output_tokens`、`usage.input_tokens_details.cached_tokens` 统计 token。使用记录会保存 `METHOD /v1/path` 形式的接口，便于区分 `/v1/models` 这类成功但没有模型和 token 用量的请求。成本统计复用供应商模型目录里的 OpenAI 价格快照做轻量 1:1 估算；未覆盖的模型先只记录 token，不强行猜价格。使用记录接口会派生输入成本、输出成本、输入单价、输出单价、缓存读取成本、账户计费和固定 1x 倍率，用于前端悬浮明细展示，不额外写入数据库。管理员视角可按 `system_account_id` 查看全部记录并显示归属列，用户视角只看自己的记录且不显示归属列。失败记录额外保存请求/响应快照，便于在使用记录页查看当时的请求体、响应体和最后一次上游错误。
 
-OpenAI OAuth 额度进度的获取优先级：网关真实转发时被动读取响应头并保存快照；账号测试、手动刷新用量或列表缺失快照时，才允许用同一 OAuth access token 对 ChatGPT Codex responses 端点做节流探测。探测不得在账户列表批量自动触发，避免为了展示进度额外消耗上游额度。遇到 OAuth 429 时，优先用 Codex header 计算命中的窗口恢复时间；header 不足时再读取响应体里的 `resets_at` / `resets_in_seconds`，并把账号标记为 `rate_limited` 到该时间。
+## 统计缓存与运维监控
+
+统计层的目标是把“高频读、低频写”的指标提前聚合好，避免列表页和图表页每次都回扫 `usage_records`。`usage_records` 继续作为事实源，后台 worker 按 `system_account_id` 分区和游标增量汇总到缓存表；列表、概览和图表只读缓存。
+
+建议的缓存分层：
+
+- `usage_stats_totals`：按 `system_account_id + scope_type + scope_id` 存累计值，覆盖 `system_account`、`provider`、`group`、`account`、`api_key`、`model`、`endpoint`。
+- `usage_stats_daily`：按 `system_account_id + scope_type + scope_id + stat_date` 存天级业务概览，用于今日、昨日和最近 7 天。
+- `usage_stats_hourly`：按 `system_account_id + scope_type + scope_id + stat_hour` 存小时趋势，用于近 24 小时和近 7 天。
+- `usage_model_daily`：按 `system_account_id + stat_date + model` 聚合请求数、token 和成本，用于模型分布。
+- `usage_error_daily`：按 `system_account_id + stat_date + error_group + error_code` 聚合错误，用于错误情况。
+- `system_metrics_samples`：主机级运维采样，记录 CPU、内存、RSS、Heap、事件循环延迟、数据库大小和统计滞后，默认仅管理员可见。
+- `system_metrics_hourly`：把主机采样值做小时级平均、最大值和最小值，供监控图长期查看。
+- `stats_job_state`：按 `scope_type + scope_id + job_name` 记录任务游标、上次成功时间、上次错误和处理滞后；用户业务汇总使用 `scope_type = system_account`，主机监控使用 `scope_type = global`。
+
+隔离规则：
+
+- 用户侧统计 API 必须带登录态隐式过滤 `system_account_id`，前端不传归属字段。
+- 管理员按系统账户筛选时读取对应 `system_account_id` 的缓存；查看全局汇总时聚合多个系统账户的缓存行，不回扫 `usage_records`。
+- 系统账户删除或停用时，应同步停止对应后台任务；删除时级联清理该账户的统计缓存、OAuth 额度快照和任务状态。
+- 主机级 CPU / 内存 / 数据库大小不属于用户业务数据，默认只在管理员运维视角展示。
+
+常用指标建议统一这样算：
+
+- 今日请求 = `request_count`
+- 平均响应时间 = `duration_ms_sum / request_count`
+- 平均首 token 时间 = `first_token_ms_sum / success_count`
+- 今日 Token = `input_tokens + output_tokens + cache_read_tokens`
+- 模型分布 = 按模型维度的请求数、Token 占比和成本占比
+- 错误情况 = `error_rate`、`error_count`、Top 错误分组和 Top 错误码
+- 系统监控 = CPU、内存、RSS、Heap、事件循环延迟、数据库文件大小、统计滞后
+
+字段层面建议如下：
+
+- 统计总表至少保存 `system_account_id`、`scope_type`、`scope_id`、`request_count`、`success_count`、`error_count`、`input_tokens`、`output_tokens`、`cache_read_tokens`、`total_cost`、`duration_ms_sum`、`first_token_ms_sum`、`last_used_at`、`last_error_at`、`distinct_client_count`。
+- 模型分布表至少保存 `system_account_id`、`model`、`request_count`、`input_tokens`、`output_tokens`、`cache_read_tokens`、`total_cost`。
+- 错误分布表至少保存 `system_account_id`、`error_group`、`error_code`、`request_count`、`error_count`。
+- 系统采样表至少保存 `cpu_percent`、`memory_used_percent`、`memory_total_bytes`、`memory_free_bytes`、`process_rss_bytes`、`process_heap_used_bytes`、`process_heap_total_bytes`、`event_loop_lag_ms`、`db_file_bytes`、`stats_lag_seconds`。
+
+汇总和保留建议：
+
+- 统计 worker 每 1 分钟按系统账户增量汇总新增 `usage_records`。
+- 系统采样每 10 到 30 秒写一次，只写全局主机采样。
+- 小时级缓存保留 14 天，日级缓存保留 180 天，总表长期保留，系统采样保留 7 到 14 天。
+- 以后如果要做更重的监控图，再把 `system_metrics_samples` 再下沉成更长周期的 rollup，不影响业务统计结构。
+
+### OpenAI OAuth 额度刷新策略
+
+OpenAI OAuth 额度进度不提供用户主动“刷新用量”入口，也不在 AI 账户列表批量即时探测。系统统一通过真实请求的响应头和后台定时器维护快照。
+
+刷新来源优先级：
+
+1. 网关真实转发时被动读取 Codex rate-limit 响应头并保存快照。
+2. 账户测试如果真实请求返回了相同响应头，可以作为副作用更新快照，但测试按钮不承担“刷新用量”语义。
+3. 后台 `oauth_usage_snapshot_refresh` 定时器按系统账户轮询缺失、过期或接近恢复点的 OAuth 快照。
+
+后台刷新规则：
+
+- worker 按 `system_account_id` 分批处理，仅选择 `provider_code = openai`、`type = oauth`、未停用且仍可调度的账户。
+- 每个系统账户内限制并发为 1，全局限制较小并发，并加随机抖动，避免启动时集中探测。
+- 快照未过期时不探测；账号处于限流冷却时，`next_refresh_after` 不早于 reset 时间。
+- 探测前如果 OAuth access token 即将过期，先用 `refresh_token` 自动刷新授权并写回账户。
+- 探测失败写入 `last_error_message`、`last_attempt_at` 和退避后的 `next_refresh_after`，不影响列表读取旧快照。
+- 遇到 OAuth 429 时，优先用 Codex header 计算命中的窗口恢复时间；header 不足时再读取响应体里的 `resets_at` / `resets_in_seconds`，并把账号标记为 `rate_limited` 到该时间。
+
+UI 规则：
+
+- AI 账户列表只展示缓存快照、快照更新时间、刷新状态和下次后台刷新时间。
+- “更多”菜单不提供“刷新用量”按钮；OAuth 授权刷新也不作为常驻按钮，授权续期由网关请求和后台维护自动完成。
+- 快照缺失或过期时显示“等待后台刷新”或“暂无快照”，不要触发前端即时请求。
 
 ## 错误处理策略
 
@@ -263,7 +406,17 @@ OpenAI OAuth 额度进度的获取优先级：网关真实转发时被动读取�
 
 ## 系统设置
 
-系统设置只放全局调度默认值，不要覆盖供应商定义或账号级明确配置。OpenAI 默认 Base URL 属于供应商定义，第一阶段固定为官方地址，不在系统设置中暴露。
+平台设置和系统账户设置分层管理。
+
+### 全局设置
+
+- `global_settings` 保存登录页品牌、站点名称、登录文案和视觉主题等平台级配置。
+- 全局设置未登录也需要读取，只允许 `admin` 修改。
+
+### 系统设置
+
+- `system_settings` 按 `system_account_id` 隔离，保存当前系统账户自己的默认值和运行偏好。
+- 用户级设置不直接替代账号级明确配置。
 
 建议配置：
 
@@ -274,6 +427,9 @@ OpenAI OAuth 额度进度的获取优先级：网关真实转发时被动读取�
 - API Key 自动生成规则（内部固定，不在系统设置暴露）
 - 自用后台完整密钥展示规则
 - 日志保留天数
+- 统计 worker 间隔、系统采样间隔和聚合数据保留天数
+- OAuth 用量快照后台刷新间隔、快照过期时间、失败退避和刷新并发
+- 统计滞后告警阈值，用于运维概览提示缓存是否落后
 
 ### 流熔断与账号处理
 
@@ -317,6 +473,6 @@ OpenAI OAuth 额度进度的获取优先级：网关真实转发时被动读取�
 
 - OAuth 手动授权：生成 PKCE 授权链接，用户复制 localhost 回调 URL，后端校验 `state` 后换取 token。
 - Refresh Token 授权：用户粘贴 `refresh_token`，后端刷新后创建 OAuth 账户。
-- OAuth 凭据字段：`access_token`、`refresh_token`、`expires_at`、`client_id`、`email`、`organization_id`、`base_url`。
+- OAuth 凭据字段：`access_token`、`refresh_token`、`expires_at`、`client_id`、`email`、`base_url`，以及上游可能返回的可选 `organization_id`。
 - 网关调度：同一分组内可混合 API Key 账户和 OAuth 账户，OAuth 账户使用 `access_token` 透传到上游。
 - 自动刷新：OAuth `expires_at` 接近过期时，用 `refresh_token` 刷新并写回 SQLite。

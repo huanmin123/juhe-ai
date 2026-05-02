@@ -5,13 +5,16 @@ import type {
   AccountTestResult,
   ApiKeySummary,
   CreatedApiKey,
+  CurrentUserSummary,
   ErrorPolicySummary,
+  GlobalSettings,
   GroupSummary,
   OpenAIAuthURLResult,
   ProviderDefinition,
   ProviderModelPricing,
   ProxyProfileSummary,
   SystemSettings,
+  SystemAccountSummary,
   UsageRecordSummary
 } from '@/types/domain'
 
@@ -22,7 +25,8 @@ interface ApiResponse<T> {
 
 const http = axios.create({
   baseURL: normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined),
-  timeout: 15000
+  timeout: 15000,
+  withCredentials: true
 })
 
 function normalizeApiBaseUrl(value?: string): string {
@@ -37,6 +41,17 @@ async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T>
 }
 
 export const api = {
+  auth: {
+    login: (payload: { username: string; password: string }) => unwrap<CurrentUserSummary>(http.post('/auth/login', payload)),
+    logout: () => unwrap<{ loggedOut: boolean }>(http.post('/auth/logout')),
+    me: () => unwrap<CurrentUserSummary>(http.get('/auth/me')),
+    changePassword: (payload: { oldPassword?: string; newPassword: string }) => unwrap<CurrentUserSummary>(http.post('/auth/change-password', payload))
+  },
+  systemAccounts: {
+    list: () => unwrap<SystemAccountSummary[]>(http.get('/system-accounts')),
+    create: (payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.post('/system-accounts', payload)),
+    update: (id: string, payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.patch(`/system-accounts/${id}`, payload))
+  },
   providers: {
     list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
     models: (code: string) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`))
@@ -79,6 +94,9 @@ export const api = {
     list: () => unwrap<UsageRecordSummary[]>(http.get('/usage-records'))
   },
   settings: {
+    public: () => unwrap<GlobalSettings>(http.get('/settings/public')),
+    global: () => unwrap<GlobalSettings>(http.get('/settings/global')),
+    updateGlobal: (payload: GlobalSettings) => unwrap<GlobalSettings>(http.patch('/settings/global', payload)),
     get: () => unwrap<SystemSettings>(http.get('/settings')),
     update: (payload: SystemSettings) => unwrap<SystemSettings>(http.patch('/settings', payload))
   }

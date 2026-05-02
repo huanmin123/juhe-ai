@@ -1,6 +1,28 @@
 export type ProviderCode = string
 export type AccountType = string
 export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
+export type SystemAccountRole = 'admin' | 'user'
+export type SystemAccountStatus = 'active' | 'disabled'
+
+export interface SystemAccountSummary {
+  id: string
+  username: string
+  displayName: string
+  role: SystemAccountRole
+  status: SystemAccountStatus
+  mustChangePassword: boolean
+  lastLoginAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CurrentUserSummary {
+  id: string
+  username: string
+  displayName: string
+  role: SystemAccountRole
+  mustChangePassword: boolean
+}
 
 export interface ProviderDefinition {
   id: string
@@ -85,6 +107,8 @@ export interface GroupAccountStats {
 
 export interface AccountSummary {
   id: string
+  systemAccountId?: string
+  systemAccountName?: string
   providerCode: ProviderCode
   name: string
   notes?: string
@@ -139,6 +163,8 @@ export interface ErrorPolicySummary {
 
 export interface GroupSummary {
   id: string
+  systemAccountId?: string
+  systemAccountName?: string
   name: string
   providerCode: ProviderCode
   description?: string
@@ -149,6 +175,8 @@ export interface GroupSummary {
 
 export interface ApiKeySummary {
   id: string
+  systemAccountId?: string
+  systemAccountName?: string
   name: string
   keyPrefix: string
   key: string
