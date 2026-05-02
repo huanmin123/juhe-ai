@@ -88,6 +88,11 @@ export interface AccountOAuthUsageSnapshot {
   kind: 'openai_codex'
   source?: string
   updatedAt?: string
+  refreshStatus?: string
+  lastAttemptAt?: string
+  lastSuccessAt?: string
+  nextRefreshAfter?: string
+  lastErrorMessage?: string
   fiveHour?: AccountOAuthUsageWindow
   sevenDay?: AccountOAuthUsageWindow
 }

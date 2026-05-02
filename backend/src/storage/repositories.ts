@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import type { DatabaseSync } from 'node:sqlite'
 
 import type { AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, ApiKeySummary, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition } from '../domain/types.js'
 import { getRequestAuthContext, type RequestAuthContext } from '../modules/auth/request-context.js'
@@ -100,6 +101,9 @@ interface ErrorPolicyRow {
 
 export type SystemAccountRole = 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'
+
+const DEFAULT_OPENAI_GROUP_NAME = '默认 OpenAI 分组'
+const DEFAULT_OPENAI_GROUP_DESCRIPTION = '第一期默认分组'
 
 export interface SystemAccountSummary {
   id: string
@@ -268,7 +272,42 @@ interface AccountUsageSnapshotRow {
   kind: string
   source: string | null
   snapshot_json: string
+  refresh_status: string | null
+  last_attempt_at: string | null
+  last_success_at: string | null
+  next_refresh_after: string | null
+  last_error_message: string | null
   updated_at: string
+}
+
+interface UsageStatsRecordRow {
+  id: string
+  system_account_id: string
+  request_id: string
+  client_ip: string | null
+  api_key_id: string | null
+  group_id: string | null
+  account_id: string | null
+  endpoint: string | null
+  provider_code: string | null
+  model: string | null
+  status_code: number | null
+  success: number
+  first_token_ms: number | null
+  duration_ms: number | null
+  input_tokens: number | null
+  output_tokens: number | null
+  cache_read_tokens: number | null
+  cost_usd: number | null
+  error_code: string | null
+  error_message: string | null
+  created_at: string
+}
+
+interface StatsJobStateRow {
+  cursor_created_at: string | null
+  cursor_id: string | null
+  lag_seconds: number
 }
 
 interface GlobalSettingRow {
@@ -347,6 +386,13 @@ function groupOwnerAndProvider(groupId: string): { systemAccountId: string; prov
   return row?.system_account_id && row.provider_code ? { systemAccountId: row.system_account_id, providerCode: row.provider_code } : undefined
 }
 
+function defaultOpenAIGroupIdForSystemAccount(systemAccountId: string): string | undefined {
+  const row = getDatabase()
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND name = ? LIMIT 1')
+    .get(systemAccountId, 'openai', DEFAULT_OPENAI_GROUP_NAME) as unknown as { id?: string } | undefined
+  return row?.id
+}
+
 function apiKeySystemAccountId(apiKeyId: string): string | undefined {
   const row = getDatabase().prepare('SELECT system_account_id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { system_account_id?: string } | undefined
   return row?.system_account_id
@@ -409,14 +455,33 @@ export function createSystemAccount(input: {
     createdAt: now,
     updatedAt: now
   }
-  getDatabase()
-    .prepare(`
-      INSERT INTO system_accounts (
-        id, username, display_name, role, status, password_hash, must_change_password, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(summary.id, summary.username, summary.displayName, summary.role, summary.status, hashPassword(input.password), summary.mustChangePassword ? 1 : 0, now, now)
+  const database = getDatabase()
+  database.exec('BEGIN')
+  try {
+    database
+      .prepare(`
+        INSERT INTO system_accounts (
+          id, username, display_name, role, status, password_hash, must_change_password, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(summary.id, summary.username, summary.displayName, summary.role, summary.status, hashPassword(input.password), summary.mustChangePassword ? 1 : 0, now, now)
+    ensureDefaultOpenAIGroupForSystemAccount(summary.id, now)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
   return summary
+}
+
+function ensureDefaultOpenAIGroupForSystemAccount(systemAccountId: string, timestamp = nowIso()): void {
+  if (defaultOpenAIGroupIdForSystemAccount(systemAccountId)) {
+    return
+  }
+
+  getDatabase()
+    .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)')
+    .run(newId('grp'), systemAccountId, DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
 }
 
 export function updateSystemAccount(id: string, input: {
@@ -1261,7 +1326,11 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
   const systemAccountId = currentSystemAccountId()
-  const groupId = String(input.groupId ?? input.group_id ?? 'grp_default_openai')
+  const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : typeof input.group_id === 'string' && input.group_id ? input.group_id : undefined
+  const groupId = explicitGroupId ?? defaultOpenAIGroupIdForSystemAccount(systemAccountId)
+  if (!groupId) {
+    throw new Error('Invalid API key group')
+  }
   const group = groupOwnerAndProvider(groupId)
   if (!group || group.systemAccountId !== systemAccountId) {
     throw new Error('Invalid API key group')
@@ -1661,12 +1730,18 @@ export function upsertAccountUsageSnapshot(input: {
   const systemAccountId = accountSystemAccountId(input.accountId) ?? currentSystemAccountId()
   getDatabase()
     .prepare(`
-      INSERT INTO account_usage_snapshots (system_account_id, account_id, kind, source, snapshot_json, updated_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(account_id, kind) DO UPDATE SET
+      INSERT INTO account_usage_snapshots (
+        system_account_id, account_id, kind, source, snapshot_json, refresh_status,
+        last_success_at, last_error_message, updated_at, created_at
+      )
+      VALUES (?, ?, ?, ?, ?, 'fresh', ?, NULL, ?, ?)
+      ON CONFLICT(system_account_id, account_id, kind) DO UPDATE SET
         system_account_id = excluded.system_account_id,
         source = excluded.source,
         snapshot_json = excluded.snapshot_json,
+        refresh_status = 'fresh',
+        last_success_at = excluded.last_success_at,
+        last_error_message = NULL,
         updated_at = excluded.updated_at
     `)
     .run(
@@ -1676,6 +1751,47 @@ export function upsertAccountUsageSnapshot(input: {
       input.source ?? null,
       JSON.stringify(input.snapshot),
       updatedAt,
+      updatedAt,
+      now
+    )
+}
+
+export function updateAccountUsageSnapshotRefreshState(input: {
+  accountId: string
+  kind: 'openai_codex'
+  status: 'pending' | 'fresh' | 'failed' | 'rate_limited'
+  attemptedAt?: string
+  successAt?: string
+  nextRefreshAfter?: string
+  errorMessage?: string
+}): void {
+  const now = nowIso()
+  const systemAccountId = accountSystemAccountId(input.accountId) ?? currentSystemAccountId()
+  getDatabase()
+    .prepare(`
+      INSERT INTO account_usage_snapshots (
+        system_account_id, account_id, kind, source, snapshot_json, refresh_status,
+        last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at, created_at
+      )
+      VALUES (?, ?, ?, NULL, '{}', ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(system_account_id, account_id, kind) DO UPDATE SET
+        refresh_status = excluded.refresh_status,
+        last_attempt_at = COALESCE(excluded.last_attempt_at, account_usage_snapshots.last_attempt_at),
+        last_success_at = COALESCE(excluded.last_success_at, account_usage_snapshots.last_success_at),
+        next_refresh_after = excluded.next_refresh_after,
+        last_error_message = excluded.last_error_message,
+        updated_at = excluded.updated_at
+    `)
+    .run(
+      systemAccountId,
+      input.accountId,
+      input.kind,
+      input.status,
+      input.attemptedAt ?? null,
+      input.successAt ?? (input.status === 'fresh' ? now : null),
+      input.nextRefreshAfter ?? null,
+      input.errorMessage ?? null,
+      now,
       now
     )
 }
@@ -1701,21 +1817,24 @@ export function resolveProxyUrlForProfile(proxyProfileId?: string | null): strin
   return proxyUrlForProfile(proxyProfileId, currentSystemAccountId())
 }
 
+export function resolveProxyUrlForProfileForSystemAccount(proxyProfileId: string | undefined | null, systemAccountId: string): string | undefined {
+  return proxyUrlForProfile(proxyProfileId, systemAccountId)
+}
+
 function loadAccountUsageSummaries(access?: AccessScope): Map<string, AccountUsageSummary> {
   const scope = buildSystemAccountScopeClause(access)
   const rows = getDatabase().prepare(`
     SELECT
-      account_id,
-      COUNT(*) AS request_count,
-      COUNT(DISTINCT api_key_id) AS client_count,
-      COALESCE(SUM(COALESCE(input_tokens, 0)), 0) AS input_tokens,
-      COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
-      COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0) AS cache_read_tokens,
-      COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS total_cost,
-      MAX(created_at) AS last_used_at
-    FROM usage_records
-    WHERE account_id IS NOT NULL${scope.clause}
-    GROUP BY account_id
+      scope_id AS account_id,
+      request_count,
+      client_count,
+      input_tokens,
+      output_tokens,
+      cache_read_tokens,
+      total_cost_usd AS total_cost,
+      last_used_at
+    FROM usage_stats_totals
+    WHERE scope_type = 'account'${scope.clause}
   `).all(...scope.params) as unknown as AccountUsageAggregateRow[]
 
   const result = new Map<string, AccountUsageSummary>()
@@ -1729,18 +1848,17 @@ function loadTodayGroupUsageSummaries(access?: AccessScope): Map<string, Account
   const scope = buildSystemAccountScopeClause(access)
   const rows = getDatabase().prepare(`
     SELECT
-      group_id,
-      COUNT(*) AS request_count,
-      COUNT(DISTINCT api_key_id) AS client_count,
-      COALESCE(SUM(COALESCE(input_tokens, 0)), 0) AS input_tokens,
-      COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
-      COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0) AS cache_read_tokens,
-      COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS total_cost,
-      MAX(created_at) AS last_used_at
-    FROM usage_records
-    WHERE group_id IS NOT NULL AND created_at >= ?${scope.clause}
-    GROUP BY group_id
-  `).all(startOfTodayIso(), ...scope.params) as unknown as Array<AccountUsageAggregateRow & { group_id: string }>
+      scope_id AS group_id,
+      request_count,
+      client_count,
+      input_tokens,
+      output_tokens,
+      cache_read_tokens,
+      total_cost_usd AS total_cost,
+      last_used_at
+    FROM usage_stats_daily
+    WHERE scope_type = 'group' AND stat_date = ?${scope.clause}
+  `).all(todayDateKey(), ...scope.params) as unknown as Array<AccountUsageAggregateRow & { group_id: string }>
 
   const result = new Map<string, AccountUsageSummary>()
   for (const row of rows) {
@@ -1752,7 +1870,9 @@ function loadTodayGroupUsageSummaries(access?: AccessScope): Map<string, Account
 function loadOpenAICodexUsageSnapshots(access?: AccessScope): Map<string, AccountOAuthUsageSnapshot> {
   const scope = buildSystemAccountScopeClause(access)
   const rows = getDatabase().prepare(`
-    SELECT account_id, kind, source, snapshot_json, updated_at
+    SELECT
+      account_id, kind, source, snapshot_json, refresh_status,
+      last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at
     FROM account_usage_snapshots
     WHERE kind = 'openai_codex'${scope.clause}
   `).all(...scope.params) as unknown as AccountUsageSnapshotRow[]
@@ -1765,6 +1885,11 @@ function loadOpenAICodexUsageSnapshots(access?: AccessScope): Map<string, Accoun
       kind: 'openai_codex',
       source: row.source ?? optionalString(snapshot.source),
       updatedAt: row.updated_at,
+      refreshStatus: row.refresh_status ?? undefined,
+      lastAttemptAt: row.last_attempt_at ?? undefined,
+      lastSuccessAt: row.last_success_at ?? undefined,
+      nextRefreshAfter: row.next_refresh_after ?? undefined,
+      lastErrorMessage: row.last_error_message ?? undefined,
       fiveHour: oauthUsageWindowFromSnapshot(snapshot, '5h', row.updated_at),
       sevenDay: oauthUsageWindowFromSnapshot(snapshot, '7d', row.updated_at)
     })
@@ -1818,6 +1943,18 @@ function startOfTodayIso(): string {
   const date = new Date()
   date.setHours(0, 0, 0, 0)
   return date.toISOString()
+}
+
+function todayDateKey(): string {
+  return dateKey(new Date())
+}
+
+function dateKey(date: Date): string {
+  return date.toISOString().slice(0, 10)
+}
+
+function hourKey(date: Date): string {
+  return date.toISOString().slice(0, 13)
 }
 
 export function importOpenAIApiKeyAccounts(input: {
@@ -1980,4 +2117,431 @@ export function updateSettings(input: Record<string, unknown>, access?: AccessSc
 
 function isHiddenSystemSetting(key: string): boolean {
   return key === 'apiKeyPrefix' || key === 'defaultOpenAIBaseUrl' || key === 'defaultErrorPolicyId' || key.startsWith('_migration')
+}
+
+interface UsageStatsAccumulator {
+  requestCount: number
+  successCount: number
+  errorCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  totalCostUsd: number
+  durationMsSum: number
+  durationMsCount: number
+  firstTokenMsSum: number
+  firstTokenMsCount: number
+  lastUsedAt?: string
+  lastErrorAt?: string
+}
+
+interface StatsAggregateMathRow {
+  request_count: number
+  success_count: number
+  error_count: number
+  client_count: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  total_cost: number
+  duration_ms_sum: number
+  duration_ms_count: number
+  first_token_ms_sum: number
+  first_token_ms_count: number
+  last_used_at: string | null
+}
+
+interface SystemMetricsSampleInput {
+  cpuPercent?: number
+  memoryUsedPercent?: number
+  memoryTotalBytes?: number
+  memoryFreeBytes?: number
+  processRssBytes?: number
+  processHeapUsedBytes?: number
+  processHeapTotalBytes?: number
+  eventLoopLagMs?: number
+  dbFileBytes?: number
+  statsLagSeconds?: number
+}
+
+export interface UsageStatsOverview {
+  today: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
+  totals: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
+  hourlyTrend: Array<{ statHour: string; requestCount: number; totalTokens: number; totalCost: number; averageDurationMs?: number; errorCount: number }>
+  modelDistribution: Array<{ model: string; providerCode: string; requestCount: number; totalTokens: number; totalCost: number }>
+  errors: Array<{ errorCode: string; providerCode: string; statusCode?: number; errorMessage?: string; errorCount: number }>
+  statsLagSeconds: number
+}
+
+export interface SystemMetricsOverview {
+  latest?: {
+    sampledAt: string
+    cpuPercent?: number
+    memoryUsedPercent?: number
+    memoryTotalBytes?: number
+    memoryFreeBytes?: number
+    processRssBytes?: number
+    processHeapUsedBytes?: number
+    processHeapTotalBytes?: number
+    eventLoopLagMs?: number
+    dbFileBytes?: number
+    statsLagSeconds?: number
+  }
+  hourlyTrend: Array<{
+    statHour: string
+    sampleCount: number
+    cpuPercentAvg?: number
+    cpuPercentMax?: number
+    memoryUsedPercentAvg?: number
+    memoryUsedPercentMax?: number
+    eventLoopLagMsAvg?: number
+    eventLoopLagMsMax?: number
+    processRssBytesMax?: number
+    processHeapUsedBytesMax?: number
+    dbFileBytesMax?: number
+    statsLagSecondsMax?: number
+  }>
+}
+
+export function aggregateUsageStatsBatch(limit = 2000): number {
+  const database = getDatabase()
+  const state = usageStatsJobState(database)
+  const rows = database
+    .prepare(`
+      SELECT *
+      FROM usage_records
+      WHERE created_at > ? OR (created_at = ? AND id > ?)
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, Math.max(1, limit)) as unknown as UsageStatsRecordRow[]
+
+  if (!rows.length) {
+    updateStatsJobState(database, { lastSuccessAt: nowIso(), lagSeconds: 0 })
+    return 0
+  }
+
+  const updatedAt = nowIso()
+  database.exec('BEGIN')
+  try {
+    for (const row of rows) {
+      aggregateUsageStatsRecord(database, row, updatedAt)
+    }
+    const last = rows[rows.length - 1]
+    updateStatsJobState(database, {
+      cursorCreatedAt: last.created_at,
+      cursorId: last.id,
+      lastSuccessAt: updatedAt,
+      lagSeconds: statsLagSecondsFromCursor(last.created_at)
+    })
+    cleanupStatsCache(database, updatedAt)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    updateStatsJobState(database, {
+      lastErrorMessage: error instanceof Error ? error.message : 'Usage stats aggregation failed',
+      lagSeconds: latestUsageStatsLagSeconds()
+    })
+    throw error
+  }
+
+  return rows.length
+}
+
+export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void {
+  const database = getDatabase()
+  const sampledAt = nowIso()
+  const statHour = hourKey(new Date(sampledAt))
+  database.exec('BEGIN')
+  try {
+    database
+      .prepare(`
+        INSERT INTO system_metrics_samples (
+          id, sampled_at, cpu_percent, memory_used_percent, memory_total_bytes, memory_free_bytes,
+          process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes, event_loop_lag_ms,
+          db_file_bytes, stats_lag_seconds
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        newId('metric'),
+        sampledAt,
+        input.cpuPercent ?? null,
+        input.memoryUsedPercent ?? null,
+        input.memoryTotalBytes ?? null,
+        input.memoryFreeBytes ?? null,
+        input.processRssBytes ?? null,
+        input.processHeapUsedBytes ?? null,
+        input.processHeapTotalBytes ?? null,
+        input.eventLoopLagMs ?? null,
+        input.dbFileBytes ?? null,
+        input.statsLagSeconds ?? null
+      )
+    upsertSystemMetricsHourly(database, statHour, input, sampledAt)
+    cleanupSystemMetrics(database)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+}
+
+export function latestUsageStatsLagSeconds(): number {
+  const row = getDatabase()
+    .prepare("SELECT lag_seconds FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
+    .get() as unknown as { lag_seconds?: number } | undefined
+  return Number(row?.lag_seconds ?? 0)
+}
+
+export function getUsageStatsOverview(access?: AccessScope): UsageStatsOverview {
+  const database = getDatabase()
+  const systemAccountIds = visibleSystemAccountIds(access)
+  const placeholders = sqlPlaceholders(systemAccountIds.length)
+  const today = todayDateKey()
+  const sinceHour = hourKey(new Date(Date.now() - 24 * 60 * 60 * 1000))
+
+  const todayRow = database.prepare(`
+    SELECT COALESCE(SUM(request_count), 0) AS request_count, COALESCE(SUM(success_count), 0) AS success_count,
+      COALESCE(SUM(error_count), 0) AS error_count, COALESCE(SUM(client_count), 0) AS client_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(total_cost_usd), 0) AS total_cost,
+      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum, COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count,
+      COALESCE(SUM(first_token_ms_sum), 0) AS first_token_ms_sum, COALESCE(SUM(first_token_ms_count), 0) AS first_token_ms_count,
+      MAX(last_used_at) AS last_used_at
+    FROM usage_stats_daily
+    WHERE scope_type = 'system_account' AND stat_date = ? AND system_account_id IN (${placeholders})
+  `).get(today, ...systemAccountIds) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow
+
+  const totalRow = database.prepare(`
+    SELECT COALESCE(SUM(request_count), 0) AS request_count, COALESCE(SUM(success_count), 0) AS success_count,
+      COALESCE(SUM(error_count), 0) AS error_count, COALESCE(SUM(client_count), 0) AS client_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(total_cost_usd), 0) AS total_cost,
+      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum, COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count,
+      COALESCE(SUM(first_token_ms_sum), 0) AS first_token_ms_sum, COALESCE(SUM(first_token_ms_count), 0) AS first_token_ms_count,
+      MAX(last_used_at) AS last_used_at
+    FROM usage_stats_totals
+    WHERE scope_type = 'system_account' AND system_account_id IN (${placeholders})
+  `).get(...systemAccountIds) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow
+
+  const hourlyRows = database.prepare(`
+    SELECT stat_hour, COALESCE(SUM(request_count), 0) AS request_count, COALESCE(SUM(error_count), 0) AS error_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(total_cost_usd), 0) AS total_cost,
+      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum, COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count
+    FROM usage_stats_hourly
+    WHERE scope_type = 'system_account' AND stat_hour >= ? AND system_account_id IN (${placeholders})
+    GROUP BY stat_hour ORDER BY stat_hour ASC
+  `).all(sinceHour, ...systemAccountIds) as unknown as Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
+
+  const modelRows = database.prepare(`
+    SELECT provider_code, model, COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(total_cost_usd), 0) AS total_cost
+    FROM usage_model_daily
+    WHERE stat_date = ? AND system_account_id IN (${placeholders})
+    GROUP BY provider_code, model ORDER BY request_count DESC LIMIT 10
+  `).all(today, ...systemAccountIds) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
+
+  const errorRows = database.prepare(`
+    SELECT provider_code, error_code, status_code, error_message, COALESCE(SUM(error_count), 0) AS error_count
+    FROM usage_error_daily
+    WHERE stat_date = ? AND system_account_id IN (${placeholders})
+    GROUP BY provider_code, error_code, status_code ORDER BY error_count DESC LIMIT 10
+  `).all(today, ...systemAccountIds) as unknown as Array<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>
+
+  return {
+    today: usageSummaryWithMath(todayRow),
+    totals: usageSummaryWithMath(totalRow),
+    hourlyTrend: hourlyRows.map((row) => ({
+      statHour: row.stat_hour,
+      requestCount: Number(row.request_count ?? 0),
+      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0) + Number(row.cache_read_tokens ?? 0),
+      totalCost: Number(row.total_cost ?? 0),
+      averageDurationMs: averageFromSum(row.duration_ms_sum, row.duration_ms_count),
+      errorCount: Number(row.error_count ?? 0)
+    })),
+    modelDistribution: modelRows.map((row) => ({
+      providerCode: row.provider_code,
+      model: row.model,
+      requestCount: Number(row.request_count ?? 0),
+      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0) + Number(row.cache_read_tokens ?? 0),
+      totalCost: Number(row.total_cost ?? 0)
+    })),
+    errors: errorRows.map((row) => ({
+      providerCode: row.provider_code,
+      errorCode: row.error_code,
+      statusCode: row.status_code || undefined,
+      errorMessage: row.error_message ?? undefined,
+      errorCount: Number(row.error_count ?? 0)
+    })),
+    statsLagSeconds: latestUsageStatsLagSeconds()
+  }
+}
+
+export function getSystemMetricsOverview(): SystemMetricsOverview {
+  const database = getDatabase()
+  const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
+  const sinceHour = hourKey(new Date(Date.now() - 24 * 60 * 60 * 1000))
+  const rows = database.prepare('SELECT * FROM system_metrics_hourly WHERE stat_hour >= ? ORDER BY stat_hour ASC').all(sinceHour) as unknown as Array<Record<string, unknown>>
+  return {
+    latest: latest
+      ? {
+          sampledAt: String(latest.sampled_at),
+          cpuPercent: numberFromUnknown(latest.cpu_percent),
+          memoryUsedPercent: numberFromUnknown(latest.memory_used_percent),
+          memoryTotalBytes: numberFromUnknown(latest.memory_total_bytes),
+          memoryFreeBytes: numberFromUnknown(latest.memory_free_bytes),
+          processRssBytes: numberFromUnknown(latest.process_rss_bytes),
+          processHeapUsedBytes: numberFromUnknown(latest.process_heap_used_bytes),
+          processHeapTotalBytes: numberFromUnknown(latest.process_heap_total_bytes),
+          eventLoopLagMs: numberFromUnknown(latest.event_loop_lag_ms),
+          dbFileBytes: numberFromUnknown(latest.db_file_bytes),
+          statsLagSeconds: numberFromUnknown(latest.stats_lag_seconds)
+        }
+      : undefined,
+    hourlyTrend: rows.map((row) => {
+      const sampleCount = Number(row.sample_count ?? 0)
+      return {
+        statHour: String(row.stat_hour),
+        sampleCount,
+        cpuPercentAvg: averageFromSum(row.cpu_percent_sum, sampleCount),
+        cpuPercentMax: numberFromUnknown(row.cpu_percent_max),
+        memoryUsedPercentAvg: averageFromSum(row.memory_used_percent_sum, sampleCount),
+        memoryUsedPercentMax: numberFromUnknown(row.memory_used_percent_max),
+        eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, sampleCount),
+        eventLoopLagMsMax: numberFromUnknown(row.event_loop_lag_ms_max),
+        processRssBytesMax: numberFromUnknown(row.process_rss_bytes_max),
+        processHeapUsedBytesMax: numberFromUnknown(row.process_heap_used_bytes_max),
+        dbFileBytesMax: numberFromUnknown(row.db_file_bytes_max),
+        statsLagSecondsMax: numberFromUnknown(row.stats_lag_seconds_max)
+      }
+    })
+  }
+}
+
+function usageStatsJobState(database: DatabaseSync): { cursorCreatedAt: string; cursorId: string } {
+  const row = database
+    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
+    .get() as unknown as StatsJobStateRow | undefined
+  return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+}
+
+function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
+  const createdAt = new Date(row.created_at)
+  const statDate = dateKey(createdAt)
+  const statHour = hourKey(createdAt)
+  for (const entry of usageStatsEntries(row)) {
+    upsertUsageStatsTotal(database, row.system_account_id, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt)
+    upsertUsageStatsDaily(database, row.system_account_id, entry.scopeType, entry.scopeId, statDate, entry.accumulator, updatedAt)
+    upsertUsageStatsHourly(database, row.system_account_id, entry.scopeType, entry.scopeId, statHour, entry.accumulator, updatedAt)
+    upsertUsageStatsClient(database, row, entry.scopeType, entry.scopeId, 'all')
+    upsertUsageStatsClient(database, row, entry.scopeType, entry.scopeId, statDate)
+  }
+  if (row.model) upsertUsageModelDaily(database, row, statDate, updatedAt)
+  if (row.success !== 1) upsertUsageErrorDaily(database, row, statDate, updatedAt)
+}
+
+function usageStatsEntries(row: UsageStatsRecordRow): Array<{ scopeType: string; scopeId: string; accumulator: UsageStatsAccumulator }> {
+  const accumulator = usageStatsAccumulatorFromRecord(row)
+  const entries = [{ scopeType: 'system_account', scopeId: row.system_account_id, accumulator }]
+  if (row.provider_code) entries.push({ scopeType: 'provider', scopeId: row.provider_code, accumulator })
+  if (row.group_id) entries.push({ scopeType: 'group', scopeId: row.group_id, accumulator })
+  if (row.account_id) entries.push({ scopeType: 'account', scopeId: row.account_id, accumulator })
+  if (row.api_key_id) entries.push({ scopeType: 'api_key', scopeId: row.api_key_id, accumulator })
+  if (row.model) entries.push({ scopeType: 'model', scopeId: row.model, accumulator })
+  if (row.endpoint) entries.push({ scopeType: 'endpoint', scopeId: row.endpoint, accumulator })
+  return entries
+}
+
+function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): UsageStatsAccumulator {
+  const success = row.success === 1
+  return {
+    requestCount: 1,
+    successCount: success ? 1 : 0,
+    errorCount: success ? 0 : 1,
+    inputTokens: Math.max(0, Number(row.input_tokens ?? 0)),
+    outputTokens: Math.max(0, Number(row.output_tokens ?? 0)),
+    cacheReadTokens: Math.max(0, Number(row.cache_read_tokens ?? 0)),
+    totalCostUsd: Math.max(0, Number(row.cost_usd ?? 0)),
+    durationMsSum: row.duration_ms === null ? 0 : Math.max(0, Number(row.duration_ms ?? 0)),
+    durationMsCount: row.duration_ms === null ? 0 : 1,
+    firstTokenMsSum: row.first_token_ms === null ? 0 : Math.max(0, Number(row.first_token_ms ?? 0)),
+    firstTokenMsCount: row.first_token_ms === null ? 0 : 1,
+    lastUsedAt: row.created_at,
+    lastErrorAt: success ? undefined : row.created_at
+  }
+}
+
+function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, stats: UsageStatsAccumulator, updatedAt: string): void {
+  database.prepare(`
+    INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, duration_ms_sum, duration_ms_count,
+      first_token_ms_sum, first_token_ms_count, last_used_at, last_error_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
+      request_count = request_count + excluded.request_count,
+      success_count = success_count + excluded.success_count,
+      error_count = error_count + excluded.error_count,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+      duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
+      duration_ms_count = duration_ms_count + excluded.duration_ms_count,
+      first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
+      first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
+      last_used_at = max_nullable(usage_stats_totals.last_used_at, excluded.last_used_at),
+      last_error_at = max_nullable(usage_stats_totals.last_error_at, excluded.last_error_at),
+      updated_at = excluded.updated_at
+  `).run(systemAccountId, scopeType, scopeId, ...statsParamsTail(stats, updatedAt))
+}
+
+function upsertUsageStatsDaily(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, statDate: string, stats: UsageStatsAccumulator, updatedAt: string): void {
+  database.prepare(`
+    INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, duration_ms_sum, duration_ms_count,
+      first_token_ms_sum, first_token_ms_count, last_used_at, last_error_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, scope_type, scope_id, stat_date) DO UPDATE SET
+      request_count = request_count + excluded.request_count,
+      success_count = success_count + excluded.success_count,
+      error_count = error_count + excluded.error_count,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+      duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
+      duration_ms_count = duration_ms_count + excluded.duration_ms_count,
+      first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
+      first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
+      last_used_at = max_nullable(usage_stats_daily.last_used_at, excluded.last_used_at),
+      last_error_at = max_nullable(usage_stats_daily.last_error_at, excluded.last_error_at),
+      updated_at = excluded.updated_at
+  `).run(systemAccountId, scopeType, scopeId, statDate, ...statsParamsTail(stats, updatedAt))
+}
+
+function upsertUsageStatsHourly(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, statHour: string, stats: UsageStatsAccumulator, updatedAt: string): void {
+  database.prepare(`
+    INSERT INTO usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, duration_ms_sum, duration_ms_count,
+      first_token_ms_sum, first_token_ms_count, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, scope_type, scope_id, stat_hour) DO UPDATE SET
+      request_count = request_count + excluded.request_count,
+      success_count = success_count + excluded.success_count,
+      error_count = error_count + excluded.error_count,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+      duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
+      duration_ms_count = duration_ms_count + excluded.duration_ms_count,
+      first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
+      first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
+      updated_at = excluded.updated_at
+  `).run(systemAccountId, scopeType, scopeId, statHour, stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, stats.durationMsSum, stats.durationMsCount, stats.firstTokenMsSum, stats.firstTokenMsCount, updatedAt)
+}
+
+function statsParamsTail(stats: UsageStatsAccumulator, updatedAt: string): Array<number | string | null> {
+  return [stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, stats.durationMsSum, stats.durationMsCount, stats.firstTokenMsSum, stats.firstTokenMsCount, stats.lastUsedAt ?? null, stats.lastErrorAt ?? null, updatedAt]
 }

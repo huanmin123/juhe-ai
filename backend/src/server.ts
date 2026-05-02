@@ -4,6 +4,7 @@ import express from 'express'
 import { accountsRouter } from './modules/accounts/accounts.routes.js'
 import { requireAdmin, requireAuth } from './modules/auth/auth.middleware.js'
 import { authRouter } from './modules/auth/auth.routes.js'
+import { startBackgroundJobs } from './modules/background/background-jobs.js'
 import { apiKeysRouter } from './modules/api-keys/api-keys.routes.js'
 import { errorPoliciesRouter } from './modules/error-policies/error-policies.routes.js'
 import { groupsRouter } from './modules/groups/groups.routes.js'
@@ -24,6 +25,7 @@ const host = runtimeConfig.host
 const port = runtimeConfig.port
 
 getDatabase()
+startBackgroundJobs()
 
 app.use(cors({ credentials: true, origin: true }))
 app.use(express.json({ limit: '2mb' }))

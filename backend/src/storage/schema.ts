@@ -2,6 +2,9 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { hashPassword } from './crypto.js'
 
+const DEFAULT_OPENAI_GROUP_NAME = '默认 OpenAI 分组'
+const DEFAULT_OPENAI_GROUP_DESCRIPTION = '第一期默认分组'
+
 export function applySchema(database: DatabaseSync): void {
   database.exec(`
     PRAGMA foreign_keys = ON;
@@ -180,10 +183,165 @@ export function applySchema(database: DatabaseSync): void {
       kind TEXT NOT NULL,
       source TEXT,
       snapshot_json TEXT NOT NULL,
+      refresh_status TEXT,
+      last_attempt_at TEXT,
+      last_success_at TEXT,
+      next_refresh_after TEXT,
+      last_error_message TEXT,
       updated_at TEXT NOT NULL,
       created_at TEXT NOT NULL,
-      PRIMARY KEY (account_id, kind),
+      PRIMARY KEY (system_account_id, account_id, kind),
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_stats_totals (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      client_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_stats_daily (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      stat_date TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      client_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, stat_date)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_stats_hourly (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      stat_hour TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, stat_hour)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_model_daily (
+      system_account_id TEXT NOT NULL,
+      stat_date TEXT NOT NULL,
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      model TEXT NOT NULL DEFAULT 'unknown',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_date, provider_code, model)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_error_daily (
+      system_account_id TEXT NOT NULL,
+      stat_date TEXT NOT NULL,
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      error_code TEXT NOT NULL DEFAULT 'unknown',
+      status_code INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_date, provider_code, error_code, status_code)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_stats_clients (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      stat_bucket TEXT NOT NULL,
+      client_key TEXT NOT NULL,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, stat_bucket, client_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS stats_job_state (
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      job_name TEXT NOT NULL,
+      cursor_created_at TEXT,
+      cursor_id TEXT,
+      last_success_at TEXT,
+      last_error_message TEXT,
+      lag_seconds INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (scope_type, scope_id, job_name)
+    );
+
+    CREATE TABLE IF NOT EXISTS system_metrics_samples (
+      id TEXT PRIMARY KEY,
+      sampled_at TEXT NOT NULL,
+      cpu_percent REAL,
+      memory_used_percent REAL,
+      memory_total_bytes INTEGER,
+      memory_free_bytes INTEGER,
+      process_rss_bytes INTEGER,
+      process_heap_used_bytes INTEGER,
+      process_heap_total_bytes INTEGER,
+      event_loop_lag_ms REAL,
+      db_file_bytes INTEGER,
+      stats_lag_seconds INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS system_metrics_hourly (
+      stat_hour TEXT PRIMARY KEY,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      cpu_percent_sum REAL NOT NULL DEFAULT 0,
+      cpu_percent_max REAL,
+      memory_used_percent_sum REAL NOT NULL DEFAULT 0,
+      memory_used_percent_max REAL,
+      process_rss_bytes_sum INTEGER NOT NULL DEFAULT 0,
+      process_rss_bytes_max INTEGER,
+      process_heap_used_bytes_sum INTEGER NOT NULL DEFAULT 0,
+      process_heap_used_bytes_max INTEGER,
+      event_loop_lag_ms_sum REAL NOT NULL DEFAULT 0,
+      event_loop_lag_ms_max REAL,
+      db_file_bytes_max INTEGER,
+      stats_lag_seconds_max INTEGER,
+      updated_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS system_settings (
@@ -231,6 +389,12 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'usage_records', 'request_snapshot_json', 'TEXT')
   ensureColumn(database, 'usage_records', 'response_snapshot_json', 'TEXT')
   ensureColumn(database, 'account_usage_snapshots', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
+  ensureColumn(database, 'account_usage_snapshots', 'refresh_status', 'TEXT')
+  ensureColumn(database, 'account_usage_snapshots', 'last_attempt_at', 'TEXT')
+  ensureColumn(database, 'account_usage_snapshots', 'last_success_at', 'TEXT')
+  ensureColumn(database, 'account_usage_snapshots', 'next_refresh_after', 'TEXT')
+  ensureColumn(database, 'account_usage_snapshots', 'last_error_message', 'TEXT')
+  migrateAccountUsageSnapshotsTable(database)
   database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
   database.exec('DROP INDEX IF EXISTS idx_accounts_credential_fingerprint;')
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_credential_fingerprint ON accounts(system_account_id, credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
@@ -240,6 +404,50 @@ export function applySchema(database: DatabaseSync): void {
   database.exec('CREATE INDEX IF NOT EXISTS idx_proxy_profiles_system_account ON proxy_profiles(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_stats_cursor ON usage_records(created_at, id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_scope_date ON usage_stats_daily(system_account_id, scope_type, scope_id, stat_date);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_scope_hour ON usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_model_daily_date ON usage_model_daily(system_account_id, stat_date, model);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_error_daily_date ON usage_error_daily(system_account_id, stat_date, error_code);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_system_metrics_samples_sampled_at ON system_metrics_samples(sampled_at);')
+}
+
+function migrateAccountUsageSnapshotsTable(database: DatabaseSync): void {
+  const rows = database.prepare('PRAGMA table_info(account_usage_snapshots)').all() as unknown as Array<{ name: string; pk: number }>
+  const pkColumns = rows.filter((row) => row.pk > 0).sort((left, right) => left.pk - right.pk).map((row) => row.name)
+  if (pkColumns.join(',') === 'system_account_id,account_id,kind') {
+    return
+  }
+
+  database.exec(`
+    DROP TABLE IF EXISTS account_usage_snapshots_pk_migration;
+    ALTER TABLE account_usage_snapshots RENAME TO account_usage_snapshots_pk_migration;
+    CREATE TABLE account_usage_snapshots (
+      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      account_id TEXT NOT NULL,
+      kind TEXT NOT NULL,
+      source TEXT,
+      snapshot_json TEXT NOT NULL,
+      refresh_status TEXT,
+      last_attempt_at TEXT,
+      last_success_at TEXT,
+      next_refresh_after TEXT,
+      last_error_message TEXT,
+      updated_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, account_id, kind),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+    INSERT OR IGNORE INTO account_usage_snapshots (
+      system_account_id, account_id, kind, source, snapshot_json, refresh_status,
+      last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at, created_at
+    )
+    SELECT
+      COALESCE(system_account_id, 'sys_admin'), account_id, kind, source, snapshot_json, refresh_status,
+      last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at, created_at
+    FROM account_usage_snapshots_pk_migration;
+    DROP TABLE account_usage_snapshots_pk_migration;
+  `)
 }
 
 function migrateSystemSettingsTable(database: DatabaseSync): void {
@@ -348,12 +556,8 @@ export function seedDefaults(database: DatabaseSync): void {
       now
     )
 
-  database
-    .prepare(`
-      INSERT OR IGNORE INTO groups (id, name, provider_code, description, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run('grp_default_openai', '默认 OpenAI 分组', 'openai', '第一期默认分组', 1, now, now)
+  ensureAdminDefaultOpenAIGroup(database, now)
+  migrateDefaultOpenAIGroupForExistingUsers(database, now)
 
   const settings = [
     ['appName', '聚合 AI'],
@@ -395,4 +599,42 @@ export function seedDefaults(database: DatabaseSync): void {
     statement.run('sys_admin', '_migration_stream_idle_default_30_20260502', JSON.stringify(true), now)
   }
   database.prepare("DELETE FROM system_settings WHERE system_account_id = 'sys_admin' AND key IN ('apiKeyPrefix', 'defaultOpenAIBaseUrl', 'defaultErrorPolicyId', 'streamFailureAction', 'streamAccountCooldownMinutes', 'overloadCooldownEnabled', 'overloadCooldownMinutes')").run()
+}
+
+function ensureAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string): void {
+  database
+    .prepare(`
+      INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+    `)
+    .run('grp_default_openai', 'sys_admin', DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
+}
+
+function migrateDefaultOpenAIGroupForExistingUsers(database: DatabaseSync, timestamp: string): void {
+  const migrationKey = '_migration_default_openai_group_per_system_account_20260503'
+  const existingMigration = database.prepare('SELECT key FROM system_settings WHERE system_account_id = ? AND key = ?').get('sys_admin', migrationKey) as unknown
+  if (existingMigration) {
+    return
+  }
+
+  ensureDefaultOpenAIGroups(database, timestamp)
+  database.prepare('INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)').run('sys_admin', migrationKey, JSON.stringify(true), timestamp)
+}
+
+function ensureDefaultOpenAIGroups(database: DatabaseSync, timestamp: string): void {
+  const systemAccounts = database.prepare('SELECT id FROM system_accounts').all() as unknown as Array<{ id: string }>
+  const findGroup = database.prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND name = ? LIMIT 1')
+  const insertGroup = database.prepare(`
+    INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+  `)
+
+  for (const account of systemAccounts) {
+    const existing = findGroup.get(account.id, 'openai', DEFAULT_OPENAI_GROUP_NAME) as unknown
+    if (existing) {
+      continue
+    }
+    const groupId = account.id === 'sys_admin' ? 'grp_default_openai' : `grp_default_openai_${account.id}`
+    insertGroup.run(groupId, account.id, DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
+  }
 }

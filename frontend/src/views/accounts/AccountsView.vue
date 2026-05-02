@@ -273,9 +273,6 @@
             <a-form-item label="Base URL">
               <a-input v-model:value="form.baseUrl" :placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'" />
             </a-form-item>
-            <a-form-item v-if="editingId" label="Organization ID">
-              <a-input v-model:value="form.organizationId" placeholder="可选" />
-            </a-form-item>
           </div>
         </section>
 
@@ -305,9 +302,6 @@
             <div class="form-grid">
               <a-form-item label="Account ID">
                 <a-input v-model:value="form.accountId" />
-              </a-form-item>
-              <a-form-item label="Organization ID">
-                <a-input v-model:value="form.organizationId" />
               </a-form-item>
             </div>
           </template>
@@ -445,7 +439,6 @@ interface AccountForm {
   clientId: string
   expiresAt?: Dayjs
   accountId: string
-  organizationId: string
   oauthMode: 'manual' | 'refresh_token'
   redirectUri: string
   callbackUrl: string
@@ -667,7 +660,6 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     refreshToken: '',
     clientId: '',
     accountId: '',
-    organizationId: '',
     oauthMode: 'manual',
     redirectUri: 'http://localhost:1455/auth/callback',
     callbackUrl: '',
@@ -1007,7 +999,6 @@ function openEdit(account: AccountSummary) {
     refreshToken: asString(account.credentials.refresh_token),
     clientId: asString(account.credentials.client_id),
     accountId: asString(account.credentials.account_id),
-    organizationId: asString(account.credentials.organization_id),
     expiresAt: undefined,
     notes: account.notes ?? ''
   })
@@ -1029,9 +1020,6 @@ function buildCredentials() {
         expires_at: form.expiresAt?.toISOString(),
         account_id: form.accountId
       }
-  if (editingId.value && form.organizationId.trim()) {
-    credentials.organization_id = form.organizationId.trim()
-  }
   writeAccountErrorPolicyToCredentials(credentials, accountErrorPolicyRules.value)
   return credentials
 }
