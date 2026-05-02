@@ -1,22 +1,18 @@
 <template>
-  <a-card class="page-card api-keys-page-card" title="API 密钥">
-    <div class="page-toolbar">
-      <span class="toolbar-note">API Key 绑定分组，系统自动生成完整密钥，不需要手动填写前缀。</span>
+  <a-card class="page-card api-keys-page-card">
+    <div class="page-toolbar page-toolbar-end">
       <div class="page-toolbar-actions">
+        <a-button @click="helpOpen = true">
+          <template #icon><question-circle-outlined /></template>
+          接入帮助
+        </a-button>
         <a-button type="primary" @click="openCreate">新建 API Key</a-button>
       </div>
     </div>
 
-    <div class="key-summary-grid">
-      <div v-for="item in keySummaryCards" :key="item.label" class="summary-card">
-        <span class="summary-label">{{ item.label }}</span>
-        <strong class="summary-value">{{ item.value }}</strong>
-        <span class="summary-hint">{{ item.hint }}</span>
-      </div>
-    </div>
     <a-table class="page-table api-keys-table" size="middle" :columns="columns" :data-source="apiKeys" row-key="id" :loading="loading" :scroll="{ x: 1200 }">
       <template #emptyText>
-        <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组，随后即可复制完整密钥。" />
+        <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'status'">
@@ -44,6 +40,51 @@
       </template>
     </a-table>
 
+    <a-modal v-model:open="helpOpen" title="API Key 接入帮助" width="720px" :footer="null">
+      <div class="gateway-help-content">
+        <a-alert
+          message="当前只兼容 OpenAI 协议"
+          description="客户端统一按 OpenAI 兼容格式请求。后续增加其他主流厂商时，也会优先在服务端适配为 OpenAI 兼容协议。"
+          type="info"
+          show-icon
+        />
+        <div class="gateway-help-section">
+          <div class="gateway-guide-heading">
+            <span class="gateway-guide-title">中转请求地址</span>
+            <a-tag color="blue">Base URL</a-tag>
+          </div>
+          <p class="gateway-guide-desc">客户端的 Base URL 填下面地址，API Key 填本页生成的本地网关密钥。</p>
+          <div class="gateway-url-row">
+            <span class="gateway-url-label">Base URL</span>
+            <span class="gateway-url-value">{{ gatewayBaseUrl }}</span>
+            <a-button class="gateway-copy-button" type="text" size="small" @click="copyGatewayBaseUrl">
+              <template #icon><copy-outlined /></template>
+              复制
+            </a-button>
+          </div>
+        </div>
+        <div class="gateway-help-section">
+          <span class="gateway-example-title">常用路径</span>
+          <div class="gateway-endpoints">
+            <a-tag v-for="endpoint in gatewayEndpoints" :key="endpoint" color="geekblue">{{ endpoint }}</a-tag>
+          </div>
+        </div>
+        <div class="gateway-help-section">
+          <span class="gateway-example-title">客户端配置示例</span>
+          <pre class="gateway-code">{{ gatewayClientExample }}</pre>
+        </div>
+        <div class="gateway-help-section">
+          <span class="gateway-example-title">调度关系</span>
+          <ol class="gateway-flow-list">
+            <li>请求携带本页 API Key 进入 `/v1/*`。</li>
+            <li>系统校验 API Key，并找到它绑定的分组。</li>
+            <li>系统只从该分组内选择可用 OpenAI 账户请求上游。</li>
+            <li>返回内容保持 OpenAI 兼容响应格式，并写入使用记录。</li>
+          </ol>
+        </div>
+      </div>
+    </a-modal>
+
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑 API Key' : '新建 API Key'" width="640px" :ok-button-props="{ type: 'primary' }" @ok="saveApiKey">
       <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建后直接复制保存即可。" type="info" show-icon />
       <a-form layout="vertical" class="modal-form">
@@ -63,7 +104,12 @@
     </a-modal>
 
     <a-modal v-model:open="createdKeyOpen" title="API Key 已创建" width="640px" :footer="null">
-      <a-alert message="明文密钥已保存，列表中也会直接显示完整值。" type="info" show-icon />
+      <a-alert message="明文密钥已保存，列表中也会直接显示完整值。调用客户端还需要同时配置下方 Base URL。" type="info" show-icon />
+      <div class="created-key-base-url">
+        <span class="created-key-label">Base URL</span>
+        <span class="created-key-value">{{ gatewayBaseUrl }}</span>
+        <a-button type="link" size="small" @click="copyGatewayBaseUrl">复制</a-button>
+      </div>
       <a-input-group compact class="created-key">
         <a-input :value="createdKey" readonly style="width: calc(100% - 88px)" />
         <a-button type="primary" @click="copyCreatedKey">复制</a-button>
@@ -74,7 +120,7 @@
 
 <script setup lang="ts">
 import type { Dayjs } from 'dayjs'
-import { CopyOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
@@ -84,15 +130,17 @@ import type { ApiKeySummary, GroupSummary } from '@/types/domain'
 const loading = ref(false)
 const modalOpen = ref(false)
 const createdKeyOpen = ref(false)
+const helpOpen = ref(false)
 const editingId = ref<string>()
 const createdKey = ref('')
 const apiKeys = ref<ApiKeySummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const form = reactive({ name: '', groupId: '', status: 'active' as 'active' | 'disabled', expiresAt: undefined as Dayjs | undefined })
+const gatewayEndpoints = ['/chat/completions', '/responses', '/models']
 
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
-  { title: '秘钥', key: 'key', width: 180 },
+  { title: '密钥', key: 'key', width: 180 },
   { title: '绑定分组', key: 'group', width: 220 },
   { title: '状态', key: 'status', width: 100 },
   { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
@@ -105,19 +153,8 @@ const statusOptions = [
 ]
 
 const groupOptions = computed(() => groups.value.map((group) => ({ label: group.name, value: group.id })))
-
-const keySummaryCards = computed(() => {
-  const total = apiKeys.value.length
-  const active = apiKeys.value.filter((item) => item.status === 'active').length
-  const disabled = apiKeys.value.filter((item) => item.status === 'disabled').length
-  const groupCount = new Set(apiKeys.value.map((item) => item.groupId)).size
-  return [
-    { label: '总密钥', value: String(total), hint: '当前系统保存的 API Key 总数' },
-    { label: '启用中', value: String(active), hint: '状态为 active 的密钥' },
-    { label: '已停用', value: String(disabled), hint: '状态为 disabled 的密钥' },
-    { label: '绑定分组', value: String(groupCount), hint: '当前被 API Key 使用的分组数' }
-  ]
-})
+const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
+const gatewayClientExample = computed(() => [`base_url = ${gatewayBaseUrl.value}`, 'api_key = <这里填本页 API Key>', 'protocol = OpenAI-compatible /v1'].join('\n'))
 
 function groupName(groupId: string) {
   return groups.value.find((group) => group.id === groupId)?.name ?? groupId
@@ -194,8 +231,25 @@ async function copyText(value: string) {
   message.success('已复制')
 }
 
+async function copyGatewayBaseUrl() {
+  await copyText(gatewayBaseUrl.value)
+}
+
 async function copyCreatedKey() {
   await copyText(createdKey.value)
+}
+
+function inferGatewayBaseUrl() {
+  if (typeof window === 'undefined') return 'http://127.0.0.1:3000/v1'
+  if (import.meta.env.DEV) {
+    return `${window.location.protocol}//${window.location.hostname}:3000/v1`
+  }
+  return `${window.location.origin}/v1`
+}
+
+function normalizeGatewayBaseUrl(value: string) {
+  const trimmed = value.trim().replace(/\/+$/, '')
+  return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`
 }
 
 async function removeApiKey(id: string) {
@@ -219,11 +273,99 @@ onMounted(loadData)
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
-.key-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
-  margin-bottom: 16px;
+.gateway-help-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.gateway-help-section {
+  padding: 14px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #fbfdff;
+}
+
+.gateway-guide-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.gateway-guide-title {
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.gateway-guide-desc {
+  max-width: 760px;
+  margin: 0 0 14px;
+  color: #475569;
+  line-height: 1.7;
+}
+
+.gateway-url-row,
+.created-key-base-url {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.gateway-url-label,
+.created-key-label,
+.gateway-example-title {
+  flex: none;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.gateway-url-value,
+.created-key-value {
+  min-width: 0;
+  padding: 4px 10px;
+  overflow: hidden;
+  color: #0f766e;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 6px;
+  background: #ecfeff;
+}
+
+.gateway-copy-button {
+  flex: none;
+}
+
+.gateway-endpoints {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
+.gateway-code {
+  margin: 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  color: #334155;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.gateway-flow-list {
+  padding-left: 20px;
+  margin: 8px 0 0;
+  color: #475569;
+  line-height: 1.8;
 }
 
 .modal-alert {
@@ -235,6 +377,10 @@ onMounted(loadData)
 }
 
 .created-key {
+  margin-top: 16px;
+}
+
+.created-key-base-url {
   margin-top: 16px;
 }
 
@@ -277,15 +423,4 @@ onMounted(loadData)
   background: #eff6ff;
 }
 
-@media (max-width: 992px) {
-  .key-summary-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 768px) {
-  .key-summary-grid {
-    grid-template-columns: 1fr;
-  }
-}
 </style>

@@ -1,6 +1,5 @@
 <template>
-  <a-card class="page-card" title="供应商">
-    <a-alert class="provider-alert" message="第一期只启用 OpenAI，账户创建方式支持 OAuth 和 API Key；模型价格来自供应商模型目录，网关计费复用同一份数据。" type="info" show-icon />
+  <a-card class="page-card">
     <a-table class="page-table provider-table" size="middle" :columns="columns" :data-source="providers" row-key="code" :loading="loading" :pagination="false" :scroll="{ x: 1200 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="当前仅内置 OpenAI 供应商，后续新供应商会在这里扩展。" />
@@ -39,6 +38,9 @@
           <a-tag color="purple">价格单位：USD / 1M tokens</a-tag>
         </a-space>
       </div>
+      <a-tabs v-model:activeKey="selectedModelType" class="model-tabs" size="small">
+        <a-tab-pane v-for="tab in modelTypeTabs" :key="tab.key" :tab="tab.label" />
+      </a-tabs>
       <a-table
         class="model-table"
         size="small"
@@ -47,7 +49,7 @@
         row-key="model"
         :loading="modelLoading"
         :pagination="{ pageSize: 12, showSizeChanger: true }"
-        :scroll="{ x: 1360 }"
+        :scroll="{ x: 1500 }"
       >
         <template #emptyText>
           <a-empty class="page-empty-card" description="这个供应商暂未配置模型价格。" />
@@ -60,7 +62,7 @@
             <span>{{ record.releaseDate || '-' }}</span>
           </template>
           <template v-else-if="column.key === 'mode'">
-            <a-tag>{{ record.mode || '-' }}</a-tag>
+            <a-tag>{{ formatModelMode(record.mode) }}</a-tag>
           </template>
           <template v-else-if="column.key === 'prices'">
             <div class="price-cell">
@@ -75,11 +77,11 @@
               <span>1h {{ formatPrice(record.cacheWrite1hUsdPer1M) }}</span>
             </div>
           </template>
-          <template v-else-if="column.key === 'image'">
-            <div class="price-cell">
-              <span>图片 token {{ formatPrice(record.imageOutputUsdPer1M) }}</span>
-              <span>每张 {{ formatUnitPrice(record.outputUsdPerImage) }}</span>
-            </div>
+          <template v-else-if="column.key === 'imageTokenPrice'">
+            <span>{{ formatPrice(record.imageOutputUsdPer1M) }}</span>
+          </template>
+          <template v-else-if="column.key === 'imageUnitPrice'">
+            <span>{{ formatUnitPrice(record.outputUsdPerImage) }}</span>
           </template>
           <template v-else-if="column.key === 'context'">
             <div class="price-cell">
@@ -107,13 +109,26 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { ProviderDefinition, ProviderModelPricing } from '@/types/domain'
 
+const modelTypeOrder = ['chat', 'responses', 'image_generation', 'audio_speech', 'audio_transcription', 'other'] as const
+type ModelTypeKey = typeof modelTypeOrder[number]
+
 const loading = ref(false)
 const modelLoading = ref(false)
 const providers = ref<ProviderDefinition[]>([])
 const providerModels = ref<ProviderModelPricing[]>([])
 const modelKeyword = ref('')
+const selectedModelType = ref<ModelTypeKey>('chat')
 const modelModalOpen = ref(false)
 const activeProvider = ref<ProviderDefinition | null>(null)
+
+const modelTypeLabels: Record<ModelTypeKey, string> = {
+  chat: '对话',
+  responses: 'Responses',
+  image_generation: '图像',
+  audio_speech: '语音合成',
+  audio_transcription: '语音转写',
+  other: '其他'
+}
 
 const columns = [
   { title: '编码', dataIndex: 'code', key: 'code', width: 120 },
@@ -125,26 +140,80 @@ const columns = [
   { title: '操作', key: 'actions', fixed: 'right', width: 120 }
 ]
 
-const modelColumns = [
+const baseModelColumns = [
   { title: '模型', key: 'model', width: 260 },
   { title: '版本日期', key: 'releaseDate', width: 120 },
   { title: '类型', key: 'mode', width: 110 },
   { title: 'Token 价格', key: 'prices', width: 230 },
   { title: '缓存写入', key: 'cacheWrite', width: 180 },
-  { title: '图片价格', key: 'image', width: 210 },
+  { title: '图片 token 价格', key: 'imageTokenPrice', width: 170 },
+  { title: '每张价格', key: 'imageUnitPrice', width: 130 },
   { title: '上下文', key: 'context', width: 180 },
   { title: '能力', key: 'features', width: 180 }
 ]
 
+const currentTabModels = computed(() => {
+  const selectedType = selectedModelType.value
+  return providerModels.value.filter((item) => getModelTypeKey(item.mode) === selectedType)
+})
+
+const modelColumns = computed(() => {
+  const rows = currentTabModels.value
+  const visibleKeys = new Set(['model', 'releaseDate', 'mode', 'features'])
+
+  if (rows.some((item) => hasAnyNumber(item.inputUsdPer1M, item.outputUsdPer1M, item.cachedInputUsdPer1M))) {
+    visibleKeys.add('prices')
+  }
+  if (rows.some((item) => hasAnyNumber(item.cacheWriteUsdPer1M, item.cacheWrite1hUsdPer1M))) {
+    visibleKeys.add('cacheWrite')
+  }
+  if (rows.some((item) => typeof item.imageOutputUsdPer1M === 'number')) {
+    visibleKeys.add('imageTokenPrice')
+  }
+  if (rows.some((item) => typeof item.outputUsdPerImage === 'number')) {
+    visibleKeys.add('imageUnitPrice')
+  }
+  if (rows.some((item) => hasAnyNumber(item.maxInputTokens, item.maxOutputTokens))) {
+    visibleKeys.add('context')
+  }
+
+  return baseModelColumns.filter((column) => visibleKeys.has(column.key))
+})
+
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型价格` : '模型价格')
+
+const modelTypeTabs = computed(() => {
+  const counts = new Map<ModelTypeKey, number>()
+  for (const key of modelTypeOrder) {
+    counts.set(key, 0)
+  }
+
+  for (const item of providerModels.value) {
+    const key = getModelTypeKey(item.mode)
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+
+  return modelTypeOrder
+    .filter((key) => (counts.get(key) ?? 0) > 0)
+    .map((key) => ({
+      key,
+      label: `${modelTypeLabels[key]} (${counts.get(key) ?? 0})`
+    }))
+})
 
 const filteredModels = computed(() => {
   const keyword = modelKeyword.value.trim().toLowerCase()
-  if (!keyword) return providerModels.value
-  return providerModels.value.filter((item) => {
-    return item.model.toLowerCase().includes(keyword) || (item.mode ?? '').toLowerCase().includes(keyword)
+  return currentTabModels.value.filter((item) => {
+    const keywordMatches = !keyword
+      || item.model.toLowerCase().includes(keyword)
+      || formatModelMode(item.mode).toLowerCase().includes(keyword)
+    return keywordMatches
   })
 })
+
+function hasAnyNumber(...values: Array<number | undefined>) {
+  return values.some((value) => typeof value === 'number')
+}
 
 async function loadProviders() {
   loading.value = true
@@ -162,9 +231,11 @@ async function openModelModal(provider: ProviderDefinition) {
   activeProvider.value = provider
   modelModalOpen.value = true
   modelKeyword.value = ''
+  selectedModelType.value = 'chat'
   modelLoading.value = true
   try {
     providerModels.value = await api.providers.models(provider.code)
+    selectedModelType.value = findFirstModelType(providerModels.value)
   } catch (error) {
     console.error(error)
     providerModels.value = []
@@ -177,7 +248,34 @@ async function openModelModal(provider: ProviderDefinition) {
 function resetModelModal() {
   activeProvider.value = null
   modelKeyword.value = ''
+  selectedModelType.value = 'chat'
   providerModels.value = []
+}
+
+function findFirstModelType(models: ProviderModelPricing[]): ModelTypeKey {
+  for (const key of modelTypeOrder) {
+    if (models.some((item) => getModelTypeKey(item.mode) === key)) {
+      return key
+    }
+  }
+  return 'other'
+}
+
+function getModelTypeKey(mode?: string): ModelTypeKey {
+  switch ((mode ?? '').trim()) {
+    case 'chat':
+    case 'responses':
+    case 'image_generation':
+    case 'audio_speech':
+    case 'audio_transcription':
+      return mode as ModelTypeKey
+    default:
+      return 'other'
+  }
+}
+
+function formatModelMode(mode?: string) {
+  return modelTypeLabels[getModelTypeKey(mode)]
 }
 
 function formatPrice(value?: number) {
@@ -203,11 +301,6 @@ onMounted(loadProviders)
 </script>
 
 <style scoped>
-.provider-alert {
-  margin-bottom: 18px;
-  border-radius: 10px;
-}
-
 .provider-table :deep(.ant-empty),
 .model-table :deep(.ant-empty) {
   margin: 12px 0;
@@ -224,6 +317,18 @@ onMounted(loadProviders)
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 16px;
+}
+
+.model-tabs {
+  margin-bottom: 8px;
+}
+
+.model-tabs :deep(.ant-tabs-content-holder) {
+  display: none;
+}
+
+.model-tabs :deep(.ant-tabs-nav) {
+  margin-bottom: 0;
 }
 
 .model-search {

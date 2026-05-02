@@ -54,6 +54,7 @@ interface GroupAccountRow {
 interface GroupRow {
   id: string
   name: string
+  provider_code: ProviderCode
   description: string | null
   enabled: number
 }
@@ -100,17 +101,27 @@ export interface ProxyProfileSummary {
   lastTestedAt?: string
 }
 
+export interface UsageRecordLogSnapshot {
+  [key: string]: unknown
+}
+
 export interface UsageRecordSummary {
   id: string
   requestId: string
+  clientIp?: string
   apiKeyId?: string
+  apiKeyName?: string
   groupId?: string
+  groupName?: string
   accountId?: string
+  accountName?: string
+  endpoint?: string
   providerCode?: string
   model?: string
   stream: boolean
   statusCode?: number
   success: boolean
+  firstTokenMs?: number
   durationMs?: number
   inputTokens?: number
   outputTokens?: number
@@ -118,6 +129,8 @@ export interface UsageRecordSummary {
   costUsd?: number
   errorCode?: string
   errorMessage?: string
+  requestSnapshot?: UsageRecordLogSnapshot
+  responseSnapshot?: UsageRecordLogSnapshot
   createdAt: string
 }
 
@@ -144,6 +157,19 @@ export interface AccountUsageSummary {
   totalTokens: number
   totalCost: number
   lastUsedAt?: string
+}
+
+interface GroupAccountStats {
+  total: number
+  available: number
+  active: number
+  disabled: number
+  error: number
+  rateLimited: number
+  currentConcurrency: number
+  concurrencyLimit: number
+  todayUsage: AccountUsageSummary
+  usage: AccountUsageSummary
 }
 
 export interface MigrationAccountInput {
@@ -205,6 +231,18 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
+function parseOptionalJsonObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'string' || !value.trim()) return undefined
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
 const accountStatusValues: readonly AccountStatus[] = ['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 const coolingAccountStatusValues: readonly AccountStatus[] = ['rate_limited', 'temporary_unavailable']
 
@@ -222,6 +260,87 @@ function boolInt(value: unknown, fallback: boolean): number {
   return typeof value === 'boolean' ? (value ? 1 : 0) : fallback ? 1 : 0
 }
 
+function emptyAccountUsageSummary(): AccountUsageSummary {
+  return {
+    requestCount: 0,
+    clientCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    totalTokens: 0,
+    totalCost: 0
+  }
+}
+
+function emptyGroupAccountStats(): GroupAccountStats {
+  return {
+    total: 0,
+    available: 0,
+    active: 0,
+    disabled: 0,
+    error: 0,
+    rateLimited: 0,
+    currentConcurrency: 0,
+    concurrencyLimit: 0,
+    todayUsage: emptyAccountUsageSummary(),
+    usage: emptyAccountUsageSummary()
+  }
+}
+
+function groupAccountStats(accounts: AccountSummary[], todayUsage?: AccountUsageSummary): GroupAccountStats {
+  const stats = emptyGroupAccountStats()
+  stats.total = accounts.length
+  stats.todayUsage = todayUsage ?? emptyAccountUsageSummary()
+  for (const account of accounts) {
+    if (account.status === 'active') {
+      stats.active += 1
+    } else if (account.status === 'disabled') {
+      stats.disabled += 1
+    } else if (account.status === 'rate_limited') {
+      stats.rateLimited += 1
+      stats.error += 1
+    } else {
+      stats.error += 1
+    }
+    if (account.status === 'active' && account.schedulable && !isAccountCooling(account)) {
+      stats.available += 1
+    }
+    stats.currentConcurrency += account.currentConcurrency
+    stats.concurrencyLimit += account.concurrencyLimit
+    stats.usage.requestCount += account.usage.requestCount
+    stats.usage.clientCount += account.usage.clientCount
+    stats.usage.inputTokens += account.usage.inputTokens
+    stats.usage.outputTokens += account.usage.outputTokens
+    stats.usage.cacheReadTokens += account.usage.cacheReadTokens
+    stats.usage.totalTokens += account.usage.totalTokens
+    stats.usage.totalCost += account.usage.totalCost
+    if (isLaterIso(account.usage.lastUsedAt, stats.usage.lastUsedAt)) {
+      stats.usage.lastUsedAt = account.usage.lastUsedAt
+    }
+  }
+  return stats
+}
+
+function isAccountCooling(account: AccountSummary): boolean {
+  if (!account.cooldownUntil) return false
+  const cooldownUntil = Date.parse(account.cooldownUntil)
+  return Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()
+}
+
+function isLaterIso(value?: string, current?: string): boolean {
+  if (!value) return false
+  if (!current) return true
+  const nextTime = Date.parse(value)
+  const currentTime = Date.parse(current)
+  return Number.isFinite(nextTime) && (!Number.isFinite(currentTime) || nextTime > currentTime)
+}
+
+function validAccountIdsForGroup(providerCode: string, accountIds: string[]): string[] {
+  const uniqueIds = [...new Set(accountIds)]
+  const accountsById = new Map(listAccounts().map((account) => [account.id, account]))
+  return uniqueIds.filter((accountId) => accountsById.get(accountId)?.providerCode === providerCode)
+}
+
 function runDelete(sql: string, id: string): boolean {
   const result = getDatabase().prepare(sql).run(id)
   return result.changes > 0
@@ -236,10 +355,6 @@ function defaultAccountConcurrencyLimit(): number {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   if (!Number.isFinite(number)) return 3
   return Math.min(Math.max(Math.trunc(number), 1), 999)
-}
-
-function defaultErrorPolicyId(): string | undefined {
-  return optionalString(getSettings().defaultErrorPolicyId) ?? 'ep_default_passthrough'
 }
 
 function defaultTemporaryUnschedulableMinutes(): number {
@@ -301,15 +416,7 @@ export function listAccounts(): AccountSummary[] {
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
     lastUsedAt: row.last_used_at ?? usageByAccount.get(row.id)?.lastUsedAt,
-    usage: usageByAccount.get(row.id) ?? {
-      requestCount: 0,
-      clientCount: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      totalTokens: 0,
-      totalCost: 0
-    }
+    usage: usageByAccount.get(row.id) ?? emptyAccountUsageSummary()
   }))
 }
 
@@ -365,7 +472,7 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? 0),
     proxyProfileId: optionalString(input.proxyProfileId ?? input.proxy_profile_id),
     passthroughEnabled: Boolean(input.passthroughEnabled ?? input.passthrough_enabled),
-    errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id) ?? defaultErrorPolicyId(),
+    errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
     schedulable: input.schedulable !== false,
     cooldownUntil: initialCooldownUntil,
     lastErrorMessage: initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
@@ -647,27 +754,43 @@ export function listGroups(): GroupSummary[] {
   const database = getDatabase()
   const rows = database.prepare('SELECT * FROM groups ORDER BY updated_at DESC').all() as unknown as GroupRow[]
   const accountRows = database.prepare('SELECT group_id, account_id FROM group_accounts WHERE enabled = 1').all() as Array<{ group_id: string; account_id: string }>
+  const accountsById = new Map(listAccounts().map((account) => [account.id, account]))
+  const todayUsageByGroup = loadTodayGroupUsageSummaries()
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
+    providerCode: row.provider_code,
     description: row.description ?? undefined,
     enabled: row.enabled === 1,
-    accountIds: accountRows.filter((item) => item.group_id === row.id).map((item) => item.account_id)
+    accountIds: accountRows
+      .filter((item) => item.group_id === row.id && accountsById.get(item.account_id)?.providerCode === row.provider_code)
+      .map((item) => item.account_id),
+    accountStats: groupAccountStats(
+      accountRows
+        .filter((item) => item.group_id === row.id)
+        .map((item) => item.account_id)
+        .map((accountId) => accountsById.get(accountId))
+        .filter((account): account is AccountSummary => account !== undefined && account.providerCode === row.provider_code),
+      todayUsageByGroup.get(row.id)
+    )
   }))
 }
 
 export function createGroup(input: Record<string, unknown>): GroupSummary {
   const now = nowIso()
+  const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai')
   const group: GroupSummary = {
     id: newId('grp'),
     name: String(input.name ?? '未命名分组'),
+    providerCode,
     description: optionalString(input.description),
     enabled: input.enabled !== false,
-    accountIds: []
+    accountIds: [],
+    accountStats: emptyGroupAccountStats()
   }
   getDatabase()
-    .prepare('INSERT INTO groups (id, name, description, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-    .run(group.id, group.name, group.description ?? null, group.enabled ? 1 : 0, now, now)
+    .prepare('INSERT INTO groups (id, name, provider_code, description, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(group.id, group.name, group.providerCode, group.description ?? null, group.enabled ? 1 : 0, now, now)
   return group
 }
 
@@ -683,13 +806,18 @@ export function updateGroup(id: string, input: Record<string, unknown>): GroupSu
   const next: GroupSummary = {
     ...current,
     name: typeof input.name === 'string' ? input.name : current.name,
+    providerCode: typeof input.providerCode === 'string' ? input.providerCode : typeof input.provider_code === 'string' ? input.provider_code : current.providerCode,
     description: optionalString(input.description) ?? current.description,
     enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled
   }
-  getDatabase()
-    .prepare('UPDATE groups SET name = ?, description = COALESCE(?, description), enabled = ?, updated_at = ? WHERE id = ?')
-    .run(next.name, optionalString(input.description) ?? null, next.enabled ? 1 : 0, nowIso(), id)
-  return next
+  const database = getDatabase()
+  database
+    .prepare('UPDATE groups SET name = ?, provider_code = ?, description = COALESCE(?, description), enabled = ?, updated_at = ? WHERE id = ?')
+    .run(next.name, next.providerCode, optionalString(input.description) ?? null, next.enabled ? 1 : 0, nowIso(), id)
+  database
+    .prepare('DELETE FROM group_accounts WHERE group_id = ? AND account_id IN (SELECT id FROM accounts WHERE provider_code <> ?)')
+    .run(id, next.providerCode)
+  return listGroups().find((group) => group.id === id)
 }
 
 export function deleteGroup(id: string): boolean {
@@ -705,16 +833,19 @@ export function setGroupAccounts(groupId: string, accountIds: string[]): GroupSu
   const now = nowIso()
   database.prepare('DELETE FROM group_accounts WHERE group_id = ?').run(groupId)
   const statement = database.prepare('INSERT INTO group_accounts (group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
-  for (const accountId of accountIds) {
+  for (const accountId of validAccountIdsForGroup(current.providerCode, accountIds)) {
     statement.run(groupId, accountId, 1, 1, now, now)
   }
-  return { ...current, accountIds }
+  return listGroups().find((group) => group.id === groupId)
 }
 
 export function addAccountToGroup(groupId: string, accountId: string, weight = 1): GroupSummary | undefined {
   const database = getDatabase()
   const current = listGroups().find((group) => group.id === groupId)
   if (!current) {
+    return undefined
+  }
+  if (!validAccountIdsForGroup(current.providerCode, [accountId]).includes(accountId)) {
     return undefined
   }
   const now = nowIso()
@@ -911,27 +1042,76 @@ function proxyPassword(row: ProxyRow): string | undefined {
 }
 
 export function listUsageRecords(): UsageRecordSummary[] {
-  const rows = getDatabase().prepare('SELECT * FROM usage_records ORDER BY created_at DESC LIMIT 200').all() as Array<Record<string, unknown>>
-  return rows.map((row) => ({
-    id: String(row.id),
-    requestId: String(row.request_id),
-    apiKeyId: optionalString(row.api_key_id),
-    groupId: optionalString(row.group_id),
-    accountId: optionalString(row.account_id),
-    providerCode: optionalString(row.provider_code),
-    model: optionalString(row.model),
-    stream: row.stream === 1,
-    statusCode: typeof row.status_code === 'number' ? row.status_code : undefined,
-    success: row.success === 1,
-    durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : undefined,
-    inputTokens: typeof row.input_tokens === 'number' ? row.input_tokens : undefined,
-    outputTokens: typeof row.output_tokens === 'number' ? row.output_tokens : undefined,
-    cacheReadTokens: typeof row.cache_read_tokens === 'number' ? row.cache_read_tokens : undefined,
-    costUsd: typeof row.cost_usd === 'number' ? row.cost_usd : undefined,
-    errorCode: optionalString(row.error_code),
-    errorMessage: optionalString(row.error_message),
-    createdAt: String(row.created_at)
-  }))
+  const rows = getDatabase()
+    .prepare(`
+      SELECT
+        ur.*,
+        ak.name AS api_key_name,
+        g.name AS group_name,
+        a.name AS account_name
+      FROM usage_records ur
+      LEFT JOIN api_keys ak ON ak.id = ur.api_key_id
+      LEFT JOIN groups g ON g.id = ur.group_id
+      LEFT JOIN accounts a ON a.id = ur.account_id
+      ORDER BY ur.created_at DESC
+      LIMIT 200
+    `)
+    .all() as Array<Record<string, unknown>>
+  return rows.map((row) => {
+    const requestSnapshot = parseOptionalJsonObject(row.request_snapshot_json)
+    const inputTokens = typeof row.input_tokens === 'number' ? row.input_tokens : undefined
+    const outputTokens = typeof row.output_tokens === 'number' ? row.output_tokens : undefined
+    const cacheReadTokens = typeof row.cache_read_tokens === 'number' ? row.cache_read_tokens : undefined
+    const model = optionalString(row.model)
+    const stream = row.stream === 1
+    return {
+      id: String(row.id),
+      requestId: String(row.request_id),
+      clientIp: optionalString(row.client_ip),
+      apiKeyId: optionalString(row.api_key_id),
+      apiKeyName: optionalString(row.api_key_name),
+      groupId: optionalString(row.group_id),
+      groupName: optionalString(row.group_name),
+      accountId: optionalString(row.account_id),
+      accountName: optionalString(row.account_name),
+      endpoint: optionalString(row.endpoint) ?? endpointFromSnapshot(requestSnapshot) ?? inferLegacyEndpoint({ model, stream, inputTokens, outputTokens, cacheReadTokens }),
+      providerCode: optionalString(row.provider_code),
+      model,
+      stream,
+      statusCode: typeof row.status_code === 'number' ? row.status_code : undefined,
+      success: row.success === 1,
+      firstTokenMs: typeof row.first_token_ms === 'number' ? row.first_token_ms : undefined,
+      durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : undefined,
+      inputTokens,
+      outputTokens,
+      cacheReadTokens,
+      costUsd: typeof row.cost_usd === 'number' ? row.cost_usd : undefined,
+      errorCode: optionalString(row.error_code),
+      errorMessage: optionalString(row.error_message),
+      requestSnapshot,
+      responseSnapshot: parseOptionalJsonObject(row.response_snapshot_json),
+      createdAt: String(row.created_at)
+    }
+  })
+}
+
+function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | undefined {
+  const method = typeof snapshot?.method === 'string' ? snapshot.method.toUpperCase() : undefined
+  const originalUrl = typeof snapshot?.originalUrl === 'string' ? snapshot.originalUrl.split('?')[0] : undefined
+  const path = typeof snapshot?.path === 'string' ? snapshot.path : undefined
+  const endpoint = originalUrl ?? path
+  return endpoint ? `${method ?? 'GET'} ${endpoint}` : undefined
+}
+
+function inferLegacyEndpoint(input: {
+  model?: string
+  stream: boolean
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+}): string | undefined {
+  if (input.inputTokens === undefined && input.outputTokens === undefined && input.cacheReadTokens === undefined) return 'GET /v1/models'
+  return undefined
 }
 
 export function selectOpenAIAccountForGroup(groupId: string): OpenAIAccountSecret | undefined {
@@ -984,14 +1164,17 @@ export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret
 
 export function createUsageRecord(input: {
   requestId: string
+  clientIp?: string
   apiKeyId?: string
   groupId?: string
   accountId?: string
+  endpoint?: string
   providerCode?: string
   model?: string
   stream?: boolean
   statusCode?: number
   success: boolean
+  firstTokenMs?: number
   durationMs?: number
   inputTokens?: number
   outputTokens?: number
@@ -999,26 +1182,32 @@ export function createUsageRecord(input: {
   costUsd?: number
   errorCode?: string
   errorMessage?: string
+  requestSnapshot?: unknown
+  responseSnapshot?: unknown
 }): void {
   const now = nowIso()
   getDatabase()
     .prepare(`
       INSERT INTO usage_records (
-        id, request_id, api_key_id, group_id, account_id, provider_code, model, stream,
-        status_code, success, duration_ms, input_tokens, output_tokens, cache_read_tokens, cost_usd, error_code, error_message, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        id, request_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
+        status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cost_usd, error_code, error_message,
+        request_snapshot_json, response_snapshot_json, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       newId('usage'),
       input.requestId,
+      input.clientIp ?? null,
       input.apiKeyId ?? null,
       input.groupId ?? null,
       input.accountId ?? null,
+      input.endpoint ?? null,
       input.providerCode ?? null,
       input.model ?? null,
       input.stream ? 1 : 0,
       input.statusCode ?? null,
       input.success ? 1 : 0,
+      input.firstTokenMs ?? null,
       input.durationMs ?? null,
       input.inputTokens ?? null,
       input.outputTokens ?? null,
@@ -1026,6 +1215,8 @@ export function createUsageRecord(input: {
       input.costUsd ?? null,
       input.errorCode ?? null,
       input.errorMessage ?? null,
+      input.requestSnapshot ? JSON.stringify(input.requestSnapshot) : null,
+      input.responseSnapshot ? JSON.stringify(input.responseSnapshot) : null,
       now
     )
 
@@ -1067,21 +1258,54 @@ function loadAccountUsageSummaries(): Map<string, AccountUsageSummary> {
 
   const result = new Map<string, AccountUsageSummary>()
   for (const row of rows) {
-    const inputTokens = Number(row.input_tokens ?? 0)
-    const outputTokens = Number(row.output_tokens ?? 0)
-    const cacheReadTokens = Number(row.cache_read_tokens ?? 0)
-    result.set(row.account_id, {
-      requestCount: Number(row.request_count ?? 0),
-      clientCount: Number(row.client_count ?? 0),
-      inputTokens,
-      outputTokens,
-      cacheReadTokens,
-      totalTokens: inputTokens + outputTokens,
-      totalCost: Number(row.total_cost ?? 0),
-      lastUsedAt: row.last_used_at ?? undefined
-    })
+    result.set(row.account_id, usageSummaryFromAggregate(row))
   }
   return result
+}
+
+function loadTodayGroupUsageSummaries(): Map<string, AccountUsageSummary> {
+  const rows = getDatabase().prepare(`
+    SELECT
+      group_id,
+      COUNT(*) AS request_count,
+      COUNT(DISTINCT api_key_id) AS client_count,
+      COALESCE(SUM(COALESCE(input_tokens, 0)), 0) AS input_tokens,
+      COALESCE(SUM(COALESCE(output_tokens, 0)), 0) AS output_tokens,
+      COALESCE(SUM(COALESCE(cache_read_tokens, 0)), 0) AS cache_read_tokens,
+      COALESCE(SUM(COALESCE(cost_usd, 0)), 0) AS total_cost,
+      MAX(created_at) AS last_used_at
+    FROM usage_records
+    WHERE group_id IS NOT NULL AND created_at >= ?
+    GROUP BY group_id
+  `).all(startOfTodayIso()) as unknown as Array<AccountUsageAggregateRow & { group_id: string }>
+
+  const result = new Map<string, AccountUsageSummary>()
+  for (const row of rows) {
+    result.set(row.group_id, usageSummaryFromAggregate(row))
+  }
+  return result
+}
+
+function usageSummaryFromAggregate(row: AccountUsageAggregateRow): AccountUsageSummary {
+  const inputTokens = Number(row.input_tokens ?? 0)
+  const outputTokens = Number(row.output_tokens ?? 0)
+  const cacheReadTokens = Number(row.cache_read_tokens ?? 0)
+  return {
+    requestCount: Number(row.request_count ?? 0),
+    clientCount: Number(row.client_count ?? 0),
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    totalTokens: inputTokens + outputTokens,
+    totalCost: Number(row.total_cost ?? 0),
+    lastUsedAt: row.last_used_at ?? undefined
+  }
+}
+
+function startOfTodayIso(): string {
+  const date = new Date()
+  date.setHours(0, 0, 0, 0)
+  return date.toISOString()
 }
 
 export function importOpenAIApiKeyAccounts(input: {
@@ -1222,17 +1446,21 @@ export function importOpenAIApiKeyAccounts(input: {
 
 export function getSettings(): Record<string, unknown> {
   const rows = getDatabase().prepare('SELECT key, value_json FROM system_settings ORDER BY key ASC').all() as Array<{ key: string; value_json: string }>
-  return Object.fromEntries(rows.filter((row) => row.key !== 'apiKeyPrefix' && !row.key.startsWith('_migration')).map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
+  return Object.fromEntries(rows.filter((row) => !isHiddenSystemSetting(row.key)).map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
 }
 
 export function updateSettings(input: Record<string, unknown>): Record<string, unknown> {
   const statement = getDatabase().prepare('INSERT INTO system_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
   const now = nowIso()
   for (const [key, value] of Object.entries(input)) {
-    if (key === 'apiKeyPrefix') {
+    if (isHiddenSystemSetting(key)) {
       continue
     }
     statement.run(key, JSON.stringify(value), now)
   }
   return getSettings()
+}
+
+function isHiddenSystemSetting(key: string): boolean {
+  return key === 'apiKeyPrefix' || key === 'defaultOpenAIBaseUrl' || key === 'defaultErrorPolicyId' || key.startsWith('_migration')
 }

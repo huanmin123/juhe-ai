@@ -28,28 +28,27 @@ $env:DATABASE_PATH = "F:\sub2api-lite-data\sub2api-lite.sqlite3"
 
 - 使用 Node 22 内置 `node:sqlite`
 - 启动时自动建表
-- 启动时自动写入 OpenAI 供应商、默认分组、默认错误策略和默认系统设置
+- 启动时自动写入 OpenAI 供应商、默认分组和默认系统设置
 - 使用 `PRAGMA journal_mode = WAL`
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
+- 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 
-## 默认错误策略
+## 错误兜底策略
 
-启动时会写入两条内置策略：
-
-- `ep_default_passthrough`：默认透传策略，上游 `4xx/5xx` 原样返回。
-- `ep_default_safe`：默认安全策略，上游 `4xx/5xx` 转成本地 `502` 自定义错误。
-
-系统设置 `defaultErrorPolicyId` 默认指向 `ep_default_passthrough`，新建账号默认引用该策略；账号编辑里可以单独切换或清空为运行时默认。
+账户添加和编辑优先维护账号自己的 `credentials.error_handling_rules`。网关不会把未处理的上游 `4xx/5xx` 原样返回给客户端：如果当前账号的内嵌规则没有命中，当前账号会按 `defaultTemporaryUnschedulableMinutes` 进入临时不可调用，并切换到同分组内下一个可用账号重试；全部账号都不可用时，客户端只会收到“没有可用账号”的网关错误。
 
 ## 默认运行策略
 
 系统设置默认写入：
 
 - `defaultTemporaryUnschedulableMinutes = 5`：未知异常、策略冷却和流熔断共用的临时不可调用时长。
+- `temporaryUnschedulableRetryIntervalSeconds = 3`：进入临时不可调用前的默认短暂重试间隔。
+- `temporaryUnschedulableRetryAttempts = 3`：进入临时不可调用前的默认短暂重试次数。
 - `streamCircuitBreakerEnabled = true`：流熔断默认开启。
-- `streamIdleTimeoutSeconds = 180`、`streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
+- `streamRequestTimeoutSeconds = 180`：流式请求首包前的请求熔断时间，超时后会切换账号重发。
+- `streamIdleTimeoutSeconds = 30`、`streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
 
-旧库升级时会清理不再展示的 `streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes`，并通过一次性迁移把流熔断默认打开。
+旧库升级时会清理不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes`，并通过一次性迁移把流熔断默认打开。
 
 ## 敏感字段
 

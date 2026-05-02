@@ -23,8 +23,8 @@
             <MenuOutlined />
           </a-button>
           <div>
-            <div class="title">轻量中转管理</div>
-            <div class="subtitle">第一期：OpenAI OAuth + API Key</div>
+            <div class="title">{{ currentPageTitle }}</div>
+            <div class="subtitle">{{ currentPageDescription }}</div>
           </div>
         </a-space>
       </a-layout-header>
@@ -41,22 +41,18 @@ import type { ItemType } from 'ant-design-vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { menuRoutes } from '@/router'
+
 const router = useRouter()
 const route = useRoute()
 const isMobile = ref(false)
 const sidebarOpen = ref(false)
 
 const selectedKeys = computed(() => [route.path])
+const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
+const currentPageDescription = computed(() => route.meta.description || '第一期：OpenAI OAuth + API Key')
 
-const menuItems: ItemType[] = [
-  { key: '/providers', label: '供应商' },
-  { key: '/accounts', label: '账户管理' },
-  { key: '/groups', label: '分组' },
-  { key: '/api-keys', label: 'API 密钥' },
-  { key: '/proxies', label: '代理管理' },
-  { key: '/usage-records', label: '使用记录' },
-  { key: '/settings', label: '系统设置' }
-]
+const menuItems: ItemType[] = menuRoutes.map((item) => ({ key: item.path, label: item.meta.title }))
 
 function handleMenuClick(event: { key: string }) {
   router.push(event.key)

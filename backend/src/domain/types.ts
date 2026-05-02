@@ -61,8 +61,10 @@ export interface GroupAccountStats {
   active: number
   disabled: number
   error: number
+  rateLimited: number
   currentConcurrency: number
   concurrencyLimit: number
+  todayUsage: AccountUsageSummary
   usage: AccountUsageSummary
 }
 

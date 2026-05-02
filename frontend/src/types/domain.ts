@@ -61,8 +61,10 @@ export interface GroupAccountStats {
   active: number
   disabled: number
   error: number
+  rateLimited: number
   currentConcurrency: number
   concurrencyLimit: number
+  todayUsage: AccountUsageSummary
   usage: AccountUsageSummary
 }
 
@@ -150,35 +152,57 @@ export interface ProxyProfileSummary {
   lastTestedAt?: string
 }
 
+export interface UsageRecordLogSnapshot {
+  [key: string]: unknown
+}
+
+export interface UsageRecordCostBreakdown {
+  inputCostUsd?: number
+  outputCostUsd?: number
+  inputUsdPer1M?: number
+  outputUsdPer1M?: number
+  cacheReadCostUsd?: number
+  accountChargeUsd?: number
+  multiplier: 1
+}
+
 export interface UsageRecordSummary {
   id: string
   requestId: string
+  clientIp?: string
   apiKeyId?: string
+  apiKeyName?: string
   groupId?: string
+  groupName?: string
   accountId?: string
+  accountName?: string
+  endpoint?: string
   providerCode?: string
   model?: string
   stream: boolean
   statusCode?: number
   success: boolean
+  firstTokenMs?: number
   durationMs?: number
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
   costUsd?: number
+  costBreakdown?: UsageRecordCostBreakdown
   errorCode?: string
   errorMessage?: string
+  requestSnapshot?: UsageRecordLogSnapshot
+  responseSnapshot?: UsageRecordLogSnapshot
   createdAt: string
 }
 
 export interface SystemSettings {
-  defaultOpenAIBaseUrl?: string
   defaultAccountConcurrencyLimit?: number
-  defaultErrorPolicyId?: string
   defaultTemporaryUnschedulableMinutes?: number
   temporaryUnschedulableRetryIntervalSeconds?: number
   temporaryUnschedulableRetryAttempts?: number
   streamCircuitBreakerEnabled?: boolean
+  streamRequestTimeoutSeconds?: number
   streamIdleTimeoutSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number

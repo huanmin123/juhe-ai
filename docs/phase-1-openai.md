@@ -9,6 +9,8 @@
 
 其他供应商先只保留架构扩展位，不实现页面和接口。
 
+对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 填本服务 `/v1`，例如开发环境 `http://127.0.0.1:3000/v1`；API Key 填 API 密钥页生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
+
 ## OpenAI 供应商定义
 
 ```ts
@@ -112,7 +114,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 - 其他供应商
 - 完整 OAuth 授权 callback
-- 真正请求中转
+- 非 OpenAI 兼容协议的专用网关
 - 复杂计费
 - 多租户用户体系
 - 自动账号健康检测
@@ -155,17 +157,17 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 账户类型
 - 供应商
 - 并发数
-- 状态
+- 状态（正常、停用、错误、限流中、临时不可调用）
 - 用量情况
 - 优先级
 - 最近使用时间
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、启用/停用、暂停/恢复调度、OAuth 刷新、切换客户端和复制 Base URL。
+操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、恢复正常/停用、暂停/恢复调度、OAuth 刷新、切换客户端和复制 Base URL。
 
 ## 统计口径
 
-- 网关会记录命中账户、API Key、分组、模型、状态、耗时、错误和 token。
+- 网关会记录命中账户、API Key、分组、模型、状态、IP、首 token、总耗时、错误和 token。
 - OpenAI JSON 响应读取 `usage.input_tokens`、`usage.output_tokens` 和 `usage.input_tokens_details.cached_tokens`。
 - OpenAI SSE 响应读取 `response.completed` / `response.done` / `response.failed` 事件里的 `response.usage`。
 - 成本按 OpenAI 官方 API 价格表做轻量估算；没有覆盖的模型先只记 token。

@@ -52,6 +52,12 @@ pnpm build
 
 `$LiteKey` 使用 API Key 页面新建后返回的明文密钥，或同步脚本首次输出的 `sync.apiKey`。
 
+客户端接入时使用 OpenAI 兼容协议：
+
+- Base URL：`http://127.0.0.1:3000/v1`
+- API Key：API 密钥页生成的本地网关密钥
+- 常用路径：`/models`、`/responses`、`/chat/completions`
+
 ```powershell
 $LiteKey = "你的本地网关 API Key"
 Invoke-RestMethod http://127.0.0.1:3000/v1/models `
@@ -134,38 +140,43 @@ $env:SMOKE_MODEL = "gpt-5.4-mini"
 pnpm test:smoke
 ```
 
-烟测还会检查默认错误策略存在且启用，以及系统设置里这些字段是否存在：`defaultErrorPolicyId`、`defaultTemporaryUnschedulableMinutes`、`streamCircuitBreakerEnabled`、`streamIdleTimeoutSeconds`、`streamFailureThresholdCount`、`streamFailureThresholdWindowMinutes`。
+烟测还会检查系统设置不再返回 `defaultErrorPolicyId`，并确认这些字段存在：`defaultTemporaryUnschedulableMinutes`、`temporaryUnschedulableRetryIntervalSeconds`、`temporaryUnschedulableRetryAttempts`、`streamCircuitBreakerEnabled`、`streamRequestTimeoutSeconds`、`streamIdleTimeoutSeconds`、`streamFailureThresholdCount`、`streamFailureThresholdWindowMinutes`。
 
 ### 错误策略验证
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:3000/api/error-policies
 $settings = Invoke-RestMethod http://127.0.0.1:3000/api/settings
-$settings.data.defaultErrorPolicyId
+$settings.data.PSObject.Properties.Name -contains 'defaultErrorPolicyId'
 ```
 
-检查点：默认应存在 `ep_default_passthrough` 和 `ep_default_safe`；账户编辑弹窗的“错误处理策略”可切换，清空后运行时回落到系统默认策略。
+检查点：系统设置不再返回 `defaultErrorPolicyId`；账户添加/编辑弹窗的“错误处理策略”应展示账号内嵌规则列表，并保存到 `credentials.error_handling_rules`。未命中账号规则的上游错误不透传给客户端，而是让当前账号进入临时不可调用并切换账号；全部账号不可用时返回没有可用账号。
 
 ### 流熔断设置验证
 
 ```powershell
 $settings = Invoke-RestMethod http://127.0.0.1:3000/api/settings
 $settings.data.defaultTemporaryUnschedulableMinutes
+$settings.data.temporaryUnschedulableRetryIntervalSeconds
+$settings.data.temporaryUnschedulableRetryAttempts
 $settings.data.streamCircuitBreakerEnabled
+$settings.data.streamRequestTimeoutSeconds
 
 Invoke-RestMethod -Method Patch `
   -Uri "http://127.0.0.1:3000/api/settings" `
   -ContentType "application/json" `
   -Body (@{
     defaultTemporaryUnschedulableMinutes = 5
+    temporaryUnschedulableRetryIntervalSeconds = 3
+    temporaryUnschedulableRetryAttempts = 3
     streamCircuitBreakerEnabled = $true
-    streamIdleTimeoutSeconds = 180
+    streamRequestTimeoutSeconds = 180
+    streamIdleTimeoutSeconds = 30
     streamFailureThresholdCount = 3
     streamFailureThresholdWindowMinutes = 10
   } | ConvertTo-Json -Compress)
 ```
 
-检查点：系统设置页能保存并回显；流式异常达到阈值后账号列表会显示临时不可调用/错误摘要，更多菜单可执行“清理冷却/错误”。
+检查点：系统设置页能保存并回显；流式异常达到阈值后账号列表会显示临时不可调用/错误摘要，更多菜单可执行“清理错误/临时状态”。
 
 ### 代码级验证
 
@@ -238,4 +249,4 @@ curl.exe -sS -N -X POST "http://127.0.0.1:3000/v1/responses" `
 - `/v1/models` 返回模型列表。
 - 非流式 `/v1/responses` 返回 `status = completed`。
 - 流式 `/v1/responses` 返回 `response.completed`。
-- `http://127.0.0.1:3000/api/usage-records` 能看到 `inputTokens`、`outputTokens`、`cacheReadTokens`、`costUsd`。
+- `http://127.0.0.1:3000/api/usage-records` 能看到 `endpoint`、`inputTokens`、`outputTokens`、`cacheReadTokens`、`costUsd`。

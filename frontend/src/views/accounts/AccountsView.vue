@@ -1,5 +1,5 @@
 <template>
-  <a-card class="page-card accounts-page-card" title="账户管理">
+  <a-card class="page-card accounts-page-card">
     <div class="page-toolbar account-toolbar">
       <div class="account-filters">
         <a-input-search v-model:value="filters.keyword" allow-clear placeholder="搜索账户名、备注、Base URL" class="toolbar-search" @search="applyFilters" />
@@ -21,11 +21,11 @@
       <div class="batch-toolbar-actions">
         <a-button @click="clearSelection">清空选择</a-button>
         <a-button type="primary" @click="batchTestSelected">批量测试</a-button>
-        <a-button @click="batchSetStatus('active')">批量启用</a-button>
+        <a-button @click="batchSetStatus('active')">批量恢复正常</a-button>
         <a-button danger @click="batchSetStatus('disabled')">批量停用</a-button>
         <a-button @click="batchSetSchedulable(true)">恢复调度</a-button>
         <a-button @click="batchSetSchedulable(false)">暂停调度</a-button>
-        <a-button @click="batchClearFailure">清理冷却/错误</a-button>
+        <a-button @click="batchClearFailure">清理错误/临时状态</a-button>
       </div>
     </div>
 
@@ -43,6 +43,7 @@
         <template v-else-if="column.key === 'status'">
           <div class="status-cell">
             <a-tag class="status-tag" :color="accountStatusColor(record)">{{ accountStatusText(record) }}</a-tag>
+            <span v-if="accountCooldownText(record)" class="status-message status-cooldown">{{ accountCooldownText(record) }}</span>
             <span v-if="record.lastErrorMessage" class="status-message" :title="record.lastErrorMessage">{{ record.lastErrorMessage }}</span>
           </div>
         </template>
@@ -160,7 +161,7 @@
               <a-input v-model:value="form.name" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
             </a-form-item>
             <a-form-item v-if="!editingId" label="绑定分组">
-              <a-select v-model:value="form.groupId" allow-clear :options="groupOptions" placeholder="可选，创建后自动加入分组" />
+              <a-select v-model:value="form.groupId" allow-clear :options="groupOptions" placeholder="可选，只显示同供应商分组" />
             </a-form-item>
           </div>
           <a-form-item label="备注">
@@ -279,9 +280,6 @@
             <a-form-item label="代理">
               <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
             </a-form-item>
-            <a-form-item label="错误处理策略">
-              <a-select v-model:value="form.errorPolicyId" allow-clear placeholder="使用系统默认策略" :options="errorPolicyOptions" />
-            </a-form-item>
           </div>
           <div class="form-toggle-grid">
             <a-form-item label="调度">
@@ -292,6 +290,8 @@
             </a-form-item>
           </div>
         </section>
+
+        <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="accountErrorPolicyRules" />
       </a-form>
     </a-modal>
   </a-card>
@@ -303,7 +303,14 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountStatus, AccountSummary, AccountType, ErrorPolicySummary, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProxyProfileSummary, SystemSettings } from '@/types/domain'
+import type { AccountStatus, AccountSummary, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProxyProfileSummary, SystemSettings } from '@/types/domain'
+import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
+import {
+  loadAccountErrorPolicyRules,
+  validateAccountErrorPolicyRules,
+  writeAccountErrorPolicyToCredentials,
+  type AccountErrorPolicyRuleForm
+} from './accountErrorPolicy'
 
 type SchedulableFilter = 'all' | 'schedulable' | 'paused' | 'cooling'
 
@@ -340,7 +347,6 @@ interface AccountForm {
   concurrencyLimit: number
   priority: number
   proxyProfileId?: string
-  errorPolicyId?: string
   passthroughEnabled: boolean
   schedulable: boolean
   notes: string
@@ -366,12 +372,12 @@ const selectedAccountIds = ref<string[]>([])
 const accounts = ref<AccountSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const proxies = ref<ProxyProfileSummary[]>([])
-const errorPolicies = ref<ErrorPolicySummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemSettings = ref<SystemSettings>({ defaultAccountConcurrencyLimit: 3 })
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all' })
 
 const form = reactive<AccountForm>(defaultForm())
+const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
 
 const typeOptions = [
   { label: '全部类型', value: 'all' },
@@ -383,14 +389,16 @@ const schedulableOptions = [
   { label: '全部调度', value: 'all' },
   { label: '可调度', value: 'schedulable' },
   { label: '已暂停', value: 'paused' },
-  { label: '冷却中', value: 'cooling' }
+  { label: '临时不可调用', value: 'cooling' }
 ] as const
 
 const statusOptions = [
   { label: '全部状态', value: 'all' },
-  { label: '启用', value: 'active' },
+  { label: '正常', value: 'active' },
   { label: '停用', value: 'disabled' },
-  { label: '错误', value: 'error' }
+  { label: '错误', value: 'error' },
+  { label: '限流中', value: 'rate_limited' },
+  { label: '临时不可调用', value: 'temporary_unavailable' }
 ]
 
 const statusEditOptions = statusOptions.filter((item) => item.value !== 'all')
@@ -433,12 +441,9 @@ const rowSelection = computed(() => ({
 }))
 
 const proxyOptions = computed(() => proxies.value.map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
-const errorPolicyOptions = computed(() => errorPolicies.value.map((policy) => ({
-  label: `${policy.name}${policy.enabled ? '' : '（停用）'}`,
-  value: policy.id,
-  disabled: !policy.enabled
-})))
-const groupOptions = computed(() => groups.value.map((group) => ({ label: group.name, value: group.id })))
+const groupOptions = computed(() => groups.value
+  .filter((group) => !form.providerCode || group.providerCode === form.providerCode)
+  .map((group) => ({ label: group.name, value: group.id })))
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
 const accountTypeChoices = computed(() => (selectedProvider.value?.accountTypes ?? []).map((type) => ({
@@ -470,7 +475,7 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     providerCode,
     name: '',
     type,
-    groupId: groups.value[0]?.id,
+    groupId: groups.value.find((group) => group.providerCode === providerCode)?.id,
     apiKey: '',
     baseUrl: provider?.baseUrl ?? 'https://api.openai.com/v1',
     accessToken: '',
@@ -485,7 +490,6 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     concurrencyLimit: defaultAccountConcurrencyLimit(),
     priority: 0,
     proxyProfileId: defaultProxyProfileId(),
-    errorPolicyId: defaultErrorPolicyId(),
     passthroughEnabled: true,
     schedulable: true,
     notes: ''
@@ -494,26 +498,41 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
 
 function resetForm(providerCode = '', type: AccountType = '') {
   Object.assign(form, defaultForm(providerCode, type))
+  accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
   authResult.value = undefined
 }
 
 function statusColor(status: AccountStatus) {
-  return status === 'active' ? 'green' : status === 'error' ? 'red' : 'default'
+  if (status === 'active') return 'green'
+  if (status === 'error') return 'red'
+  if (status === 'rate_limited') return 'orange'
+  if (status === 'temporary_unavailable') return 'gold'
+  return 'default'
 }
 
 function statusText(status: AccountStatus) {
-  return status === 'active' ? '启用' : status === 'error' ? '错误' : '停用'
+  if (status === 'active') return '正常'
+  if (status === 'error') return '错误'
+  if (status === 'rate_limited') return '限流中'
+  if (status === 'temporary_unavailable') return '临时不可调用'
+  return '停用'
 }
 
 function accountStatusColor(account: AccountSummary) {
-  return isCoolingDown(account) ? 'orange' : statusColor(account.status)
+  return statusColor(account.status)
 }
 
 function accountStatusText(account: AccountSummary) {
-  if (!isCoolingDown(account)) {
-    return statusText(account.status)
-  }
-  return `冷却至 ${formatDateTime(account.cooldownUntil)}`
+  return statusText(account.status)
+}
+
+function accountCooldownText(account: AccountSummary) {
+  if (!isCoolingDown(account)) return ''
+  return `暂停至 ${formatDateTime(account.cooldownUntil)}`
+}
+
+function isTemporaryAccountStatus(account: AccountSummary) {
+  return account.status === 'rate_limited' || account.status === 'temporary_unavailable'
 }
 
 function isCoolingDown(account: AccountSummary) {
@@ -557,12 +576,6 @@ function defaultAccountConcurrencyLimit() {
   return Math.min(Math.max(Math.trunc(number), 1), 999)
 }
 
-function defaultErrorPolicyId() {
-  return typeof systemSettings.value.defaultErrorPolicyId === 'string'
-    ? systemSettings.value.defaultErrorPolicyId
-    : errorPolicies.value.find((policy) => policy.enabled)?.id
-}
-
 function asString(value: unknown): string {
   return typeof value === 'string' ? value : ''
 }
@@ -573,8 +586,8 @@ function normalizeKeyword(value: unknown): string {
 
 function matchesSchedulableFilter(account: AccountSummary, filter: SchedulableFilter): boolean {
   if (filter === 'all') return true
-  if (filter === 'cooling') return isCoolingDown(account)
-  if (filter === 'schedulable') return account.schedulable && !isCoolingDown(account)
+  if (filter === 'cooling') return isTemporaryAccountStatus(account) || isCoolingDown(account)
+  if (filter === 'schedulable') return account.schedulable && !isTemporaryAccountStatus(account) && !isCoolingDown(account)
   return !account.schedulable
 }
 
@@ -585,10 +598,10 @@ function accountBaseUrl(account: AccountSummary): string {
 function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   return [
     { key: 'test', label: '测试' },
-    { key: 'toggle-status', label: account.status === 'active' ? '停用账户' : '启用账户', danger: account.status === 'active' },
+    { key: 'toggle-status', label: account.status === 'active' ? '停用账户' : '恢复正常', danger: account.status === 'active' },
     { key: 'toggle-schedulable', label: account.schedulable ? '暂停调度' : '恢复调度' },
-    ...(account.status === 'error' || account.cooldownUntil || account.lastErrorMessage
-      ? [{ key: 'clear-failure', label: '清理冷却/错误' }]
+    ...(account.status === 'error' || account.status === 'rate_limited' || account.status === 'temporary_unavailable' || account.cooldownUntil || account.lastErrorMessage
+      ? [{ key: 'clear-failure', label: '清理错误/临时状态' }]
       : []),
     ...(account.type === 'oauth' ? [{ key: 'refresh-oauth', label: '刷新授权' }] : []),
     { key: 'switch-client', label: account.type === 'oauth' ? '切换客户端' : '编辑 API Key' },
@@ -631,18 +644,16 @@ async function copyText(value: string) {
 async function loadData() {
   loading.value = true
   try {
-    const [accountList, providerList, proxyList, errorPolicyList, groupList, settings] = await Promise.all([
+    const [accountList, providerList, proxyList, groupList, settings] = await Promise.all([
       api.accounts.list(),
       api.providers.list(),
       api.proxies.list(),
-      api.errorPolicies.list(),
       api.groups.list(),
       api.settings.get()
     ])
     accounts.value = accountList
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
     proxies.value = proxyList
-    errorPolicies.value = errorPolicyList
     groups.value = groupList
     systemSettings.value = settings
     selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id))
@@ -693,7 +704,6 @@ function selectAccountType(type: AccountType) {
     ...defaultForm(providerCode, type),
     groupId: form.groupId,
     proxyProfileId: form.proxyProfileId,
-    errorPolicyId: form.errorPolicyId ?? null,
     notes: form.notes,
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
@@ -713,7 +723,6 @@ function openEdit(account: AccountSummary) {
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
     proxyProfileId: account.proxyProfileId,
-    errorPolicyId: account.errorPolicyId,
     passthroughEnabled: account.passthroughEnabled,
     schedulable: account.schedulable,
     apiKey: asString(account.credentials.api_key),
@@ -726,26 +735,28 @@ function openEdit(account: AccountSummary) {
     expiresAt: undefined,
     notes: account.notes ?? ''
   })
+  accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
   authResult.value = undefined
   modalOpen.value = true
 }
 
 function buildCredentials() {
-  if (form.type === 'api_key') {
-    return {
-      api_key: form.apiKey,
-      base_url: form.baseUrl,
-      organization_id: form.organizationId
-    }
-  }
-  return {
-    access_token: form.accessToken,
-    refresh_token: form.refreshToken,
-    client_id: form.clientId,
-    expires_at: form.expiresAt?.toISOString(),
-    account_id: form.accountId,
-    organization_id: form.organizationId
-  }
+  const credentials: Record<string, unknown> = form.type === 'api_key'
+    ? {
+        api_key: form.apiKey,
+        base_url: form.baseUrl,
+        organization_id: form.organizationId
+      }
+    : {
+        access_token: form.accessToken,
+        refresh_token: form.refreshToken,
+        client_id: form.clientId,
+        expires_at: form.expiresAt?.toISOString(),
+        account_id: form.accountId,
+        organization_id: form.organizationId
+      }
+  writeAccountErrorPolicyToCredentials(credentials, accountErrorPolicyRules.value)
+  return credentials
 }
 
 async function saveAccount() {
@@ -785,6 +796,11 @@ async function saveAccount() {
     message.warning('请填写 Refresh Token')
     return
   }
+  const errorPolicyValidation = validateAccountErrorPolicyRules(accountErrorPolicyRules.value)
+  if (!errorPolicyValidation.valid) {
+    message.warning(errorPolicyValidation.message || '错误处理策略配置不完整')
+    return
+  }
 
   const payload = {
     providerCode: form.providerCode,
@@ -795,7 +811,6 @@ async function saveAccount() {
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
     proxyProfileId: form.proxyProfileId,
-    errorPolicyId: form.errorPolicyId ?? null,
     passthroughEnabled: form.passthroughEnabled,
     schedulable: form.schedulable,
     groupId: form.groupId,
@@ -852,7 +867,7 @@ async function createOAuthAccountFromUnifiedForm() {
     groupId: form.groupId,
     concurrencyLimit: form.concurrencyLimit,
     proxyProfileId: form.proxyProfileId,
-    errorPolicyId: form.errorPolicyId ?? null,
+    credentialsPatch: { error_handling_rules: buildCredentials().error_handling_rules },
     notes: form.notes || undefined
   }
 
@@ -955,8 +970,8 @@ async function batchTestSelected() {
 async function batchSetStatus(status: 'active' | 'disabled') {
   await batchUpdateAccounts(
     () => ({ status }),
-    status === 'active' ? '正在批量启用账户' : '正在批量停用账户',
-    status === 'active' ? '账户已批量启用' : '账户已批量停用'
+    status === 'active' ? '正在批量恢复正常' : '正在批量停用账户',
+    status === 'active' ? '账户已批量恢复正常' : '账户已批量停用'
   )
 }
 
@@ -971,8 +986,8 @@ async function batchSetSchedulable(schedulable: boolean) {
 async function batchClearFailure() {
   await batchUpdateAccounts(
     () => ({ status: 'active', schedulable: true, clearFailureState: true }),
-    '正在清理冷却/错误状态',
-    '账户冷却/错误状态已批量清理'
+    '正在清理错误/临时状态',
+    '账户错误/临时状态已批量清理'
   )
 }
 
@@ -994,7 +1009,7 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
   }
   if (key === 'toggle-status') {
     const nextStatus = account.status === 'active' ? 'disabled' : 'active'
-    await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
+    await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已恢复正常' : '账户已停用')
     return
   }
   if (key === 'toggle-schedulable') {
@@ -1002,7 +1017,7 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
     return
   }
   if (key === 'clear-failure') {
-    await updateAccountState(account, { status: 'active', schedulable: true, clearFailureState: true }, '账户冷却/错误状态已清理')
+    await updateAccountState(account, { status: 'active', schedulable: true, clearFailureState: true }, '账户错误/临时状态已清理')
     return
   }
   if (key === 'refresh-oauth') {
@@ -1146,9 +1161,10 @@ onMounted(loadData)
 }
 
 .status-tag {
-  width: fit-content;
+  width: max-content;
   max-width: 100%;
-  white-space: normal;
+  margin-inline-end: 0;
+  white-space: nowrap;
 }
 
 .status-message {
@@ -1158,6 +1174,10 @@ onMounted(loadData)
   line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.status-cooldown {
+  color: #64748b;
 }
 
 .row-actions :deep(.ant-btn-link) {
@@ -1363,6 +1383,7 @@ onMounted(loadData)
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 0 16px;
 }
+
 
 .form-toggle-grid {
   display: grid;

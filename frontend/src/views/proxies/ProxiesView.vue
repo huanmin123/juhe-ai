@@ -1,7 +1,6 @@
 <template>
-  <a-card class="page-card" title="代理管理">
-    <div class="page-toolbar">
-      <span class="toolbar-note">代理可绑定到 OpenAI OAuth 账户，用于刷新、测试和后续真实转发。</span>
+  <a-card class="page-card">
+    <div class="page-toolbar page-toolbar-end">
       <div class="page-toolbar-actions">
         <a-button type="primary" @click="openCreate">新建代理</a-button>
       </div>

@@ -10,9 +10,11 @@
 
 ## 2. 错误处理策略
 
-- 错误策略最好是规则化配置，而不是在代码里写死判断。
-- 可以按错误码、关键词、平台和优先级来匹配。
-- 可以区分三类结果：原样返回、自定义状态码、自定义错误内容。
+- `sub2api` 的账户错误处理不是简单全局下拉，而是保存在账号凭据里的 `error_handling_rules` 规则数组。
+- 规则按 `enabled` 与 `priority` 生效，匹配字段包括 `status_codes`、`error_codes`、`error_types`、`keywords`；多个字段同时配置时必须全部命中。
+- 动作在 lite 中收敛为 `rate_limited`、`temp_unschedulable`、`error_disabled`；其中只有 `error_disabled` 会把账号置为错误。
+- `rate_limited` 支持固定时长、每日固定时间、每周固定时间恢复，并保留时区字段。
+- `sub2api-lite` 不搬旧项目所有兼容字段，第一期只把这些规则语义落到账户添加/编辑和 OpenAI 网关处理。
 
 ## 3. 并发
 
@@ -42,8 +44,8 @@
 
 `sub2api-lite` 的简化实现：
 
-- 设置项映射为 `streamCircuitBreakerEnabled`、`streamIdleTimeoutSeconds`、`streamFailureThresholdCount`、`streamFailureThresholdWindowMinutes` 和 `defaultTemporaryUnschedulableMinutes`。
-- 账号字段只保留 `cooldown_until`、`last_error_message`、`stream_failure_count`、`stream_failure_window_started_at`。
+- 设置项映射为 `streamCircuitBreakerEnabled`、`streamRequestTimeoutSeconds`、`streamIdleTimeoutSeconds`、`streamFailureThresholdCount`、`streamFailureThresholdWindowMinutes`、`temporaryUnschedulableRetryIntervalSeconds`、`temporaryUnschedulableRetryAttempts` 和 `defaultTemporaryUnschedulableMinutes`。
+- 账号字段只保留 `cooldown_until`、`last_error_message`、`stream_failure_count`、`stream_failure_window_started_at`，并把运行态语义拆成正常、停用、错误、限流中和临时不可调用。
 - 不做独立调度器，请求时直接过滤仍在冷却中的账号。
-- 上游未被账号错误策略截获的未知异常统一按默认临时不可调用时长冷却当前账号后尝试下一个账号。
+- 上游未被账号错误策略截获的未知异常统一先做短暂重试，重试后仍失败才按默认临时不可调用时长冷却当前账号后尝试下一个账号。
 - 网关成功请求会清理账号失败状态，减少人工处理成本。

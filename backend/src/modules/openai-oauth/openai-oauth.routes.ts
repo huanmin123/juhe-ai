@@ -29,6 +29,7 @@ const createFromCodeSchema = z.object({
   concurrencyLimit: z.number().int().min(1).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
+  credentialsPatch: z.record(z.unknown()).optional(),
   notes: z.string().optional()
 })
 
@@ -40,6 +41,7 @@ const createFromRefreshTokenSchema = z.object({
   concurrencyLimit: z.number().int().min(1).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
+  credentialsPatch: z.record(z.unknown()).optional(),
   notes: z.string().optional()
 })
 
@@ -71,7 +73,10 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
     const account = createAccount({
       name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
       type: 'oauth',
-      credentials: buildOpenAIOAuthCredentials(tokenInfo),
+      credentials: {
+        ...buildOpenAIOAuthCredentials(tokenInfo),
+        ...(parsed.data.credentialsPatch ?? {})
+      },
       status: 'active',
       concurrencyLimit: parsed.data.concurrencyLimit,
       proxyProfileId: parsed.data.proxyProfileId,
@@ -105,7 +110,10 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
     const account = createAccount({
       name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
       type: 'oauth',
-      credentials: buildOpenAIOAuthCredentials(tokenInfo, { refreshToken: parsed.data.refreshToken }),
+      credentials: {
+        ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken: parsed.data.refreshToken }),
+        ...(parsed.data.credentialsPatch ?? {})
+      },
       status: 'active',
       concurrencyLimit: parsed.data.concurrencyLimit,
       proxyProfileId: parsed.data.proxyProfileId,

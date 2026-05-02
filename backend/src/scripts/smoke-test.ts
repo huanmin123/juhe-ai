@@ -33,6 +33,7 @@ interface AccountTestResult {
 
 interface UsageRecordSummary {
   requestId: string
+  endpoint?: string
   model?: string
   stream: boolean
   success: boolean
@@ -45,19 +46,14 @@ interface UsageRecordSummary {
 }
 
 interface SystemSettings {
-  defaultErrorPolicyId?: string
   defaultTemporaryUnschedulableMinutes?: number
+  temporaryUnschedulableRetryIntervalSeconds?: number
+  temporaryUnschedulableRetryAttempts?: number
   streamCircuitBreakerEnabled?: boolean
+  streamRequestTimeoutSeconds?: number
   streamIdleTimeoutSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
-}
-
-interface ErrorPolicySummary {
-  id: string
-  name: string
-  enabled: boolean
-  rules: Array<Record<string, unknown>>
 }
 
 interface ResponsePayload {
@@ -80,22 +76,23 @@ async function main(): Promise<void> {
   summary.push('health ok')
 
   const settings = await getEnvelope<SystemSettings>('/api/settings')
-  const errorPolicies = await getEnvelope<ErrorPolicySummary[]>('/api/error-policies')
-  assert(typeof settings.defaultErrorPolicyId === 'string' && settings.defaultErrorPolicyId.length > 0, '系统设置缺少 defaultErrorPolicyId')
-  assert(errorPolicies.some((policy) => policy.id === settings.defaultErrorPolicyId && policy.enabled && policy.rules.length > 0), '默认错误处理策略不存在或未启用')
+  assert(!Object.prototype.hasOwnProperty.call(settings, 'defaultErrorPolicyId'), '系统设置不应返回 defaultErrorPolicyId')
   assert(typeof settings.defaultTemporaryUnschedulableMinutes === 'number', '系统设置缺少 defaultTemporaryUnschedulableMinutes')
+  assert(typeof settings.temporaryUnschedulableRetryIntervalSeconds === 'number', '系统设置缺少 temporaryUnschedulableRetryIntervalSeconds')
+  assert(typeof settings.temporaryUnschedulableRetryAttempts === 'number', '系统设置缺少 temporaryUnschedulableRetryAttempts')
   assert(typeof settings.streamCircuitBreakerEnabled === 'boolean', '系统设置缺少 streamCircuitBreakerEnabled')
+  assert(typeof settings.streamRequestTimeoutSeconds === 'number', '系统设置缺少 streamRequestTimeoutSeconds')
   assert(typeof settings.streamIdleTimeoutSeconds === 'number', '系统设置缺少 streamIdleTimeoutSeconds')
   assert(typeof settings.streamFailureThresholdCount === 'number', '系统设置缺少 streamFailureThresholdCount')
   assert(typeof settings.streamFailureThresholdWindowMinutes === 'number', '系统设置缺少 streamFailureThresholdWindowMinutes')
-  summary.push('settings and error policies ok')
+  summary.push('settings ok')
 
   const accounts = await getEnvelope<AccountSummary[]>('/api/accounts')
   assert(accounts.length > 0, '账户列表为空')
   const targetAccount = accounts.find((account) => account.name === accountName)
   assert(targetAccount, `找不到目标账户：${accountName}`)
   assert(targetAccount.providerCode === 'openai', `目标账户供应商不是 openai：${targetAccount.providerCode}`)
-  assert(targetAccount.status === 'active', `目标账户未启用：${targetAccount.status}`)
+  assert(targetAccount.status === 'active', `目标账户状态不是正常：${targetAccount.status}`)
   summary.push(`account ok: ${targetAccount.name}`)
 
   const accountTest = await postEnvelope<AccountTestResult>(`/api/accounts/${targetAccount.id}/test`, {})
@@ -141,6 +138,8 @@ async function main(): Promise<void> {
 
   const usageRecords = await getEnvelope<UsageRecordSummary[]>('/api/usage-records')
   const modelUsageRecords = usageRecords.filter((record) => record.model === model && record.success)
+  assert(usageRecords.some((record) => record.endpoint === 'GET /v1/models'), '找不到 /v1/models 接口使用记录')
+  assert(modelUsageRecords.some((record) => record.endpoint === 'POST /v1/responses'), '找不到 /v1/responses 接口使用记录')
   assert(modelUsageRecords.some((record) => record.stream && typeof record.inputTokens === 'number' && typeof record.outputTokens === 'number' && typeof record.costUsd === 'number'), '找不到流式 token/cost 使用记录')
   assert(modelUsageRecords.some((record) => !record.stream && typeof record.inputTokens === 'number' && typeof record.outputTokens === 'number' && typeof record.costUsd === 'number'), '找不到非流式 token/cost 使用记录')
   summary.push('usage records ok')

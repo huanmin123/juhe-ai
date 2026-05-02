@@ -72,10 +72,12 @@ export function applySchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
+      provider_code TEXT NOT NULL DEFAULT 'openai',
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
     );
 
     CREATE TABLE IF NOT EXISTS group_accounts (
@@ -111,14 +113,17 @@ export function applySchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_records (
       id TEXT PRIMARY KEY,
       request_id TEXT NOT NULL,
+      client_ip TEXT,
       api_key_id TEXT,
       group_id TEXT,
       account_id TEXT,
+      endpoint TEXT,
       provider_code TEXT,
       model TEXT,
       stream INTEGER NOT NULL DEFAULT 0,
       status_code INTEGER,
       success INTEGER NOT NULL DEFAULT 0,
+      first_token_ms INTEGER,
       duration_ms INTEGER,
       input_tokens INTEGER,
       output_tokens INTEGER,
@@ -126,6 +131,8 @@ export function applySchema(database: DatabaseSync): void {
       cost_usd REAL,
       error_code TEXT,
       error_message TEXT,
+      request_snapshot_json TEXT,
+      response_snapshot_json TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -147,11 +154,18 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'accounts', 'last_error_message', 'TEXT')
   ensureColumn(database, 'accounts', 'stream_failure_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'accounts', 'stream_failure_window_started_at', 'TEXT')
+  ensureColumn(database, 'groups', 'provider_code', "TEXT NOT NULL DEFAULT 'openai'")
   ensureColumn(database, 'api_keys', 'key_secret_encrypted', 'TEXT')
+  ensureColumn(database, 'usage_records', 'client_ip', 'TEXT')
+  ensureColumn(database, 'usage_records', 'endpoint', 'TEXT')
+  ensureColumn(database, 'usage_records', 'first_token_ms', 'INTEGER')
   ensureColumn(database, 'usage_records', 'input_tokens', 'INTEGER')
   ensureColumn(database, 'usage_records', 'output_tokens', 'INTEGER')
   ensureColumn(database, 'usage_records', 'cache_read_tokens', 'INTEGER')
   ensureColumn(database, 'usage_records', 'cost_usd', 'REAL')
+  ensureColumn(database, 'usage_records', 'request_snapshot_json', 'TEXT')
+  ensureColumn(database, 'usage_records', 'response_snapshot_json', 'TEXT')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
 }
 
@@ -185,58 +199,19 @@ export function seedDefaults(database: DatabaseSync): void {
 
   database
     .prepare(`
-      INSERT OR IGNORE INTO groups (id, name, description, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?)
+      INSERT OR IGNORE INTO groups (id, name, provider_code, description, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
     `)
-    .run('grp_default_openai', '默认 OpenAI 分组', '第一期默认分组', 1, now, now)
-
-  const errorPolicyStatement = database.prepare(`
-    INSERT OR IGNORE INTO error_policies (id, name, enabled, rules_json, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `)
-
-  errorPolicyStatement.run(
-    'ep_default_passthrough',
-    '默认透传策略',
-    1,
-    JSON.stringify([
-      {
-        name: '上游错误原样透传',
-        match: { statusCode: '4xx/5xx' },
-        action: 'passthrough',
-        description: '第一期默认把上游错误状态和错误内容原样返回，便于排查。'
-      }
-    ]),
-    now,
-    now
-  )
-
-  errorPolicyStatement.run(
-    'ep_default_safe',
-    '默认安全策略',
-    1,
-    JSON.stringify([
-      {
-        name: '隐藏上游敏感错误',
-        match: { statusCode: '4xx/5xx' },
-        action: 'custom_error',
-        statusCode: 502,
-        message: 'Upstream request failed'
-      }
-    ]),
-    now,
-    now
-  )
+    .run('grp_default_openai', '默认 OpenAI 分组', 'openai', '第一期默认分组', 1, now, now)
 
   const settings = [
-    ['defaultOpenAIBaseUrl', 'https://api.openai.com/v1'],
     ['defaultAccountConcurrencyLimit', 3],
-    ['defaultErrorPolicyId', 'ep_default_passthrough'],
     ['defaultTemporaryUnschedulableMinutes', 5],
     ['temporaryUnschedulableRetryIntervalSeconds', 3],
     ['temporaryUnschedulableRetryAttempts', 3],
     ['streamCircuitBreakerEnabled', true],
-    ['streamIdleTimeoutSeconds', 180],
+    ['streamRequestTimeoutSeconds', 180],
+    ['streamIdleTimeoutSeconds', 30],
     ['streamFailureThresholdCount', 3],
     ['streamFailureThresholdWindowMinutes', 10],
   ] as const
@@ -257,5 +232,14 @@ export function seedDefaults(database: DatabaseSync): void {
     statement.run('streamCircuitBreakerEnabled', JSON.stringify(true), now)
     statement.run('_migration_stream_circuit_default_enabled_20260502', JSON.stringify(true), now)
   }
-  database.prepare("DELETE FROM system_settings WHERE key IN ('apiKeyPrefix', 'streamFailureAction', 'streamAccountCooldownMinutes', 'overloadCooldownEnabled', 'overloadCooldownMinutes')").run()
+  const streamIdleDefaultMigration = database
+    .prepare("SELECT key FROM system_settings WHERE key = '_migration_stream_idle_default_30_20260502'")
+    .get() as unknown
+  if (!streamIdleDefaultMigration) {
+    database
+      .prepare("UPDATE system_settings SET value_json = ?, updated_at = ? WHERE key = 'streamIdleTimeoutSeconds' AND value_json = ?")
+      .run(JSON.stringify(30), now, JSON.stringify(180))
+    statement.run('_migration_stream_idle_default_30_20260502', JSON.stringify(true), now)
+  }
+  database.prepare("DELETE FROM system_settings WHERE key IN ('apiKeyPrefix', 'defaultOpenAIBaseUrl', 'defaultErrorPolicyId', 'streamFailureAction', 'streamAccountCooldownMinutes', 'overloadCooldownEnabled', 'overloadCooldownMinutes')").run()
 }

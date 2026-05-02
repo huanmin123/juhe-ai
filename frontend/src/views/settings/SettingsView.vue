@@ -1,45 +1,33 @@
 <template>
-  <a-card class="page-card settings-page-card" title="系统设置">
+  <a-card class="page-card settings-page-card">
     <div class="settings-shell">
-      <div class="settings-hero">
-        <div>
-          <div class="hero-title">轻量默认策略</div>
-          <div class="hero-subtitle">这些设置只作为本地网关和账户调度的默认策略，不覆盖账号编辑里的显式配置。</div>
-        </div>
-        <a-tag color="blue" class="hero-tag">SQLite 本地持久化</a-tag>
-      </div>
-
-      <a-alert class="setting-alert" type="info" show-icon>
-        <template #message>流熔断默认开启；未知异常和流式失败都会按全局临时不可调用时长冷却账号。</template>
-      </a-alert>
-
       <a-form layout="vertical" class="settings-form">
         <section class="settings-section">
           <div class="section-heading">
             <div>
-              <h3>基础默认值</h3>
-              <p>用于新建 OpenAI 账户时的默认基础配置。</p>
+              <h3>账户调度默认值</h3>
+              <p>用于新建账户和网关调度的默认策略；供应商 Base URL 由供应商定义维护。</p>
             </div>
           </div>
           <div class="settings-grid">
-            <div class="setting-item setting-item-wide">
-              <a-form-item label="默认 OpenAI Base URL" extra="只作为新账户默认值，已有账户按自己的 Base URL 转发。">
-                <a-input v-model:value="form.defaultOpenAIBaseUrl" placeholder="https://api.openai.com/v1" />
-              </a-form-item>
-            </div>
             <div class="setting-item">
               <a-form-item label="默认账号并发上限" extra="第一期先保存配置值，后续并发调度按账号级配置执行。">
                 <a-input-number v-model:value="form.defaultAccountConcurrencyLimit" :min="1" :max="999" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="默认错误处理策略" extra="新建账户默认引用该策略；账号编辑里可以单独覆盖。">
-                <a-select v-model:value="form.defaultErrorPolicyId" :options="errorPolicyOptions" placeholder="选择默认策略" />
+              <a-form-item label="临时不可调用暂停时长（分钟）" extra="未知异常、策略冷却和流熔断都会使用这个全局时长。">
+                <a-input-number v-model:value="form.defaultTemporaryUnschedulableMinutes" :min="1" :max="1440" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="默认临时不可调用（分钟）" extra="未知异常、策略冷却和流熔断都会使用这个时长。">
-                <a-input-number v-model:value="form.defaultTemporaryUnschedulableMinutes" :min="1" :max="1440" style="width: 100%" />
+              <a-form-item label="临时状态重试间隔（秒）" extra="标记临时不可调用前，每次短暂重试之间等待多久。">
+                <a-input-number v-model:value="form.temporaryUnschedulableRetryIntervalSeconds" :min="0" :max="3600" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="临时状态重试次数" extra="默认失败后重试 3 次，仍失败才进入临时不可调用。">
+                <a-input-number v-model:value="form.temporaryUnschedulableRetryAttempts" :min="0" :max="10" style="width: 100%" />
               </a-form-item>
             </div>
           </div>
@@ -48,25 +36,34 @@
         <section class="settings-section">
           <div class="section-heading">
             <div>
-              <h3>流熔断与账号处理</h3>
-              <p>参考 sub2api 的流超时处理语义，轻量版只做本地计数，达到阈值后一律临时不可调用。</p>
+              <h3>流式超时与换号</h3>
+              <p>分别控制“首包前等多久换账号”和“输出中停多久算中断”；累计失败达到阈值后，账号会临时不可调用。</p>
             </div>
             <a-switch v-model:checked="form.streamCircuitBreakerEnabled" checked-children="启用" un-checked-children="关闭" />
           </div>
 
+          <a-alert class="setting-alert section-alert" type="info" show-icon>
+            <template #message>流式请求如果首包等待过久会自动换账号重试；已经开始输出后长时间没有新数据，则记录为流式中断。</template>
+          </a-alert>
+
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="流空闲超时（秒）" extra="流式响应超过该时间没有新数据，会记录一次流失败。">
-                <a-input-number v-model:value="form.streamIdleTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
+              <a-form-item label="首包等待上限（秒）" extra="发起流式请求后，超过这个时间还没有收到第一段内容，就中断当前账号并换下一个账号重试。">
+                <a-input-number v-model:value="form.streamRequestTimeoutSeconds" :min="10" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="阈值次数" extra="同一账号在统计窗口内累计到该次数后触发处理。">
+              <a-form-item label="输出停顿上限（秒）" extra="已经收到第一段内容后，如果连续这么久没有新内容，就认为本次流式响应中断。默认 30 秒。">
+                <a-input-number v-model:value="form.streamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="失败触发次数" extra="同一账号在统计窗口内累计到这个失败次数后，进入临时不可调用。">
                 <a-input-number v-model:value="form.streamFailureThresholdCount" :min="1" :max="100" style="width: 100%" />
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="统计窗口（分钟）" extra="超过窗口后失败次数重新计算。">
+              <a-form-item label="失败统计窗口（分钟）" extra="只统计这个时间窗口内的流式失败；超过窗口后重新计数。">
                 <a-input-number v-model:value="form.streamFailureThresholdWindowMinutes" :min="1" :max="1440" style="width: 100%" />
               </a-form-item>
             </div>
@@ -76,7 +73,7 @@
         <div class="settings-actions">
           <a-space>
             <a-button type="primary" :loading="saving" @click="saveSettings">保存设置</a-button>
-            <a-button :disabled="saving" @click="resetDefaults">还原推荐默认值</a-button>
+            <a-button :disabled="saving" @click="resetDefaults">恢复默认配置</a-button>
           </a-space>
         </div>
       </a-form>
@@ -86,49 +83,43 @@
 
 <script setup lang="ts">
 import { message } from 'ant-design-vue'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { ErrorPolicySummary, SystemSettings } from '@/types/domain'
+import type { SystemSettings } from '@/types/domain'
 
 
 interface SettingsForm {
-  defaultOpenAIBaseUrl: string
   defaultAccountConcurrencyLimit: number
-  defaultErrorPolicyId: string
   defaultTemporaryUnschedulableMinutes: number
+  temporaryUnschedulableRetryIntervalSeconds: number
+  temporaryUnschedulableRetryAttempts: number
   streamCircuitBreakerEnabled: boolean
+  streamRequestTimeoutSeconds: number
   streamIdleTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
 }
 
 const defaultSettings: SettingsForm = {
-  defaultOpenAIBaseUrl: 'https://api.openai.com/v1',
   defaultAccountConcurrencyLimit: 3,
-  defaultErrorPolicyId: 'ep_default_passthrough',
   defaultTemporaryUnschedulableMinutes: 5,
+  temporaryUnschedulableRetryIntervalSeconds: 3,
+  temporaryUnschedulableRetryAttempts: 3,
   streamCircuitBreakerEnabled: true,
-  streamIdleTimeoutSeconds: 180,
+  streamRequestTimeoutSeconds: 180,
+  streamIdleTimeoutSeconds: 30,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 10
 }
 
 
 const saving = ref(false)
-const errorPolicies = ref<ErrorPolicySummary[]>([])
 const form = reactive<SettingsForm>({ ...defaultSettings })
-
-const errorPolicyOptions = computed(() => errorPolicies.value.map((policy) => ({
-  label: `${policy.name}${policy.enabled ? '' : '（停用）'}`,
-  value: policy.id,
-  disabled: !policy.enabled
-})))
 
 async function loadSettings() {
   try {
-    const [settings, policies] = await Promise.all([api.settings.get(), api.errorPolicies.list()])
-    errorPolicies.value = policies
+    const settings = await api.settings.get()
     Object.assign(form, normalizeSettings(settings))
   } catch (error) {
     console.error(error)
@@ -156,19 +147,16 @@ function resetDefaults() {
 
 function normalizeSettings(settings: SystemSettings | SettingsForm): SettingsForm {
   return {
-    defaultOpenAIBaseUrl: stringValue(settings.defaultOpenAIBaseUrl, defaultSettings.defaultOpenAIBaseUrl),
     defaultAccountConcurrencyLimit: numberValue(settings.defaultAccountConcurrencyLimit, defaultSettings.defaultAccountConcurrencyLimit, 1, 999),
-    defaultErrorPolicyId: errorPolicyValue(settings.defaultErrorPolicyId),
     defaultTemporaryUnschedulableMinutes: numberValue(settings.defaultTemporaryUnschedulableMinutes, defaultSettings.defaultTemporaryUnschedulableMinutes, 1, 1440),
+    temporaryUnschedulableRetryIntervalSeconds: numberValue(settings.temporaryUnschedulableRetryIntervalSeconds, defaultSettings.temporaryUnschedulableRetryIntervalSeconds, 0, 3600),
+    temporaryUnschedulableRetryAttempts: numberValue(settings.temporaryUnschedulableRetryAttempts, defaultSettings.temporaryUnschedulableRetryAttempts, 0, 10),
     streamCircuitBreakerEnabled: booleanValue(settings.streamCircuitBreakerEnabled, defaultSettings.streamCircuitBreakerEnabled),
-    streamIdleTimeoutSeconds: numberValue(settings.streamIdleTimeoutSeconds, defaultSettings.streamIdleTimeoutSeconds, 10, 3600),
+    streamRequestTimeoutSeconds: numberValue(settings.streamRequestTimeoutSeconds, defaultSettings.streamRequestTimeoutSeconds, 10, 3600),
+    streamIdleTimeoutSeconds: numberValue(settings.streamIdleTimeoutSeconds, defaultSettings.streamIdleTimeoutSeconds, 1, 3600),
     streamFailureThresholdCount: numberValue(settings.streamFailureThresholdCount, defaultSettings.streamFailureThresholdCount, 1, 100),
     streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSettings.streamFailureThresholdWindowMinutes, 1, 1440)
   }
-}
-
-function stringValue(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
 function numberValue(value: unknown, fallback: number, min: number, max: number): number {
@@ -179,11 +167,6 @@ function numberValue(value: unknown, fallback: number, min: number, max: number)
 
 function booleanValue(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback
-}
-
-function errorPolicyValue(value: unknown): string {
-  if (typeof value === 'string' && errorPolicies.value.some((policy) => policy.id === value)) return value
-  return errorPolicies.value.find((policy) => policy.enabled)?.id ?? defaultSettings.defaultErrorPolicyId
 }
 
 
@@ -201,39 +184,12 @@ onMounted(loadSettings)
   gap: 18px;
 }
 
-.settings-hero {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 18px;
-  padding: 18px 20px;
-  background: linear-gradient(135deg, rgba(22, 119, 255, 0.10) 0%, rgba(14, 165, 233, 0.06) 100%);
-  border: 1px solid #dbeafe;
-  border-radius: 16px;
-}
-
-.hero-title {
-  color: #0f172a;
-  font-size: 18px;
-  font-weight: 800;
-  line-height: 28px;
-}
-
-.hero-subtitle {
-  margin-top: 4px;
-  color: #475569;
-  font-size: 13px;
-  line-height: 22px;
-}
-
-.hero-tag {
-  margin-inline-end: 0;
-  border-radius: 999px;
-  font-weight: 700;
-}
-
 .setting-alert {
   border-radius: 12px;
+}
+
+.section-alert {
+  margin-bottom: 16px;
 }
 
 .settings-form {
@@ -287,10 +243,6 @@ onMounted(loadSettings)
   border-radius: 14px;
 }
 
-.setting-item-wide {
-  grid-column: 1 / -1;
-}
-
 .setting-switch-item {
   display: flex;
   align-items: center;
@@ -313,7 +265,6 @@ onMounted(loadSettings)
     grid-template-columns: 1fr;
   }
 
-  .settings-hero,
   .section-heading {
     align-items: flex-start;
     flex-direction: column;

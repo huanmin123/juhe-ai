@@ -45,6 +45,20 @@ interface CostInput {
   cacheReadTokens?: number
 }
 
+interface CostBreakdownInput extends CostInput {
+  costUsd?: number
+}
+
+export interface ProviderCostBreakdown {
+  inputCostUsd?: number
+  outputCostUsd?: number
+  inputUsdPer1M?: number
+  outputUsdPer1M?: number
+  cacheReadCostUsd?: number
+  accountChargeUsd?: number
+  multiplier: 1
+}
+
 const openAIModels = openAIModelPricingData as readonly RawModelPricing[]
 
 export function listProviderModelPricing(providerCode: string): ProviderModelPricing[] {
@@ -82,6 +96,35 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
     + outputTokens * (outputPrice ?? 0)
 
   return Number(cost.toFixed(10))
+}
+
+export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderCostBreakdown | undefined {
+  if (!isOpenAIProvider(input.providerCode) || !input.model) return undefined
+
+  const pricing = findOpenAIModelPricing(input.model)
+  if (!pricing) return undefined
+
+  const inputPrice = normalizePrice(pricing.input_cost_per_token)
+  const outputPrice = normalizePrice(pricing.output_cost_per_token)
+  const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost) ?? inputPrice
+  if (inputPrice === undefined && outputPrice === undefined && cachedInputPrice === undefined) return undefined
+
+  const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
+  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens, 0)
+  const outputTokens = Math.max(input.outputTokens ?? 0, 0)
+  const inputCostUsd = inputPrice === undefined ? undefined : roundCost(uncachedInputTokens * inputPrice)
+  const outputCostUsd = outputPrice === undefined ? undefined : roundCost(outputTokens * outputPrice)
+  const cacheReadCostUsd = cachedInputPrice === undefined ? undefined : roundCost(cacheReadTokens * cachedInputPrice)
+
+  return {
+    inputCostUsd,
+    outputCostUsd,
+    inputUsdPer1M: perMillion(inputPrice),
+    outputUsdPer1M: perMillion(outputPrice),
+    cacheReadCostUsd,
+    accountChargeUsd: normalizePrice(input.costUsd) ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd),
+    multiplier: 1
+  }
 }
 
 function findOpenAIModelPricing(model: string): RawModelPricing | undefined {
@@ -166,6 +209,14 @@ function normalizePrice(value?: number): number | undefined {
 function perMillion(value?: number): number | undefined {
   const price = normalizePrice(value)
   return price === undefined ? undefined : Number((price * 1_000_000).toFixed(8))
+}
+
+function roundCost(value: number): number {
+  return Number(value.toFixed(10))
+}
+
+function sumCostParts(...parts: Array<number | undefined>): number {
+  return roundCost(parts.reduce<number>((total, value) => total + (value ?? 0), 0))
 }
 
 function extractModelReleaseDate(model: string): string | undefined {

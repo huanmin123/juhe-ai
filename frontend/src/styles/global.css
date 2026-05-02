@@ -50,6 +50,10 @@ body {
   margin-bottom: 18px;
 }
 
+.page-toolbar-end {
+  justify-content: flex-end;
+}
+
 .page-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
