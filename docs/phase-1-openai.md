@@ -149,7 +149,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
 - 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户。
 - 账户页提供“刷新授权”按钮，可手动刷新某个 OAuth 账户。
-- OAuth token 刷新和账户测试会优先使用账户绑定的代理；Mac 迁移过来的 OAuth 账户默认绑定本地 `socks5h://127.0.0.1:7897` 代理配置。
+- OAuth token 刷新和账户测试会优先使用账户绑定的代理；没有绑定代理时默认直连。迁移旧账户时不再自动创建或绑定本机固定端口代理，避免换电脑或服务器部署后误连本机端口。
 
 ## 账户列表字段
 

@@ -41,7 +41,7 @@
         </template>
         <template v-else-if="column.key === 'group'">
           <a-tooltip v-if="groupNameForAccount(record.id)" :title="groupNameForAccount(record.id)">
-            <a-tag class="account-group-tag" color="purple">{{ groupNameForAccount(record.id) }}</a-tag>
+            <span class="account-group-text">{{ groupNameForAccount(record.id) }}</span>
           </a-tooltip>
           <span v-else class="muted-cell">未归属</span>
         </template>
@@ -494,10 +494,10 @@ const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 230 },
   { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
   { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 },
-  { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
   { title: '并发数', key: 'concurrency', width: 100, align: 'center' },
   { title: '状态', key: 'status', width: 190 },
   { title: '用量情况', key: 'usage', width: 280 },
+  { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
   { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
   { title: '最近使用时间', key: 'lastUsedAt', width: 180 },
   { title: '操作', key: 'actions', width: 220, fixed: 'right' }
@@ -638,7 +638,7 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     status: 'active',
     concurrencyLimit: defaultAccountConcurrencyLimit(),
     priority: 0,
-    proxyProfileId: defaultProxyProfileId(),
+    proxyProfileId: undefined,
     passthroughEnabled: true,
     schedulable: true,
     notes: ''
@@ -743,10 +743,6 @@ function groupIdForAccount(accountId: string) {
 
 function groupNameForAccount(accountId: string) {
   return groups.value.find((group) => group.accountIds.includes(accountId))?.name
-}
-
-function defaultProxyProfileId() {
-  return proxies.value.find((proxy) => proxy.type === 'socks5h' && proxy.host === '127.0.0.1' && proxy.port === 7897)?.id
 }
 
 function defaultAccountConcurrencyLimit() {
@@ -1374,14 +1370,12 @@ onMounted(loadData)
   white-space: nowrap;
 }
 
-.account-group-tag {
-  display: inline-block;
-  max-width: 210px;
+.account-group-text {
+  display: block;
+  width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
-  vertical-align: bottom;
   white-space: nowrap;
-  margin-inline-end: 0;
 }
 
 .usage-cell {
@@ -1393,7 +1387,7 @@ onMounted(loadData)
 .usage-summary {
   color: #0f172a;
   font-family: Consolas, 'Courier New', monospace;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .status-cell {

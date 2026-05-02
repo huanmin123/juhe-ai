@@ -942,22 +942,6 @@ export function listProxies(): ProxyProfileSummary[] {
   return rows.map(proxySummaryFromRow)
 }
 
-export function findOrCreateLocalSocksProxy(): ProxyProfileSummary {
-  const row = getDatabase()
-    .prepare('SELECT * FROM proxy_profiles WHERE type IN (?, ?) AND host = ? AND port = ? ORDER BY created_at ASC LIMIT 1')
-    .get('socks5', 'socks5h', '127.0.0.1', 7897) as unknown as ProxyRow | undefined
-  if (row) {
-    return proxySummaryFromRow(row)
-  }
-  return createProxy({
-    name: 'OpenAI OAuth 本地代理 7897',
-    type: 'socks5h',
-    host: '127.0.0.1',
-    port: 7897,
-    enabled: true
-  })
-}
-
 function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
   return {
     id: row.id,
@@ -1337,7 +1321,6 @@ export function importOpenAIApiKeyAccounts(input: {
   const groupName = input.groupName ?? '迁移 OpenAI 账户分组'
   const existingGroup = findGroupByName(groupName)
   const group = existingGroup ?? (input.dryRun ? { id: 'dry_run_group', name: groupName, enabled: true, accountIds: [] } : createGroup({ name: groupName, description: '从 sub2api 迁移的 OpenAI API Key 与 OAuth 账户' }))
-  const defaultOAuthProxyId = input.dryRun ? undefined : findOrCreateLocalSocksProxy().id
   let imported = 0
   let skipped = 0
   let importedApiKey = 0
@@ -1411,7 +1394,7 @@ export function importOpenAIApiKeyAccounts(input: {
       credentials,
       status: 'active',
       concurrencyLimit: 3,
-      proxyProfileId: account.proxyProfileId ?? defaultOAuthProxyId,
+      proxyProfileId: account.proxyProfileId,
       passthroughEnabled: true,
       schedulable: true,
       notes: account.description

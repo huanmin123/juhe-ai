@@ -2,10 +2,18 @@
 
 ## 启动
 
+在项目根目录执行：
+
 ```powershell
-cd F:\juhe-ai
 pnpm install
 pnpm dev
+```
+
+首次运行可从示例文件复制项目内配置：
+
+```powershell
+Copy-Item backend/.env.example backend/.env
+Copy-Item frontend/.env.example frontend/.env
 ```
 
 打开：
@@ -31,14 +39,38 @@ curl.exe http://127.0.0.1:3000/api/settings
 默认数据库：
 
 ```text
-F:\juhe-ai\backend\data\juhe-ai.sqlite3
+backend/data/juhe-ai.sqlite3
 ```
 
-指定数据库位置：编辑 `backend/.env`，不设置系统环境变量。
+指定数据库位置：编辑项目内 `backend/.env`，不设置系统环境变量。相对路径按 `backend/` 目录解析，拷贝项目目录到其他电脑或服务器时可跟随迁移。
 
 ```dotenv
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 ```
+
+## 可移植部署
+
+项目默认不依赖系统环境变量，部署时优先调整项目内配置文件：
+
+```dotenv
+# backend/.env
+JUHE_AI_HOST=127.0.0.1
+JUHE_AI_PORT=3000
+JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
+JUHE_AI_SECRET=请替换为稳定随机字符串
+JUHE_AI_OAUTH_PROXY_URL=
+```
+
+```dotenv
+# frontend/.env
+VITE_JUHE_AI_BACKEND_TARGET=http://127.0.0.1:3000
+VITE_JUHE_AI_API_BASE_URL=/api
+VITE_JUHE_AI_GATEWAY_BASE_URL=
+```
+
+迁移到新机器时，复制项目目录、`backend/.env`、`frontend/.env` 和 `backend/data/` 即可。若要让后端直接监听局域网或容器端口，可把 `JUHE_AI_HOST` 改为 `0.0.0.0`；如果放在反向代理后面，通常保持 `127.0.0.1` 更安全。
+
+代理不再默认绑定本机端口。需要代理时，在代理管理页创建代理并给具体账户绑定；`JUHE_AI_OAUTH_PROXY_URL` 只作为 OAuth token 换取/刷新的可选兜底。
 
 ## 验证
 
@@ -117,7 +149,6 @@ OAuth 账户如需代理，可在账户编辑弹窗中绑定代理配置；若�
 ### 自动烟测
 
 ```powershell
-cd F:\juhe-ai
 pnpm test:smoke
 ```
 
@@ -174,7 +205,6 @@ Invoke-RestMethod -Method Patch `
 ### 代码级验证
 
 ```powershell
-cd F:\juhe-ai
 pnpm typecheck
 pnpm build
 pnpm test:smoke

@@ -21,9 +21,15 @@ interface ApiResponse<T> {
 }
 
 const http = axios.create({
-  baseURL: '/api',
+  baseURL: normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined),
   timeout: 15000
 })
+
+function normalizeApiBaseUrl(value?: string): string {
+  const text = value?.trim()
+  if (!text) return '/api'
+  return text.replace(/\/+$/, '') || '/api'
+}
 
 async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T> {
   const response = await request

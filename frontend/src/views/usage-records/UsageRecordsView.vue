@@ -117,10 +117,10 @@
           </span>
         </template>
         <template v-else-if="column.key === 'firstTokenMs'">
-          <a-tag>{{ formatDuration(record.firstTokenMs) }}</a-tag>
+          <span>{{ formatDuration(record.firstTokenMs) }}</span>
         </template>
         <template v-else-if="column.key === 'durationMs'">
-          <a-tag>{{ formatDuration(record.durationMs) }}</a-tag>
+          <span>{{ formatDuration(record.durationMs) }}</span>
         </template>
         <template v-else-if="column.key === 'createdAt'">
           <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
@@ -217,7 +217,7 @@ function formatUnitPrice(value?: number): string {
 }
 
 function formatDuration(value?: number): string {
-  return typeof value === 'number' ? `${value} ms` : '-'
+  return typeof value === 'number' ? `${(value / 1000).toFixed(2)} s` : '-'
 }
 
 function statusCodeColor(value?: number): string {

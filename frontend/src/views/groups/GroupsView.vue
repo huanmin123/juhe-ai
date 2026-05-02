@@ -6,14 +6,14 @@
       </div>
     </div>
 
-    <a-table class="page-table groups-table" size="middle" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :scroll="{ x: 1260 }">
+    <a-table class="page-table groups-table" size="middle" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :scroll="{ x: 1380 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页选择账户的归属分组。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
           <div class="group-name-cell">
-            <strong>{{ record.name }}</strong>
+            <span>{{ record.name }}</span>
           </div>
         </template>
         <template v-else-if="column.key === 'providerCode'">
@@ -23,17 +23,17 @@
           <div class="account-count-cell">
             <span class="account-count-row">
               <span class="account-count-label">可用:</span>
-              <strong class="account-count-value available">{{ groupStats(record).available }}</strong>
+              <span class="account-count-value available">{{ groupStats(record).available }}</span>
               <span class="account-count-unit">个账号</span>
             </span>
             <span v-if="groupStats(record).rateLimited > 0" class="account-count-row">
               <span class="account-count-label">限流:</span>
-              <strong class="account-count-value limited">{{ groupStats(record).rateLimited }}</strong>
+              <span class="account-count-value limited">{{ groupStats(record).rateLimited }}</span>
               <span class="account-count-unit">个账号</span>
             </span>
             <span class="account-count-row">
               <span class="account-count-label">总量:</span>
-              <strong class="account-count-value">{{ groupStats(record).total }}</strong>
+              <span class="account-count-value">{{ groupStats(record).total }}</span>
               <span class="account-count-unit">个账号</span>
             </span>
           </div>
@@ -47,11 +47,27 @@
             <span><span class="usage-label">累计:</span> <span class="usage-summary">{{ formatUsageSummary(groupStats(record).usage) }}</span></span>
           </div>
         </template>
-        <template v-else-if="column.key === 'status'">
-          <div class="status-cell">
-            <a-tag class="status-tag" :color="groupStatusColor(record)">{{ groupStatusText(record) }}</a-tag>
-            <span class="status-message">{{ groupStatusHint(record) }}</span>
+        <template v-else-if="column.key === 'accountStatusCount'">
+          <div class="account-count-cell">
+            <span class="account-count-row">
+              <span class="account-count-label">启用:</span>
+              <span class="account-count-value available">{{ groupStats(record).active }}</span>
+              <span class="account-count-unit">个账号</span>
+            </span>
+            <span class="account-count-row">
+              <span class="account-count-label">异常:</span>
+              <span class="account-count-value limited">{{ groupStats(record).error }}</span>
+              <span class="account-count-unit">个账号</span>
+            </span>
+            <span class="account-count-row">
+              <span class="account-count-label">停用:</span>
+              <span class="account-count-value">{{ groupStats(record).disabled }}</span>
+              <span class="account-count-unit">个账号</span>
+            </span>
           </div>
+        </template>
+        <template v-else-if="column.key === 'status'">
+          <a-tag class="status-tag" :color="groupStatusColor(record)">{{ groupStatusText(record) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
@@ -115,7 +131,8 @@ const columns = [
   { title: '账户数', key: 'accountCount', width: 130 },
   { title: '当前并发', key: 'concurrency', width: 100 },
   { title: '用量', key: 'usage', width: 280 },
-  { title: '状态', key: 'status', width: 180 },
+  { title: '账号数', key: 'accountStatusCount', width: 130 },
+  { title: '状态', key: 'status', width: 100 },
   { title: '操作', key: 'actions', width: 150, fixed: 'right' }
 ]
 
@@ -144,12 +161,6 @@ function groupStatusColor(group: GroupSummary) {
   if (!group.enabled || stats.total === 0) return 'default'
   if (stats.available === 0) return 'orange'
   return 'green'
-}
-
-function groupStatusHint(group: GroupSummary) {
-  const stats = groupStats(group)
-  if (!group.enabled) return '该分组不会被 API Key 调度'
-  return `启用 ${stats.active}，异常 ${stats.error}，停用 ${stats.disabled}`
 }
 
 function providerName(providerCode?: string) {
@@ -256,8 +267,7 @@ onMounted(loadData)
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
-.form-help,
-.status-message {
+.form-help {
   color: #64748b;
   font-size: 12px;
 }
@@ -271,7 +281,6 @@ onMounted(loadData)
 }
 
 .group-name-cell,
-.status-cell,
 .account-count-cell,
 .usage-cell {
   display: flex;
@@ -283,7 +292,7 @@ onMounted(loadData)
 .usage-summary {
   color: #0f172a;
   font-family: Consolas, 'Courier New', monospace;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .account-count-row {
@@ -301,7 +310,7 @@ onMounted(loadData)
 .account-count-value {
   color: #334155;
   font-family: Consolas, 'Courier New', monospace;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .account-count-value.available {

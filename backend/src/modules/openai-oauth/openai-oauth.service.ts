@@ -219,7 +219,7 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
 
 async function performTokenRequest(bodyText: string, proxyUrl?: string): Promise<{ statusCode: number; body: string }> {
   const resolvedProxyUrl = normalizeString(proxyUrl) || runtimeConfig.oauthProxyUrl
-  const agent = createProxyAgent(resolvedProxyUrl)
+  const agent = resolvedProxyUrl ? createProxyAgent(resolvedProxyUrl) : undefined
   const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
     const request = httpsRequest(OPENAI_OAUTH_TOKEN_URL, {
       method: 'POST',

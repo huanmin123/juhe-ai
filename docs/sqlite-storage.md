@@ -18,7 +18,9 @@ backend/data/juhe-ai.sqlite3
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 ```
 
-相对路径按 `backend/` 目录解析；也可以填写绝对路径，例如 `F:\juhe-ai-data\juhe-ai.sqlite3`。
+相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3` 这类项目内相对路径；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
+
+迁移到其他电脑或服务器时，保留 `backend/.env` 和 `backend/data/` 即可带走配置与数据。
 
 ## 当前实现
 

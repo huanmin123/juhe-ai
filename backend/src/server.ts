@@ -15,6 +15,7 @@ import { runtimeConfig } from './config/runtime.js'
 import { getDatabase } from './storage/database.js'
 
 const app = express()
+const host = runtimeConfig.host
 const port = runtimeConfig.port
 
 getDatabase()
@@ -41,6 +42,6 @@ app.use('/api/usage-records', usageRecordsRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/v1', openAIGatewayRouter)
 
-app.listen(port, () => {
-  console.log(`juhe-ai backend listening on http://127.0.0.1:${port}`)
+app.listen(port, host, () => {
+  console.log(`juhe-ai backend listening on http://${host}:${port}`)
 })

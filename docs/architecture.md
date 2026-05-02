@@ -46,7 +46,7 @@ flowchart LR
 设计原则：
 
 - 数据库文件默认放在 `backend/data/juhe-ai.sqlite3`
-- 运行配置读取项目内 `backend/.env`；数据库文件可通过 `JUHE_AI_DATABASE_PATH` 指定，不要求系统环境变量
+- 运行配置读取项目内 `backend/.env`；数据库文件可通过 `JUHE_AI_DATABASE_PATH` 指定，推荐使用项目内相对路径，不依赖系统环境变量
 - 使用 WAL 模式提升本地读写体验
 - 不引入复杂 ORM，先用简单 repository 封装 SQL
 - 敏感字段加密后存储；自用后台接口按页面需要返回完整密钥

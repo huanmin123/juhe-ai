@@ -39,13 +39,20 @@ pnpm dev
 - 后端：`http://127.0.0.1:3000`
 - 中转 Base URL：`http://127.0.0.1:3000/v1`
 
-默认 SQLite 文件：`backend/data/juhe-ai.sqlite3`。运行配置读取 `backend/.env` 本地文件；首次使用可复制 `backend/.env.example`，不需要设置 Windows 系统环境变量。
+项目按“目录可移植”设计：后端读取 `backend/.env`，前端读取 `frontend/.env`；默认 SQLite 文件放在 `backend/data/juhe-ai.sqlite3`。这些配置文件跟着项目目录走，不依赖系统环境变量，拷贝整个目录到其他电脑或服务器后只要保留 `.env` 和 `backend/data/` 即可继续使用。
 
 ```powershell
 Copy-Item backend/.env.example backend/.env
-# 按需编辑 backend/.env，例如 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
+Copy-Item frontend/.env.example frontend/.env
+# 按需编辑 backend/.env 和 frontend/.env
 pnpm --filter juhe-ai-backend dev
 ```
+
+服务器或局域网部署时，通常只需要改项目内配置文件：
+
+- `backend/.env`：`JUHE_AI_HOST=0.0.0.0`、`JUHE_AI_PORT=3000`、`JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3`
+- `frontend/.env`：`VITE_JUHE_AI_API_BASE_URL=/api`、`VITE_JUHE_AI_GATEWAY_BASE_URL=http://你的域名或IP:3000/v1`
+- 需要代理时在代理管理页给账户绑定代理；`JUHE_AI_OAUTH_PROXY_URL` 只作为 OAuth token 换取/刷新的可选兜底，不再默认写死本机代理。
 
 对外请求统一兼容 OpenAI 协议：客户端填本服务 `/v1` 作为 Base URL，API Key 填 API 密钥页生成的本地网关密钥；后续提供方也优先适配成 OpenAI 兼容格式。
 ## 当前可用功能
@@ -63,7 +70,6 @@ pnpm --filter juhe-ai-backend dev
 ## 测试与验证
 
 ```powershell
-cd F:\juhe-ai
 pnpm typecheck
 pnpm build
 pnpm test:smoke

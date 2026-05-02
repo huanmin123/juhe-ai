@@ -5,10 +5,11 @@ import { fileURLToPath } from 'node:url'
 import { parse } from 'dotenv'
 
 export interface RuntimeConfig {
+  host: string
   port: number
   databasePath: string
   secret: string
-  oauthProxyUrl: string
+  oauthProxyUrl?: string
   smokeTest: {
     backendUrl: string
     accountName: string
@@ -23,10 +24,11 @@ export const localEnvPath = resolve(backendRoot, '.env')
 const localEnv = loadLocalEnv(localEnvPath)
 
 export const runtimeConfig: RuntimeConfig = {
+  host: stringConfig('JUHE_AI_HOST', '127.0.0.1'),
   port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai.sqlite3')),
   secret: stringConfig('JUHE_AI_SECRET', 'juhe-ai-dev-secret-change-me'),
-  oauthProxyUrl: stringConfig('JUHE_AI_OAUTH_PROXY_URL', 'socks5h://127.0.0.1:7897'),
+  oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   smokeTest: {
     backendUrl: stringConfig('JUHE_AI_BACKEND_URL', 'http://127.0.0.1:3000'),
     accountName: stringConfig('JUHE_AI_SMOKE_ACCOUNT_NAME', 'dli.li-300-15'),
@@ -45,6 +47,11 @@ function loadLocalEnv(path: string): Record<string, string> {
 function stringConfig(name: string, fallback: string): string {
   const value = localEnv[name]?.trim()
   return value ? value : fallback
+}
+
+function optionalStringConfig(name: string): string | undefined {
+  const value = localEnv[name]?.trim()
+  return value ? value : undefined
 }
 
 function numberConfig(name: string, fallback: number, min: number, max: number): number {
