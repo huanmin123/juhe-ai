@@ -116,6 +116,7 @@ function handlePointerMove(event: PointerEvent): void {
 }
 
 async function handleLogin() {
+  if (loading.value) return
   if (!form.username.trim() || !form.password || !form.captchaCode.trim()) {
     message.warning('请输入账号、密码和验证码')
     return
@@ -133,7 +134,7 @@ async function handleLogin() {
       captchaCode: form.captchaCode
     })
     if (user.mustChangePassword) {
-      message.warning('当前使用初始密码，请尽快在右上角修改密码')
+      message.warning('当前账户仍在使用初始密码，请尽快在右上角修改密码')
     }
     await router.replace(typeof route.query.redirect === 'string' ? route.query.redirect : '/accounts')
   } catch (error) {

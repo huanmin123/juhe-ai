@@ -133,13 +133,15 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 4. 如果本机没有监听该端口，浏览器显示连接失败也没关系，复制地址栏完整 URL。
 5. 前端把回调 URL 提交给后端，后端校验 `state` 并用 PKCE `code_verifier` 换取 token。
 6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id` 和邮箱。
+7. 账户落库后立即触发一次首次额度快照刷新；刷新失败只更新快照状态和退避时间，不影响账户创建结果。
 
 ### Refresh Token 授权
 
 1. 用户直接粘贴已有 `refresh_token`。
 2. 后端使用 `grant_type=refresh_token` 向 OpenAI token endpoint 刷新。
 3. 刷新成功后创建 OpenAI OAuth 账户。
-4. 如果 OpenAI 没返回新的 `refresh_token`，继续保留用户输入的原始 `refresh_token`。
+4. 账户落库后立即触发一次首次额度快照刷新；刷新失败只更新快照状态和退避时间，不影响账户创建结果。
+5. 如果 OpenAI 没返回新的 `refresh_token`，继续保留用户输入的原始 `refresh_token`。
 
 ### 调度与授权刷新
 
@@ -157,7 +159,7 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - 数据来源优先使用真实网关请求或账号测试返回的 Codex rate-limit 响应头：`x-codex-primary-used-percent`、`x-codex-primary-reset-after-seconds`、`x-codex-primary-window-minutes`、`x-codex-secondary-used-percent`、`x-codex-secondary-reset-after-seconds`、`x-codex-secondary-window-minutes`。
 - 归一化规则：优先按 `window_minutes` 判断窗口，较小窗口映射为 `5h`，较大窗口映射为 `7d`；只有单侧窗口时，`<= 360` 分钟归为 `5h`，更长归为 `7d`；没有窗口长度时兼容旧语义，默认 primary 为 `7d`、secondary 为 `5h`。
 - 存储字段建议保存为账号运行态快照，并按 `system_account_id + account_id + kind` 隔离：`codex_5h_used_percent`、`codex_5h_reset_after_seconds`、`codex_5h_reset_at`、`codex_5h_window_minutes`、`codex_7d_used_percent`、`codex_7d_reset_after_seconds`、`codex_7d_reset_at`、`codex_7d_window_minutes`、`codex_usage_updated_at`、`last_attempt_at`、`last_success_at`、`next_refresh_after`、`refresh_status`、`last_error_message`。
-- 获取策略：列表只读已缓存快照，不因展示批量探测；缺失、过期或接近恢复点的快照由后台定时器统一探测，可对 `https://chatgpt.com/backend-api/codex/responses` 做节流探测，使用 `stream: true`、`store: false`、Codex CLI 相关 header，并复用账号代理。
+- 获取策略：列表只读已缓存快照，不因展示批量探测；新建 OAuth 账户会在创建流程里立即触发一次首次快照刷新，缺失、过期或接近恢复点的快照由后台定时器统一探测，可对 `https://chatgpt.com/backend-api/codex/responses` 做节流探测，使用 `stream: true`、`store: false`、Codex CLI 相关 header，并复用账号代理。
 - 后台策略：按系统账户分批处理，每个系统账户内默认并发为 1；快照未过期不探测，失败后按退避时间更新 `next_refresh_after`，保留旧快照继续展示。
 - 429 处理：收到 OAuth Codex 429 时，先解析 header 里已耗尽窗口的 reset 时间；如果 header 不足，再解析响应体 `error.resets_at` 或 `error.resets_in_seconds`；计算出的时间写入账号 `rate_limited` 冷却截止时间，后台下次刷新不早于 reset 时间。
 - UI 展示：OAuth 行在“用量情况”里显示本地请求/token/成本摘要，同时额外显示 `5h`、`7d` 两条进度条、百分比、倒计时/刷新时间、快照更新时间、后台刷新状态和下次刷新时间；API Key 行不显示这两条 OAuth 额度进度。
@@ -186,3 +188,6 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - OpenAI SSE 响应读取 `response.completed` / `response.done` / `response.failed` 事件里的 `response.usage`。
 - 成本按 OpenAI 官方 API 价格表做轻量估算；没有覆盖的模型先只记 token。
 - OpenAI OAuth `5h` / `7d` 额度进度来自上游 Codex 限制快照，只用于判断账号剩余额度和恢复时间，不计入 `usage_records.cost_usd`，也不替代本地 token 用量统计。
+
+
+

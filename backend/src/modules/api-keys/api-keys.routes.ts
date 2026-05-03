@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { createApiKeyRecord, deleteApiKey, listApiKeys, updateApiKey } from '../../storage/repositories.js'
+import { getRequestAccessScope } from '../auth/request-context.js'
 
 export const apiKeysRouter = Router()
 
@@ -13,8 +14,8 @@ const apiKeyCreateSchema = z.object({
   expiresAt: z.string().optional()
 })
 
-apiKeysRouter.get('/', (_req, res) => {
-  res.json(ok(listApiKeys()))
+apiKeysRouter.get('/', (req, res) => {
+  res.json(ok(listApiKeys(getRequestAccessScope(req.query.systemAccountId))))
 })
 
 apiKeysRouter.post('/', (req, res) => {

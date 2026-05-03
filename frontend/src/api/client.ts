@@ -26,6 +26,10 @@ interface ApiResponse<T> {
   message?: string
 }
 
+interface ListParams {
+  systemAccountId?: string
+}
+
 const http = axios.create({
   baseURL: normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined),
   timeout: 15000,
@@ -64,20 +68,20 @@ export const api = {
     list: () => unwrap<ErrorPolicySummary[]>(http.get('/error-policies'))
   },
   accounts: {
-    list: () => unwrap<AccountSummary[]>(http.get('/accounts')),
+    list: (params?: ListParams) => unwrap<AccountSummary[]>(http.get('/accounts', { params })),
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload)),
     test: (id: string, payload?: { model?: string; prompt?: string }) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { timeout: 130000 })),
     delete: (id: string) => http.delete(`/accounts/${id}`)
   },
   groups: {
-    list: () => unwrap<GroupSummary[]>(http.get('/groups')),
+    list: (params?: ListParams) => unwrap<GroupSummary[]>(http.get('/groups', { params })),
     create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/groups', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<GroupSummary>(http.patch(`/groups/${id}`, payload)),
     delete: (id: string) => http.delete(`/groups/${id}`)
   },
   apiKeys: {
-    list: () => unwrap<ApiKeySummary[]>(http.get('/api-keys')),
+    list: (params?: ListParams) => unwrap<ApiKeySummary[]>(http.get('/api-keys', { params })),
     create: (payload: Record<string, unknown>) => unwrap<CreatedApiKey>(http.post('/api-keys', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<ApiKeySummary>(http.patch(`/api-keys/${id}`, payload)),
     delete: (id: string) => http.delete(`/api-keys/${id}`)
@@ -88,13 +92,13 @@ export const api = {
     createFromRefreshToken: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/openai-oauth/create-from-refresh-token', payload))
   },
   proxies: {
-    list: () => unwrap<ProxyProfileSummary[]>(http.get('/proxies')),
+    list: (params?: ListParams) => unwrap<ProxyProfileSummary[]>(http.get('/proxies', { params })),
     create: (payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.post('/proxies', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.patch(`/proxies/${id}`, payload)),
     delete: (id: string) => http.delete(`/proxies/${id}`)
   },
   usageRecords: {
-    list: () => unwrap<UsageRecordSummary[]>(http.get('/usage-records'))
+    list: (params?: ListParams) => unwrap<UsageRecordSummary[]>(http.get('/usage-records', { params }))
   },
   stats: {
     usageOverview: () => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview')),

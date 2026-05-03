@@ -1,12 +1,15 @@
 <template>
   <a-card class="page-card groups-page-card">
-    <div class="page-toolbar page-toolbar-end">
+    <div class="page-toolbar groups-toolbar">
+      <div v-if="isAdmin" class="list-filters">
+        <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" class="toolbar-select" :options="systemAccountOptions" @change="loadData" />
+      </div>
       <div class="page-toolbar-actions">
         <a-button type="primary" @click="openCreate">新建分组</a-button>
       </div>
     </div>
 
-    <a-table class="page-table groups-table" size="middle" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1560 : 1380 }">
+    <a-table class="page-table groups-table" size="middle" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1560 : 1380 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页选择账户的归属分组。" />
       </template>
@@ -110,7 +113,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
-import type { GroupSummary, ProviderDefinition } from '@/types/domain'
+import type { GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
+import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
@@ -127,6 +131,8 @@ const modalOpen = ref(false)
 const editingId = ref<string>()
 const groups = ref<GroupSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
+const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccountFilter = ref(allSystemAccountsValue)
 const form = reactive({ name: '', providerCode: 'openai', description: '', enabled: true })
 const isAdmin = authState.isAdmin
 
@@ -150,6 +156,8 @@ const columns = computed(() => {
 })
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
+const filteredGroups = computed(() => groups.value.filter((group) => matchesSystemAccountFilter(group, systemAccountFilter.value, isAdmin.value)))
+const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 const providerOptions = computed(() => availableProviders.value.map((provider) => ({
   label: provider.name,
   value: provider.code,
@@ -182,7 +190,7 @@ function providerName(providerCode?: string) {
 }
 
 function groupSystemAccountText(group: GroupSummary) {
-  return group.systemAccountName || group.systemAccountId || '-'
+  return systemAccountDisplayText(group)
 }
 
 function formatUsageSummary(usage: GroupSummary['accountStats']['usage']) {
@@ -219,12 +227,15 @@ function defaultProviderCode() {
 async function loadData() {
   loading.value = true
   try {
-    const [groupList, providerList] = await Promise.all([
-      api.groups.list(),
-      isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[])
+    const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, isAdmin.value)
+    const [groupList, providerList, systemAccountList] = await Promise.all([
+      api.groups.list({ systemAccountId }),
+      isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
+      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     groups.value = groupList
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
+    systemAccounts.value = systemAccountList
   } catch (error) {
     console.error(error)
     message.error('加载分组失败')
@@ -285,6 +296,22 @@ onMounted(loadData)
   border: 1px solid #e8edf5;
   border-radius: 16px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+}
+
+.groups-toolbar {
+  align-items: center;
+}
+
+.list-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  flex: 1 1 260px;
+}
+
+.toolbar-select {
+  min-width: 180px;
 }
 
 .form-help {

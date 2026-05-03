@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { addAccountToGroup, createAccount, listGroups, resolveProxyUrlForProfile } from '../../storage/repositories.js'
+import { addAccountToGroup, createAccount, listAccounts, listGroups, resolveProxyUrlForProfile } from '../../storage/repositories.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -10,6 +10,7 @@ import {
   generateOpenAIAuthURL,
   refreshOpenAIOAuthToken
 } from './openai-oauth.service.js'
+import { refreshOpenAIOAuthUsageSnapshot } from './openai-oauth-usage-refresh.service.js'
 
 export const openAIOAuthRouter = Router()
 
@@ -92,7 +93,8 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
     if (parsed.data.groupId) {
       addAccountToGroup(parsed.data.groupId, account.id)
     }
-    res.status(201).json(ok(account))
+    const accountWithInitialUsage = await refreshCreatedOAuthUsage(account)
+    res.status(201).json(ok(accountWithInitialUsage))
   } catch (error) {
     res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI OAuth code exchange failed' })
   }
@@ -133,12 +135,24 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
     if (parsed.data.groupId) {
       addAccountToGroup(parsed.data.groupId, account.id)
     }
-    res.status(201).json(ok(account))
+    const accountWithInitialUsage = await refreshCreatedOAuthUsage(account)
+    res.status(201).json(ok(accountWithInitialUsage))
   } catch (error) {
     res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI refresh token authorization failed' })
   }
 })
 
+async function refreshCreatedOAuthUsage(account: ReturnType<typeof createAccount>) {
+  try {
+    await refreshOpenAIOAuthUsageSnapshot(account, { source: 'account_create', requestTimeoutMs: 30000 })
+  } catch (error) {
+    console.error('[openai-oauth] initial usage snapshot refresh failed', error)
+  }
+  return listAccounts().find((item) => item.id === account.id) ?? account
+}
+
 function isOpenAIGroup(groupId: string): boolean {
   return listGroups().some((group) => group.id === groupId && group.providerCode === 'openai')
 }
+
+

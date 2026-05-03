@@ -1,6 +1,9 @@
 <template>
   <a-card class="page-card api-keys-page-card">
-    <div class="page-toolbar page-toolbar-end">
+    <div class="page-toolbar api-keys-toolbar">
+      <div v-if="isAdmin" class="list-filters">
+        <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" class="toolbar-select" :options="systemAccountOptions" @change="loadData" />
+      </div>
       <div class="page-toolbar-actions">
         <a-button @click="helpOpen = true">
           <template #icon><question-circle-outlined /></template>
@@ -10,7 +13,7 @@
       </div>
     </div>
 
-    <a-table class="page-table api-keys-table" size="middle" :columns="columns" :data-source="apiKeys" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1380 : 1200 }">
+    <a-table class="page-table api-keys-table" size="middle" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1380 : 1200 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
@@ -30,7 +33,7 @@
           <a-tag color="purple">{{ groupName(record.groupId) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'systemAccount'">
-          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ record.systemAccountName || record.systemAccountId || '-' }}</span>
+          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ apiKeySystemAccountText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
@@ -129,7 +132,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
-import type { ApiKeySummary, GroupSummary } from '@/types/domain'
+import type { ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
+import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const loading = ref(false)
 const modalOpen = ref(false)
@@ -139,6 +143,8 @@ const editingId = ref<string>()
 const createdKey = ref('')
 const apiKeys = ref<ApiKeySummary[]>([])
 const groups = ref<GroupSummary[]>([])
+const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccountFilter = ref(allSystemAccountsValue)
 const form = reactive({ name: '', groupId: '', status: 'active' as 'active' | 'disabled', expiresAt: undefined as Dayjs | undefined })
 const isAdmin = authState.isAdmin
 const gatewayEndpoints = ['/chat/completions', '/responses', '/models']
@@ -166,6 +172,8 @@ const statusOptions = [
 ]
 
 const groupOptions = computed(() => groups.value.map((group) => ({ label: group.name, value: group.id })))
+const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => matchesSystemAccountFilter(apiKey, systemAccountFilter.value, isAdmin.value)))
+const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`base_url = ${gatewayBaseUrl.value}`, 'api_key = <这里填本页 API Key>', 'protocol = OpenAI-compatible /v1'].join('\n'))
 
@@ -182,18 +190,25 @@ function formatKeyPreview(value?: string) {
 async function loadData() {
   loading.value = true
   try {
-    const [keyList, groupList] = await Promise.all([
-      api.apiKeys.list(),
-      api.groups.list()
+    const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, isAdmin.value)
+    const [keyList, groupList, systemAccountList] = await Promise.all([
+      api.apiKeys.list({ systemAccountId }),
+      api.groups.list({ systemAccountId }),
+      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     apiKeys.value = keyList
     groups.value = groupList
+    systemAccounts.value = systemAccountList
   } catch (error) {
     console.error(error)
     message.error('加载 API Key 失败')
   } finally {
     loading.value = false
   }
+}
+
+function apiKeySystemAccountText(apiKey: ApiKeySummary) {
+  return systemAccountDisplayText(apiKey)
 }
 
 function openCreate() {
@@ -287,6 +302,22 @@ onMounted(loadData)
   border: 1px solid #e8edf5;
   border-radius: 16px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
+}
+
+.api-keys-toolbar {
+  align-items: center;
+}
+
+.list-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  flex: 1 1 260px;
+}
+
+.toolbar-select {
+  min-width: 180px;
 }
 
 .gateway-help-content {

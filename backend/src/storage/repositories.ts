@@ -133,6 +133,7 @@ interface SystemAccountRow {
 export interface AccessScope {
   systemAccountId: string
   role: SystemAccountRole
+  systemAccountFilterId?: string
 }
 
 export interface SessionWithAccount {
@@ -353,18 +354,30 @@ function canAccessAll(access?: AccessScope): boolean {
   return !scope || scope.role === 'admin'
 }
 
+function scopedSystemAccountId(access?: AccessScope): string | undefined {
+  const scope = resolveAccessScope(access)
+  if (!scope) return undefined
+  if (scope.role === 'admin') {
+    const filterId = scope.systemAccountFilterId?.trim()
+    return filterId || undefined
+  }
+  return scope.systemAccountId
+}
+
 function buildSystemAccountScopeClause(access?: AccessScope, column = 'system_account_id'): { clause: string; params: Array<string> } {
-  if (canAccessAll(access)) {
+  const systemAccountId = scopedSystemAccountId(access)
+  if (!systemAccountId) {
     return { clause: '', params: [] }
   }
-  return { clause: ` AND ${column} = ?`, params: [currentSystemAccountId(access)] }
+  return { clause: ` AND ${column} = ?`, params: [systemAccountId] }
 }
 
 function buildSystemAccountWhereClause(access?: AccessScope, column = 'system_account_id'): { clause: string; params: Array<string> } {
-  if (canAccessAll(access)) {
+  const systemAccountId = scopedSystemAccountId(access)
+  if (!systemAccountId) {
     return { clause: '', params: [] }
   }
-  return { clause: ` WHERE ${column} = ?`, params: [currentSystemAccountId(access)] }
+  return { clause: ` WHERE ${column} = ?`, params: [systemAccountId] }
 }
 
 function includeSystemAccountFields(access?: AccessScope): boolean {
@@ -378,6 +391,10 @@ function systemAccountNameMap(): Map<string, string> {
 function accountSystemAccountId(accountId: string): string | undefined {
   const row = getDatabase().prepare('SELECT system_account_id FROM accounts WHERE id = ?').get(accountId) as unknown as { system_account_id?: string } | undefined
   return row?.system_account_id
+}
+
+export function resolveAccountSystemAccountId(accountId: string): string | undefined {
+  return accountSystemAccountId(accountId)
 }
 
 function groupOwnerAndProvider(groupId: string): { systemAccountId: string; providerCode: ProviderCode } | undefined {
@@ -2667,6 +2684,8 @@ function statsLagSecondsFromCursor(cursorCreatedAt: string): number {
 }
 
 function visibleSystemAccountIds(access?: AccessScope): string[] {
+  const scopedId = scopedSystemAccountId(access)
+  if (scopedId) return [scopedId]
   if (canAccessAll(access)) {
     const ids = listSystemAccounts().map((account) => account.id)
     return ids.length ? ids : ['sys_admin']
@@ -2704,3 +2723,4 @@ function settingsNumberValue(key: string, fallback: number, min: number, max: nu
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
 }
+

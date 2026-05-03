@@ -6,6 +6,7 @@
         <a-select v-model:value="filters.type" class="toolbar-select" :options="typeOptions" />
         <a-select v-model:value="filters.status" class="toolbar-select" :options="statusOptions" />
         <a-select v-model:value="filters.schedulable" class="toolbar-select" :options="schedulableOptions" />
+        <a-select v-if="isAdmin" v-model:value="filters.systemAccountId" show-search option-filter-prop="label" class="toolbar-select" :options="systemAccountOptions" @change="handleSystemAccountFilterChange" />
         <a-button @click="resetFilters">重置筛选</a-button>
       </div>
       <div class="page-toolbar-actions">
@@ -388,7 +389,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
-import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemSettings } from '@/types/domain'
+import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary, SystemSettings } from '@/types/domain'
+import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import {
   loadAccountErrorPolicyRules,
@@ -404,6 +406,7 @@ interface AccountFilters {
   type: 'all' | AccountType
   status: 'all' | AccountStatus
   schedulable: SchedulableFilter
+  systemAccountId: string
 }
 
 interface AccountMenuItem {
@@ -478,8 +481,9 @@ const providers = ref<ProviderDefinition[]>([])
 const providerModels = ref<ProviderModelPricing[]>([])
 const proxies = ref<ProxyProfileSummary[]>([])
 const groups = ref<GroupSummary[]>([])
+const systemAccounts = ref<SystemAccountSummary[]>([])
 const systemSettings = ref<SystemSettings>({ defaultAccountConcurrencyLimit: 3 })
-const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all' })
+const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue })
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
 const isAdmin = authState.isAdmin
 
@@ -546,8 +550,11 @@ const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const typeMatched = filters.type === 'all' || account.type === filters.type
   const statusMatched = filters.status === 'all' || account.status === filters.status
   const schedulableMatched = matchesSchedulableFilter(account, filters.schedulable)
-  return keywordMatched && typeMatched && statusMatched && schedulableMatched
+  const systemAccountMatched = matchesSystemAccountFilter(account, filters.systemAccountId, isAdmin.value)
+  return keywordMatched && typeMatched && statusMatched && schedulableMatched && systemAccountMatched
 }))
+
+const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 
 const defaultTestModelOptions = [
   'gpt-5.5',
@@ -905,18 +912,21 @@ async function copyText(value: string) {
 async function loadData() {
   loading.value = true
   try {
-    const [accountList, providerList, proxyList, groupList, settings] = await Promise.all([
-      api.accounts.list(),
+    const systemAccountId = selectedSystemAccountId(filters.systemAccountId, isAdmin.value)
+    const [accountList, providerList, proxyList, groupList, settings, systemAccountList] = await Promise.all([
+      api.accounts.list({ systemAccountId }),
       isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-      isAdmin.value ? api.proxies.list() : Promise.resolve([] as ProxyProfileSummary[]),
-      api.groups.list(),
-      api.settings.get()
+      isAdmin.value ? api.proxies.list({ systemAccountId }) : Promise.resolve([] as ProxyProfileSummary[]),
+      api.groups.list({ systemAccountId }),
+      api.settings.get(),
+      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     accounts.value = accountList
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
     proxies.value = proxyList
     groups.value = groupList
     systemSettings.value = settings
+    systemAccounts.value = systemAccountList
     selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id))
   } catch (error) {
     console.error(error)
@@ -935,8 +945,15 @@ function resetFilters() {
     keyword: '',
     type: 'all',
     status: 'all',
-    schedulable: 'all'
+    schedulable: 'all',
+    systemAccountId: allSystemAccountsValue
   })
+  void loadData()
+}
+
+function handleSystemAccountFilterChange() {
+  selectedAccountIds.value = []
+  void loadData()
 }
 
 function clearSelection() {

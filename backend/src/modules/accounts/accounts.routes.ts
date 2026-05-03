@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { addAccountToGroup, clearAccountFailureState, createAccount, deleteAccount, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
+import { getRequestAccessScope } from '../auth/request-context.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 export const accountsRouter = Router()
@@ -28,8 +29,8 @@ const accountTestSchema = z.object({
   prompt: z.string().trim().optional()
 }).optional()
 
-accountsRouter.get('/', (_req, res) => {
-  res.json(ok(listAccounts()))
+accountsRouter.get('/', (req, res) => {
+  res.json(ok(listAccounts(getRequestAccessScope(req.query.systemAccountId))))
 })
 
 accountsRouter.post('/', (req, res) => {

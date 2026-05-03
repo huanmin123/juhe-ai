@@ -48,7 +48,6 @@
           </div>
         </a-space>
         <a-space class="header-actions" align="center">
-          <a-tag v-if="currentUser?.mustChangePassword" color="warning">请修改初始密码</a-tag>
           <a-dropdown :trigger="['click']">
             <button class="user-trigger" type="button" aria-label="打开用户菜单">
               <span class="user-avatar">{{ userAvatarText }}</span>

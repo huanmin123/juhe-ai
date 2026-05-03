@@ -31,6 +31,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 登录验证码挑战暂不写入 SQLite，使用后端进程内存保存短时一次性验证码；过期和已提交的挑战会被清理。
+- 登录失败限频和账号临时锁定暂不写入 SQLite，使用后端进程内存保存短时窗口和锁定状态；后续多实例部署时再迁移到共享存储。
 
 ## 统计缓存与监控存储
 
@@ -79,6 +80,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 刷新策略：
 
+- OAuth 账户创建成功后，后端立即触发一次首次额度快照刷新；刷新失败不回滚账户，只记录失败状态并交给后台重试。
 - 真实网关请求返回 Codex rate-limit 响应头时，直接被动更新 `account_usage_snapshots`。
 - 账户测试如果拿到相同响应头，也可以作为副作用更新快照，但 UI 不把测试描述成“刷新用量”。
 - 后台 `oauth_usage_snapshot_refresh` worker 统一扫描缺失、过期或接近恢复点的 OpenAI OAuth 账户并刷新快照。
@@ -156,3 +158,6 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 这是单人自用系统，接口会返回前端需要展示的完整密钥；数据库中仍尽量加密保存。
 
 API Key 明文只在创建时返回一次。
+
+
+

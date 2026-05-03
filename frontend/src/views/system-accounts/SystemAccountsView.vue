@@ -20,7 +20,7 @@
           <a-tag :color="record.status === 'active' ? 'green' : 'red'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'mustChangePassword'">
-          <a-tag :color="record.mustChangePassword ? 'warning' : 'success'">{{ record.mustChangePassword ? '需改密' : '正常' }}</a-tag>
+          <a-tag :color="record.mustChangePassword ? 'warning' : 'success'">{{ record.mustChangePassword ? '提醒' : '不提醒' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'lastLoginAt'">
           <span class="muted-cell">{{ formatDateTime(record.lastLoginAt) }}</span>
@@ -51,7 +51,7 @@
         <a-form-item label="状态">
           <a-select v-model:value="form.status" :options="statusOptions" />
         </a-form-item>
-        <a-form-item label="登录后强制改密">
+        <a-form-item label="登录后提醒改密">
           <a-switch v-model:checked="form.mustChangePassword" checked-children="是" un-checked-children="否" />
         </a-form-item>
       </a-form>
@@ -62,7 +62,7 @@
         <a-form-item label="新密码" required>
           <a-input-password v-model:value="resetPassword" placeholder="请输入新密码" />
         </a-form-item>
-        <a-alert type="info" show-icon message="保存后该账户需要重新登录，并会被标记为需修改密码。" />
+        <a-alert type="info" show-icon message="保存后该账户下次登录会收到修改密码提醒。" />
       </a-form>
     </a-modal>
   </a-card>
@@ -108,7 +108,7 @@ const columns = [
   { title: '显示名称', dataIndex: 'displayName', key: 'displayName', width: 180 },
   { title: '角色', key: 'role', width: 110 },
   { title: '状态', key: 'status', width: 100 },
-  { title: '改密状态', key: 'mustChangePassword', width: 110 },
+  { title: '改密提醒', key: 'mustChangePassword', width: 110 },
   { title: '最后登录', key: 'lastLoginAt', width: 180 },
   { title: '操作', key: 'actions', width: 180, fixed: 'right' }
 ]

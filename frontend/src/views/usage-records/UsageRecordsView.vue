@@ -20,6 +20,15 @@
           :options="statusCodeOptions"
           placeholder="状态码"
         />
+        <a-select
+          v-if="isAdmin"
+          v-model:value="systemAccountFilter"
+          show-search
+          option-filter-prop="label"
+          class="filter-select system-account-filter"
+          :options="systemAccountOptions"
+          @change="loadData"
+        />
         <a-button @click="resetFilters">重置</a-button>
       </div>
       <div class="page-toolbar-actions">
@@ -51,7 +60,7 @@
         </template>
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">
-            {{ record.systemAccountName || record.systemAccountId || '-' }}
+            {{ systemAccountDisplayText(record) }}
           </span>
         </template>
         <template v-else-if="column.key === 'clientIp'">
@@ -143,13 +152,16 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
-import type { UsageRecordSummary } from '@/types/domain'
+import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
+import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const loading = ref(false)
 const records = ref<UsageRecordSummary[]>([])
 const accountNameFilter = ref('')
 const resultFilter = ref<'all' | 'success' | 'failed'>('all')
 const statusCodeFilter = ref<string>('')
+const systemAccountFilter = ref(allSystemAccountsValue)
+const systemAccounts = ref<SystemAccountSummary[]>([])
 const isAdmin = authState.isAdmin
 
 const resultOptions = [
@@ -170,9 +182,12 @@ const statusCodeOptions = computed(() => {
   return uniqueCodes.map((code) => ({ label: String(code), value: String(code) }))
 })
 
+const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
+
 const filteredRecords = computed(() => {
   const nameTerm = accountNameFilter.value.trim().toLowerCase()
   return records.value.filter((record) => {
+    if (!matchesSystemAccountFilter(record, systemAccountFilter.value, isAdmin.value)) return false
     if (nameTerm) {
       const accountText = `${record.accountName ?? ''} ${record.accountId ?? ''}`.toLowerCase()
       if (!accountText.includes(nameTerm)) return false
@@ -252,18 +267,30 @@ function resetFilters(): void {
   accountNameFilter.value = ''
   resultFilter.value = 'all'
   statusCodeFilter.value = ''
+  systemAccountFilter.value = allSystemAccountsValue
+  void loadData()
 }
 
 async function loadData() {
   loading.value = true
   try {
-    records.value = await api.usageRecords.list()
+    const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, isAdmin.value)
+    const [recordList, systemAccountList] = await Promise.all([
+      api.usageRecords.list({ systemAccountId }),
+      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+    ])
+    records.value = recordList
+    systemAccounts.value = systemAccountList
   } catch (error) {
     console.error(error)
     message.error('加载使用记录失败')
   } finally {
     loading.value = false
   }
+}
+
+function usageRecordSystemAccountText(record: UsageRecordSummary): string {
+  return systemAccountDisplayText(record)
 }
 
 onMounted(loadData)
@@ -300,6 +327,10 @@ onMounted(loadData)
 
 .filter-select {
   width: 150px;
+}
+
+.system-account-filter {
+  width: 180px;
 }
 
 .token-cell {
@@ -413,4 +444,9 @@ onMounted(loadData)
   }
 }
 
+
 </style>
+
+
+
+

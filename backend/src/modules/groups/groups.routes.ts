@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { createGroup, deleteGroup, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
+import { getRequestAccessScope } from '../auth/request-context.js'
 
 export const groupsRouter = Router()
 
@@ -13,8 +14,8 @@ const groupSchema = z.object({
   enabled: z.boolean().optional()
 })
 
-groupsRouter.get('/', (_req, res) => {
-  res.json(ok(listGroups()))
+groupsRouter.get('/', (req, res) => {
+  res.json(ok(listGroups(getRequestAccessScope(req.query.systemAccountId))))
 })
 
 groupsRouter.post('/', (req, res) => {

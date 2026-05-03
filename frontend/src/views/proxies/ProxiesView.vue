@@ -1,11 +1,14 @@
 <template>
   <a-card class="page-card">
-    <div class="page-toolbar page-toolbar-end">
+    <div class="page-toolbar proxy-toolbar">
+      <div class="list-filters">
+        <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" class="toolbar-select" :options="systemAccountOptions" @change="loadData" />
+      </div>
       <div class="page-toolbar-actions">
         <a-button type="primary" @click="openCreate">新建代理</a-button>
       </div>
     </div>
-    <a-table class="page-table proxy-table" size="middle" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :scroll="{ x: 1300 }">
+    <a-table class="page-table proxy-table" size="middle" :columns="columns" :data-source="filteredProxies" row-key="id" :loading="loading" :scroll="{ x: 1300 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建代理，再在 OAuth 账户里选择绑定。" />
       </template>
@@ -24,7 +27,7 @@
         </template>
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">
-            {{ record.systemAccountName || record.systemAccountId || '-' }}
+            {{ proxySystemAccountText(record) }}
           </span>
         </template>
         <template v-else-if="column.key === 'status'">
@@ -83,16 +86,21 @@
 
 <script setup lang="ts">
 import { message } from 'ant-design-vue'
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { ProxyProfileSummary } from '@/types/domain'
+import { authState } from '@/composables/useAuth'
+import type { ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
+import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const loading = ref(false)
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const proxies = ref<ProxyProfileSummary[]>([])
+const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccountFilter = ref(allSystemAccountsValue)
 const form = reactive({ name: '', type: 'http', host: '', port: 7890, username: '', password: '', enabled: true })
+const isAdmin = authState.isAdmin
 
 const columns = [
   { title: '名称', dataIndex: 'name', key: 'name', width: 240 },
@@ -112,6 +120,9 @@ const typeOptions = [
   { label: 'SOCKS5H', value: 'socks5h' }
 ]
 
+const filteredProxies = computed(() => proxies.value.filter((proxy) => matchesSystemAccountFilter(proxy, systemAccountFilter.value, isAdmin.value)))
+const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
+
 function proxyTypeColor(type: string) {
   if (type === 'socks5' || type === 'socks5h') return 'purple'
   if (type === 'https') return 'green'
@@ -121,13 +132,23 @@ function proxyTypeColor(type: string) {
 async function loadData() {
   loading.value = true
   try {
-    proxies.value = await api.proxies.list()
+    const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, isAdmin.value)
+    const [proxyList, systemAccountList] = await Promise.all([
+      api.proxies.list({ systemAccountId }),
+      api.systemAccounts.list()
+    ])
+    proxies.value = proxyList
+    systemAccounts.value = systemAccountList
   } catch (error) {
     console.error(error)
     message.error('加载代理失败')
   } finally {
     loading.value = false
   }
+}
+
+function proxySystemAccountText(proxy: ProxyProfileSummary) {
+  return systemAccountDisplayText(proxy)
 }
 
 function openCreate() {
@@ -184,5 +205,21 @@ onMounted(loadData)
 
 .proxy-table :deep(.ant-empty) {
   margin: 12px 0;
+}
+
+.proxy-toolbar {
+  align-items: center;
+}
+
+.list-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  flex: 1 1 260px;
+}
+
+.toolbar-select {
+  min-width: 180px;
 }
 </style>
