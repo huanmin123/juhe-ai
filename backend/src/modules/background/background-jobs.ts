@@ -152,7 +152,6 @@ async function refreshOpenAIOAuthUsageSnapshot(account: AccountSummary): Promise
 
 async function prepareOAuthProbeAccount(account: AccountSummary): Promise<{
   accessToken: string
-  organizationId?: string
   chatgptAccountId?: string
   proxyUrl?: string
 }> {
@@ -177,7 +176,6 @@ async function prepareOAuthProbeAccount(account: AccountSummary): Promise<{
   }
   return {
     accessToken,
-    organizationId: stringValue(credentials.organization_id),
     chatgptAccountId: stringValue(credentials.chatgpt_account_id) || stringValue(credentials.account_id),
     proxyUrl
   }
@@ -185,7 +183,6 @@ async function prepareOAuthProbeAccount(account: AccountSummary): Promise<{
 
 function requestCodexUsageProbe(input: {
   accessToken: string
-  organizationId?: string
   chatgptAccountId?: string
   proxyUrl?: string
 }): Promise<{ statusCode: number; headers: Record<string, string | string[]>; bodyText: string }> {
@@ -211,7 +208,6 @@ function requestCodexUsageProbe(input: {
     version: '0.125.0',
     'openai-beta': 'responses=experimental'
   }
-  if (input.organizationId) headers['OpenAI-Organization'] = input.organizationId
   if (input.chatgptAccountId) headers['chatgpt-account-id'] = input.chatgptAccountId
 
   return new Promise((resolve, reject) => {

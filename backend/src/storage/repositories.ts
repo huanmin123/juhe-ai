@@ -250,7 +250,6 @@ export interface MigrationOAuthAccountInput {
   email?: string
   chatgptAccountId?: string
   chatgptUserId?: string
-  organizationId?: string
   planType?: string
   proxyProfileId?: string
 }
@@ -2032,7 +2031,6 @@ export function importOpenAIApiKeyAccounts(input: {
     if (account.email) credentials.email = account.email
     if (account.chatgptAccountId) credentials.chatgpt_account_id = account.chatgptAccountId
     if (account.chatgptUserId) credentials.chatgpt_user_id = account.chatgptUserId
-    if (account.organizationId) credentials.organization_id = account.organizationId
     if (account.planType) credentials.plan_type = account.planType
 
     const created = createAccount({
@@ -2257,13 +2255,12 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
     database
       .prepare(`
         INSERT INTO system_metrics_samples (
-          id, sampled_at, cpu_percent, memory_used_percent, memory_total_bytes, memory_free_bytes,
+          sampled_at, cpu_percent, memory_used_percent, memory_total_bytes, memory_free_bytes,
           process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes, event_loop_lag_ms,
-          db_file_bytes, stats_lag_seconds
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          db_file_bytes, stats_lag_seconds, id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
-        newId('metric'),
         sampledAt,
         input.cpuPercent ?? null,
         input.memoryUsedPercent ?? null,
@@ -2274,7 +2271,9 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
         input.processHeapTotalBytes ?? null,
         input.eventLoopLagMs ?? null,
         input.dbFileBytes ?? null,
-        input.statsLagSeconds ?? null
+        input.statsLagSeconds ?? null,
+        newId('metric'),
+        sampledAt
       )
     upsertSystemMetricsHourly(database, statHour, input, sampledAt)
     cleanupSystemMetrics(database)
@@ -2294,7 +2293,8 @@ export function latestUsageStatsLagSeconds(): number {
 
 export function getUsageStatsOverview(access?: AccessScope): UsageStatsOverview {
   const database = getDatabase()
-  const systemAccountIds = visibleSystemAccountIds(access)
+  const effectiveAccess = resolveAccessScope(access)
+  const systemAccountIds = visibleSystemAccountIds(effectiveAccess)
   const placeholders = sqlPlaceholders(systemAccountIds.length)
   const today = todayDateKey()
   const sinceHour = hourKey(new Date(Date.now() - 24 * 60 * 60 * 1000))
@@ -2343,10 +2343,10 @@ export function getUsageStatsOverview(access?: AccessScope): UsageStatsOverview 
   `).all(today, ...systemAccountIds) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
 
   const errorRows = database.prepare(`
-    SELECT provider_code, error_code, status_code, error_message, COALESCE(SUM(error_count), 0) AS error_count
+    SELECT provider_code, error_code, MAX(status_code) AS status_code, MAX(error_message) AS error_message, COALESCE(SUM(error_count), 0) AS error_count
     FROM usage_error_daily
     WHERE stat_date = ? AND system_account_id IN (${placeholders})
-    GROUP BY provider_code, error_code, status_code ORDER BY error_count DESC LIMIT 10
+    GROUP BY provider_code, error_code ORDER BY error_count DESC LIMIT 10
   `).all(today, ...systemAccountIds) as unknown as Array<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>
 
   return {
@@ -2490,8 +2490,8 @@ function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, 
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
       first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
       first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
-      last_used_at = max_nullable(usage_stats_totals.last_used_at, excluded.last_used_at),
-      last_error_at = max_nullable(usage_stats_totals.last_error_at, excluded.last_error_at),
+      last_used_at = CASE WHEN excluded.last_used_at IS NULL THEN usage_stats_totals.last_used_at WHEN usage_stats_totals.last_used_at IS NULL OR excluded.last_used_at > usage_stats_totals.last_used_at THEN excluded.last_used_at ELSE usage_stats_totals.last_used_at END,
+      last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN usage_stats_totals.last_error_at WHEN usage_stats_totals.last_error_at IS NULL OR excluded.last_error_at > usage_stats_totals.last_error_at THEN excluded.last_error_at ELSE usage_stats_totals.last_error_at END,
       updated_at = excluded.updated_at
   `).run(systemAccountId, scopeType, scopeId, ...statsParamsTail(stats, updatedAt))
 }
@@ -2514,8 +2514,8 @@ function upsertUsageStatsDaily(database: DatabaseSync, systemAccountId: string, 
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
       first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
       first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
-      last_used_at = max_nullable(usage_stats_daily.last_used_at, excluded.last_used_at),
-      last_error_at = max_nullable(usage_stats_daily.last_error_at, excluded.last_error_at),
+      last_used_at = CASE WHEN excluded.last_used_at IS NULL THEN usage_stats_daily.last_used_at WHEN usage_stats_daily.last_used_at IS NULL OR excluded.last_used_at > usage_stats_daily.last_used_at THEN excluded.last_used_at ELSE usage_stats_daily.last_used_at END,
+      last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN usage_stats_daily.last_error_at WHEN usage_stats_daily.last_error_at IS NULL OR excluded.last_error_at > usage_stats_daily.last_error_at THEN excluded.last_error_at ELSE usage_stats_daily.last_error_at END,
       updated_at = excluded.updated_at
   `).run(systemAccountId, scopeType, scopeId, statDate, ...statsParamsTail(stats, updatedAt))
 }
@@ -2544,4 +2544,163 @@ function upsertUsageStatsHourly(database: DatabaseSync, systemAccountId: string,
 
 function statsParamsTail(stats: UsageStatsAccumulator, updatedAt: string): Array<number | string | null> {
   return [stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, stats.durationMsSum, stats.durationMsCount, stats.firstTokenMsSum, stats.firstTokenMsCount, stats.lastUsedAt ?? null, stats.lastErrorAt ?? null, updatedAt]
+}
+
+function upsertUsageStatsClient(database: DatabaseSync, row: UsageStatsRecordRow, scopeType: string, scopeId: string, statBucket: string): void {
+  const clientKey = row.api_key_id ?? row.client_ip ?? ''
+  if (!clientKey) return
+  const result = database.prepare(`
+    INSERT OR IGNORE INTO usage_stats_clients (system_account_id, scope_type, scope_id, stat_bucket, client_key, first_seen_at, last_seen_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(row.system_account_id, scopeType, scopeId, statBucket, clientKey, row.created_at, row.created_at)
+  if (result.changes <= 0) {
+    database.prepare(`
+      UPDATE usage_stats_clients
+      SET last_seen_at = ?
+      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_bucket = ? AND client_key = ?
+    `).run(row.created_at, row.system_account_id, scopeType, scopeId, statBucket, clientKey)
+    return
+  }
+  if (statBucket === 'all') {
+    database.prepare('UPDATE usage_stats_totals SET client_count = client_count + 1 WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?').run(row.system_account_id, scopeType, scopeId)
+    return
+  }
+  database.prepare('UPDATE usage_stats_daily SET client_count = client_count + 1 WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_date = ?').run(row.system_account_id, scopeType, scopeId, statBucket)
+}
+
+function upsertUsageModelDaily(database: DatabaseSync, row: UsageStatsRecordRow, statDate: string, updatedAt: string): void {
+  const stats = usageStatsAccumulatorFromRecord(row)
+  database.prepare(`
+    INSERT INTO usage_model_daily (system_account_id, stat_date, provider_code, model, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, stat_date, model) DO UPDATE SET
+      provider_code = excluded.provider_code,
+      request_count = request_count + excluded.request_count,
+      success_count = success_count + excluded.success_count,
+      error_count = error_count + excluded.error_count,
+      input_tokens = input_tokens + excluded.input_tokens,
+      output_tokens = output_tokens + excluded.output_tokens,
+      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+      updated_at = excluded.updated_at
+  `).run(row.system_account_id, statDate, row.provider_code ?? 'unknown', row.model ?? 'unknown', stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, updatedAt)
+}
+
+function upsertUsageErrorDaily(database: DatabaseSync, row: UsageStatsRecordRow, statDate: string, updatedAt: string): void {
+  const errorGroup = row.provider_code ?? 'unknown'
+  const errorCode = row.error_code ?? String(row.status_code ?? 'unknown')
+  database.prepare(`
+    INSERT INTO usage_error_daily (system_account_id, stat_date, error_group, provider_code, error_code, status_code, error_message, request_count, error_count, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+    ON CONFLICT(system_account_id, stat_date, error_group, error_code) DO UPDATE SET
+      provider_code = excluded.provider_code,
+      status_code = excluded.status_code,
+      error_message = COALESCE(excluded.error_message, usage_error_daily.error_message),
+      request_count = request_count + excluded.request_count,
+      error_count = error_count + excluded.error_count,
+      updated_at = excluded.updated_at
+  `).run(row.system_account_id, statDate, errorGroup, row.provider_code ?? 'unknown', errorCode, row.status_code ?? 0, row.error_message ?? null, updatedAt)
+}
+
+function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, input: SystemMetricsSampleInput, updatedAt: string): void {
+  database.prepare(`
+    INSERT INTO system_metrics_hourly (stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
+      memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
+      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_max, db_file_bytes_max, stats_lag_seconds_max, updated_at)
+    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(stat_hour) DO UPDATE SET
+      sample_count = sample_count + 1,
+      cpu_percent_sum = cpu_percent_sum + excluded.cpu_percent_sum,
+      cpu_percent_max = CASE WHEN excluded.cpu_percent_max IS NULL THEN system_metrics_hourly.cpu_percent_max WHEN system_metrics_hourly.cpu_percent_max IS NULL OR excluded.cpu_percent_max > system_metrics_hourly.cpu_percent_max THEN excluded.cpu_percent_max ELSE system_metrics_hourly.cpu_percent_max END,
+      memory_used_percent_sum = memory_used_percent_sum + excluded.memory_used_percent_sum,
+      memory_used_percent_max = CASE WHEN excluded.memory_used_percent_max IS NULL THEN system_metrics_hourly.memory_used_percent_max WHEN system_metrics_hourly.memory_used_percent_max IS NULL OR excluded.memory_used_percent_max > system_metrics_hourly.memory_used_percent_max THEN excluded.memory_used_percent_max ELSE system_metrics_hourly.memory_used_percent_max END,
+      process_rss_bytes_sum = process_rss_bytes_sum + excluded.process_rss_bytes_sum,
+      process_rss_bytes_max = CASE WHEN excluded.process_rss_bytes_max IS NULL THEN system_metrics_hourly.process_rss_bytes_max WHEN system_metrics_hourly.process_rss_bytes_max IS NULL OR excluded.process_rss_bytes_max > system_metrics_hourly.process_rss_bytes_max THEN excluded.process_rss_bytes_max ELSE system_metrics_hourly.process_rss_bytes_max END,
+      process_heap_used_bytes_sum = process_heap_used_bytes_sum + excluded.process_heap_used_bytes_sum,
+      process_heap_used_bytes_max = CASE WHEN excluded.process_heap_used_bytes_max IS NULL THEN system_metrics_hourly.process_heap_used_bytes_max WHEN system_metrics_hourly.process_heap_used_bytes_max IS NULL OR excluded.process_heap_used_bytes_max > system_metrics_hourly.process_heap_used_bytes_max THEN excluded.process_heap_used_bytes_max ELSE system_metrics_hourly.process_heap_used_bytes_max END,
+      event_loop_lag_ms_sum = event_loop_lag_ms_sum + excluded.event_loop_lag_ms_sum,
+      event_loop_lag_ms_max = CASE WHEN excluded.event_loop_lag_ms_max IS NULL THEN system_metrics_hourly.event_loop_lag_ms_max WHEN system_metrics_hourly.event_loop_lag_ms_max IS NULL OR excluded.event_loop_lag_ms_max > system_metrics_hourly.event_loop_lag_ms_max THEN excluded.event_loop_lag_ms_max ELSE system_metrics_hourly.event_loop_lag_ms_max END,
+      db_file_bytes_max = CASE WHEN excluded.db_file_bytes_max IS NULL THEN system_metrics_hourly.db_file_bytes_max WHEN system_metrics_hourly.db_file_bytes_max IS NULL OR excluded.db_file_bytes_max > system_metrics_hourly.db_file_bytes_max THEN excluded.db_file_bytes_max ELSE system_metrics_hourly.db_file_bytes_max END,
+      stats_lag_seconds_max = CASE WHEN excluded.stats_lag_seconds_max IS NULL THEN system_metrics_hourly.stats_lag_seconds_max WHEN system_metrics_hourly.stats_lag_seconds_max IS NULL OR excluded.stats_lag_seconds_max > system_metrics_hourly.stats_lag_seconds_max THEN excluded.stats_lag_seconds_max ELSE system_metrics_hourly.stats_lag_seconds_max END,
+      updated_at = excluded.updated_at
+  `).run(statHour, input.cpuPercent ?? 0, input.cpuPercent ?? null, input.memoryUsedPercent ?? 0, input.memoryUsedPercent ?? null, input.processRssBytes ?? 0, input.processRssBytes ?? null, input.processHeapUsedBytes ?? 0, input.processHeapUsedBytes ?? null, input.eventLoopLagMs ?? 0, input.eventLoopLagMs ?? null, input.dbFileBytes ?? null, input.statsLagSeconds ?? null, updatedAt)
+}
+
+function updateStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {
+  database.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES ('global', '', 'usage_stats_aggregation', ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = COALESCE(excluded.cursor_created_at, stats_job_state.cursor_created_at),
+      cursor_id = COALESCE(excluded.cursor_id, stats_job_state.cursor_id),
+      last_success_at = COALESCE(excluded.last_success_at, stats_job_state.last_success_at),
+      last_error_message = excluded.last_error_message,
+      lag_seconds = excluded.lag_seconds,
+      updated_at = excluded.updated_at
+  `).run(input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? 0, nowIso())
+}
+
+function cleanupStatsCache(database: DatabaseSync, now: string): void {
+  const dailyRetentionDays = settingsNumberValue('usageStatsDailyRetentionDays', 180, 7, 3650)
+  const hourlyRetentionDays = settingsNumberValue('usageStatsHourlyRetentionDays', 14, 1, 365)
+  const dailyCutoff = dateKey(new Date(Date.parse(now) - dailyRetentionDays * 24 * 60 * 60 * 1000))
+  const hourlyCutoff = hourKey(new Date(Date.parse(now) - hourlyRetentionDays * 24 * 60 * 60 * 1000))
+  database.prepare('DELETE FROM usage_stats_daily WHERE stat_date < ?').run(dailyCutoff)
+  database.prepare('DELETE FROM usage_model_daily WHERE stat_date < ?').run(dailyCutoff)
+  database.prepare('DELETE FROM usage_error_daily WHERE stat_date < ?').run(dailyCutoff)
+  database.prepare('DELETE FROM usage_stats_hourly WHERE stat_hour < ?').run(hourlyCutoff)
+  database.prepare("DELETE FROM usage_stats_clients WHERE stat_bucket <> 'all' AND stat_bucket < ?").run(dailyCutoff)
+}
+
+function cleanupSystemMetrics(database: DatabaseSync): void {
+  const retentionDays = settingsNumberValue('systemMetricsRetentionDays', 14, 1, 365)
+  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString()
+  const hourlyCutoff = hourKey(new Date(Date.now() - 180 * 24 * 60 * 60 * 1000))
+  database.prepare('DELETE FROM system_metrics_samples WHERE sampled_at < ?').run(cutoff)
+  database.prepare('DELETE FROM system_metrics_hourly WHERE stat_hour < ?').run(hourlyCutoff)
+}
+
+function statsLagSecondsFromCursor(cursorCreatedAt: string): number {
+  const cursorTime = Date.parse(cursorCreatedAt)
+  return Number.isFinite(cursorTime) ? Math.max(0, Math.floor((Date.now() - cursorTime) / 1000)) : 0
+}
+
+function visibleSystemAccountIds(access?: AccessScope): string[] {
+  if (canAccessAll(access)) {
+    const ids = listSystemAccounts().map((account) => account.id)
+    return ids.length ? ids : ['sys_admin']
+  }
+  return [currentSystemAccountId(access)]
+}
+
+function sqlPlaceholders(count: number): string {
+  return Array.from({ length: Math.max(1, count) }, () => '?').join(',')
+}
+
+function usageSummaryWithMath(row: AccountUsageAggregateRow & StatsAggregateMathRow): AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number } {
+  const summary = usageSummaryFromAggregate(row)
+  const successCount = Number(row.success_count ?? 0)
+  const errorCount = Number(row.error_count ?? 0)
+  const requestCount = Number(row.request_count ?? 0)
+  return {
+    ...summary,
+    successCount,
+    errorCount,
+    errorRate: requestCount > 0 ? errorCount / requestCount : 0,
+    averageDurationMs: averageFromSum(row.duration_ms_sum, row.duration_ms_count),
+    averageFirstTokenMs: averageFromSum(row.first_token_ms_sum, row.first_token_ms_count)
+  }
+}
+
+function averageFromSum(sum: unknown, count: unknown): number | undefined {
+  const numericSum = Number(sum ?? 0)
+  const numericCount = Number(count ?? 0)
+  return numericCount > 0 ? Math.round(numericSum / numericCount) : undefined
+}
+
+function settingsNumberValue(key: string, fallback: number, min: number, max: number): number {
+  const value = getSettings()[key]
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
 }

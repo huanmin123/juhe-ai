@@ -50,7 +50,6 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 可设置过期时间
 - 可手动启用 / 停用
 - `refresh_token` 只对 OAuth 账户需要，账户列表不展示
-- 创建表单不要求用户填写 `organization_id`；如授权响应返回组织信息，可由后端保存并在编辑时兼容展示
 
 ## OpenAI API Key 创建方式
 
@@ -71,7 +70,6 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
 - 可手动启用 / 停用
-- 创建表单不要求用户填写 `organization_id`；历史或编辑态已有值继续兼容
 
 ## 账户归属分组
 
@@ -134,7 +132,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 3. 用户登录 OpenAI 后浏览器会跳转到 `http://localhost:1455/auth/callback`。
 4. 如果本机没有监听该端口，浏览器显示连接失败也没关系，复制地址栏完整 URL。
 5. 前端把回调 URL 提交给后端，后端校验 `state` 并用 PKCE `code_verifier` 换取 token。
-6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱；如果上游返回组织信息则一并保存。
+6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id` 和邮箱。
 
 ### Refresh Token 授权
 

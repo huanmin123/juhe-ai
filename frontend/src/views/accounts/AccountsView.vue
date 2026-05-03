@@ -806,12 +806,6 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     ...(!isTemporaryAccountStatus(account)
       ? [{ key: 'toggle-schedulable', label: account.schedulable ? '暂停调度' : '恢复调度' }]
       : []),
-    ...(account.type === 'oauth'
-      ? [
-          { key: 'refresh-oauth', label: '刷新授权' },
-          { key: 'refresh-oauth-usage', label: '刷新用量' }
-        ]
-      : [])
   ]
 }
 
@@ -1152,34 +1146,6 @@ async function createOAuthAccountFromUnifiedForm() {
   })
 }
 
-async function refreshOAuthAccount(id: string) {
-  try {
-    await api.openaiOAuth.refreshAccount(id)
-    message.success('OAuth 授权已刷新')
-    await loadData()
-  } catch (error) {
-    console.error(error)
-    message.error('刷新 OAuth 授权失败')
-  }
-}
-
-async function refreshOAuthUsage(account: AccountSummary) {
-  const hide = message.loading('刷新 OAuth 用量中...', 0)
-  try {
-    const result = await testAccountSilently(account)
-    await loadData()
-    if (result?.success) {
-      message.success(`${account.name} 的 OAuth 用量已刷新`)
-    } else if (result) {
-      message.warning(`${account.name} 的 OAuth 用量已刷新，但请求未成功：${result.message}`)
-    } else {
-      message.error(`${account.name} 的 OAuth 用量刷新失败`)
-    }
-  } finally {
-    hide()
-  }
-}
-
 async function loadTestModels() {
   if (!isAdmin.value || providerModels.value.length || testModelsLoading.value) return
   testModelsLoading.value = true
@@ -1352,14 +1318,6 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
   }
   if (key === 'toggle-schedulable') {
     await updateAccountState(account, { schedulable: !account.schedulable }, account.schedulable ? '账户已暂停调度' : '账户已恢复调度')
-    return
-  }
-  if (key === 'refresh-oauth') {
-    await refreshOAuthAccount(account.id)
-    return
-  }
-  if (key === 'refresh-oauth-usage') {
-    await refreshOAuthUsage(account)
     return
   }
 }

@@ -59,6 +59,7 @@ pnpm --filter juhe-ai-backend dev
 
 - 供应商列表：内置 OpenAI，默认 Base URL 归属供应商定义
 - 系统账户管理：管理员可管理登录账号、角色和重置密码
+- 登录安全：登录接口需要一次性图形验证码，减少自动化撞库和暴力尝试
 - AI 账户管理：创建 / 编辑 / 删除 OpenAI OAuth 与 API Key 账户，OAuth 支持手动授权和 Refresh Token 授权
 - AI 账户管理：管理员视角会显示系统账户列；普通用户只看到自己的数据
 - 分组管理：创建 / 编辑 / 删除分组，并绑定账户

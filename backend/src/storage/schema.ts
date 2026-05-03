@@ -278,13 +278,15 @@ export function applySchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_error_daily (
       system_account_id TEXT NOT NULL,
       stat_date TEXT NOT NULL,
+      error_group TEXT NOT NULL DEFAULT 'unknown',
       provider_code TEXT NOT NULL DEFAULT 'unknown',
       error_code TEXT NOT NULL DEFAULT 'unknown',
       status_code INTEGER NOT NULL DEFAULT 0,
       error_message TEXT,
+      request_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, stat_date, provider_code, error_code, status_code)
+      PRIMARY KEY (system_account_id, stat_date, error_group, error_code)
     );
 
     CREATE TABLE IF NOT EXISTS usage_stats_clients (
@@ -395,6 +397,16 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'account_usage_snapshots', 'next_refresh_after', 'TEXT')
   ensureColumn(database, 'account_usage_snapshots', 'last_error_message', 'TEXT')
   migrateAccountUsageSnapshotsTable(database)
+  ensureColumn(database, 'stats_job_state', 'cursor_created_at', 'TEXT')
+  ensureColumn(database, 'stats_job_state', 'cursor_id', 'TEXT')
+  ensureColumn(database, 'stats_job_state', 'last_success_at', 'TEXT')
+  ensureColumn(database, 'stats_job_state', 'last_error_message', 'TEXT')
+  ensureColumn(database, 'stats_job_state', 'lag_seconds', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'stats_job_state', 'updated_at', 'TEXT')
+  ensureUsageStatsColumns(database)
+  migrateUsageStatsLegacyColumns(database)
+  migrateStatsJobStateLegacyColumns(database)
+  ensureSystemMetricsColumns(database)
   database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
   database.exec('DROP INDEX IF EXISTS idx_accounts_credential_fingerprint;')
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_credential_fingerprint ON accounts(system_account_id, credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
@@ -408,8 +420,89 @@ export function applySchema(database: DatabaseSync): void {
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_scope_date ON usage_stats_daily(system_account_id, scope_type, scope_id, stat_date);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_scope_hour ON usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_model_daily_date ON usage_model_daily(system_account_id, stat_date, model);')
+  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_model_daily_account_date_model ON usage_model_daily(system_account_id, stat_date, model);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_error_daily_date ON usage_error_daily(system_account_id, stat_date, error_code);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_system_metrics_samples_sampled_at ON system_metrics_samples(sampled_at);')
+}
+
+function ensureUsageStatsColumns(database: DatabaseSync): void {
+  for (const tableName of ['usage_stats_totals', 'usage_stats_daily'] as const) {
+    ensureColumn(database, tableName, 'client_count', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'total_cost_usd', 'REAL NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'duration_ms_sum', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'duration_ms_count', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'first_token_ms_sum', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'first_token_ms_count', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'last_used_at', 'TEXT')
+    ensureColumn(database, tableName, 'last_error_at', 'TEXT')
+    ensureColumn(database, tableName, 'updated_at', 'TEXT')
+  }
+
+  for (const tableName of ['usage_stats_hourly', 'usage_model_daily'] as const) {
+    ensureColumn(database, tableName, 'total_cost_usd', 'REAL NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'duration_ms_sum', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'duration_ms_count', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'first_token_ms_sum', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'first_token_ms_count', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'updated_at', 'TEXT')
+  }
+
+  ensureColumn(database, 'usage_model_daily', 'success_count', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'usage_model_daily', 'error_count', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'usage_model_daily', 'provider_code', "TEXT NOT NULL DEFAULT 'unknown'")
+  ensureColumn(database, 'usage_error_daily', 'provider_code', "TEXT NOT NULL DEFAULT 'unknown'")
+  ensureColumn(database, 'usage_error_daily', 'error_group', "TEXT NOT NULL DEFAULT 'unknown'")
+  ensureColumn(database, 'usage_error_daily', 'status_code', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'usage_error_daily', 'error_message', 'TEXT')
+  ensureColumn(database, 'usage_error_daily', 'request_count', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'usage_error_daily', 'updated_at', 'TEXT')
+}
+
+function migrateUsageStatsLegacyColumns(database: DatabaseSync): void {
+  const usageStatsTables = ['usage_stats_totals', 'usage_stats_daily', 'usage_stats_hourly', 'usage_model_daily'] as const
+  for (const tableName of usageStatsTables) {
+    const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as unknown as Array<{ name: string }>
+    const hasLegacyTotalCost = columns.some((row) => row.name === 'total_cost')
+    const hasLegacyClientCount = columns.some((row) => row.name === 'distinct_client_count')
+    if (hasLegacyTotalCost) {
+      database.exec(`UPDATE ${tableName} SET total_cost_usd = COALESCE(total_cost_usd, total_cost) WHERE total_cost_usd = 0 AND total_cost IS NOT NULL;`)
+    }
+    if (hasLegacyClientCount && tableName !== 'usage_model_daily' && tableName !== 'usage_stats_hourly') {
+      database.exec(`UPDATE ${tableName} SET client_count = COALESCE(client_count, distinct_client_count) WHERE client_count = 0 AND distinct_client_count IS NOT NULL;`)
+    }
+  }
+}
+
+function migrateStatsJobStateLegacyColumns(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(stats_job_state)').all() as unknown as Array<{ name: string }>
+  const hasLegacyCursorCreatedAt = columns.some((row) => row.name === 'last_usage_created_at')
+  const hasLegacyCursorId = columns.some((row) => row.name === 'last_usage_id')
+  if (!hasLegacyCursorCreatedAt && !hasLegacyCursorId) {
+    return
+  }
+  database.exec(`
+    UPDATE stats_job_state
+    SET cursor_created_at = COALESCE(cursor_created_at, last_usage_created_at),
+        cursor_id = COALESCE(cursor_id, last_usage_id)
+    WHERE (cursor_created_at IS NULL OR cursor_id IS NULL)
+      AND (last_usage_created_at IS NOT NULL OR last_usage_id IS NOT NULL);
+  `)
+}
+
+function ensureSystemMetricsColumns(database: DatabaseSync): void {
+  ensureColumn(database, 'system_metrics_samples', 'id', 'TEXT')
+  ensureColumn(database, 'system_metrics_samples', 'created_at', 'TEXT')
+
+  ensureColumn(database, 'system_metrics_hourly', 'cpu_percent_sum', 'REAL NOT NULL DEFAULT 0')
+  ensureColumn(database, 'system_metrics_hourly', 'memory_used_percent_sum', 'REAL NOT NULL DEFAULT 0')
+  ensureColumn(database, 'system_metrics_hourly', 'process_rss_bytes_sum', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'system_metrics_hourly', 'process_heap_used_bytes_sum', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'system_metrics_hourly', 'process_heap_used_bytes_max', 'INTEGER')
+  ensureColumn(database, 'system_metrics_hourly', 'event_loop_lag_ms_sum', 'REAL NOT NULL DEFAULT 0')
+  ensureColumn(database, 'system_metrics_hourly', 'db_file_bytes_max', 'INTEGER')
+  ensureColumn(database, 'system_metrics_hourly', 'stats_lag_seconds_max', 'INTEGER')
+  ensureColumn(database, 'system_metrics_hourly', 'sample_count', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'system_metrics_hourly', 'updated_at', 'TEXT')
 }
 
 function migrateAccountUsageSnapshotsTable(database: DatabaseSync): void {

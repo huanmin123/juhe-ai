@@ -57,7 +57,6 @@ export interface ProviderModelPricing {
 export interface AccountCredentials {
   api_key?: string
   base_url?: string
-  organization_id?: string
   access_token?: string
   refresh_token?: string
   client_id?: string

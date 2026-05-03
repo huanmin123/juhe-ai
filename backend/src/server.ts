@@ -11,6 +11,7 @@ import { groupsRouter } from './modules/groups/groups.routes.js'
 import { providersRouter } from './modules/providers/providers.routes.js'
 import { proxiesRouter } from './modules/proxies/proxies.routes.js'
 import { settingsRouter } from './modules/settings/settings.routes.js'
+import { statsRouter } from './modules/stats/stats.routes.js'
 import { systemAccountsRouter } from './modules/system-accounts/system-accounts.routes.js'
 import { usageRecordsRouter } from './modules/usage-records/usage-records.routes.js'
 import { openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
@@ -52,6 +53,7 @@ app.use('/api/api-keys', apiKeysRouter)
 app.use('/api/openai-oauth', openAIOAuthRouter)
 app.use('/api/proxies', requireAdmin, proxiesRouter)
 app.use('/api/usage-records', usageRecordsRouter)
+app.use('/api/stats', statsRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/system-accounts', requireAdmin, systemAccountsRouter)
 app.use('/v1', openAIGatewayRouter)

@@ -100,7 +100,7 @@ export async function testOpenAIAccount(account: AccountSummary, input: { model?
 }
 
 function buildTestHeaders(
-  prepared: { apiKey: string; organizationId?: string; chatgptAccountId?: string },
+  prepared: { apiKey: string; chatgptAccountId?: string },
   isOAuth: boolean,
   bodyText: string
 ): Record<string, string> {
@@ -111,9 +111,6 @@ function buildTestHeaders(
     'content-length': String(Buffer.byteLength(bodyText)),
     'user-agent': isOAuth ? 'codex_cli_rs/0.125.0' : 'juhe-ai-account-test/0.1'
   } as Record<string, string>
-  if (prepared.organizationId) {
-    headers['OpenAI-Organization'] = prepared.organizationId
-  }
   if (isOAuth) {
     headers.originator = 'codex_cli_rs'
     headers.version = '0.125.0'
@@ -184,7 +181,6 @@ function requestOpenAITest(
 async function prepareAccountForTest(account: AccountSummary): Promise<{
   apiKey: string
   baseUrl: string
-  organizationId?: string
   chatgptAccountId?: string
   proxyUrl?: string
   tokenRefreshed: boolean
@@ -206,7 +202,6 @@ async function prepareAccountForTest(account: AccountSummary): Promise<{
       return {
         apiKey: stringValue(credentials.access_token),
         baseUrl: stringValue(credentials.base_url) || 'https://api.openai.com/v1',
-        organizationId: stringValue(credentials.organization_id),
         chatgptAccountId: stringValue(credentials.chatgpt_account_id) || stringValue(credentials.account_id),
         proxyUrl,
         tokenRefreshed: true
@@ -219,7 +214,6 @@ async function prepareAccountForTest(account: AccountSummary): Promise<{
     return {
       apiKey: accessToken,
       baseUrl: stringValue(account.credentials.base_url) || 'https://api.openai.com/v1',
-      organizationId: stringValue(account.credentials.organization_id),
       chatgptAccountId: stringValue(account.credentials.chatgpt_account_id) || stringValue(account.credentials.account_id),
       proxyUrl,
       tokenRefreshed: false
@@ -233,7 +227,6 @@ async function prepareAccountForTest(account: AccountSummary): Promise<{
   return {
     apiKey,
     baseUrl: stringValue(account.credentials.base_url) || 'https://api.openai.com/v1',
-    organizationId: stringValue(account.credentials.organization_id),
     proxyUrl: resolveProxyUrlForProfile(account.proxyProfileId),
     tokenRefreshed: false
   }

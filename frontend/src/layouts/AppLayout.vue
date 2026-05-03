@@ -89,6 +89,7 @@ import {
   ApartmentOutlined,
   DownOutlined,
   GlobalOutlined,
+  BarChartOutlined,
   HistoryOutlined,
   MenuFoldOutlined,
   MenuOutlined,
@@ -166,6 +167,7 @@ const menuIconMap = {
   '/groups': ApartmentOutlined,
   '/api-keys': ApiKeyMenuIcon,
   '/proxies': NodeIndexOutlined,
+  '/stats': BarChartOutlined,
   '/usage-records': HistoryOutlined,
   '/settings': SettingOutlined,
   '/system-accounts': TeamOutlined

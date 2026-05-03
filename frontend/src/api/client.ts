@@ -4,6 +4,7 @@ import type {
   AccountSummary,
   AccountTestResult,
   ApiKeySummary,
+  CaptchaChallengeSummary,
   CreatedApiKey,
   CurrentUserSummary,
   ErrorPolicySummary,
@@ -15,6 +16,8 @@ import type {
   ProxyProfileSummary,
   SystemSettings,
   SystemAccountSummary,
+  SystemMetricsOverview,
+  UsageStatsOverview,
   UsageRecordSummary
 } from '@/types/domain'
 
@@ -42,7 +45,8 @@ async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T>
 
 export const api = {
   auth: {
-    login: (payload: { username: string; password: string }) => unwrap<CurrentUserSummary>(http.post('/auth/login', payload)),
+    captcha: () => unwrap<CaptchaChallengeSummary>(http.get('/auth/captcha')),
+    login: (payload: { username: string; password: string; captchaId: string; captchaCode: string }) => unwrap<CurrentUserSummary>(http.post('/auth/login', payload)),
     logout: () => unwrap<{ loggedOut: boolean }>(http.post('/auth/logout')),
     me: () => unwrap<CurrentUserSummary>(http.get('/auth/me')),
     changePassword: (payload: { oldPassword?: string; newPassword: string }) => unwrap<CurrentUserSummary>(http.post('/auth/change-password', payload))
@@ -81,8 +85,7 @@ export const api = {
   openaiOAuth: {
     authUrl: (payload: Record<string, unknown>) => unwrap<OpenAIAuthURLResult>(http.post('/openai-oauth/auth-url', payload)),
     createFromCode: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/openai-oauth/create-from-code', payload)),
-    createFromRefreshToken: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/openai-oauth/create-from-refresh-token', payload)),
-    refreshAccount: (id: string) => unwrap<AccountSummary>(http.post(`/openai-oauth/accounts/${id}/refresh`))
+    createFromRefreshToken: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/openai-oauth/create-from-refresh-token', payload))
   },
   proxies: {
     list: () => unwrap<ProxyProfileSummary[]>(http.get('/proxies')),
@@ -92,6 +95,10 @@ export const api = {
   },
   usageRecords: {
     list: () => unwrap<UsageRecordSummary[]>(http.get('/usage-records'))
+  },
+  stats: {
+    usageOverview: () => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview')),
+    systemMetrics: () => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics'))
   },
   settings: {
     public: () => unwrap<GlobalSettings>(http.get('/settings/public')),

@@ -30,6 +30,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 使用 `PRAGMA journal_mode = WAL`
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
+- 登录验证码挑战暂不写入 SQLite，使用后端进程内存保存短时一次性验证码；过期和已提交的挑战会被清理。
 
 ## 统计缓存与监控存储
 

@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { addAccountToGroup, createAccount, listAccounts, listGroups, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
+import { addAccountToGroup, createAccount, listGroups, resolveProxyUrlForProfile } from '../../storage/repositories.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -142,36 +142,3 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
 function isOpenAIGroup(groupId: string): boolean {
   return listGroups().some((group) => group.id === groupId && group.providerCode === 'openai')
 }
-
-openAIOAuthRouter.post('/accounts/:id/refresh', async (req, res) => {
-  const account = listAccounts().find((item) => item.id === req.params.id)
-  if (!account) {
-    res.status(404).json({ message: 'Account not found' })
-    return
-  }
-  if (account.type !== 'oauth') {
-    res.status(400).json({ message: 'Only OAuth accounts can be refreshed' })
-    return
-  }
-  const refreshToken = typeof account.credentials.refresh_token === 'string' ? account.credentials.refresh_token : ''
-  if (!refreshToken) {
-    res.status(400).json({ message: 'OAuth account has no refresh_token' })
-    return
-  }
-
-  try {
-    const tokenInfo = await refreshOpenAIOAuthToken({
-      refreshToken,
-      clientId: typeof account.credentials.client_id === 'string' ? account.credentials.client_id : undefined,
-      proxyUrl: resolveProxyUrlForProfile(account.proxyProfileId)
-    })
-    const credentials = {
-      ...account.credentials,
-      ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
-    }
-    const updated = updateAccount(account.id, { credentials, status: 'active' })
-    res.json(ok(updated))
-  } catch (error) {
-    res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI account refresh failed' })
-  }
-})

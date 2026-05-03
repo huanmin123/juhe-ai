@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 
 import { api } from '@/api/client'
-import type { CurrentUserSummary } from '@/types/domain'
+import type { CaptchaChallengeSummary, CurrentUserSummary } from '@/types/domain'
 
 const currentUser = ref<CurrentUserSummary>()
 const authChecked = ref(false)
@@ -28,7 +28,11 @@ export async function loadCurrentUser(force = false): Promise<CurrentUserSummary
   }
 }
 
-export async function login(payload: { username: string; password: string }): Promise<CurrentUserSummary> {
+export async function loadCaptcha(): Promise<CaptchaChallengeSummary> {
+  return api.auth.captcha()
+}
+
+export async function login(payload: { username: string; password: string; captchaId: string; captchaCode: string }): Promise<CurrentUserSummary> {
   currentUser.value = await api.auth.login(payload)
   authChecked.value = true
   return currentUser.value

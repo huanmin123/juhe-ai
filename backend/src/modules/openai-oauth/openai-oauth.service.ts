@@ -38,7 +38,6 @@ export interface OpenAITokenInfo {
   email?: string
   chatgptAccountId?: string
   chatgptUserId?: string
-  organizationId?: string
   planType?: string
 }
 
@@ -70,7 +69,6 @@ export function generateOpenAIAuthURL(input: { redirectUri?: string; clientId?: 
     state,
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
-    id_token_add_organizations: 'true',
     codex_cli_simplified_flow: 'true'
   })
 
@@ -137,7 +135,6 @@ export function buildOpenAIOAuthCredentials(tokenInfo: OpenAITokenInfo, fallback
   if (tokenInfo.email) credentials.email = tokenInfo.email
   if (tokenInfo.chatgptAccountId) credentials.chatgpt_account_id = tokenInfo.chatgptAccountId
   if (tokenInfo.chatgptUserId) credentials.chatgpt_user_id = tokenInfo.chatgptUserId
-  if (tokenInfo.organizationId) credentials.organization_id = tokenInfo.organizationId
   if (tokenInfo.planType) credentials.plan_type = tokenInfo.planType
   return credentials
 }
@@ -212,7 +209,6 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
     email: normalizeString(claims?.email),
     chatgptAccountId: normalizeString(openAIAuth?.chatgpt_account_id),
     chatgptUserId: normalizeString(openAIAuth?.chatgpt_user_id) || normalizeString(openAIAuth?.user_id),
-    organizationId: normalizeString(openAIAuth?.poid) || firstDefaultOrganizationId(openAIAuth?.organizations),
     planType: normalizeString(openAIAuth?.chatgpt_plan_type)
   }
 }
@@ -254,13 +250,6 @@ export function createProxyAgent(proxyUrl: string): HttpsProxyAgent<string> | So
     return new SocksProxyAgent(proxyUrl)
   }
   throw new Error(`Unsupported proxy protocol: ${parsed.protocol}`)
-}
-
-function firstDefaultOrganizationId(value: unknown): string | undefined {
-  if (!Array.isArray(value)) return undefined
-  const defaultOrg = value.find((item) => typeof item === 'object' && item !== null && (item as Record<string, unknown>).is_default === true) as Record<string, unknown> | undefined
-  const firstOrg = value.find((item) => typeof item === 'object' && item !== null) as Record<string, unknown> | undefined
-  return normalizeString(defaultOrg?.id) || normalizeString(firstOrg?.id)
 }
 
 function decodeJwtClaims(token?: string): Record<string, unknown> | undefined {

@@ -60,6 +60,7 @@ flowchart LR
 
 - 系统账户是登录和隔离边界，业务数据默认都归属某个系统账户。
 - `admin` 可以看所有系统账户的数据；`user` 只能看自己的数据。
+- 登录接口需要携带一次性图形验证码，验证码只用于未登录登录防护，不作为业务数据隔离维度。
 - 登录页品牌和平台级文案由全局设置控制，只有管理员能改。
 - 供应商定义账户创建方式，例如 OpenAI 支持 OAuth 和 API Key；对外请求协议仍统一收敛为 OpenAI 兼容协议。
 - 账户属于某个供应商，并选择一种账户类型。
@@ -159,6 +160,8 @@ flowchart LR
 
 系统账户管理页主要给 `admin` 使用，用来查看、创建、停用、重置密码和分配角色。
 
+登录验证码使用后端生成的短时挑战：前端先请求验证码图片和 `captchaId`，登录时提交 `captchaId` 与用户输入；后端无论校验成功或失败都消费该挑战，过期挑战自动失效。第一阶段先使用单进程内存存储，不落 SQLite；后续如果做多实例部署，再替换为共享存储。
+
 ## AI账户管理
 
 AI 账户是上游凭据和调度配置的承载对象，归属某个系统账户。
@@ -204,13 +207,11 @@ OpenAI OAuth 建议凭据：
 - `refresh_token`
 - `expires_at`
 - `account_id`
-- `organization_id`：可选，创建表单不要求填写；如授权响应返回则保存，编辑态兼容展示
 
 OpenAI API Key 建议凭据：
 
 - `api_key`
 - `base_url`
-- `organization_id`：可选兼容字段，创建表单不要求填写
 
 ## 分组
 
@@ -474,6 +475,6 @@ UI 规则：
 
 - OAuth 手动授权：生成 PKCE 授权链接，用户复制 localhost 回调 URL，后端校验 `state` 后换取 token。
 - Refresh Token 授权：用户粘贴 `refresh_token`，后端刷新后创建 OAuth 账户。
-- OAuth 凭据字段：`access_token`、`refresh_token`、`expires_at`、`client_id`、`email`、`base_url`，以及上游可能返回的可选 `organization_id`。
+- OAuth 凭据字段：`access_token`、`refresh_token`、`expires_at`、`client_id`、`email`、`base_url`。
 - 网关调度：同一分组内可混合 API Key 账户和 OAuth 账户，OAuth 账户使用 `access_token` 透传到上游。
 - 自动刷新：OAuth `expires_at` 接近过期时，用 `refresh_token` 刷新并写回 SQLite。

@@ -12,6 +12,12 @@ export interface CurrentUserSummary {
   mustChangePassword: boolean
 }
 
+export interface CaptchaChallengeSummary {
+  captchaId: string
+  image: string
+  expiresAt: string
+}
+
 export interface SystemAccountSummary {
   id: string
   username: string
@@ -57,7 +63,6 @@ export interface ProviderModelPricing {
 export interface AccountCredentials {
   api_key?: string
   base_url?: string
-  organization_id?: string
   access_token?: string
   refresh_token?: string
   client_id?: string
@@ -259,6 +264,76 @@ export interface UsageRecordSummary {
   requestSnapshot?: UsageRecordLogSnapshot
   responseSnapshot?: UsageRecordLogSnapshot
   createdAt: string
+}
+
+export interface UsageStatsOverview {
+  today: AccountUsageSummary & {
+    successCount: number
+    errorCount: number
+    errorRate: number
+    averageDurationMs?: number
+    averageFirstTokenMs?: number
+  }
+  totals: AccountUsageSummary & {
+    successCount: number
+    errorCount: number
+    errorRate: number
+    averageDurationMs?: number
+    averageFirstTokenMs?: number
+  }
+  hourlyTrend: Array<{
+    statHour: string
+    requestCount: number
+    totalTokens: number
+    totalCost: number
+    averageDurationMs?: number
+    errorCount: number
+  }>
+  modelDistribution: Array<{
+    model: string
+    providerCode: string
+    requestCount: number
+    totalTokens: number
+    totalCost: number
+  }>
+  errors: Array<{
+    errorCode: string
+    providerCode: string
+    statusCode?: number
+    errorMessage?: string
+    errorCount: number
+  }>
+  statsLagSeconds: number
+}
+
+export interface SystemMetricsOverview {
+  latest?: {
+    sampledAt: string
+    cpuPercent?: number
+    memoryUsedPercent?: number
+    memoryTotalBytes?: number
+    memoryFreeBytes?: number
+    processRssBytes?: number
+    processHeapUsedBytes?: number
+    processHeapTotalBytes?: number
+    eventLoopLagMs?: number
+    dbFileBytes?: number
+    statsLagSeconds?: number
+  }
+  hourlyTrend: Array<{
+    statHour: string
+    sampleCount: number
+    cpuPercentAvg?: number
+    cpuPercentMax?: number
+    memoryUsedPercentAvg?: number
+    memoryUsedPercentMax?: number
+    eventLoopLagMsAvg?: number
+    eventLoopLagMsMax?: number
+    processRssBytesMax?: number
+    processHeapUsedBytesMax?: number
+    dbFileBytesMax?: number
+    statsLagSecondsMax?: number
+  }>
 }
 
 export interface SystemSettings {

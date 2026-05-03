@@ -3,6 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { createSession, findSessionByToken, revokeSession, touchSession, updateSystemAccount, updateSystemAccountLastLogin, verifySystemAccountCredentials } from '../../storage/repositories.js'
+import { createCaptchaChallenge, verifyCaptchaChallenge } from './captcha.service.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 
 export const authRouter = Router()
@@ -12,7 +13,9 @@ const sessionMaxAgeMs = 14 * 24 * 60 * 60 * 1000
 
 const loginSchema = z.object({
   username: z.string().trim().min(1),
-  password: z.string().min(1)
+  password: z.string().min(1),
+  captchaId: z.string().trim().min(1),
+  captchaCode: z.string().trim().min(1)
 })
 
 const passwordSchema = z.object({
@@ -20,10 +23,19 @@ const passwordSchema = z.object({
   newPassword: z.string().min(4)
 })
 
+authRouter.get('/captcha', (_req, res) => {
+  res.json(ok(createCaptchaChallenge()))
+})
+
 authRouter.post('/login', (req, res) => {
   const parsed = loginSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('Invalid login payload'))
+    return
+  }
+
+  if (!verifyCaptchaChallenge(parsed.data.captchaId, parsed.data.captchaCode)) {
+    res.status(400).json({ message: '验证码错误或已过期' })
     return
   }
 
