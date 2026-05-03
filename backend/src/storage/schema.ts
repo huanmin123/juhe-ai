@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { hashPassword } from './crypto.js'
+import { decryptJson, hashPassword, hashSecret } from './crypto.js'
 
 const DEFAULT_OPENAI_GROUP_NAME = '默认 OpenAI 分组'
 const DEFAULT_OPENAI_GROUP_DESCRIPTION = '第一期默认分组'
@@ -422,9 +422,11 @@ export function applySchema(database: DatabaseSync): void {
   migrateUsageStatsLegacyColumns(database)
   migrateStatsJobStateLegacyColumns(database)
   ensureSystemMetricsColumns(database)
+  migrateAccountCredentialFingerprints(database)
   database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
   database.exec('DROP INDEX IF EXISTS idx_accounts_credential_fingerprint;')
-  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_credential_fingerprint ON accounts(system_account_id, credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
+  database.exec('DROP INDEX IF EXISTS idx_accounts_owner_credential_fingerprint;')
+  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);')
@@ -511,6 +513,76 @@ function migrateStatsJobStateLegacyColumns(database: DatabaseSync): void {
     WHERE (cursor_created_at IS NULL OR cursor_id IS NULL)
       AND (last_usage_created_at IS NOT NULL OR last_usage_id IS NOT NULL);
   `)
+}
+
+function migrateAccountCredentialFingerprints(database: DatabaseSync): void {
+  const rows = database.prepare(`
+    SELECT id, provider_code, type, status, credentials_encrypted, credential_fingerprint
+    FROM accounts
+    ORDER BY created_at ASC, id ASC
+  `).all() as unknown as Array<{
+    id: string
+    provider_code: string
+    type: string
+    status: string
+    credentials_encrypted: string
+    credential_fingerprint: string | null
+  }>
+  const firstAccountIdByFingerprint = new Map<string, string>()
+  const updateFingerprint = database.prepare('UPDATE accounts SET credential_fingerprint = ? WHERE id = ?')
+  const disableDuplicate = database.prepare(`
+    UPDATE accounts
+    SET credential_fingerprint = NULL,
+        status = 'disabled',
+        schedulable = 0,
+        last_error_message = ?,
+        updated_at = ?
+    WHERE id = ?
+  `)
+  const now = new Date().toISOString()
+
+  for (const row of rows) {
+    const fingerprint = credentialFingerprintFromEncryptedCredentials(row)
+    if (!fingerprint) {
+      if (row.credential_fingerprint !== null) {
+        updateFingerprint.run(null, row.id)
+      }
+      continue
+    }
+
+    const firstAccountId = firstAccountIdByFingerprint.get(fingerprint)
+    if (firstAccountId) {
+      disableDuplicate.run(`账户凭据与已有账户 ${firstAccountId} 重复，已在迁移时停用`, now, row.id)
+      continue
+    }
+
+    firstAccountIdByFingerprint.set(fingerprint, row.id)
+    if (row.credential_fingerprint !== fingerprint) {
+      updateFingerprint.run(fingerprint, row.id)
+    }
+  }
+}
+
+function credentialFingerprintFromEncryptedCredentials(row: {
+  provider_code: string
+  type: string
+  credentials_encrypted: string
+}): string | null {
+  try {
+    const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
+    const secret = row.type === 'oauth'
+      ? credentials.refresh_token ?? credentials.access_token ?? ''
+      : credentials.api_key ?? ''
+    return typeof secret === 'string' && secret.trim()
+      ? accountCredentialFingerprint(row.provider_code, row.type, secret)
+      : null
+  } catch {
+    return null
+  }
+}
+
+function accountCredentialFingerprint(providerCode: string, type: string, secret: string): string {
+  return hashSecret(`${providerCode}:${type}:${secret.trim()}`)
 }
 
 function ensureSystemMetricsColumns(database: DatabaseSync): void {

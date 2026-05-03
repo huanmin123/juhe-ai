@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { clearAccountFailureState, createAccount, deleteAccount, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, deleteAccount, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
@@ -70,6 +70,10 @@ accountsRouter.post('/', (req, res) => {
     })
     res.status(201).json(ok(account))
   } catch (error) {
+    if (error instanceof DuplicateAccountCredentialError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Invalid account payload'))
   }
 })
@@ -96,7 +100,17 @@ accountsRouter.patch('/:id', (req, res) => {
   if (body.clearFailureState === true) {
     clearAccountFailureState(req.params.id)
   }
-  const account = updateAccount(req.params.id, body)
+  let account: ReturnType<typeof updateAccount>
+  try {
+    account = updateAccount(req.params.id, body)
+  } catch (error) {
+    if (error instanceof DuplicateAccountCredentialError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Update account failed'))
+    return
+  }
   if (!account) {
     res.status(404).json({ message: 'Account not found' })
     return

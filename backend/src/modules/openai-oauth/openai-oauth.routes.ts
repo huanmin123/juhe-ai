@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createAccount, listAccounts, listGroups, resolveProxyUrlForProfile } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, createAccount, listAccounts, listGroups, resolveProxyUrlForProfile } from '../../storage/repositories.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -88,6 +88,10 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
     const accountWithInitialUsage = await refreshCreatedOAuthUsage(account)
     res.status(201).json(ok(accountWithInitialUsage))
   } catch (error) {
+    if (error instanceof DuplicateAccountCredentialError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
     res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI OAuth code exchange failed' })
   }
 })
@@ -127,6 +131,10 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
     const accountWithInitialUsage = await refreshCreatedOAuthUsage(account)
     res.status(201).json(ok(accountWithInitialUsage))
   } catch (error) {
+    if (error instanceof DuplicateAccountCredentialError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
     res.status(502).json({ message: error instanceof Error ? error.message : 'OpenAI refresh token authorization failed' })
   }
 })

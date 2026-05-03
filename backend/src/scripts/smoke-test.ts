@@ -16,6 +16,8 @@ interface AccountSummary {
   type: string
   providerCode: string
   status: string
+  schedulable?: boolean
+  cooldownUntil?: string
 }
 
 interface ApiKeySummary {
@@ -31,6 +33,11 @@ interface AccountTestResult {
   success: boolean
   statusCode?: number
   message: string
+}
+
+interface TestedAccount {
+  account: AccountSummary
+  test: AccountTestResult
 }
 
 interface UsageRecordSummary {
@@ -91,16 +98,11 @@ async function main(): Promise<void> {
 
   const accounts = await getEnvelope<AccountSummary[]>('/api/accounts')
   assert(accounts.length > 0, '账户列表为空')
-  const targetAccount = accountName
-    ? accounts.find((account) => account.name === accountName)
-    : accounts.find((account) => account.providerCode === 'openai' && account.status === 'active')
-  assert(targetAccount, accountName ? `找不到目标账户：${accountName}` : '找不到可用于烟测的启用 OpenAI 账户')
-  assert(targetAccount.providerCode === 'openai', `目标账户供应商不是 openai：${targetAccount.providerCode}`)
-  assert(targetAccount.status === 'active', `目标账户状态不是正常：${targetAccount.status}`)
+  const selectedAccount = accountName
+    ? await testNamedAccount(accounts, accountName)
+    : await selectFirstUsableOpenAIAccount(accounts)
+  const { account: targetAccount, test: accountTest } = selectedAccount
   summary.push(`account ok: ${targetAccount.name}`)
-
-  const accountTest = await postEnvelope<AccountTestResult>(`/api/accounts/${targetAccount.id}/test`, {})
-  assert(accountTest.success, `账户测试失败：${accountTest.message} status=${accountTest.statusCode ?? 'unknown'}`)
   summary.push(`account test ok: ${accountTest.message}`)
 
   const apiKeys = await getEnvelope<ApiKeySummary[]>('/api/api-keys')
@@ -157,6 +159,56 @@ async function main(): Promise<void> {
 async function checkHealth(): Promise<void> {
   const health = await requestJson<Record<string, unknown>>('/api/health')
   assert(health.status === 'ok', `健康检查失败：${JSON.stringify(health)}`)
+}
+
+async function testNamedAccount(accounts: AccountSummary[], name: string): Promise<TestedAccount> {
+  const account = accounts.find((item) => item.name === name)
+  assert(account, `找不到目标账户：${name}`)
+  assertAccountCanBeTested(account, `目标账户不可用于烟测：${name}`)
+
+  const test = await testAccount(account)
+  assert(test.success, `账户测试失败：${test.message} status=${test.statusCode ?? 'unknown'}`)
+  return { account, test }
+}
+
+async function selectFirstUsableOpenAIAccount(accounts: AccountSummary[]): Promise<TestedAccount> {
+  const candidates = accounts.filter(isOpenAIAccountCandidate)
+  assert(candidates.length > 0, '找不到启用且可调度的 OpenAI 账户')
+
+  const failures: string[] = []
+  for (const account of candidates) {
+    const test = await testAccount(account)
+    if (test.success) {
+      return { account, test }
+    }
+    failures.push(`${account.name}: ${test.message}${test.statusCode ? ` status=${test.statusCode}` : ''}`)
+  }
+
+  throw new Error(`找不到可用于烟测的 OpenAI 账户；已测试 ${candidates.length} 个启用账户均失败：${failures.join('；')}`)
+}
+
+async function testAccount(account: AccountSummary): Promise<AccountTestResult> {
+  return postEnvelope<AccountTestResult>(`/api/accounts/${account.id}/test`, {})
+}
+
+function assertAccountCanBeTested(account: AccountSummary, prefix: string): void {
+  assert(account.providerCode === 'openai', `${prefix}，供应商不是 openai：${account.providerCode}`)
+  assert(account.status === 'active', `${prefix}，状态不是正常：${account.status}`)
+  assert(account.schedulable !== false, `${prefix}，账号已设为不可调度`)
+  assert(!isCooling(account), `${prefix}，账号冷却中至 ${account.cooldownUntil}`)
+}
+
+function isOpenAIAccountCandidate(account: AccountSummary): boolean {
+  return account.providerCode === 'openai'
+    && account.status === 'active'
+    && account.schedulable !== false
+    && !isCooling(account)
+}
+
+function isCooling(account: AccountSummary): boolean {
+  return typeof account.cooldownUntil === 'string'
+    && account.cooldownUntil.length > 0
+    && new Date(account.cooldownUntil).getTime() > Date.now()
 }
 
 async function getEnvelope<T>(path: string): Promise<T> {

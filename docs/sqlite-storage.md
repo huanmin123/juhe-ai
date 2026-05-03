@@ -35,7 +35,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 
 ## 统计缓存与监控存储
 
-个人或几个人使用时，统计缓存也优先放在 SQLite 内，不额外引入 Redis、ClickHouse 或 Prometheus。`usage_records` 仍是事实源，但账户列表、分组列表、统计概览和监控图都应读取缓存表。缓存表属于业务数据缓存，必须按 `system_account_id` 隔离；主机级系统监控属于全局运维数据，默认只给管理员看。
+个人或几个人使用时，统计缓存也优先放在 SQLite 内，不额外引入 Redis、ClickHouse 或 Prometheus。`usage_records` 仍是事实源，但账户列表、分组列表、管理员统计概览和监控图都应读取缓存表。缓存表属于业务数据缓存，必须按 `system_account_id` 隔离；统计概览和主机级系统监控属于管理员视角，默认只给管理员看。
 
 建议新增表：
 

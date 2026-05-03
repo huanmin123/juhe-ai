@@ -45,6 +45,13 @@ interface AccountFailureRow {
   stream_failure_window_started_at: string | null
 }
 
+export class DuplicateAccountCredentialError extends Error {
+  constructor() {
+    super('账户凭据已被其他账户使用，不能重复添加')
+    this.name = 'DuplicateAccountCredentialError'
+  }
+}
+
 interface GatewayApiKeyRow {
   id: string
   system_account_id: string
@@ -417,10 +424,13 @@ function defaultOpenAIGroupIdForSystemAccount(systemAccountId: string): string |
 }
 
 function defaultGroupIdForSystemAccount(providerCode: string, systemAccountId: string): string | undefined {
-  if (providerCode !== 'openai') {
-    return undefined
+  const row = getDatabase()
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? ORDER BY is_default DESC, updated_at DESC LIMIT 1')
+    .get(systemAccountId, providerCode) as unknown as { id?: string } | undefined
+  if (row?.id) {
+    return row.id
   }
-  return defaultOpenAIGroupIdForSystemAccount(systemAccountId)
+  return providerCode === 'openai' ? defaultOpenAIGroupIdForSystemAccount(systemAccountId) : undefined
 }
 
 function apiKeySystemAccountId(apiKeyId: string): string | undefined {
@@ -792,7 +802,19 @@ function runDelete(sql: string, id: string): boolean {
 }
 
 function accountFingerprint(providerCode: string, type: string, baseUrl: string, secret: string): string {
-  return hashSecret(`${providerCode}:${type}:${baseUrl.trim().replace(/\/+$/, '')}:${secret.trim()}`)
+  void baseUrl
+  return hashSecret(`${providerCode}:${type}:${secret.trim()}`)
+}
+
+function isDuplicateAccountCredentialError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  const databaseError = error as Error & { code?: string }
+  return databaseError.code === 'SQLITE_CONSTRAINT_UNIQUE'
+    && databaseError.message.includes('accounts.credential_fingerprint')
+}
+
+function throwDuplicateAccountCredentialError(): never {
+  throw new DuplicateAccountCredentialError()
 }
 
 function defaultAccountConcurrencyLimit(): number {
@@ -978,6 +1000,9 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
+    if (isDuplicateAccountCredentialError(error)) {
+      throwDuplicateAccountCredentialError()
+    }
     throw error
   }
 
@@ -986,12 +1011,11 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
 
 export function findAccountByFingerprint(providerCode: string, type: string, baseUrl: string, apiKey: string): AccountSummary | undefined {
   const fingerprint = accountFingerprint(providerCode, type, baseUrl, apiKey)
-  const scope = buildSystemAccountScopeClause()
-  const row = getDatabase().prepare(`SELECT id FROM accounts WHERE credential_fingerprint = ?${scope.clause}`).get(fingerprint, ...scope.params) as unknown as { id?: string } | undefined
+  const row = getDatabase().prepare('SELECT id FROM accounts WHERE credential_fingerprint = ?').get(fingerprint) as unknown as { id?: string } | undefined
   if (!row?.id) {
     return undefined
   }
-  return listAccounts().find((account) => account.id === row.id)
+  return listAccounts().find((account) => account.id === row.id) ?? listAccounts({ role: 'admin', systemAccountId: currentSystemAccountId() }).find((account) => account.id === row.id)
 }
 
 export function updateAccount(id: string, input: Record<string, unknown>): AccountSummary | undefined {
@@ -1057,33 +1081,40 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
     usage: current.usage
   }
 
-  getDatabase()
-    .prepare(`
-      UPDATE accounts
-      SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
-          proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
-          error_policy_id = ?, priority = ?, schedulable = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
-      WHERE id = ? AND system_account_id = ?
-    `)
-    .run(
-      next.name,
-      next.notes ?? null,
-      next.status,
-      encryptJson(credentials),
-      credentialFingerprint,
-      maskSecret(credentialSource),
-      next.proxyProfileId ?? null,
-      next.concurrencyLimit,
-      next.passthroughEnabled ? 1 : 0,
-      next.errorPolicyId ?? null,
-      next.priority,
-      next.schedulable ? 1 : 0,
-      next.cooldownUntil ?? null,
-      next.lastErrorMessage ?? null,
-      nowIso(),
-      id,
-      systemAccountId
-    )
+  try {
+    getDatabase()
+      .prepare(`
+        UPDATE accounts
+        SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
+            proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
+            error_policy_id = ?, priority = ?, schedulable = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
+        WHERE id = ? AND system_account_id = ?
+      `)
+      .run(
+        next.name,
+        next.notes ?? null,
+        next.status,
+        encryptJson(credentials),
+        credentialFingerprint,
+        maskSecret(credentialSource),
+        next.proxyProfileId ?? null,
+        next.concurrencyLimit,
+        next.passthroughEnabled ? 1 : 0,
+        next.errorPolicyId ?? null,
+        next.priority,
+        next.schedulable ? 1 : 0,
+        next.cooldownUntil ?? null,
+        next.lastErrorMessage ?? null,
+        nowIso(),
+        id,
+        systemAccountId
+      )
+  } catch (error) {
+    if (isDuplicateAccountCredentialError(error)) {
+      throwDuplicateAccountCredentialError()
+    }
+    throw error
+  }
 
   return next
 }

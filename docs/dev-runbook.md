@@ -152,7 +152,7 @@ OAuth 账户如需代理，可在账户编辑弹窗中绑定代理配置；若�
 pnpm test:smoke
 ```
 
-默认会自动选择第一个启用的 OpenAI 账户，并检查可见网关 API Key、`/v1/models`、`/v1/responses` 非流式和流式、使用记录 token/cost 入库。需要固定测试账号或模型时编辑 `backend/.env`：
+默认会自动选择第一个启用并且可用的 OpenAI 账户，并检查可见网关 API Key、`/v1/models`、`/v1/responses` 非流式和流式、使用记录 token/cost 入库。需要固定测试账号或模型时编辑 `backend/.env`：
 
 ```dotenv
 # 只影响 pnpm test:smoke，不影响正常启动和网关转发。
@@ -162,7 +162,7 @@ JUHE_AI_SMOKE_MODEL=gpt-5.4-mini
 JUHE_AI_SMOKE_PROMPT=只输出 OK
 ```
 
-`JUHE_AI_SMOKE_ACCOUNT_NAME` 留空时自动选第一个启用的 OpenAI 账号；填写后必须和账户页里的账号名称完全一致。
+`JUHE_AI_SMOKE_ACCOUNT_NAME` 留空时自动选第一个启用并且可用的 OpenAI 账号；填写后必须和账户页里的账号名称完全一致。
 
 ```powershell
 pnpm test:smoke
