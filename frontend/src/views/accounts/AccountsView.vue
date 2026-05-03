@@ -83,7 +83,7 @@
           </div>
         </template>
         <template v-else-if="column.key === 'lastUsedAt'">
-          {{ formatDateTime(record.lastUsedAt || record.usage.lastUsedAt) }}
+          {{ formatDateTime(accountLastUsedAt(record)) }}
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
@@ -243,8 +243,9 @@
             <a-form-item label="账户名称" :required="form.type === 'api_key' || Boolean(editingId)">
               <a-input v-model:value="form.name" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
             </a-form-item>
-            <a-form-item label="归属分组">
-              <a-select v-model:value="form.groupId" allow-clear :options="groupOptions" placeholder="可选，只显示同供应商分组" />
+            <a-form-item label="归属分组" required>
+              <a-select v-model:value="form.groupId" :options="groupOptions" placeholder="请选择同供应商分组" />
+              <div class="form-help">添加账户时会根据供应商默认选择默认分组。</div>
             </a-form-item>
           </div>
           <a-form-item label="备注">
@@ -285,16 +286,8 @@
               <a-textarea v-model:value="form.refreshToken" :rows="3" placeholder="可直接查看和修改 Refresh Token" />
             </a-form-item>
             <div class="form-grid">
-              <a-form-item label="Client ID">
-                <a-input v-model:value="form.clientId" placeholder="默认使用 Codex CLI Client ID" />
-              </a-form-item>
               <a-form-item label="过期时间">
                 <a-date-picker v-model:value="form.expiresAt" show-time style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="form-grid">
-              <a-form-item label="Account ID">
-                <a-input v-model:value="form.accountId" />
               </a-form-item>
             </div>
           </template>
@@ -303,17 +296,9 @@
             <a-form-item label="授权方式">
               <a-segmented v-model:value="form.oauthMode" :options="[{ label: '手动授权', value: 'manual' }, { label: 'Refresh Token', value: 'refresh_token' }]" block />
             </a-form-item>
-            <div class="form-grid">
-              <a-form-item label="Client ID">
-                <a-input v-model:value="form.clientId" placeholder="默认使用 Codex CLI Client ID" />
-              </a-form-item>
-              <a-form-item label="Redirect URI" v-if="form.oauthMode === 'manual'">
-                <a-input v-model:value="form.redirectUri" />
-              </a-form-item>
-            </div>
 
             <template v-if="form.oauthMode === 'manual'">
-              <a-alert class="form-alert" type="info" show-icon message="先生成授权链接；浏览器跳转 localhost 失败后，复制地址栏完整回调 URL 粘贴回来即可。" />
+              <a-alert class="form-alert" type="info" show-icon message="先生成授权链接；浏览器跳转失败后，复制地址栏完整回调 URL 粘贴回来即可。" />
               <a-space class="oauth-actions" wrap>
                 <a-button :loading="authLoading" @click="generateOAuthUrl">生成授权链接</a-button>
                 <a-button :disabled="!authResult?.authUrl" @click="openAuthUrl">打开授权链接</a-button>
@@ -431,11 +416,8 @@ interface AccountForm {
   baseUrl: string
   accessToken: string
   refreshToken: string
-  clientId: string
   expiresAt?: Dayjs
-  accountId: string
   oauthMode: 'manual' | 'refresh_token'
-  redirectUri: string
   callbackUrl: string
   status: AccountStatus
   concurrencyLimit: number
@@ -516,12 +498,12 @@ const columns = computed(() => {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
   }
   baseColumns.push(
-    { title: '并发数', key: 'concurrency', width: 100, align: 'center' },
+    { title: '并发数', key: 'concurrency', width: 100, align: 'center', sorter: compareAccountConcurrency },
     { title: '状态', key: 'status', width: 190 },
     { title: '用量情况', key: 'usage', width: 380 },
     { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
     { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
-    { title: '最近使用时间', key: 'lastUsedAt', width: 180 },
+    { title: '最近使用时间', key: 'lastUsedAt', width: 180, sorter: compareAccountLastUsedAt },
     { title: '操作', key: 'actions', width: 220, fixed: 'right' }
   )
   return baseColumns
@@ -618,9 +600,8 @@ const rowSelection = computed(() => ({
 }))
 
 const proxyOptions = computed(() => (isAdmin.value ? proxies.value : []).map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
-const groupOptions = computed(() => groups.value
-  .filter((group) => !form.providerCode || group.providerCode === form.providerCode)
-  .map((group) => ({ label: group.name, value: group.id })))
+const providerGroups = computed(() => groups.value.filter((group) => !form.providerCode || group.providerCode === form.providerCode))
+const groupOptions = computed(() => providerGroups.value.map((group) => ({ label: group.isDefault ? `${group.name}（默认）` : group.name, value: group.id })))
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
 const accountTypeChoices = computed(() => (selectedProvider.value?.accountTypes ?? []).map((type) => ({
@@ -657,10 +638,7 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     baseUrl: provider?.baseUrl ?? 'https://api.openai.com/v1',
     accessToken: '',
     refreshToken: '',
-    clientId: '',
-    accountId: '',
     oauthMode: 'manual',
-    redirectUri: 'http://localhost:1455/auth/callback',
     callbackUrl: '',
     status: 'active',
     concurrencyLimit: defaultAccountConcurrencyLimit(),
@@ -674,6 +652,7 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
 
 function resetForm(providerCode = '', type: AccountType = '') {
   Object.assign(form, defaultForm(providerCode, type))
+  ensureDefaultGroupSelected(providerCode)
   accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
   authResult.value = undefined
 }
@@ -770,6 +749,23 @@ function groupIdForAccount(accountId: string) {
 
 function groupNameForAccount(accountId: string) {
   return groups.value.find((group) => group.accountIds.includes(accountId))?.name
+}
+
+function defaultGroupForProvider(providerCode: string) {
+  const candidates = groups.value.filter((group) => group.providerCode === providerCode)
+  return candidates.find((group) => group.isDefault) ?? candidates[0]
+}
+
+function ensureDefaultGroupSelected(providerCode = form.providerCode) {
+  if (!providerCode) {
+    form.groupId = undefined
+    return
+  }
+  const currentGroup = groups.value.find((group) => group.id === form.groupId)
+  if (currentGroup?.providerCode === providerCode) {
+    return
+  }
+  form.groupId = defaultGroupForProvider(providerCode)?.id
 }
 
 function defaultAccountConcurrencyLimit() {
@@ -883,6 +879,24 @@ function formatDateTime(value?: string): string {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function accountLastUsedAt(account: AccountSummary): string | undefined {
+  return account.lastUsedAt || account.usage.lastUsedAt
+}
+
+function compareAccountLastUsedAt(left: AccountSummary, right: AccountSummary): number {
+  return timestampOf(accountLastUsedAt(left)) - timestampOf(accountLastUsedAt(right))
+}
+
+function compareAccountConcurrency(left: AccountSummary, right: AccountSummary): number {
+  return left.concurrencyLimit - right.concurrencyLimit || left.currentConcurrency - right.currentConcurrency || left.name.localeCompare(right.name, 'zh-CN')
+}
+
+function timestampOf(value?: string): number {
+  if (!value) return 0
+  const timestamp = Date.parse(value)
+  return Number.isFinite(timestamp) ? timestamp : 0
+}
+
 function formatTestTerminalResult(result: AccountTestResult): string {
   if (result.outputText?.trim()) return result.outputText.trim()
   if (result.success) return ''
@@ -904,7 +918,7 @@ async function loadData() {
     const [accountList, providerList, proxyList, groupList, settings, systemAccountList] = await Promise.all([
       api.accounts.list({ systemAccountId }),
       isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-      isAdmin.value ? api.proxies.list({ systemAccountId }) : Promise.resolve([] as ProxyProfileSummary[]),
+      isAdmin.value ? api.proxies.list() : Promise.resolve([] as ProxyProfileSummary[]),
       api.groups.list({ systemAccountId }),
       api.settings.get(),
       isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
@@ -916,6 +930,9 @@ async function loadData() {
     systemSettings.value = settings
     systemAccounts.value = systemAccountList
     selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id))
+    if (modalOpen.value && !editingId.value) {
+      ensureDefaultGroupSelected()
+    }
   } catch (error) {
     console.error(error)
     message.error('加载账户失败')
@@ -976,6 +993,7 @@ function selectAccountType(type: AccountType) {
     passthroughEnabled: form.passthroughEnabled,
     schedulable: form.schedulable
   })
+  ensureDefaultGroupSelected(providerCode)
   authResult.value = undefined
 }
 
@@ -996,8 +1014,6 @@ function openEdit(account: AccountSummary) {
     baseUrl: asString(account.credentials.base_url) || 'https://api.openai.com/v1',
     accessToken: asString(account.credentials.access_token),
     refreshToken: asString(account.credentials.refresh_token),
-    clientId: asString(account.credentials.client_id),
-    accountId: asString(account.credentials.account_id),
     expiresAt: undefined,
     notes: account.notes ?? ''
   })
@@ -1008,19 +1024,34 @@ function openEdit(account: AccountSummary) {
 
 function buildCredentials() {
   const credentials: Record<string, unknown> = form.type === 'api_key'
-    ? {
-        api_key: form.apiKey,
-        base_url: form.baseUrl
-      }
-    : {
-        access_token: form.accessToken,
-        refresh_token: form.refreshToken,
-        client_id: form.clientId,
-        expires_at: form.expiresAt?.toISOString(),
-        account_id: form.accountId
-      }
+    ? buildApiKeyCredentials()
+    : buildOAuthCredentials()
   writeAccountErrorPolicyToCredentials(credentials, accountErrorPolicyRules.value)
   return credentials
+}
+
+function buildApiKeyCredentials(): Record<string, unknown> {
+  return {
+    api_key: form.apiKey,
+    base_url: form.baseUrl
+  }
+}
+
+function buildOAuthCredentials(): Record<string, unknown> {
+  const currentCredentials = editingId.value
+    ? accounts.value.find((account) => account.id === editingId.value)?.credentials ?? {}
+    : {}
+  return compactCredentials({
+    ...currentCredentials,
+    access_token: form.accessToken,
+    refresh_token: form.refreshToken,
+    expires_at: form.expiresAt?.toISOString() ?? currentCredentials.expires_at,
+    base_url: currentCredentials.base_url ?? 'https://api.openai.com/v1'
+  })
+}
+
+function compactCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(credentials).filter(([, value]) => value !== undefined && value !== ''))
 }
 
 async function saveAccount() {
@@ -1034,6 +1065,10 @@ async function saveAccount() {
   }
   if ((editingId.value || form.type === 'api_key') && !form.name.trim()) {
     message.warning('请填写账户名称')
+    return
+  }
+  if (!form.groupId) {
+    message.warning('请选择归属分组')
     return
   }
   if (form.type === 'api_key' && !form.apiKey.trim()) {
@@ -1077,7 +1112,7 @@ async function saveAccount() {
     proxyProfileId: form.proxyProfileId,
     passthroughEnabled: form.passthroughEnabled,
     schedulable: form.schedulable,
-    groupId: form.groupId ?? null,
+    groupId: form.groupId,
     notes: form.notes
   }
 
@@ -1106,10 +1141,7 @@ async function saveAccount() {
 async function generateOAuthUrl() {
   authLoading.value = true
   try {
-    authResult.value = await api.openaiOAuth.authUrl({
-      redirectUri: form.redirectUri,
-      clientId: form.clientId || undefined
-    })
+    authResult.value = await api.openaiOAuth.authUrl({})
     message.success('授权链接已生成')
   } catch (error) {
     console.error(error)
@@ -1126,9 +1158,8 @@ function openAuthUrl() {
 
 async function createOAuthAccountFromUnifiedForm() {
   const commonPayload = {
-    clientId: form.clientId || undefined,
     name: form.name.trim() || undefined,
-    groupId: form.groupId || undefined,
+    groupId: form.groupId,
     concurrencyLimit: form.concurrencyLimit,
     proxyProfileId: form.proxyProfileId,
     credentialsPatch: { error_handling_rules: buildCredentials().error_handling_rules },
@@ -1139,8 +1170,7 @@ async function createOAuthAccountFromUnifiedForm() {
     await api.openaiOAuth.createFromCode({
       ...commonPayload,
       sessionId: authResult.value?.sessionId,
-      callbackUrl: form.callbackUrl,
-      redirectUri: form.redirectUri
+      callbackUrl: form.callbackUrl
     })
     return
   }

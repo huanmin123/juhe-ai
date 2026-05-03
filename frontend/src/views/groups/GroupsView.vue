@@ -16,7 +16,10 @@
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
           <div class="group-name-cell">
-            <span>{{ record.name }}</span>
+            <span>
+              {{ record.name }}
+              <a-tag v-if="record.isDefault" class="default-group-tag" color="blue">默认</a-tag>
+            </span>
           </div>
         </template>
         <template v-else-if="column.key === 'providerCode'">
@@ -54,9 +57,12 @@
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
             <a-button type="link" size="small" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm title="确认删除这个分组？" @confirm="removeGroup(record.id)">
+            <a-popconfirm v-if="!record.isDefault" title="确认删除这个分组？" @confirm="removeGroup(record.id)">
               <a-button type="link" size="small" danger>删除</a-button>
             </a-popconfirm>
+            <a-tooltip v-else title="默认分组不允许删除">
+              <a-button type="link" size="small" danger disabled>删除</a-button>
+            </a-tooltip>
           </a-space>
         </template>
       </template>
@@ -253,6 +259,11 @@ async function saveGroup() {
 }
 
 async function removeGroup(id: string) {
+  const group = groups.value.find((item) => item.id === id)
+  if (group?.isDefault) {
+    message.warning('默认分组不允许删除')
+    return
+  }
   try {
     await api.groups.delete(id)
     message.success('分组已删除')
@@ -309,6 +320,10 @@ onMounted(loadData)
   flex-direction: column;
   gap: 4px;
   line-height: 1.4;
+}
+
+.default-group-tag {
+  margin-left: 8px;
 }
 
 .usage-summary {

@@ -173,6 +173,7 @@ export interface GroupSummary {
   providerCode: ProviderCode
   description?: string
   enabled: boolean
+  isDefault: boolean
   accountIds: string[]
   accountStats: GroupAccountStats
 }

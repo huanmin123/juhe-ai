@@ -23,9 +23,6 @@ interface OAuthSession {
 export interface OpenAIAuthURLResult {
   authUrl: string
   sessionId: string
-  state: string
-  redirectUri: string
-  clientId: string
 }
 
 export interface OpenAITokenInfo {
@@ -44,14 +41,14 @@ export interface OpenAITokenInfo {
 const sessions = new Map<string, OAuthSession>()
 const sessionTtlMs = 30 * 60 * 1000
 
-export function generateOpenAIAuthURL(input: { redirectUri?: string; clientId?: string } = {}): OpenAIAuthURLResult {
+export function generateOpenAIAuthURL(): OpenAIAuthURLResult {
   cleanupExpiredSessions()
   const state = randomBytes(32).toString('hex')
   const codeVerifier = randomBytes(64).toString('hex')
   const codeChallenge = createHash('sha256').update(codeVerifier).digest('base64url')
   const sessionId = randomBytes(16).toString('hex')
-  const redirectUri = normalizeString(input.redirectUri) || OPENAI_OAUTH_DEFAULT_REDIRECT_URI
-  const clientId = normalizeString(input.clientId) || OPENAI_OAUTH_CLIENT_ID
+  const redirectUri = OPENAI_OAUTH_DEFAULT_REDIRECT_URI
+  const clientId = OPENAI_OAUTH_CLIENT_ID
 
   sessions.set(sessionId, {
     state,
@@ -74,10 +71,7 @@ export function generateOpenAIAuthURL(input: { redirectUri?: string; clientId?: 
 
   return {
     authUrl: `${OPENAI_OAUTH_AUTHORIZE_URL}?${params.toString()}`,
-    sessionId,
-    state,
-    redirectUri,
-    clientId
+    sessionId
   }
 }
 
@@ -85,7 +79,6 @@ export async function exchangeOpenAIAuthCode(input: {
   sessionId: string
   code: string
   state: string
-  redirectUri?: string
   proxyUrl?: string
 }): Promise<OpenAITokenInfo> {
   cleanupExpiredSessions()
@@ -96,12 +89,11 @@ export async function exchangeOpenAIAuthCode(input: {
   if (!input.state || input.state !== session.state) {
     throw new Error('Invalid OAuth state')
   }
-  const redirectUri = normalizeString(input.redirectUri) || session.redirectUri
   const tokenInfo = await requestOpenAIToken({
     grant_type: 'authorization_code',
     client_id: session.clientId,
     code: input.code,
-    redirect_uri: redirectUri,
+    redirect_uri: session.redirectUri,
     code_verifier: session.codeVerifier
   }, input.proxyUrl)
   sessions.delete(input.sessionId)

@@ -45,12 +45,14 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 保存请求数、Token 和成本，用于模型分布。
 - `usage_error_daily`：按 `system_account_id + stat_date + error_group + error_code` 保存错误数量，用于错误情况。
 - `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、事件循环延迟、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后。
-- `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值。
+- `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。
 
 建议索引：
 
 - `usage_records(system_account_id, created_at, id)`：统计 worker 增量扫描。
+- `usage_records(system_account_id, first_token_ms, created_at, id)`、`usage_records(system_account_id, duration_ms, created_at, id)`、`usage_records(system_account_id, cost_usd, created_at, id)`：使用记录页按首 token、总耗时、成本排序时只取有限窗口，避免大数据量下前端全量排序或数据库临时排序。
+- `usage_records(first_token_ms, created_at, id)`、`usage_records(duration_ms, created_at, id)`、`usage_records(cost_usd, created_at, id)`：管理员查看全部系统账户时的全局排序索引。
 - `usage_stats_totals(system_account_id, scope_type, scope_id)`：列表读取累计值。
 - `usage_stats_daily(system_account_id, scope_type, scope_id, stat_date)`：今日和天级趋势读取。
 - `usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour)`：小时趋势读取。
@@ -119,7 +121,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 - `appName = 聚合 AI`
 - `appIcon = /brand-icon.svg`
-- 登录页品牌和平台文案保持全局共享，只有管理员可修改。
+- 全局设置只保存系统名称和系统图标路径，只有管理员可修改；登录页标题由系统名称派生，角标、副标题和首页样式按 [前端设计.md](前端设计.md) 固定。
 
 系统设置默认写入：
 
@@ -142,9 +144,9 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 ## 系统账户隔离补充
 
-- `accounts`、`groups`、`group_accounts`、`api_keys`、`proxy_profiles`、`error_policies`、`usage_records`、`account_usage_snapshots`、`system_settings` 后续都会按 `system_account_id` 隔离。
+- `accounts`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`account_usage_snapshots`、`system_settings` 后续都会按 `system_account_id` 隔离。
 - `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_error_daily` 也必须按 `system_account_id` 隔离。
-- `providers`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly` 保持全局共享；主机级系统监控默认仅管理员可见。
+- `providers`、`proxy_profiles`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly` 保持全局共享；`providers` 和 `proxy_profiles` 只允许管理员维护，主机级系统监控默认仅管理员可见。
 - 管理员可以读取所有系统账户的数据；普通用户只读取自己的系统账户数据。
 
 ## 敏感字段

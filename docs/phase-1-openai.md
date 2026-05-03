@@ -36,12 +36,13 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `access_token`
 - `refresh_token`
 - `expires_at`
-- `account_id`
 - 代理
 - 并发上限
 - 是否启用透传
 - 错误策略
 - 备注
+
+`account_id` / `chatgpt_account_id` 属于 OpenAI OAuth token 解析出的系统元数据，不作为用户表单输入项。
 
 保存要求：
 
@@ -131,14 +132,14 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 2. 前端打开 `https://auth.openai.com/oauth/authorize`。
 3. 用户登录 OpenAI 后浏览器会跳转到 `http://localhost:1455/auth/callback`。
 4. 如果本机没有监听该端口，浏览器显示连接失败也没关系，复制地址栏完整 URL。
-5. 前端把回调 URL 提交给后端，后端校验 `state` 并用 PKCE `code_verifier` 换取 token。
+5. 前端把回调 URL 提交给后端，后端校验 `state` 并用 PKCE `code_verifier` 换取 token；Client ID 与 Redirect URI 使用后端内置默认值，不暴露给用户填写。
 6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id` 和邮箱。
 7. 账户落库后立即触发一次首次额度快照刷新；刷新失败只更新快照状态和退避时间，不影响账户创建结果。
 
 ### Refresh Token 授权
 
 1. 用户直接粘贴已有 `refresh_token`。
-2. 后端使用 `grant_type=refresh_token` 向 OpenAI token endpoint 刷新。
+2. 后端使用内置默认 Client ID 和 `grant_type=refresh_token` 向 OpenAI token endpoint 刷新。
 3. 刷新成功后创建 OpenAI OAuth 账户。
 4. 账户落库后立即触发一次首次额度快照刷新；刷新失败只更新快照状态和退避时间，不影响账户创建结果。
 5. 如果 OpenAI 没返回新的 `refresh_token`，继续保留用户输入的原始 `refresh_token`。

@@ -6,27 +6,23 @@
           <div class="section-heading">
             <div>
               <h3>全局展示配置</h3>
-              <p>用于登录页、左侧菜单标题和浏览器标签页；未登录时也会读取这一份配置。</p>
+              <p>只管理系统名称和系统图标路径；登录页文案与样式按设计固定。</p>
             </div>
             <div class="global-preview-stack">
               <div class="brand-preview">
                 <img class="brand-preview-icon" :src="globalForm.appIcon" :alt="`${globalForm.appName} 图标`" />
                 <span>{{ globalForm.appName }}</span>
               </div>
-              <div class="login-preview">
-                <span>{{ globalForm.loginBadge }}</span>
-                <strong>{{ globalForm.loginTitle }}</strong>
-              </div>
             </div>
           </div>
 
           <a-alert class="setting-alert section-alert" type="info" show-icon>
-            <template #message>这部分是平台级全局配置，仅管理员可修改；普通用户不会看到这些字段。</template>
+            <template #message>全局配置仅包含系统名称和系统图标路径，仅管理员可修改；普通用户不会看到这些字段。</template>
           </a-alert>
 
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="系统名称" extra="保存后同步显示到左侧菜单标题和浏览器 tab。">
+              <a-form-item label="系统名称" extra="保存后同步显示到左侧菜单标题、浏览器 tab，并用于登录页“系统名称 + 管理平台”标题。">
                 <a-input v-model:value="globalForm.appName" placeholder="请输入系统名称" />
               </a-form-item>
             </div>
@@ -41,27 +37,12 @@
                 </a-space>
               </a-form-item>
             </div>
-            <div class="setting-item">
-              <a-form-item label="登录页标题" extra="登录页主标题，建议控制在 20 个字以内。">
-                <a-input v-model:value="globalForm.loginTitle" placeholder="聚合 AI 管理平台" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="登录页角标" extra="显示在登录页左侧的小标签，适合英文短语或版本标识。">
-                <a-input v-model:value="globalForm.loginBadge" placeholder="统一接入平台" />
-              </a-form-item>
-            </div>
-            <div class="setting-item setting-item-wide">
-              <a-form-item label="登录页副标题" extra="用于解释平台定位，保存后未登录页立即读取。">
-                <a-textarea v-model:value="globalForm.loginSubtitle" :rows="2" placeholder="统一接入、统一调度、统一可观测。" />
-              </a-form-item>
-            </div>
           </div>
 
           <div class="settings-actions">
             <a-space>
-              <a-button type="primary" :loading="savingGlobal" @click="saveGlobalSettings">保存全局展示</a-button>
-              <a-button :disabled="savingGlobal" @click="resetGlobalDefaults">恢复默认展示</a-button>
+              <a-button type="primary" :loading="savingGlobal" @click="saveGlobalSettings">保存全局配置</a-button>
+              <a-button :disabled="savingGlobal" @click="resetGlobalDefaults">恢复默认配置</a-button>
             </a-space>
           </div>
         </section>
@@ -159,9 +140,6 @@ import type { GlobalSettings, SystemSettings } from '@/types/domain'
 interface GlobalForm {
   appName: string
   appIcon: string
-  loginTitle: string
-  loginSubtitle: string
-  loginBadge: string
 }
 
 interface SystemForm {
@@ -178,10 +156,7 @@ interface SystemForm {
 
 const defaultGlobalSettings: GlobalForm = {
   appName: defaultAppBrand.appName,
-  appIcon: defaultAppBrand.appIcon,
-  loginTitle: '聚合 AI 管理平台',
-  loginSubtitle: '统一接入、统一调度、统一可观测。',
-  loginBadge: '统一接入平台'
+  appIcon: defaultAppBrand.appIcon
 }
 
 const defaultSystemSettings: SystemForm = {
@@ -223,10 +198,10 @@ async function saveGlobalSettings() {
     const next = await api.settings.updateGlobal({ ...normalizeGlobalSettings(globalForm) })
     Object.assign(globalForm, normalizeGlobalSettings(next))
     applyAppBrand(next)
-    message.success('全局展示配置已保存')
+    message.success('全局配置已保存')
   } catch (error) {
     console.error(error)
-    message.error('保存全局展示配置失败')
+    message.error('保存全局配置失败')
   } finally {
     savingGlobal.value = false
   }
@@ -272,7 +247,7 @@ function handleIconUpload(file: File): boolean {
   reader.onload = () => {
     if (typeof reader.result === 'string') {
       globalForm.appIcon = reader.result
-      message.success('图标已读取，保存全局展示后生效')
+      message.success('图标已读取，保存全局配置后生效')
     }
   }
   reader.onerror = () => {
@@ -285,10 +260,7 @@ function handleIconUpload(file: File): boolean {
 function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): GlobalForm {
   return {
     appName: stringValue(settings.appName, defaultGlobalSettings.appName),
-    appIcon: stringValue(settings.appIcon, defaultGlobalSettings.appIcon),
-    loginTitle: stringValue(settings.loginTitle, defaultGlobalSettings.loginTitle),
-    loginSubtitle: stringValue(settings.loginSubtitle, defaultGlobalSettings.loginSubtitle),
-    loginBadge: stringValue(settings.loginBadge, defaultGlobalSettings.loginBadge)
+    appIcon: stringValue(settings.appIcon, defaultGlobalSettings.appIcon)
   }
 }
 

@@ -113,6 +113,7 @@ export function applySchema(database: DatabaseSync): void {
       provider_code TEXT NOT NULL DEFAULT 'openai',
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
+      is_default INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code)
@@ -347,8 +348,10 @@ export function applySchema(database: DatabaseSync): void {
       event_loop_lag_ms_max REAL,
       network_rx_bytes_per_sec_sum REAL NOT NULL DEFAULT 0,
       network_rx_bytes_per_sec_max REAL,
+      network_rx_bytes_per_sec_count INTEGER NOT NULL DEFAULT 0,
       network_tx_bytes_per_sec_sum REAL NOT NULL DEFAULT 0,
       network_tx_bytes_per_sec_max REAL,
+      network_tx_bytes_per_sec_count INTEGER NOT NULL DEFAULT 0,
       network_rx_total_bytes_max INTEGER,
       network_tx_total_bytes_max INTEGER,
       db_file_bytes_max INTEGER,
@@ -376,6 +379,7 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'system_accounts', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_accounts', 'last_login_at', 'TEXT')
   ensureColumn(database, 'proxy_profiles', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
+  database.prepare("UPDATE proxy_profiles SET system_account_id = 'sys_admin' WHERE system_account_id <> 'sys_admin'").run()
   ensureColumn(database, 'error_policies', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'accounts', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'accounts', 'credential_fingerprint', 'TEXT')
@@ -387,6 +391,7 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'accounts', 'stream_failure_window_started_at', 'TEXT')
   ensureColumn(database, 'groups', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'groups', 'provider_code', "TEXT NOT NULL DEFAULT 'openai'")
+  ensureColumn(database, 'groups', 'is_default', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'group_accounts', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'api_keys', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'api_keys', 'key_secret_encrypted', 'TEXT')
@@ -421,10 +426,19 @@ export function applySchema(database: DatabaseSync): void {
   database.exec('DROP INDEX IF EXISTS idx_accounts_credential_fingerprint;')
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_credential_fingerprint ON accounts(system_account_id, credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_proxy_profiles_system_account ON proxy_profiles(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_sort ON usage_records(system_account_id, created_at, id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_first_token_sort ON usage_records(first_token_ms, created_at, id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_duration_sort ON usage_records(duration_ms, created_at, id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_cost_sort ON usage_records(cost_usd, created_at, id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_first_token_sort ON usage_records(system_account_id, first_token_ms, created_at, id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_duration_sort ON usage_records(system_account_id, duration_ms, created_at, id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_cost_sort ON usage_records(system_account_id, cost_usd, created_at, id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_stats_cursor ON usage_records(created_at, id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_scope_date ON usage_stats_daily(system_account_id, scope_type, scope_id, stat_date);')
@@ -515,14 +529,37 @@ function ensureSystemMetricsColumns(database: DatabaseSync): void {
   ensureColumn(database, 'system_metrics_hourly', 'event_loop_lag_ms_sum', 'REAL NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_metrics_hourly', 'network_rx_bytes_per_sec_sum', 'REAL NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_metrics_hourly', 'network_rx_bytes_per_sec_max', 'REAL')
+  ensureColumn(database, 'system_metrics_hourly', 'network_rx_bytes_per_sec_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_metrics_hourly', 'network_tx_bytes_per_sec_sum', 'REAL NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_metrics_hourly', 'network_tx_bytes_per_sec_max', 'REAL')
+  ensureColumn(database, 'system_metrics_hourly', 'network_tx_bytes_per_sec_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_metrics_hourly', 'network_rx_total_bytes_max', 'INTEGER')
   ensureColumn(database, 'system_metrics_hourly', 'network_tx_total_bytes_max', 'INTEGER')
   ensureColumn(database, 'system_metrics_hourly', 'db_file_bytes_max', 'INTEGER')
   ensureColumn(database, 'system_metrics_hourly', 'stats_lag_seconds_max', 'INTEGER')
   ensureColumn(database, 'system_metrics_hourly', 'sample_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_metrics_hourly', 'updated_at', 'TEXT')
+  backfillSystemMetricsNetworkCounts(database)
+}
+
+function backfillSystemMetricsNetworkCounts(database: DatabaseSync): void {
+  database.exec(`
+    UPDATE system_metrics_hourly
+    SET network_rx_bytes_per_sec_count = COALESCE((
+          SELECT COUNT(*)
+          FROM system_metrics_samples
+          WHERE substr(sampled_at, 1, 13) = system_metrics_hourly.stat_hour
+            AND network_rx_bytes_per_sec IS NOT NULL
+        ), 0),
+        network_tx_bytes_per_sec_count = COALESCE((
+          SELECT COUNT(*)
+          FROM system_metrics_samples
+          WHERE substr(sampled_at, 1, 13) = system_metrics_hourly.stat_hour
+            AND network_tx_bytes_per_sec IS NOT NULL
+        ), 0)
+    WHERE (network_rx_bytes_per_sec_count = 0 AND network_rx_bytes_per_sec_max IS NOT NULL)
+       OR (network_tx_bytes_per_sec_count = 0 AND network_tx_bytes_per_sec_max IS NOT NULL);
+  `)
 }
 
 function migrateAccountUsageSnapshotsTable(database: DatabaseSync): void {
@@ -632,10 +669,7 @@ export function seedDefaults(database: DatabaseSync): void {
 
   const globalSettings = [
     ['appName', '聚合 AI'],
-    ['appIcon', '/brand-icon.svg'],
-    ['loginTitle', '聚合 AI 管理平台'],
-    ['loginSubtitle', '统一接入、统一调度、统一可观测。'],
-    ['loginBadge', '统一接入平台']
+    ['appIcon', '/brand-icon.svg']
   ] as const
 
   const globalStatement = database.prepare(`
@@ -646,10 +680,7 @@ export function seedDefaults(database: DatabaseSync): void {
     globalStatement.run(key, JSON.stringify(value), now)
   }
 
-  database.prepare("UPDATE global_settings SET value_json = ?, updated_at = ? WHERE key = 'loginSubtitle' AND value_json = ?")
-    .run(JSON.stringify('统一接入、统一调度、统一可观测。'), now, JSON.stringify('统一登录、统一调度、统一可观测。'))
-  database.prepare("UPDATE global_settings SET value_json = ?, updated_at = ? WHERE key = 'loginBadge' AND value_json = ?")
-    .run(JSON.stringify('统一接入平台'), now, JSON.stringify('AI Control Plane'))
+  database.prepare("DELETE FROM global_settings WHERE key IN ('loginTitle', 'loginSubtitle', 'loginBadge')").run()
 
   database
     .prepare(`
@@ -671,6 +702,7 @@ export function seedDefaults(database: DatabaseSync): void {
 
   ensureAdminDefaultOpenAIGroup(database, now)
   migrateDefaultOpenAIGroupForExistingUsers(database, now)
+  markDefaultOpenAIGroups(database)
 
   const settings = [
     ['appName', '聚合 AI'],
@@ -717,10 +749,11 @@ export function seedDefaults(database: DatabaseSync): void {
 function ensureAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string): void {
   database
     .prepare(`
-      INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
     `)
     .run('grp_default_openai', 'sys_admin', DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
+  database.prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?').run('grp_default_openai', 'sys_admin')
 }
 
 function migrateDefaultOpenAIGroupForExistingUsers(database: DatabaseSync, timestamp: string): void {
@@ -734,21 +767,30 @@ function migrateDefaultOpenAIGroupForExistingUsers(database: DatabaseSync, times
   database.prepare('INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)').run('sys_admin', migrationKey, JSON.stringify(true), timestamp)
 }
 
+function markDefaultOpenAIGroups(database: DatabaseSync): void {
+  database
+    .prepare('UPDATE groups SET is_default = 1 WHERE provider_code = ? AND name = ?')
+    .run('openai', DEFAULT_OPENAI_GROUP_NAME)
+}
+
 function ensureDefaultOpenAIGroups(database: DatabaseSync, timestamp: string): void {
   const systemAccounts = database.prepare('SELECT id FROM system_accounts').all() as unknown as Array<{ id: string }>
   const findGroup = database.prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND name = ? LIMIT 1')
   const insertGroup = database.prepare(`
-    INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+    INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
   `)
+  const markDefaultGroup = database.prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
 
   for (const account of systemAccounts) {
-    const existing = findGroup.get(account.id, 'openai', DEFAULT_OPENAI_GROUP_NAME) as unknown
-    if (existing) {
+    const existing = findGroup.get(account.id, 'openai', DEFAULT_OPENAI_GROUP_NAME) as unknown as { id?: string } | undefined
+    if (existing?.id) {
+      markDefaultGroup.run(existing.id, account.id)
       continue
     }
     const groupId = account.id === 'sys_admin' ? 'grp_default_openai' : `grp_default_openai_${account.id}`
     insertGroup.run(groupId, account.id, DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
+    markDefaultGroup.run(groupId, account.id)
   }
 }
 

@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { addAccountToGroup, createAccount, listAccounts, listGroups, resolveProxyUrlForProfile } from '../../storage/repositories.js'
+import { createAccount, listAccounts, listGroups, resolveProxyUrlForProfile } from '../../storage/repositories.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -14,17 +14,13 @@ import { refreshOpenAIOAuthUsageSnapshot } from './openai-oauth-usage-refresh.se
 
 export const openAIOAuthRouter = Router()
 
-const authUrlSchema = z.object({
-  redirectUri: z.string().optional(),
-  clientId: z.string().optional()
-})
+const authUrlSchema = z.object({}).passthrough()
 
 const createFromCodeSchema = z.object({
   sessionId: z.string().min(1),
   callbackUrl: z.string().optional(),
   code: z.string().optional(),
   state: z.string().optional(),
-  redirectUri: z.string().optional(),
   name: z.string().optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -36,7 +32,6 @@ const createFromCodeSchema = z.object({
 
 const createFromRefreshTokenSchema = z.object({
   refreshToken: z.string().min(1),
-  clientId: z.string().optional(),
   name: z.string().optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
@@ -52,7 +47,7 @@ openAIOAuthRouter.post('/auth-url', (req, res) => {
     res.status(400).json(badRequest('Invalid OpenAI OAuth auth-url payload'))
     return
   }
-  res.json(ok(generateOpenAIAuthURL(parsed.data)))
+  res.json(ok(generateOpenAIAuthURL()))
 })
 
 openAIOAuthRouter.post('/create-from-code', async (req, res) => {
@@ -72,7 +67,6 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
       sessionId: parsed.data.sessionId,
       code,
       state,
-      redirectUri: parsed.data.redirectUri,
       proxyUrl: resolveProxyUrlForProfile(parsed.data.proxyProfileId)
     })
     const account = createAccount({
@@ -88,11 +82,9 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
       errorPolicyId: parsed.data.errorPolicyId,
       passthroughEnabled: true,
       schedulable: true,
+      groupId: parsed.data.groupId,
       notes: parsed.data.notes
     })
-    if (parsed.data.groupId) {
-      addAccountToGroup(parsed.data.groupId, account.id)
-    }
     const accountWithInitialUsage = await refreshCreatedOAuthUsage(account)
     res.status(201).json(ok(accountWithInitialUsage))
   } catch (error) {
@@ -114,7 +106,6 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
   try {
     const tokenInfo = await refreshOpenAIOAuthToken({
       refreshToken: parsed.data.refreshToken,
-      clientId: parsed.data.clientId,
       proxyUrl: resolveProxyUrlForProfile(parsed.data.proxyProfileId)
     })
     const account = createAccount({
@@ -130,11 +121,9 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
       errorPolicyId: parsed.data.errorPolicyId,
       passthroughEnabled: true,
       schedulable: true,
+      groupId: parsed.data.groupId,
       notes: parsed.data.notes
     })
-    if (parsed.data.groupId) {
-      addAccountToGroup(parsed.data.groupId, account.id)
-    }
     const accountWithInitialUsage = await refreshCreatedOAuthUsage(account)
     res.status(201).json(ok(accountWithInitialUsage))
   } catch (error) {

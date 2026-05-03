@@ -25,9 +25,9 @@
 
 ## 设置分层
 
-- `global_settings`：平台全局配置，未登录也需要读取，只允许 `admin` 修改。
+- `global_settings`：平台全局配置，只保存系统名称和系统图标路径；未登录也需要读取，只允许 `admin` 修改。
 - `system_settings`：系统账户自己的配置，按 `system_account_id` 隔离，登录后读取和修改。
-- 登录页品牌、站点名称、登录文案和视觉主题属于全局配置，不参与用户级隔离。
+- 登录页标题由系统名称派生为“系统名称 + 管理平台”；登录页角标、副标题和视觉样式属于前端设计，详见 [前端设计.md](前端设计.md)。
 - 网关调度相关的默认值、偏好和运行参数属于用户级系统设置。
 
 ## 模块总览
@@ -39,12 +39,12 @@ flowchart LR
   SystemAccount --> AIAccount["AI账户"]
   SystemAccount --> Group["分组"]
   SystemAccount --> APIKey["API Key"]
-  SystemAccount --> Proxy["代理"]
   SystemAccount --> Usage["使用记录"]
   SystemAccount --> Stats["统计缓存与监控"]
   SystemAccount --> ErrorPolicy["错误策略"]
-  GlobalSettings --> LoginBrand["登录页品牌"]
-  AIAccount --> Provider["供应商"]
+  GlobalSettings --> AppBrand["系统名称与图标"]
+  Provider["供应商"] --> AIAccount
+  Proxy["代理"] --> AIAccount
   AIAccount --> Proxy
   AIAccount --> ErrorPolicy
   APIKey --> Group
@@ -62,17 +62,17 @@ flowchart LR
 - `admin` 可以看所有系统账户的数据；`user` 只能看自己的数据。
 - 登录接口需要携带一次性图形验证码，验证码只用于未登录登录防护，不作为业务数据隔离维度。
 - 登录防护需要同时按客户端 IP 和用户名记录失败尝试；短时间失败过多时临时限制该 IP 或锁定该用户名。
-- 登录页品牌和平台级文案由全局设置控制，只有管理员能改。
-- 供应商定义账户创建方式，例如 OpenAI 支持 OAuth 和 API Key；对外请求协议仍统一收敛为 OpenAI 兼容协议。
+- 系统名称和系统图标路径由全局设置控制，只有管理员能改；登录页文案和样式写在 [前端设计.md](前端设计.md) 中。
+- 供应商定义账户创建方式，例如 OpenAI 支持 OAuth 和 API Key；供应商定义为全局资源，只允许管理员维护，普通用户不能看到供应商管理菜单。
 - 账户属于某个供应商，并选择一种账户类型。
 - AI 账户属于某个系统账户，并选择一种账户类型；管理员视角列表需要额外显示系统账户维度，用户视角不显示该列。
 - 分组归属于一个供应商；账户主动选择归属分组，分组汇总同供应商账户并代表一组可调度资源。
 - API Key 绑定分组，请求进入后只能使用该分组内的账户。
-- 代理独立管理，账户按需绑定代理。
+- 代理是服务器提供的全局运维资源，只允许管理员维护和绑定；普通用户不能看到代理管理菜单，也不能自行选择或修改账户代理。
 - 账号级错误处理策略也按系统账户隔离；AI 账户创建和编辑时只可选择本系统账户内可见的规则。
 - 使用记录记录 API Key、分组、账户、接口、供应商、模型、状态、IP、首 token、总耗时和错误；上游请求每一次尝试都会记录，包含重试过程中的失败，并冗余 `system_account_id` 便于隔离查询。
 - 使用记录是事实源，统计缓存按 `system_account_id` 分区并由后台定时任务增量汇总，列表页和图表页不直接实时扫描 `usage_records`。
-- 全局设置只保存登录页和平台级展示信息；系统设置保存系统账户自己的默认值和运行偏好，不直接替代账号级配置。
+- 全局设置只保存系统名称和系统图标路径；系统设置保存系统账户自己的默认值和运行偏好，不直接替代账号级配置。
 - 流熔断只作用于流式响应异常：首包前请求超时、超过空闲超时没有新数据或流被异常中断时，按账号累计失败并临时不可调用。
 
 ## SQLite 存储策略
@@ -104,7 +104,7 @@ flowchart LR
 - `account_usage_snapshots`
 - `system_settings`
 
-其中 `accounts`、`groups`、`group_accounts`、`api_keys`、`proxy_profiles`、`error_policies`、`usage_records`、`account_usage_snapshots`、`system_settings` 都需要按 `system_account_id` 隔离；`providers` 和 `global_settings` 维持全局共享。统计缓存表也属于业务数据缓存，必须冗余 `system_account_id` 并按登录态过滤；系统 CPU / 内存这类主机级监控属于全局运维数据，默认仅管理员可见。
+其中 `accounts`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`account_usage_snapshots`、`system_settings` 都需要按 `system_account_id` 隔离；`providers`、`proxy_profiles` 和 `global_settings` 维持全局共享，其中 `providers`、`proxy_profiles` 只允许管理员管理。统计缓存表也属于业务数据缓存，必须冗余 `system_account_id` 并按登录态过滤；系统 CPU / 内存这类主机级监控属于全局运维数据，默认仅管理员可见。
 
 统计缓存建议新增：
 
@@ -228,6 +228,7 @@ OpenAI API Key 建议凭据：
 - `provider_code`：分组所属供应商，默认 `openai`；只允许同一供应商的账户归入该分组
 - `description`
 - `enabled`
+- `is_default`：是否为系统账户在该供应商下的默认分组；默认分组不允许删除
 - `account_count`
 - `created_at` / `updated_at`
 
@@ -242,7 +243,7 @@ OpenAI API Key 建议凭据：
 
 第一阶段建议：
 
-- 一个账户主动归属到零个或一个分组；调整入口在账户创建 / 编辑表单中
+- 一个账户必须归属到一个同供应商分组；创建时按供应商默认选中默认分组，编辑时可调整
 - 每个系统账户默认拥有一个 OpenAI 分组；新建系统账户时同步创建，旧数据通过启动迁移补齐一次
 - 一个分组可以汇总多个同供应商账户
 - 一个分组只汇总同一 `provider_code` 下的账户，列表只展示数量与聚合状态，不展开账户名称
@@ -275,12 +276,11 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 
 ## 代理管理
 
-代理独立于账户，账户只引用代理配置。
+代理独立于账户，账户只引用代理配置。代理是服务器级全局资源，不属于某个系统账户；代理列表、创建、编辑和删除只面向管理员开放，普通用户不显示代理菜单，也不能通过账户表单选择或修改代理。
 
 建议字段：
 
 - `id`
-- `system_account_id`
 - `name`
 - `type`：`http`、`https`、`socks5`
 - `host`
@@ -416,7 +416,7 @@ UI 规则：
 
 ### 全局设置
 
-- `global_settings` 保存登录页品牌、站点名称、登录文案和视觉主题等平台级配置。
+- `global_settings` 只保存系统名称和系统图标路径；登录页角标、副标题和视觉样式按 [前端设计.md](前端设计.md) 固定。
 - 全局设置未登录也需要读取，只允许 `admin` 修改。
 
 ### 系统设置
@@ -477,8 +477,8 @@ UI 规则：
 
 ## OpenAI OAuth 授权设计
 
-- OAuth 手动授权：生成 PKCE 授权链接，用户复制 localhost 回调 URL，后端校验 `state` 后换取 token。
-- Refresh Token 授权：用户粘贴 `refresh_token`，后端刷新后创建 OAuth 账户。
+- OAuth 手动授权：生成 PKCE 授权链接，用户复制 localhost 回调 URL，后端校验 `state` 后换取 token；Client ID 和 Redirect URI 使用后端内置默认值，不作为用户输入项。
+- Refresh Token 授权：用户粘贴 `refresh_token`，后端使用内置默认 Client ID 刷新后创建 OAuth 账户。
 - OAuth 凭据字段：`access_token`、`refresh_token`、`expires_at`、`client_id`、`email`、`base_url`。
 - 网关调度：同一分组内可混合 API Key 账户和 OAuth 账户，OAuth 账户使用 `access_token` 透传到上游。
 - 自动刷新：OAuth `expires_at` 接近过期时，用 `refresh_token` 刷新并写回 SQLite。

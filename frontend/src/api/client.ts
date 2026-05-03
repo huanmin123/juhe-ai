@@ -30,6 +30,12 @@ interface ListParams {
   systemAccountId?: string
 }
 
+export interface UsageRecordListParams extends ListParams {
+  sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
+  sortOrder?: 'asc' | 'desc'
+  limit?: number
+}
+
 const http = axios.create({
   baseURL: normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined),
   timeout: 15000,
@@ -92,13 +98,13 @@ export const api = {
     createFromRefreshToken: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/openai-oauth/create-from-refresh-token', payload))
   },
   proxies: {
-    list: (params?: ListParams) => unwrap<ProxyProfileSummary[]>(http.get('/proxies', { params })),
+    list: () => unwrap<ProxyProfileSummary[]>(http.get('/proxies')),
     create: (payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.post('/proxies', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.patch(`/proxies/${id}`, payload)),
     delete: (id: string) => http.delete(`/proxies/${id}`)
   },
   usageRecords: {
-    list: (params?: ListParams) => unwrap<UsageRecordSummary[]>(http.get('/usage-records', { params }))
+    list: (params?: UsageRecordListParams) => unwrap<UsageRecordSummary[]>(http.get('/usage-records', { params }))
   },
   stats: {
     usageOverview: () => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview')),

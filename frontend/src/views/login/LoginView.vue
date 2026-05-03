@@ -82,19 +82,18 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { loadCaptcha, login } from '@/composables/useAuth'
 import { appBrand, loadGlobalBrandSettings } from '@/composables/useAppBrand'
-import type { CaptchaChallengeSummary, GlobalSettings } from '@/types/domain'
+import type { CaptchaChallengeSummary } from '@/types/domain'
 
 const router = useRouter()
 const route = useRoute()
 const loading = ref(false)
 const captchaLoading = ref(false)
-const globalSettings = ref<GlobalSettings>({})
 const captcha = ref<CaptchaChallengeSummary>()
 const form = reactive({ username: '', password: '', captchaCode: '' })
 
-const loginTitle = computed(() => stringValue(globalSettings.value.loginTitle, `${appBrand.appName} 管理平台`))
-const loginSubtitle = computed(() => stringValue(globalSettings.value.loginSubtitle, '统一接入、统一调度、统一可观测。'))
-const loginBadge = computed(() => stringValue(globalSettings.value.loginBadge, '统一接入平台'))
+const loginTitle = computed(() => `${appBrand.appName} 管理平台`)
+const loginSubtitle = '统一接入、统一调度、统一可观测。'
+const loginBadge = '统一接入平台'
 
 const signals = [
   { index: '01', value: '多厂商接入', title: '统一纳管模型供应商与上游账号' },
@@ -166,17 +165,13 @@ function getLoginErrorMessage(error: unknown): string {
   return '登录失败，请检查账号、密码或验证码'
 }
 
-function stringValue(value: unknown, fallback: string): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : fallback
-}
-
 onMounted(async () => {
   await Promise.all([loadBrandSettings(), refreshCaptcha()])
 })
 
 async function loadBrandSettings(): Promise<void> {
   try {
-    globalSettings.value = await loadGlobalBrandSettings()
+    await loadGlobalBrandSettings()
   } catch (error) {
     console.error(error)
   }

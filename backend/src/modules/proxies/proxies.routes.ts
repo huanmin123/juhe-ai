@@ -3,7 +3,6 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { createProxy, deleteProxy, listProxies, updateProxy } from '../../storage/repositories.js'
-import { getRequestAccessScope } from '../auth/request-context.js'
 
 export const proxiesRouter = Router()
 
@@ -17,8 +16,8 @@ const proxySchema = z.object({
   enabled: z.boolean().optional()
 })
 
-proxiesRouter.get('/', (req, res) => {
-  res.json(ok(listProxies(getRequestAccessScope(req.query.systemAccountId))))
+proxiesRouter.get('/', (_req, res) => {
+  res.json(ok(listProxies()))
 })
 
 proxiesRouter.post('/', (req, res) => {

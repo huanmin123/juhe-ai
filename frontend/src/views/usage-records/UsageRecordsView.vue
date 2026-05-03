@@ -44,6 +44,7 @@
       row-key="id"
       :loading="loading"
       :scroll="{ x: isAdmin ? 2030 : 1850 }"
+      @change="handleTableChange"
     >
       <template #emptyText>
         <a-empty class="page-empty-card" description="中转网关接入后开始产生使用记录。" />
@@ -151,6 +152,7 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
+import type { UsageRecordListParams } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -163,6 +165,10 @@ const statusCodeFilter = ref<string>('')
 const systemAccountFilter = ref(allSystemAccountsValue)
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const isAdmin = authState.isAdmin
+type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
+type TableSortOrder = 'ascend' | 'descend' | null
+
+const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>({ field: 'createdAt', order: 'descend' })
 
 const resultOptions = [
   { label: '全部结果', value: 'all' },
@@ -213,10 +219,10 @@ const columns = computed(() => {
     { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 90 },
     { title: '结果', key: 'success', width: 90 },
     { title: 'Tokens', key: 'tokens', width: 150 },
-    { title: '成本', key: 'cost', width: 110 },
-    { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100 },
-    { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100 },
-    { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180 },
+    { title: '成本', key: 'cost', width: 110, sorter: true, sortOrder: columnSortOrder('costUsd') },
+    { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100, sorter: true, sortOrder: columnSortOrder('firstTokenMs') },
+    { title: '总耗时', dataIndex: 'durationMs', key: 'durationMs', width: 100, sorter: true, sortOrder: columnSortOrder('durationMs') },
+    { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180, sorter: true, sortOrder: columnSortOrder('createdAt') },
     { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
     { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
     { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 }
@@ -271,12 +277,38 @@ function resetFilters(): void {
   void loadData()
 }
 
+async function handleTableChange(_pagination: unknown, _filters: unknown, sorter: unknown): Promise<void> {
+  const normalized = normalizeTableSorter(sorter)
+  sortState.value = normalized ?? { field: 'createdAt', order: 'descend' }
+  await loadData()
+}
+
+function columnSortOrder(field: UsageRecordSortField): TableSortOrder {
+  return sortState.value.field === field ? sortState.value.order : null
+}
+
+function normalizeTableSorter(sorter: unknown): { field: UsageRecordSortField; order: TableSortOrder } | undefined {
+  const item = Array.isArray(sorter) ? sorter[0] : sorter
+  if (!item || typeof item !== 'object') return undefined
+  const record = item as Record<string, unknown>
+  const field = sortFieldFromColumn(record.columnKey ?? record.field)
+  const order = record.order === 'ascend' || record.order === 'descend' ? record.order : null
+  return field && order ? { field, order } : undefined
+}
+
+function sortFieldFromColumn(value: unknown): UsageRecordSortField | undefined {
+  if (value === 'cost') return 'costUsd'
+  if (value === 'costUsd' || value === 'firstTokenMs' || value === 'durationMs' || value === 'createdAt') return value
+  return undefined
+}
+
 async function loadData() {
   loading.value = true
   try {
     const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, isAdmin.value)
+    const sortOrder = sortState.value.order === 'ascend' ? 'asc' : 'desc'
     const [recordList, systemAccountList] = await Promise.all([
-      api.usageRecords.list({ systemAccountId }),
+      api.usageRecords.list({ systemAccountId, sortBy: sortState.value.field, sortOrder }),
       isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     records.value = recordList

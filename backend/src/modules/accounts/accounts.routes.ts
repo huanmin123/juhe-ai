@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { addAccountToGroup, clearAccountFailureState, createAccount, deleteAccount, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
+import { clearAccountFailureState, createAccount, deleteAccount, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
@@ -63,15 +63,15 @@ accountsRouter.post('/', (req, res) => {
     }
   }
 
-  const account = createAccount({
-    ...parsed.data,
-    providerCode
-  })
-  if (groupId) {
-    addAccountToGroup(groupId, account.id)
+  try {
+    const account = createAccount({
+      ...parsed.data,
+      providerCode
+    })
+    res.status(201).json(ok(account))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Invalid account payload'))
   }
-
-  res.status(201).json(ok(account))
 })
 
 accountsRouter.patch('/:id', (req, res) => {
@@ -81,7 +81,12 @@ accountsRouter.patch('/:id', (req, res) => {
     res.status(404).json({ message: 'Account not found' })
     return
   }
-  if (Object.prototype.hasOwnProperty.call(body, 'groupId') && typeof body.groupId === 'string' && body.groupId) {
+  const hasGroupId = Object.prototype.hasOwnProperty.call(body, 'groupId')
+  if (hasGroupId && (typeof body.groupId !== 'string' || !body.groupId)) {
+    res.status(400).json(badRequest('Account group is required'))
+    return
+  }
+  if (hasGroupId) {
     const group = listGroups().find((item) => item.id === body.groupId)
     if (!group || group.providerCode !== existingAccount.providerCode) {
       res.status(400).json(badRequest('Invalid account group'))
@@ -96,8 +101,8 @@ accountsRouter.patch('/:id', (req, res) => {
     res.status(404).json({ message: 'Account not found' })
     return
   }
-  if (Object.prototype.hasOwnProperty.call(body, 'groupId')) {
-    const nextAccount = setAccountGroup(account.id, typeof body.groupId === 'string' && body.groupId ? body.groupId : null)
+  if (hasGroupId) {
+    const nextAccount = setAccountGroup(account.id, body.groupId as string)
     if (!nextAccount) {
       res.status(400).json(badRequest('Invalid account group'))
       return

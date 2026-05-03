@@ -120,7 +120,7 @@ http://127.0.0.1:5173/accounts
 
 点击 `OpenAI 账户授权`，可选两种方式：
 
-- `手动授权`：生成授权链接，登录完成后复制浏览器地址栏里的 `http://localhost:1455/auth/callback?code=...&state=...` 回调 URL，粘贴回弹窗创建账户。
+- `手动授权`：生成授权链接，登录完成后复制浏览器地址栏里的 `http://localhost:1455/auth/callback?code=...&state=...` 回调 URL，粘贴回弹窗创建账户；用户不需要填写 Client ID 或 Redirect URI。
 - `Refresh Token`：直接粘贴已有 OpenAI `refresh_token`，后端刷新成功后创建 OAuth 账户。
 
 后端冒烟验证：

@@ -179,6 +179,7 @@ export interface GroupSummary {
   providerCode: ProviderCode
   description?: string
   enabled: boolean
+  isDefault: boolean
   accountIds: string[]
   accountStats: GroupAccountStats
 }
@@ -201,15 +202,10 @@ export interface CreatedApiKey extends ApiKeySummary {}
 export interface OpenAIAuthURLResult {
   authUrl: string
   sessionId: string
-  state: string
-  redirectUri: string
-  clientId: string
 }
 
 export interface ProxyProfileSummary {
   id: string
-  systemAccountId?: string
-  systemAccountName?: string
   name: string
   type: 'http' | 'https' | 'socks5' | string
   host: string
@@ -364,9 +360,6 @@ export interface SystemSettings {
 export interface GlobalSettings {
   appName?: string
   appIcon?: string
-  loginTitle?: string
-  loginSubtitle?: string
-  loginBadge?: string
   [key: string]: unknown
 }
 

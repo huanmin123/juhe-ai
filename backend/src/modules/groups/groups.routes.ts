@@ -61,9 +61,13 @@ groupsRouter.patch('/:id', (req, res) => {
 })
 
 groupsRouter.delete('/:id', (req, res) => {
-  if (!deleteGroup(req.params.id)) {
-    res.status(404).json({ message: 'Group not found' })
-    return
+  try {
+    if (!deleteGroup(req.params.id)) {
+      res.status(404).json({ message: 'Group not found' })
+      return
+    }
+    res.status(204).send()
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Delete group failed'))
   }
-  res.status(204).send()
 })

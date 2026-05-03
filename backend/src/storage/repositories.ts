@@ -64,6 +64,7 @@ interface GroupRow {
   provider_code: ProviderCode
   description: string | null
   enabled: number
+  is_default: number
 }
 
 interface ApiKeyRow {
@@ -79,7 +80,6 @@ interface ApiKeyRow {
 
 interface ProxyRow {
   id: string
-  system_account_id: string
   name: string
   type: string
   host: string
@@ -144,8 +144,6 @@ export interface SessionWithAccount {
 
 export interface ProxyProfileSummary {
   id: string
-  systemAccountId?: string
-  systemAccountName?: string
   name: string
   type: string
   host: string
@@ -189,6 +187,15 @@ export interface UsageRecordSummary {
   requestSnapshot?: UsageRecordLogSnapshot
   responseSnapshot?: UsageRecordLogSnapshot
   createdAt: string
+}
+
+export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
+export type UsageRecordSortDirection = 'asc' | 'desc'
+
+export interface UsageRecordListOptions {
+  sortBy?: UsageRecordSortField
+  sortOrder?: UsageRecordSortDirection
+  limit?: number
 }
 
 export interface OpenAIAccountSecret {
@@ -404,9 +411,16 @@ function groupOwnerAndProvider(groupId: string): { systemAccountId: string; prov
 
 function defaultOpenAIGroupIdForSystemAccount(systemAccountId: string): string | undefined {
   const row = getDatabase()
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND name = ? LIMIT 1')
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND (is_default = 1 OR name = ?) ORDER BY is_default DESC LIMIT 1')
     .get(systemAccountId, 'openai', DEFAULT_OPENAI_GROUP_NAME) as unknown as { id?: string } | undefined
   return row?.id
+}
+
+function defaultGroupIdForSystemAccount(providerCode: string, systemAccountId: string): string | undefined {
+  if (providerCode !== 'openai') {
+    return undefined
+  }
+  return defaultOpenAIGroupIdForSystemAccount(systemAccountId)
 }
 
 function apiKeySystemAccountId(apiKeyId: string): string | undefined {
@@ -414,14 +428,15 @@ function apiKeySystemAccountId(apiKeyId: string): string | undefined {
   return row?.system_account_id
 }
 
-function proxySystemAccountId(proxyProfileId: string): string | undefined {
-  const row = getDatabase().prepare('SELECT system_account_id FROM proxy_profiles WHERE id = ?').get(proxyProfileId) as unknown as { system_account_id?: string } | undefined
-  return row?.system_account_id
+function globalProxyProfileId(proxyProfileId: string | undefined): string | undefined {
+  if (!proxyProfileId) return undefined
+  const row = getDatabase().prepare('SELECT id FROM proxy_profiles WHERE id = ?').get(proxyProfileId) as unknown as { id?: string } | undefined
+  return row?.id
 }
 
-function proxyProfileIdForOwner(proxyProfileId: string | undefined, systemAccountId: string): string | undefined {
-  if (!proxyProfileId) return undefined
-  return proxySystemAccountId(proxyProfileId) === systemAccountId ? proxyProfileId : undefined
+function canSetGlobalProxyProfile(access?: AccessScope): boolean {
+  const scope = resolveAccessScope(access)
+  return !scope || scope.role === 'admin'
 }
 
 export function listSystemAccounts(): SystemAccountSummary[] {
@@ -496,7 +511,7 @@ function ensureDefaultOpenAIGroupForSystemAccount(systemAccountId: string, times
   }
 
   getDatabase()
-    .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?)')
+    .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)')
     .run(newId('grp'), systemAccountId, DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
 }
 
@@ -622,10 +637,15 @@ export function listGlobalSettings(): Record<string, unknown> {
 export function updateGlobalSettings(input: Record<string, unknown>): Record<string, unknown> {
   const statement = getDatabase().prepare('INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
   const now = nowIso()
-  for (const [key, value] of Object.entries(input)) {
+  for (const [key, value] of Object.entries(pickGlobalSettings(input))) {
     statement.run(key, JSON.stringify(value), now)
   }
   return listGlobalSettings()
+}
+
+function pickGlobalSettings(input: Record<string, unknown>): Record<string, unknown> {
+  const allowedKeys = new Set(['appName', 'appIcon'])
+  return Object.fromEntries(Object.entries(input).filter(([key]) => allowedKeys.has(key)))
 }
 
 export interface MigrationResult {
@@ -857,8 +877,10 @@ function parseJsonRules(value: string): Array<Record<string, unknown>> {
 export function createAccount(input: Record<string, unknown>): AccountSummary {
   const now = nowIso()
   const id = newId('acc')
-  const systemAccountId = currentSystemAccountId()
   const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai')
+  const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : typeof input.group_id === 'string' && input.group_id ? input.group_id : undefined
+  const explicitGroup = explicitGroupId ? groupOwnerAndProvider(explicitGroupId) : undefined
+  const systemAccountId = explicitGroup?.systemAccountId ?? currentSystemAccountId()
   const provider = listProviders().find((item) => item.code === providerCode)
   const credentials = typeof input.credentials === 'object' && input.credentials !== null ? input.credentials as Record<string, unknown> : {}
   const credentialMap = credentials as Record<string, unknown>
@@ -874,6 +896,16 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
   const initialCooldownUntil = isCoolingAccountStatus(initialStatus)
     ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
     : undefined
+  const groupId = explicitGroupId ?? defaultGroupIdForSystemAccount(providerCode, systemAccountId)
+  if (!groupId) {
+    throw new Error('Account group is required')
+  }
+  const group = explicitGroupId === groupId ? explicitGroup : groupOwnerAndProvider(groupId)
+  if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode) {
+    throw new Error('Invalid account group')
+  }
+  const access = resolveAccessScope()
+  const proxyProfileId = canSetGlobalProxyProfile(access) ? globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id)) : undefined
   const account: AccountSummary = {
     id,
     systemAccountId: includeSystemAccountFields() ? systemAccountId : undefined,
@@ -887,7 +919,7 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? defaultAccountConcurrencyLimit()),
     currentConcurrency: 0,
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? 0),
-    proxyProfileId: proxyProfileIdForOwner(optionalString(input.proxyProfileId ?? input.proxy_profile_id), systemAccountId),
+    proxyProfileId,
     passthroughEnabled: Boolean(input.passthroughEnabled ?? input.passthrough_enabled),
     errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
     schedulable: input.schedulable !== false,
@@ -905,38 +937,49 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     }
   }
 
-  getDatabase()
-    .prepare(`
-      INSERT INTO accounts (
-        id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
-        proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
-        priority, schedulable, notes, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
-      account.id,
-      systemAccountId,
-      account.providerCode,
-      account.name,
-      account.type,
-      account.status,
-      encryptJson(credentials),
-      credentialFingerprint,
-      maskSecret(credentialSource),
-      account.proxyProfileId ?? null,
-      account.concurrencyLimit,
-      account.passthroughEnabled ? 1 : 0,
-      account.errorPolicyId ?? null,
-      account.priority,
-      account.schedulable ? 1 : 0,
-      optionalString(input.notes) ?? null,
-      account.cooldownUntil ?? null,
-      account.lastErrorMessage ?? null,
-      0,
-      null,
-      now,
-      now
-    )
+  const database = getDatabase()
+  database.exec('BEGIN')
+  try {
+    database
+      .prepare(`
+        INSERT INTO accounts (
+          id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
+          proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
+          priority, schedulable, notes, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        account.id,
+        systemAccountId,
+        account.providerCode,
+        account.name,
+        account.type,
+        account.status,
+        encryptJson(credentials),
+        credentialFingerprint,
+        maskSecret(credentialSource),
+        account.proxyProfileId ?? null,
+        account.concurrencyLimit,
+        account.passthroughEnabled ? 1 : 0,
+        account.errorPolicyId ?? null,
+        account.priority,
+        account.schedulable ? 1 : 0,
+        optionalString(input.notes) ?? null,
+        account.cooldownUntil ?? null,
+        account.lastErrorMessage ?? null,
+        0,
+        null,
+        now,
+        now
+      )
+    database
+      .prepare('INSERT INTO group_accounts (system_account_id, group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
+      .run(systemAccountId, groupId, account.id, 1, now, now)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
 
   return account
 }
@@ -957,6 +1000,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
     return undefined
   }
   const systemAccountId = accountSystemAccountId(id) ?? currentSystemAccountId()
+  const access = resolveAccessScope()
 
   const credentials = typeof input.credentials === 'object' && input.credentials !== null
     ? input.credentials as Record<string, unknown>
@@ -999,8 +1043,10 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
     status: nextStatus,
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? current.concurrencyLimit),
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? current.priority),
-    proxyProfileId: Object.prototype.hasOwnProperty.call(input, 'proxyProfileId') || Object.prototype.hasOwnProperty.call(input, 'proxy_profile_id')
-      ? proxyProfileIdForOwner(optionalString(input.proxyProfileId ?? input.proxy_profile_id), systemAccountId)
+    proxyProfileId: canSetGlobalProxyProfile(access)
+      ? (Object.prototype.hasOwnProperty.call(input, 'proxyProfileId') || Object.prototype.hasOwnProperty.call(input, 'proxy_profile_id')
+        ? globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
+        : current.proxyProfileId)
       : current.proxyProfileId,
     passthroughEnabled: typeof input.passthroughEnabled === 'boolean' ? input.passthroughEnabled : current.passthroughEnabled,
     errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
@@ -1191,6 +1237,7 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
     providerCode: row.provider_code,
     description: row.description ?? undefined,
     enabled: row.enabled === 1,
+    isDefault: row.is_default === 1,
     accountIds: accountRows
       .filter((item) => item.group_id === row.id && accountsById.get(item.account_id)?.providerCode === row.provider_code)
       .map((item) => item.account_id),
@@ -1217,11 +1264,12 @@ export function createGroup(input: Record<string, unknown>): GroupSummary {
     providerCode,
     description: optionalString(input.description),
     enabled: input.enabled !== false,
+    isDefault: false,
     accountIds: [],
     accountStats: emptyGroupAccountStats()
   }
   getDatabase()
-    .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+    .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)')
     .run(group.id, systemAccountId, group.name, group.providerCode, group.description ?? null, group.enabled ? 1 : 0, now, now)
   return group
 }
@@ -1254,6 +1302,10 @@ export function updateGroup(id: string, input: Record<string, unknown>): GroupSu
 }
 
 export function deleteGroup(id: string): boolean {
+  const current = listGroups().find((group) => group.id === id)
+  if (current?.isDefault) {
+    throw new Error('Default group cannot be deleted')
+  }
   const scope = buildSystemAccountScopeClause()
   const result = getDatabase().prepare(`DELETE FROM groups WHERE id = ?${scope.clause}`).run(id, ...scope.params)
   return result.changes > 0
@@ -1265,28 +1317,27 @@ export function setAccountGroup(accountId: string, groupId: string | null): Acco
   if (!current) {
     return undefined
   }
+  if (!groupId) {
+    return undefined
+  }
   const systemAccountId = accountSystemAccountId(accountId)
   if (!systemAccountId) {
     return undefined
   }
 
-  if (groupId) {
-    const group = groupOwnerAndProvider(groupId)
-    if (!group || group.systemAccountId !== systemAccountId) {
-      return undefined
-    }
-    if (group.providerCode !== current.providerCode) {
-      return undefined
-    }
+  const group = groupOwnerAndProvider(groupId)
+  if (!group || group.systemAccountId !== systemAccountId) {
+    return undefined
+  }
+  if (group.providerCode !== current.providerCode) {
+    return undefined
   }
 
   database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, systemAccountId)
-  if (groupId) {
-    const now = nowIso()
-    database
-      .prepare('INSERT INTO group_accounts (system_account_id, group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
-      .run(systemAccountId, groupId, accountId, 1, now, now)
-  }
+  const now = nowIso()
+  database
+    .prepare('INSERT INTO group_accounts (system_account_id, group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
+    .run(systemAccountId, groupId, accountId, 1, now, now)
 
   return listAccounts().find((account) => account.id === accountId)
 }
@@ -1418,18 +1469,14 @@ export function deleteApiKey(id: string): boolean {
   return result.changes > 0
 }
 
-export function listProxies(access?: AccessScope): ProxyProfileSummary[] {
-  const scope = buildSystemAccountWhereClause(access)
-  const rows = getDatabase().prepare(`SELECT * FROM proxy_profiles${scope.clause} ORDER BY updated_at DESC`).all(...scope.params) as unknown as ProxyRow[]
-  const accountNames = includeSystemAccountFields(access) ? systemAccountNameMap() : new Map<string, string>()
-  return rows.map((row) => proxySummaryFromRow(row, includeSystemAccountFields(access), accountNames))
+export function listProxies(): ProxyProfileSummary[] {
+  const rows = getDatabase().prepare('SELECT * FROM proxy_profiles ORDER BY updated_at DESC').all() as unknown as ProxyRow[]
+  return rows.map(proxySummaryFromRow)
 }
 
-function proxySummaryFromRow(row: ProxyRow, includeOwner = false, accountNames = new Map<string, string>()): ProxyProfileSummary {
+function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
   return {
     id: row.id,
-    systemAccountId: includeOwner ? row.system_account_id : undefined,
-    systemAccountName: includeOwner ? accountNames.get(row.system_account_id) : undefined,
     name: row.name,
     type: row.type,
     host: row.host,
@@ -1443,11 +1490,8 @@ function proxySummaryFromRow(row: ProxyRow, includeOwner = false, accountNames =
 
 export function createProxy(input: Record<string, unknown>): ProxyProfileSummary {
   const now = nowIso()
-  const systemAccountId = currentSystemAccountId()
   const proxy: ProxyProfileSummary = {
     id: newId('proxy'),
-    systemAccountId: includeSystemAccountFields() ? systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields() ? systemAccountNameMap().get(systemAccountId) : undefined,
     name: String(input.name ?? '未命名代理'),
     type: String(input.type ?? 'http'),
     host: String(input.host ?? ''),
@@ -1458,20 +1502,16 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
   }
   getDatabase()
     .prepare(`
-      INSERT INTO proxy_profiles (id, system_account_id, name, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proxy_profiles (id, name, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    .run(proxy.id, systemAccountId, proxy.name, proxy.type, proxy.host, proxy.port, proxy.username ?? null, input.password ? encryptJson({ password: input.password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
+    .run(proxy.id, proxy.name, proxy.type, proxy.host, proxy.port, proxy.username ?? null, input.password ? encryptJson({ password: input.password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
   return proxy
 }
 
 export function updateProxy(id: string, input: Record<string, unknown>): ProxyProfileSummary | undefined {
   const current = listProxies().find((proxy) => proxy.id === id)
   if (!current) {
-    return undefined
-  }
-  const systemAccountId = proxySystemAccountId(id)
-  if (!systemAccountId) {
     return undefined
   }
   const next: ProxyProfileSummary = {
@@ -1487,25 +1527,22 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
     .prepare(`
       UPDATE proxy_profiles
       SET name = ?, type = ?, host = ?, port = ?, username = ?, enabled = ?, updated_at = ?
-      WHERE id = ? AND system_account_id = ?
+      WHERE id = ?
     `)
-    .run(next.name, next.type, next.host, next.port, next.username ?? null, next.enabled ? 1 : 0, nowIso(), id, systemAccountId)
+    .run(next.name, next.type, next.host, next.port, next.username ?? null, next.enabled ? 1 : 0, nowIso(), id)
   return next
 }
 
 export function deleteProxy(id: string): boolean {
-  const scope = buildSystemAccountScopeClause()
-  const result = getDatabase().prepare(`DELETE FROM proxy_profiles WHERE id = ?${scope.clause}`).run(id, ...scope.params)
+  const result = getDatabase().prepare('DELETE FROM proxy_profiles WHERE id = ?').run(id)
   return result.changes > 0
 }
 
-function proxyUrlForProfile(proxyProfileId?: string | null, systemAccountId?: string): string | undefined {
+function proxyUrlForProfile(proxyProfileId?: string | null): string | undefined {
   if (!proxyProfileId) return undefined
-  const ownerClause = systemAccountId ? ' AND system_account_id = ?' : ''
-  const params = systemAccountId ? [proxyProfileId, systemAccountId] : [proxyProfileId]
   const row = getDatabase()
-    .prepare(`SELECT type, host, port, username, password_encrypted FROM proxy_profiles WHERE id = ? AND enabled = 1${ownerClause}`)
-    .get(...params) as unknown as ProxyRow | undefined
+    .prepare('SELECT type, host, port, username, password_encrypted FROM proxy_profiles WHERE id = ? AND enabled = 1')
+    .get(proxyProfileId) as unknown as ProxyRow | undefined
   if (!row) return undefined
   const protocol = row.type === 'socks5h' ? 'socks5h' : row.type === 'socks5' ? 'socks5h' : row.type
   const credentials = row.username
@@ -1520,8 +1557,20 @@ function proxyPassword(row: ProxyRow): string | undefined {
   return typeof decrypted.password === 'string' ? decrypted.password : undefined
 }
 
-export function listUsageRecords(access?: AccessScope): UsageRecordSummary[] {
+const usageRecordSortColumns: Record<UsageRecordSortField, string> = {
+  createdAt: 'ur.created_at',
+  firstTokenMs: 'ur.first_token_ms',
+  durationMs: 'ur.duration_ms',
+  costUsd: 'ur.cost_usd'
+}
+
+const usageRecordDefaultLimit = 200
+const usageRecordMaxLimit = 500
+
+export function listUsageRecords(access?: AccessScope, options?: UsageRecordListOptions): UsageRecordSummary[] {
   const scope = buildSystemAccountWhereClause(access, 'ur.system_account_id')
+  const listOptions = normalizeUsageRecordListOptions(options)
+  const orderClause = buildUsageRecordOrderClause(listOptions)
   const accountNames = includeSystemAccountFields(access) ? systemAccountNameMap() : new Map<string, string>()
   const rows = getDatabase()
     .prepare(`
@@ -1535,10 +1584,10 @@ export function listUsageRecords(access?: AccessScope): UsageRecordSummary[] {
       LEFT JOIN groups g ON g.id = ur.group_id
       LEFT JOIN accounts a ON a.id = ur.account_id
       ${scope.clause}
-      ORDER BY ur.created_at DESC
-      LIMIT 200
+      ${orderClause}
+      LIMIT ?
     `)
-    .all(...scope.params) as Array<Record<string, unknown>>
+    .all(...scope.params, listOptions.limit) as Array<Record<string, unknown>>
   return rows.map((row) => {
     const requestSnapshot = parseOptionalJsonObject(row.request_snapshot_json)
     const inputTokens = typeof row.input_tokens === 'number' ? row.input_tokens : undefined
@@ -1579,6 +1628,26 @@ export function listUsageRecords(access?: AccessScope): UsageRecordSummary[] {
       createdAt: String(row.created_at)
     }
   })
+}
+
+function normalizeUsageRecordListOptions(options?: UsageRecordListOptions): Required<UsageRecordListOptions> {
+  const sortBy = options?.sortBy && Object.prototype.hasOwnProperty.call(usageRecordSortColumns, options.sortBy)
+    ? options.sortBy
+    : 'createdAt'
+  const sortOrder = options?.sortOrder === 'asc' ? 'asc' : 'desc'
+  const rawLimit = options?.limit
+  const limit = typeof rawLimit === 'number' && Number.isInteger(rawLimit)
+    ? Math.min(usageRecordMaxLimit, Math.max(1, rawLimit))
+    : usageRecordDefaultLimit
+  return { sortBy, sortOrder, limit }
+}
+
+function buildUsageRecordOrderClause(options: Required<UsageRecordListOptions>): string {
+  const direction = options.sortOrder === 'asc' ? 'ASC' : 'DESC'
+  if (options.sortBy === 'createdAt') {
+    return `ORDER BY ur.created_at ${direction}, ur.id ${direction}`
+  }
+  return `ORDER BY ${usageRecordSortColumns[options.sortBy]} ${direction}, ur.created_at ${direction}, ur.id ${direction}`
 }
 
 function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | undefined {
@@ -1654,7 +1723,7 @@ export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret
       apiKey,
       refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
       clientId: typeof credentials.client_id === 'string' ? credentials.client_id : undefined,
-      proxyUrl: proxyUrlForProfile(row.proxy_profile_id, row.system_account_id),
+      proxyUrl: proxyUrlForProfile(row.proxy_profile_id),
       errorPolicyId: row.error_policy_id ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorMessage: row.last_error_message ?? undefined,
@@ -1830,11 +1899,11 @@ function systemAccountIdForUsage(input: { apiKeyId?: string; groupId?: string; a
 }
 
 export function resolveProxyUrlForProfile(proxyProfileId?: string | null): string | undefined {
-  return proxyUrlForProfile(proxyProfileId, currentSystemAccountId())
+  return proxyUrlForProfile(proxyProfileId)
 }
 
-export function resolveProxyUrlForProfileForSystemAccount(proxyProfileId: string | undefined | null, systemAccountId: string): string | undefined {
-  return proxyUrlForProfile(proxyProfileId, systemAccountId)
+export function resolveProxyUrlForProfileForSystemAccount(proxyProfileId: string | undefined | null, _systemAccountId: string): string | undefined {
+  return proxyUrlForProfile(proxyProfileId)
 }
 
 function loadAccountUsageSummaries(access?: AccessScope): Map<string, AccountUsageSummary> {
@@ -2016,6 +2085,7 @@ export function importOpenAIApiKeyAccounts(input: {
       concurrencyLimit: 1,
       passthroughEnabled: true,
       schedulable: true,
+      groupId: group.id,
       notes: account.description
     })
     imported += 1
@@ -2059,6 +2129,7 @@ export function importOpenAIApiKeyAccounts(input: {
       proxyProfileId: account.proxyProfileId,
       passthroughEnabled: true,
       schedulable: true,
+      groupId: group.id,
       notes: account.description
     })
     imported += 1
@@ -2450,9 +2521,9 @@ export function getSystemMetricsOverview(): SystemMetricsOverview {
         memoryUsedPercentMax: numberFromUnknown(row.memory_used_percent_max),
         eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, sampleCount),
         eventLoopLagMsMax: numberFromUnknown(row.event_loop_lag_ms_max),
-        networkRxBytesPerSecondAvg: averageFromSum(row.network_rx_bytes_per_sec_sum, sampleCount),
+        networkRxBytesPerSecondAvg: averageFromSum(row.network_rx_bytes_per_sec_sum, row.network_rx_bytes_per_sec_count),
         networkRxBytesPerSecondMax: numberFromUnknown(row.network_rx_bytes_per_sec_max),
-        networkTxBytesPerSecondAvg: averageFromSum(row.network_tx_bytes_per_sec_sum, sampleCount),
+        networkTxBytesPerSecondAvg: averageFromSum(row.network_tx_bytes_per_sec_sum, row.network_tx_bytes_per_sec_count),
         networkTxBytesPerSecondMax: numberFromUnknown(row.network_tx_bytes_per_sec_max),
         networkRxTotalBytesMax: numberFromUnknown(row.network_rx_total_bytes_max),
         networkTxTotalBytesMax: numberFromUnknown(row.network_tx_total_bytes_max),
@@ -2655,11 +2726,12 @@ function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, inp
       stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
       memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
       process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_max,
-      network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_tx_bytes_per_sec_sum,
-      network_tx_bytes_per_sec_max, network_rx_total_bytes_max, network_tx_total_bytes_max,
+      network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
+      network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
+      network_rx_total_bytes_max, network_tx_total_bytes_max,
       db_file_bytes_max, stats_lag_seconds_max, updated_at
     )
-    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(stat_hour) DO UPDATE SET
       sample_count = sample_count + 1,
       cpu_percent_sum = cpu_percent_sum + excluded.cpu_percent_sum,
@@ -2674,8 +2746,10 @@ function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, inp
       event_loop_lag_ms_max = CASE WHEN excluded.event_loop_lag_ms_max IS NULL THEN system_metrics_hourly.event_loop_lag_ms_max WHEN system_metrics_hourly.event_loop_lag_ms_max IS NULL OR excluded.event_loop_lag_ms_max > system_metrics_hourly.event_loop_lag_ms_max THEN excluded.event_loop_lag_ms_max ELSE system_metrics_hourly.event_loop_lag_ms_max END,
       network_rx_bytes_per_sec_sum = network_rx_bytes_per_sec_sum + excluded.network_rx_bytes_per_sec_sum,
       network_rx_bytes_per_sec_max = CASE WHEN excluded.network_rx_bytes_per_sec_max IS NULL THEN system_metrics_hourly.network_rx_bytes_per_sec_max WHEN system_metrics_hourly.network_rx_bytes_per_sec_max IS NULL OR excluded.network_rx_bytes_per_sec_max > system_metrics_hourly.network_rx_bytes_per_sec_max THEN excluded.network_rx_bytes_per_sec_max ELSE system_metrics_hourly.network_rx_bytes_per_sec_max END,
+      network_rx_bytes_per_sec_count = network_rx_bytes_per_sec_count + excluded.network_rx_bytes_per_sec_count,
       network_tx_bytes_per_sec_sum = network_tx_bytes_per_sec_sum + excluded.network_tx_bytes_per_sec_sum,
       network_tx_bytes_per_sec_max = CASE WHEN excluded.network_tx_bytes_per_sec_max IS NULL THEN system_metrics_hourly.network_tx_bytes_per_sec_max WHEN system_metrics_hourly.network_tx_bytes_per_sec_max IS NULL OR excluded.network_tx_bytes_per_sec_max > system_metrics_hourly.network_tx_bytes_per_sec_max THEN excluded.network_tx_bytes_per_sec_max ELSE system_metrics_hourly.network_tx_bytes_per_sec_max END,
+      network_tx_bytes_per_sec_count = network_tx_bytes_per_sec_count + excluded.network_tx_bytes_per_sec_count,
       network_rx_total_bytes_max = CASE WHEN excluded.network_rx_total_bytes_max IS NULL THEN system_metrics_hourly.network_rx_total_bytes_max WHEN system_metrics_hourly.network_rx_total_bytes_max IS NULL OR excluded.network_rx_total_bytes_max > system_metrics_hourly.network_rx_total_bytes_max THEN excluded.network_rx_total_bytes_max ELSE system_metrics_hourly.network_rx_total_bytes_max END,
       network_tx_total_bytes_max = CASE WHEN excluded.network_tx_total_bytes_max IS NULL THEN system_metrics_hourly.network_tx_total_bytes_max WHEN system_metrics_hourly.network_tx_total_bytes_max IS NULL OR excluded.network_tx_total_bytes_max > system_metrics_hourly.network_tx_total_bytes_max THEN excluded.network_tx_total_bytes_max ELSE system_metrics_hourly.network_tx_total_bytes_max END,
       db_file_bytes_max = CASE WHEN excluded.db_file_bytes_max IS NULL THEN system_metrics_hourly.db_file_bytes_max WHEN system_metrics_hourly.db_file_bytes_max IS NULL OR excluded.db_file_bytes_max > system_metrics_hourly.db_file_bytes_max THEN excluded.db_file_bytes_max ELSE system_metrics_hourly.db_file_bytes_max END,
@@ -2695,8 +2769,10 @@ function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, inp
     input.eventLoopLagMs ?? null,
     input.networkRxBytesPerSecond ?? 0,
     input.networkRxBytesPerSecond ?? null,
+    input.networkRxBytesPerSecond === undefined ? 0 : 1,
     input.networkTxBytesPerSecond ?? 0,
     input.networkTxBytesPerSecond ?? null,
+    input.networkTxBytesPerSecond === undefined ? 0 : 1,
     input.networkRxTotalBytes ?? null,
     input.networkTxTotalBytes ?? null,
     input.dbFileBytes ?? null,

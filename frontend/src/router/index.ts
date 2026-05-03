@@ -13,6 +13,14 @@ declare module 'vue-router' {
 
 export const menuRoutes: RouteRecordRaw[] = [
   {
+    path: '/stats',
+    component: () => import('@/views/stats/StatsView.vue'),
+    meta: {
+      title: '统计概览',
+      description: '查看今日请求、Token 使用趋势、模型分布、错误情况和系统性能。'
+    }
+  },
+  {
     path: '/providers',
     component: () => import('@/views/providers/ProvidersView.vue'),
     meta: {
@@ -52,14 +60,6 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '代理管理',
       description: '管理可绑定到账户的代理配置，支持刷新、测试和后续转发。',
       roles: ['admin']
-    }
-  },
-  {
-    path: '/stats',
-    component: () => import('@/views/stats/StatsView.vue'),
-    meta: {
-      title: '统计概览',
-      description: '查看今日请求、Token 使用趋势、模型分布、错误情况和系统性能。'
     }
   },
   {
