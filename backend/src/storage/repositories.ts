@@ -811,8 +811,7 @@ function accountFingerprint(providerCode: string, type: string, baseUrl: string,
 function isDuplicateAccountCredentialError(error: unknown): boolean {
   if (!(error instanceof Error)) return false
   const databaseError = error as Error & { code?: string }
-  return databaseError.code === 'SQLITE_CONSTRAINT_UNIQUE'
-    && databaseError.message.includes('accounts.credential_fingerprint')
+  return databaseError.message.includes('UNIQUE constraint failed: accounts.credential_fingerprint')
 }
 
 function throwDuplicateAccountCredentialError(): never {
@@ -2085,7 +2084,7 @@ export function importOpenAIApiKeyAccounts(input: {
 }): MigrationResult {
   const groupName = input.groupName ?? '迁移 OpenAI 账户分组'
   const existingGroup = findGroupByName(groupName)
-  const group = existingGroup ?? (input.dryRun ? { id: 'dry_run_group', name: groupName, enabled: true, accountIds: [] } : createGroup({ name: groupName, description: '从 sub2api 迁移的 OpenAI API Key 与 OAuth 账户' }))
+  const group = existingGroup ?? (input.dryRun ? { id: 'dry_run_group', name: groupName, enabled: true, accountIds: [] } : createGroup({ name: groupName, description: '从外部数据导入的 OpenAI API Key 与 OAuth 账户' }))
   let imported = 0
   let skipped = 0
   let importedApiKey = 0

@@ -35,21 +35,20 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 账户名称
 - `access_token`
 - `refresh_token`
-- `expires_at`
 - 代理
 - 并发上限
 - 是否启用透传
 - 错误策略
 - 备注
 
-`account_id` / `chatgpt_account_id` 属于 OpenAI OAuth token 解析出的系统元数据，不作为用户表单输入项。
+`expires_at`、`account_id` / `chatgpt_account_id` 属于 OpenAI OAuth token 响应或 token 解析出的系统元数据，不作为用户表单输入项。
 
 保存要求：
 
 - token 加密存储
 - `refresh_token` 按凭据指纹做数据库全局唯一约束，不能被其他系统账户重复添加；无 `refresh_token` 时兜底约束 `access_token`
 - 列表不展示 Access Token 与 Refresh Token，编辑弹窗可查看和修改
-- 可设置过期时间
+- `expires_at` 由后端根据 OpenAI 返回的 `expires_in` 自动计算和刷新
 - 可手动启用 / 停用
 - `refresh_token` 只对 OAuth 账户需要，账户列表不展示
 
@@ -126,7 +125,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 ## OpenAI OAuth 授权方式
 
-参考 `sub2api` 的 OpenAI OAuth 账户语义，`juhe-ai` 第一阶段实现两种轻量授权方式：
+`juhe-ai` 第一阶段为 OpenAI OAuth 账户实现两种轻量授权方式：
 
 ### 手动授权
 

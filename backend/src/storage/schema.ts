@@ -94,6 +94,7 @@ export function applySchema(database: DatabaseSync): void {
       priority INTEGER NOT NULL DEFAULT 0,
       schedulable INTEGER NOT NULL DEFAULT 1,
       notes TEXT,
+      account_expires_at TEXT,
       last_used_at TEXT,
       cooldown_until TEXT,
       last_error_message TEXT,
@@ -384,6 +385,7 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'accounts', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'accounts', 'credential_fingerprint', 'TEXT')
   ensureColumn(database, 'accounts', 'priority', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'accounts', 'account_expires_at', 'TEXT')
   ensureColumn(database, 'accounts', 'last_used_at', 'TEXT')
   ensureColumn(database, 'accounts', 'cooldown_until', 'TEXT')
   ensureColumn(database, 'accounts', 'last_error_message', 'TEXT')

@@ -270,11 +270,12 @@
           </div>
         </section>
 
-        <section v-else-if="isOAuthForm" class="form-section credential-section">
+        <section v-else-if="isOAuthForm" class="form-section">
           <div class="form-section-head">
             <div>
               <h4>{{ accountTypeTitle(form.providerCode, form.type) }} 配置</h4>
-              <p>Refresh Token 不在列表展示；创建时可手动授权，也可直接粘贴 Refresh Token。</p>
+              <p v-if="editingId">Access Token 与 Refresh Token 只在编辑弹窗展示和修改，不会出现在列表。</p>
+              <p v-else>创建时支持手动授权或直接粘贴 Refresh Token；敏感凭据不会在列表展示。</p>
             </div>
           </div>
 
@@ -285,37 +286,61 @@
             <a-form-item label="Refresh Token">
               <a-textarea v-model:value="form.refreshToken" :rows="3" placeholder="可直接查看和修改 Refresh Token" />
             </a-form-item>
-            <div class="form-grid">
-              <a-form-item label="过期时间">
-                <a-date-picker v-model:value="form.expiresAt" show-time style="width: 100%" />
-              </a-form-item>
-            </div>
           </template>
 
           <template v-else-if="isOpenAIOAuthForm">
-            <a-form-item label="授权方式">
-              <a-segmented v-model:value="form.oauthMode" :options="[{ label: '手动授权', value: 'manual' }, { label: 'Refresh Token', value: 'refresh_token' }]" block />
+            <a-form-item class="oauth-mode-item" label="授权方式">
+              <a-segmented v-model:value="form.oauthMode" :options="[{ label: '手动授权', value: 'manual' }, { label: '粘贴 Refresh Token', value: 'refresh_token' }]" block />
             </a-form-item>
 
             <template v-if="form.oauthMode === 'manual'">
-              <a-alert class="form-alert" type="info" show-icon message="先生成授权链接；浏览器跳转失败后，复制地址栏完整回调 URL 粘贴回来即可。" />
-              <a-space class="oauth-actions" wrap>
-                <a-button :loading="authLoading" @click="generateOAuthUrl">生成授权链接</a-button>
+              <div class="oauth-flow-panel">
+                <div class="oauth-step-grid">
+                  <div class="oauth-step-card">
+                    <span>1</span>
+                    <div>
+                      <strong>生成链接</strong>
+                      <small>获取本次授权地址</small>
+                    </div>
+                  </div>
+                  <div class="oauth-step-card">
+                    <span>2</span>
+                    <div>
+                      <strong>浏览器授权</strong>
+                      <small>登录 OpenAI 并允许跳转</small>
+                    </div>
+                  </div>
+                  <div class="oauth-step-card">
+                    <span>3</span>
+                    <div>
+                      <strong>粘贴回调 URL</strong>
+                      <small>保留 code 与 state 参数</small>
+                    </div>
+                  </div>
+                </div>
+                <a-alert class="form-alert" type="info" show-icon message="浏览器最终跳转到本地回调地址；如果页面显示连接失败，复制地址栏完整 URL 粘贴回来即可。" />
+              </div>
+              <div class="oauth-actions">
+                <a-button type="primary" :loading="authLoading" @click="generateOAuthUrl">生成授权链接</a-button>
                 <a-button :disabled="!authResult?.authUrl" @click="openAuthUrl">打开授权链接</a-button>
                 <a-button :disabled="!authResult?.authUrl" @click="copyText(authResult?.authUrl || '')">复制授权链接</a-button>
-              </a-space>
-              <a-form-item v-if="authResult" label="授权链接">
+              </div>
+              <a-form-item v-if="authResult" class="oauth-url-field" label="授权链接">
                 <a-textarea :value="authResult.authUrl" :rows="3" readonly />
               </a-form-item>
-              <a-form-item label="回调 URL" required>
+              <a-form-item class="oauth-callback-field" label="回调 URL" required>
                 <a-textarea v-model:value="form.callbackUrl" :rows="3" placeholder="粘贴浏览器地址栏里的 http://localhost:1455/auth/callback?code=...&state=..." />
+                <div class="form-help">需要粘贴完整地址，不能只粘贴 code 或 state。</div>
               </a-form-item>
             </template>
 
             <template v-else>
-              <a-form-item label="Refresh Token" required>
-                <a-textarea v-model:value="form.refreshToken" :rows="4" placeholder="粘贴 OpenAI refresh_token" />
-              </a-form-item>
+              <div class="oauth-token-panel">
+                <a-alert class="form-alert" type="info" show-icon message="已有 Refresh Token 时可跳过浏览器授权，后端会换取 Access Token 后创建账户。" />
+                <a-form-item class="oauth-token-field" label="Refresh Token" required>
+                  <a-textarea v-model:value="form.refreshToken" :rows="4" placeholder="粘贴 OpenAI 的 Refresh Token" />
+                </a-form-item>
+              </div>
             </template>
           </template>
 
@@ -329,20 +354,21 @@
               <p>并发、优先级、代理和透传会影响后续请求转发与账户选择。</p>
             </div>
           </div>
-          <div class="form-grid">
+          <div class="strategy-grid">
             <a-form-item label="状态">
               <a-select v-model:value="form.status" :options="statusEditOptions" />
             </a-form-item>
             <a-form-item label="并发上限">
               <a-input-number v-model:value="form.concurrencyLimit" :min="1" style="width: 100%" />
             </a-form-item>
-            <a-form-item label="优先级" extra="数字越小越优先；当前账号失败后会切换到下一个可用账号。">
+            <a-form-item label="优先级">
               <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
             </a-form-item>
-            <a-form-item v-if="isAdmin" label="代理">
-              <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
-            </a-form-item>
           </div>
+          <div class="form-help strategy-help">优先级数字越小越优先；当前账号失败后会切换到下一个可用账号。</div>
+          <a-form-item v-if="isAdmin" class="strategy-proxy-field" label="代理">
+            <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
+          </a-form-item>
           <div class="form-toggle-grid">
             <a-form-item label="调度">
               <a-switch v-model:checked="form.schedulable" checked-children="可调度" un-checked-children="停用" />
@@ -361,7 +387,6 @@
 
 <script setup lang="ts">
 import axios from 'axios'
-import type { Dayjs } from 'dayjs'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
@@ -417,7 +442,6 @@ interface AccountForm {
   baseUrl: string
   accessToken: string
   refreshToken: string
-  expiresAt?: Dayjs
   oauthMode: 'manual' | 'refresh_token'
   callbackUrl: string
   status: AccountStatus
@@ -1022,7 +1046,6 @@ function openEdit(account: AccountSummary) {
     baseUrl: asString(account.credentials.base_url) || 'https://api.openai.com/v1',
     accessToken: asString(account.credentials.access_token),
     refreshToken: asString(account.credentials.refresh_token),
-    expiresAt: undefined,
     notes: account.notes ?? ''
   })
   accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
@@ -1053,7 +1076,7 @@ function buildOAuthCredentials(): Record<string, unknown> {
     ...currentCredentials,
     access_token: form.accessToken,
     refresh_token: form.refreshToken,
-    expires_at: form.expiresAt?.toISOString() ?? currentCredentials.expires_at,
+    expires_at: currentCredentials.expires_at,
     base_url: currentCredentials.base_url ?? 'https://api.openai.com/v1'
   })
 }
@@ -1727,7 +1750,85 @@ onMounted(loadData)
 }
 
 .oauth-actions {
+  display: flex;
+  width: 100%;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
   margin-bottom: 16px;
+}
+
+.oauth-mode-item {
+  margin-bottom: 12px;
+}
+
+.oauth-flow-panel,
+.oauth-token-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.oauth-step-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.oauth-step-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #dbeafe;
+  border-radius: 14px;
+  background: #fff;
+}
+
+.oauth-step-card span {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  color: #1d4ed8;
+  font-weight: 700;
+  border-radius: 999px;
+  background: #dbeafe;
+}
+
+.oauth-step-card div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.oauth-step-card strong {
+  color: #0f172a;
+  font-size: 13px;
+}
+
+.oauth-step-card small {
+  overflow: hidden;
+  color: #64748b;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.oauth-url-field,
+.oauth-callback-field,
+.oauth-token-field {
+  margin-bottom: 0;
+}
+
+.form-help {
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 12px;
 }
 
 .setup-progress {
@@ -1917,6 +2018,20 @@ onMounted(loadData)
   gap: 0 16px;
 }
 
+.strategy-grid {
+  display: grid;
+  grid-template-columns: minmax(160px, 1.3fr) minmax(120px, 1fr) minmax(120px, 1fr);
+  gap: 0 16px;
+}
+
+.strategy-help {
+  margin-top: -8px;
+  margin-bottom: 16px;
+}
+
+.strategy-proxy-field {
+  margin-bottom: 16px;
+}
 
 .form-toggle-grid {
   display: grid;
@@ -1929,11 +2044,13 @@ onMounted(loadData)
 }
 
 @media (max-width: 992px) {
-  .setup-progress {
+  .setup-progress,
+  .oauth-step-grid {
     grid-template-columns: 1fr;
   }
 
   .form-grid,
+  .strategy-grid,
   .form-toggle-grid {
     grid-template-columns: 1fr;
   }
@@ -1949,6 +2066,7 @@ onMounted(loadData)
   }
 
   .form-grid,
+  .strategy-grid,
   .form-toggle-grid {
     grid-template-columns: 1fr;
   }
