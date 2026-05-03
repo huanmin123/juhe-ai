@@ -250,28 +250,6 @@ interface GroupAccountStats {
   usage: AccountUsageSummary
 }
 
-export interface MigrationAccountInput {
-  name: string
-  description?: string
-  baseUrl: string
-  apiKey: string
-}
-
-export interface MigrationOAuthAccountInput {
-  name: string
-  description?: string
-  accessToken: string
-  refreshToken: string
-  idToken?: string
-  expiresAt?: string
-  clientId?: string
-  email?: string
-  chatgptAccountId?: string
-  chatgptUserId?: string
-  planType?: string
-  proxyProfileId?: string
-}
-
 interface AccountUsageAggregateRow {
   account_id: string
   request_count: number
@@ -661,22 +639,6 @@ function pickGlobalSettings(input: Record<string, unknown>): Record<string, unkn
   return Object.fromEntries(Object.entries(input).filter(([key]) => allowedKeys.has(key)))
 }
 
-export interface MigrationResult {
-  imported: number
-  skipped: number
-  importedApiKey?: number
-  importedOAuth?: number
-  skippedApiKey?: number
-  skippedOAuth?: number
-  accountIds: string[]
-  apiKey?: string
-  gatewayApiKeyId?: string
-  gatewayApiKeyName?: string
-  gatewayApiKeyCreated?: boolean
-  groupId: string
-  groupName: string
-}
-
 function parseJsonArray(value: string): string[] {
   const parsed = JSON.parse(value) as unknown
   return Array.isArray(parsed) ? parsed.map(String) : []
@@ -1043,15 +1005,6 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
   return account
 }
 
-export function findAccountByFingerprint(providerCode: string, type: string, baseUrl: string, apiKey: string): AccountSummary | undefined {
-  const fingerprint = accountFingerprint(providerCode, type, baseUrl, apiKey)
-  const row = getDatabase().prepare('SELECT id FROM accounts WHERE credential_fingerprint = ?').get(fingerprint) as unknown as { id?: string } | undefined
-  if (!row?.id) {
-    return undefined
-  }
-  return listAccounts().find((account) => account.id === row.id) ?? listAccounts({ role: 'admin', systemAccountId: currentSystemAccountId() }).find((account) => account.id === row.id)
-}
-
 export function updateAccount(id: string, input: Record<string, unknown>): AccountSummary | undefined {
   const current = listAccounts().find((account) => account.id === id)
   if (!current) {
@@ -1352,10 +1305,6 @@ export function createGroup(input: Record<string, unknown>): GroupSummary {
   return group
 }
 
-export function findGroupByName(name: string): GroupSummary | undefined {
-  return listGroups().find((group) => group.name === name)
-}
-
 export function updateGroup(id: string, input: Record<string, unknown>): GroupSummary | undefined {
   const current = listGroups().find((group) => group.id === id)
   if (!current) {
@@ -1499,10 +1448,6 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
     .run(record.id, systemAccountId, record.name, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, record.expiresAt ?? null, JSON.stringify(input.scopes ?? []), now, now)
   return record
 }
-function findApiKeyByGroupAndName(groupId: string, name: string): ApiKeySummary | undefined {
-  return listApiKeys().find((apiKey) => apiKey.groupId === groupId && apiKey.name === name)
-}
-
 export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined {
   const row = getDatabase().prepare('SELECT id, system_account_id, group_id, status, expires_at FROM api_keys WHERE key_hash = ?').get(hashSecret(key)) as unknown as GatewayApiKeyRow | undefined
   if (!row || row.status !== 'active') {
@@ -2120,142 +2065,6 @@ function dateKey(date: Date): string {
 
 function hourKey(date: Date): string {
   return date.toISOString().slice(0, 13)
-}
-
-export function importOpenAIApiKeyAccounts(input: {
-  accounts: MigrationAccountInput[]
-  oauthAccounts?: MigrationOAuthAccountInput[]
-  groupName?: string
-  createGatewayApiKey?: boolean
-  gatewayApiKeyName?: string
-  dryRun?: boolean
-}): MigrationResult {
-  const groupName = input.groupName ?? '迁移 OpenAI 账户分组'
-  const existingGroup = findGroupByName(groupName)
-  const group = existingGroup ?? (input.dryRun ? { id: 'dry_run_group', name: groupName, enabled: true, accountIds: [] } : createGroup({ name: groupName, description: '从外部数据导入的 OpenAI API Key 与 OAuth 账户' }))
-  let imported = 0
-  let skipped = 0
-  let importedApiKey = 0
-  let importedOAuth = 0
-  let skippedApiKey = 0
-  let skippedOAuth = 0
-  const accountIds = new Set(group.accountIds)
-
-  for (const account of input.accounts) {
-    const existing = findAccountByFingerprint('openai', 'api_key', account.baseUrl, account.apiKey)
-    if (existing) {
-      skipped += 1
-      skippedApiKey += 1
-      accountIds.add(existing.id)
-      continue
-    }
-    if (input.dryRun) {
-      imported += 1
-      importedApiKey += 1
-      continue
-    }
-    const created = createAccount({
-      name: account.name,
-      type: 'api_key',
-      credentials: {
-        api_key: account.apiKey,
-        base_url: account.baseUrl
-      },
-      status: 'active',
-      concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
-      passthroughEnabled: true,
-      schedulable: true,
-      groupId: group.id,
-      notes: account.description
-    })
-    imported += 1
-    importedApiKey += 1
-    accountIds.add(created.id)
-  }
-
-  for (const account of input.oauthAccounts ?? []) {
-    const existing = findAccountByFingerprint('openai', 'oauth', 'https://api.openai.com/v1', account.refreshToken)
-    if (existing) {
-      skipped += 1
-      skippedOAuth += 1
-      accountIds.add(existing.id)
-      continue
-    }
-    if (input.dryRun) {
-      imported += 1
-      importedOAuth += 1
-      continue
-    }
-
-    const credentials: Record<string, unknown> = {
-      access_token: account.accessToken,
-      refresh_token: account.refreshToken,
-      base_url: 'https://api.openai.com/v1'
-    }
-    if (account.idToken) credentials.id_token = account.idToken
-    if (account.expiresAt) credentials.expires_at = account.expiresAt
-    if (account.clientId) credentials.client_id = account.clientId
-    if (account.email) credentials.email = account.email
-    if (account.chatgptAccountId) credentials.chatgpt_account_id = account.chatgptAccountId
-    if (account.chatgptUserId) credentials.chatgpt_user_id = account.chatgptUserId
-    if (account.planType) credentials.plan_type = account.planType
-
-    const created = createAccount({
-      name: account.name,
-      type: 'oauth',
-      credentials,
-      status: 'active',
-      concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
-      proxyProfileId: account.proxyProfileId,
-      passthroughEnabled: true,
-      schedulable: true,
-      groupId: group.id,
-      notes: account.description
-    })
-    imported += 1
-    importedOAuth += 1
-    accountIds.add(created.id)
-  }
-
-  if (!input.dryRun) {
-    for (const accountId of accountIds) {
-      addAccountToGroup(group.id, accountId)
-    }
-  }
-
-  const result: MigrationResult = {
-    imported,
-    skipped,
-    importedApiKey,
-    importedOAuth,
-    skippedApiKey,
-    skippedOAuth,
-    accountIds: [...accountIds],
-    groupId: group.id,
-    groupName: group.name
-  }
-
-  if (input.createGatewayApiKey && !input.dryRun) {
-    const gatewayApiKeyName = input.gatewayApiKeyName ?? '迁移 OpenAI 网关 Key'
-    const existingGatewayApiKey = findApiKeyByGroupAndName(group.id, gatewayApiKeyName)
-    result.gatewayApiKeyName = gatewayApiKeyName
-    if (existingGatewayApiKey) {
-      result.gatewayApiKeyId = existingGatewayApiKey.id
-      result.apiKey = existingGatewayApiKey.key || undefined
-      result.gatewayApiKeyCreated = false
-    } else {
-      const createdGatewayApiKey = createApiKeyRecord({
-        name: gatewayApiKeyName,
-        groupId: group.id,
-        status: 'active',
-      })
-      result.apiKey = createdGatewayApiKey.key
-      result.gatewayApiKeyId = createdGatewayApiKey.id
-      result.gatewayApiKeyCreated = true
-    }
-  }
-
-  return result
 }
 
 export function getSettings(access?: AccessScope): Record<string, unknown> {

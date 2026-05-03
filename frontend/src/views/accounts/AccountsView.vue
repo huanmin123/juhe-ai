@@ -85,6 +85,9 @@
         <template v-else-if="column.key === 'lastUsedAt'">
           {{ formatDateTime(accountLastUsedAt(record)) }}
         </template>
+        <template v-else-if="column.key === 'accountExpiresAt'">
+          <span :class="isAccountPackageExpired(record) ? 'expired-cell' : 'muted-cell'">{{ formatDateTime(record.accountExpiresAt) }}</span>
+        </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
             <a-button type="link" size="small" @click="openEdit(record)">编辑</a-button>
@@ -247,6 +250,10 @@
               <a-select v-model:value="form.groupId" :options="groupOptions" placeholder="请选择同供应商分组" />
               <div class="form-help">添加账户时会根据供应商默认选择默认分组。</div>
             </a-form-item>
+            <a-form-item label="账户到期时间">
+              <a-date-picker v-model:value="form.accountExpiresAt" show-time allow-clear style="width: 100%" />
+              <div class="form-help">可选，表示套餐/账号购买到期时间；到期后后端会自动停用账户。</div>
+            </a-form-item>
           </div>
           <a-form-item label="备注">
             <a-textarea v-model:value="form.notes" :rows="2" placeholder="可填写来源、用途或额度说明" />
@@ -387,6 +394,7 @@
 
 <script setup lang="ts">
 import axios from 'axios'
+import dayjs, { type Dayjs } from 'dayjs'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
@@ -444,6 +452,7 @@ interface AccountForm {
   refreshToken: string
   oauthMode: 'manual' | 'refresh_token'
   callbackUrl: string
+  accountExpiresAt?: Dayjs | null
   status: AccountStatus
   concurrencyLimit: number
   priority: number
@@ -529,12 +538,13 @@ const columns = computed(() => {
     { title: '用量情况', key: 'usage', width: 380 },
     { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
     { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
+    { title: '账户到期时间', key: 'accountExpiresAt', width: 180, sorter: compareAccountExpiresAt },
     { title: '最近使用时间', key: 'lastUsedAt', width: 180, sorter: compareAccountLastUsedAt },
     { title: '操作', key: 'actions', width: 220, fixed: 'right' }
   )
   return baseColumns
 })
-const tableScrollX = computed(() => (isAdmin.value ? 2120 : 1940))
+const tableScrollX = computed(() => (isAdmin.value ? 2300 : 2120))
 
 const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const keyword = normalizeKeyword(filters.keyword)
@@ -666,6 +676,7 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     refreshToken: '',
     oauthMode: 'manual',
     callbackUrl: '',
+    accountExpiresAt: undefined,
     status: 'active',
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
@@ -722,6 +733,9 @@ function accountCooldownText(account: AccountSummary) {
 
 function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
+  if (account.accountExpiresAt) {
+    lines.push(`账户到期时间：${formatDateTime(account.accountExpiresAt)}`)
+  }
   const cooldownText = accountCooldownText(account)
   if (cooldownText) {
     lines.push(cooldownText)
@@ -743,6 +757,12 @@ function isCoolingDown(account: AccountSummary) {
   if (!account.cooldownUntil) return false
   const time = new Date(account.cooldownUntil).getTime()
   return Number.isFinite(time) && time > Date.now()
+}
+
+function isAccountPackageExpired(account: AccountSummary) {
+  if (!account.accountExpiresAt) return false
+  const time = new Date(account.accountExpiresAt).getTime()
+  return Number.isFinite(time) && time <= Date.now()
 }
 
 function accountTypeText(type: AccountType) {
@@ -898,12 +918,22 @@ function formatDateTime(value?: string): string {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
+function parseDatePickerValue(value?: string): Dayjs | undefined {
+  if (!value) return undefined
+  const parsed = dayjs(value)
+  return parsed.isValid() ? parsed : undefined
+}
+
 function accountLastUsedAt(account: AccountSummary): string | undefined {
   return account.lastUsedAt || account.usage.lastUsedAt
 }
 
 function compareAccountLastUsedAt(left: AccountSummary, right: AccountSummary): number {
   return timestampOf(accountLastUsedAt(left)) - timestampOf(accountLastUsedAt(right))
+}
+
+function compareAccountExpiresAt(left: AccountSummary, right: AccountSummary): number {
+  return timestampOf(left.accountExpiresAt) - timestampOf(right.accountExpiresAt)
 }
 
 function compareAccountConcurrency(left: AccountSummary, right: AccountSummary): number {
@@ -1015,7 +1045,8 @@ function selectAccountType(type: AccountType) {
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
     passthroughEnabled: form.passthroughEnabled,
-    schedulable: form.schedulable
+    schedulable: form.schedulable,
+    accountExpiresAt: form.accountExpiresAt
   })
   ensureDefaultGroupSelected(providerCode)
   authResult.value = undefined
@@ -1033,6 +1064,7 @@ function openEdit(account: AccountSummary) {
     proxyProfileId: account.proxyProfileId,
     passthroughEnabled: account.passthroughEnabled,
     schedulable: account.schedulable,
+    accountExpiresAt: parseDatePickerValue(account.accountExpiresAt),
     groupId: groupIdForAccount(account.id),
     apiKey: asString(account.credentials.api_key),
     baseUrl: asString(account.credentials.base_url) || 'https://api.openai.com/v1',
@@ -1135,6 +1167,7 @@ async function saveAccount() {
     proxyProfileId: form.proxyProfileId,
     passthroughEnabled: form.passthroughEnabled,
     schedulable: form.schedulable,
+    accountExpiresAt: form.accountExpiresAt?.toISOString() ?? null,
     groupId: form.groupId,
     notes: form.notes
   }
@@ -1185,6 +1218,7 @@ async function createOAuthAccountFromUnifiedForm() {
     groupId: form.groupId,
     concurrencyLimit: form.concurrencyLimit,
     proxyProfileId: form.proxyProfileId,
+    accountExpiresAt: form.accountExpiresAt?.toISOString() ?? null,
     credentialsPatch: { error_handling_rules: buildCredentials().error_handling_rules },
     notes: form.notes || undefined
   }
@@ -1592,6 +1626,10 @@ onMounted(loadData)
   max-width: 320px;
   line-height: 1.7;
   white-space: pre-wrap;
+}
+
+.expired-cell {
+  color: #dc2626;
 }
 
 .row-actions :deep(.ant-btn-link) {

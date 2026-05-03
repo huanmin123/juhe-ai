@@ -26,6 +26,8 @@ const createFromCodeSchema = z.object({
   concurrencyLimit: z.number().int().min(1).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
+  accountExpiresAt: z.string().nullable().optional(),
+  account_expires_at: z.string().nullable().optional(),
   credentialsPatch: z.record(z.unknown()).optional(),
   notes: z.string().optional()
 })
@@ -37,6 +39,8 @@ const createFromRefreshTokenSchema = z.object({
   concurrencyLimit: z.number().int().min(1).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
+  accountExpiresAt: z.string().nullable().optional(),
+  account_expires_at: z.string().nullable().optional(),
   credentialsPatch: z.record(z.unknown()).optional(),
   notes: z.string().optional()
 })
@@ -80,6 +84,7 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
       concurrencyLimit: parsed.data.concurrencyLimit,
       proxyProfileId: parsed.data.proxyProfileId,
       errorPolicyId: parsed.data.errorPolicyId,
+      accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
       passthroughEnabled: true,
       schedulable: true,
       groupId: parsed.data.groupId,
@@ -123,6 +128,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
       concurrencyLimit: parsed.data.concurrencyLimit,
       proxyProfileId: parsed.data.proxyProfileId,
       errorPolicyId: parsed.data.errorPolicyId,
+      accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
       passthroughEnabled: true,
       schedulable: true,
       groupId: parsed.data.groupId,

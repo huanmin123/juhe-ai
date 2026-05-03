@@ -815,7 +815,7 @@ export function seedDefaults(database: DatabaseSync): void {
       .run(JSON.stringify(30), now, JSON.stringify(180))
     statement.run('sys_admin', '_migration_stream_idle_default_30_20260502', JSON.stringify(true), now)
   }
-  database.prepare("DELETE FROM system_settings WHERE system_account_id = 'sys_admin' AND key IN ('apiKeyPrefix', 'defaultOpenAIBaseUrl', 'defaultErrorPolicyId', 'defaultAccountConcurrencyLimit', 'streamFailureAction', 'streamAccountCooldownMinutes', 'overloadCooldownEnabled', 'overloadCooldownMinutes')").run()
+  database.prepare("DELETE FROM system_settings WHERE key IN ('apiKeyPrefix', 'defaultOpenAIBaseUrl', 'defaultErrorPolicyId', 'defaultAccountConcurrencyLimit', 'streamFailureAction', 'streamAccountCooldownMinutes', 'overloadCooldownEnabled', 'overloadCooldownMinutes')").run()
 }
 
 function ensureAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string): void {
