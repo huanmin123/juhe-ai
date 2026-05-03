@@ -30,7 +30,7 @@
 - 第一阶段只保留两种角色：`admin` 和 `user`。
 - 默认初始化一个 `admin/admin` 账号，登录成功后对初始密码状态做一次消息提醒。
 - `admin` 可以查看全部系统账户、全部业务数据、全部使用记录和全部系统级配置。
-- `user` 只能访问自己名下的数据，看不到其他系统账户的归属维度，也不能进入 `系统账户管理`。
+- `user` 只能访问自己名下的数据，看不到其他系统账户的归属维度，也不能进入 `系统账户管理`；被其他用户授权的 AI 账户和分组可分别以“授权账户”“授权分组”形式出现，但只能使用，不能管理。
 - 所有业务数据都必须按 `system_account_id` 做作用域隔离，后端写入和查询都以登录态为准，前端不传系统账户归属字段。
 - 登录态建议使用服务端会话加 `HttpOnly Cookie`，便于后续封禁、改角色和强制下线。
 
@@ -48,7 +48,9 @@ flowchart LR
   SystemAccount["系统账户"] --> GlobalSettings["全局设置"]
   SystemAccount --> SystemSettings["系统设置"]
   SystemAccount --> AIAccount["AI账户"]
+  SystemAccount --> AccountAuthorization["账户使用授权"]
   SystemAccount --> Group["分组"]
+  SystemAccount --> GroupAuthorization["分组使用授权"]
   SystemAccount --> APIKey["API Key"]
   SystemAccount --> Usage["使用记录"]
   SystemAccount --> Stats["统计缓存与监控"]
@@ -58,6 +60,10 @@ flowchart LR
   Proxy["代理"] --> AIAccount
   AIAccount --> Proxy
   AIAccount --> ErrorPolicy
+  AIAccount --> AccountAuthorization
+  AccountAuthorization --> Group
+  Group --> GroupAuthorization
+  GroupAuthorization --> APIKey
   APIKey --> Group
   Gateway["OpenAI 兼容中转网关"] --> APIKey
   Gateway --> Usage["使用记录"]
@@ -70,20 +76,22 @@ flowchart LR
 ## 核心关系
 
 - 系统账户是登录和隔离边界，业务数据默认都归属某个系统账户。
-- `admin` 可以看所有系统账户的数据；`user` 只能看自己的数据。
+- `admin` 可以看所有系统账户的数据；`user` 默认只能看自己的数据，另可看到其他用户主动授权给自己的 AI 账户使用权和分组使用权。
 - 登录接口需要携带一次性图形验证码，验证码只用于未登录登录防护，不作为业务数据隔离维度。
 - 登录防护需要同时按客户端 IP 和用户名记录失败尝试；短时间失败过多时临时限制该 IP 或锁定该用户名。
 - 系统名称和系统图标路径由全局设置控制，只有管理员能改；登录页文案和样式写在 [前端设计.md](前端设计.md) 中。
 - 供应商定义账户创建方式，例如 OpenAI 支持 OAuth 和 API Key；供应商定义为全局资源，只允许管理员维护，普通用户不能看到供应商管理菜单。
 - 账户属于某个供应商，并选择一种账户类型。
-- AI 账户属于某个系统账户，并选择一种账户类型；管理员视角列表需要额外显示系统账户维度，用户视角不显示该列。
-- 分组归属于一个供应商；账户主动选择归属分组，分组汇总同供应商账户并代表一组可调度资源。
-- API Key 绑定分组，请求进入后只能使用该分组内的账户。
+- AI 账户属于某个系统账户，并选择一种账户类型；管理员视角列表需要额外显示系统账户维度，用户视角不显示自有账户归属列，但授权账户需要显示“来自授权”和所有者摘要。
+- AI 账户使用授权只代表使用权，不改变账户所有者；被授权用户可以把账户加入自己的同供应商分组并通过自己的 API Key 使用，但不能编辑凭据、代理、并发、错误策略、状态、调度配置，也不能删除或继续转授权。
+- 分组归属于一个供应商；账户所有者创建账户时选择自己的归属分组，被授权用户可以把授权账户加入自己的同供应商分组，分组汇总同供应商账户并代表一组可调度资源。
+- 分组使用授权只代表使用整个分组的权限，不改变分组所有者；被授权用户可以把自己的 API Key 绑定到该授权分组并使用分组内全部可共享账户，但不能编辑分组、增删账户、修改权重、删除分组或继续转授权。
+- API Key 可以绑定自有分组或授权分组，请求进入后只能使用该分组内当前可调度且授权仍有效的账户。
 - 代理是服务器提供的全局运维资源，只允许管理员维护和绑定；普通用户不能看到代理管理菜单，也不能自行选择或修改账户代理。
 - 账号级错误处理策略也按系统账户隔离；AI 账户创建和编辑时只可选择本系统账户内可见的规则。
-- 使用记录记录 API Key、分组、账户、接口、供应商、模型、状态、IP、首 token、总耗时和错误；上游请求每一次尝试都会记录，包含重试过程中的失败，并冗余 `system_account_id` 便于隔离查询。
-- 使用记录是事实源，统计缓存按 `system_account_id` 分区并由后台定时任务增量汇总，列表页和图表页不直接实时扫描 `usage_records`。
-- 全局设置只保存系统名称和系统图标路径；系统设置保存系统账户自己的默认值和运行偏好，不直接替代账号级配置。
+- 使用记录记录调用方系统账户、账户所有者、分组所有者、账户授权关系、分组授权关系、API Key、分组、账户、接口、供应商、模型、状态、IP、首 token、总耗时和错误；上游请求每一次尝试都会记录，包含重试过程中的失败，并冗余 `system_account_id` 便于按调用方隔离查询。
+- 使用记录是事实源，统计缓存按调用方使用口径、账户所有者汇总口径和分组所有者汇总口径增量汇总；普通用户只看自己的明细，资源所有者可在授权管理中查看被授权用户的聚合用量，不看对方请求快照或业务内容。
+- 全局设置只保存系统名称和系统图标路径；系统设置保存系统账户自己的运行偏好，不直接替代账号级配置。
 - 流熔断只作用于流式响应异常：首包前请求超时、超过空闲超时没有新数据或流被异常中断时，按账号累计失败并临时不可调用。
 
 ## SQLite 存储策略
@@ -106,7 +114,9 @@ flowchart LR
 - `sessions`
 - `global_settings`
 - `accounts`
+- `account_authorizations`
 - `groups`
+- `group_authorizations`
 - `group_accounts`
 - `api_keys`
 - `proxy_profiles`
@@ -115,7 +125,7 @@ flowchart LR
 - `account_usage_snapshots`
 - `system_settings`
 
-其中 `accounts`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`account_usage_snapshots`、`system_settings` 都需要按 `system_account_id` 隔离；`providers`、`proxy_profiles` 和 `global_settings` 维持全局共享，其中 `providers`、`proxy_profiles` 只允许管理员管理。统计缓存表也属于业务数据缓存，必须冗余 `system_account_id` 并按登录态过滤；系统 CPU / 内存这类主机级监控属于全局运维数据，默认仅管理员可见。
+其中 `accounts`、`account_authorizations`、`groups`、`group_authorizations`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`account_usage_snapshots`、`system_settings` 都需要按 `system_account_id` 或明确的 owner/grantee 字段隔离；`providers`、`proxy_profiles` 和 `global_settings` 维持全局共享，其中 `providers`、`proxy_profiles` 只允许管理员管理。统计缓存表也属于业务数据缓存，必须冗余 `system_account_id` 并按登录态过滤；系统 CPU / 内存这类主机级监控属于全局运维数据，默认仅管理员可见。
 
 统计缓存建议新增：
 
@@ -192,7 +202,7 @@ AI 账户是上游凭据和调度配置的承载对象，归属某个系统账�
 - `credential_fingerprint`：上游凭据指纹；按凭据明文归一化后哈希，底层全局唯一，用于禁止任意系统账户重复添加同一份 `API Key`、OAuth `refresh_token` 或兜底 `access_token`
 - `credential_mask`：兼容保留字段；列表不展示凭据，编辑弹窗可展示完整凭据
 - `proxy_profile_id`
-- `concurrency_limit`
+- `concurrency_limit`：创建账户时默认 `20`，可在账号表单中按账号调整。
 - `current_concurrency`：运行态字段，不建议直接持久化为主状态
 - `passthrough_enabled`
 - `error_policy_id`
@@ -206,7 +216,7 @@ AI 账户是上游凭据和调度配置的承载对象，归属某个系统账�
 - `stream_failure_window_started_at`：流失败统计窗口起始时间
 - `created_at` / `updated_at`
 
-账户列表第一期展示：账户名称、账户类型、供应商、并发数、状态、用量情况、优先级、最近使用时间、操作。管理员视角额外展示 `系统账户` 列；用户视角不展示该列。账号优先级按数字从小到大生效，`0` 优先于 `10`；同分组调度时先尝试优先级更高的账号，当前账号失败或进入冷却后再切换到下一个可用账号。`Access/API Key` 与 `Refresh Token` 不在列表展示，只在编辑弹窗里查看和修改；`Refresh Token` 只对 OAuth 账户有意义。状态语义统一为：正常、停用、错误、限流中、临时不可调用。
+账户列表第一期展示：账户名称、账户类型、供应商、并发数、状态、用量情况、优先级、最近使用时间、操作。管理员视角额外展示 `系统账户` 列；用户视角自有账户不展示归属列，授权账户显示“来自授权”和所有者摘要。账号优先级按数字从小到大生效，`0` 优先于 `10`；同分组调度时先尝试优先级更高的账号，当前账号失败或进入冷却后再切换到下一个可用账号。`Access/API Key` 与 `Refresh Token` 不在列表展示；只有账户所有者可在编辑弹窗里查看和修改，授权账户永不返回完整敏感凭据。状态语义统一为：正常、停用、错误、限流中、临时不可调用。
 
 OpenAI OAuth 账户还有上游 Codex/ChatGPT 使用窗口限制，不能和 OpenAI API Key 的本地 token / 成本用量混为一类。账户列表的“用量情况”应分两层展示：本地网关统计从统计缓存读取，事实源仍是 `usage_records`，用于请求数、token、成本；OAuth 专属额度进度来自上游返回的 Codex rate-limit 快照，用独立进度条展示 `5h` 与 `7d` 窗口百分比、预计恢复时间和快照更新时间。该进度只表示上游 OAuth 额度占用，不参与 API Key 计费口径。
 
@@ -228,9 +238,69 @@ OpenAI API Key 建议凭据：
 - `api_key`
 - `base_url`
 
+## AI账户使用授权
+
+AI 账户使用授权用于把某个上游账户的“使用权”授予另一个系统账户。授权不改变账户所有者，不复制凭据，也不产生新的上游账户；被授权用户只是多了一个可调度账号入口。
+
+第一阶段只支持一种授权范围：`use`。语义固定为“只可使用，不可管理”：
+
+- 账户所有者可以新增授权、查看授权名单、收回授权、查看授权用户在该账户上的聚合用量，并继续完整管理账户本身。
+- 被授权用户可以在自己的 AI 账户列表看到授权账户，把它加入自己的同供应商分组，并通过自己的 API Key 使用。
+- 被授权用户不能修改账户名称、凭据、代理、并发、优先级、调度开关、错误策略、备注和状态，不能删除账户，也不能继续转授权。
+- 被授权用户不能查看账户完整敏感凭据，只能看到列表需要的基础摘要、状态、可用性和必要的来源标识。
+- 授权账户的“测试”如果保留，应按一次使用动作处理，必须以当前用户为调用方写入使用记录和统计，不能绕过日志隔离。
+
+建议字段：
+
+- `id`
+- `account_id`：被授权使用的 AI 账户
+- `owner_system_account_id`：账户所有者，冗余自 `accounts.system_account_id`
+- `grantee_system_account_id`：被授权用户
+- `scope`：第一阶段固定为 `use`
+- `status`：`active`、`revoked`
+- `remark`
+- `created_by`
+- `created_at`
+- `revoked_by`
+- `revoked_at`
+- `updated_at`
+
+约束与生命周期：
+
+- 同一个 `account_id + grantee_system_account_id` 同一时间只能有一条有效授权。
+- 不允许授权给账户所有者自己。
+- 不允许授权给已停用或不存在的系统账户。
+- 收回授权采用状态变更，不物理删除，历史请求和统计继续保留。
+- 账户删除时级联清理授权关系；历史 `usage_records` 保留原始 `account_authorization_id`、调用方和账户所有者字段用于追溯。
+- 授权收回后，被授权用户的旧分组关联可以保留为失效状态，调度时必须重新校验有效授权，不能继续命中该账户。
+
+账户列表与权限返回：
+
+- `GET /api/accounts` 返回自有账户和授权账户的合集。
+- 每行建议返回 `access_type`：`owner` 或 `authorized`。
+- 授权账户额外返回 `account_authorization_id`、`owner_system_account_id`、`owner_display_name`、`authorization_status`。
+- 每行建议返回 `permissions` 摘要，例如 `can_use`、`can_edit`、`can_delete`、`can_authorize`、`can_view_credentials`，前端据此隐藏操作；后端仍必须在每个写接口重新校验。
+- 自有账户在“更多”菜单展示“授权管理”；授权账户隐藏编辑、删除、授权管理、代理配置、错误策略配置等管理动作。
+
+授权管理弹窗：
+
+- 入口只对账户所有者展示，放在 AI 账户列表“更多”菜单中。
+- 上半部分展示授权名单：被授权用户、状态、授权时间、授权人、备注、最后使用时间和收回操作。
+- 下半部分展示使用统计：按被授权用户或授权关系聚合展示请求次数、成功次数、失败次数、输入 Token、输出 Token、缓存读取 Token、总 Token、成本、最后使用时间和最近模型。
+- 统计范围建议支持累计、本月、最近 7 天和自授权以来；第一阶段可先实现累计和最近 7 天。
+- 收回授权后授权名单仍可展示历史行，状态标记为“已收回”，历史统计不清零。
+- 账户所有者只能查看被授权用户在该账户上的聚合用量，不能查看对方的请求快照、响应快照、客户端 IP、API Key 明文或业务请求内容。
+
+建议接口：
+
+- `GET /api/accounts/:id/authorizations`：查看某账户授权列表和聚合用量，仅账户所有者或管理员可用。
+- `POST /api/accounts/:id/authorizations`：新增授权，仅账户所有者或管理员可用。
+- `DELETE /api/accounts/:id/authorizations/:authorizationId`：收回授权，仅账户所有者或管理员可用；语义是改为 `revoked`。
+- `GET /api/accounts/:id/authorizations/:authorizationId/usage`：查看某条授权的聚合用量，可后续在弹窗展开详情时使用。
+
 ## 分组
 
-分组是调度和授权边界。账户主动选择归属分组，API Key 绑定分组。系统账户创建时后端会同步创建一个 `默认 OpenAI 分组`，用于新用户开箱即用选择 OpenAI 账户和 API Key 的归属边界。
+分组是调度和使用授权边界。账户主动选择归属分组，API Key 绑定分组。系统账户创建时后端会同步创建一个 `默认 OpenAI 分组`，用于新用户开箱即用选择 OpenAI 账户和 API Key 的归属边界。
 
 建议字段：
 
@@ -259,7 +329,72 @@ OpenAI API Key 建议凭据：
 - 每个系统账户默认拥有一个 OpenAI 分组；新建系统账户时同步创建，旧数据通过启动迁移补齐一次
 - 一个分组可以汇总多个同供应商账户
 - 一个分组只汇总同一 `provider_code` 下的账户，列表只展示数量与聚合状态，不展开账户名称
-- 一个 API Key 先绑定一个分组
+- 一个 API Key 先绑定一个自有分组；分组授权能力完成后，也允许绑定授权给自己的分组
+
+## 分组使用授权
+
+分组使用授权用于把某个分组的“整体使用权”授予另一个系统账户。它和账户使用授权的区别是授权维度不同：账户授权共享单个账户，分组授权共享该分组内当前全部可共享账户。
+
+实施顺序：分组使用授权在账户使用授权之后实现。原因是分组授权的调度、统计和权限校验都依赖账户授权已经明确的“只可使用，不可管理”和日志隔离口径。
+
+第一阶段只支持一种授权范围：`use`。语义固定为“只可使用，不可管理”：
+
+- 分组所有者可以新增授权、查看授权名单、收回授权、查看被授权用户在该分组上的聚合用量，并继续完整管理分组本身。
+- 被授权用户可以在自己的分组列表看到授权分组，把自己的 API Key 绑定到该授权分组，并通过该分组使用其中全部当前可共享账户。
+- 被授权用户不能修改分组名称、描述、启停状态、默认分组标记、账户集合、账户权重，也不能删除分组或继续转授权。
+- 被授权用户不能看到分组内账户的敏感凭据；如账户行需要展示，也只能展示授权分组下的基础摘要、状态和来源标识。
+- 分组授权是动态使用权：所有者后续向分组新增或移除可共享账户，会直接影响被授权用户通过该分组可调度的账户集合。
+- 可共享账户默认只包含分组所有者自有账户；如果分组里包含其他用户授权来的账户，第一阶段不能随分组继续共享，调度时必须过滤，避免绕过账户授权“不转授权”的规则。
+- 分组授权收回后，被授权用户绑定该授权分组的 API Key 应立即不可继续调度；前端可标记为“授权已失效”，由用户改绑其他分组。
+
+建议字段：
+
+- `id`
+- `group_id`：被授权使用的分组
+- `owner_system_account_id`：分组所有者，冗余自 `groups.system_account_id`
+- `grantee_system_account_id`：被授权用户
+- `scope`：第一阶段固定为 `use`
+- `status`：`active`、`revoked`
+- `remark`
+- `created_by`
+- `created_at`
+- `revoked_by`
+- `revoked_at`
+- `updated_at`
+
+约束与生命周期：
+
+- 同一个 `group_id + grantee_system_account_id` 同一时间只能有一条有效授权。
+- 不允许授权给分组所有者自己。
+- 不允许授权已停用或不存在的分组。
+- 不允许授权给已停用或不存在的系统账户。
+- 收回授权采用状态变更，不物理删除，历史请求和统计继续保留。
+- 分组删除时级联清理授权关系；历史 `usage_records` 保留原始 `group_authorization_id`、调用方和分组所有者字段用于追溯。
+- 调度时必须重新校验 `group_authorization_id` 仍有效，不能只依赖 API Key 里保存的 `group_id`。
+
+分组列表与权限返回：
+
+- `GET /api/groups` 返回自有分组和授权分组的合集。
+- 每行建议返回 `access_type`：`owner` 或 `authorized`。
+- 授权分组额外返回 `group_authorization_id`、`owner_system_account_id`、`owner_display_name`、`authorization_status`。
+- 每行建议返回 `permissions` 摘要，例如 `can_use`、`can_edit`、`can_delete`、`can_authorize`、`can_manage_accounts`，前端据此隐藏操作；后端仍必须在每个写接口重新校验。
+- 自有分组在“更多”菜单展示“授权管理”；授权分组隐藏编辑、删除、账户绑定、权重调整、授权管理等管理动作。
+
+分组授权管理弹窗：
+
+- 入口只对分组所有者展示，放在分组列表“更多”菜单中。
+- 上半部分展示授权名单：被授权用户、状态、授权时间、授权人、备注、最后使用时间和收回操作。
+- 下半部分展示使用统计：按被授权用户或分组授权关系聚合展示请求次数、成功次数、失败次数、输入 Token、输出 Token、缓存读取 Token、总 Token、成本、最后使用时间、最近模型和命中账户数。
+- 统计范围建议支持累计、本月、最近 7 天和自授权以来；第一阶段可先实现累计和最近 7 天。
+- 收回授权后授权名单仍可展示历史行，状态标记为“已收回”，历史统计不清零。
+- 分组所有者只能查看被授权用户在该分组上的聚合用量，不能查看对方请求快照、响应快照、客户端 IP、API Key 明文或业务请求内容。
+
+建议接口：
+
+- `GET /api/groups/:id/authorizations`：查看某分组授权列表和聚合用量，仅分组所有者或管理员可用。
+- `POST /api/groups/:id/authorizations`：新增授权，仅分组所有者或管理员可用。
+- `DELETE /api/groups/:id/authorizations/:authorizationId`：收回授权，仅分组所有者或管理员可用；语义是改为 `revoked`。
+- `GET /api/groups/:id/authorizations/:authorizationId/usage`：查看某条分组授权的聚合用量，可后续在弹窗展开详情时使用。
 
 ## API Key 管理
 
@@ -311,7 +446,13 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 建议字段：
 
 - `id`
-- `system_account_id`
+- `system_account_id`：实际调用方系统账户，决定普通用户使用记录隔离
+- `account_owner_system_account_id`：命中账户所有者，自有账户时等于 `system_account_id`
+- `group_owner_system_account_id`：命中分组所有者，自有分组时等于 `system_account_id`
+- `account_access_type`：`owner`、`account_authorized`、`group_authorized`
+- `group_access_type`：`owner` 或 `authorized`
+- `account_authorization_id`：命中账户授权时记录账户授权关系，自有账户或仅通过分组授权访问时为空
+- `group_authorization_id`：命中授权分组时记录分组授权关系，自有分组为空
 - `request_id`
 - `api_key_id`
 - `group_id`
@@ -335,7 +476,7 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 - `response_snapshot_json`：失败请求的网关返回与最后一次上游响应快照
 - `created_at`
 
-第一阶段网关已写入请求记录，并从 OpenAI 响应里的 `usage.input_tokens`、`usage.output_tokens`、`usage.input_tokens_details.cached_tokens` 统计 token。使用记录会保存 `METHOD /v1/path` 形式的接口，便于区分 `/v1/models` 这类成功但没有模型和 token 用量的请求。成本统计复用供应商模型目录里的 OpenAI 价格快照做轻量 1:1 估算；未覆盖的模型先只记录 token，不强行猜价格。使用记录接口会派生输入成本、输出成本、输入单价、输出单价、缓存读取成本、账户计费和固定 1x 倍率，用于前端悬浮明细展示，不额外写入数据库。管理员视角可按 `system_account_id` 查看全部记录并显示归属列，用户视角只看自己的记录且不显示归属列。失败记录额外保存请求/响应快照，便于在使用记录页查看当时的请求体、响应体和最后一次上游错误。
+第一阶段网关已写入请求记录，并从 OpenAI 响应里的 `usage.input_tokens`、`usage.output_tokens`、`usage.input_tokens_details.cached_tokens` 统计 token。使用记录会保存 `METHOD /v1/path` 形式的接口，便于区分 `/v1/models` 这类成功但没有模型和 token 用量的请求。成本统计复用供应商模型目录里的 OpenAI 价格快照做轻量 1:1 估算；未覆盖的模型先只记录 token，不强行猜价格。使用记录接口会派生输入成本、输出成本、输入单价、输出单价、缓存读取成本、账户计费和固定 1x 倍率，用于前端悬浮明细展示，不额外写入数据库。管理员视角可按 `system_account_id` 查看全部记录并显示归属列，用户视角只看自己的记录且不显示归属列。授权账户和授权分组调用都按调用方写入明细，资源所有者不能直接查看被授权用户的请求快照、响应快照、客户端 IP 或业务内容，只能通过对应授权管理查看聚合用量。失败记录额外保存请求/响应快照，便于在使用记录页查看当时的请求体、响应体和最后一次上游错误。
 
 ## 统计缓存与运维监控
 
@@ -343,7 +484,7 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 
 建议的缓存分层：
 
-- `usage_stats_totals`：按 `system_account_id + scope_type + scope_id` 存累计值，覆盖 `system_account`、`provider`、`group`、`account`、`api_key`、`model`、`endpoint`。
+- `usage_stats_totals`：按 `system_account_id + scope_type + scope_id` 存累计值，覆盖 `system_account`、`provider`、`group`、`account`、`account_authorization`、`group_authorization`、`api_key`、`model`、`endpoint`。
 - `usage_stats_daily`：按 `system_account_id + scope_type + scope_id + stat_date` 存天级业务概览，用于今日、昨日和最近 7 天。
 - `usage_stats_hourly`：按 `system_account_id + scope_type + scope_id + stat_hour` 存小时趋势，用于近 24 小时和近 7 天。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 聚合请求数、token 和成本，用于模型分布。
@@ -356,6 +497,8 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 
 - 统计概览与运维监控属于管理员视角，只允许 `admin` 访问；普通用户没有统计概览菜单和统计 API 权限。
 - 管理员按系统账户筛选时读取对应 `system_account_id` 的缓存；查看全局汇总时聚合多个系统账户的缓存行，不回扫 `usage_records`。
+- 账户授权需要同时维护调用方口径和账户归属口径：调用方的 `system_account` / `group` / `api_key` 统计按 `usage_records.system_account_id` 聚合；账户列表的真实账户用量按 `account_owner_system_account_id + scope_type = account + account_id` 聚合；账户授权管理弹窗按 `account_owner_system_account_id + scope_type = account_authorization + account_authorization_id` 聚合。
+- 分组授权需要同时维护调用方口径和分组归属口径：调用方的 API Key 和个人统计按 `usage_records.system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + scope_type = group + group_id` 聚合；分组授权管理弹窗按 `group_owner_system_account_id + scope_type = group_authorization + group_authorization_id` 聚合。
 - 系统账户删除或停用时，应同步停止对应后台任务；删除时级联清理该账户的统计缓存、OAuth 额度快照和任务状态。
 - 主机级 CPU / 内存 / 数据库大小不属于用户业务数据，默认只在管理员运维视角展示。
 
@@ -433,13 +576,12 @@ UI 规则：
 
 ### 系统设置
 
-- `system_settings` 按 `system_account_id` 隔离，保存当前系统账户自己的默认值和运行偏好。
+- `system_settings` 按 `system_account_id` 隔离，保存当前系统账户自己的运行偏好。
 - 用户级设置不直接替代账号级明确配置。
 
 建议配置：
 
 - 默认上游请求超时
-- 默认账号并发上限
 - 默认临时不可调用时长
 - 默认代理策略
 - API Key 自动生成规则（内部固定，不在系统设置暴露）
@@ -478,6 +620,8 @@ UI 规则：
 透传目标不是无约束 raw proxy，而是稳定中转与兼容性处理：按 OpenAI 兼容协议整理请求和响应，保留必要的白名单头、认证替换、会话标识、body 兼容修正和错误兜底。
 
 `juhe-ai` 后续如果补透传能力，建议把语义拆成两层：`strict` 仅保留最小必要转发，`compat` 允许按平台做必要兼容修正。不要把两种目标混成一个开关。
+
+更完整的源码对照和推荐方案见 `docs/relay-survey.md`。
 
 当前轻量中转请求链路是：
 

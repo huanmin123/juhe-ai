@@ -6,6 +6,8 @@ import { getRequestAuthContext, type RequestAuthContext } from '../modules/auth/
 import { createApiKey, decryptJson, encryptJson, hashPassword, hashSecret, maskSecret, verifyPassword } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 
+const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
+
 interface ProviderRow {
   id: string
   code: ProviderCode
@@ -32,6 +34,7 @@ interface AccountRow {
   error_policy_id: string | null
   priority: number
   schedulable: number
+  account_expires_at: string | null
   last_used_at: string | null
   cooldown_until: string | null
   last_error_message: string | null
@@ -683,6 +686,36 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined
 }
 
+function optionalNullableString(value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  if (typeof value !== 'string') return null
+  return value.trim().length > 0 ? value : null
+}
+
+function isAccountExpired(accountExpiresAt: string | null | undefined, now = Date.now()): boolean {
+  if (!accountExpiresAt) return false
+  const timestamp = Date.parse(accountExpiresAt)
+  return Number.isFinite(timestamp) && timestamp <= now
+}
+
+function disableExpiredAccounts(access?: AccessScope): void {
+  const scope = buildSystemAccountScopeClause(access)
+  const now = nowIso()
+  getDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET status = 'disabled',
+          schedulable = 0,
+          cooldown_until = NULL,
+          last_error_message = ?,
+          updated_at = ?
+      WHERE account_expires_at IS NOT NULL
+        AND account_expires_at <= ?
+        AND status <> 'disabled'${scope.clause}
+    `)
+    .run('账户套餐已过期，已自动停用', now, now, ...scope.params)
+}
+
 function parseOptionalJsonObject(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== 'string' || !value.trim()) return undefined
   try {
@@ -818,13 +851,6 @@ function throwDuplicateAccountCredentialError(): never {
   throw new DuplicateAccountCredentialError()
 }
 
-function defaultAccountConcurrencyLimit(): number {
-  const value = getSettings().defaultAccountConcurrencyLimit
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  if (!Number.isFinite(number)) return 3
-  return Math.min(Math.max(Math.trunc(number), 1), 999)
-}
-
 function defaultTemporaryUnschedulableMinutes(): number {
   const value = getSettings().defaultTemporaryUnschedulableMinutes
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
@@ -847,6 +873,7 @@ export function listProviders(): ProviderDefinition[] {
 
 export function listAccounts(access?: AccessScope): AccountSummary[] {
   const scope = buildSystemAccountWhereClause(access)
+  disableExpiredAccounts(access)
   const rows = getDatabase().prepare(`SELECT * FROM accounts${scope.clause} ORDER BY priority ASC, updated_at DESC`).all(...scope.params) as unknown as AccountRow[]
   const usageByAccount = loadAccountUsageSummaries(access)
   const oauthUsageByAccount = loadOpenAICodexUsageSnapshots(access)
@@ -868,6 +895,7 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
     passthroughEnabled: row.passthrough_enabled === 1,
     errorPolicyId: row.error_policy_id ?? undefined,
     schedulable: row.schedulable === 1,
+    accountExpiresAt: row.account_expires_at ?? undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
     lastUsedAt: row.last_used_at ?? usageByAccount.get(row.id)?.lastUsedAt,
@@ -915,7 +943,10 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountFingerprint(providerCode, accountType, baseUrl, credentialSource)
     : null
+  const accountExpiresAt = optionalNullableString(input.accountExpiresAt ?? input.account_expires_at)
   const initialStatus = normalizeAccountStatus(input.status, 'active')
+  const expiredByPackage = isAccountExpired(accountExpiresAt)
+  const nextStatus = expiredByPackage ? 'disabled' : initialStatus
   const initialCooldownUntil = isCoolingAccountStatus(initialStatus)
     ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
     : undefined
@@ -938,16 +969,17 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     notes: optionalString(input.notes),
     type: accountType,
     credentials,
-    status: initialStatus,
-    concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? defaultAccountConcurrencyLimit()),
+    status: nextStatus,
+    concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? DEFAULT_ACCOUNT_CONCURRENCY_LIMIT),
     currentConcurrency: 0,
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? 0),
     proxyProfileId,
     passthroughEnabled: Boolean(input.passthroughEnabled ?? input.passthrough_enabled),
     errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
-    schedulable: input.schedulable !== false,
-    cooldownUntil: initialCooldownUntil,
-    lastErrorMessage: initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
+    schedulable: expiredByPackage ? false : input.schedulable !== false,
+    accountExpiresAt: accountExpiresAt ?? undefined,
+    cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
+    lastErrorMessage: expiredByPackage ? '账户套餐已过期，已自动停用' : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     lastUsedAt: undefined,
     usage: {
       requestCount: 0,
@@ -968,8 +1000,8 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
         INSERT INTO accounts (
           id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
-          priority, schedulable, notes, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          priority, schedulable, notes, account_expires_at, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -988,6 +1020,7 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
         account.priority,
         account.schedulable ? 1 : 0,
         optionalString(input.notes) ?? null,
+        account.accountExpiresAt ?? null,
         account.cooldownUntil ?? null,
         account.lastErrorMessage ?? null,
         0,
@@ -1037,6 +1070,12 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountFingerprint(current.providerCode, current.type, baseUrl, credentialSource)
     : null
+  const hasAccountExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'accountExpiresAt')
+    || Object.prototype.hasOwnProperty.call(input, 'account_expires_at')
+  const nextAccountExpiresAt = hasAccountExpiresAtInput
+    ? optionalNullableString(input.accountExpiresAt ?? input.account_expires_at)
+    : current.accountExpiresAt ?? null
+  const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
 
   const rawErrorPolicyId = Object.prototype.hasOwnProperty.call(input, 'errorPolicyId')
     ? input.errorPolicyId
@@ -1045,7 +1084,8 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
       : undefined
 
   const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
-  const nextStatus = hasStatusInput ? normalizeAccountStatus(input.status, current.status) : current.status
+  const requestedStatus = hasStatusInput ? normalizeAccountStatus(input.status, current.status) : current.status
+  const nextStatus = expiredByPackage ? 'disabled' : requestedStatus
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorMessage = current.lastErrorMessage
   if (hasStatusInput) {
@@ -1058,6 +1098,10 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
       nextCooldownUntil = new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
       nextLastErrorMessage = nextLastErrorMessage ?? '手动设置为临时不可调用'
     }
+  }
+  if (expiredByPackage) {
+    nextCooldownUntil = undefined
+    nextLastErrorMessage = '账户套餐已过期，已自动停用'
   }
 
   const next: AccountSummary = {
@@ -1075,7 +1119,8 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
       : current.proxyProfileId,
     passthroughEnabled: typeof input.passthroughEnabled === 'boolean' ? input.passthroughEnabled : current.passthroughEnabled,
     errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
-    schedulable: typeof input.schedulable === 'boolean' ? input.schedulable : current.schedulable,
+    schedulable: expiredByPackage ? false : typeof input.schedulable === 'boolean' ? input.schedulable : current.schedulable,
+    accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
     lastErrorMessage: nextLastErrorMessage,
     lastUsedAt: current.lastUsedAt,
@@ -1085,10 +1130,10 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
   try {
     getDatabase()
       .prepare(`
-        UPDATE accounts
-        SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
+      UPDATE accounts
+      SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
-            error_policy_id = ?, priority = ?, schedulable = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
+            error_policy_id = ?, priority = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
       .run(
@@ -1104,6 +1149,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
         next.errorPolicyId ?? null,
         next.priority,
         next.schedulable ? 1 : 0,
+        next.accountExpiresAt ?? null,
         next.cooldownUntil ?? null,
         next.lastErrorMessage ?? null,
         nowIso(),
@@ -1709,6 +1755,7 @@ export function selectOpenAIAccountForGroup(groupId: string): OpenAIAccountSecre
 export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret[] {
   const database = getDatabase()
   const now = nowIso()
+  disableExpiredAccounts(resolveAccessScope())
   const groupAccountRows = database
     .prepare(`
       SELECT group_accounts.account_id
@@ -1729,12 +1776,13 @@ export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret
           AND provider_code = 'openai'
           AND type IN ('api_key', 'oauth')
           AND schedulable = 1
+          AND (account_expires_at IS NULL OR account_expires_at > ?)
           AND (
             (status = 'active' AND (cooldown_until IS NULL OR cooldown_until <= ?))
             OR (status IN ('rate_limited', 'temporary_unavailable') AND cooldown_until IS NOT NULL AND cooldown_until <= ?)
           )
       `)
-      .get(groupAccount.account_id, now, now) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
+      .get(groupAccount.account_id, now, now, now) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
     if (!row) {
       continue
     }
@@ -2114,7 +2162,7 @@ export function importOpenAIApiKeyAccounts(input: {
         base_url: account.baseUrl
       },
       status: 'active',
-      concurrencyLimit: 1,
+      concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
       passthroughEnabled: true,
       schedulable: true,
       groupId: group.id,
@@ -2157,7 +2205,7 @@ export function importOpenAIApiKeyAccounts(input: {
       type: 'oauth',
       credentials,
       status: 'active',
-      concurrencyLimit: 3,
+      concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
       proxyProfileId: account.proxyProfileId,
       passthroughEnabled: true,
       schedulable: true,
@@ -2234,7 +2282,7 @@ export function updateSettings(input: Record<string, unknown>, access?: AccessSc
 }
 
 function isHiddenSystemSetting(key: string): boolean {
-  return key === 'apiKeyPrefix' || key === 'defaultOpenAIBaseUrl' || key === 'defaultErrorPolicyId' || key.startsWith('_migration')
+  return key === 'apiKeyPrefix' || key === 'defaultOpenAIBaseUrl' || key === 'defaultErrorPolicyId' || key === 'defaultAccountConcurrencyLimit' || key.startsWith('_migration')
 }
 
 interface UsageStatsAccumulator {

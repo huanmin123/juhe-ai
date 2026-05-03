@@ -345,7 +345,6 @@ export interface SystemMetricsOverview {
 export interface SystemSettings {
   appName?: string
   appIcon?: string
-  defaultAccountConcurrencyLimit?: number
   defaultTemporaryUnschedulableMinutes?: number
   temporaryUnschedulableRetryIntervalSeconds?: number
   temporaryUnschedulableRetryAttempts?: number

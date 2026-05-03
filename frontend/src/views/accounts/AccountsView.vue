@@ -392,7 +392,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
-import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary, SystemSettings } from '@/types/domain'
+import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import {
@@ -463,6 +463,8 @@ const FALLBACK_PROVIDER: ProviderDefinition = {
   capabilities: ['models', 'responses', 'stream', 'passthrough']
 }
 
+const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
+
 const loading = ref(false)
 const saving = ref(false)
 const authLoading = ref(false)
@@ -481,7 +483,6 @@ const providerModels = ref<ProviderModelPricing[]>([])
 const proxies = ref<ProxyProfileSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
-const systemSettings = ref<SystemSettings>({ defaultAccountConcurrencyLimit: 3 })
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue })
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
 const isAdmin = authState.isAdmin
@@ -666,7 +667,7 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     oauthMode: 'manual',
     callbackUrl: '',
     status: 'active',
-    concurrencyLimit: defaultAccountConcurrencyLimit(),
+    concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
     proxyProfileId: undefined,
     passthroughEnabled: true,
@@ -791,13 +792,6 @@ function ensureDefaultGroupSelected(providerCode = form.providerCode) {
     return
   }
   form.groupId = defaultGroupForProvider(providerCode)?.id
-}
-
-function defaultAccountConcurrencyLimit() {
-  const value = systemSettings.value.defaultAccountConcurrencyLimit
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  if (!Number.isFinite(number)) return 3
-  return Math.min(Math.max(Math.trunc(number), 1), 999)
 }
 
 function asString(value: unknown): string {
@@ -940,19 +934,17 @@ async function loadData() {
   loading.value = true
   try {
     const systemAccountId = selectedSystemAccountId(filters.systemAccountId, isAdmin.value)
-    const [accountList, providerList, proxyList, groupList, settings, systemAccountList] = await Promise.all([
+    const [accountList, providerList, proxyList, groupList, systemAccountList] = await Promise.all([
       api.accounts.list({ systemAccountId }),
       isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
       isAdmin.value ? api.proxies.list() : Promise.resolve([] as ProxyProfileSummary[]),
       api.groups.list({ systemAccountId }),
-      api.settings.get(),
       isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     accounts.value = accountList
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
     proxies.value = proxyList
     groups.value = groupList
-    systemSettings.value = settings
     systemAccounts.value = systemAccountList
     selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id))
     if (modalOpen.value && !editingId.value) {

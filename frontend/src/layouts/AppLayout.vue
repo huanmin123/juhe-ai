@@ -27,7 +27,7 @@
       placement="left"
       :closable="false"
       :width="280"
-      class="mobile-drawer"
+      root-class-name="mobile-drawer"
       :body-style="{ padding: '0', background: 'transparent' }"
     >
       <div class="brand brand-drawer">
@@ -476,15 +476,15 @@ watch(
   padding: 12px 20px 0;
 }
 
-:deep(.mobile-drawer .ant-drawer-content-wrapper) {
+:global(.mobile-drawer .ant-drawer-content-wrapper) {
   box-shadow: 18px 0 32px rgba(3, 17, 31, 0.2);
 }
 
-:deep(.mobile-drawer .ant-drawer-content) {
+:global(.mobile-drawer .ant-drawer-content) {
   background: linear-gradient(180deg, #061a2e 0%, #03111f 100%);
 }
 
-:deep(.mobile-drawer .ant-menu-dark) {
+:global(.mobile-drawer .ant-menu-dark) {
   background: transparent;
 }
 

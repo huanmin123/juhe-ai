@@ -126,6 +126,7 @@ export interface AccountSummary {
   passthroughEnabled: boolean
   errorPolicyId?: string
   schedulable: boolean
+  accountExpiresAt?: string
   cooldownUntil?: string
   lastErrorMessage?: string
   lastUsedAt?: string

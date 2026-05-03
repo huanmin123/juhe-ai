@@ -58,11 +58,6 @@
           </div>
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="默认账号并发上限" extra="第一期先保存配置值，后续并发调度按账号级配置执行。">
-                <a-input-number v-model:value="systemForm.defaultAccountConcurrencyLimit" :min="1" :max="999" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
               <a-form-item label="临时不可调用暂停时长（分钟）" extra="未知异常、策略冷却和流熔断都会使用这个用户级默认时长。">
                 <a-input-number v-model:value="systemForm.defaultTemporaryUnschedulableMinutes" :min="1" :max="1440" style="width: 100%" />
               </a-form-item>
@@ -143,7 +138,6 @@ interface GlobalForm {
 }
 
 interface SystemForm {
-  defaultAccountConcurrencyLimit: number
   defaultTemporaryUnschedulableMinutes: number
   temporaryUnschedulableRetryIntervalSeconds: number
   temporaryUnschedulableRetryAttempts: number
@@ -160,7 +154,6 @@ const defaultGlobalSettings: GlobalForm = {
 }
 
 const defaultSystemSettings: SystemForm = {
-  defaultAccountConcurrencyLimit: 3,
   defaultTemporaryUnschedulableMinutes: 5,
   temporaryUnschedulableRetryIntervalSeconds: 3,
   temporaryUnschedulableRetryAttempts: 3,
@@ -266,7 +259,6 @@ function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): GlobalF
 
 function normalizeSystemSettings(settings: SystemSettings | SystemForm): SystemForm {
   return {
-    defaultAccountConcurrencyLimit: numberValue(settings.defaultAccountConcurrencyLimit, defaultSystemSettings.defaultAccountConcurrencyLimit, 1, 999),
     defaultTemporaryUnschedulableMinutes: numberValue(settings.defaultTemporaryUnschedulableMinutes, defaultSystemSettings.defaultTemporaryUnschedulableMinutes, 1, 1440),
     temporaryUnschedulableRetryIntervalSeconds: numberValue(settings.temporaryUnschedulableRetryIntervalSeconds, defaultSystemSettings.temporaryUnschedulableRetryIntervalSeconds, 0, 3600),
     temporaryUnschedulableRetryAttempts: numberValue(settings.temporaryUnschedulableRetryAttempts, defaultSystemSettings.temporaryUnschedulableRetryAttempts, 0, 10),

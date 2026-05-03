@@ -88,7 +88,7 @@ export function applySchema(database: DatabaseSync): void {
       credential_fingerprint TEXT,
       credential_mask TEXT NOT NULL DEFAULT '',
       proxy_profile_id TEXT,
-      concurrency_limit INTEGER NOT NULL DEFAULT 1,
+      concurrency_limit INTEGER NOT NULL DEFAULT 20,
       passthrough_enabled INTEGER NOT NULL DEFAULT 0,
       error_policy_id TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
@@ -780,7 +780,6 @@ export function seedDefaults(database: DatabaseSync): void {
   const settings = [
     ['appName', '聚合 AI'],
     ['appIcon', '/brand-icon.svg'],
-    ['defaultAccountConcurrencyLimit', 3],
     ['defaultTemporaryUnschedulableMinutes', 5],
     ['temporaryUnschedulableRetryIntervalSeconds', 3],
     ['temporaryUnschedulableRetryAttempts', 3],
@@ -816,7 +815,7 @@ export function seedDefaults(database: DatabaseSync): void {
       .run(JSON.stringify(30), now, JSON.stringify(180))
     statement.run('sys_admin', '_migration_stream_idle_default_30_20260502', JSON.stringify(true), now)
   }
-  database.prepare("DELETE FROM system_settings WHERE system_account_id = 'sys_admin' AND key IN ('apiKeyPrefix', 'defaultOpenAIBaseUrl', 'defaultErrorPolicyId', 'streamFailureAction', 'streamAccountCooldownMinutes', 'overloadCooldownEnabled', 'overloadCooldownMinutes')").run()
+  database.prepare("DELETE FROM system_settings WHERE system_account_id = 'sys_admin' AND key IN ('apiKeyPrefix', 'defaultOpenAIBaseUrl', 'defaultErrorPolicyId', 'defaultAccountConcurrencyLimit', 'streamFailureAction', 'streamAccountCooldownMinutes', 'overloadCooldownEnabled', 'overloadCooldownMinutes')").run()
 }
 
 function ensureAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string): void {

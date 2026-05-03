@@ -21,6 +21,8 @@ const accountCreateSchema = z.object({
   errorPolicyId: z.string().nullable().optional(),
   schedulable: z.boolean().optional(),
   groupId: z.string().nullable().optional(),
+  accountExpiresAt: z.string().nullable().optional(),
+  account_expires_at: z.string().nullable().optional(),
   notes: z.string().optional()
 })
 

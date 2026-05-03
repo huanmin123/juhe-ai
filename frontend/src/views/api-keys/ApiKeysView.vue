@@ -46,20 +46,10 @@
       </template>
     </a-table>
 
-    <a-modal v-model:open="helpOpen" title="API Key 接入帮助" width="720px" :footer="null">
+    <a-modal v-model:open="helpOpen" title="API Key 接入帮助" width="560px" :footer="null">
       <div class="gateway-help-content">
-        <a-alert
-          message="当前只兼容 OpenAI 协议"
-          description="客户端统一按 OpenAI 兼容格式请求。后续增加其他主流厂商时，也会优先在服务端适配为 OpenAI 兼容协议。"
-          type="info"
-          show-icon
-        />
         <div class="gateway-help-section">
-          <div class="gateway-guide-heading">
-            <span class="gateway-guide-title">中转请求地址</span>
-            <a-tag color="blue">Base URL</a-tag>
-          </div>
-          <p class="gateway-guide-desc">客户端的 Base URL 填下面地址，API Key 填本页生成的本地网关密钥。</p>
+          <span class="gateway-step-title">1. 复制 Base URL</span>
           <div class="gateway-url-row">
             <span class="gateway-url-label">Base URL</span>
             <span class="gateway-url-value">{{ gatewayBaseUrl }}</span>
@@ -70,23 +60,11 @@
           </div>
         </div>
         <div class="gateway-help-section">
-          <span class="gateway-example-title">常用路径</span>
-          <div class="gateway-endpoints">
-            <a-tag v-for="endpoint in gatewayEndpoints" :key="endpoint" color="geekblue">{{ endpoint }}</a-tag>
-          </div>
+          <span class="gateway-step-title">2. 复制本页 API Key</span>
         </div>
         <div class="gateway-help-section">
-          <span class="gateway-example-title">客户端配置示例</span>
+          <span class="gateway-step-title">3. 填到客户端</span>
           <pre class="gateway-code">{{ gatewayClientExample }}</pre>
-        </div>
-        <div class="gateway-help-section">
-          <span class="gateway-example-title">调度关系</span>
-          <ol class="gateway-flow-list">
-            <li>请求携带本页 API Key 进入 `/v1/*`。</li>
-            <li>系统校验 API Key，并找到它绑定的分组。</li>
-            <li>系统只从该分组内选择可用 OpenAI 账户请求上游。</li>
-            <li>返回内容保持 OpenAI 兼容响应格式，并写入使用记录。</li>
-          </ol>
         </div>
       </div>
     </a-modal>
@@ -110,7 +88,7 @@
     </a-modal>
 
     <a-modal v-model:open="createdKeyOpen" title="API Key 已创建" width="640px" :footer="null">
-      <a-alert message="明文密钥已保存，列表中也会直接显示完整值。调用客户端还需要同时配置下方 Base URL。" type="info" show-icon />
+      <a-alert message="复制下方 API Key 和 Base URL，填到客户端即可。" type="info" show-icon />
       <div class="created-key-base-url">
         <span class="created-key-label">Base URL</span>
         <span class="created-key-value">{{ gatewayBaseUrl }}</span>
@@ -147,7 +125,6 @@ const systemAccounts = ref<SystemAccountSummary[]>([])
 const systemAccountFilter = ref(allSystemAccountsValue)
 const form = reactive({ name: '', groupId: '', status: 'active' as 'active' | 'disabled', expiresAt: undefined as Dayjs | undefined })
 const isAdmin = authState.isAdmin
-const gatewayEndpoints = ['/chat/completions', '/responses', '/models']
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -175,7 +152,7 @@ const groupOptions = computed(() => groups.value.map((group) => ({ label: group.
 const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => matchesSystemAccountFilter(apiKey, systemAccountFilter.value, isAdmin.value)))
 const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
-const gatewayClientExample = computed(() => [`base_url = ${gatewayBaseUrl.value}`, 'api_key = <这里填本页 API Key>', 'protocol = OpenAI-compatible /v1'].join('\n'))
+const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填本页复制的密钥'].join('\n'))
 
 function groupName(groupId: string) {
   return groups.value.find((group) => group.id === groupId)?.name ?? groupId
@@ -333,24 +310,10 @@ onMounted(loadData)
   background: #fbfdff;
 }
 
-.gateway-guide-heading {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-bottom: 8px;
-}
-
-.gateway-guide-title {
+.gateway-step-title {
   color: #0f172a;
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
-}
-
-.gateway-guide-desc {
-  max-width: 760px;
-  margin: 0 0 14px;
-  color: #475569;
-  line-height: 1.7;
 }
 
 .gateway-url-row,
@@ -362,8 +325,7 @@ onMounted(loadData)
 }
 
 .gateway-url-label,
-.created-key-label,
-.gateway-example-title {
+.created-key-label {
   flex: none;
   color: #64748b;
   font-size: 12px;
@@ -388,13 +350,6 @@ onMounted(loadData)
   flex: none;
 }
 
-.gateway-endpoints {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin: 8px 0 10px;
-}
-
 .gateway-code {
   margin: 0;
   padding: 10px 12px;
@@ -406,13 +361,6 @@ onMounted(loadData)
   border: 1px solid #e2e8f0;
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.8);
-}
-
-.gateway-flow-list {
-  padding-left: 20px;
-  margin: 8px 0 0;
-  color: #475569;
-  line-height: 1.8;
 }
 
 .modal-alert {

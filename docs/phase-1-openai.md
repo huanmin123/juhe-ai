@@ -79,16 +79,21 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 - 账户在创建 / 编辑时主动选择归属分组
 - 一个账户同一时间归属零个或一个分组
+- 账户所有者可以把账户授权给其他系统账户使用；授权不改变账户所有者，也不复制凭据
+- 被授权用户可以把授权账户加入自己的同供应商分组，像使用自己账户一样参与调度
+- 被授权用户不能编辑、删除、查看敏感凭据、修改代理/并发/错误策略/状态/调度配置，也不能继续转授权
+- 分组授权在账户授权之后实现；分组所有者可以把整个分组授权给其他系统账户使用，授权共享该分组内当前全部可共享账户
+- 被授权用户可以把自己的 API Key 绑定到授权分组，但不能编辑分组、增删账户、调整权重或继续转授权
 - 分组可以汇总多个 OpenAI 账户
-- API Key 绑定一个分组
+- API Key 绑定一个自有分组；分组授权完成后也可以绑定授权给自己的分组
 - 请求进入后只能使用该 API Key 对应分组内的账户
 
 ## 页面优先级
 
 1. 供应商页：展示 OpenAI、支持的账户类型和模型价格目录
-2. 账户页：OpenAI OAuth / API Key 创建、编辑、状态切换
-3. 分组页：维护分组基础信息并查看账户数量与聚合状态
-4. API Key 页：创建密钥并绑定分组
+2. 账户页：OpenAI OAuth / API Key 创建、编辑、状态切换、授权管理和授权用量查看
+3. 分组页：维护分组基础信息、查看账户数量与聚合状态，账户授权完成后补授权管理和授权用量查看
+4. API Key 页：创建密钥并绑定自有分组，分组授权完成后可绑定授权分组
 5. 代理页：维护代理并给账户选择
 6. 使用记录页：先做空状态和列表结构
 7. 系统设置页：先做基础配置占位
@@ -101,16 +106,22 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 4. `POST /api/accounts`
 5. `PATCH /api/accounts/:id`
 6. `DELETE /api/accounts/:id`
-7. `GET /api/groups`
-8. `POST /api/groups`
-9. `PATCH /api/groups/:id`
-10. `DELETE /api/groups/:id`
-11. `GET /api/api-keys`
-12. `POST /api/api-keys`
-13. `PATCH /api/api-keys/:id`
-14. `DELETE /api/api-keys/:id`
-15. `GET /api/proxies`
-16. `POST /api/proxies`
+7. `GET /api/accounts/:id/authorizations`
+8. `POST /api/accounts/:id/authorizations`
+9. `DELETE /api/accounts/:id/authorizations/:authorizationId`
+10. `GET /api/groups`
+11. `POST /api/groups`
+12. `PATCH /api/groups/:id`
+13. `DELETE /api/groups/:id`
+14. `GET /api/groups/:id/authorizations`
+15. `POST /api/groups/:id/authorizations`
+16. `DELETE /api/groups/:id/authorizations/:authorizationId`
+17. `GET /api/api-keys`
+18. `POST /api/api-keys`
+19. `PATCH /api/api-keys/:id`
+20. `DELETE /api/api-keys/:id`
+21. `GET /api/proxies`
+22. `POST /api/proxies`
 
 ## 暂不做
 
@@ -172,6 +183,8 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 账户列表只展示运维判断需要的信息：
 
 - 账户名称
+- 来源：自有账户 / 授权账户
+- 所有者摘要：仅授权账户展示
 - 账户类型
 - 供应商
 - 并发数
@@ -181,11 +194,36 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - 最近使用时间
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、恢复正常/停用、暂停/恢复调度和切换客户端，不提供“刷新用量”按钮。测试会打开结果弹窗，可选择模型；弹窗终端区域只展示测试过程、成败和模型返回内容，状态码、耗时、请求 URL、代理、原始响应正文等排查字段统一通过完整 JSON 查看，不再额外展示测试结果表格；如果测试响应里带有 Codex rate-limit header，可作为副作用更新 OAuth 额度快照。
+操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、恢复正常/停用、暂停/恢复调度、切换客户端和授权管理，不提供“刷新用量”按钮。授权管理只对自有账户展示；授权账户只保留使用相关操作，隐藏编辑、删除、授权管理和所有配置修改入口。测试会打开结果弹窗，可选择模型；弹窗终端区域只展示测试过程、成败和模型返回内容，状态码、耗时、请求 URL、代理、原始响应正文等排查字段统一通过完整 JSON 查看，不再额外展示测试结果表格；如果测试响应里带有 Codex rate-limit header，可作为副作用更新 OAuth 额度快照。
+
+## 账户使用授权
+
+授权管理弹窗从账户列表“更多”打开，只对账户所有者展示。弹窗需要同时解决两个问题：知道这个账户授权给了谁，以及每个被授权用户用了多少。
+
+- 授权名单展示被授权用户、授权状态、授权时间、授权人、备注、最后使用时间和收回按钮。
+- 新增授权时选择一个系统账户，后端校验不能授权给自己、不能重复有效授权、不能授权给停用用户。
+- 收回授权只把授权状态改成 `revoked`，不删除历史行，历史使用统计继续可见。
+- 使用统计按被授权用户或 `account_authorization_id` 聚合展示请求次数、成功次数、失败次数、输入 Token、输出 Token、缓存读取 Token、总 Token、成本、最后使用时间和最近模型。
+- 第一阶段统计范围至少支持累计和最近 7 天，后续再补本月和自授权以来的快捷筛选。
+- 账户所有者只能看授权账户在这个账户上的聚合用量，不能看被授权用户的请求快照、响应快照、客户端 IP、API Key 明文或业务请求内容。
+
+## 分组使用授权
+
+分组使用授权排在账户使用授权之后实现。授权管理弹窗从分组列表“更多”打开，只对分组所有者展示。弹窗同样需要展示授权给了谁，以及每个被授权用户通过该分组用了多少。
+
+- 授权名单展示被授权用户、授权状态、授权时间、授权人、备注、最后使用时间和收回按钮。
+- 新增授权时选择一个系统账户，后端校验不能授权给自己、不能重复有效授权、不能授权给停用用户。
+- 收回授权只把授权状态改成 `revoked`，不删除历史行；被授权用户已绑定该分组的 API Key 应立即不可继续调度。
+- 使用统计按被授权用户或 `group_authorization_id` 聚合展示请求次数、成功次数、失败次数、输入 Token、输出 Token、缓存读取 Token、总 Token、成本、最后使用时间、最近模型和命中账户数。
+- 分组授权是动态使用权，分组所有者后续新增、移除或停用可共享账户，会直接影响被授权用户通过该分组可调度的账户集合。
+- 授权分组第一阶段只共享分组所有者自有账户；如果分组里包含别人授权来的账户，不能通过分组授权继续共享给第三方。
+- 分组所有者只能看被授权用户在该分组上的聚合用量，不能看被授权用户的请求快照、响应快照、客户端 IP、API Key 明文或业务请求内容。
 
 ## 统计口径
 
-- 网关会记录命中账户、API Key、分组、模型、状态、IP、首 token、总耗时、错误和 token。
+- 网关会记录调用方系统账户、账户所有者、分组所有者、账户授权关系、分组授权关系、命中账户、API Key、分组、模型、状态、IP、首 token、总耗时、错误和 token。
+- 授权账户调用时，请求日志归实际调用方；账户真实用量按同一个 `account_id` 统一累计；授权管理用量按 `account_authorization_id` 或被授权用户聚合。
+- 授权分组调用时，请求日志归实际调用方；分组真实用量按同一个 `group_id` 统一累计；分组授权管理用量按 `group_authorization_id` 或被授权用户聚合。
 - OpenAI JSON 响应读取 `usage.input_tokens`、`usage.output_tokens` 和 `usage.input_tokens_details.cached_tokens`。
 - OpenAI SSE 响应读取 `response.completed` / `response.done` / `response.failed` 事件里的 `response.usage`。
 - 成本按 OpenAI 官方 API 价格表做轻量估算；没有覆盖的模型先只记 token。
