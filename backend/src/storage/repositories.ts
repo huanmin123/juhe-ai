@@ -802,8 +802,10 @@ function runDelete(sql: string, id: string): boolean {
 }
 
 function accountFingerprint(providerCode: string, type: string, baseUrl: string, secret: string): string {
+  void providerCode
+  void type
   void baseUrl
-  return hashSecret(`${providerCode}:${type}:${secret.trim()}`)
+  return hashSecret(secret.trim())
 }
 
 function isDuplicateAccountCredentialError(error: unknown): boolean {

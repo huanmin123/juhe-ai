@@ -47,6 +47,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 保存要求：
 
 - token 加密存储
+- `refresh_token` 按凭据指纹做数据库全局唯一约束，不能被其他系统账户重复添加；无 `refresh_token` 时兜底约束 `access_token`
 - 列表不展示 Access Token 与 Refresh Token，编辑弹窗可查看和修改
 - 可设置过期时间
 - 可手动启用 / 停用
@@ -68,6 +69,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 保存要求：
 
 - API Key 加密存储
+- API Key 按凭据指纹做数据库全局唯一约束，不能被其他系统账户重复添加
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
 - 可手动启用 / 停用

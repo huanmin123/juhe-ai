@@ -178,6 +178,7 @@ AI 账户是上游凭据和调度配置的承载对象，归属某个系统账�
 - `type`：`oauth` 或 `api_key`
 - `status`：`active`、`disabled`、`error`、`rate_limited`、`temporary_unavailable`
 - `credentials`：加密后的凭据内容
+- `credential_fingerprint`：上游凭据指纹；按凭据明文归一化后哈希，底层全局唯一，用于禁止任意系统账户重复添加同一份 `API Key`、OAuth `refresh_token` 或兜底 `access_token`
 - `credential_mask`：兼容保留字段；列表不展示凭据，编辑弹窗可展示完整凭据
 - `proxy_profile_id`
 - `concurrency_limit`

@@ -360,6 +360,7 @@
 </template>
 
 <script setup lang="ts">
+import axios from 'axios'
 import type { Dayjs } from 'dayjs'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -956,6 +957,13 @@ function resetFilters() {
   void loadData()
 }
 
+function extractApiErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError<{ message?: string }>(error)) {
+    return error.response?.data?.message ?? fallback
+  }
+  return error instanceof Error ? error.message : fallback
+}
+
 function handleSystemAccountFilterChange() {
   selectedAccountIds.value = []
   void loadData()
@@ -1132,7 +1140,7 @@ async function saveAccount() {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('保存账户失败')
+    message.error(extractApiErrorMessage(error, '保存账户失败'))
   } finally {
     saving.value = false
   }

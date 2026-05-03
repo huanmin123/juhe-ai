@@ -422,10 +422,10 @@ export function applySchema(database: DatabaseSync): void {
   migrateUsageStatsLegacyColumns(database)
   migrateStatsJobStateLegacyColumns(database)
   ensureSystemMetricsColumns(database)
-  migrateAccountCredentialFingerprints(database)
-  database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
   database.exec('DROP INDEX IF EXISTS idx_accounts_credential_fingerprint;')
   database.exec('DROP INDEX IF EXISTS idx_accounts_owner_credential_fingerprint;')
+  migrateAccountCredentialFingerprints(database)
+  database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);')
@@ -517,14 +517,13 @@ function migrateStatsJobStateLegacyColumns(database: DatabaseSync): void {
 
 function migrateAccountCredentialFingerprints(database: DatabaseSync): void {
   const rows = database.prepare(`
-    SELECT id, provider_code, type, status, credentials_encrypted, credential_fingerprint
+    SELECT id, provider_code, type, credentials_encrypted, credential_fingerprint
     FROM accounts
     ORDER BY created_at ASC, id ASC
   `).all() as unknown as Array<{
     id: string
     provider_code: string
     type: string
-    status: string
     credentials_encrypted: string
     credential_fingerprint: string | null
   }>
@@ -574,15 +573,15 @@ function credentialFingerprintFromEncryptedCredentials(row: {
       ? credentials.refresh_token ?? credentials.access_token ?? ''
       : credentials.api_key ?? ''
     return typeof secret === 'string' && secret.trim()
-      ? accountCredentialFingerprint(row.provider_code, row.type, secret)
+      ? accountCredentialFingerprint(secret)
       : null
   } catch {
     return null
   }
 }
 
-function accountCredentialFingerprint(providerCode: string, type: string, secret: string): string {
-  return hashSecret(`${providerCode}:${type}:${secret.trim()}`)
+function accountCredentialFingerprint(secret: string): string {
+  return hashSecret(secret.trim())
 }
 
 function ensureSystemMetricsColumns(database: DatabaseSync): void {
