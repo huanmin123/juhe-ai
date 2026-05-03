@@ -336,7 +336,7 @@ API Key 是对外访问入口，不直接绑定账户，而是绑定分组。
 - `usage_stats_hourly`：按 `system_account_id + scope_type + scope_id + stat_hour` 存小时趋势，用于近 24 小时和近 7 天。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 聚合请求数、token 和成本，用于模型分布。
 - `usage_error_daily`：按 `system_account_id + stat_date + error_group + error_code` 聚合错误，用于错误情况。
-- `system_metrics_samples`：主机级运维采样，记录 CPU、内存、RSS、Heap、事件循环延迟、数据库大小和统计滞后，默认仅管理员可见。
+- `system_metrics_samples`：主机级运维采样，记录 CPU、内存、RSS、Heap、事件循环延迟、网络入站/出站吞吐、网卡累计收发、数据库大小和统计滞后，默认仅管理员可见。
 - `system_metrics_hourly`：把主机采样值做小时级平均、最大值和最小值，供监控图长期查看。
 - `stats_job_state`：按 `scope_type + scope_id + job_name` 记录任务游标、上次成功时间、上次错误和处理滞后；用户业务汇总使用 `scope_type = system_account`，主机监控使用 `scope_type = global`。
 
@@ -482,6 +482,7 @@ UI 规则：
 - OAuth 凭据字段：`access_token`、`refresh_token`、`expires_at`、`client_id`、`email`、`base_url`。
 - 网关调度：同一分组内可混合 API Key 账户和 OAuth 账户，OAuth 账户使用 `access_token` 透传到上游。
 - 自动刷新：OAuth `expires_at` 接近过期时，用 `refresh_token` 刷新并写回 SQLite。
+
 
 
 

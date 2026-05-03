@@ -324,6 +324,10 @@ export function applySchema(database: DatabaseSync): void {
       process_heap_used_bytes INTEGER,
       process_heap_total_bytes INTEGER,
       event_loop_lag_ms REAL,
+      network_rx_bytes_per_sec REAL,
+      network_tx_bytes_per_sec REAL,
+      network_rx_total_bytes INTEGER,
+      network_tx_total_bytes INTEGER,
       db_file_bytes INTEGER,
       stats_lag_seconds INTEGER
     );
@@ -341,6 +345,12 @@ export function applySchema(database: DatabaseSync): void {
       process_heap_used_bytes_max INTEGER,
       event_loop_lag_ms_sum REAL NOT NULL DEFAULT 0,
       event_loop_lag_ms_max REAL,
+      network_rx_bytes_per_sec_sum REAL NOT NULL DEFAULT 0,
+      network_rx_bytes_per_sec_max REAL,
+      network_tx_bytes_per_sec_sum REAL NOT NULL DEFAULT 0,
+      network_tx_bytes_per_sec_max REAL,
+      network_rx_total_bytes_max INTEGER,
+      network_tx_total_bytes_max INTEGER,
       db_file_bytes_max INTEGER,
       stats_lag_seconds_max INTEGER,
       updated_at TEXT NOT NULL
@@ -492,6 +502,10 @@ function migrateStatsJobStateLegacyColumns(database: DatabaseSync): void {
 function ensureSystemMetricsColumns(database: DatabaseSync): void {
   ensureColumn(database, 'system_metrics_samples', 'id', 'TEXT')
   ensureColumn(database, 'system_metrics_samples', 'created_at', 'TEXT')
+  ensureColumn(database, 'system_metrics_samples', 'network_rx_bytes_per_sec', 'REAL')
+  ensureColumn(database, 'system_metrics_samples', 'network_tx_bytes_per_sec', 'REAL')
+  ensureColumn(database, 'system_metrics_samples', 'network_rx_total_bytes', 'INTEGER')
+  ensureColumn(database, 'system_metrics_samples', 'network_tx_total_bytes', 'INTEGER')
 
   ensureColumn(database, 'system_metrics_hourly', 'cpu_percent_sum', 'REAL NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_metrics_hourly', 'memory_used_percent_sum', 'REAL NOT NULL DEFAULT 0')
@@ -499,6 +513,12 @@ function ensureSystemMetricsColumns(database: DatabaseSync): void {
   ensureColumn(database, 'system_metrics_hourly', 'process_heap_used_bytes_sum', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_metrics_hourly', 'process_heap_used_bytes_max', 'INTEGER')
   ensureColumn(database, 'system_metrics_hourly', 'event_loop_lag_ms_sum', 'REAL NOT NULL DEFAULT 0')
+  ensureColumn(database, 'system_metrics_hourly', 'network_rx_bytes_per_sec_sum', 'REAL NOT NULL DEFAULT 0')
+  ensureColumn(database, 'system_metrics_hourly', 'network_rx_bytes_per_sec_max', 'REAL')
+  ensureColumn(database, 'system_metrics_hourly', 'network_tx_bytes_per_sec_sum', 'REAL NOT NULL DEFAULT 0')
+  ensureColumn(database, 'system_metrics_hourly', 'network_tx_bytes_per_sec_max', 'REAL')
+  ensureColumn(database, 'system_metrics_hourly', 'network_rx_total_bytes_max', 'INTEGER')
+  ensureColumn(database, 'system_metrics_hourly', 'network_tx_total_bytes_max', 'INTEGER')
   ensureColumn(database, 'system_metrics_hourly', 'db_file_bytes_max', 'INTEGER')
   ensureColumn(database, 'system_metrics_hourly', 'stats_lag_seconds_max', 'INTEGER')
   ensureColumn(database, 'system_metrics_hourly', 'sample_count', 'INTEGER NOT NULL DEFAULT 0')
@@ -731,3 +751,5 @@ function ensureDefaultOpenAIGroups(database: DatabaseSync, timestamp: string): v
     insertGroup.run(groupId, account.id, DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
   }
 }
+
+

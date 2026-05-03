@@ -45,20 +45,10 @@
         </a-card>
       </a-col>
       <a-col :xs="24" :xl="14">
-        <a-card title="系统性能趋势（近 24 小时）" class="page-card chart-card" :loading="loading">
+        <a-card title="系统性能 / 网络吞吐趋势（近 24 小时）" class="page-card chart-card" :loading="loading">
           <template v-if="isAdmin">
             <a-empty v-if="!hasSystemTrend" description="等待后台监控采样" />
-            <div v-else ref="systemMetricsChartRef" class="chart-panel" />
-            <a-descriptions v-if="systemMetrics?.latest" class="metrics-latest" size="small" :column="4" bordered>
-              <a-descriptions-item label="CPU">{{ formatPercent(systemMetrics.latest.cpuPercent) }}</a-descriptions-item>
-              <a-descriptions-item label="内存">{{ formatPercent(systemMetrics.latest.memoryUsedPercent) }}</a-descriptions-item>
-              <a-descriptions-item label="RSS">{{ formatBytes(systemMetrics.latest.processRssBytes) }}</a-descriptions-item>
-              <a-descriptions-item label="Heap">{{ formatBytes(systemMetrics.latest.processHeapUsedBytes) }}</a-descriptions-item>
-              <a-descriptions-item label="事件循环延迟">{{ formatDuration(systemMetrics.latest.eventLoopLagMs) }}</a-descriptions-item>
-              <a-descriptions-item label="统计滞后">{{ formatSeconds(systemMetrics.latest.statsLagSeconds ?? usageOverview?.statsLagSeconds) }}</a-descriptions-item>
-              <a-descriptions-item label="数据库大小">{{ formatBytes(systemMetrics.latest.dbFileBytes) }}</a-descriptions-item>
-              <a-descriptions-item label="采样时间">{{ formatDateTime(systemMetrics.latest.sampledAt) }}</a-descriptions-item>
-            </a-descriptions>
+            <div v-else ref="systemMetricsChartRef" class="chart-panel chart-panel-large" />
           </template>
           <a-empty v-else description="系统监控仅管理员可见" />
         </a-card>
@@ -323,14 +313,14 @@ function renderSystemMetricsChart() {
 
   const trend = systemMetrics.value.hourlyTrend
   const option: EChartsOption = {
-    color: ['#1677ff', '#52c41a', '#faad14', '#722ed1'],
+    color: ['#1677ff', '#52c41a', '#13c2c2', '#722ed1', '#faad14'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => systemMetricsTooltip(params)
     },
     legend: {
       bottom: 0,
-      data: ['CPU 平均', '内存平均', '事件循环延迟', '统计滞后']
+      data: ['CPU 平均', '内存平均', '入站带宽', '出站带宽', '事件循环延迟']
     },
     grid: {
       left: 48,
@@ -354,7 +344,7 @@ function renderSystemMetricsChart() {
       },
       {
         type: 'value',
-        name: '延迟 / 秒',
+        name: 'Mbps / ms',
         axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
         splitLine: { show: false }
       }
@@ -377,6 +367,24 @@ function renderSystemMetricsChart() {
         data: trend.map((item) => item.memoryUsedPercentAvg ?? null)
       },
       {
+        name: '入站带宽',
+        type: 'line',
+        yAxisIndex: 1,
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 6,
+        data: trend.map((item) => bytesPerSecondToMbps(item.networkRxBytesPerSecondAvg))
+      },
+      {
+        name: '出站带宽',
+        type: 'line',
+        yAxisIndex: 1,
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 6,
+        data: trend.map((item) => bytesPerSecondToMbps(item.networkTxBytesPerSecondAvg))
+      },
+      {
         name: '事件循环延迟',
         type: 'line',
         yAxisIndex: 1,
@@ -384,15 +392,6 @@ function renderSystemMetricsChart() {
         symbol: 'circle',
         symbolSize: 6,
         data: trend.map((item) => item.eventLoopLagMsAvg ?? null)
-      },
-      {
-        name: '统计滞后',
-        type: 'line',
-        yAxisIndex: 1,
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => item.statsLagSecondsMax ?? null)
       }
     ]
   }
@@ -465,7 +464,7 @@ function systemMetricsTooltip(params: unknown) {
   for (const point of points) {
     const name = String(point.seriesName ?? '')
     const value = pointValue(point)
-    const formatted = name.includes('CPU') || name.includes('内存') ? formatPercent(value) : name.includes('事件循环') ? formatDuration(value) : formatSeconds(value)
+    const formatted = name.includes('CPU') || name.includes('内存') ? formatPercent(value) : name.includes('带宽') ? formatNetworkRateFromMbps(value) : formatDuration(value)
     lines.push(`${point.marker ?? ''}${name}: ${formatted}`)
   }
   return lines.join('<br/>')
@@ -530,19 +529,14 @@ function formatSeconds(value?: number) {
   return value === undefined ? '-' : `${Math.round(value)} 秒`
 }
 
-function formatBytes(value?: number) {
-  if (value === undefined) return '-'
-  if (value >= 1024 ** 3) return `${(value / 1024 ** 3).toFixed(2)} GB`
-  if (value >= 1024 ** 2) return `${(value / 1024 ** 2).toFixed(2)} MB`
-  if (value >= 1024) return `${(value / 1024).toFixed(2)} KB`
-  return `${value} B`
+function bytesPerSecondToMbps(value?: number) {
+  return value === undefined ? null : (value * 8) / 1_000_000
 }
 
-function formatDateTime(value?: string) {
-  if (!value) return '-'
-  const date = new Date(value)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { hour12: false })
+function formatNetworkRateFromMbps(value?: number) {
+  return value === undefined ? '-' : `${value.toFixed(value >= 10 ? 1 : 2)} Mbps`
 }
+
 
 function formatHourLabel(value: string) {
   const date = new Date(`${value}:00:00.000Z`)
@@ -644,10 +638,6 @@ onBeforeUnmount(() => {
   height: 340px;
 }
 
-.metrics-latest {
-  margin-top: 14px;
-}
-
 @media (max-width: 768px) {
   .chart-panel,
   .chart-panel-large {
@@ -655,3 +645,7 @@ onBeforeUnmount(() => {
   }
 }
 </style>
+
+
+
+

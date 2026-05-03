@@ -205,8 +205,8 @@
 - `usage_stats_hourly`：按 `system_account_id` 隔离的小时统计缓存
 - `usage_model_daily`：按 `system_account_id` 隔离的模型分布统计缓存
 - `usage_error_daily`：按 `system_account_id` 隔离的错误分布统计缓存
-- `system_metrics_sample`：系统监控采样数据
-- `system_metrics_hourly`：系统监控小时聚合数据
+- `system_metrics_sample`：系统监控采样数据，包含 CPU、内存、进程、事件循环、网络吞吐和数据库大小
+- `system_metrics_hourly`：系统监控小时聚合数据，支持性能与网络带宽趋势图
 - `stats_job_state`：统计任务游标与状态
 - `account_usage_snapshot`：按 `system_account_id + account_id` 隔离的账号级上游额度快照，第一阶段只用于 OpenAI OAuth 的 Codex `5h` / `7d` 进度和后台刷新状态
 - `system_setting`：系统设置，按系统账户隔离
@@ -245,3 +245,5 @@
 - 文档能说明每个关键字段的作用
 - 系统设置可配置用户级默认临时不可调用时长、临时状态短暂重试参数、请求熔断时间和流熔断阈值；未命中账号规则的上游错误、未知异常和流式中断都会写入账号临时不可调用状态
 - 全局品牌设置可以被管理员修改，未登录页可以读取
+
+

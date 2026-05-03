@@ -2175,6 +2175,10 @@ interface SystemMetricsSampleInput {
   processHeapUsedBytes?: number
   processHeapTotalBytes?: number
   eventLoopLagMs?: number
+  networkRxBytesPerSecond?: number
+  networkTxBytesPerSecond?: number
+  networkRxTotalBytes?: number
+  networkTxTotalBytes?: number
   dbFileBytes?: number
   statsLagSeconds?: number
 }
@@ -2199,6 +2203,10 @@ export interface SystemMetricsOverview {
     processHeapUsedBytes?: number
     processHeapTotalBytes?: number
     eventLoopLagMs?: number
+    networkRxBytesPerSecond?: number
+    networkTxBytesPerSecond?: number
+    networkRxTotalBytes?: number
+    networkTxTotalBytes?: number
     dbFileBytes?: number
     statsLagSeconds?: number
   }
@@ -2211,6 +2219,12 @@ export interface SystemMetricsOverview {
     memoryUsedPercentMax?: number
     eventLoopLagMsAvg?: number
     eventLoopLagMsMax?: number
+    networkRxBytesPerSecondAvg?: number
+    networkRxBytesPerSecondMax?: number
+    networkTxBytesPerSecondAvg?: number
+    networkTxBytesPerSecondMax?: number
+    networkRxTotalBytesMax?: number
+    networkTxTotalBytesMax?: number
     processRssBytesMax?: number
     processHeapUsedBytesMax?: number
     dbFileBytesMax?: number
@@ -2274,8 +2288,9 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
         INSERT INTO system_metrics_samples (
           sampled_at, cpu_percent, memory_used_percent, memory_total_bytes, memory_free_bytes,
           process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes, event_loop_lag_ms,
+          network_rx_bytes_per_sec, network_tx_bytes_per_sec, network_rx_total_bytes, network_tx_total_bytes,
           db_file_bytes, stats_lag_seconds, id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         sampledAt,
@@ -2287,6 +2302,10 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
         input.processHeapUsedBytes ?? null,
         input.processHeapTotalBytes ?? null,
         input.eventLoopLagMs ?? null,
+        input.networkRxBytesPerSecond ?? null,
+        input.networkTxBytesPerSecond ?? null,
+        input.networkRxTotalBytes ?? null,
+        input.networkTxTotalBytes ?? null,
         input.dbFileBytes ?? null,
         input.statsLagSeconds ?? null,
         newId('metric'),
@@ -2412,6 +2431,10 @@ export function getSystemMetricsOverview(): SystemMetricsOverview {
           processHeapUsedBytes: numberFromUnknown(latest.process_heap_used_bytes),
           processHeapTotalBytes: numberFromUnknown(latest.process_heap_total_bytes),
           eventLoopLagMs: numberFromUnknown(latest.event_loop_lag_ms),
+          networkRxBytesPerSecond: numberFromUnknown(latest.network_rx_bytes_per_sec),
+          networkTxBytesPerSecond: numberFromUnknown(latest.network_tx_bytes_per_sec),
+          networkRxTotalBytes: numberFromUnknown(latest.network_rx_total_bytes),
+          networkTxTotalBytes: numberFromUnknown(latest.network_tx_total_bytes),
           dbFileBytes: numberFromUnknown(latest.db_file_bytes),
           statsLagSeconds: numberFromUnknown(latest.stats_lag_seconds)
         }
@@ -2427,6 +2450,12 @@ export function getSystemMetricsOverview(): SystemMetricsOverview {
         memoryUsedPercentMax: numberFromUnknown(row.memory_used_percent_max),
         eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, sampleCount),
         eventLoopLagMsMax: numberFromUnknown(row.event_loop_lag_ms_max),
+        networkRxBytesPerSecondAvg: averageFromSum(row.network_rx_bytes_per_sec_sum, sampleCount),
+        networkRxBytesPerSecondMax: numberFromUnknown(row.network_rx_bytes_per_sec_max),
+        networkTxBytesPerSecondAvg: averageFromSum(row.network_tx_bytes_per_sec_sum, sampleCount),
+        networkTxBytesPerSecondMax: numberFromUnknown(row.network_tx_bytes_per_sec_max),
+        networkRxTotalBytesMax: numberFromUnknown(row.network_rx_total_bytes_max),
+        networkTxTotalBytesMax: numberFromUnknown(row.network_tx_total_bytes_max),
         processRssBytesMax: numberFromUnknown(row.process_rss_bytes_max),
         processHeapUsedBytesMax: numberFromUnknown(row.process_heap_used_bytes_max),
         dbFileBytesMax: numberFromUnknown(row.db_file_bytes_max),
@@ -2622,10 +2651,15 @@ function upsertUsageErrorDaily(database: DatabaseSync, row: UsageStatsRecordRow,
 
 function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, input: SystemMetricsSampleInput, updatedAt: string): void {
   database.prepare(`
-    INSERT INTO system_metrics_hourly (stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
+    INSERT INTO system_metrics_hourly (
+      stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
       memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
-      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_max, db_file_bytes_max, stats_lag_seconds_max, updated_at)
-    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_max,
+      network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_tx_bytes_per_sec_sum,
+      network_tx_bytes_per_sec_max, network_rx_total_bytes_max, network_tx_total_bytes_max,
+      db_file_bytes_max, stats_lag_seconds_max, updated_at
+    )
+    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(stat_hour) DO UPDATE SET
       sample_count = sample_count + 1,
       cpu_percent_sum = cpu_percent_sum + excluded.cpu_percent_sum,
@@ -2638,10 +2672,37 @@ function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, inp
       process_heap_used_bytes_max = CASE WHEN excluded.process_heap_used_bytes_max IS NULL THEN system_metrics_hourly.process_heap_used_bytes_max WHEN system_metrics_hourly.process_heap_used_bytes_max IS NULL OR excluded.process_heap_used_bytes_max > system_metrics_hourly.process_heap_used_bytes_max THEN excluded.process_heap_used_bytes_max ELSE system_metrics_hourly.process_heap_used_bytes_max END,
       event_loop_lag_ms_sum = event_loop_lag_ms_sum + excluded.event_loop_lag_ms_sum,
       event_loop_lag_ms_max = CASE WHEN excluded.event_loop_lag_ms_max IS NULL THEN system_metrics_hourly.event_loop_lag_ms_max WHEN system_metrics_hourly.event_loop_lag_ms_max IS NULL OR excluded.event_loop_lag_ms_max > system_metrics_hourly.event_loop_lag_ms_max THEN excluded.event_loop_lag_ms_max ELSE system_metrics_hourly.event_loop_lag_ms_max END,
+      network_rx_bytes_per_sec_sum = network_rx_bytes_per_sec_sum + excluded.network_rx_bytes_per_sec_sum,
+      network_rx_bytes_per_sec_max = CASE WHEN excluded.network_rx_bytes_per_sec_max IS NULL THEN system_metrics_hourly.network_rx_bytes_per_sec_max WHEN system_metrics_hourly.network_rx_bytes_per_sec_max IS NULL OR excluded.network_rx_bytes_per_sec_max > system_metrics_hourly.network_rx_bytes_per_sec_max THEN excluded.network_rx_bytes_per_sec_max ELSE system_metrics_hourly.network_rx_bytes_per_sec_max END,
+      network_tx_bytes_per_sec_sum = network_tx_bytes_per_sec_sum + excluded.network_tx_bytes_per_sec_sum,
+      network_tx_bytes_per_sec_max = CASE WHEN excluded.network_tx_bytes_per_sec_max IS NULL THEN system_metrics_hourly.network_tx_bytes_per_sec_max WHEN system_metrics_hourly.network_tx_bytes_per_sec_max IS NULL OR excluded.network_tx_bytes_per_sec_max > system_metrics_hourly.network_tx_bytes_per_sec_max THEN excluded.network_tx_bytes_per_sec_max ELSE system_metrics_hourly.network_tx_bytes_per_sec_max END,
+      network_rx_total_bytes_max = CASE WHEN excluded.network_rx_total_bytes_max IS NULL THEN system_metrics_hourly.network_rx_total_bytes_max WHEN system_metrics_hourly.network_rx_total_bytes_max IS NULL OR excluded.network_rx_total_bytes_max > system_metrics_hourly.network_rx_total_bytes_max THEN excluded.network_rx_total_bytes_max ELSE system_metrics_hourly.network_rx_total_bytes_max END,
+      network_tx_total_bytes_max = CASE WHEN excluded.network_tx_total_bytes_max IS NULL THEN system_metrics_hourly.network_tx_total_bytes_max WHEN system_metrics_hourly.network_tx_total_bytes_max IS NULL OR excluded.network_tx_total_bytes_max > system_metrics_hourly.network_tx_total_bytes_max THEN excluded.network_tx_total_bytes_max ELSE system_metrics_hourly.network_tx_total_bytes_max END,
       db_file_bytes_max = CASE WHEN excluded.db_file_bytes_max IS NULL THEN system_metrics_hourly.db_file_bytes_max WHEN system_metrics_hourly.db_file_bytes_max IS NULL OR excluded.db_file_bytes_max > system_metrics_hourly.db_file_bytes_max THEN excluded.db_file_bytes_max ELSE system_metrics_hourly.db_file_bytes_max END,
       stats_lag_seconds_max = CASE WHEN excluded.stats_lag_seconds_max IS NULL THEN system_metrics_hourly.stats_lag_seconds_max WHEN system_metrics_hourly.stats_lag_seconds_max IS NULL OR excluded.stats_lag_seconds_max > system_metrics_hourly.stats_lag_seconds_max THEN excluded.stats_lag_seconds_max ELSE system_metrics_hourly.stats_lag_seconds_max END,
       updated_at = excluded.updated_at
-  `).run(statHour, input.cpuPercent ?? 0, input.cpuPercent ?? null, input.memoryUsedPercent ?? 0, input.memoryUsedPercent ?? null, input.processRssBytes ?? 0, input.processRssBytes ?? null, input.processHeapUsedBytes ?? 0, input.processHeapUsedBytes ?? null, input.eventLoopLagMs ?? 0, input.eventLoopLagMs ?? null, input.dbFileBytes ?? null, input.statsLagSeconds ?? null, updatedAt)
+  `).run(
+    statHour,
+    input.cpuPercent ?? 0,
+    input.cpuPercent ?? null,
+    input.memoryUsedPercent ?? 0,
+    input.memoryUsedPercent ?? null,
+    input.processRssBytes ?? 0,
+    input.processRssBytes ?? null,
+    input.processHeapUsedBytes ?? 0,
+    input.processHeapUsedBytes ?? null,
+    input.eventLoopLagMs ?? 0,
+    input.eventLoopLagMs ?? null,
+    input.networkRxBytesPerSecond ?? 0,
+    input.networkRxBytesPerSecond ?? null,
+    input.networkTxBytesPerSecond ?? 0,
+    input.networkTxBytesPerSecond ?? null,
+    input.networkRxTotalBytes ?? null,
+    input.networkTxTotalBytes ?? null,
+    input.dbFileBytes ?? null,
+    input.statsLagSeconds ?? null,
+    updatedAt
+  )
 }
 
 function updateStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {
@@ -2723,4 +2784,6 @@ function settingsNumberValue(key: string, fallback: number, min: number, max: nu
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
 }
+
+
 

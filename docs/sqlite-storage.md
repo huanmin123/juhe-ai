@@ -44,7 +44,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `usage_stats_hourly`：按 `system_account_id + scope_type + scope_id + stat_hour` 保存业务统计，用于近 24 小时和近 7 天趋势图。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 保存请求数、Token 和成本，用于模型分布。
 - `usage_error_daily`：按 `system_account_id + stat_date + error_group + error_code` 保存错误数量，用于错误情况。
-- `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、事件循环延迟、数据库文件大小和统计滞后。
+- `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、事件循环延迟、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。
 
@@ -158,6 +158,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 这是单人自用系统，接口会返回前端需要展示的完整密钥；数据库中仍尽量加密保存。
 
 API Key 明文只在创建时返回一次。
+
 
 
 

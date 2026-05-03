@@ -317,6 +317,10 @@ export interface SystemMetricsOverview {
     processHeapUsedBytes?: number
     processHeapTotalBytes?: number
     eventLoopLagMs?: number
+    networkRxBytesPerSecond?: number
+    networkTxBytesPerSecond?: number
+    networkRxTotalBytes?: number
+    networkTxTotalBytes?: number
     dbFileBytes?: number
     statsLagSeconds?: number
   }
@@ -329,6 +333,12 @@ export interface SystemMetricsOverview {
     memoryUsedPercentMax?: number
     eventLoopLagMsAvg?: number
     eventLoopLagMsMax?: number
+    networkRxBytesPerSecondAvg?: number
+    networkRxBytesPerSecondMax?: number
+    networkTxBytesPerSecondAvg?: number
+    networkTxBytesPerSecondMax?: number
+    networkRxTotalBytesMax?: number
+    networkTxTotalBytesMax?: number
     processRssBytesMax?: number
     processHeapUsedBytesMax?: number
     dbFileBytesMax?: number
@@ -359,3 +369,4 @@ export interface GlobalSettings {
   loginBadge?: string
   [key: string]: unknown
 }
+

@@ -117,7 +117,7 @@
               </div>
             </div>
           </div>
-          <a-tag :color="accountStatusColor(testingAccount)">{{ testingAccount.status }}</a-tag>
+          <a-tag :color="accountStatusColor(testingAccount)">{{ accountStatusText(testingAccount) }}</a-tag>
         </div>
 
         <a-form layout="vertical" class="test-form">
@@ -139,14 +139,6 @@
         </div>
 
         <div v-if="testResult" class="test-result-meta">
-          <a-descriptions size="small" bordered :column="2">
-            <a-descriptions-item label="状态码">{{ testResult.statusCode ?? '-' }}</a-descriptions-item>
-            <a-descriptions-item label="耗时">{{ formatDuration(testResult.durationMs) }}</a-descriptions-item>
-            <a-descriptions-item label="模型">{{ testResult.model || testForm.model }}</a-descriptions-item>
-            <a-descriptions-item label="Token 刷新">{{ testResult.tokenRefreshed ? '已刷新' : '未刷新' }}</a-descriptions-item>
-            <a-descriptions-item label="请求 URL" :span="2">{{ testResult.requestUrl || '-' }}</a-descriptions-item>
-            <a-descriptions-item label="代理" :span="2">{{ testResult.proxyUrl || '未使用' }}</a-descriptions-item>
-          </a-descriptions>
           <a-collapse class="test-result-collapse" ghost>
             <a-collapse-panel key="result" header="完整测试结果 JSON">
               <a-textarea :value="testResultJson" :rows="8" readonly />
@@ -889,10 +881,6 @@ function formatDateTime(value?: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', { hour12: false })
-}
-
-function formatDuration(value?: number): string {
-  return typeof value === 'number' ? `${value} ms` : '-'
 }
 
 function formatTestTerminalResult(result: AccountTestResult): string {

@@ -1,5 +1,6 @@
-import { existsSync, statSync } from 'node:fs'
-import { cpus, freemem, totalmem } from 'node:os'
+import { existsSync, readFileSync, statSync } from 'node:fs'
+import { execFile } from 'node:child_process'
+import { cpus, freemem, platform, totalmem } from 'node:os'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
@@ -17,6 +18,7 @@ import {
 
 let started = false
 let previousCpuSnapshot = cpuSnapshot()
+let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
 let lastMetricsExpectedAt = Date.now()
 
 export function startBackgroundJobs(): void {
@@ -48,6 +50,7 @@ async function runSystemMetricsSample(): Promise<void> {
   const memoryFreeBytes = freemem()
   const memoryUsedPercent = memoryTotalBytes > 0 ? ((memoryTotalBytes - memoryFreeBytes) / memoryTotalBytes) * 100 : undefined
   const memoryUsage = process.memoryUsage()
+  const networkMetrics = await currentNetworkMetrics()
   try {
     insertSystemMetricsSample({
       cpuPercent: currentCpuPercent(),
@@ -58,6 +61,7 @@ async function runSystemMetricsSample(): Promise<void> {
       processHeapUsedBytes: memoryUsage.heapUsed,
       processHeapTotalBytes: memoryUsage.heapTotal,
       eventLoopLagMs: lagMs,
+      ...networkMetrics,
       dbFileBytes: databaseFileBytes(),
       statsLagSeconds: latestUsageStatsLagSeconds()
     })
@@ -124,4 +128,112 @@ function currentCpuPercent(): number | undefined {
   previousCpuSnapshot = next
   if (totalDelta <= 0) return undefined
   return Math.min(100, Math.max(0, (1 - idleDelta / totalDelta) * 100))
+}
+
+interface NetworkCounterSnapshot {
+  rxBytes: number
+  txBytes: number
+  sampledAtMs: number
+}
+
+interface NetworkMetricsSample {
+  networkRxBytesPerSecond?: number
+  networkTxBytesPerSecond?: number
+  networkRxTotalBytes?: number
+  networkTxTotalBytes?: number
+}
+
+async function currentNetworkMetrics(): Promise<NetworkMetricsSample> {
+  const next = await readNetworkCounterSnapshot()
+  if (!next) return {}
+
+  const previous = previousNetworkSnapshot
+  previousNetworkSnapshot = next
+  if (!previous) {
+    return {
+      networkRxTotalBytes: next.rxBytes,
+      networkTxTotalBytes: next.txBytes
+    }
+  }
+
+  const elapsedSeconds = (next.sampledAtMs - previous.sampledAtMs) / 1000
+  if (elapsedSeconds <= 0 || next.rxBytes < previous.rxBytes || next.txBytes < previous.txBytes) {
+    return {
+      networkRxTotalBytes: next.rxBytes,
+      networkTxTotalBytes: next.txBytes
+    }
+  }
+
+  return {
+    networkRxBytesPerSecond: (next.rxBytes - previous.rxBytes) / elapsedSeconds,
+    networkTxBytesPerSecond: (next.txBytes - previous.txBytes) / elapsedSeconds,
+    networkRxTotalBytes: next.rxBytes,
+    networkTxTotalBytes: next.txBytes
+  }
+}
+
+async function readNetworkCounterSnapshot(): Promise<NetworkCounterSnapshot | undefined> {
+  const counters = platform() === 'win32' ? await readWindowsNetworkCounters() : readProcNetworkCounters()
+  if (!counters) return undefined
+  return { ...counters, sampledAtMs: Date.now() }
+}
+
+function readProcNetworkCounters(): { rxBytes: number; txBytes: number } | undefined {
+  const path = '/proc/net/dev'
+  if (!existsSync(path)) return undefined
+  try {
+    const lines = readFileSync(path, 'utf8').split('\n').slice(2)
+    let rxBytes = 0
+    let txBytes = 0
+    for (const line of lines) {
+      const [ifacePart, dataPart] = line.split(':')
+      if (!ifacePart || !dataPart) continue
+      if (ifacePart.trim() === 'lo') continue
+      const fields = dataPart.trim().split(/\s+/).map((value) => Number(value))
+      if (fields.length < 16 || !Number.isFinite(fields[0]) || !Number.isFinite(fields[8])) continue
+      rxBytes += fields[0]
+      txBytes += fields[8]
+    }
+    return rxBytes > 0 || txBytes > 0 ? { rxBytes, txBytes } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function readWindowsNetworkCounters(): Promise<{ rxBytes: number; txBytes: number } | undefined> {
+  const command = `
+$adapters = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.Name -notmatch 'Loopback' }
+$stats = foreach ($adapter in $adapters) { Get-NetAdapterStatistics -Name $adapter.Name -ErrorAction SilentlyContinue }
+$rx = ($stats | Measure-Object -Property ReceivedBytes -Sum).Sum
+$tx = ($stats | Measure-Object -Property SentBytes -Sum).Sum
+if ($null -eq $rx) { $rx = 0 }
+if ($null -eq $tx) { $tx = 0 }
+[pscustomobject]@{ rxBytes = [double]$rx; txBytes = [double]$tx } | ConvertTo-Json -Compress
+`.trim()
+  try {
+    const stdout = await execFileText('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command], 5000)
+    const parsed = JSON.parse(stdout) as { rxBytes?: unknown; txBytes?: unknown }
+    const rxBytes = numberValue(parsed.rxBytes)
+    const txBytes = numberValue(parsed.txBytes)
+    return rxBytes !== undefined && txBytes !== undefined ? { rxBytes, txBytes } : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function execFileText(file: string, args: string[], timeout: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(file, args, { timeout, windowsHide: true }, (error, stdout) => {
+      if (error) {
+        reject(error)
+        return
+      }
+      resolve(stdout.toString())
+    })
+  })
+}
+
+function numberValue(value: unknown): number | undefined {
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(number) ? number : undefined
 }
