@@ -6,12 +6,19 @@
   "scripts": {
     "dev": "pnpm -r --parallel dev",
     "build": "pnpm -r build",
+    "package:release": "pwsh ./scripts/package-release.ps1",
+    "package:release:windows": "pwsh ./scripts/package-release.ps1",
+    "package:release:mac": "bash ./scripts/package-release.sh",
+    "package:release:linux": "bash ./scripts/package-release.sh",
+    "package:linux": "pwsh ./scripts/package-linux.ps1",
+    "package:linux:windows": "pwsh ./scripts/package-linux.ps1",
+    "package:linux:mac": "bash ./scripts/package-linux.sh",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "test:smoke": "pnpm --filter juhe-ai-backend test:smoke"
   },
   "engines": {
-    "node": ">=20.0.0",
+    "node": ">=22.5.0",
     "pnpm": ">=9.0.0"
   }
 }

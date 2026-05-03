@@ -14,7 +14,7 @@
 
     <a-row :gutter="[16, 16]">
       <a-col v-for="item in summaryCards" :key="item.key" :xs="24" :sm="12" :lg="6">
-        <a-card class="metric-card" :loading="loading">
+        <a-card class="metric-card" :loading="initialLoading">
           <div class="metric-label">{{ item.label }}</div>
           <div class="metric-value">{{ item.value }}</div>
           <div class="metric-extra">{{ item.extra }}</div>
@@ -24,14 +24,14 @@
 
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="14">
-        <a-card title="请求 / Token / 平均响应（近 24 小时）" class="page-card chart-card" :loading="loading">
-          <a-empty v-if="!hasUsageTrend" description="暂无趋势数据" />
+        <a-card title="请求 / Token / 平均响应（近 24 小时）" class="page-card chart-card" :loading="initialLoading">
+          <a-empty v-if="!hasUsageTrend" :description="usageTrendEmptyDescription" />
           <div v-else ref="usageTrendChartRef" class="chart-panel chart-panel-large" />
         </a-card>
       </a-col>
       <a-col :xs="24" :xl="10">
-        <a-card title="模型分布（今日）" class="page-card chart-card" :loading="loading">
-          <a-empty v-if="!hasModelDistribution" description="今日暂无模型调用" />
+        <a-card title="模型分布（今日）" class="page-card chart-card" :loading="initialLoading">
+          <a-empty v-if="!hasModelDistribution" :description="modelDistributionEmptyDescription" />
           <div v-else ref="modelDistributionChartRef" class="chart-panel chart-panel-large" />
         </a-card>
       </a-col>
@@ -39,13 +39,13 @@
 
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="10">
-        <a-card title="错误 Top 10（今日）" class="page-card chart-card" :loading="loading">
-          <a-empty v-if="!hasErrors" description="今日暂无错误" />
+        <a-card title="错误 Top 10（今日）" class="page-card chart-card" :loading="initialLoading">
+          <a-empty v-if="!hasErrors" :description="errorEmptyDescription" />
           <div v-else ref="errorChartRef" class="chart-panel" />
         </a-card>
       </a-col>
       <a-col :xs="24" :xl="14">
-        <a-card title="系统性能 / 网络吞吐趋势（近 24 小时）" class="page-card chart-card" :loading="loading">
+        <a-card title="系统性能 / 网络吞吐趋势（近 24 小时）" class="page-card chart-card" :loading="systemInitialLoading">
           <template v-if="isAdmin">
             <a-empty v-if="!hasSystemTrend" description="等待后台监控采样" />
             <div v-else ref="systemMetricsChartRef" class="chart-panel chart-panel-large" />
@@ -87,14 +87,22 @@ const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ??
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
 const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?? 0) > 0)
+const hasUsageOverview = computed(() => Boolean(usageOverview.value))
+const initialLoading = computed(() => loading.value && !hasUsageOverview.value)
+const systemInitialLoading = computed(() => loading.value && isAdmin.value && !systemMetrics.value)
+const hasHistoricalUsage = computed(() => (usageOverview.value?.totals.requestCount ?? 0) > 0)
+const usageTrendEmptyDescription = computed(() => hasHistoricalUsage.value ? '近 24 小时暂无趋势数据，累计指标已在上方展示' : '暂无趋势数据')
+const modelDistributionEmptyDescription = computed(() => hasHistoricalUsage.value ? '今日暂无模型调用，累计指标已在上方展示' : '今日暂无模型调用')
+const errorEmptyDescription = computed(() => hasHistoricalUsage.value ? '今日暂无错误，累计错误率已在上方展示' : '今日暂无错误')
 
 const summaryCards = computed(() => {
   const today = usageOverview.value?.today
+  const totals = usageOverview.value?.totals
   return [
-    { key: 'requests', label: '今日请求', value: formatInteger(today?.requestCount), extra: `错误率 ${formatPercent((today?.errorRate ?? 0) * 100)}` },
-    { key: 'duration', label: '平均响应', value: formatDuration(today?.averageDurationMs), extra: `首 Token ${formatDuration(today?.averageFirstTokenMs)}` },
-    { key: 'tokens', label: '今日 Token', value: formatInteger(today?.totalTokens), extra: `输入 ${formatInteger(today?.inputTokens)} / 输出 ${formatInteger(today?.outputTokens)}` },
-    { key: 'cost', label: '今日成本', value: formatCost(today?.totalCost), extra: `统计滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
+    { key: 'requests', label: '今日请求', value: formatInteger(today?.requestCount), extra: `累计 ${formatInteger(totals?.requestCount)} / 错误率 ${formatPercent((today?.errorRate ?? totals?.errorRate ?? 0) * 100)}` },
+    { key: 'duration', label: '平均响应', value: formatDuration(today?.averageDurationMs ?? totals?.averageDurationMs), extra: `首 Token ${formatDuration(today?.averageFirstTokenMs ?? totals?.averageFirstTokenMs)}` },
+    { key: 'tokens', label: '今日 Token', value: formatInteger(today?.totalTokens), extra: `累计 ${formatInteger(totals?.totalTokens)} / 输入 ${formatInteger(today?.inputTokens)}` },
+    { key: 'cost', label: '今日成本', value: formatCost(today?.totalCost), extra: `累计 ${formatCost(totals?.totalCost)} / 滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
   ]
 })
 

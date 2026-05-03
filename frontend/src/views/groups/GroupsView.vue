@@ -9,7 +9,7 @@
       </div>
     </div>
 
-    <a-table class="page-table groups-table" size="middle" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1560 : 1380 }">
+    <a-table class="page-table groups-table" size="middle" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1430 : 1250 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页选择账户的归属分组。" />
       </template>
@@ -32,11 +32,6 @@
               <span class="account-count-value available">{{ groupStats(record).available }}</span>
               <span class="account-count-unit">个账号</span>
             </span>
-            <span v-if="groupStats(record).rateLimited > 0" class="account-count-row">
-              <span class="account-count-label">限流:</span>
-              <span class="account-count-value limited">{{ groupStats(record).rateLimited }}</span>
-              <span class="account-count-unit">个账号</span>
-            </span>
             <span class="account-count-row">
               <span class="account-count-label">总量:</span>
               <span class="account-count-value">{{ groupStats(record).total }}</span>
@@ -51,25 +46,6 @@
           <div class="usage-cell">
             <span><span class="usage-label">今日:</span> <span class="usage-summary">{{ formatUsageSummary(groupStats(record).todayUsage) }}</span></span>
             <span><span class="usage-label">累计:</span> <span class="usage-summary">{{ formatUsageSummary(groupStats(record).usage) }}</span></span>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'accountStatusCount'">
-          <div class="account-count-cell">
-            <span class="account-count-row">
-              <span class="account-count-label">启用:</span>
-              <span class="account-count-value available">{{ groupStats(record).active }}</span>
-              <span class="account-count-unit">个账号</span>
-            </span>
-            <span class="account-count-row">
-              <span class="account-count-label">异常:</span>
-              <span class="account-count-value limited">{{ groupStats(record).error }}</span>
-              <span class="account-count-unit">个账号</span>
-            </span>
-            <span class="account-count-row">
-              <span class="account-count-label">停用:</span>
-              <span class="account-count-value">{{ groupStats(record).disabled }}</span>
-              <span class="account-count-unit">个账号</span>
-            </span>
           </div>
         </template>
         <template v-else-if="column.key === 'status'">
@@ -148,7 +124,6 @@ const columns = computed(() => {
     { title: '账户数', key: 'accountCount', width: 130 },
     { title: '当前并发', key: 'concurrency', width: 100 },
     { title: '用量', key: 'usage', width: 280 },
-    { title: '账号数', key: 'accountStatusCount', width: 130 },
     { title: '状态', key: 'status', width: 100 },
     { title: '操作', key: 'actions', width: 150, fixed: 'right' }
   )

@@ -5,13 +5,12 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$APP_DIR"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js is required. Install Node.js 22+ before running this script." >&2
+  echo "Node.js is required. Install Node.js 22.5+ before running this script." >&2
   exit 1
 fi
 
-NODE_MAJOR="$(node -p "process.versions.node.split('.')[0]")"
-if [ "$NODE_MAJOR" -lt 22 ]; then
-  echo "Node.js 22+ is required because this project uses node:sqlite. Current: $(node -v)" >&2
+if ! node --input-type=module -e "import 'node:sqlite'" >/dev/null 2>&1; then
+  echo "Node.js with node:sqlite support is required. Install Node.js 22.5+ or a newer LTS release. Current: $(node -v)" >&2
   exit 1
 fi
 
@@ -38,11 +37,11 @@ fi
 
 mkdir -p backend/data
 
-if [ ! -d node_modules ]; then
+if [ ! -d node_modules ] || [ ! -d backend/node_modules ]; then
   echo "Installing production dependencies..."
-  pnpm install --prod --frozen-lockfile
+  pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
 else
-  echo "Using existing node_modules. Remove it to force reinstall."
+  echo "Using existing node_modules. Remove node_modules and backend/node_modules to force reinstall."
 fi
 
 HOST="$(grep -E '^JUHE_AI_HOST=' backend/.env | tail -n 1 | cut -d= -f2- || true)"

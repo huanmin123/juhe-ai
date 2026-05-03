@@ -21,6 +21,8 @@
 - 整体架构：`docs/architecture.md`
 - 第一阶段计划：`docs/phase-1-plan.md`
 - 参考笔记：`docs/sub2api-reference-notes.md`
+- 构建发布文档：`docs/deploy/build.md`
+- 部署运行文档：`docs/deploy/deploy.md`
 - 前端样式规范：`docs/前端样式规范指导.md`
 - 功能开发指导：`docs/功能开发指导.md`
 - 大文件重构指南：`docs/大文件重构指南.md`
@@ -55,6 +57,58 @@ pnpm --filter juhe-ai-backend dev
 - 需要代理时在代理管理页给账户绑定代理；`JUHE_AI_OAUTH_PROXY_URL` 只作为 OAuth token 换取/刷新的可选兜底，不再默认写死本机代理。
 
 对外请求统一兼容 OpenAI 协议：客户端填本服务 `/v1` 作为 Base URL，API Key 填 API 密钥页生成的本地网关密钥；后续提供方也优先适配成 OpenAI 兼容格式。
+
+## 跨平台发布包
+
+发布体系支持任意平台打包，并部署到 Windows、macOS 或 Linux。构建说明见 `docs/deploy/build.md`，部署说明见 `docs/deploy/deploy.md`。
+
+打包命令：
+
+```powershell
+# Windows 打包
+pnpm package:release:windows
+```
+
+```bash
+# macOS 打包
+pnpm package:release:mac
+
+# Linux 打包
+pnpm package:release:linux
+```
+
+默认生成：
+
+- `release/juhe-ai-release.tar.gz`：推荐给 macOS/Linux 目标。
+- `release/juhe-ai-release.zip`：推荐给 Windows 目标。
+
+目标机器启动：
+
+```powershell
+# Windows 目标
+pwsh ./start.ps1
+```
+
+```bash
+# macOS/Linux 目标
+bash ./start.sh
+```
+
+发布包会由后端直接托管 `frontend/dist`，因此无需额外静态服务器即可访问管理后台。部署前必须检查 Node.js 是否支持 `node:sqlite`，并配置 `backend/.env` 中的 `JUHE_AI_SECRET`。
+
+如需固定公网网关地址：
+
+```powershell
+# Windows 打包机
+pwsh ./scripts/package-release.ps1 -FrontendGatewayBaseUrl "https://你的域名/v1"
+```
+
+```bash
+# macOS/Linux 打包机
+bash ./scripts/package-release.sh --frontend-gateway-base-url "https://你的域名/v1"
+```
+
+旧的 Linux-only 打包命令仍保留，但新发布优先使用 `package:release:*`。
 ## 当前可用功能
 
 - 供应商列表：内置 OpenAI，默认 Base URL 归属供应商定义
@@ -78,4 +132,8 @@ pnpm test:smoke
 ```
 
 本地真实网关验证见 `docs/dev-runbook.md`，烟测会使用启用的 OpenAI 账户验证 `/v1/models`、`/v1/responses` 非流式与流式、用量和成本入库。
+
+
+
+
 
