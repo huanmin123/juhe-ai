@@ -75,7 +75,13 @@ accountsRouter.patch('/:id/granted-authorization/:authorizationId/schedulable', 
     res.status(400).json(badRequest('Invalid account authorization schedule payload'))
     return
   }
-  const account = updateGrantedAccountAuthorizationSchedulable(req.params.id, req.params.authorizationId, parsed.data.schedulable, getRequestAccessScope(req.query.systemAccountId))
+  let account: ReturnType<typeof updateGrantedAccountAuthorizationSchedulable>
+  try {
+    account = updateGrantedAccountAuthorizationSchedulable(req.params.id, req.params.authorizationId, parsed.data.schedulable, getRequestAccessScope(req.query.systemAccountId))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Update account authorization schedule failed'))
+    return
+  }
   if (!account) {
     res.status(404).json({ message: 'Account authorization not found' })
     return

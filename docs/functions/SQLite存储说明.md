@@ -114,6 +114,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `owner_system_account_id` 必须等于该账户的 `accounts.system_account_id`。
 - `grantee_system_account_id` 不能等于 `owner_system_account_id`。
 - 同一个 `account_id + grantee_system_account_id` 同一时间只能存在一条 `active` 授权；SQLite 可用部分唯一索引或 service 层事务校验实现。
+- 如果账户所有者把主账户停用，被授权用户即使自己的 `schedulable = 1` 也不能调度；被授权用户也不能在所有者停用期间自行启用这份授权账户。
 - 收回授权只把 `status` 改为 `revoked` 并写入 `revoked_by` / `revoked_at`，不物理删除，历史统计继续可查。
 - 被授权用户主动“归还”账户授权时，同样把自己的授权关系改为 `revoked`，并清理自己分组中绑定的该账户。
 

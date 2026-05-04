@@ -37,7 +37,7 @@
             <span class="resource-name-line">
               <span>{{ record.name }}</span>
               <a-tooltip v-if="isAuthorizedAccount(record)" :title="authorizedAccountTooltip(record)">
-                <InfoCircleOutlined class="authorized-account-icon" />
+                <InfoCircleOutlined class="authorized-account-icon" :class="{ 'owner-disabled': isOwnerDisabledAuthorizedAccount(record) }" />
               </a-tooltip>
             </span>
           </div>
@@ -100,7 +100,9 @@
           <a-space class="row-actions" :size="8">
             <template v-if="isAuthorizedAccount(record)">
               <a-button type="link" size="small" @click="openTestModal(record)">测试</a-button>
-              <a-button type="link" size="small" :danger="record.accountAuthorizationSchedulable !== false" @click="updateGrantedAuthorizationSchedulable(record)">{{ record.accountAuthorizationSchedulable === false ? '启用账户' : '停用账户' }}</a-button>
+              <a-tooltip v-if="canToggleGrantedAuthorization(record)" :title="authorizedAccountToggleTooltip(record)">
+                <a-button type="link" size="small" :danger="record.accountAuthorizationSchedulable !== false" @click="updateGrantedAuthorizationSchedulable(record)">{{ record.accountAuthorizationSchedulable === false ? '启用账户' : '停用账户' }}</a-button>
+              </a-tooltip>
               <a-popconfirm title="确认归还这个授权账户？" ok-text="确认归还" cancel-text="取消" @confirm="returnGrantedAuthorization(record)">
                 <a-button type="link" size="small" danger>归还</a-button>
               </a-popconfirm>
@@ -782,11 +784,13 @@ function formatErrorPolicyAction(action: NonNullable<AccountTestResult['errorPol
 }
 
 function accountStatusColor(account: AccountSummary) {
+  if (isOwnerDisabledAuthorizedAccount(account)) return 'default'
   if (isLocallyDisabledAuthorizedAccount(account)) return 'default'
   return statusColor(account.status)
 }
 
 function accountStatusText(account: AccountSummary) {
+  if (isOwnerDisabledAuthorizedAccount(account)) return '停用'
   if (isLocallyDisabledAuthorizedAccount(account)) return '停用'
   return statusText(account.status)
 }
@@ -873,8 +877,29 @@ function isLocallyDisabledAuthorizedAccount(account: AccountSummary): boolean {
   return isAuthorizedAccount(account) && account.accountAuthorizationSchedulable === false
 }
 
+function isOwnerDisabledAuthorizedAccount(account: AccountSummary): boolean {
+  return isAuthorizedAccount(account) && account.status === 'disabled'
+}
+
 function authorizedAccountTooltip(account: AccountSummary): string {
-  return `授权自 ${account.ownerSystemAccountName || '其他用户'}，仅可使用`
+  const ownerName = account.ownerSystemAccountName || '其他用户'
+  if (isOwnerDisabledAuthorizedAccount(account)) {
+    return `授权自 ${ownerName}。账户所有者已停用该账户，你暂时无法启用或调用；请联系对方启用后再使用。`
+  }
+  if (isLocallyDisabledAuthorizedAccount(account)) {
+    return `授权自 ${ownerName}。你已停用这份授权账户；重新启用只影响你自己，不影响账户所有者和其他用户。`
+  }
+  return `授权自 ${ownerName}，仅可使用`
+}
+
+function canToggleGrantedAuthorization(account: AccountSummary): boolean {
+  return !isOwnerDisabledAuthorizedAccount(account)
+}
+
+function authorizedAccountToggleTooltip(account: AccountSummary): string {
+  return account.accountAuthorizationSchedulable === false
+    ? '只为你自己启用这份授权账户'
+    : '只为你自己停用这份授权账户'
 }
 
 function canEditAccount(account: AccountSummary): boolean {
@@ -1599,7 +1624,7 @@ async function updateGrantedAuthorizationSchedulable(account: AccountSummary) {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '授权调度状态更新失败'))
+    message.error(extractApiErrorMessage(error, '授权账户启停失败'))
   }
 }
 
@@ -2256,6 +2281,10 @@ onMounted(loadData)
   color: #08979c;
   cursor: help;
   font-size: 14px;
+}
+
+.authorized-account-icon.owner-disabled {
+  color: #d48806;
 }
 
 .authorization-create-row {

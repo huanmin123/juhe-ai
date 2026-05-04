@@ -1141,6 +1141,10 @@ export function updateGrantedAccountAuthorizationSchedulable(accountId: string, 
   if (!row) {
     return undefined
   }
+  const accountRow = getDatabase().prepare('SELECT status FROM accounts WHERE id = ?').get(accountId) as unknown as { status?: AccountStatus } | undefined
+  if (schedulable && accountRow?.status === 'disabled') {
+    throw new Error('账户所有者已停用该账户，请联系账户所有者启用后再使用')
+  }
   getDatabase()
     .prepare('UPDATE account_authorizations SET schedulable = ?, updated_at = ? WHERE id = ?')
     .run(schedulable ? 1 : 0, nowIso(), authorizationId)
