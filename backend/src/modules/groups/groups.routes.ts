@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { badRequest, ok } from '../../shared/http.js'
 import { createGroup, createGroupAuthorization, deleteGroup, listGroupAuthorizations, listGroups, listProviders, revokeGroupAuthorization, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 export const groupsRouter = Router()
 
@@ -34,7 +35,9 @@ groupsRouter.post('/:id/authorizations', (req, res) => {
     return
   }
   try {
-    res.status(201).json(ok(createGroupAuthorization(req.params.id, parsed.data, getRequestAccessScope(req.query.systemAccountId))))
+    const authorization = createGroupAuthorization(req.params.id, parsed.data, getRequestAccessScope(req.query.systemAccountId))
+    clearGatewayRuntimeCache()
+    res.status(201).json(ok(authorization))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Create group authorization failed'))
   }
@@ -46,6 +49,7 @@ groupsRouter.delete('/:id/authorizations/:authorizationId', (req, res) => {
     res.status(404).json({ message: 'Group authorization not found' })
     return
   }
+  clearGatewayRuntimeCache()
   res.json(ok(authorization))
 })
 
@@ -65,7 +69,9 @@ groupsRouter.post('/', (req, res) => {
     res.status(400).json(badRequest(`Provider is disabled: ${providerCode}`))
     return
   }
-  res.status(201).json(ok(createGroup({ ...parsed.data, providerCode })))
+  const group = createGroup({ ...parsed.data, providerCode })
+  clearGatewayRuntimeCache()
+  res.status(201).json(ok(group))
 })
 
 groupsRouter.patch('/:id', (req, res) => {
@@ -88,6 +94,7 @@ groupsRouter.patch('/:id', (req, res) => {
     res.status(404).json({ message: 'Group not found' })
     return
   }
+  clearGatewayRuntimeCache()
   res.json(ok(group))
 })
 
@@ -97,6 +104,7 @@ groupsRouter.delete('/:id', (req, res) => {
       res.status(404).json({ message: 'Group not found' })
       return
     }
+    clearGatewayRuntimeCache()
     res.status(204).send()
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Delete group failed'))

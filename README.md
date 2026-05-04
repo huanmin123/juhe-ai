@@ -1,12 +1,17 @@
 # 聚合 AI
 
-![聚合 AI 管理后台预览](resources/images/home-page.png)
-
 聚合 AI（`juhe-ai`）是一个轻量级 OpenAI 兼容中转与账号调度管理项目。它把客户端固定到一个本地 `/v1` 入口，把 OpenAI 上游账号、分组、API Key、代理、授权、错误切换和使用记录放到后台统一管理，适合个人或小团队维护多组上游账号、多套代理和多个客户端接入的场景。
 
 当前阶段聚焦 OpenAI 供应商，支持通过 OpenAI OAuth 或 OpenAI API Key 接入上游账号。系统采用“分组绑定账号、API Key 绑定分组”的授权模型：客户端只需要把 Base URL 指向本服务的 `/v1`，并使用后台生成的本地 API Key，即可按 OpenAI 兼容协议发起请求。
 
 > 项目仍处于第一阶段迭代，目标是先形成轻量闭环，再逐步扩展更多供应商和更复杂的网关能力。
+
+
+
+![聚合 AI 管理后台预览](resources/images/home-page.png)
+
+![聚合 AI 管理后台预览](resources/images/admin-page.png)
+
 
 ## 解决的问题
 

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { badRequest, ok } from '../../shared/http.js'
 import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, createAccountAuthorization, deleteAccount, findAccountForTest, listAccountAuthorizations, listAccounts, listGroups, listProviders, returnGrantedAccountAuthorization, revokeAccountAuthorization, setAccountGroup, updateAccount, updateGrantedAccountAuthorizationSchedulable } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 export const accountsRouter = Router()
@@ -54,7 +55,9 @@ accountsRouter.post('/:id/authorizations', (req, res) => {
     return
   }
   try {
-    res.status(201).json(ok(createAccountAuthorization(req.params.id, parsed.data, getRequestAccessScope(req.query.systemAccountId))))
+    const authorization = createAccountAuthorization(req.params.id, parsed.data, getRequestAccessScope(req.query.systemAccountId))
+    clearGatewayRuntimeCache()
+    res.status(201).json(ok(authorization))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Create account authorization failed'))
   }
@@ -66,6 +69,7 @@ accountsRouter.delete('/:id/authorizations/:authorizationId', (req, res) => {
     res.status(404).json({ message: 'Account authorization not found' })
     return
   }
+  clearGatewayRuntimeCache()
   res.json(ok(authorization))
 })
 
@@ -86,6 +90,7 @@ accountsRouter.patch('/:id/granted-authorization/:authorizationId/schedulable', 
     res.status(404).json({ message: 'Account authorization not found' })
     return
   }
+  clearGatewayRuntimeCache()
   res.json(ok(account))
 })
 
@@ -95,6 +100,7 @@ accountsRouter.post('/:id/granted-authorization/:authorizationId/return', (req, 
     res.status(404).json({ message: 'Account authorization not found' })
     return
   }
+  clearGatewayRuntimeCache()
   res.json(ok({ returned: true }))
 })
 
@@ -133,6 +139,7 @@ accountsRouter.post('/', (req, res) => {
       ...parsed.data,
       providerCode
     })
+    clearGatewayRuntimeCache()
     res.status(201).json(ok(account))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
@@ -187,6 +194,7 @@ accountsRouter.patch('/:id', (req, res) => {
       return
     }
   }
+  clearGatewayRuntimeCache()
   res.json(ok(account))
 })
 
@@ -215,5 +223,6 @@ accountsRouter.delete('/:id', (req, res) => {
     res.status(404).json({ message: 'Account not found' })
     return
   }
+  clearGatewayRuntimeCache()
   res.status(204).send()
 })

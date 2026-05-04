@@ -5,21 +5,23 @@ import type { IncomingHttpHeaders, IncomingMessage } from 'node:http'
 import { Router, type Request, type Response } from 'express'
 
 import {
-  listOpenAIAccountsForGroup,
   recordAccountStreamFailure,
-  resolveGroupUsageAccessMetadata,
   updateAccount,
   validateGatewayApiKey,
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
+import {
+  listCachedOpenAIAccountsForGroup,
+  readCachedGatewaySettings,
+  resolveCachedGroupUsageAccessMetadata
+} from './gateway-runtime-cache.service.js'
 import { estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
 import { buildOpenAIOAuthCredentials, createProxyAgent, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import {
   applyAccountErrorHandling,
   parseErrorPayload,
-  readGatewaySettings,
   type GatewaySettings
 } from './account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
@@ -33,7 +35,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
   const endpoint = requestEndpoint(req)
   const requestSnapshot = buildUsageRequestSnapshot(req, requestId, clientIp)
   const gatewayApiKey = extractBearerToken(req.header('authorization'))
-  const gatewaySettings = readGatewaySettings()
+  const gatewaySettings = readCachedGatewaySettings()
 
   if (!gatewayApiKey) {
     res.status(401).json({ error: { message: 'Missing bearer token', type: 'invalid_request_error' } })
@@ -46,7 +48,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     return
   }
 
-  const groupAccess = resolveGroupUsageAccessMetadata(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
+  const groupAccess = resolveCachedGroupUsageAccessMetadata(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
   if (!groupAccess) {
     const statusCode = 403
     const responsePayload = { error: { message: 'API key group authorization is unavailable', type: 'forbidden' } }
@@ -72,7 +74,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
   }
 
   const groupUsageFields = groupUsageMetadata(groupAccess)
-  const accounts = listOpenAIAccountsForGroup(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
+  const accounts = listCachedOpenAIAccountsForGroup(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
   if (accounts.length === 0) {
     const statusCode = 503
     const responsePayload = { error: { message: 'No available upstream account', type: 'service_unavailable' } }
