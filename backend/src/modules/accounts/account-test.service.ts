@@ -4,6 +4,7 @@ import { request as httpsRequest } from 'node:https'
 
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
+import { withRequestAuthContext } from '../auth/request-context.js'
 import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/openai-codex-usage.service.js'
 import {
@@ -198,7 +199,7 @@ async function prepareAccountForTest(account: AccountSummary): Promise<{
         ...account.credentials,
         ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
       }
-      updateAccount(account.id, { credentials, status: 'active' })
+      updateAccountAsOwner(account, { credentials, status: 'active' })
       return {
         apiKey: stringValue(credentials.access_token),
         baseUrl: stringValue(credentials.base_url) || 'https://api.openai.com/v1',
@@ -230,6 +231,21 @@ async function prepareAccountForTest(account: AccountSummary): Promise<{
     proxyUrl: resolveProxyUrlForProfile(account.proxyProfileId),
     tokenRefreshed: false
   }
+}
+
+function updateAccountAsOwner(account: AccountSummary, payload: Record<string, unknown>): void {
+  if (!account.ownerSystemAccountId) {
+    updateAccount(account.id, payload)
+    return
+  }
+  withRequestAuthContext({
+    systemAccountId: account.ownerSystemAccountId,
+    role: 'user',
+    username: 'account-owner',
+    displayName: account.ownerSystemAccountName || '账户所有者',
+    mustChangePassword: false,
+    sessionId: 'account-test'
+  }, () => updateAccount(account.id, payload))
 }
 
 function normalizeHeaders(headers: IncomingHttpHeaders): Record<string, string | string[]> {

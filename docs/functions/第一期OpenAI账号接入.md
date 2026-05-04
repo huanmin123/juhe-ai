@@ -24,7 +24,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 模型列表
 - Responses API 预留
 - 流式响应预留
-- 透传预留
+- 供应商级默认透传
 
 ## OpenAI OAuth 创建方式
 
@@ -38,7 +38,6 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 代理
 - 并发上限
 - 账户到期时间（可选，套餐/账号购买到期时间）
-- 是否启用透传
 - 错误策略
 - 备注
 
@@ -64,7 +63,6 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 代理
 - 并发上限
 - 账户到期时间（可选，套餐/账号购买到期时间）
-- 是否启用透传
 - 错误策略
 - 备注
 
@@ -76,6 +74,8 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `base_url` 默认使用 OpenAI 官方地址
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
 - 可手动启用 / 停用
+
+透传策略：OpenAI 账户默认按供应商网关策略透传，用户侧不提供开关；服务端只保留本地鉴权、账号调度、上游认证替换、安全头剔除、流式转发和错误兜底等必要中转职责。
 
 ## 账户归属分组
 

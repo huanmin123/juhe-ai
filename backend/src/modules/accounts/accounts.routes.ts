@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, createAccountAuthorization, deleteAccount, listAccountAuthorizations, listAccounts, listGroups, listProviders, revokeAccountAuthorization, setAccountGroup, updateAccount } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, createAccountAuthorization, deleteAccount, findAccountForTest, listAccountAuthorizations, listAccounts, listGroups, listProviders, returnGrantedAccountAuthorization, revokeAccountAuthorization, setAccountGroup, updateAccount, updateGrantedAccountAuthorizationSchedulable } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
@@ -35,6 +35,10 @@ const accountAuthorizationSchema = z.object({
   remark: z.string().trim().max(200).optional()
 })
 
+const grantedAuthorizationScheduleSchema = z.object({
+  schedulable: z.boolean()
+})
+
 accountsRouter.get('/', (req, res) => {
   res.json(ok(listAccounts(getRequestAccessScope(req.query.systemAccountId))))
 })
@@ -63,6 +67,29 @@ accountsRouter.delete('/:id/authorizations/:authorizationId', (req, res) => {
     return
   }
   res.json(ok(authorization))
+})
+
+accountsRouter.patch('/:id/granted-authorization/:authorizationId/schedulable', (req, res) => {
+  const parsed = grantedAuthorizationScheduleSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('Invalid account authorization schedule payload'))
+    return
+  }
+  const account = updateGrantedAccountAuthorizationSchedulable(req.params.id, req.params.authorizationId, parsed.data.schedulable, getRequestAccessScope(req.query.systemAccountId))
+  if (!account) {
+    res.status(404).json({ message: 'Account authorization not found' })
+    return
+  }
+  res.json(ok(account))
+})
+
+accountsRouter.post('/:id/granted-authorization/:authorizationId/return', (req, res) => {
+  const returned = returnGrantedAccountAuthorization(req.params.id, req.params.authorizationId, getRequestAccessScope(req.query.systemAccountId))
+  if (!returned) {
+    res.status(404).json({ message: 'Account authorization not found' })
+    return
+  }
+  res.json(ok({ returned: true }))
 })
 
 accountsRouter.post('/', (req, res) => {
@@ -163,13 +190,9 @@ accountsRouter.post('/:id/test', async (req, res) => {
     res.status(400).json(badRequest('Invalid account test payload'))
     return
   }
-  const account = listAccounts().find((item) => item.id === req.params.id)
+  const account = findAccountForTest(req.params.id, getRequestAccessScope(req.query.systemAccountId))
   if (!account) {
     res.status(404).json({ message: 'Account not found' })
-    return
-  }
-  if (account.permissions?.canViewCredentials === false) {
-    res.status(403).json({ message: '授权账户仅可使用，不能测试或查看凭据' })
     return
   }
   if (account.providerCode !== 'openai') {

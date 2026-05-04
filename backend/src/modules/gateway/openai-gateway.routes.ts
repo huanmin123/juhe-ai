@@ -637,7 +637,7 @@ interface UsageResponseSnapshot {
 interface UpstreamRequestOptions {
   method: string
   headers: Headers
-  body?: string
+  body?: Buffer | string
   proxyUrl?: string
   timeoutMs?: number
   requestTimeoutMs?: number
@@ -1013,7 +1013,7 @@ const skippedUpstreamRequestHeaders = new Set([
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
-function buildUpstreamRequestBody(req: Request, passthroughEnabled: boolean): string | undefined {
+function buildUpstreamRequestBody(req: Request, passthroughEnabled: boolean): Buffer | string | undefined {
   if (req.method === 'GET' || req.method === 'HEAD') {
     return undefined
   }
@@ -1022,7 +1022,7 @@ function buildUpstreamRequestBody(req: Request, passthroughEnabled: boolean): st
   }
   const rawBody = (req as RawBodyRequest).rawBody
   if (rawBody && rawBody.length > 0) {
-    return rawBody.toString('utf8')
+    return rawBody
   }
   if (req.body === undefined || isEmptyPlainObject(req.body)) {
     return undefined

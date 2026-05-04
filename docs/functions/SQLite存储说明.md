@@ -100,6 +100,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `grantee_system_account_id`
 - `scope`：第一阶段固定为 `use`
 - `status`：`active`、`revoked`
+- `schedulable`：被授权用户是否启用这份账户授权，默认 `1`；产品上表现为被授权用户自己的“停用 / 启用账户”，只影响该被授权用户通过账户授权调度，不影响账户所有者、其他被授权用户或分组授权。
 - `remark`
 - `created_by`
 - `created_at`
@@ -114,6 +115,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `grantee_system_account_id` 不能等于 `owner_system_account_id`。
 - 同一个 `account_id + grantee_system_account_id` 同一时间只能存在一条 `active` 授权；SQLite 可用部分唯一索引或 service 层事务校验实现。
 - 收回授权只把 `status` 改为 `revoked` 并写入 `revoked_by` / `revoked_at`，不物理删除，历史统计继续可查。
+- 被授权用户主动“归还”账户授权时，同样把自己的授权关系改为 `revoked`，并清理自己分组中绑定的该账户。
 
 `usage_records` 需要额外冗余这些字段：
 
@@ -124,6 +126,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 日志隔离和统计口径：
 
 - 使用记录页按 `usage_records.system_account_id` 查询，所以被授权用户只看自己的调用明细。
+- 账户列表的“用量情况”按访问身份区分：账户所有者查看真实账户总用量；被授权用户查看自己这条 `account_authorization_id` 产生的用量，不展示账户所有者或其他被授权用户的真实总量。
 - 账户所有者不按明细读取被授权用户的 `usage_records`，授权管理弹窗只读取按 `account_authorization_id` 聚合后的请求数、Token、成本、成功失败和最后使用时间。
 - 账户真实总用量按 `account_owner_system_account_id + account_id` 聚合，所以自用和被授权用户使用都会消耗同一个账户额度。
 

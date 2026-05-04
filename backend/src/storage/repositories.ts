@@ -74,6 +74,7 @@ interface AccountAuthorizationRow {
   grantee_system_account_id: string
   scope: 'use'
   status: AuthorizationStatus
+  schedulable: number
   remark: string | null
   created_by: string
   created_at: string
@@ -101,6 +102,7 @@ type AccountListRow = AccountRow & {
   access_type?: 'owner' | 'authorized'
   authorization_id?: string | null
   authorization_status?: AuthorizationStatus | null
+  authorization_schedulable?: number | null
 }
 
 type GroupListRow = GroupRow & {
@@ -475,6 +477,11 @@ function canUseAccount(accountId: string, systemAccountId: string): boolean {
   const ownerId = accountSystemAccountId(accountId)
   if (ownerId === systemAccountId) return true
   return Boolean(activeAccountAuthorization(accountId, systemAccountId))
+}
+
+function canScheduleAuthorizedAccount(accountId: string, authorizationId: string | undefined, systemAccountId: string): boolean {
+  if (!authorizationId) return true
+  return activeAccountAuthorization(accountId, systemAccountId)?.schedulable === 1
 }
 
 function canUseGroup(groupId: string, systemAccountId: string): boolean {
@@ -955,10 +962,15 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
   disableExpiredAccounts(access)
   const rows = listAccountRowsForAccess(access)
   const usageByAccount = loadAccountUsageSummariesByAccountIds(rows.map((row) => row.id))
+  const usageByAuthorization = loadAccountAuthorizationUsageSummaries(rows.map((row) => row.authorization_id ?? ''))
   const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => row.id))
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const accountNames = includeSystemAccountFields(access) || hasAuthorizedRows ? systemAccountNameMap() : new Map<string, string>()
-  return rows.map((row) => ({
+  return rows.map((row) => {
+    const usage = row.access_type === 'authorized' && row.authorization_id
+      ? usageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
+      : usageByAccount.get(row.id) ?? emptyAccountUsageSummary()
+    return {
     id: row.id,
     systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
     systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
@@ -976,18 +988,38 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
     proxyProfileId: row.proxy_profile_id ?? undefined,
     passthroughEnabled: row.passthrough_enabled === 1,
     errorPolicyId: row.error_policy_id ?? undefined,
-    schedulable: row.schedulable === 1,
+    schedulable: row.schedulable === 1 && (row.access_type !== 'authorized' || row.authorization_schedulable !== 0),
     accountExpiresAt: row.account_expires_at ?? undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
-    lastUsedAt: row.last_used_at ?? usageByAccount.get(row.id)?.lastUsedAt,
-    usage: usageByAccount.get(row.id) ?? emptyAccountUsageSummary(),
+    lastUsedAt: row.access_type === 'authorized' ? usage.lastUsedAt : row.last_used_at ?? usage.lastUsedAt,
+    usage,
     oauthUsage: row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined,
     accessType: row.access_type ?? 'owner',
     accountAuthorizationId: row.authorization_id ?? undefined,
+    accountAuthorizationSchedulable: row.access_type === 'authorized' ? row.authorization_schedulable !== 0 : undefined,
     authorizationStatus: row.authorization_status ?? undefined,
     permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
-  }))
+    }
+  })
+}
+
+export function findAccountForTest(accountId: string, access?: AccessScope): AccountSummary | undefined {
+  const visibleAccount = listAccounts(access).find((account) => account.id === accountId)
+  if (!visibleAccount?.permissions?.canUse) {
+    return undefined
+  }
+  const row = getDatabase().prepare('SELECT * FROM accounts WHERE id = ?').get(accountId) as unknown as AccountRow | undefined
+  if (!row) {
+    return undefined
+  }
+  return {
+    ...visibleAccount,
+    credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
+    proxyProfileId: row.proxy_profile_id ?? undefined,
+    passthroughEnabled: row.passthrough_enabled === 1,
+    errorPolicyId: row.error_policy_id ?? undefined
+  }
 }
 
 function listAccountRowsForAccess(access?: AccessScope): AccountListRow[] {
@@ -995,22 +1027,22 @@ function listAccountRowsForAccess(access?: AccessScope): AccountListRow[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return getDatabase()
-      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM accounts ORDER BY priority ASC, updated_at DESC")
+      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_schedulable FROM accounts ORDER BY priority ASC, updated_at DESC")
       .all() as unknown as AccountListRow[]
   }
   if (!viewerSystemAccountId) {
     return getDatabase()
-      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM accounts ORDER BY priority ASC, updated_at DESC")
+      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_schedulable FROM accounts ORDER BY priority ASC, updated_at DESC")
       .all() as unknown as AccountListRow[]
   }
   return getDatabase()
     .prepare(`
       SELECT * FROM (
-        SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+        SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_schedulable
         FROM accounts
         WHERE accounts.system_account_id = ?
         UNION ALL
-        SELECT accounts.*, 'authorized' AS access_type, aa.id AS authorization_id, aa.status AS authorization_status
+        SELECT accounts.*, 'authorized' AS access_type, aa.id AS authorization_id, aa.status AS authorization_status, aa.schedulable AS authorization_schedulable
         FROM account_authorizations aa
         INNER JOIN accounts ON accounts.id = aa.account_id
         WHERE aa.grantee_system_account_id = ?
@@ -1087,11 +1119,61 @@ export function revokeAccountAuthorization(accountId: string, authorizationId: s
   }
   if (row.status !== 'revoked') {
     const now = nowIso()
-    getDatabase()
+    const database = getDatabase()
+    database
       .prepare("UPDATE account_authorizations SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
       .run(currentSystemAccountId(access), now, now, authorizationId)
+    database
+      .prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?')
+      .run(accountId, row.grantee_system_account_id)
   }
   return listAccountAuthorizations(accountId, access).find((item) => item.id === authorizationId)
+}
+
+export function updateGrantedAccountAuthorizationSchedulable(accountId: string, authorizationId: string, schedulable: boolean, access?: AccessScope): AccountSummary | undefined {
+  const granteeSystemAccountId = userVisibleSystemAccountId(access)
+  if (!granteeSystemAccountId) {
+    return undefined
+  }
+  const row = getDatabase()
+    .prepare("SELECT * FROM account_authorizations WHERE id = ? AND account_id = ? AND grantee_system_account_id = ? AND status = 'active'")
+    .get(authorizationId, accountId, granteeSystemAccountId) as unknown as AccountAuthorizationRow | undefined
+  if (!row) {
+    return undefined
+  }
+  getDatabase()
+    .prepare('UPDATE account_authorizations SET schedulable = ?, updated_at = ? WHERE id = ?')
+    .run(schedulable ? 1 : 0, nowIso(), authorizationId)
+  return listAccounts(access).find((account) => account.id === accountId && account.accountAuthorizationId === authorizationId)
+}
+
+export function returnGrantedAccountAuthorization(accountId: string, authorizationId: string, access?: AccessScope): boolean {
+  const granteeSystemAccountId = userVisibleSystemAccountId(access)
+  if (!granteeSystemAccountId) {
+    return false
+  }
+  const row = getDatabase()
+    .prepare("SELECT * FROM account_authorizations WHERE id = ? AND account_id = ? AND grantee_system_account_id = ? AND status = 'active'")
+    .get(authorizationId, accountId, granteeSystemAccountId) as unknown as AccountAuthorizationRow | undefined
+  if (!row) {
+    return false
+  }
+  const now = nowIso()
+  const database = getDatabase()
+  database.exec('BEGIN')
+  try {
+    database
+      .prepare("UPDATE account_authorizations SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
+      .run(granteeSystemAccountId, now, now, authorizationId)
+    database
+      .prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?')
+      .run(accountId, granteeSystemAccountId)
+    database.exec('COMMIT')
+    return true
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
 }
 
 function accountAuthorizationSummaries(rows: AccountAuthorizationRow[]): AccountAuthorizationSummary[] {
@@ -1108,6 +1190,7 @@ function accountAuthorizationSummaries(rows: AccountAuthorizationRow[]): Account
     granteeSystemAccountName: systemAccountNames.get(row.grantee_system_account_id),
     scope: 'use',
     status: row.status,
+    schedulable: row.schedulable === 1,
     remark: row.remark ?? undefined,
     usage: usageByAuthorization.get(row.id) ?? emptyAccountUsageSummary(),
     createdAt: row.created_at,
@@ -1365,7 +1448,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
       : current.proxyProfileId,
     passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
-    schedulable: expiredByPackage ? false : typeof input.schedulable === 'boolean' ? input.schedulable : current.schedulable,
+    schedulable: expiredByPackage ? false : hasStatusInput ? nextStatus === 'active' : typeof input.schedulable === 'boolean' ? input.schedulable : current.schedulable,
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
     lastErrorMessage: nextLastErrorMessage,
@@ -2263,6 +2346,9 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
     }
     const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess)
     if (!accountAccess) {
+      continue
+    }
+    if (!canScheduleAuthorizedAccount(row.id, accountAccess.accountAuthorizationId, systemAccountId)) {
       continue
     }
     accounts.push({

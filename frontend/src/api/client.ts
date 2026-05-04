@@ -83,6 +83,8 @@ export const api = {
     authorizations: (id: string, params?: ListParams) => unwrap<AccountAuthorizationSummary[]>(http.get(`/accounts/${id}/authorizations`, { params })),
     createAuthorization: (id: string, payload: { granteeSystemAccountId: string; remark?: string }, params?: ListParams) => unwrap<AccountAuthorizationSummary>(http.post(`/accounts/${id}/authorizations`, payload, { params })),
     revokeAuthorization: (id: string, authorizationId: string, params?: ListParams) => unwrap<AccountAuthorizationSummary>(http.delete(`/accounts/${id}/authorizations/${authorizationId}`, { params })),
+    updateGrantedAuthorizationSchedulable: (id: string, authorizationId: string, schedulable: boolean, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/granted-authorization/${authorizationId}/schedulable`, { schedulable }, { params })),
+    returnGrantedAuthorization: (id: string, authorizationId: string, params?: ListParams) => unwrap<{ returned: boolean }>(http.post(`/accounts/${id}/granted-authorization/${authorizationId}/return`, undefined, { params })),
     delete: (id: string) => http.delete(`/accounts/${id}`)
   },
   groups: {

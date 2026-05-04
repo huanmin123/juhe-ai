@@ -151,6 +151,7 @@ export interface AccountSummary {
   oauthUsage?: AccountOAuthUsageSnapshot
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
+  accountAuthorizationSchedulable?: boolean
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
@@ -167,6 +168,7 @@ export interface AccountAuthorizationSummary {
   granteeSystemAccountName?: string
   scope: 'use'
   status: AuthorizationStatus
+  schedulable: boolean
   remark?: string
   usage: AccountUsageSummary
   createdAt: string

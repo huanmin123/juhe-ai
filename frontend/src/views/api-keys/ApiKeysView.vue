@@ -13,7 +13,7 @@
       </div>
     </div>
 
-    <a-table class="page-table api-keys-table" size="middle" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1380 : 1200 }">
+    <a-table class="page-table api-keys-table" size="middle" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1350 : 1170 }">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
@@ -138,7 +138,7 @@ const columns = computed(() => {
     { title: '绑定分组', key: 'group', width: 220 },
     { title: '状态', key: 'status', width: 100 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
-    { title: '操作', key: 'actions', width: 140 }
+    { title: '操作', key: 'actions', width: 110 }
   )
   return baseColumns
 })

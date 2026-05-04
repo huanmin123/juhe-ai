@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import cors from 'cors'
-import express, { type Request } from 'express'
+import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { accountsRouter } from './modules/accounts/accounts.routes.js'
 import { requireAdmin, requireAuth } from './modules/auth/auth.middleware.js'
@@ -32,17 +32,33 @@ const frontendIndexPath = resolve(frontendDistPath, 'index.html')
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
+function captureGatewayRawBody(req: RawBodyRequest, _res: Response, next: NextFunction): void {
+  const rawBody = Buffer.isBuffer(req.body) ? Buffer.from(req.body) : Buffer.alloc(0)
+  req.rawBody = rawBody
+
+  const contentType = req.headers['content-type'] ?? ''
+  if (rawBody.length > 0 && String(contentType).toLowerCase().includes('json')) {
+    try {
+      req.body = JSON.parse(rawBody.toString('utf8')) as unknown
+    } catch {
+      req.body = undefined
+    }
+  } else {
+    req.body = undefined
+  }
+
+  next()
+}
+
 getDatabase()
 startBackgroundJobs()
 
 app.use(cors({ credentials: true, origin: true }))
+app.use('/v1', express.raw({ type: () => true, limit: '2mb' }), captureGatewayRawBody, openAIGatewayRouter)
 app.use(express.json({
   limit: '2mb',
   verify: (req, _res, buffer) => {
-    const requestUrl = req.url || ''
-    if (requestUrl.startsWith('/v1')) {
-      (req as RawBodyRequest).rawBody = Buffer.from(buffer)
-    }
+    ;(req as RawBodyRequest).rawBody = Buffer.from(buffer)
   }
 }))
 
@@ -71,7 +87,6 @@ app.use('/api/usage-records', usageRecordsRouter)
 app.use('/api/stats', requireAdmin, statsRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/system-accounts', systemAccountsRouter)
-app.use('/v1', openAIGatewayRouter)
 
 if (existsSync(frontendIndexPath)) {
   app.use(express.static(frontendDistPath))

@@ -114,6 +114,7 @@ export function applySchema(database: DatabaseSync): void {
       grantee_system_account_id TEXT NOT NULL,
       scope TEXT NOT NULL DEFAULT 'use',
       status TEXT NOT NULL DEFAULT 'active',
+      schedulable INTEGER NOT NULL DEFAULT 1,
       remark TEXT,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL,
@@ -432,6 +433,7 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'groups', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'groups', 'provider_code', "TEXT NOT NULL DEFAULT 'openai'")
   ensureColumn(database, 'groups', 'is_default', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'account_authorizations', 'schedulable', 'INTEGER NOT NULL DEFAULT 1')
   ensureColumn(database, 'group_accounts', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'api_keys', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'api_keys', 'key_secret_encrypted', 'TEXT')

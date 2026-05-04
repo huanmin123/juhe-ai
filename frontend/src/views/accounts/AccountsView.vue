@@ -22,10 +22,8 @@
       <div class="batch-toolbar-actions">
         <a-button @click="clearSelection">清空选择</a-button>
         <a-button type="primary" @click="batchTestSelected">批量测试</a-button>
-        <a-button @click="batchSetStatus('active')">批量恢复正常</a-button>
+        <a-button @click="batchSetStatus('active')">批量启用</a-button>
         <a-button danger @click="batchSetStatus('disabled')">批量停用</a-button>
-        <a-button @click="batchSetSchedulable(true)">恢复调度</a-button>
-        <a-button @click="batchSetSchedulable(false)">暂停调度</a-button>
       </div>
     </div>
 
@@ -100,19 +98,27 @@
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
-            <a-button v-if="canEditAccount(record)" type="link" size="small" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm v-if="canDeleteAccount(record)" title="确认删除这个账户？" @confirm="removeAccount(record.id)">
-              <a-button type="link" size="small" danger>删除</a-button>
-            </a-popconfirm>
-            <a-tag v-if="isAuthorizedAccount(record)" color="cyan">仅可使用</a-tag>
-            <a-dropdown v-if="accountMenuItems(record).length">
-              <a-button type="link" size="small">更多</a-button>
-              <template #overlay>
-                <a-menu @click="handleAccountMenuClick($event, record)">
-                  <a-menu-item v-for="item in accountMenuItems(record)" :key="item.key" :danger="item.danger">{{ item.label }}</a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
+            <template v-if="isAuthorizedAccount(record)">
+              <a-button type="link" size="small" @click="openTestModal(record)">测试</a-button>
+              <a-button type="link" size="small" :danger="record.accountAuthorizationSchedulable !== false" @click="updateGrantedAuthorizationSchedulable(record)">{{ record.accountAuthorizationSchedulable === false ? '启用账户' : '停用账户' }}</a-button>
+              <a-popconfirm title="确认归还这个授权账户？" ok-text="确认归还" cancel-text="取消" @confirm="returnGrantedAuthorization(record)">
+                <a-button type="link" size="small" danger>归还</a-button>
+              </a-popconfirm>
+            </template>
+            <template v-else>
+              <a-button v-if="canEditAccount(record)" type="link" size="small" @click="openEdit(record)">编辑</a-button>
+              <a-popconfirm v-if="canDeleteAccount(record)" title="确认删除这个账户？" @confirm="removeAccount(record.id)">
+                <a-button type="link" size="small" danger>删除</a-button>
+              </a-popconfirm>
+              <a-dropdown v-if="accountMenuItems(record).length">
+                <a-button type="link" size="small">更多</a-button>
+                <template #overlay>
+                  <a-menu @click="handleAccountMenuClick($event, record)">
+                    <a-menu-item v-for="item in accountMenuItems(record)" :key="item.key" :danger="item.danger">{{ item.label }}</a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </template>
           </a-space>
         </template>
       </template>
@@ -450,7 +456,7 @@ import {
   type AccountErrorPolicyRuleForm
 } from './accountErrorPolicy'
 
-type SchedulableFilter = 'all' | 'schedulable' | 'paused' | 'cooling'
+type SchedulableFilter = 'all' | 'enabled' | 'disabled' | 'cooling'
 
 interface AccountFilters {
   keyword: string
@@ -550,9 +556,9 @@ const typeOptions = [
 ]
 
 const schedulableOptions = [
-  { label: '全部调度', value: 'all' },
-  { label: '可调度', value: 'schedulable' },
-  { label: '已暂停', value: 'paused' },
+  { label: '全部启停', value: 'all' },
+  { label: '已启用', value: 'enabled' },
+  { label: '已停用', value: 'disabled' },
   { label: '临时不可调用', value: 'cooling' }
 ] as const
 
@@ -584,11 +590,11 @@ const columns = computed(() => {
     { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
     { title: '账户到期时间', key: 'accountExpiresAt', width: 180, sorter: compareAccountExpiresAt },
     { title: '最近使用时间', key: 'lastUsedAt', width: 180, sorter: compareAccountLastUsedAt },
-    { title: '操作', key: 'actions', width: 220, fixed: 'right' }
+    { title: '操作', key: 'actions', width: 160, fixed: 'right' }
   )
   return baseColumns
 })
-const tableScrollX = computed(() => (isAdmin.value ? 2300 : 2120))
+const tableScrollX = computed(() => (isAdmin.value ? 2240 : 2060))
 
 const authorizationModalTitle = computed(() => authorizationAccount.value ? `授权管理：${authorizationAccount.value.name}` : '授权管理')
 
@@ -776,10 +782,12 @@ function formatErrorPolicyAction(action: NonNullable<AccountTestResult['errorPol
 }
 
 function accountStatusColor(account: AccountSummary) {
+  if (isLocallyDisabledAuthorizedAccount(account)) return 'default'
   return statusColor(account.status)
 }
 
 function accountStatusText(account: AccountSummary) {
+  if (isLocallyDisabledAuthorizedAccount(account)) return '停用'
   return statusText(account.status)
 }
 
@@ -790,6 +798,9 @@ function accountCooldownText(account: AccountSummary) {
 
 function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
+  if (isAuthorizedAccount(account) && account.accountAuthorizationSchedulable === false) {
+    lines.push('你已停用这份授权账户，不影响授权方和其他用户')
+  }
   if (account.accountExpiresAt) {
     lines.push(`账户到期时间：${formatDateTime(account.accountExpiresAt)}`)
   }
@@ -858,6 +869,10 @@ function isAuthorizedAccount(account: AccountSummary): boolean {
   return account.accessType === 'authorized'
 }
 
+function isLocallyDisabledAuthorizedAccount(account: AccountSummary): boolean {
+  return isAuthorizedAccount(account) && account.accountAuthorizationSchedulable === false
+}
+
 function authorizedAccountTooltip(account: AccountSummary): string {
   return `授权自 ${account.ownerSystemAccountName || '其他用户'}，仅可使用`
 }
@@ -876,6 +891,10 @@ function canAuthorizeAccount(account: AccountSummary): boolean {
 
 function canUseAccountActions(account: AccountSummary): boolean {
   return canEditAccount(account) && account.permissions?.canViewCredentials !== false
+}
+
+function canTestAccount(account: AccountSummary): boolean {
+  return account.permissions?.canUse !== false
 }
 
 function canManageGroupAccounts(group: GroupSummary): boolean {
@@ -910,8 +929,8 @@ function normalizeKeyword(value: unknown): string {
 function matchesSchedulableFilter(account: AccountSummary, filter: SchedulableFilter): boolean {
   if (filter === 'all') return true
   if (filter === 'cooling') return isTemporaryAccountStatus(account) || isCoolingDown(account)
-  if (filter === 'schedulable') return account.schedulable && !isTemporaryAccountStatus(account) && !isCoolingDown(account)
-  return !account.schedulable
+  if (filter === 'enabled') return account.status === 'active' && account.schedulable && !isTemporaryAccountStatus(account) && !isCoolingDown(account)
+  return account.status === 'disabled' || !account.schedulable
 }
 
 function accountBaseUrl(account: AccountSummary): string {
@@ -922,10 +941,7 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   if (!canUseAccountActions(account)) return []
   return [
     { key: 'test', label: '测试' },
-    { key: 'toggle-status', label: account.status === 'active' ? '停用账户' : '恢复正常', danger: account.status === 'active' },
-    ...(!isTemporaryAccountStatus(account)
-      ? [{ key: 'toggle-schedulable', label: account.schedulable ? '暂停调度' : '恢复调度' }]
-      : []),
+    { key: 'toggle-status', label: account.status === 'active' ? '停用账户' : '启用账户', danger: account.status === 'active' },
     ...(canAuthorizeAccount(account) ? [{ key: 'authorizations', label: '授权管理' }] : [])
   ]
 }
@@ -1112,6 +1128,10 @@ function handleSystemAccountFilterChange() {
 
 function clearSelection() {
   selectedAccountIds.value = []
+}
+
+function currentListParams() {
+  return { systemAccountId: selectedSystemAccountId(filters.systemAccountId, isAdmin.value) }
 }
 
 function openCreate() {
@@ -1420,8 +1440,8 @@ async function loadTestModels() {
 }
 
 async function openTestModal(account: AccountSummary) {
-  if (!canUseAccountActions(account)) {
-    message.warning('授权账户仅可使用，不能测试')
+  if (!canTestAccount(account)) {
+    message.warning('当前账户不能测试')
     return
   }
   testingAccount.value = account
@@ -1480,7 +1500,7 @@ async function testAccount(account: AccountSummary) {
 }
 
 async function testAccountSilently(account: AccountSummary) {
-  if (!canUseAccountActions(account)) return undefined
+  if (!canTestAccount(account)) return undefined
   try {
     return await api.accounts.test(account.id, { model: testForm.model, prompt: testForm.prompt })
   } catch (error) {
@@ -1519,7 +1539,7 @@ async function batchUpdateAccounts(
 }
 
 async function batchTestSelected() {
-  const selected = selectedAccounts.value.filter(canUseAccountActions)
+  const selected = selectedAccounts.value.filter(canTestAccount)
   if (!selected.length) {
     message.warning('请先选择账户')
     return
@@ -1547,16 +1567,8 @@ async function batchTestSelected() {
 async function batchSetStatus(status: 'active' | 'disabled') {
   await batchUpdateAccounts(
     () => ({ status }),
-    status === 'active' ? '正在批量恢复正常' : '正在批量停用账户',
-    status === 'active' ? '账户已批量恢复正常' : '账户已批量停用'
-  )
-}
-
-async function batchSetSchedulable(schedulable: boolean) {
-  await batchUpdateAccounts(
-    () => ({ schedulable }),
-    schedulable ? '正在批量恢复调度' : '正在批量暂停调度',
-    schedulable ? '账户已批量恢复调度' : '账户已批量暂停调度'
+    status === 'active' ? '正在批量启用账户' : '正在批量停用账户',
+    status === 'active' ? '账户已批量启用' : '账户已批量停用'
   )
 }
 
@@ -1575,6 +1587,38 @@ async function updateAccountState(account: AccountSummary, payload: Record<strin
   }
 }
 
+async function updateGrantedAuthorizationSchedulable(account: AccountSummary) {
+  if (!account.accountAuthorizationId) {
+    message.warning('授权关系不存在')
+    return
+  }
+  const nextSchedulable = account.accountAuthorizationSchedulable === false
+  try {
+    await api.accounts.updateGrantedAuthorizationSchedulable(account.id, account.accountAuthorizationId, nextSchedulable, currentListParams())
+    message.success(nextSchedulable ? '已启用这份授权账户' : '已停用这份授权账户')
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '授权调度状态更新失败'))
+  }
+}
+
+async function returnGrantedAuthorization(account: AccountSummary) {
+  if (!account.accountAuthorizationId) {
+    message.warning('授权关系不存在')
+    return
+  }
+  try {
+    await api.accounts.returnGrantedAuthorization(account.id, account.accountAuthorizationId, currentListParams())
+    message.success('已归还授权账户')
+    selectedAccountIds.value = selectedAccountIds.value.filter((id) => id !== account.id)
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '归还授权账户失败'))
+  }
+}
+
 async function handleAccountMenu(key: string, account: AccountSummary) {
   if (!canUseAccountActions(account)) {
     message.warning('授权账户仅可使用，不能执行管理操作')
@@ -1586,11 +1630,7 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
   }
   if (key === 'toggle-status') {
     const nextStatus = account.status === 'active' ? 'disabled' : 'active'
-    await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已恢复正常' : '账户已停用')
-    return
-  }
-  if (key === 'toggle-schedulable') {
-    await updateAccountState(account, { schedulable: !account.schedulable }, account.schedulable ? '账户已暂停调度' : '账户已恢复调度')
+    await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
     return
   }
   if (key === 'authorizations') {
