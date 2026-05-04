@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createGroup, createGroupAuthorization, deleteGroup, listGroupAuthorizations, listGroups, listProviders, revokeGroupAuthorization, updateGroup } from '../../storage/repositories.js'
+import { createGroup, deleteGroup, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
@@ -15,42 +15,8 @@ const groupSchema = z.object({
   enabled: z.boolean().optional()
 })
 
-const groupAuthorizationSchema = z.object({
-  granteeSystemAccountId: z.string().trim().min(1),
-  remark: z.string().trim().max(200).optional()
-})
-
 groupsRouter.get('/', (req, res) => {
   res.json(ok(listGroups(getRequestAccessScope(req.query.systemAccountId))))
-})
-
-groupsRouter.get('/:id/authorizations', (req, res) => {
-  res.json(ok(listGroupAuthorizations(req.params.id, getRequestAccessScope(req.query.systemAccountId))))
-})
-
-groupsRouter.post('/:id/authorizations', (req, res) => {
-  const parsed = groupAuthorizationSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid group authorization payload'))
-    return
-  }
-  try {
-    const authorization = createGroupAuthorization(req.params.id, parsed.data, getRequestAccessScope(req.query.systemAccountId))
-    clearGatewayRuntimeCache()
-    res.status(201).json(ok(authorization))
-  } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Create group authorization failed'))
-  }
-})
-
-groupsRouter.delete('/:id/authorizations/:authorizationId', (req, res) => {
-  const authorization = revokeGroupAuthorization(req.params.id, req.params.authorizationId, getRequestAccessScope(req.query.systemAccountId))
-  if (!authorization) {
-    res.status(404).json({ message: 'Group authorization not found' })
-    return
-  }
-  clearGatewayRuntimeCache()
-  res.json(ok(authorization))
 })
 
 groupsRouter.post('/', (req, res) => {

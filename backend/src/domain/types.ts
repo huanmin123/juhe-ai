@@ -4,9 +4,14 @@ export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | '
 export type SystemAccountRole = 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'
-export type AccountUsageAccessType = 'owner' | 'account_authorized' | 'group_authorized'
+export type AccountUsageAccessType = 'owner' | 'authorized' | 'account_authorized' | 'group_authorized'
 export type GroupUsageAccessType = 'owner' | 'authorized'
 export type AuthorizationStatus = 'active' | 'revoked'
+export type SystemTeamStatus = 'active' | 'disabled'
+export type SystemTeamMemberStatus = 'active' | 'removed'
+export type ResourceAuthorizationResourceType = 'account' | 'group'
+export type ResourceAuthorizationSourceType = 'manual' | 'team'
+export type ResourceAuthorizationSourceStatus = 'active' | 'superseded' | 'revoked'
 
 export interface SystemAccountSummary {
   id: string
@@ -27,6 +32,51 @@ export interface CurrentUserSummary {
   role: SystemAccountRole
   mustChangePassword: boolean
 }
+
+export interface SystemTeamMemberSummary {
+  id: string
+  teamId: string
+  systemAccountId: string
+  systemAccountName?: string
+  username?: string
+  memberRole: 'member'
+  status: SystemTeamMemberStatus
+  joinedAt: string
+  removedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SystemTeamSummary {
+  id: string
+  name: string
+  description?: string
+  status: SystemTeamStatus
+  memberCount: number
+  activeMemberCount: number
+  members?: SystemTeamMemberSummary[]
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ResourceAuthorizationSourceSummary {
+  id: string
+  authorizationId: string
+  sourceType: ResourceAuthorizationSourceType
+  sourceTeamId?: string
+  sourceTeamName?: string
+  status: ResourceAuthorizationSourceStatus
+  activatedAt?: string
+  endedAt?: string
+  endedReason?: string
+  createdBy: string
+  createdAt: string
+  revokedBy?: string
+  revokedAt?: string
+  updatedAt: string
+}
+
 
 export interface ProviderDefinition {
   id: string
@@ -143,33 +193,16 @@ export interface AccountSummary {
   cooldownUntil?: string
   lastErrorMessage?: string
   lastUsedAt?: string
+  todayUsage: AccountUsageSummary
   usage: AccountUsageSummary
   oauthUsage?: AccountOAuthUsageSnapshot
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
-  accountAuthorizationSchedulable?: boolean
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
+  authorizationSources?: ResourceAuthorizationSourceSummary[]
   permissions?: ResourcePermissions
-}
-
-export interface AccountAuthorizationSummary {
-  id: string
-  accountId: string
-  accountName?: string
-  ownerSystemAccountId: string
-  ownerSystemAccountName?: string
-  granteeSystemAccountId: string
-  granteeSystemAccountName?: string
-  scope: 'use'
-  status: AuthorizationStatus
-  schedulable: boolean
-  remark?: string
-  usage: AccountUsageSummary
-  createdAt: string
-  revokedAt?: string
-  updatedAt: string
 }
 
 export interface AccountTestResult {
@@ -220,25 +253,58 @@ export interface GroupSummary {
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
+  authorizationSources?: ResourceAuthorizationSourceSummary[]
   permissions?: ResourcePermissions
 }
 
-export interface GroupAuthorizationSummary {
+export interface ResourceAuthorizationUsageDetail {
+  systemAccountId: string
+  systemAccountName?: string
+  username?: string
+  requestCount: number
+  clientCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  totalTokens: number
+  totalCost: number
+  lastUsedAt?: string
+}
+
+export interface ResourceAuthorizationSummary {
   id: string
-  groupId: string
-  groupName?: string
-  ownerSystemAccountId: string
-  ownerSystemAccountName?: string
+  resourceType: ResourceAuthorizationResourceType
+  resourceId: string
+  resourceName?: string
+  resourceOwnerSystemAccountId: string
+  resourceOwnerSystemAccountName?: string
   granteeSystemAccountId: string
   granteeSystemAccountName?: string
+  granteeUsername?: string
   scope: 'use'
   status: AuthorizationStatus
   remark?: string
+  expiresAt?: string
+  limits?: Record<string, unknown>
+  modelPolicy?: Record<string, unknown>
+  effectiveSourceType?: ResourceAuthorizationSourceType
+  effectiveSourceTeamId?: string
+  effectiveSourceTeamName?: string
+  activatedAt?: string
+  lastSourceChangedAt?: string
+  sources: ResourceAuthorizationSourceSummary[]
+  authorizationSources?: ResourceAuthorizationSourceSummary[]
   usage: AccountUsageSummary
+  usageBySystemAccount?: ResourceAuthorizationUsageDetail[]
+  createdBy: string
   createdAt: string
+  revokedBy?: string
   revokedAt?: string
+  revokedReason?: string
   updatedAt: string
 }
+
+export type ResourceAuthorizationUsageSummary = ResourceAuthorizationSummary
 
 export interface ApiKeySummary {
   id: string

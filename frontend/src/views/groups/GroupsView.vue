@@ -1,15 +1,21 @@
 <template>
-  <a-card class="page-card groups-page-card">
-    <div class="page-toolbar groups-toolbar">
-      <div v-if="isAdmin" class="list-filters">
-        <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" class="toolbar-select" :options="systemAccountOptions" @change="loadData" />
-      </div>
-    <div class="page-toolbar-actions">
+  <a-card class="page-card groups-page-card responsive-page-card">
+    <ResponsiveListToolbar :show-search="false" :show-reset="isAdmin" :show-filters="isAdmin" filter-title="筛选分组" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
+      <template #inline-filters>
+        <a-select v-if="isAdmin" v-model:value="systemAccountFilter" show-search option-filter-prop="label" class="toolbar-select responsive-list-inline-filter" :options="systemAccountOptions" @change="loadData" />
+      </template>
+      <template #actions>
         <a-button type="primary" @click="openCreate">新建分组</a-button>
-      </div>
-    </div>
+      </template>
+      <template #filters>
+        <label v-if="isAdmin" class="mobile-filter-field">
+          <span>系统账户</span>
+          <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" :options="systemAccountOptions" @change="loadData" />
+        </label>
+      </template>
+    </ResponsiveListToolbar>
 
-    <a-table class="page-table groups-table" size="middle" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1430 : 1250 }">
+    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll-x="isAdmin ? 1430 : 1250" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页选择账户的归属分组。" />
       </template>
@@ -47,8 +53,7 @@
         </template>
         <template v-else-if="column.key === 'usage'">
           <div class="usage-cell">
-            <span><span class="usage-label">今日:</span> <span class="usage-summary">{{ formatUsageSummary(groupStats(record).todayUsage) }}</span></span>
-            <span><span class="usage-label">累计:</span> <span class="usage-summary">{{ formatUsageSummary(groupStats(record).usage) }}</span></span>
+            <span class="usage-summary">{{ formatUsageSummary(groupStats(record).todayUsage) }}</span>
           </div>
         </template>
         <template v-else-if="column.key === 'status'">
@@ -64,18 +69,52 @@
               <a-button type="link" size="small" danger disabled>删除</a-button>
             </a-tooltip>
             <a-tag v-if="isAuthorizedGroup(record)" color="cyan">仅可使用</a-tag>
-            <a-dropdown v-if="groupMenuItems(record).length">
-              <a-button type="link" size="small">更多</a-button>
-              <template #overlay>
-                <a-menu @click="handleGroupMenuClick($event, record)">
-                  <a-menu-item v-for="item in groupMenuItems(record)" :key="item.key" :danger="item.danger">{{ item.label }}</a-menu-item>
-                </a-menu>
-              </template>
-            </a-dropdown>
           </a-space>
         </template>
       </template>
-    </a-table>
+      <template #card="{ record }">
+        <article class="mobile-list-card">
+          <div class="mobile-list-card-head">
+            <div class="mobile-list-card-title">
+              {{ record.name }}
+              <a-tag v-if="record.isDefault" class="default-group-tag" color="blue">默认</a-tag>
+            </div>
+            <div class="mobile-list-card-tags">
+              <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+              <a-tag class="status-tag" :color="groupStatusColor(record)">{{ groupStatusText(record) }}</a-tag>
+              <a-tag v-if="isAuthorizedGroup(record)" color="cyan">仅可使用</a-tag>
+            </div>
+          </div>
+          <div class="mobile-list-meta-grid">
+            <div v-if="isAdmin" class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>系统账户</span>
+              <strong>{{ groupSystemAccountText(record) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>可用账号</span>
+              <strong>{{ groupStats(record).available }} / {{ groupStats(record).total }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>并发</span>
+              <strong>{{ groupStats(record).currentConcurrency }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>用量(日)</span>
+              <strong>{{ formatUsageSummary(groupStats(record).todayUsage) }}</strong>
+            </div>
+          </div>
+          <div class="mobile-list-card-actions">
+            <a-button v-if="canEditGroup(record)" type="primary" @click="openEdit(record)">编辑</a-button>
+            <a-popconfirm v-if="canDeleteGroup(record)" title="确认删除这个分组？" @confirm="removeGroup(record.id)">
+              <a-button danger>删除</a-button>
+            </a-popconfirm>
+            <a-tooltip v-else-if="record.isDefault" title="默认分组不允许删除">
+              <a-button danger disabled>删除</a-button>
+            </a-tooltip>
+          </div>
+        </article>
+      </template>
+    </ResponsiveDataList>
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑分组' : '新建分组'" width="640px" :ok-button-props="{ type: 'primary' }" @ok="saveGroup">
       <a-form layout="vertical">
@@ -95,42 +134,6 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="authorizationModalOpen" :title="authorizationModalTitle" width="920px" :footer="null" @cancel="closeAuthorizationModal">
-      <div v-if="authorizationGroup" class="authorization-modal">
-        <a-alert class="form-alert" type="info" show-icon message="分组授权后，对方可直接使用该分组里的全部账户；统计会按分组维度汇总，但具体日志仍按实际调用者记录。" />
-        <div class="authorization-create-row">
-          <a-select v-model:value="authorizationForm.granteeSystemAccountId" show-search option-filter-prop="label" class="authorization-user-select" :options="authorizationUserOptions" placeholder="选择被授权用户" />
-          <a-input v-model:value="authorizationForm.remark" allow-clear placeholder="备注（可选）" />
-          <a-button type="primary" :loading="authorizationSaving" @click="createAuthorization">新增授权</a-button>
-        </div>
-        <a-table size="small" :columns="authorizationColumns" :data-source="groupAuthorizations" row-key="id" :loading="authorizationLoading" :pagination="false">
-          <template #emptyText>
-            <a-empty description="还没有授权记录" />
-          </template>
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'grantee'">
-              {{ record.granteeSystemAccountName || record.granteeSystemAccountId }}
-            </template>
-            <template v-else-if="column.key === 'status'">
-              <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '生效中' : '已收回' }}</a-tag>
-            </template>
-            <template v-else-if="column.key === 'usage'">
-              <span class="usage-summary">{{ formatAuthorizationUsage(record.usage) }}</span>
-            </template>
-            <template v-else-if="column.key === 'createdAt'">
-              {{ formatDateTime(record.createdAt) }}
-            </template>
-            <template v-else-if="column.key === 'actions'">
-              <a-popconfirm v-if="record.status === 'active'" title="确认收回这个授权？" @confirm="revokeAuthorization(record.id)">
-                <a-button type="link" size="small" danger>收回</a-button>
-              </a-popconfirm>
-              <span v-else class="muted-cell">-</span>
-            </template>
-          </template>
-        </a-table>
-      </div>
-    </a-modal>
-
   </a-card>
 </template>
 
@@ -139,8 +142,10 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { authState } from '@/composables/useAuth'
-import type { AccountUsageSummary, GroupAuthorizationSummary, GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
+import type { GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
@@ -155,25 +160,13 @@ const FALLBACK_PROVIDER: ProviderDefinition = {
 
 const loading = ref(false)
 const modalOpen = ref(false)
-const authorizationModalOpen = ref(false)
-const authorizationLoading = ref(false)
-const authorizationSaving = ref(false)
 const editingId = ref<string>()
-const authorizationGroup = ref<GroupSummary>()
-const groupAuthorizations = ref<GroupAuthorizationSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const systemAccountFilter = ref(allSystemAccountsValue)
 const form = reactive({ name: '', providerCode: 'openai', description: '', enabled: true })
-const authorizationForm = reactive({ granteeSystemAccountId: undefined as string | undefined, remark: '' })
 const isAdmin = authState.isAdmin
-
-interface GroupMenuItem {
-  key: string
-  label: string
-  danger?: boolean
-}
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -186,7 +179,7 @@ const columns = computed(() => {
   baseColumns.push(
     { title: '账户数', key: 'accountCount', width: 130 },
     { title: '当前并发', key: 'concurrency', width: 100 },
-    { title: '用量', key: 'usage', width: 280 },
+    { title: '用量(日)', key: 'usage', width: 280 },
     { title: '状态', key: 'status', width: 100 },
     { title: '操作', key: 'actions', width: 150, fixed: 'right' }
   )
@@ -196,24 +189,13 @@ const columns = computed(() => {
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const filteredGroups = computed(() => groups.value.filter((group) => matchesSystemAccountFilter(group, systemAccountFilter.value, isAdmin.value)))
 const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
-const authorizationModalTitle = computed(() => authorizationGroup.value ? `授权管理：${authorizationGroup.value.name}` : '授权管理')
-const authorizationColumns = [
-  { title: '被授权用户', key: 'grantee', width: 180 },
-  { title: '状态', key: 'status', width: 100 },
-  { title: '授权后用量', key: 'usage', width: 260 },
-  { title: '备注', dataIndex: 'remark', key: 'remark', width: 180 },
-  { title: '授权时间', key: 'createdAt', width: 180 },
-  { title: '操作', key: 'actions', width: 100 }
-]
-const authorizationUserOptions = computed(() => systemAccounts.value
-  .filter((account) => account.status === 'active' && account.id !== authorizationGroup.value?.ownerSystemAccountId)
-  .map((account) => ({ label: `${account.displayName || account.username}（${account.username}）`, value: account.id })))
 const providerOptions = computed(() => availableProviders.value.map((provider) => ({
   label: provider.name,
   value: provider.code,
   disabled: !provider.enabled
 })))
 const providerLocked = computed(() => Boolean(editingId.value && groups.value.find((group) => group.id === editingId.value)?.accountStats.total))
+const activeFilterCount = computed(() => systemAccountFilter.value === allSystemAccountsValue ? 0 : 1)
 
 function groupStats(group: GroupSummary) {
   return group.accountStats
@@ -255,20 +237,8 @@ function canDeleteGroup(group: GroupSummary): boolean {
   return !group.isDefault && group.permissions?.canDelete !== false
 }
 
-function canAuthorizeGroup(group: GroupSummary): boolean {
-  return group.permissions?.canAuthorize !== false && !isAuthorizedGroup(group)
-}
-
-function groupMenuItems(group: GroupSummary): GroupMenuItem[] {
-  return canAuthorizeGroup(group) ? [{ key: 'authorizations', label: '授权管理' }] : []
-}
-
 function formatUsageSummary(usage: GroupSummary['accountStats']['usage']) {
   return `${formatNumber(usage.requestCount)}req/${formatUsageAmount(usage.totalTokens)}/${formatCost(usage.totalCost)}`
-}
-
-function formatAuthorizationUsage(usage: AccountUsageSummary): string {
-  return `${formatNumber(usage.requestCount)}req / ${formatUsageAmount(usage.totalTokens)} / ${formatCost(usage.totalCost)}`
 }
 
 function formatDateTime(value?: string): string {
@@ -325,6 +295,11 @@ async function loadData() {
   }
 }
 
+function resetFilters() {
+  systemAccountFilter.value = allSystemAccountsValue
+  void loadData()
+}
+
 function openCreate() {
   editingId.value = undefined
   Object.assign(form, { name: '', providerCode: defaultProviderCode(), description: '', enabled: true })
@@ -339,91 +314,6 @@ function openEdit(group: GroupSummary) {
   editingId.value = group.id
   Object.assign(form, { name: group.name, providerCode: group.providerCode, description: group.description ?? '', enabled: group.enabled })
   modalOpen.value = true
-}
-
-async function openAuthorizationModal(group: GroupSummary) {
-  if (!canAuthorizeGroup(group)) {
-    message.warning('当前分组没有授权管理权限')
-    return
-  }
-  authorizationGroup.value = group
-  authorizationForm.granteeSystemAccountId = undefined
-  authorizationForm.remark = ''
-  authorizationModalOpen.value = true
-  authorizationLoading.value = true
-  try {
-    groupAuthorizations.value = await api.groups.authorizations(group.id)
-  } catch (error) {
-    console.error(error)
-    message.error('加载授权记录失败')
-  } finally {
-    authorizationLoading.value = false
-  }
-}
-
-function closeAuthorizationModal() {
-  authorizationModalOpen.value = false
-  authorizationGroup.value = undefined
-  groupAuthorizations.value = []
-  authorizationForm.granteeSystemAccountId = undefined
-  authorizationForm.remark = ''
-}
-
-async function refreshAuthorizationList() {
-  if (!authorizationGroup.value) return
-  authorizationLoading.value = true
-  try {
-    groupAuthorizations.value = await api.groups.authorizations(authorizationGroup.value.id)
-  } catch (error) {
-    console.error(error)
-    message.error('刷新授权记录失败')
-  } finally {
-    authorizationLoading.value = false
-  }
-}
-
-async function createAuthorization() {
-  if (!authorizationGroup.value) return
-  if (!authorizationForm.granteeSystemAccountId) {
-    message.warning('请选择被授权用户')
-    return
-  }
-  authorizationSaving.value = true
-  try {
-    await api.groups.createAuthorization(authorizationGroup.value.id, {
-      granteeSystemAccountId: authorizationForm.granteeSystemAccountId,
-      remark: authorizationForm.remark.trim() || undefined
-    })
-    message.success('授权已创建')
-    authorizationForm.granteeSystemAccountId = undefined
-    authorizationForm.remark = ''
-    await refreshAuthorizationList()
-    await loadData()
-  } catch (error) {
-    console.error(error)
-    message.error('创建授权失败')
-  } finally {
-    authorizationSaving.value = false
-  }
-}
-
-async function revokeAuthorization(authorizationId: string) {
-  if (!authorizationGroup.value) return
-  try {
-    await api.groups.revokeAuthorization(authorizationGroup.value.id, authorizationId)
-    message.success('授权已收回')
-    await refreshAuthorizationList()
-    await loadData()
-  } catch (error) {
-    console.error(error)
-    message.error('收回授权失败')
-  }
-}
-
-function handleGroupMenuClick(event: { key: string | number }, group: GroupSummary) {
-  if (String(event.key) === 'authorizations') {
-    void openAuthorizationModal(group)
-  }
 }
 
 async function saveGroup() {
@@ -477,42 +367,21 @@ onMounted(loadData)
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
-.groups-toolbar {
-  align-items: center;
-}
-
-.list-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  flex: 1 1 260px;
-}
-
 .toolbar-select {
   min-width: 180px;
+}
+
+.mobile-filter-field {
+  display: grid;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .form-help {
   color: #64748b;
   font-size: 12px;
-}
-
-.authorization-modal {
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.authorization-create-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 240px) minmax(180px, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-}
-
-.authorization-user-select {
-  width: 100%;
 }
 
 .groups-table :deep(.ant-table-cell) {

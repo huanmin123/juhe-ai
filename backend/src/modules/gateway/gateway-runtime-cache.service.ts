@@ -1,3 +1,4 @@
+import { createAppCache } from '../../shared/cache.js'
 import {
   listOpenAIAccountsForGroup,
   resolveGroupUsageAccessMetadata,
@@ -10,53 +11,64 @@ const gatewaySettingsTtlMs = 1000
 const groupUsageAccessTtlMs = 1000
 const openAIAccountsTtlMs = 1000
 
-interface CacheEntry<T> {
-  value: T
-  expiresAtMs: number
-}
+const gatewaySettingsCache = createAppCache<string, GatewaySettings>({
+  name: 'gateway:settings',
+  max: 1,
+  ttlMs: gatewaySettingsTtlMs
+})
 
-let gatewaySettingsCache: CacheEntry<GatewaySettings> | undefined
-const groupUsageAccessCache = new Map<string, CacheEntry<GroupUsageAccessMetadata | undefined>>()
-const openAIAccountsCache = new Map<string, CacheEntry<OpenAIAccountSecret[]>>()
+const groupUsageAccessCache = createAppCache<string, GroupUsageAccessMetadata | false>({
+  name: 'gateway:group-usage-access',
+  max: 1000,
+  ttlMs: groupUsageAccessTtlMs
+})
+
+const openAIAccountsCache = createAppCache<string, OpenAIAccountSecret[]>({
+  name: 'gateway:openai-accounts',
+  max: 1000,
+  ttlMs: openAIAccountsTtlMs
+})
 
 export function readCachedGatewaySettings(): GatewaySettings {
-  const now = Date.now()
-  if (gatewaySettingsCache && gatewaySettingsCache.expiresAtMs > now) {
-    return gatewaySettingsCache.value
+  const cached = gatewaySettingsCache.get('current')
+  if (cached) {
+    return cached
   }
   const value = readGatewaySettings()
-  gatewaySettingsCache = { value, expiresAtMs: now + gatewaySettingsTtlMs }
+  gatewaySettingsCache.set('current', value)
   return value
 }
 
 export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
-  const cacheKey = `${groupId}:${systemAccountId}`
-  const now = Date.now()
+  const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = groupUsageAccessCache.get(cacheKey)
-  if (cached && cached.expiresAtMs > now) {
-    return cached.value
+  if (cached !== undefined) {
+    return cached || undefined
   }
   const value = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
-  groupUsageAccessCache.set(cacheKey, { value, expiresAtMs: now + groupUsageAccessTtlMs })
+  groupUsageAccessCache.set(cacheKey, value ?? false)
   return value
 }
 
 export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountId: string): OpenAIAccountSecret[] {
-  const cacheKey = `${groupId}:${systemAccountId}`
-  const now = Date.now()
+  const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = openAIAccountsCache.get(cacheKey)
-  if (cached && cached.expiresAtMs > now) {
-    return cached.value.map(cloneOpenAIAccountSecret)
+  if (cached) {
+    return cached.map(cloneOpenAIAccountSecret)
   }
   const value = listOpenAIAccountsForGroup(groupId, systemAccountId)
-  openAIAccountsCache.set(cacheKey, { value, expiresAtMs: now + openAIAccountsTtlMs })
+  openAIAccountsCache.set(cacheKey, value)
   return value.map(cloneOpenAIAccountSecret)
 }
 
 export function clearGatewayRuntimeCache(): void {
-  gatewaySettingsCache = undefined
+  gatewaySettingsCache.clear()
   groupUsageAccessCache.clear()
   openAIAccountsCache.clear()
+}
+
+function gatewayCacheKey(groupId: string, systemAccountId: string): string {
+  return `${groupId}:${systemAccountId}`
 }
 
 function cloneOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAccountSecret {

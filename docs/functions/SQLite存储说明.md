@@ -30,7 +30,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 使用 `PRAGMA journal_mode = WAL`
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
-- AI 账户使用授权和分组使用授权使用独立表记录，不复制账户凭据；授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者和授权关系用于聚合统计。
+- 系统团队、团队成员和统一资源授权使用独立表记录；授权不复制账户凭据，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
 - 登录验证码挑战暂不写入 SQLite，使用后端进程内存保存短时一次性验证码；过期和已提交的挑战会被清理。
 - 登录失败限频和账号临时锁定暂不写入 SQLite，使用后端进程内存保存短时窗口和锁定状态；后续多实例部署时再迁移到共享存储。
@@ -54,15 +54,17 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 
 - `usage_records(system_account_id, created_at, id)`：统计 worker 增量扫描。
 - `usage_records(account_owner_system_account_id, account_id, created_at, id)`：账户所有者查看真实账户统一用量。
-- `usage_records(account_owner_system_account_id, account_authorization_id, created_at, id)`：授权管理弹窗按授权关系聚合用量。
 - `usage_records(group_owner_system_account_id, group_id, created_at, id)`：分组所有者查看真实分组统一用量。
-- `usage_records(group_owner_system_account_id, group_authorization_id, created_at, id)`：分组授权管理弹窗按授权关系聚合用量。
-- `account_authorizations(owner_system_account_id, account_id, status)`：账户所有者查看授权名单。
-- `account_authorizations(grantee_system_account_id, status)`：被授权用户查询可用授权账户。
-- `account_authorizations(account_id, grantee_system_account_id, status)`：防止同一账户重复有效授权给同一用户。
-- `group_authorizations(owner_system_account_id, group_id, status)`：分组所有者查看授权名单。
-- `group_authorizations(grantee_system_account_id, status)`：被授权用户查询可用授权分组。
-- `group_authorizations(group_id, grantee_system_account_id, status)`：防止同一分组重复有效授权给同一用户。
+- `usage_records(account_owner_system_account_id, account_authorization_id, created_at, id)`：授权管理按账户授权关系聚合用量。
+- `usage_records(group_owner_system_account_id, group_authorization_id, created_at, id)`：授权管理按分组授权关系聚合用量。
+- `system_teams(name)`：保证团队名称唯一。
+- `system_teams(status, name)`：团队列表和授权对象选择器读取。
+- `system_team_members(team_id, system_account_id, status)`：校验团队成员有效性。
+- `system_team_members(system_account_id, status)`：查询当前系统账户所属团队。
+- `resource_authorizations(resource_owner_system_account_id, resource_type, resource_id, status)`：资源所有者查看授权名单。
+- `resource_authorizations(grantee_system_account_id, status)`：查询系统账户可用授权。
+- `resource_authorizations(resource_type, resource_id, grantee_system_account_id, status)`：防止同一资源重复有效授权给同一用户。
+- 有效资源查询需要在 service 层按 `resource_type + resource_id + caller_system_account_id` 去重；团队来源只能合并到用户授权来源摘要，不能展开成多条 AI 账户或分组。
 - `usage_records(system_account_id, first_token_ms, created_at, id)`、`usage_records(system_account_id, duration_ms, created_at, id)`、`usage_records(system_account_id, cost_usd, created_at, id)`：使用记录页按首 token、总耗时、成本排序时只取有限窗口，避免大数据量下前端全量排序或数据库临时排序。
 - `usage_records(first_token_ms, created_at, id)`、`usage_records(duration_ms, created_at, id)`、`usage_records(cost_usd, created_at, id)`：管理员查看全部系统账户时的全局排序索引。
 - `usage_stats_totals(system_account_id, scope_type, scope_id)`：列表读取累计值。
@@ -75,8 +77,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 默认任务策略：
 
 - 统计 worker 每 1 分钟按 `system_account_id` 和 `(created_at, id)` 游标增量读取 `usage_records` 并 upsert 到聚合表。
-- 授权账户调用需要同时写入调用方统计和真实账户统计：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；账户所有者的账户总用量按 `account_owner_system_account_id + account_id` 聚合；账户授权弹窗按 `account_owner_system_account_id + account_authorization_id` 聚合。
-- 授权分组调用需要同时写入调用方统计和真实分组统计：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；分组授权弹窗按 `group_owner_system_account_id + group_authorization_id` 聚合。
+- 授权账户调用需要同时写入调用方统计、真实账户统计和授权消耗统计：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；账户所有者的账户总用量按 `account_owner_system_account_id + account_id` 聚合；授权管理按 `account_owner_system_account_id + account_authorization_id` 聚合，并过滤资源归属人自用消耗。
+- 授权分组调用需要同时写入调用方统计、真实分组统计和授权消耗统计：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权管理按 `group_owner_system_account_id + group_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 管理员全局汇总从各系统账户缓存聚合，不回扫 `usage_records`。
 - 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属。
 - 账户、分组、API Key 等列表接口只读 `usage_stats_totals` / `usage_stats_daily`，不要在列表查询里 `SUM usage_records`。
@@ -90,17 +92,47 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `system_metrics_samples` 保留 7 到 14 天，`system_metrics_hourly` 可保留 180 天。
 - 如果统计缓存损坏，可以按系统账户从 `usage_records` 重新构建缓存，不需要删除原始使用记录。
 
-## AI 账户使用授权存储
+## 系统团队与统一授权存储
 
-账户授权只保存使用权关系，不保存或复制上游凭据。建议新增 `account_authorizations` 表：
+当前项目未正式上线，本地 SQLite 可以重建或清洗，因此新版授权不保留旧 `account_authorizations` / `group_authorizations` 兼容分支，统一使用 `resource_authorizations`。
+
+建议新增 `system_teams` 表：
 
 - `id`
-- `account_id`
-- `owner_system_account_id`
-- `grantee_system_account_id`
+- `name`
+- `description`
+- `status`：`active`、`disabled`
+- `created_by`
+- `created_at`
+- `updated_at`
+
+建议新增 `system_team_members` 表：
+
+- `id`
+- `team_id`
+- `system_account_id`
+- `member_role`：第一阶段固定 `member`
+- `status`：`active`、`removed`
+- `joined_at`
+- `removed_at`
+- `created_by`
+- `created_at`
+- `updated_at`
+
+建议新增 `resource_authorizations` 表：
+
+- `id`
+- `resource_type`：`account`、`group`
+- `resource_id`
+- `resource_owner_system_account_id`
+- `grantee_system_account_id`：最终被授权系统账户
+- `source_type`：`manual`、`team`
+- `source_team_id`：团队来源 ID，手动个人授权为空
 - `scope`：第一阶段固定为 `use`
+- `expires_at`：预留字段，第一阶段不启用。
+- `limits_json`：预留字段，第一阶段不启用。
+- `model_policy_json`：预留字段，第一阶段不启用。
 - `status`：`active`、`revoked`
-- `schedulable`：被授权用户是否启用这份账户授权，默认 `1`；产品上表现为被授权用户自己的“停用 / 启用账户”，只影响该被授权用户通过账户授权调度，不影响账户所有者、其他被授权用户或分组授权。
 - `remark`
 - `created_by`
 - `created_at`
@@ -110,67 +142,49 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 
 约束：
 
-- `account_id` 必须指向真实存在的 AI 账户。
-- `owner_system_account_id` 必须等于该账户的 `accounts.system_account_id`。
-- `grantee_system_account_id` 不能等于 `owner_system_account_id`。
-- 同一个 `account_id + grantee_system_account_id` 同一时间只能存在一条 `active` 授权；SQLite 可用部分唯一索引或 service 层事务校验实现。
-- 如果账户所有者把主账户停用，被授权用户即使自己的 `schedulable = 1` 也不能调度；被授权用户也不能在所有者停用期间自行启用这份授权账户。
+- `resource_type = account` 时，`resource_id` 必须指向真实存在的 AI 账户，且 `resource_owner_system_account_id` 必须等于 `accounts.system_account_id`。
+- `resource_type = group` 时，`resource_id` 必须指向真实存在的分组，且 `resource_owner_system_account_id` 必须等于 `groups.system_account_id`。
+- `grantee_system_account_id` 必须指向存在的系统账户，且不能等于 `resource_owner_system_account_id`。
+- 团队授权由 service 层展开为成员用户级授权；资源所有者如果也是团队成员，其自用调用仍按自用处理，不计入授权消耗。
+- 同一个 `resource_type + resource_id + grantee_system_account_id` 同一时间只能存在一条 `active` 授权；SQLite 可用部分唯一索引或 service 层事务校验实现。
 - 收回授权只把 `status` 改为 `revoked` 并写入 `revoked_by` / `revoked_at`，不物理删除，历史统计继续可查。
-- 被授权用户主动“归还”账户授权时，同样把自己的授权关系改为 `revoked`，并清理自己分组中绑定的该账户。
+- 团队停用、成员移除或系统账户停用后，网关实时校验应立即阻断团队授权使用权。
+- 授权资源不能继续被被授权人二次授权给第三方。
+
+`group_accounts` 和 `api_keys` 的授权路径字段：
+
+- `group_accounts.account_id` 仍指向唯一物理 AI 账户；同一 `system_account_id + group_id + account_id` 只能有一条有效分组成员关系，不能因多个授权来源重复加入同一账户。
+- `group_accounts.account_authorization_id`：当被授权用户把授权 AI 账户加入自己分组时记录首选统一授权 ID；为空表示自有账户。
+- `api_keys.group_id` 仍指向唯一分组；同一个授权分组不能因为个人来源和团队来源重复出现在 API Key 绑定选项。
+- `api_keys.group_authorization_id`：当 API Key 绑定授权分组时记录首选统一授权 ID；为空表示绑定自有分组。
+- 这两个字段只记录当时选择的授权路径，调度时必须重新校验授权、团队、成员、资源状态，不能只信任历史绑定。
+- 当同一用户对同一账户或分组同时拥有个人来源和团队来源时，只允许存在一条用户级授权，并在资源行返回全部来源供排查。
+- 调度只校验用户级授权是否仍有效；来源变化不应导致资源重复或历史绑定断裂。
 
 `usage_records` 需要额外冗余这些字段：
 
 - `account_owner_system_account_id`：命中账户所有者，自有账户时等于 `system_account_id`。
-- `account_access_type`：`owner`、`account_authorized`、`group_authorized`。
-- `account_authorization_id`：命中账户授权时写入，自有账户或仅通过分组授权访问时为空。
+- `group_owner_system_account_id`：命中分组所有者，自有分组时等于 `system_account_id`。
+- `account_access_type`：`owner`、`authorized`。
+- `group_access_type`：`owner`、`authorized`。
+- `account_authorization_id`：命中授权 AI 账户时写入统一授权 ID，自有账户或仅通过授权分组访问时为空。
+- `group_authorization_id`：命中授权分组时写入统一授权 ID，自有分组为空。
+- `authorization_source_summary`：可选快照，记录当时用户授权来自个人、团队或两者合并。
 
 日志隔离和统计口径：
 
 - 使用记录页按 `usage_records.system_account_id` 查询，所以被授权用户只看自己的调用明细。
-- 账户列表的“用量情况”按访问身份区分：账户所有者查看真实账户总用量；被授权用户查看自己这条 `account_authorization_id` 产生的用量，不展示账户所有者或其他被授权用户的真实总量。
-- 账户所有者不按明细读取被授权用户的 `usage_records`，授权管理弹窗只读取按 `account_authorization_id` 聚合后的请求数、Token、成本、成功失败和最后使用时间。
-- 账户真实总用量按 `account_owner_system_account_id + account_id` 聚合，所以自用和被授权用户使用都会消耗同一个账户额度。
-
-## 分组使用授权存储
-
-分组授权只保存分组使用权关系，不保存或复制分组内账户凭据。该能力排在账户使用授权之后实现。建议新增 `group_authorizations` 表：
-
-- `id`
-- `group_id`
-- `owner_system_account_id`
-- `grantee_system_account_id`
-- `scope`：第一阶段固定为 `use`
-- `status`：`active`、`revoked`
-- `remark`
-- `created_by`
-- `created_at`
-- `revoked_by`
-- `revoked_at`
-- `updated_at`
-
-约束：
-
-- `group_id` 必须指向真实存在的分组。
-- `owner_system_account_id` 必须等于该分组的 `groups.system_account_id`。
-- `grantee_system_account_id` 不能等于 `owner_system_account_id`。
-- 同一个 `group_id + grantee_system_account_id` 同一时间只能存在一条 `active` 授权；SQLite 可用部分唯一索引或 service 层事务校验实现。
-- 收回授权只把 `status` 改为 `revoked` 并写入 `revoked_by` / `revoked_at`，不物理删除，历史统计继续可查。
-- 被授权用户绑定该授权分组的 API Key 不必立即删除，但调度时必须校验授权仍有效；授权失效时该 API Key 应返回“分组授权已失效”类错误或提示用户改绑。
-
-`usage_records` 需要额外冗余这些字段：
-
-- `group_owner_system_account_id`：命中分组所有者，自有分组时等于 `system_account_id`。
-- `group_access_type`：`owner` 或 `authorized`。
-- `group_authorization_id`：命中授权分组时写入，自有分组为空。
-
-日志隔离和统计口径：
-
-- 使用记录页仍按 `usage_records.system_account_id` 查询，所以被授权用户只看自己的调用明细。
-- 分组所有者不按明细读取被授权用户的 `usage_records`，分组授权管理弹窗只读取按 `group_authorization_id` 聚合后的请求数、Token、成本、成功失败、最后使用时间和命中账户数。
-- 分组真实总用量按 `group_owner_system_account_id + group_id` 聚合，所以自用和被授权用户通过该分组使用都会累计到同一个分组维度。
-- 分组授权共享的是动态分组集合，但第一阶段只共享分组所有者自有账户；如果分组里包含别人授权来的账户，调度时必须过滤，不能通过分组授权继续共享给第三方。
-- 统计按请求实际命中的 `group_id` 和当时的 `group_authorization_id` 记录，历史不会因后续分组账户变化而重算。
-
+- 资源所有者不按明细读取被授权用户的 `usage_records`，授权管理只读取按统一授权 ID 聚合后的请求数、Token、成本、成功失败和最后使用时间。
+- 授权消耗统计必须过滤自用记录：账户授权按 `usage_records.system_account_id != account_owner_system_account_id`，分组授权按 `usage_records.system_account_id != group_owner_system_account_id`。
+- 账户真实总用量按 `account_owner_system_account_id + account_id` 聚合，所以自用和所有用户授权都会累计到同一个真实账户维度。
+- 分组真实总用量按 `group_owner_system_account_id + group_id` 聚合，所以自用和所有用户授权都会累计到同一个真实分组维度。
+- 授权统计主口径是“资源 × 用户”：按用户级统一授权 ID 聚合，不再把个人来源和团队来源拆成两份。
+- 个人授权详情需要按实际调用方 `system_account_id` 聚合，所以 A 授权给 B 时，A 能看到 B 对该资源的消耗。
+- 团队授权详情从用户级授权集合聚合：团队总量是成员用户消耗去重汇总，成员明细按 `system_account_id` 展示每个用户在该资源上的消耗。
+- 团队来源变更只影响用户级授权来源摘要；成员移除后，如果该用户没有其他来源则授权失效，但历史用户消耗仍按该用户保留。
+- 分组授权共享的是动态分组集合，但只共享分组所有者自有账户；如果分组里包含别人授权来的账户，调度时必须过滤，不能通过分组授权继续共享给第三方。
+- 同一请求只能写入一条 `usage_records`，不能因为调用方同时拥有个人来源和团队来源而重复入库；资源真实总量按 `usage_records.id` 去重。
+- 统计按请求实际命中的 `group_id`、`account_id` 和当时的统一授权 ID 记录，历史不会因后续团队成员或分组账户变化而重算。
 ## 账户套餐到期
 
 `accounts.account_expires_at` 是本地账户套餐/购买到期时间，适用于 OpenAI OAuth 和 OpenAI API Key 账户。它和 OAuth 凭据里的 `expires_at` 分离：`credentials.expires_at` 来自 OpenAI token 的 `expires_in`，只表示 access token 过期时间。
@@ -248,7 +262,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 ## 系统账户隔离补充
 
-- `accounts`、`account_authorizations`、`groups`、`group_authorizations`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`account_usage_snapshots`、`system_settings` 后续都会按 `system_account_id` 或明确的 owner/grantee 字段隔离。
+- `accounts`、`system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`account_usage_snapshots`、`system_settings` 后续都会按 `system_account_id` 或明确的 owner/grantee 字段隔离。
 - `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_error_daily` 也必须按 `system_account_id` 隔离。
 - `providers`、`proxy_profiles`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly` 保持全局共享；`providers` 和 `proxy_profiles` 只允许管理员维护，主机级系统监控默认仅管理员可见。
 - 管理员可以读取所有系统账户的数据；普通用户只读取自己的系统账户数据，以及其他用户主动授权给自己的 AI 账户和分组使用摘要。

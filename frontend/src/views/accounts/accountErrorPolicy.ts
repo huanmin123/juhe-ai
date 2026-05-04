@@ -16,7 +16,6 @@ export interface AccountErrorPolicyRuleForm {
   daily_reset_hour: number | null
   weekly_reset_day: number | null
   weekly_reset_hour: number | null
-  reset_timezone: string
   description: string
 }
 
@@ -47,11 +46,9 @@ export interface AccountErrorHandlingRulePayload {
   daily_reset_hour?: number
   weekly_reset_day?: number
   weekly_reset_hour?: number
-  reset_timezone?: string
   description?: string
 }
 
-const defaultTimezone = 'Asia/Shanghai'
 const listSeparators = /[,;，；\n]/
 
 export const accountErrorActionValues: AccountErrorAction[] = [
@@ -70,23 +67,6 @@ export const accountErrorRecoveryStrategyOptions = [
   { label: '固定时长', value: 'duration' },
   { label: '每天固定时间', value: 'daily' },
   { label: '每周固定时间', value: 'weekly' }
-]
-
-export const accountErrorTimezoneOptions = [
-  'Asia/Shanghai',
-  'UTC',
-  'Asia/Tokyo',
-  'Asia/Seoul',
-  'Asia/Singapore',
-  'Asia/Kolkata',
-  'Europe/London',
-  'Europe/Paris',
-  'Europe/Berlin',
-  'America/New_York',
-  'America/Chicago',
-  'America/Denver',
-  'America/Los_Angeles',
-  'Australia/Sydney'
 ]
 
 export const accountErrorHourOptions = Array.from({ length: 24 }, (_, index) => ({ label: `${String(index).padStart(2, '0')}:00`, value: index }))
@@ -184,7 +164,6 @@ const makeRule = (patch: Partial<AccountErrorPolicyRuleForm>): AccountErrorPolic
   daily_reset_hour: 0,
   weekly_reset_day: 1,
   weekly_reset_hour: 0,
-  reset_timezone: defaultTimezone,
   description: '',
   ...patch
 })
@@ -225,7 +204,6 @@ const newAPIQuotaRule = (): AccountErrorPolicyRuleForm => makeRule({
   action: 'rate_limited',
   reset_strategy: 'daily',
   daily_reset_hour: 0,
-  reset_timezone: defaultTimezone,
   description: '403 但语义是用户额度不足，按限流处理到次日恢复'
 })
 
@@ -236,7 +214,6 @@ const balance402Rule = (): AccountErrorPolicyRuleForm => makeRule({
   action: 'rate_limited',
   reset_strategy: 'daily',
   daily_reset_hour: 0,
-  reset_timezone: defaultTimezone,
   description: '余额不足或支付要求，切换其他账号并在固定时间恢复'
 })
 
@@ -248,7 +225,6 @@ const dailyLimit429Rule = (): AccountErrorPolicyRuleForm => makeRule({
   action: 'rate_limited',
   reset_strategy: 'daily',
   daily_reset_hour: 0,
-  reset_timezone: defaultTimezone,
   description: '同为 429 时，仅包含日额度关键词才按限流到次日恢复'
 })
 
@@ -293,7 +269,6 @@ const buildRuleFromPayload = (value: unknown, index: number): AccountErrorPolicy
     daily_reset_hour: normalizeHour(entry.daily_reset_hour ?? entry.dailyResetHour, 0),
     weekly_reset_day: normalizeWeekday(entry.weekly_reset_day ?? entry.weeklyResetDay, 1),
     weekly_reset_hour: normalizeHour(entry.weekly_reset_hour ?? entry.weeklyResetHour, 0),
-    reset_timezone: String(entry.reset_timezone || entry.timezone || defaultTimezone),
     description: typeof entry.description === 'string' && entry.description.trim() !== name.trim() ? entry.description.trim() : ''
   })
 }
@@ -367,10 +342,8 @@ export const buildAccountErrorPolicyPayload = (rules: AccountErrorPolicyRuleForm
       } else if (payload.reset_strategy === 'weekly') {
         payload.weekly_reset_day = normalizeWeekday(rule.weekly_reset_day, 1)
         payload.weekly_reset_hour = normalizeHour(rule.weekly_reset_hour, 0)
-        payload.reset_timezone = rule.reset_timezone || defaultTimezone
       } else {
         payload.daily_reset_hour = normalizeHour(rule.daily_reset_hour, 0)
-        payload.reset_timezone = rule.reset_timezone || defaultTimezone
       }
     }
     return payload

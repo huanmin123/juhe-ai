@@ -16,6 +16,7 @@
     "dotenv": "^16.4.7",
     "express": "^4.21.2",
     "https-proxy-agent": "^9.0.0",
+    "lru-cache": "^11.3.5",
     "socks-proxy-agent": "^10.0.0",
     "zod": "^3.24.0"
   },

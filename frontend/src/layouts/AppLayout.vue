@@ -94,6 +94,7 @@ import {
   MenuOutlined,
   MenuUnfoldOutlined,
   NodeIndexOutlined,
+  SafetyCertificateOutlined,
   SettingOutlined,
   TeamOutlined,
   UserSwitchOutlined
@@ -164,6 +165,8 @@ const menuIconMap = {
   '/providers': GlobalOutlined,
   '/accounts': UserSwitchOutlined,
   '/groups': ApartmentOutlined,
+  '/system-teams': TeamOutlined,
+  '/authorizations': SafetyCertificateOutlined,
   '/api-keys': ApiKeyMenuIcon,
   '/proxies': NodeIndexOutlined,
   '/stats': BarChartOutlined,
@@ -174,11 +177,14 @@ const menuIconMap = {
 
 const menuItems = computed<ItemType[]>(() => menuRoutes
   .filter((item) => !item.meta?.roles?.length || (currentUser.value && item.meta.roles.includes(currentUser.value.role)))
-  .map((item) => ({
-    key: item.path,
-    label: item.meta?.title ?? '',
-    icon: () => h(menuIconMap[item.path as keyof typeof menuIconMap])
-  })))
+  .map((item) => {
+    const iconComponent = menuIconMap[item.path as keyof typeof menuIconMap]
+    return {
+      key: item.path,
+      label: item.meta?.title ?? '',
+      ...(iconComponent ? { icon: () => h(iconComponent) } : {})
+    }
+  }))
 
 function handleMenuClick(event: { key: string }) {
   router.push(event.key)

@@ -20,7 +20,7 @@
 ## 2. 后端范围
 
 - 后端是 `juhe-ai` 的管理 API、OpenAI 兼容中转网关、账号调度、凭据处理、统计聚合和后台任务承载层。
-- 第一阶段优先保证 OpenAI 供应商、系统账户、AI 账户、分组、API Key、代理、使用记录、统计缓存、系统设置和 OpenAI OAuth 账号接入形成轻量闭环。
+- 第一阶段优先保证 OpenAI 供应商、系统账户、系统团队、统一授权、AI 账户、分组、API Key、代理、使用记录、统计缓存、系统设置和 OpenAI OAuth 账号接入形成轻量闭环。
 - 后端只暴露两类入口：管理面 `/api/*` 和 OpenAI 兼容网关 `/v1/*`；客户端不直接访问上游账号凭据。
 - 后端是业务事实源；前端不传系统账户归属字段，不自行决定数据隔离、调度状态或敏感字段展示。
 
@@ -122,8 +122,8 @@ flowchart LR
 - `usage_records` 是请求事实源；统计表只做读优化和图表缓存，不替代事实记录。
 - 启动时通过 `applySchema()` 自动建表、补列、建索引和做必要兼容迁移。
 - 启动时通过 `seedDefaults()` 写入默认管理员、OpenAI 供应商、默认 OpenAI 分组、全局设置和系统设置。
-- 新字段必须明确默认值、可空性、展示边界、旧库兼容策略和是否需要索引。
-- 不通过删除本地数据库掩盖 schema 兼容问题。
+- 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引；项目未上线阶段可重建或清洗本地库，正式上线后再按兼容迁移处理。
+- 未上线阶段可以按计划重建本地 SQLite；一旦正式上线，不通过删除数据库掩盖 schema 兼容问题。
 
 ### 6.2 表分区
 
@@ -132,7 +132,7 @@ flowchart LR
 | 登录与权限 | `system_accounts`、`system_sessions` | 后台账号、角色、状态、密码哈希和登录会话 |
 | 设置 | `global_settings`、`system_settings` | 平台公开设置和系统账户级运行偏好 |
 | 供应商与资源 | `providers`、`accounts`、`proxy_profiles`、`error_policies` | 上游供应商、AI 账户、代理和账号错误策略 |
-| 授权与分组 | `account_authorizations`、`groups`、`group_authorizations`、`group_accounts` | 账户使用授权、分组、分组授权和分组账号绑定 |
+| 团队、授权与分组 | `system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts` | 系统团队、团队成员、统一资源授权、分组和分组账号绑定 |
 | 网关访问 | `api_keys` | 本地网关密钥、分组绑定、状态、过期和配额占位 |
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
@@ -149,8 +149,10 @@ erDiagram
   system_accounts ||--o{ api_keys : owns
   providers ||--o{ accounts : defines
   providers ||--o{ groups : defines
-  accounts ||--o{ account_authorizations : grants
-  groups ||--o{ group_authorizations : grants
+  system_accounts ||--o{ system_team_members : joins
+  system_teams ||--o{ system_team_members : contains
+  accounts ||--o{ resource_authorizations : grants
+  groups ||--o{ resource_authorizations : grants
   groups ||--o{ group_accounts : contains
   accounts ||--o{ group_accounts : joins
   groups ||--o{ api_keys : binds
@@ -162,8 +164,8 @@ erDiagram
 - `system_account_id` 是业务数据隔离主线；普通用户只访问自己拥有或被授权使用的资源。
 - `providers.code` 是供应商稳定标识；`accounts.provider_code` 和 `groups.provider_code` 以它作为逻辑归属。
 - `groups` 是 API Key 的授权边界；`group_accounts` 保存分组与账号的多对多关系。
-- `account_authorizations` 和 `group_authorizations` 只授予使用权，不授予管理权，也不泄露凭据。
-- `usage_records` 冗余账号所有者、分组所有者、授权类型和授权 id，便于授权用量统计和历史追溯。
+- `resource_authorizations` 统一记录账户 / 分组授权给系统账户 / 团队的使用权，不授予管理权，也不泄露凭据。
+- `usage_records` 冗余账号所有者、分组所有者、统一授权 ID、授权对象类型和访问类型，便于真实资源总量、授权消耗统计和历史追溯。
 
 ### 6.4 敏感字段
 

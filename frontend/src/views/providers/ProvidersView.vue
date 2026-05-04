@@ -1,6 +1,7 @@
 <template>
-  <a-card class="page-card">
-    <a-table class="page-table provider-table" size="middle" :columns="columns" :data-source="providers" row-key="code" :loading="loading" :pagination="false" :scroll="{ x: 1200 }">
+  <a-card class="page-card responsive-page-card">
+    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadProviders" />
+    <ResponsiveDataList table-class="page-table provider-table" :columns="columns" :data-source="providers" row-key="code" :loading="loading" :pagination="false" :scroll-x="1200" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadProviders">
       <template #emptyText>
         <a-empty class="page-empty-card" description="当前仅内置 OpenAI 供应商，后续新供应商会在这里扩展。" />
       </template>
@@ -29,7 +30,35 @@
           <a-button type="link" size="small" @click="openModelModal(record)">查看模型</a-button>
         </template>
       </template>
-    </a-table>
+      <template #card="{ record }">
+        <article class="mobile-list-card">
+          <div class="mobile-list-card-head">
+            <div class="mobile-list-card-title">{{ record.name }}</div>
+            <div class="mobile-list-card-tags">
+              <a-tag class="mono-cell">{{ record.code }}</a-tag>
+              <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
+            </div>
+          </div>
+          <div class="mobile-list-meta-grid">
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>账户类型</span>
+              <strong>{{ record.accountTypes.join(' / ') }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>能力</span>
+              <strong>{{ formatCapabilitiesSummary(record.capabilities) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>默认 Base URL</span>
+              <strong class="mono-cell">{{ record.baseUrl }}</strong>
+            </div>
+          </div>
+          <div class="mobile-list-card-actions single-action">
+            <a-button type="primary" @click="openModelModal(record)">查看模型</a-button>
+          </div>
+        </article>
+      </template>
+    </ResponsiveDataList>
 
     <a-modal v-model:open="modelModalOpen" :title="modelModalTitle" width="1180px" :footer="null" @cancel="resetModelModal">
       <div class="model-toolbar">
@@ -108,6 +137,8 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import type { ProviderDefinition, ProviderModelPricing } from '@/types/domain'
 
 const modelTypeOrder = ['chat', 'responses', 'image_generation', 'audio_speech', 'audio_transcription', 'other'] as const
@@ -293,6 +324,11 @@ function visibleProviderCapabilities(capabilities: string[]) {
 
 function formatProviderCapability(capability: string) {
   return providerCapabilityLabels[capability] ?? capability
+}
+
+function formatCapabilitiesSummary(capabilities: string[]) {
+  const visibleCapabilities = visibleProviderCapabilities(capabilities)
+  return visibleCapabilities.length ? visibleCapabilities.map(formatProviderCapability).join(' / ') : '-'
 }
 
 function formatPrice(value?: number) {

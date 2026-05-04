@@ -42,7 +42,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     path: '/groups',
     component: () => import('@/views/groups/GroupsView.vue'),
     meta: {
-      title: '分组',
+      title: 'AI账户分组',
       description: '按供应商划分账户，账户主动选择归属分组，API Key 再绑定分组统一调度。'
     }
   },
@@ -78,6 +78,23 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '系统账户管理',
       description: '管理后台登录账号、角色、状态和初始密码。',
       roles: ['admin']
+    }
+  },
+  {
+    path: '/system-teams',
+    component: () => import('@/views/system-teams/SystemTeamsView.vue'),
+    meta: {
+      title: '系统团队管理',
+      description: '管理团队和成员，支持把多个系统账户归纳到一个团队内。',
+      roles: ['admin']
+    }
+  },
+  {
+    path: '/authorizations',
+    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
+    meta: {
+      title: '统一授权管理',
+      description: '统一管理账户、分组、团队授权，并查看团队与系统账户维度的用量明细。'
     }
   },
   {

@@ -1,22 +1,16 @@
 <template>
-  <a-card class="page-card">
-    <div class="usage-toolbar">
-      <div class="usage-toolbar-filters">
-        <a-input
-          v-model:value="accountNameFilter"
-          allow-clear
-          class="filter-input"
-          placeholder="按账户名称筛选"
-        />
+  <a-card class="page-card responsive-page-card">
+    <ResponsiveListToolbar v-model:keyword="accountNameFilter" search-placeholder="按账户名称筛选" filter-title="筛选使用记录" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
+      <template #inline-filters>
         <a-select
           v-model:value="resultFilter"
-          class="filter-select"
+          class="filter-select toolbar-select responsive-list-inline-filter"
           :options="resultOptions"
         />
         <a-select
           v-model:value="statusCodeFilter"
           allow-clear
-          class="filter-select"
+          class="filter-select toolbar-select responsive-list-inline-filter"
           :options="statusCodeOptions"
           placeholder="状态码"
         />
@@ -25,26 +19,38 @@
           v-model:value="systemAccountFilter"
           show-search
           option-filter-prop="label"
-          class="filter-select system-account-filter"
+          class="filter-select system-account-filter toolbar-select responsive-list-inline-filter"
           :options="systemAccountOptions"
           @change="loadData"
         />
-        <a-button @click="resetFilters">重置</a-button>
-      </div>
-      <div class="page-toolbar-actions">
-        <a-button :loading="loading" @click="loadData">刷新</a-button>
-      </div>
-    </div>
+      </template>
+      <template #filters>
+        <label class="mobile-filter-field">
+          <span>请求结果</span>
+          <a-select v-model:value="resultFilter" :options="resultOptions" />
+        </label>
+        <label class="mobile-filter-field">
+          <span>状态码</span>
+          <a-select v-model:value="statusCodeFilter" allow-clear :options="statusCodeOptions" placeholder="状态码" />
+        </label>
+        <label v-if="isAdmin" class="mobile-filter-field">
+          <span>系统账户</span>
+          <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" :options="systemAccountOptions" @change="loadData" />
+        </label>
+      </template>
+    </ResponsiveListToolbar>
 
-    <a-table
-      class="page-table usage-table"
-      size="middle"
+    <ResponsiveDataList
+      table-class="page-table usage-table"
       :columns="columns"
       :data-source="filteredRecords"
       row-key="id"
       :loading="loading"
-      :scroll="{ x: isAdmin ? 2050 : 1870 }"
+      :scroll-x="isAdmin ? 2050 : 1870"
+      pull-refresh-enabled
+      :refreshing="loading"
       @change="handleTableChange"
+      @mobile-refresh="loadData"
     >
       <template #emptyText>
         <a-empty class="page-empty-card" description="中转网关接入后开始产生使用记录。" />
@@ -150,7 +156,62 @@
           <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
         </template>
       </template>
-    </a-table>
+      <template #card="{ record }">
+        <article class="mobile-list-card">
+          <div class="mobile-list-card-head">
+            <div class="mobile-list-card-title">{{ accountDisplayText(record) }}</div>
+            <div class="mobile-list-card-tags">
+              <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
+              <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
+              <a-tag :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
+              <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
+            </div>
+          </div>
+          <div class="mobile-list-meta-grid">
+            <div v-if="isAdmin" class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>系统账户</span>
+              <strong>{{ usageRecordSystemAccountText(record) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>接口</span>
+              <strong class="mono-cell">{{ formatEndpoint(record.endpoint) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>成本</span>
+              <strong>{{ formatCost(record.costUsd) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>Tokens</span>
+              <strong>{{ formatRecordTokens(record) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>耗时</span>
+              <strong>{{ formatDuration(record.durationMs) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>首 token</span>
+              <strong>{{ formatDuration(record.firstTokenMs) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>时间</span>
+              <strong>{{ formatDateTime(record.createdAt) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>API Key</span>
+              <strong>{{ displayName(record.apiKeyName, record.apiKeyId) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>分组</span>
+              <strong>{{ displayName(record.groupName, record.groupId) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>IP</span>
+              <strong class="mono-cell">{{ record.clientIp ?? '-' }}</strong>
+            </div>
+          </div>
+        </article>
+      </template>
+    </ResponsiveDataList>
   </a-card>
 
 </template>
@@ -162,6 +223,8 @@ import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { authState } from '@/composables/useAuth'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -198,6 +261,13 @@ const statusCodeOptions = computed(() => {
 })
 
 const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
+const activeFilterCount = computed(() => {
+  let count = 0
+  if (resultFilter.value !== 'all') count += 1
+  if (statusCodeFilter.value) count += 1
+  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
+  return count
+})
 
 const filteredRecords = computed(() => {
   const nameTerm = accountNameFilter.value.trim().toLowerCase()
@@ -253,6 +323,10 @@ function accountDisplayText(record: UsageRecordSummary): string {
 
 function formatTokens(value?: number): string {
   return new Intl.NumberFormat('zh-CN').format(value ?? 0)
+}
+
+function formatRecordTokens(record: UsageRecordSummary): string {
+  return `${formatTokens(record.inputTokens)} / ${formatTokens(record.outputTokens)} / ${formatTokens(record.cacheReadTokens)}`
 }
 
 function formatEndpoint(value?: string): string {
@@ -364,26 +438,6 @@ onMounted(loadData)
 
 .usage-table :deep(.ant-empty) {
   margin: 12px 0;
-}
-
-.usage-toolbar {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-  margin-bottom: 14px;
-}
-
-.usage-toolbar-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-}
-
-.filter-input {
-  width: 220px;
 }
 
 .filter-select {
@@ -522,27 +576,17 @@ onMounted(loadData)
   background: #0f172a;
 }
 
-.usage-toolbar .page-toolbar-actions {
-  justify-content: flex-end;
+.toolbar-select {
+  min-width: 150px;
 }
 
-@media (max-width: 768px) {
-  .usage-toolbar {
-    flex-direction: column;
-    align-items: stretch;
-  }
-
-  .usage-toolbar-filters {
-    width: 100%;
-  }
-
-  .usage-toolbar .page-toolbar-actions {
-    justify-content: flex-start;
-    width: 100%;
-  }
+.mobile-filter-field {
+  display: grid;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
 }
-
-
 </style>
 
 

@@ -5,6 +5,11 @@ export type SystemAccountRole = 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'
 export type AuthorizationStatus = 'active' | 'revoked'
+export type AuthorizationResourceType = 'account' | 'group'
+export type AuthorizationSourceType = 'manual' | 'team'
+export type AuthorizationSourceStatus = 'active' | 'superseded' | 'revoked'
+export type TeamStatus = 'active' | 'disabled'
+export type TeamMemberStatus = 'active' | 'removed'
 
 export interface CurrentUserSummary {
   id: string
@@ -147,33 +152,15 @@ export interface AccountSummary {
   cooldownUntil?: string
   lastErrorMessage?: string
   lastUsedAt?: string
+  todayUsage: AccountUsageSummary
   usage: AccountUsageSummary
   oauthUsage?: AccountOAuthUsageSnapshot
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
-  accountAuthorizationSchedulable?: boolean
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
   permissions?: ResourcePermissions
-}
-
-export interface AccountAuthorizationSummary {
-  id: string
-  accountId: string
-  accountName?: string
-  ownerSystemAccountId: string
-  ownerSystemAccountName?: string
-  granteeSystemAccountId: string
-  granteeSystemAccountName?: string
-  scope: 'use'
-  status: AuthorizationStatus
-  schedulable: boolean
-  remark?: string
-  usage: AccountUsageSummary
-  createdAt: string
-  revokedAt?: string
-  updatedAt: string
 }
 
 export interface AccountTestResult {
@@ -227,21 +214,88 @@ export interface GroupSummary {
   permissions?: ResourcePermissions
 }
 
-export interface GroupAuthorizationSummary {
+export interface SystemTeamMemberSummary {
   id: string
-  groupId: string
-  groupName?: string
-  ownerSystemAccountId: string
-  ownerSystemAccountName?: string
+  teamId: string
+  systemAccountId: string
+  systemAccountName?: string
+  systemAccountUsername?: string
+  username?: string
+  memberRole: 'member'
+  status: TeamMemberStatus
+  joinedAt?: string
+  removedAt?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface SystemTeamSummary {
+  id: string
+  name: string
+  description?: string
+  status: TeamStatus
+  createdBy: string
+  createdAt: string
+  updatedAt: string
+  memberCount?: number
+  members?: SystemTeamMemberSummary[]
+}
+
+export interface AuthorizationSourceSummary {
+  id: string
+  authorizationId?: string
+  sourceType: AuthorizationSourceType
+  sourceTeamId?: string
+  sourceTeamName?: string
+  status: AuthorizationSourceStatus
+  activatedAt?: string
+  endedAt?: string
+  endedReason?: string
+  createdBy?: string
+  createdAt: string
+  revokedBy?: string
+  revokedAt?: string
+  updatedAt?: string
+}
+
+export interface AuthorizationUserUsageDetail {
+  systemAccountId: string
+  systemAccountName?: string
+  requestCount: number
+  clientCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  totalTokens: number
+  totalCost: number
+  lastUsedAt?: string
+}
+
+export interface ResourceAuthorizationSummary {
+  id: string
+  resourceType: AuthorizationResourceType
+  resourceId: string
+  resourceName?: string
+  resourceOwnerSystemAccountId: string
+  resourceOwnerSystemAccountName?: string
   granteeSystemAccountId: string
   granteeSystemAccountName?: string
-  scope: 'use'
+  granteeUsername?: string
   status: AuthorizationStatus
+  scope: 'use'
   remark?: string
-  usage: AccountUsageSummary
+  expiresAt?: string
+  limits?: Record<string, unknown>
+  modelPolicy?: Record<string, unknown>
   createdAt: string
-  revokedAt?: string
   updatedAt: string
+  revokedAt?: string
+  createdBy?: string
+  revokedBy?: string
+  sources?: AuthorizationSourceSummary[]
+  authorizationSources: AuthorizationSourceSummary[]
+  usage: AccountUsageSummary
+  usageBySystemAccount?: AuthorizationUserUsageDetail[]
 }
 
 export interface ApiKeySummary {

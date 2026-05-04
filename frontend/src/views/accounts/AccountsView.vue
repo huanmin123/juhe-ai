@@ -1,18 +1,34 @@
 <template>
-  <a-card class="page-card accounts-page-card">
-    <div class="page-toolbar account-toolbar">
-      <div class="account-filters">
-        <a-input-search v-model:value="filters.keyword" allow-clear placeholder="搜索账户名、备注、Base URL" class="toolbar-search" @search="applyFilters" />
-        <a-select v-model:value="filters.type" class="toolbar-select" :options="typeOptions" />
-        <a-select v-model:value="filters.status" class="toolbar-select" :options="statusOptions" />
-        <a-select v-model:value="filters.schedulable" class="toolbar-select" :options="schedulableOptions" />
-        <a-select v-if="isAdmin" v-model:value="filters.systemAccountId" show-search option-filter-prop="label" class="toolbar-select" :options="systemAccountOptions" @change="handleSystemAccountFilterChange" />
-        <a-button @click="resetFilters">重置筛选</a-button>
-      </div>
-      <div class="page-toolbar-actions">
+  <a-card class="page-card accounts-page-card responsive-page-card">
+    <ResponsiveListToolbar v-model:keyword="filters.keyword" search-placeholder="搜索账号..." filter-title="筛选账户" :active-filter-count="activeAdvancedFilterCount" :mobile-action-count="1" :refresh-loading="loading" @search="applyFilters" @reset="resetFilters" @refresh="loadData">
+      <template #inline-filters>
+        <a-select v-model:value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" />
+        <a-select v-model:value="filters.status" class="toolbar-select responsive-list-inline-filter" :options="statusOptions" />
+        <a-select v-model:value="filters.schedulable" class="toolbar-select responsive-list-inline-filter" :options="schedulableOptions" />
+        <a-select v-if="isAdmin" v-model:value="filters.systemAccountId" show-search option-filter-prop="label" class="toolbar-select responsive-list-inline-filter" :options="systemAccountOptions" @change="handleSystemAccountFilterChange" />
+      </template>
+      <template #actions>
         <a-button type="primary" @click="openCreate">添加账户</a-button>
-      </div>
-    </div>
+      </template>
+      <template #filters>
+        <label class="mobile-filter-field">
+          <span>账户类型</span>
+          <a-select v-model:value="filters.type" :options="typeOptions" />
+        </label>
+        <label class="mobile-filter-field">
+          <span>账户状态</span>
+          <a-select v-model:value="filters.status" :options="statusOptions" />
+        </label>
+        <label class="mobile-filter-field">
+          <span>启停状态</span>
+          <a-select v-model:value="filters.schedulable" :options="schedulableOptions" />
+        </label>
+        <label v-if="isAdmin" class="mobile-filter-field">
+          <span>系统账户</span>
+          <a-select v-model:value="filters.systemAccountId" show-search option-filter-prop="label" :options="systemAccountOptions" @change="handleSystemAccountFilterChange" />
+        </label>
+      </template>
+    </ResponsiveListToolbar>
 
     <div v-if="selectedAccounts.length" class="batch-toolbar">
       <div class="batch-toolbar-info">
@@ -27,7 +43,27 @@
       </div>
     </div>
 
-    <a-table class="account-table" size="middle" :columns="columns" :data-source="filteredAccounts" row-key="id" :loading="loading" :scroll="{ x: tableScrollX }" :row-selection="rowSelection">
+    <ResponsiveDataList
+      class="account-responsive-list"
+      table-class="account-table"
+      :columns="columns"
+      :data-source="filteredAccounts"
+      :mobile-data-source="mobileVisibleAccounts"
+      row-key="id"
+      :loading="loading"
+      :scroll-x="tableScrollX"
+      :table-scroll-y="tableScrollY"
+      :pagination="accountTablePagination"
+      :row-selection="rowSelection"
+      mobile-pagination
+      pull-refresh-enabled
+      :mobile-has-more="mobileHasMoreAccounts"
+      :loading-more="mobileLoadingMore"
+      :refreshing="mobileRefreshing"
+      @change="handleAccountTableChange"
+      @mobile-load-more="loadMoreMobileAccounts"
+      @mobile-refresh="refreshMobileAccounts"
+    >
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有账户。点击「添加账户」，再选择供应商和账户类型。" />
       </template>
@@ -76,9 +112,9 @@
         <template v-else-if="column.key === 'usage'">
           <div class="usage-cell">
             <div class="usage-summary-tags">
-              <a-tag class="usage-summary-tag">{{ `${record.usage.requestCount}req` }}</a-tag>
-              <a-tag class="usage-summary-tag">{{ formatUsageAmount(record.usage.totalTokens) }}</a-tag>
-              <a-tag class="usage-summary-tag">{{ formatCost(record.usage.totalCost) }}</a-tag>
+              <a-tag class="usage-summary-tag">{{ `${record.todayUsage.requestCount}req` }}</a-tag>
+              <a-tag class="usage-summary-tag">{{ formatUsageAmount(record.todayUsage.totalTokens) }}</a-tag>
+              <a-tag class="usage-summary-tag">{{ formatCost(record.todayUsage.totalCost) }}</a-tag>
             </div>
             <div v-if="oauthUsageBars(record).length" class="oauth-usage-bars">
               <div v-for="bar in oauthUsageBars(record)" :key="bar.key" class="oauth-usage-row">
@@ -100,12 +136,6 @@
           <a-space class="row-actions" :size="8">
             <template v-if="isAuthorizedAccount(record)">
               <a-button type="link" size="small" @click="openTestModal(record)">测试</a-button>
-              <a-tooltip v-if="canToggleGrantedAuthorization(record)" :title="authorizedAccountToggleTooltip(record)">
-                <a-button type="link" size="small" :danger="record.accountAuthorizationSchedulable !== false" @click="updateGrantedAuthorizationSchedulable(record)">{{ record.accountAuthorizationSchedulable === false ? '启用账户' : '停用账户' }}</a-button>
-              </a-tooltip>
-              <a-popconfirm title="确认归还这个授权账户？" ok-text="确认归还" cancel-text="取消" @confirm="returnGrantedAuthorization(record)">
-                <a-button type="link" size="small" danger>归还</a-button>
-              </a-popconfirm>
             </template>
             <template v-else>
               <a-button v-if="canEditAccount(record)" type="link" size="small" @click="openEdit(record)">编辑</a-button>
@@ -124,7 +154,78 @@
           </a-space>
         </template>
       </template>
-    </a-table>
+      <template #card="{ record }">
+        <article class="account-mobile-card">
+          <div class="account-mobile-card-head">
+            <a-checkbox :checked="isAccountSelected(record.id)" :disabled="!canEditAccount(record)" @change="toggleAccountSelection(record)" />
+            <div class="account-mobile-card-title">
+              <div class="account-mobile-name-row">
+                <span class="account-mobile-name">{{ record.name }}</span>
+                <a-tooltip v-if="isAuthorizedAccount(record)" :title="authorizedAccountTooltip(record)">
+                  <InfoCircleOutlined class="authorized-account-icon" :class="{ 'owner-disabled': isOwnerDisabledAuthorizedAccount(record) }" />
+                </a-tooltip>
+              </div>
+              <div class="account-mobile-tags">
+                <a-tag color="processing">{{ accountTypeText(record.type) }}</a-tag>
+                <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+                <a-tag class="status-tag" :color="accountStatusColor(record)">{{ accountStatusText(record) }}</a-tag>
+              </div>
+            </div>
+          </div>
+
+          <div class="account-mobile-meta-grid">
+            <div v-if="isAdmin" class="account-mobile-meta-item">
+              <span>系统账户</span>
+              <strong>{{ record.systemAccountName || record.systemAccountId || '-' }}</strong>
+            </div>
+            <div class="account-mobile-meta-item">
+              <span>归属分组</span>
+              <strong>{{ groupNameForAccount(record.id) || '未归属' }}</strong>
+            </div>
+            <div class="account-mobile-meta-item">
+              <span>并发</span>
+              <strong>{{ record.currentConcurrency }}/{{ record.concurrencyLimit }}</strong>
+            </div>
+            <div class="account-mobile-meta-item">
+              <span>优先级</span>
+              <strong>{{ record.priority }}</strong>
+            </div>
+            <div class="account-mobile-meta-item">
+              <span>用量(日)</span>
+              <strong>{{ formatAccountUsageSummary(record.todayUsage) }}</strong>
+            </div>
+            <div class="account-mobile-meta-item">
+              <span>最近使用</span>
+              <strong>{{ formatDateTime(accountLastUsedAt(record)) }}</strong>
+            </div>
+            <div v-if="record.accountExpiresAt" class="account-mobile-meta-item account-mobile-meta-wide">
+              <span>到期时间</span>
+              <strong :class="isAccountPackageExpired(record) ? 'expired-cell' : ''">{{ formatDateTime(record.accountExpiresAt) }}</strong>
+            </div>
+          </div>
+
+          <div class="account-mobile-card-actions">
+            <template v-if="isAuthorizedAccount(record)">
+              <a-button @click="openTestModal(record)">测试</a-button>
+            </template>
+            <template v-else>
+              <a-button v-if="canEditAccount(record)" type="primary" @click="openEdit(record)">编辑</a-button>
+              <a-popconfirm v-if="canDeleteAccount(record)" title="确认删除这个账户？" @confirm="removeAccount(record.id)">
+                <a-button danger>删除</a-button>
+              </a-popconfirm>
+              <a-dropdown v-if="accountMenuItems(record).length">
+                <a-button>更多</a-button>
+                <template #overlay>
+                  <a-menu @click="handleAccountMenuClick($event, record)">
+                    <a-menu-item v-for="item in accountMenuItems(record)" :key="item.key" :danger="item.danger">{{ item.label }}</a-menu-item>
+                  </a-menu>
+                </template>
+              </a-dropdown>
+            </template>
+          </div>
+        </article>
+      </template>
+    </ResponsiveDataList>
 
     <a-modal v-model:open="testModalOpen" title="测试账号连接" width="620px" :footer="null" :closable="!testRunning" :keyboard="!testRunning" :mask-closable="!testRunning" @cancel="closeTestModal">
       <div v-if="testingAccount" class="test-modal">
@@ -400,42 +501,6 @@
         <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="accountErrorPolicyRules" />
       </a-form>
     </a-modal>
-
-    <a-modal v-model:open="authorizationModalOpen" :title="authorizationModalTitle" width="920px" :footer="null" @cancel="closeAuthorizationModal">
-      <div v-if="authorizationAccount" class="authorization-modal">
-        <a-alert class="form-alert" type="info" show-icon message="授权后对方仅可使用账户，不能编辑、删除、测试或查看凭据；用量统一累计到账户，日志仍按实际调用者记录。" />
-        <div class="authorization-create-row">
-          <a-select v-model:value="authorizationForm.granteeSystemAccountId" show-search option-filter-prop="label" class="authorization-user-select" :options="authorizationUserOptions" placeholder="选择被授权用户" />
-          <a-input v-model:value="authorizationForm.remark" allow-clear placeholder="备注（可选）" />
-          <a-button type="primary" :loading="authorizationSaving" @click="createAuthorization">新增授权</a-button>
-        </div>
-        <a-table size="small" :columns="authorizationColumns" :data-source="accountAuthorizations" row-key="id" :loading="authorizationLoading" :pagination="false">
-          <template #emptyText>
-            <a-empty description="还没有授权记录" />
-          </template>
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'grantee'">
-              {{ record.granteeSystemAccountName || record.granteeSystemAccountId }}
-            </template>
-            <template v-else-if="column.key === 'status'">
-              <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '生效中' : '已收回' }}</a-tag>
-            </template>
-            <template v-else-if="column.key === 'usage'">
-              <span class="usage-summary">{{ formatAuthorizationUsage(record.usage) }}</span>
-            </template>
-            <template v-else-if="column.key === 'createdAt'">
-              {{ formatDateTime(record.createdAt) }}
-            </template>
-            <template v-else-if="column.key === 'actions'">
-              <a-popconfirm v-if="record.status === 'active'" title="确认收回这个授权？" @confirm="revokeAuthorization(record.id)">
-                <a-button type="link" size="small" danger>收回</a-button>
-              </a-popconfirm>
-              <span v-else class="muted-cell">-</span>
-            </template>
-          </template>
-        </a-table>
-      </div>
-    </a-modal>
   </a-card>
 </template>
 
@@ -447,8 +512,10 @@ import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { authState } from '@/composables/useAuth'
-import type { AccountAuthorizationSummary, AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
+import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import {
@@ -521,19 +588,16 @@ const FALLBACK_PROVIDER: ProviderDefinition = {
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 
 const loading = ref(false)
+const mobileLoadingMore = ref(false)
+const mobileRefreshing = ref(false)
 const saving = ref(false)
 const authLoading = ref(false)
 const testModalOpen = ref(false)
 const testRunning = ref(false)
 const testModelsLoading = ref(false)
 const modalOpen = ref(false)
-const authorizationModalOpen = ref(false)
-const authorizationLoading = ref(false)
-const authorizationSaving = ref(false)
 const authResult = ref<OpenAIAuthURLResult>()
 const editingId = ref<string>()
-const authorizationAccount = ref<AccountSummary>()
-const accountAuthorizations = ref<AccountAuthorizationSummary[]>([])
 const testingAccount = ref<AccountSummary>()
 const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
@@ -544,8 +608,10 @@ const proxies = ref<ProxyProfileSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue })
+const accountPagination = reactive({ current: 1, pageSize: 10 })
+const mobilePageSize = 10
+const mobileVisibleCount = ref(mobilePageSize)
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
-const authorizationForm = reactive({ granteeSystemAccountId: undefined as string | undefined, remark: '' })
 const isAdmin = authState.isAdmin
 
 const form = reactive<AccountForm>(defaultForm())
@@ -595,7 +661,7 @@ const columns = computed(() => {
   baseColumns.push(
     { title: '并发数', key: 'concurrency', width: 100, align: 'center', sorter: compareAccountConcurrency },
     { title: '状态', key: 'status', width: 190 },
-    { title: '用量情况', key: 'usage', width: 380 },
+    { title: '用量(日)', key: 'usage', width: 380 },
     { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
     { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
     { title: '账户到期时间', key: 'accountExpiresAt', width: 180, sorter: compareAccountExpiresAt },
@@ -605,17 +671,7 @@ const columns = computed(() => {
   return baseColumns
 })
 const tableScrollX = computed(() => (isAdmin.value ? 2240 : 2060))
-
-const authorizationModalTitle = computed(() => authorizationAccount.value ? `授权管理：${authorizationAccount.value.name}` : '授权管理')
-
-const authorizationColumns = [
-  { title: '被授权用户', key: 'grantee', width: 180 },
-  { title: '状态', key: 'status', width: 100 },
-  { title: '授权后用量', key: 'usage', width: 260 },
-  { title: '备注', dataIndex: 'remark', key: 'remark', width: 180 },
-  { title: '授权时间', key: 'createdAt', width: 180 },
-  { title: '操作', key: 'actions', width: 100 }
-]
+const tableScrollY = computed(() => 'calc(100dvh - 286px)')
 
 const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const keyword = normalizeKeyword(filters.keyword)
@@ -635,10 +691,24 @@ const filteredAccounts = computed(() => accounts.value.filter((account) => {
   return keywordMatched && typeMatched && statusMatched && schedulableMatched && systemAccountMatched
 }))
 
+const mobileVisibleAccounts = computed(() => filteredAccounts.value.slice(0, mobileVisibleCount.value))
+const mobileHasMoreAccounts = computed(() => mobileVisibleAccounts.value.length < filteredAccounts.value.length)
+const accountTablePagination = computed(() => ({
+  current: accountPagination.current,
+  pageSize: accountPagination.pageSize,
+  total: filteredAccounts.value.length,
+  showSizeChanger: true,
+  showTotal: (total: number) => `共 ${total} 个账户`
+}))
+
+const activeAdvancedFilterCount = computed(() => [
+  filters.type !== 'all',
+  filters.status !== 'all',
+  filters.schedulable !== 'all',
+  isAdmin.value && filters.systemAccountId !== allSystemAccountsValue
+].filter(Boolean).length)
+
 const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
-const authorizationUserOptions = computed(() => systemAccounts.value
-  .filter((account) => account.status === 'active' && account.id !== authorizationAccount.value?.ownerSystemAccountId)
-  .map((account) => ({ label: `${account.displayName || account.username}（${account.username}）`, value: account.id })))
 
 const defaultTestModelOptions = [
   'gpt-5.5',
@@ -709,6 +779,17 @@ const rowSelection = computed(() => ({
   },
   getCheckboxProps: (account: AccountSummary) => ({ disabled: !canEditAccount(account) })
 }))
+
+function isAccountSelected(accountId: string): boolean {
+  return selectedAccountIds.value.includes(accountId)
+}
+
+function toggleAccountSelection(account: AccountSummary) {
+  if (!canEditAccount(account)) return
+  selectedAccountIds.value = isAccountSelected(account.id)
+    ? selectedAccountIds.value.filter((id) => id !== account.id)
+    : [...selectedAccountIds.value, account.id]
+}
 
 const proxyOptions = computed(() => (isAdmin.value ? proxies.value : []).map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
 const providerGroups = computed(() => groups.value.filter((group) => canManageGroupAccounts(group) && (!form.providerCode || group.providerCode === form.providerCode)))
@@ -793,13 +874,11 @@ function formatErrorPolicyAction(action: NonNullable<AccountTestResult['errorPol
 
 function accountStatusColor(account: AccountSummary) {
   if (isOwnerDisabledAuthorizedAccount(account)) return 'default'
-  if (isLocallyDisabledAuthorizedAccount(account)) return 'default'
   return statusColor(account.status)
 }
 
 function accountStatusText(account: AccountSummary) {
   if (isOwnerDisabledAuthorizedAccount(account)) return '停用'
-  if (isLocallyDisabledAuthorizedAccount(account)) return '停用'
   return statusText(account.status)
 }
 
@@ -810,9 +889,6 @@ function accountCooldownText(account: AccountSummary) {
 
 function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
-  if (isAuthorizedAccount(account) && account.accountAuthorizationSchedulable === false) {
-    lines.push('你已停用这份授权账户，不影响授权方和其他用户')
-  }
   if (account.accountExpiresAt) {
     lines.push(`账户到期时间：${formatDateTime(account.accountExpiresAt)}`)
   }
@@ -881,10 +957,6 @@ function isAuthorizedAccount(account: AccountSummary): boolean {
   return account.accessType === 'authorized'
 }
 
-function isLocallyDisabledAuthorizedAccount(account: AccountSummary): boolean {
-  return isAuthorizedAccount(account) && account.accountAuthorizationSchedulable === false
-}
-
 function isOwnerDisabledAuthorizedAccount(account: AccountSummary): boolean {
   return isAuthorizedAccount(account) && account.status === 'disabled'
 }
@@ -894,20 +966,7 @@ function authorizedAccountTooltip(account: AccountSummary): string {
   if (isOwnerDisabledAuthorizedAccount(account)) {
     return `授权自 ${ownerName}。账户所有者已停用该账户，你暂时无法启用或调用；请联系对方启用后再使用。`
   }
-  if (isLocallyDisabledAuthorizedAccount(account)) {
-    return `授权自 ${ownerName}。你已停用这份授权账户；重新启用只影响你自己，不影响账户所有者和其他用户。`
-  }
   return `授权自 ${ownerName}，仅可使用`
-}
-
-function canToggleGrantedAuthorization(account: AccountSummary): boolean {
-  return !isOwnerDisabledAuthorizedAccount(account)
-}
-
-function authorizedAccountToggleTooltip(account: AccountSummary): string {
-  return account.accountAuthorizationSchedulable === false
-    ? '只为你自己启用这份授权账户'
-    : '只为你自己停用这份授权账户'
 }
 
 function canEditAccount(account: AccountSummary): boolean {
@@ -916,10 +975,6 @@ function canEditAccount(account: AccountSummary): boolean {
 
 function canDeleteAccount(account: AccountSummary): boolean {
   return account.permissions?.canDelete !== false
-}
-
-function canAuthorizeAccount(account: AccountSummary): boolean {
-  return account.permissions?.canAuthorize !== false && !isAuthorizedAccount(account)
 }
 
 function canUseAccountActions(account: AccountSummary): boolean {
@@ -971,15 +1026,17 @@ function accountBaseUrl(account: AccountSummary): string {
 }
 
 function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
-  if (!canUseAccountActions(account)) return []
-  return [
-    { key: 'test', label: '测试' },
-    { key: 'toggle-status', label: account.status === 'disabled' ? '启用账户' : '停用账户', danger: account.status !== 'disabled' },
-    ...(canAuthorizeAccount(account) ? [{ key: 'authorizations', label: '授权管理' }] : [])
-  ]
+  const items: AccountMenuItem[] = []
+  if (canTestAccount(account)) {
+    items.push({ key: 'test', label: '测试' })
+  }
+  if (canUseAccountActions(account)) {
+    items.push({ key: 'toggle-status', label: account.status === 'disabled' ? '启用账户' : '停用账户', danger: account.status !== 'disabled' })
+  }
+  return items
 }
 
-function formatAuthorizationUsage(usage: AccountUsageSummary): string {
+function formatAccountUsageSummary(usage: AccountUsageSummary): string {
   return `${formatNumber(usage.requestCount)}req / ${formatUsageAmount(usage.totalTokens)} / ${formatCost(usage.totalCost)}`
 }
 
@@ -1068,6 +1125,10 @@ function parseDatePickerValue(value?: string): Dayjs | undefined {
   return parsed.isValid() ? parsed : undefined
 }
 
+function formatServerDateTimeInput(value?: Dayjs | null): string | null {
+  return value ? value.format('YYYY-MM-DDTHH:mm:ss') : null
+}
+
 function accountLastUsedAt(account: AccountSummary): string | undefined {
   return account.lastUsedAt || account.usage.lastUsedAt
 }
@@ -1121,6 +1182,7 @@ async function loadData() {
     groups.value = groupList
     systemAccounts.value = systemAccountList
     selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id && canEditAccount(account)))
+    clampAccountListPagination()
     if (modalOpen.value && !editingId.value) {
       ensureDefaultGroupSelected()
     }
@@ -1134,6 +1196,7 @@ async function loadData() {
 
 function applyFilters() {
   filters.keyword = filters.keyword.trim()
+  resetAccountListPagination()
 }
 
 function resetFilters() {
@@ -1144,7 +1207,40 @@ function resetFilters() {
     schedulable: 'all',
     systemAccountId: allSystemAccountsValue
   })
+  resetAccountListPagination()
   void loadData()
+}
+
+function resetAccountListPagination() {
+  accountPagination.current = 1
+  mobileVisibleCount.value = mobilePageSize
+}
+
+function handleAccountTableChange(pagination: unknown) {
+  if (!pagination || typeof pagination !== 'object') return
+  const nextPagination = pagination as { current?: number; pageSize?: number }
+  accountPagination.current = nextPagination.current ?? accountPagination.current
+  accountPagination.pageSize = nextPagination.pageSize ?? accountPagination.pageSize
+}
+
+function loadMoreMobileAccounts() {
+  if (mobileLoadingMore.value || !mobileHasMoreAccounts.value) return
+  mobileLoadingMore.value = true
+  window.setTimeout(() => {
+    mobileVisibleCount.value = Math.min(mobileVisibleCount.value + mobilePageSize, filteredAccounts.value.length)
+    mobileLoadingMore.value = false
+  }, 260)
+}
+
+async function refreshMobileAccounts() {
+  if (mobileRefreshing.value) return
+  mobileRefreshing.value = true
+  try {
+    resetAccountListPagination()
+    await loadData()
+  } finally {
+    mobileRefreshing.value = false
+  }
 }
 
 function extractApiErrorMessage(error: unknown, fallback: string): string {
@@ -1156,7 +1252,14 @@ function extractApiErrorMessage(error: unknown, fallback: string): string {
 
 function handleSystemAccountFilterChange() {
   selectedAccountIds.value = []
+  resetAccountListPagination()
   void loadData()
+}
+
+function clampAccountListPagination() {
+  const maxPage = Math.max(1, Math.ceil(filteredAccounts.value.length / accountPagination.pageSize))
+  accountPagination.current = Math.min(accountPagination.current, maxPage)
+  mobileVisibleCount.value = Math.min(Math.max(mobileVisibleCount.value, mobilePageSize), Math.max(filteredAccounts.value.length, mobilePageSize))
 }
 
 function clearSelection() {
@@ -1219,85 +1322,6 @@ function openEdit(account: AccountSummary) {
   accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
   authResult.value = undefined
   modalOpen.value = true
-}
-
-async function openAuthorizationModal(account: AccountSummary) {
-  if (!canAuthorizeAccount(account)) {
-    message.warning('当前账户没有授权管理权限')
-    return
-  }
-  authorizationAccount.value = account
-  authorizationForm.granteeSystemAccountId = undefined
-  authorizationForm.remark = ''
-  authorizationModalOpen.value = true
-  authorizationLoading.value = true
-  try {
-    accountAuthorizations.value = await api.accounts.authorizations(account.id)
-  } catch (error) {
-    console.error(error)
-    message.error('加载授权记录失败')
-  } finally {
-    authorizationLoading.value = false
-  }
-}
-
-function closeAuthorizationModal() {
-  authorizationModalOpen.value = false
-  authorizationAccount.value = undefined
-  accountAuthorizations.value = []
-  authorizationForm.granteeSystemAccountId = undefined
-  authorizationForm.remark = ''
-}
-
-async function refreshAuthorizationList() {
-  if (!authorizationAccount.value) return
-  authorizationLoading.value = true
-  try {
-    accountAuthorizations.value = await api.accounts.authorizations(authorizationAccount.value.id)
-  } catch (error) {
-    console.error(error)
-    message.error('刷新授权记录失败')
-  } finally {
-    authorizationLoading.value = false
-  }
-}
-
-async function createAuthorization() {
-  if (!authorizationAccount.value) return
-  if (!authorizationForm.granteeSystemAccountId) {
-    message.warning('请选择被授权用户')
-    return
-  }
-  authorizationSaving.value = true
-  try {
-    await api.accounts.createAuthorization(authorizationAccount.value.id, {
-      granteeSystemAccountId: authorizationForm.granteeSystemAccountId,
-      remark: authorizationForm.remark.trim() || undefined
-    })
-    message.success('授权已创建')
-    authorizationForm.granteeSystemAccountId = undefined
-    authorizationForm.remark = ''
-    await refreshAuthorizationList()
-    await loadData()
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '创建授权失败'))
-  } finally {
-    authorizationSaving.value = false
-  }
-}
-
-async function revokeAuthorization(authorizationId: string) {
-  if (!authorizationAccount.value) return
-  try {
-    await api.accounts.revokeAuthorization(authorizationAccount.value.id, authorizationId)
-    message.success('授权已收回')
-    await refreshAuthorizationList()
-    await loadData()
-  } catch (error) {
-    console.error(error)
-    message.error('收回授权失败')
-  }
 }
 
 function buildCredentials() {
@@ -1388,7 +1412,7 @@ async function saveAccount() {
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
     proxyProfileId: form.proxyProfileId,
-    accountExpiresAt: form.accountExpiresAt?.toISOString() ?? null,
+    accountExpiresAt: formatServerDateTimeInput(form.accountExpiresAt),
     groupId: form.groupId,
     notes: form.notes
   }
@@ -1439,7 +1463,7 @@ async function createOAuthAccountFromUnifiedForm() {
     groupId: form.groupId,
     concurrencyLimit: form.concurrencyLimit,
     proxyProfileId: form.proxyProfileId,
-    accountExpiresAt: form.accountExpiresAt?.toISOString() ?? null,
+    accountExpiresAt: formatServerDateTimeInput(form.accountExpiresAt),
     credentialsPatch: { error_handling_rules: buildCredentials().error_handling_rules },
     notes: form.notes || undefined
   }
@@ -1632,54 +1656,18 @@ async function updateAccountState(account: AccountSummary, payload: Record<strin
   }
 }
 
-async function updateGrantedAuthorizationSchedulable(account: AccountSummary) {
-  if (!account.accountAuthorizationId) {
-    message.warning('授权关系不存在')
-    return
-  }
-  const nextSchedulable = account.accountAuthorizationSchedulable === false
-  try {
-    await api.accounts.updateGrantedAuthorizationSchedulable(account.id, account.accountAuthorizationId, nextSchedulable, currentListParams())
-    message.success(nextSchedulable ? '已启用这份授权账户' : '已停用这份授权账户')
-    await loadData()
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '授权账户启停失败'))
-  }
-}
-
-async function returnGrantedAuthorization(account: AccountSummary) {
-  if (!account.accountAuthorizationId) {
-    message.warning('授权关系不存在')
-    return
-  }
-  try {
-    await api.accounts.returnGrantedAuthorization(account.id, account.accountAuthorizationId, currentListParams())
-    message.success('已归还授权账户')
-    selectedAccountIds.value = selectedAccountIds.value.filter((id) => id !== account.id)
-    await loadData()
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '归还授权账户失败'))
-  }
-}
-
 async function handleAccountMenu(key: string, account: AccountSummary) {
-  if (!canUseAccountActions(account)) {
-    message.warning('授权账户仅可使用，不能执行管理操作')
-    return
-  }
   if (key === 'test') {
     await testAccount(account)
+    return
+  }
+  if (!canUseAccountActions(account)) {
+    message.warning('授权账户仅可使用，不能执行管理操作')
     return
   }
   if (key === 'toggle-status') {
     const nextStatus = account.status === 'disabled' ? 'active' : 'disabled'
     await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
-    return
-  }
-  if (key === 'authorizations') {
-    await openAuthorizationModal(account)
     return
   }
 }
@@ -1709,17 +1697,9 @@ onMounted(loadData)
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
-.account-toolbar {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  margin-bottom: 16px;
-}
-
 .batch-toolbar {
   display: flex;
+  flex: 0 0 auto;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
@@ -1751,24 +1731,23 @@ onMounted(loadData)
   gap: 10px;
 }
 
-.account-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  flex: 1 1 520px;
-}
-
-.toolbar-search {
-  width: min(340px, 100%);
-}
-
 .toolbar-select {
   min-width: 150px;
 }
 
+.mobile-filter-field {
+  display: grid;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.mobile-filter-field :deep(.ant-select) {
+  width: 100%;
+}
+
 .account-table {
-  overflow: hidden;
   border: 1px solid #e8edf5;
   border-radius: 14px;
 }
@@ -2283,8 +2262,7 @@ onMounted(loadData)
   vertical-align: bottom;
 }
 
-.resource-name-cell,
-.authorization-modal {
+.resource-name-cell {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -2305,17 +2283,6 @@ onMounted(loadData)
 
 .authorized-account-icon.owner-disabled {
   color: #d48806;
-}
-
-.authorization-create-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 240px) minmax(180px, 1fr) auto;
-  gap: 10px;
-  align-items: center;
-}
-
-.authorization-user-select {
-  width: 100%;
 }
 
 .account-form {
@@ -2384,7 +2351,7 @@ onMounted(loadData)
   }
 }
 
-@media (max-width: 768px) {
+@media (max-width: 900px) {
   .choice-card {
     align-items: flex-start;
   }
@@ -2398,18 +2365,110 @@ onMounted(loadData)
     grid-template-columns: 1fr;
   }
 
-  .account-toolbar {
-    flex-direction: column;
-  }
-
-  .account-filters {
-    width: 100%;
-  }
-
-  .toolbar-search,
   .toolbar-select {
     width: 100%;
     min-width: 0;
+  }
+
+  .account-mobile-card {
+    display: grid;
+    gap: 12px;
+    padding: 14px;
+    border: 1px solid #e8edf5;
+    border-radius: 14px;
+    background: #fff;
+  }
+
+  .account-mobile-card-head {
+    display: flex;
+    gap: 10px;
+    align-items: flex-start;
+  }
+
+  .account-mobile-card-title {
+    display: grid;
+    min-width: 0;
+    flex: 1;
+    gap: 8px;
+  }
+
+  .account-mobile-name-row {
+    display: flex;
+    min-width: 0;
+    gap: 6px;
+    align-items: center;
+  }
+
+  .account-mobile-name {
+    min-width: 0;
+    overflow: hidden;
+    color: #0f172a;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .account-mobile-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .account-mobile-tags :deep(.ant-tag) {
+    margin-inline-end: 0;
+  }
+
+  .account-mobile-meta-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .account-mobile-meta-item {
+    display: grid;
+    min-width: 0;
+    gap: 2px;
+    padding: 8px 10px;
+    border-radius: 10px;
+    background: #f8fafc;
+  }
+
+  .account-mobile-meta-wide {
+    grid-column: 1 / -1;
+  }
+
+  .account-mobile-meta-item span {
+    color: #64748b;
+    font-size: 12px;
+  }
+
+  .account-mobile-meta-item strong {
+    min-width: 0;
+    overflow: hidden;
+    color: #0f172a;
+    font-size: 13px;
+    font-weight: 600;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .account-mobile-card-actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+
+  .account-mobile-card-actions :deep(.ant-btn),
+  .account-mobile-card-actions :deep(.ant-dropdown-trigger),
+  .account-mobile-card-actions :deep(.ant-popconfirm-open) {
+    width: 100%;
+  }
+
+  .account-table :deep(.ant-table-cell-fix-right),
+  .account-table :deep(.ant-table-cell-fix-right-first),
+  .account-table :deep(.ant-table-cell-fix-right-last) {
+    position: static !important;
+    box-shadow: none !important;
   }
 }
 </style>

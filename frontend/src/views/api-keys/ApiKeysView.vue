@@ -1,19 +1,25 @@
 <template>
-  <a-card class="page-card api-keys-page-card">
-    <div class="page-toolbar api-keys-toolbar">
-      <div v-if="isAdmin" class="list-filters">
-        <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" class="toolbar-select" :options="systemAccountOptions" @change="loadData" />
-      </div>
-      <div class="page-toolbar-actions">
+  <a-card class="page-card api-keys-page-card responsive-page-card">
+    <ResponsiveListToolbar :show-search="false" :show-reset="isAdmin" :show-filters="isAdmin" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
+      <template #inline-filters>
+        <a-select v-if="isAdmin" v-model:value="systemAccountFilter" show-search option-filter-prop="label" class="toolbar-select responsive-list-inline-filter" :options="systemAccountOptions" @change="loadData" />
+      </template>
+      <template #actions>
         <a-button @click="helpOpen = true">
           <template #icon><question-circle-outlined /></template>
           接入帮助
         </a-button>
         <a-button type="primary" @click="openCreate">新建 API Key</a-button>
-      </div>
-    </div>
+      </template>
+      <template #filters>
+        <label v-if="isAdmin" class="mobile-filter-field">
+          <span>系统账户</span>
+          <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" :options="systemAccountOptions" @change="loadData" />
+        </label>
+      </template>
+    </ResponsiveListToolbar>
 
-    <a-table class="page-table api-keys-table" size="middle" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll="{ x: isAdmin ? 1350 : 1170 }">
+    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll-x="isAdmin ? 1350 : 1170" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
@@ -44,7 +50,38 @@
           </a-space>
         </template>
       </template>
-    </a-table>
+      <template #card="{ record }">
+        <article class="mobile-list-card">
+          <div class="mobile-list-card-head">
+            <div class="mobile-list-card-title">{{ record.name }}</div>
+            <div class="mobile-list-card-tags">
+              <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
+              <a-tag color="purple">{{ groupName(record.groupId) }}</a-tag>
+            </div>
+          </div>
+          <div class="mobile-list-meta-grid">
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>API Key</span>
+              <strong>{{ formatKeyPreview(record.key) }}</strong>
+            </div>
+            <div v-if="isAdmin" class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>系统账户</span>
+              <strong>{{ apiKeySystemAccountText(record) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>过期时间</span>
+              <strong>{{ formatDateTime(record.expiresAt) }}</strong>
+            </div>
+          </div>
+          <div class="mobile-list-card-actions two-actions">
+            <a-button type="primary" @click="openEdit(record)">编辑</a-button>
+            <a-popconfirm title="确认删除这个 API Key？" @confirm="removeApiKey(record.id)">
+              <a-button danger>删除</a-button>
+            </a-popconfirm>
+          </div>
+        </article>
+      </template>
+    </ResponsiveDataList>
 
     <a-modal v-model:open="helpOpen" title="API Key 接入帮助" width="560px" :footer="null">
       <div class="gateway-help-content">
@@ -109,6 +146,8 @@ import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { authState } from '@/composables/useAuth'
 import type { ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -138,7 +177,7 @@ const columns = computed(() => {
     { title: '绑定分组', key: 'group', width: 220 },
     { title: '状态', key: 'status', width: 100 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
-    { title: '操作', key: 'actions', width: 110 }
+    { title: '操作', key: 'actions', width: 110, fixed: 'right' }
   )
   return baseColumns
 })
@@ -151,6 +190,7 @@ const statusOptions = [
 const groupOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
 const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => matchesSystemAccountFilter(apiKey, systemAccountFilter.value, isAdmin.value)))
 const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
+const activeFilterCount = computed(() => systemAccountFilter.value === allSystemAccountsValue ? 0 : 1)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填本页复制的密钥'].join('\n'))
 
@@ -168,6 +208,14 @@ function formatKeyPreview(value?: string) {
   if (!value) return '未回填'
   if (value.length <= 14) return value
   return `${value.slice(0, 6)}...${value.slice(-4)}`
+}
+
+function formatDateTime(value?: string) {
+  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+}
+
+function formatServerDateTimeInput(value?: Dayjs): string | undefined {
+  return value?.format('YYYY-MM-DDTHH:mm:ss')
 }
 
 async function loadData() {
@@ -188,6 +236,11 @@ async function loadData() {
   } finally {
     loading.value = false
   }
+}
+
+function resetFilters() {
+  systemAccountFilter.value = allSystemAccountsValue
+  void loadData()
 }
 
 function apiKeySystemAccountText(apiKey: ApiKeySummary) {
@@ -219,7 +272,7 @@ async function saveApiKey() {
     name: form.name,
     groupId: form.groupId,
     status: form.status,
-    expiresAt: form.expiresAt?.toISOString()
+    expiresAt: formatServerDateTimeInput(form.expiresAt)
   }
   try {
     if (editingId.value) {
@@ -287,20 +340,16 @@ onMounted(loadData)
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
-.api-keys-toolbar {
-  align-items: center;
-}
-
-.list-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  flex: 1 1 260px;
-}
-
 .toolbar-select {
   min-width: 180px;
+}
+
+.mobile-filter-field {
+  display: grid;
+  gap: 8px;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
 }
 
 .gateway-help-content {

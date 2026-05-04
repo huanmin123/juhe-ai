@@ -103,7 +103,7 @@ const summaryCards = computed(() => {
   const totals = usageOverview.value?.totals
   return [
     { key: 'requests', label: '今日请求', value: formatInteger(today?.requestCount), extra: `累计 ${formatInteger(totals?.requestCount)} / 错误率 ${formatPercent((today?.errorRate ?? totals?.errorRate ?? 0) * 100)}` },
-    { key: 'duration', label: '平均响应', value: formatDuration(today?.averageDurationMs ?? totals?.averageDurationMs), extra: `首 Token ${formatDuration(today?.averageFirstTokenMs ?? totals?.averageFirstTokenMs)}` },
+    { key: 'duration', label: '今日平均响应', value: formatDuration(today?.averageDurationMs), extra: `首 Token ${formatDuration(today?.averageFirstTokenMs)}` },
     { key: 'tokens', label: '今日 Token', value: formatInteger(today?.totalTokens), extra: `累计 ${formatInteger(totals?.totalTokens)} / 输入 ${formatInteger(today?.inputTokens)}` },
     { key: 'cost', label: '今日成本', value: formatCost(today?.totalCost), extra: `累计 ${formatCost(totals?.totalCost)} / 滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
   ]
@@ -618,8 +618,8 @@ function formatNetworkRateFromMbps(value?: number) {
 
 
 function formatHourLabel(value: string) {
-  const date = new Date(`${value}:00:00.000Z`)
-  return Number.isNaN(date.getTime()) ? value : date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})$/.exec(value)
+  return match ? `${match[4]}:00` : value
 }
 
 function axisNumberLabel(value: number) {

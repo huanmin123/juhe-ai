@@ -107,21 +107,93 @@ export function applySchema(database: DatabaseSync): void {
       FOREIGN KEY (error_policy_id) REFERENCES error_policies(id)
     );
 
-    CREATE TABLE IF NOT EXISTS account_authorizations (
+    CREATE TABLE IF NOT EXISTS system_teams (
       id TEXT PRIMARY KEY,
-      account_id TEXT NOT NULL,
-      owner_system_account_id TEXT NOT NULL,
+      name TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS system_team_members (
+      id TEXT PRIMARY KEY,
+      team_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      member_role TEXT NOT NULL DEFAULT 'member',
+      status TEXT NOT NULL DEFAULT 'active',
+      joined_at TEXT NOT NULL,
+      removed_at TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (team_id) REFERENCES system_teams(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS resource_authorizations (
+      id TEXT PRIMARY KEY,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      resource_owner_system_account_id TEXT NOT NULL,
       grantee_system_account_id TEXT NOT NULL,
       scope TEXT NOT NULL DEFAULT 'use',
       status TEXT NOT NULL DEFAULT 'active',
-      schedulable INTEGER NOT NULL DEFAULT 1,
+      effective_source_type TEXT,
+      effective_source_team_id TEXT,
+      activated_at TEXT,
+      last_source_changed_at TEXT,
       remark TEXT,
+      expires_at TEXT,
+      limits_json TEXT,
+      model_policy_json TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_by TEXT,
+      revoked_at TEXT,
+      revoked_reason TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (grantee_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS resource_authorization_sources (
+      id TEXT PRIMARY KEY,
+      authorization_id TEXT NOT NULL,
+      source_type TEXT NOT NULL,
+      source_team_id TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      activated_at TEXT,
+      ended_at TEXT,
+      ended_reason TEXT,
       created_by TEXT NOT NULL,
       created_at TEXT NOT NULL,
       revoked_by TEXT,
       revoked_at TEXT,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+      FOREIGN KEY (authorization_id) REFERENCES resource_authorizations(id) ON DELETE CASCADE,
+      FOREIGN KEY (source_team_id) REFERENCES system_teams(id) ON DELETE CASCADE
+    );
+
+
+    CREATE TABLE IF NOT EXISTS team_resource_authorization_grants (
+      id TEXT PRIMARY KEY,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT NOT NULL,
+      resource_owner_system_account_id TEXT NOT NULL,
+      team_id TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'use',
+      status TEXT NOT NULL DEFAULT 'active',
+      remark TEXT,
+      expires_at TEXT,
+      limits_json TEXT,
+      model_policy_json TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_by TEXT,
+      revoked_at TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (team_id) REFERENCES system_teams(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS groups (
@@ -135,22 +207,6 @@ export function applySchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code)
-    );
-
-    CREATE TABLE IF NOT EXISTS group_authorizations (
-      id TEXT PRIMARY KEY,
-      group_id TEXT NOT NULL,
-      owner_system_account_id TEXT NOT NULL,
-      grantee_system_account_id TEXT NOT NULL,
-      scope TEXT NOT NULL DEFAULT 'use',
-      status TEXT NOT NULL DEFAULT 'active',
-      remark TEXT,
-      created_by TEXT NOT NULL,
-      created_at TEXT NOT NULL,
-      revoked_by TEXT,
-      revoked_at TEXT,
-      updated_at TEXT NOT NULL,
-      FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS group_accounts (
@@ -414,7 +470,10 @@ export function applySchema(database: DatabaseSync): void {
   `)
 
   migrateSystemSettingsTable(database)
+  database.exec('DROP TABLE IF EXISTS account_authorizations;')
+  database.exec('DROP TABLE IF EXISTS group_authorizations;')
   ensureColumn(database, 'global_settings', 'updated_at', 'TEXT NOT NULL')
+  migrateSystemTeamsTable(database)
 
   ensureColumn(database, 'system_accounts', 'must_change_password', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'system_accounts', 'last_login_at', 'TEXT')
@@ -430,10 +489,30 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'accounts', 'last_error_message', 'TEXT')
   ensureColumn(database, 'accounts', 'stream_failure_count', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'accounts', 'stream_failure_window_started_at', 'TEXT')
+  ensureColumn(database, 'system_teams', 'status', "TEXT NOT NULL DEFAULT 'active'")
+  ensureColumn(database, 'system_teams', 'description', 'TEXT')
+  ensureColumn(database, 'system_team_members', 'member_role', "TEXT NOT NULL DEFAULT 'member'")
+  ensureColumn(database, 'system_team_members', 'status', "TEXT NOT NULL DEFAULT 'active'")
+  ensureColumn(database, 'system_team_members', 'removed_at', 'TEXT')
+  ensureColumn(database, 'resource_authorizations', 'remark', 'TEXT')
+  ensureColumn(database, 'resource_authorizations', 'expires_at', 'TEXT')
+  ensureColumn(database, 'resource_authorizations', 'limits_json', 'TEXT')
+  ensureColumn(database, 'resource_authorizations', 'model_policy_json', 'TEXT')
+  ensureColumn(database, 'resource_authorizations', 'effective_source_type', 'TEXT')
+  ensureColumn(database, 'resource_authorizations', 'effective_source_team_id', 'TEXT')
+  ensureColumn(database, 'resource_authorizations', 'activated_at', 'TEXT')
+  ensureColumn(database, 'resource_authorizations', 'last_source_changed_at', 'TEXT')
+  ensureColumn(database, 'resource_authorizations', 'revoked_reason', 'TEXT')
+  ensureColumn(database, 'resource_authorization_sources', 'activated_at', 'TEXT')
+  ensureColumn(database, 'resource_authorization_sources', 'ended_at', 'TEXT')
+  ensureColumn(database, 'resource_authorization_sources', 'ended_reason', 'TEXT')
+  ensureColumn(database, 'team_resource_authorization_grants', 'remark', 'TEXT')
+  ensureColumn(database, 'team_resource_authorization_grants', 'expires_at', 'TEXT')
+  ensureColumn(database, 'team_resource_authorization_grants', 'limits_json', 'TEXT')
+  ensureColumn(database, 'team_resource_authorization_grants', 'model_policy_json', 'TEXT')
   ensureColumn(database, 'groups', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'groups', 'provider_code', "TEXT NOT NULL DEFAULT 'openai'")
   ensureColumn(database, 'groups', 'is_default', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(database, 'account_authorizations', 'schedulable', 'INTEGER NOT NULL DEFAULT 1')
   ensureColumn(database, 'group_accounts', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'api_keys', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'api_keys', 'key_secret_encrypted', 'TEXT')
@@ -469,9 +548,11 @@ export function applySchema(database: DatabaseSync): void {
   ensureUsageStatsColumns(database)
   migrateUsageStatsLegacyColumns(database)
   migrateStatsJobStateLegacyColumns(database)
+  resetUsageStatsCacheForLocalTimeBuckets(database)
   ensureSystemMetricsColumns(database)
   database.exec('DROP INDEX IF EXISTS idx_accounts_credential_fingerprint;')
   database.exec('DROP INDEX IF EXISTS idx_accounts_owner_credential_fingerprint;')
+  cleanupDuplicateSystemTeamNames(database)
   migrateAccountCredentialFingerprints(database)
   database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
@@ -479,14 +560,26 @@ export function applySchema(database: DatabaseSync): void {
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_account_authorizations_account ON account_authorizations(account_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_account_authorizations_owner ON account_authorizations(owner_system_account_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_account_authorizations_grantee ON account_authorizations(grantee_system_account_id, status);')
-  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_account_authorizations_active_unique ON account_authorizations(account_id, grantee_system_account_id) WHERE status = 'active';")
-  database.exec('CREATE INDEX IF NOT EXISTS idx_group_authorizations_group ON group_authorizations(group_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_group_authorizations_owner ON group_authorizations(owner_system_account_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_group_authorizations_grantee ON group_authorizations(grantee_system_account_id, status);')
-  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_group_authorizations_active_unique ON group_authorizations(group_id, grantee_system_account_id) WHERE status = 'active';")
+  database.exec('CREATE INDEX IF NOT EXISTS idx_system_teams_status ON system_teams(status, updated_at);')
+  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique ON system_teams(name);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_system_team_members_team ON system_team_members(team_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_system_team_members_account ON system_team_members(system_account_id, status);')
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_system_team_members_active_unique ON system_team_members(team_id, system_account_id) WHERE status = 'active';")
+  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorizations_resource ON resource_authorizations(resource_type, resource_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorizations_owner ON resource_authorizations(resource_owner_system_account_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorizations_grantee ON resource_authorizations(grantee_system_account_id, status);')
+  cleanupDuplicateResourceAuthorizations(database)
+  cleanupDuplicateResourceAuthorizationSources(database)
+  database.exec('DROP INDEX IF EXISTS idx_resource_authorizations_active_unique;')
+  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorizations_user_unique ON resource_authorizations(resource_type, resource_id, grantee_system_account_id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorization_sources_authorization ON resource_authorization_sources(authorization_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorization_sources_team ON resource_authorization_sources(source_team_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_team ON team_resource_authorization_grants(team_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_resource ON team_resource_authorization_grants(resource_type, resource_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_owner ON team_resource_authorization_grants(resource_owner_system_account_id, status);')
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_active_unique ON team_resource_authorization_grants(resource_type, resource_id, team_id) WHERE status = 'active';")
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_sources_active_manual_unique ON resource_authorization_sources(authorization_id, source_type) WHERE status = 'active' AND source_type = 'manual';")
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_sources_active_team_unique ON resource_authorization_sources(authorization_id, source_type, source_team_id) WHERE status = 'active' AND source_type = 'team';")
   database.exec('CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_proxy_profiles_system_account ON proxy_profiles(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);')
@@ -559,6 +652,109 @@ function migrateUsageStatsLegacyColumns(database: DatabaseSync): void {
   }
 }
 
+function cleanupDuplicateResourceAuthorizations(database: DatabaseSync): void {
+  const duplicateGroups = database.prepare(`
+    SELECT resource_type, resource_id, grantee_system_account_id, MIN(created_at) AS first_created_at, MIN(id) AS keep_id, COUNT(*) AS row_count
+    FROM resource_authorizations
+    GROUP BY resource_type, resource_id, grantee_system_account_id
+    HAVING row_count > 1
+  `).all() as unknown as Array<{
+    resource_type: string
+    resource_id: string
+    grantee_system_account_id: string
+    keep_id: string
+  }>
+
+  for (const group of duplicateGroups) {
+    const rows = database.prepare(`
+      SELECT id
+      FROM resource_authorizations
+      WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?
+      ORDER BY CASE WHEN status = 'active' THEN 0 ELSE 1 END, created_at ASC, id ASC
+    `).all(group.resource_type, group.resource_id, group.grantee_system_account_id) as unknown as Array<{ id: string }>
+    const keepId = rows[0]?.id ?? group.keep_id
+    const duplicateIds = rows.map((row) => row.id).filter((id) => id !== keepId)
+    for (const duplicateId of duplicateIds) {
+      database.prepare(`
+        UPDATE usage_records
+        SET account_authorization_id = ?
+        WHERE account_authorization_id = ?
+      `).run(keepId, duplicateId)
+      database.prepare(`
+        UPDATE usage_records
+        SET group_authorization_id = ?
+        WHERE group_authorization_id = ?
+      `).run(keepId, duplicateId)
+      database.prepare(`
+        UPDATE resource_authorization_sources
+        SET authorization_id = ?, updated_at = COALESCE(updated_at, datetime('now'))
+        WHERE authorization_id = ?
+      `).run(keepId, duplicateId)
+      database.prepare('DELETE FROM resource_authorizations WHERE id = ?').run(duplicateId)
+    }
+  }
+}
+
+function cleanupDuplicateSystemTeamNames(database: DatabaseSync): void {
+  const columns = database.prepare('PRAGMA table_info(system_teams)').all() as unknown as Array<{ name: string }>
+  if (!columns.some((column) => column.name === 'name')) return
+  const duplicateNames = database.prepare(`
+    SELECT name
+    FROM system_teams
+    GROUP BY name
+    HAVING COUNT(*) > 1
+  `).all() as unknown as Array<{ name: string }>
+  for (const group of duplicateNames) {
+    const rows = database.prepare(`
+      SELECT id, name
+      FROM system_teams
+      WHERE name = ?
+      ORDER BY created_at ASC, id ASC
+    `).all(group.name) as unknown as Array<{ id: string; name: string }>
+    for (const [index, row] of rows.slice(1).entries()) {
+      database.prepare('UPDATE system_teams SET name = ?, updated_at = COALESCE(updated_at, datetime(\'now\')) WHERE id = ?').run(`${row.name}-${index + 2}`, row.id)
+    }
+  }
+}
+
+function cleanupDuplicateResourceAuthorizationSources(database: DatabaseSync): void {
+  const duplicateGroups = database.prepare(`
+    SELECT authorization_id, source_type, COALESCE(source_team_id, '') AS source_team_key, COUNT(*) AS row_count
+    FROM resource_authorization_sources
+    WHERE status = 'active'
+    GROUP BY authorization_id, source_type, COALESCE(source_team_id, '')
+    HAVING row_count > 1
+  `).all() as unknown as Array<{
+    authorization_id: string
+    source_type: string
+    source_team_key: string
+  }>
+
+  for (const group of duplicateGroups) {
+    const rows = database.prepare(`
+      SELECT id
+      FROM resource_authorization_sources
+      WHERE authorization_id = ?
+        AND source_type = ?
+        AND COALESCE(source_team_id, '') = ?
+        AND status = 'active'
+      ORDER BY activated_at ASC, created_at ASC, id ASC
+    `).all(group.authorization_id, group.source_type, group.source_team_key) as unknown as Array<{ id: string }>
+    const duplicateIds = rows.slice(1).map((row) => row.id)
+    for (const duplicateId of duplicateIds) {
+      database.prepare(`
+        UPDATE resource_authorization_sources
+        SET status = 'revoked',
+            ended_at = COALESCE(ended_at, datetime('now')),
+            ended_reason = COALESCE(ended_reason, 'duplicate_source_cleaned'),
+            revoked_at = COALESCE(revoked_at, datetime('now')),
+            updated_at = datetime('now')
+        WHERE id = ?
+      `).run(duplicateId)
+    }
+  }
+}
+
 function migrateStatsJobStateLegacyColumns(database: DatabaseSync): void {
   const columns = database.prepare('PRAGMA table_info(stats_job_state)').all() as unknown as Array<{ name: string }>
   const hasLegacyCursorCreatedAt = columns.some((row) => row.name === 'last_usage_created_at')
@@ -573,6 +769,26 @@ function migrateStatsJobStateLegacyColumns(database: DatabaseSync): void {
     WHERE (cursor_created_at IS NULL OR cursor_id IS NULL)
       AND (last_usage_created_at IS NOT NULL OR last_usage_id IS NOT NULL);
   `)
+}
+
+function resetUsageStatsCacheForLocalTimeBuckets(database: DatabaseSync): void {
+  const migrationKey = '_migration_usage_stats_local_time_buckets_20260505'
+  const existingMigration = database.prepare('SELECT key FROM system_settings WHERE system_account_id = ? AND key = ?').get('sys_admin', migrationKey) as unknown
+  if (existingMigration) {
+    return
+  }
+  database.exec(`
+    DELETE FROM usage_stats_totals;
+    DELETE FROM usage_stats_daily;
+    DELETE FROM usage_stats_hourly;
+    DELETE FROM usage_model_daily;
+    DELETE FROM usage_error_daily;
+    DELETE FROM usage_stats_clients;
+    DELETE FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation';
+  `)
+  database
+    .prepare('INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)')
+    .run('sys_admin', migrationKey, JSON.stringify(true), new Date().toISOString())
 }
 
 function migrateAccountCredentialFingerprints(database: DatabaseSync): void {
@@ -728,6 +944,42 @@ function migrateAccountUsageSnapshotsTable(database: DatabaseSync): void {
       last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at, created_at
     FROM account_usage_snapshots_pk_migration;
     DROP TABLE account_usage_snapshots_pk_migration;
+  `)
+}
+
+function migrateSystemTeamsTable(database: DatabaseSync): void {
+  const rows = database.prepare('PRAGMA table_info(system_teams)').all() as unknown as Array<{ name: string }>
+  if (!rows.length || !rows.some((row) => row.name === 'code')) {
+    return
+  }
+
+  database.exec(`
+    PRAGMA foreign_keys = OFF;
+    PRAGMA legacy_alter_table = ON;
+    DROP TABLE IF EXISTS system_teams_no_code_migration;
+    ALTER TABLE system_teams RENAME TO system_teams_no_code_migration;
+    CREATE TABLE system_teams (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      description TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+    INSERT OR IGNORE INTO system_teams (id, name, description, status, created_by, created_at, updated_at)
+    SELECT
+      id,
+      name,
+      description,
+      COALESCE(status, 'active'),
+      created_by,
+      created_at,
+      updated_at
+    FROM system_teams_no_code_migration;
+    DROP TABLE system_teams_no_code_migration;
+    PRAGMA legacy_alter_table = OFF;
+    PRAGMA foreign_keys = ON;
   `)
 }
 
@@ -889,23 +1141,18 @@ export function seedDefaults(database: DatabaseSync): void {
 }
 
 function ensureAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string): void {
-  database
-    .prepare(`
-      INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
-    `)
-    .run('grp_default_openai', 'sys_admin', DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
-  database.prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?').run('grp_default_openai', 'sys_admin')
+  ensureDefaultOpenAIGroup(database, 'sys_admin', 'grp_default_openai', timestamp)
 }
 
 function migrateDefaultOpenAIGroupForExistingUsers(database: DatabaseSync, timestamp: string): void {
   const migrationKey = '_migration_default_openai_group_per_system_account_20260503'
+  ensureDefaultOpenAIGroups(database, timestamp)
+
   const existingMigration = database.prepare('SELECT key FROM system_settings WHERE system_account_id = ? AND key = ?').get('sys_admin', migrationKey) as unknown
   if (existingMigration) {
     return
   }
 
-  ensureDefaultOpenAIGroups(database, timestamp)
   database.prepare('INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at) VALUES (?, ?, ?, ?)').run('sys_admin', migrationKey, JSON.stringify(true), timestamp)
 }
 
@@ -917,23 +1164,48 @@ function markDefaultOpenAIGroups(database: DatabaseSync): void {
 
 function ensureDefaultOpenAIGroups(database: DatabaseSync, timestamp: string): void {
   const systemAccounts = database.prepare('SELECT id FROM system_accounts').all() as unknown as Array<{ id: string }>
-  const findGroup = database.prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND name = ? LIMIT 1')
+
+  for (const account of systemAccounts) {
+    const groupId = account.id === 'sys_admin' ? 'grp_default_openai' : `grp_default_openai_${account.id}`
+    ensureDefaultOpenAIGroup(database, account.id, groupId, timestamp)
+  }
+}
+
+function ensureDefaultOpenAIGroup(database: DatabaseSync, systemAccountId: string, preferredGroupId: string, timestamp: string): void {
+  const existing = database
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND name = ? LIMIT 1')
+    .get(systemAccountId, 'openai', DEFAULT_OPENAI_GROUP_NAME) as unknown as { id?: string } | undefined
+  const markDefaultGroup = database.prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
+  if (existing?.id) {
+    markDefaultGroup.run(existing.id, systemAccountId)
+    return
+  }
+
   const insertGroup = database.prepare(`
     INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
   `)
-  const markDefaultGroup = database.prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
+  const fallbackGroupId = systemAccountId === 'sys_admin' ? 'grp_default_openai_sys_admin' : `grp_default_openai_${systemAccountId}`
+  const candidateIds = [...new Set([preferredGroupId, fallbackGroupId])]
 
-  for (const account of systemAccounts) {
-    const existing = findGroup.get(account.id, 'openai', DEFAULT_OPENAI_GROUP_NAME) as unknown as { id?: string } | undefined
-    if (existing?.id) {
-      markDefaultGroup.run(existing.id, account.id)
-      continue
+  for (const candidateId of candidateIds) {
+    const result = insertGroup.run(candidateId, systemAccountId, DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
+    if (result.changes > 0) {
+      markDefaultGroup.run(candidateId, systemAccountId)
+      return
     }
-    const groupId = account.id === 'sys_admin' ? 'grp_default_openai' : `grp_default_openai_${account.id}`
-    insertGroup.run(groupId, account.id, DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
-    markDefaultGroup.run(groupId, account.id)
   }
+
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const candidateId = `${fallbackGroupId}_${Date.now().toString(36)}_${Math.random().toString(16).slice(2, 10)}`
+    const result = insertGroup.run(candidateId, systemAccountId, DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
+    if (result.changes > 0) {
+      markDefaultGroup.run(candidateId, systemAccountId)
+      return
+    }
+  }
+
+  throw new Error(`无法创建 ${systemAccountId} 的默认 OpenAI 分组`)
 }
 
 

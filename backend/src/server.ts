@@ -9,6 +9,7 @@ import { requireAdmin, requireAuth } from './modules/auth/auth.middleware.js'
 import { authRouter } from './modules/auth/auth.routes.js'
 import { startBackgroundJobs } from './modules/background/background-jobs.js'
 import { apiKeysRouter } from './modules/api-keys/api-keys.routes.js'
+import { authorizationsRouter } from './modules/authorizations/authorizations.routes.js'
 import { errorPoliciesRouter } from './modules/error-policies/error-policies.routes.js'
 import { groupsRouter } from './modules/groups/groups.routes.js'
 import { providersRouter } from './modules/providers/providers.routes.js'
@@ -16,6 +17,7 @@ import { proxiesRouter } from './modules/proxies/proxies.routes.js'
 import { settingsRouter } from './modules/settings/settings.routes.js'
 import { statsRouter } from './modules/stats/stats.routes.js'
 import { systemAccountsRouter } from './modules/system-accounts/system-accounts.routes.js'
+import { systemTeamsRouter } from './modules/system-teams/system-teams.routes.js'
 import { usageRecordsRouter } from './modules/usage-records/usage-records.routes.js'
 import { openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
 import { installUsageRecordQueueShutdownHooks } from './modules/gateway/usage-record-queue.service.js'
@@ -83,12 +85,14 @@ app.use('/api/error-policies', errorPoliciesRouter)
 app.use('/api/accounts', accountsRouter)
 app.use('/api/groups', groupsRouter)
 app.use('/api/api-keys', apiKeysRouter)
+app.use('/api/authorizations', authorizationsRouter)
 app.use('/api/openai-oauth', openAIOAuthRouter)
 app.use('/api/proxies', requireAdmin, proxiesRouter)
 app.use('/api/usage-records', usageRecordsRouter)
 app.use('/api/stats', requireAdmin, statsRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/system-accounts', systemAccountsRouter)
+app.use('/api/system-teams', systemTeamsRouter)
 
 if (existsSync(frontendIndexPath)) {
   app.use(express.static(frontendDistPath))

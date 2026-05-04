@@ -1,17 +1,12 @@
 <template>
-  <a-card class="page-card system-account-card">
-    <div class="page-toolbar">
-      <div class="toolbar-copy">
-        <strong>系统账户</strong>
-        <span>用于后台登录、权限控制和数据隔离。</span>
-      </div>
-      <div class="page-toolbar-actions">
-        <a-button :loading="loading" @click="loadData">刷新</a-button>
+  <a-card class="page-card system-account-card responsive-page-card">
+    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadData">
+      <template #actions>
         <a-button type="primary" @click="openCreate">新增系统账户</a-button>
-      </div>
-    </div>
+      </template>
+    </ResponsiveListToolbar>
 
-    <a-table class="page-table" size="middle" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :scroll="{ x: 1050 }">
+    <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :scroll-x="1050" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'role'">
           <a-tag :color="record.role === 'admin' ? 'geekblue' : 'default'">{{ record.role === 'admin' ? '管理员' : '用户' }}</a-tag>
@@ -32,7 +27,33 @@
           </a-space>
         </template>
       </template>
-    </a-table>
+      <template #card="{ record }">
+        <article class="mobile-list-card">
+          <div class="mobile-list-card-head">
+            <div class="mobile-list-card-title">{{ record.username }}</div>
+            <div class="mobile-list-card-tags">
+              <a-tag :color="record.role === 'admin' ? 'geekblue' : 'default'">{{ record.role === 'admin' ? '管理员' : '用户' }}</a-tag>
+              <a-tag :color="record.status === 'active' ? 'green' : 'red'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
+              <a-tag :color="record.mustChangePassword ? 'warning' : 'success'">{{ record.mustChangePassword ? '提醒改密' : '不提醒改密' }}</a-tag>
+            </div>
+          </div>
+          <div class="mobile-list-meta-grid">
+            <div class="mobile-list-meta-item">
+              <span>显示名称</span>
+              <strong>{{ record.displayName }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>最后登录</span>
+              <strong>{{ formatDateTime(record.lastLoginAt) }}</strong>
+            </div>
+          </div>
+          <div class="mobile-list-card-actions two-actions">
+            <a-button type="primary" @click="openEdit(record)">编辑</a-button>
+            <a-button @click="openResetPassword(record)">重置密码</a-button>
+          </div>
+        </article>
+      </template>
+    </ResponsiveDataList>
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑系统账户' : '新增系统账户'" :confirm-loading="saving" @ok="handleSave">
       <a-form layout="vertical">
@@ -73,6 +94,8 @@ import { message } from 'ant-design-vue'
 import { onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
 
 const loading = ref(false)
@@ -215,17 +238,5 @@ onMounted(loadData)
 <style scoped>
 .system-account-card {
   margin-top: 4px;
-}
-
-.toolbar-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: #64748b;
-}
-
-.toolbar-copy strong {
-  color: #0f172a;
-  font-size: 16px;
 }
 </style>

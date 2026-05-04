@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, createAccountAuthorization, deleteAccount, findAccountForTest, listAccountAuthorizations, listAccounts, listGroups, listProviders, returnGrantedAccountAuthorization, revokeAccountAuthorization, setAccountGroup, updateAccount, updateGrantedAccountAuthorizationSchedulable } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { testOpenAIAccount } from './account-test.service.js'
@@ -31,77 +31,8 @@ const accountTestSchema = z.object({
   prompt: z.string().trim().optional()
 }).optional()
 
-const accountAuthorizationSchema = z.object({
-  granteeSystemAccountId: z.string().trim().min(1),
-  remark: z.string().trim().max(200).optional()
-})
-
-const grantedAuthorizationScheduleSchema = z.object({
-  schedulable: z.boolean()
-})
-
 accountsRouter.get('/', (req, res) => {
   res.json(ok(listAccounts(getRequestAccessScope(req.query.systemAccountId))))
-})
-
-accountsRouter.get('/:id/authorizations', (req, res) => {
-  res.json(ok(listAccountAuthorizations(req.params.id, getRequestAccessScope(req.query.systemAccountId))))
-})
-
-accountsRouter.post('/:id/authorizations', (req, res) => {
-  const parsed = accountAuthorizationSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid account authorization payload'))
-    return
-  }
-  try {
-    const authorization = createAccountAuthorization(req.params.id, parsed.data, getRequestAccessScope(req.query.systemAccountId))
-    clearGatewayRuntimeCache()
-    res.status(201).json(ok(authorization))
-  } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Create account authorization failed'))
-  }
-})
-
-accountsRouter.delete('/:id/authorizations/:authorizationId', (req, res) => {
-  const authorization = revokeAccountAuthorization(req.params.id, req.params.authorizationId, getRequestAccessScope(req.query.systemAccountId))
-  if (!authorization) {
-    res.status(404).json({ message: 'Account authorization not found' })
-    return
-  }
-  clearGatewayRuntimeCache()
-  res.json(ok(authorization))
-})
-
-accountsRouter.patch('/:id/granted-authorization/:authorizationId/schedulable', (req, res) => {
-  const parsed = grantedAuthorizationScheduleSchema.safeParse(req.body)
-  if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid account authorization schedule payload'))
-    return
-  }
-  let account: ReturnType<typeof updateGrantedAccountAuthorizationSchedulable>
-  try {
-    account = updateGrantedAccountAuthorizationSchedulable(req.params.id, req.params.authorizationId, parsed.data.schedulable, getRequestAccessScope(req.query.systemAccountId))
-  } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Update account authorization schedule failed'))
-    return
-  }
-  if (!account) {
-    res.status(404).json({ message: 'Account authorization not found' })
-    return
-  }
-  clearGatewayRuntimeCache()
-  res.json(ok(account))
-})
-
-accountsRouter.post('/:id/granted-authorization/:authorizationId/return', (req, res) => {
-  const returned = returnGrantedAccountAuthorization(req.params.id, req.params.authorizationId, getRequestAccessScope(req.query.systemAccountId))
-  if (!returned) {
-    res.status(404).json({ message: 'Account authorization not found' })
-    return
-  }
-  clearGatewayRuntimeCache()
-  res.json(ok({ returned: true }))
 })
 
 accountsRouter.post('/', (req, res) => {

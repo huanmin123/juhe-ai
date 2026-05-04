@@ -1,12 +1,11 @@
 <template>
-  <a-card class="page-card">
-    <div class="page-toolbar proxy-toolbar">
-      <div class="page-toolbar-copy">代理由管理员全局维护，账户只选择绑定已有代理。</div>
-      <div class="page-toolbar-actions">
+  <a-card class="page-card responsive-page-card">
+    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadData">
+      <template #actions>
         <a-button type="primary" @click="openCreate">新建代理</a-button>
-      </div>
-    </div>
-    <a-table class="page-table proxy-table" size="middle" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :scroll="{ x: 1120 }">
+      </template>
+    </ResponsiveListToolbar>
+    <ResponsiveDataList table-class="page-table proxy-table" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :scroll-x="1120" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建代理，再在 OAuth 账户里选择绑定。" />
       </template>
@@ -35,7 +34,38 @@
           </a-space>
         </template>
       </template>
-    </a-table>
+      <template #card="{ record }">
+        <article class="mobile-list-card">
+          <div class="mobile-list-card-head">
+            <div class="mobile-list-card-title">{{ record.name }}</div>
+            <div class="mobile-list-card-tags">
+              <a-tag :color="proxyTypeColor(record.type)">{{ record.type.toUpperCase() }}</a-tag>
+              <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
+            </div>
+          </div>
+          <div class="mobile-list-meta-grid">
+            <div class="mobile-list-meta-item">
+              <span>地址</span>
+              <strong class="mono-cell">{{ record.host }}</strong>
+            </div>
+            <div class="mobile-list-meta-item">
+              <span>端口</span>
+              <strong>{{ record.port }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>用户</span>
+              <strong :class="record.username ? 'mono-cell' : 'muted-cell'">{{ record.username || '-' }}</strong>
+            </div>
+          </div>
+          <div class="mobile-list-card-actions two-actions">
+            <a-button type="primary" @click="openEdit(record)">编辑</a-button>
+            <a-popconfirm title="确认删除这个代理？" @confirm="removeProxy(record.id)">
+              <a-button danger>删除</a-button>
+            </a-popconfirm>
+          </div>
+        </article>
+      </template>
+    </ResponsiveDataList>
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑代理' : '新建代理'" width="720px" :ok-button-props="{ type: 'primary' }" @ok="saveProxy">
       <a-form layout="vertical" class="modal-form">
@@ -82,6 +112,8 @@ import { message } from 'ant-design-vue'
 import { onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import type { ProxyProfileSummary } from '@/types/domain'
 
 const loading = ref(false)
@@ -181,19 +213,4 @@ onMounted(loadData)
   margin: 12px 0;
 }
 
-.proxy-toolbar {
-  align-items: center;
-}
-
-.list-filters {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  align-items: center;
-  flex: 1 1 260px;
-}
-
-.toolbar-select {
-  min-width: 180px;
-}
 </style>

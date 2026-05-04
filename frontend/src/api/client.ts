@@ -3,7 +3,8 @@ import axios from 'axios'
 import type {
   AccountSummary,
   AccountTestResult,
-  AccountAuthorizationSummary,
+  AuthorizationResourceType,
+  ResourceAuthorizationSummary,
   ApiKeySummary,
   CaptchaChallengeSummary,
   CreatedApiKey,
@@ -11,11 +12,12 @@ import type {
   ErrorPolicySummary,
   GlobalSettings,
   GroupSummary,
-  GroupAuthorizationSummary,
   OpenAIAuthURLResult,
   ProviderDefinition,
   ProviderModelPricing,
   ProxyProfileSummary,
+  SystemTeamMemberSummary,
+  SystemTeamSummary,
   SystemSettings,
   SystemAccountSummary,
   SystemMetricsOverview,
@@ -36,6 +38,14 @@ export interface UsageRecordListParams extends ListParams {
   sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
   sortOrder?: 'asc' | 'desc'
   limit?: number
+}
+
+export interface AuthorizationListParams extends ListParams {
+  resourceType?: AuthorizationResourceType
+  resourceId?: string
+  granteeSystemAccountId?: string
+  teamId?: string
+  status?: 'active' | 'revoked'
 }
 
 const http = axios.create({
@@ -80,21 +90,32 @@ export const api = {
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload)),
     test: (id: string, payload?: { model?: string; prompt?: string }) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { timeout: 130000 })),
-    authorizations: (id: string, params?: ListParams) => unwrap<AccountAuthorizationSummary[]>(http.get(`/accounts/${id}/authorizations`, { params })),
-    createAuthorization: (id: string, payload: { granteeSystemAccountId: string; remark?: string }, params?: ListParams) => unwrap<AccountAuthorizationSummary>(http.post(`/accounts/${id}/authorizations`, payload, { params })),
-    revokeAuthorization: (id: string, authorizationId: string, params?: ListParams) => unwrap<AccountAuthorizationSummary>(http.delete(`/accounts/${id}/authorizations/${authorizationId}`, { params })),
-    updateGrantedAuthorizationSchedulable: (id: string, authorizationId: string, schedulable: boolean, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/granted-authorization/${authorizationId}/schedulable`, { schedulable }, { params })),
-    returnGrantedAuthorization: (id: string, authorizationId: string, params?: ListParams) => unwrap<{ returned: boolean }>(http.post(`/accounts/${id}/granted-authorization/${authorizationId}/return`, undefined, { params })),
     delete: (id: string) => http.delete(`/accounts/${id}`)
   },
   groups: {
     list: (params?: ListParams) => unwrap<GroupSummary[]>(http.get('/groups', { params })),
     create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/groups', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<GroupSummary>(http.patch(`/groups/${id}`, payload)),
-    authorizations: (id: string, params?: ListParams) => unwrap<GroupAuthorizationSummary[]>(http.get(`/groups/${id}/authorizations`, { params })),
-    createAuthorization: (id: string, payload: { granteeSystemAccountId: string; remark?: string }, params?: ListParams) => unwrap<GroupAuthorizationSummary>(http.post(`/groups/${id}/authorizations`, payload, { params })),
-    revokeAuthorization: (id: string, authorizationId: string, params?: ListParams) => unwrap<GroupAuthorizationSummary>(http.delete(`/groups/${id}/authorizations/${authorizationId}`, { params })),
     delete: (id: string) => http.delete(`/groups/${id}`)
+  },
+  systemTeams: {
+    list: (params?: ListParams) => unwrap<SystemTeamSummary[]>(http.get('/system-teams', { params })),
+    create: (payload: { name: string; description?: string; status?: 'active' | 'disabled' }) => unwrap<SystemTeamSummary>(http.post('/system-teams', payload)),
+    update: (id: string, payload: { name?: string; description?: string; status?: 'active' | 'disabled' }) => unwrap<SystemTeamSummary>(http.patch(`/system-teams/${id}`, payload)),
+    addMembers: (id: string, payload: { systemAccountIds: string[] }) => unwrap<SystemTeamSummary>(http.post(`/system-teams/${id}/members`, payload)),
+    removeMember: (id: string, memberId: string) => unwrap<SystemTeamSummary>(http.delete(`/system-teams/${id}/members/${memberId}`))
+  },
+  authorizations: {
+    list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/authorizations', { params })),
+    create: (payload: {
+      resourceType: AuthorizationResourceType
+      resourceId: string
+      granteeType: 'system_account' | 'team'
+      granteeId: string
+      remark?: string
+    }) => unwrap<ResourceAuthorizationSummary>(http.post('/authorizations', payload)),
+    revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { data: payload })),
+    usage: (id: string) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`))
   },
   apiKeys: {
     list: (params?: ListParams) => unwrap<ApiKeySummary[]>(http.get('/api-keys', { params })),

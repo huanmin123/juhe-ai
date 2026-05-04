@@ -117,9 +117,6 @@
                   <a-form-item v-if="rule.reset_strategy === 'weekly'" label="每周恢复时间">
                     <a-select v-model:value="rule.weekly_reset_hour" :options="accountErrorHourOptions" />
                   </a-form-item>
-                  <a-form-item v-if="rule.reset_strategy !== 'duration'" label="时区">
-                    <a-select v-model:value="rule.reset_timezone" :options="timezoneOptions" show-search />
-                  </a-form-item>
                 </div>
 
                 <a-form-item label="说明">
@@ -142,7 +139,6 @@ import {
   accountErrorHourOptions,
   accountErrorPolicyPresets,
   accountErrorRecoveryStrategyOptions,
-  accountErrorTimezoneOptions,
   accountErrorWeekdayOptions,
   buildDefaultAccountErrorPolicyRules,
   cloneAccountErrorPolicyRule,
@@ -158,7 +154,6 @@ const rules = defineModel<AccountErrorPolicyRuleForm[]>('rules', { required: tru
 const policyActiveKeys = ref<string[]>([])
 const activeRuleKeys = ref<string[]>([])
 const actionOptions = accountErrorActionOptions.map((item) => ({ label: item.label, value: item.value }))
-const timezoneOptions = accountErrorTimezoneOptions.map((timezone) => ({ label: timezone, value: timezone }))
 const enabledRuleCount = computed(() => rules.value.filter((rule) => rule.enabled !== false).length)
 
 function ruleKey(index: number) {

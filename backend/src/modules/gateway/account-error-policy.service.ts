@@ -63,6 +63,9 @@ export function applyAccountErrorHandling(
 ): AccountErrorHandlingResult {
   if (input.success) {
     const changed = (account.status !== undefined && account.status !== 'active') || Boolean(account.cooldownUntil) || Boolean(account.lastErrorMessage)
+    if (!changed) {
+      return { action: 'none', changed: false, accountStatus: account.status }
+    }
     const updated = clearAccountFailureState(account.id)
     return { action: 'none', changed, accountStatus: updated?.status ?? account.status }
   }
@@ -211,111 +214,29 @@ function resolveAccountErrorRuleCooldownUntil(rule: Record<string, unknown>): st
     const hours = Math.max(1, numericRuleValue(rule.duration_hours ?? rule.durationHours, 5))
     return new Date(now.getTime() + hours * 60 * 60_000).toISOString()
   }
-  const timeZone = safeTimeZone(rule.reset_timezone ?? rule.timezone)
   if (strategy === 'weekly') {
     const weekday = Math.min(Math.max(numericRuleValue(rule.weekly_reset_day ?? rule.weeklyResetDay, 1), 0), 6)
     const hour = Math.min(Math.max(numericRuleValue(rule.weekly_reset_hour ?? rule.weeklyResetHour, 0), 0), 23)
-    return nextWeeklyReset(now, weekday, hour, timeZone).toISOString()
+    return nextWeeklyReset(now, weekday, hour).toISOString()
   }
   const hour = Math.min(Math.max(numericRuleValue(rule.daily_reset_hour ?? rule.dailyResetHour, 0), 0), 23)
-  return nextDailyReset(now, hour, timeZone).toISOString()
+  return nextDailyReset(now, hour).toISOString()
 }
 
-function nextDailyReset(now: Date, hour: number, timeZone?: string): Date {
-  if (!timeZone) {
-    const next = new Date(now)
-    next.setHours(hour, 0, 0, 0)
-    if (next <= now) next.setDate(next.getDate() + 1)
-    return next
-  }
-  const parts = zonedDateParts(now, timeZone)
-  let next = zonedTimeToDate(timeZone, parts.year, parts.month, parts.day, hour)
-  if (next <= now) {
-    const tomorrow = addDaysToLocalDate(parts.year, parts.month, parts.day, 1)
-    next = zonedTimeToDate(timeZone, tomorrow.year, tomorrow.month, tomorrow.day, hour)
-  }
+function nextDailyReset(now: Date, hour: number): Date {
+  const next = new Date(now)
+  next.setHours(hour, 0, 0, 0)
+  if (next <= now) next.setDate(next.getDate() + 1)
   return next
 }
 
-function nextWeeklyReset(now: Date, weekday: number, hour: number, timeZone?: string): Date {
-  if (!timeZone) {
-    const next = new Date(now)
-    next.setHours(hour, 0, 0, 0)
-    const delta = (weekday - next.getDay() + 7) % 7
-    next.setDate(next.getDate() + delta)
-    if (next <= now) next.setDate(next.getDate() + 7)
-    return next
-  }
-  const parts = zonedDateParts(now, timeZone)
-  let delta = (weekday - parts.weekday + 7) % 7
-  let target = addDaysToLocalDate(parts.year, parts.month, parts.day, delta)
-  let next = zonedTimeToDate(timeZone, target.year, target.month, target.day, hour)
-  if (next <= now) {
-    delta += 7
-    target = addDaysToLocalDate(parts.year, parts.month, parts.day, delta)
-    next = zonedTimeToDate(timeZone, target.year, target.month, target.day, hour)
-  }
+function nextWeeklyReset(now: Date, weekday: number, hour: number): Date {
+  const next = new Date(now)
+  next.setHours(hour, 0, 0, 0)
+  const delta = (weekday - next.getDay() + 7) % 7
+  next.setDate(next.getDate() + delta)
+  if (next <= now) next.setDate(next.getDate() + 7)
   return next
-}
-
-function safeTimeZone(value: unknown): string | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined
-  try {
-    new Intl.DateTimeFormat('en-US', { timeZone: value }).format(new Date())
-    return value
-  } catch {
-    return undefined
-  }
-}
-
-function zonedDateParts(date: Date, timeZone: string): { year: number; month: number; day: number; weekday: number } {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    weekday: 'short'
-  })
-  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]))
-  return {
-    year: Number(parts.year),
-    month: Number(parts.month),
-    day: Number(parts.day),
-    weekday: weekdayNumber(String(parts.weekday))
-  }
-}
-
-function weekdayNumber(value: string): number {
-  const key = value.slice(0, 3).toLowerCase()
-  return ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'].indexOf(key)
-}
-
-function addDaysToLocalDate(year: number, month: number, day: number, days: number): { year: number; month: number; day: number } {
-  const date = new Date(Date.UTC(year, month - 1, day + days, 12, 0, 0, 0))
-  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() }
-}
-
-function zonedTimeToDate(timeZone: string, year: number, month: number, day: number, hour: number): Date {
-  const localAsUtcMs = Date.UTC(year, month - 1, day, hour, 0, 0, 0)
-  let result = new Date(localAsUtcMs - timeZoneOffsetMs(timeZone, new Date(localAsUtcMs)))
-  result = new Date(localAsUtcMs - timeZoneOffsetMs(timeZone, result))
-  return result
-}
-
-function timeZoneOffsetMs(timeZone: string, date: Date): number {
-  const formatter = new Intl.DateTimeFormat('en-US', {
-    timeZone,
-    hour12: false,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit'
-  })
-  const parts = Object.fromEntries(formatter.formatToParts(date).map((part) => [part.type, part.value]))
-  const asUtc = Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour), Number(parts.minute), Number(parts.second))
-  return asUtc - date.getTime()
 }
 
 function errorPolicyRuleSpecs(rule: Record<string, unknown>): {

@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountAuthorizationSummary, AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, ApiKeySummary, AuthorizationStatus, ErrorPolicySummary, GroupAuthorizationSummary, GroupSummary, ProviderCode, ProviderDefinition, ResourcePermissions } from '../domain/types.js'
+import type { AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, ApiKeySummary, AuthorizationStatus, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberStatus, SystemTeamMemberSummary, SystemTeamStatus, SystemTeamSummary } from '../domain/types.js'
 import { getRequestAuthContext, type RequestAuthContext } from '../modules/auth/request-context.js'
+import { createAppCache } from '../shared/cache.js'
 import { createApiKey, decryptJson, encryptJson, hashPassword, hashSecret, maskSecret, verifyPassword } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 
@@ -65,7 +66,6 @@ interface GatewayApiKeyRow {
 
 type GatewayApiKeyCacheEntry = {
   row: GatewayApiKeyRow
-  expiresAtMs: number
   forceRevalidateAtMs: number
 }
 
@@ -73,15 +73,62 @@ interface GroupAccountRow {
   account_id: string
 }
 
-interface AccountAuthorizationRow {
+interface SystemTeamRow {
   id: string
-  account_id: string
-  owner_system_account_id: string
+  name: string
+  description: string | null
+  status: SystemTeamStatus
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+interface SystemTeamMemberRow {
+  id: string
+  team_id: string
+  system_account_id: string
+  member_role: 'member'
+  status: SystemTeamMemberStatus
+  joined_at: string
+  removed_at: string | null
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+interface ResourceAuthorizationRow {
+  id: string
+  resource_type: ResourceAuthorizationResourceType
+  resource_id: string
+  resource_owner_system_account_id: string
   grantee_system_account_id: string
   scope: 'use'
   status: AuthorizationStatus
-  schedulable: number
+  effective_source_type: ResourceAuthorizationSourceType | null
+  effective_source_team_id: string | null
+  activated_at: string | null
+  last_source_changed_at: string | null
   remark: string | null
+  expires_at: string | null
+  limits_json: string | null
+  model_policy_json: string | null
+  created_by: string
+  created_at: string
+  revoked_by: string | null
+  revoked_at: string | null
+  revoked_reason: string | null
+  updated_at: string
+}
+
+interface ResourceAuthorizationSourceRow {
+  id: string
+  authorization_id: string
+  source_type: ResourceAuthorizationSourceType
+  source_team_id: string | null
+  status: ResourceAuthorizationSourceStatus
+  activated_at: string | null
+  ended_at: string | null
+  ended_reason: string | null
   created_by: string
   created_at: string
   revoked_by: string | null
@@ -89,14 +136,18 @@ interface AccountAuthorizationRow {
   updated_at: string
 }
 
-interface GroupAuthorizationRow {
+interface TeamResourceAuthorizationGrantRow {
   id: string
-  group_id: string
-  owner_system_account_id: string
-  grantee_system_account_id: string
+  resource_type: ResourceAuthorizationResourceType
+  resource_id: string
+  resource_owner_system_account_id: string
+  team_id: string
   scope: 'use'
   status: AuthorizationStatus
   remark: string | null
+  expires_at: string | null
+  limits_json: string | null
+  model_policy_json: string | null
   created_by: string
   created_at: string
   revoked_by: string | null
@@ -108,7 +159,6 @@ type AccountListRow = AccountRow & {
   access_type?: 'owner' | 'authorized'
   authorization_id?: string | null
   authorization_status?: AuthorizationStatus | null
-  authorization_schedulable?: number | null
 }
 
 type GroupListRow = GroupRow & {
@@ -166,7 +216,12 @@ const DEFAULT_OPENAI_GROUP_NAME = '默认 OpenAI 分组'
 const DEFAULT_OPENAI_GROUP_DESCRIPTION = '第一期默认分组'
 const GATEWAY_API_KEY_CACHE_TTL_MS = 60_000
 const GATEWAY_API_KEY_CACHE_MAX_STALE_MS = 5 * 60_000
-const gatewayApiKeyCache = new Map<string, GatewayApiKeyCacheEntry>()
+const gatewayApiKeyCache = createAppCache<string, GatewayApiKeyCacheEntry>({
+  name: 'gateway:api-key-validation',
+  max: 10000,
+  ttlMs: GATEWAY_API_KEY_CACHE_TTL_MS,
+  updateAgeOnGet: true
+})
 
 export interface SystemAccountSummary {
   id: string
@@ -485,30 +540,43 @@ function accountSystemAccountId(accountId: string): string | undefined {
 function canUseAccount(accountId: string, systemAccountId: string): boolean {
   const ownerId = accountSystemAccountId(accountId)
   if (ownerId === systemAccountId) return true
-  return Boolean(activeAccountAuthorization(accountId, systemAccountId))
+  return Boolean(activeResourceAuthorization('account', accountId, systemAccountId))
 }
 
-function canScheduleAuthorizedAccount(accountId: string, authorizationId: string | undefined, systemAccountId: string): boolean {
-  if (!authorizationId) return true
-  return activeAccountAuthorization(accountId, systemAccountId)?.schedulable === 1
+function canScheduleAuthorizedAccount(input: {
+  accountId: string
+  accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'
+  authorizationId?: string
+  systemAccountId: string
+}): boolean {
+  if (input.accountAccessType === 'owner' || input.accountAccessType === 'group_authorized') {
+    return true
+  }
+  if (!input.authorizationId) {
+    return false
+  }
+  const authorization = activeAccountAuthorization(input.accountId, input.systemAccountId)
+  return authorization?.id === input.authorizationId
 }
 
 function canUseGroup(groupId: string, systemAccountId: string): boolean {
   const group = groupOwnerAndProvider(groupId)
   if (group?.systemAccountId === systemAccountId) return true
-  return Boolean(activeGroupAuthorization(groupId, systemAccountId))
+  return Boolean(activeResourceAuthorization('group', groupId, systemAccountId))
 }
 
-function activeAccountAuthorization(accountId: string, granteeSystemAccountId: string): AccountAuthorizationRow | undefined {
-  return getDatabase()
-    .prepare("SELECT * FROM account_authorizations WHERE account_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
-    .get(accountId, granteeSystemAccountId) as unknown as AccountAuthorizationRow | undefined
+function activeAccountAuthorization(accountId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
+  return activeResourceAuthorization('account', accountId, granteeSystemAccountId)
 }
 
-function activeGroupAuthorization(groupId: string, granteeSystemAccountId: string): GroupAuthorizationRow | undefined {
+function activeGroupAuthorization(groupId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
+  return activeResourceAuthorization('group', groupId, granteeSystemAccountId)
+}
+
+function activeResourceAuthorization(resourceType: ResourceAuthorizationResourceType, resourceId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
   return getDatabase()
-    .prepare("SELECT * FROM group_authorizations WHERE group_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
-    .get(groupId, granteeSystemAccountId) as unknown as GroupAuthorizationRow | undefined
+    .prepare("SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
+    .get(resourceType, resourceId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
 }
 
 export function resolveAccountSystemAccountId(accountId: string): string | undefined {
@@ -777,6 +845,28 @@ function optionalNullableString(value: unknown): string | null {
   return value.trim().length > 0 ? value : null
 }
 
+function optionalServerDateTimeIso(value: unknown): string | undefined {
+  const text = optionalString(value)?.trim()
+  if (!text) return undefined
+  const normalizedText = text.includes(' ') ? text.replace(' ', 'T') : text
+  const hasTimeZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalizedText)
+  const timestamp = hasTimeZone ? Date.parse(normalizedText) : serverLocalDateTimeMs(normalizedText)
+  if (!Number.isFinite(timestamp)) return undefined
+  return new Date(timestamp).toISOString()
+}
+
+function optionalNullableServerDateTimeIso(value: unknown): string | null {
+  if (value === undefined || value === null) return null
+  return optionalServerDateTimeIso(value) ?? null
+}
+
+function serverLocalDateTimeMs(value: string): number {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2}))?)?)?$/.exec(value)
+  if (!match) return Date.parse(value)
+  const [, year, month, day, hour = '0', minute = '0', second = '0'] = match
+  return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), 0).getTime()
+}
+
 function isAccountExpired(accountExpiresAt: string | null | undefined, now = Date.now()): boolean {
   if (!accountExpiresAt) return false
   const timestamp = Date.parse(accountExpiresAt)
@@ -970,8 +1060,13 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
   const rows = listAccountRowsForAccess(access)
-  const usageByAccount = loadAccountUsageSummariesByAccountIds(rows.map((row) => row.id))
-  const usageByAuthorization = loadAccountAuthorizationUsageSummaries(rows.map((row) => row.authorization_id ?? ''))
+  const accountIds = rows.map((row) => row.id)
+  const usageByAccount = loadAccountUsageSummariesByAccountIds(accountIds)
+  const todayUsageByAccount = loadAccountUsageSummariesByAccountIds(accountIds, todayDateKey())
+  const authorizationIds = rows.map((row) => row.authorization_id ?? '')
+  const usageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationIds)
+  const todayUsageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationIds, startOfTodayIso())
+  const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => row.id))
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const accountNames = includeSystemAccountFields(access) || hasAuthorizedRows ? systemAccountNameMap() : new Map<string, string>()
@@ -979,6 +1074,9 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
     const usage = row.access_type === 'authorized' && row.authorization_id
       ? usageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : usageByAccount.get(row.id) ?? emptyAccountUsageSummary()
+    const todayUsage = row.access_type === 'authorized' && row.authorization_id
+      ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
+      : todayUsageByAccount.get(row.id) ?? emptyAccountUsageSummary()
     return {
     id: row.id,
     systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -997,17 +1095,18 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
     proxyProfileId: row.proxy_profile_id ?? undefined,
     passthroughEnabled: row.passthrough_enabled === 1,
     errorPolicyId: row.error_policy_id ?? undefined,
-    schedulable: row.schedulable === 1 && (row.access_type !== 'authorized' || row.authorization_schedulable !== 0),
+    schedulable: row.schedulable === 1,
     accountExpiresAt: row.account_expires_at ?? undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
     lastUsedAt: row.access_type === 'authorized' ? usage.lastUsedAt : row.last_used_at ?? usage.lastUsedAt,
+    todayUsage,
     usage,
     oauthUsage: row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined,
     accessType: row.access_type ?? 'owner',
     accountAuthorizationId: row.authorization_id ?? undefined,
-    accountAuthorizationSchedulable: row.access_type === 'authorized' ? row.authorization_schedulable !== 0 : undefined,
     authorizationStatus: row.authorization_status ?? undefined,
+    authorizationSources: row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : undefined,
     permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
   })
@@ -1035,7 +1134,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
   disableExpiredAccounts()
   const rows = getDatabase()
     .prepare(`
-      SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_schedulable
+      SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
       FROM accounts
       WHERE provider_code = 'openai'
         AND type IN ('api_key', 'oauth')
@@ -1072,6 +1171,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
     lastUsedAt: row.last_used_at ?? undefined,
+    todayUsage: emptyAccountUsageSummary(),
     usage: emptyAccountUsageSummary(),
     oauthUsage: undefined,
     accessType: 'owner',
@@ -1084,26 +1184,27 @@ function listAccountRowsForAccess(access?: AccessScope): AccountListRow[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return getDatabase()
-      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_schedulable FROM accounts ORDER BY priority ASC, updated_at DESC")
+      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM accounts ORDER BY priority ASC, updated_at DESC")
       .all() as unknown as AccountListRow[]
   }
   if (!viewerSystemAccountId) {
     return getDatabase()
-      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_schedulable FROM accounts ORDER BY priority ASC, updated_at DESC")
+      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM accounts ORDER BY priority ASC, updated_at DESC")
       .all() as unknown as AccountListRow[]
   }
   return getDatabase()
     .prepare(`
       SELECT * FROM (
-        SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_schedulable
+        SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM accounts
         WHERE accounts.system_account_id = ?
         UNION ALL
-        SELECT accounts.*, 'authorized' AS access_type, aa.id AS authorization_id, aa.status AS authorization_status, aa.schedulable AS authorization_schedulable
-        FROM account_authorizations aa
-        INNER JOIN accounts ON accounts.id = aa.account_id
-        WHERE aa.grantee_system_account_id = ?
-          AND aa.status = 'active'
+        SELECT accounts.*, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
+        FROM resource_authorizations ra
+        INNER JOIN accounts ON accounts.id = ra.resource_id
+        WHERE ra.resource_type = 'account'
+          AND ra.grantee_system_account_id = ?
+          AND ra.status = 'active'
           AND accounts.system_account_id <> ?
       )
       ORDER BY priority ASC, updated_at DESC
@@ -1119,147 +1220,6 @@ function accountCredentialsForList(row: AccountListRow): Record<string, unknown>
   return typeof credentials.base_url === 'string' && credentials.base_url ? { base_url: credentials.base_url } : {}
 }
 
-export function listAccountAuthorizations(accountId: string, access?: AccessScope): AccountAuthorizationSummary[] {
-  const ownerSystemAccountId = accountSystemAccountId(accountId)
-  if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, access)) {
-    return []
-  }
-  const rows = getDatabase()
-    .prepare('SELECT * FROM account_authorizations WHERE account_id = ? AND owner_system_account_id = ? ORDER BY status ASC, created_at DESC')
-    .all(accountId, ownerSystemAccountId) as unknown as AccountAuthorizationRow[]
-  return accountAuthorizationSummaries(rows)
-}
-
-export function createAccountAuthorization(accountId: string, input: Record<string, unknown>, access?: AccessScope): AccountAuthorizationSummary {
-  const ownerSystemAccountId = accountSystemAccountId(accountId)
-  if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, access)) {
-    throw new Error('Account not found')
-  }
-  const granteeSystemAccountId = optionalString(input.granteeSystemAccountId ?? input.grantee_system_account_id)
-  if (!granteeSystemAccountId) {
-    throw new Error('Grantee system account is required')
-  }
-  if (granteeSystemAccountId === ownerSystemAccountId) {
-    throw new Error('不能授权给账户所有者自己')
-  }
-  const grantee = findSystemAccountById(granteeSystemAccountId)
-  if (!grantee || grantee.status !== 'active') {
-    throw new Error('被授权用户不存在或已停用')
-  }
-  const existing = activeAccountAuthorization(accountId, granteeSystemAccountId)
-  if (existing) {
-    throw new Error('该账户已授权给这个用户')
-  }
-  const now = nowIso()
-  const id = newId('acctauth')
-  getDatabase()
-    .prepare(`
-      INSERT INTO account_authorizations (
-        id, account_id, owner_system_account_id, grantee_system_account_id, scope, status, remark,
-        created_by, created_at, revoked_by, revoked_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'use', 'active', ?, ?, ?, NULL, NULL, ?)
-    `)
-    .run(id, accountId, ownerSystemAccountId, granteeSystemAccountId, optionalString(input.remark) ?? null, currentSystemAccountId(access), now, now)
-  const created = listAccountAuthorizations(accountId, access).find((item) => item.id === id)
-  if (!created) {
-    throw new Error('Create account authorization failed')
-  }
-  return created
-}
-
-export function revokeAccountAuthorization(accountId: string, authorizationId: string, access?: AccessScope): AccountAuthorizationSummary | undefined {
-  const row = getDatabase()
-    .prepare('SELECT * FROM account_authorizations WHERE id = ? AND account_id = ?')
-    .get(authorizationId, accountId) as unknown as AccountAuthorizationRow | undefined
-  if (!row || !canManageResourceOwner(row.owner_system_account_id, access)) {
-    return undefined
-  }
-  if (row.status !== 'revoked') {
-    const now = nowIso()
-    const database = getDatabase()
-    database
-      .prepare("UPDATE account_authorizations SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
-      .run(currentSystemAccountId(access), now, now, authorizationId)
-    database
-      .prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?')
-      .run(accountId, row.grantee_system_account_id)
-  }
-  return listAccountAuthorizations(accountId, access).find((item) => item.id === authorizationId)
-}
-
-export function updateGrantedAccountAuthorizationSchedulable(accountId: string, authorizationId: string, schedulable: boolean, access?: AccessScope): AccountSummary | undefined {
-  const granteeSystemAccountId = userVisibleSystemAccountId(access)
-  if (!granteeSystemAccountId) {
-    return undefined
-  }
-  const row = getDatabase()
-    .prepare("SELECT * FROM account_authorizations WHERE id = ? AND account_id = ? AND grantee_system_account_id = ? AND status = 'active'")
-    .get(authorizationId, accountId, granteeSystemAccountId) as unknown as AccountAuthorizationRow | undefined
-  if (!row) {
-    return undefined
-  }
-  const accountRow = getDatabase().prepare('SELECT status FROM accounts WHERE id = ?').get(accountId) as unknown as { status?: AccountStatus } | undefined
-  if (schedulable && accountRow?.status === 'disabled') {
-    throw new Error('账户所有者已停用该账户，请联系账户所有者启用后再使用')
-  }
-  getDatabase()
-    .prepare('UPDATE account_authorizations SET schedulable = ?, updated_at = ? WHERE id = ?')
-    .run(schedulable ? 1 : 0, nowIso(), authorizationId)
-  return listAccounts(access).find((account) => account.id === accountId && account.accountAuthorizationId === authorizationId)
-}
-
-export function returnGrantedAccountAuthorization(accountId: string, authorizationId: string, access?: AccessScope): boolean {
-  const granteeSystemAccountId = userVisibleSystemAccountId(access)
-  if (!granteeSystemAccountId) {
-    return false
-  }
-  const row = getDatabase()
-    .prepare("SELECT * FROM account_authorizations WHERE id = ? AND account_id = ? AND grantee_system_account_id = ? AND status = 'active'")
-    .get(authorizationId, accountId, granteeSystemAccountId) as unknown as AccountAuthorizationRow | undefined
-  if (!row) {
-    return false
-  }
-  const now = nowIso()
-  const database = getDatabase()
-  database.exec('BEGIN')
-  try {
-    database
-      .prepare("UPDATE account_authorizations SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
-      .run(granteeSystemAccountId, now, now, authorizationId)
-    database
-      .prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?')
-      .run(accountId, granteeSystemAccountId)
-    database.exec('COMMIT')
-    return true
-  } catch (error) {
-    database.exec('ROLLBACK')
-    throw error
-  }
-}
-
-function accountAuthorizationSummaries(rows: AccountAuthorizationRow[]): AccountAuthorizationSummary[] {
-  const accountNames = accountNameMap(rows.map((row) => row.account_id))
-  const systemAccountNames = systemAccountNameMap()
-  const usageByAuthorization = loadAccountAuthorizationUsageSummaries(rows.map((row) => row.id))
-  return rows.map((row) => ({
-    id: row.id,
-    accountId: row.account_id,
-    accountName: accountNames.get(row.account_id),
-    ownerSystemAccountId: row.owner_system_account_id,
-    ownerSystemAccountName: systemAccountNames.get(row.owner_system_account_id),
-    granteeSystemAccountId: row.grantee_system_account_id,
-    granteeSystemAccountName: systemAccountNames.get(row.grantee_system_account_id),
-    scope: 'use',
-    status: row.status,
-    schedulable: row.schedulable === 1,
-    remark: row.remark ?? undefined,
-    usage: usageByAuthorization.get(row.id) ?? emptyAccountUsageSummary(),
-    createdAt: row.created_at,
-    revokedAt: row.revoked_at ?? undefined,
-    updatedAt: row.updated_at
-  }))
-}
-
 function accountNameMap(accountIds: string[]): Map<string, string> {
   const ids = [...new Set(accountIds)].filter(Boolean)
   if (!ids.length) return new Map()
@@ -1269,29 +1229,8 @@ function accountNameMap(accountIds: string[]): Map<string, string> {
   return new Map(rows.map((row) => [row.id, row.name]))
 }
 
-function loadAccountAuthorizationUsageSummaries(authorizationIds: string[]): Map<string, AccountUsageSummary> {
-  const ids = [...new Set(authorizationIds)].filter(Boolean)
-  if (!ids.length) return new Map()
-  const rows = getDatabase().prepare(`
-    SELECT
-      account_authorization_id AS authorization_id,
-      COUNT(*) AS request_count,
-      COUNT(DISTINCT COALESCE(api_key_id, client_ip, request_id)) AS client_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens,
-      COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-      COALESCE(SUM(cost_usd), 0) AS total_cost,
-      MAX(created_at) AS last_used_at
-    FROM usage_records
-    WHERE account_authorization_id IN (${sqlPlaceholders(ids.length)})
-    GROUP BY account_authorization_id
-  `).all(...ids) as unknown as Array<AccountUsageAggregateRow & { authorization_id: string }>
-
-  const result = new Map<string, AccountUsageSummary>()
-  for (const row of rows) {
-    result.set(row.authorization_id, usageSummaryFromAggregate(row))
-  }
-  return result
+function loadAccountAuthorizationUsageSummaries(authorizationIds: string[], sinceCreatedAt?: string): Map<string, AccountUsageSummary> {
+  return loadResourceAuthorizationUsageSummaries(authorizationIds, 'account', sinceCreatedAt)
 }
 
 export function listErrorPolicies(access?: AccessScope): ErrorPolicySummary[] {
@@ -1338,7 +1277,7 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
   const credentialFingerprint = typeof credentialSource === 'string' && credentialSource.trim()
     ? accountFingerprint(providerCode, accountType, baseUrl, credentialSource)
     : null
-  const accountExpiresAt = optionalNullableString(input.accountExpiresAt ?? input.account_expires_at)
+  const accountExpiresAt = optionalNullableServerDateTimeIso(input.accountExpiresAt ?? input.account_expires_at)
   const initialStatus = normalizeAccountStatus(input.status, 'active')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : initialStatus
@@ -1376,15 +1315,8 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
     lastErrorMessage: expiredByPackage ? '账户套餐已过期，已自动停用' : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     lastUsedAt: undefined,
-    usage: {
-      requestCount: 0,
-      clientCount: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      totalTokens: 0,
-      totalCost: 0
-    }
+    todayUsage: emptyAccountUsageSummary(),
+    usage: emptyAccountUsageSummary()
   }
 
   const database = getDatabase()
@@ -1462,7 +1394,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
   const hasAccountExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'accountExpiresAt')
     || Object.prototype.hasOwnProperty.call(input, 'account_expires_at')
   const nextAccountExpiresAt = hasAccountExpiresAtInput
-    ? optionalNullableString(input.accountExpiresAt ?? input.account_expires_at)
+    ? optionalNullableServerDateTimeIso(input.accountExpiresAt ?? input.account_expires_at)
     : current.accountExpiresAt ?? null
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
 
@@ -1739,6 +1671,7 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
   const accountRows = database.prepare('SELECT system_account_id, group_id, account_id FROM group_accounts WHERE enabled = 1').all() as Array<{ system_account_id: string; group_id: string; account_id: string }>
   const todayUsageByGroup = loadGroupUsageSummariesByGroupIds(rows.map((row) => row.id), todayDateKey())
   const totalUsageByGroup = loadGroupUsageSummariesByGroupIds(rows.map((row) => row.id))
+  const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const accountNames = systemAccountNameMap()
   return rows.map((row) => ({
     id: row.id,
@@ -1762,6 +1695,7 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
     accessType: row.access_type ?? 'owner',
     groupAuthorizationId: row.authorization_id ?? undefined,
     authorizationStatus: row.authorization_status ?? undefined,
+    authorizationSources: row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : undefined,
     permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
   }))
 }
@@ -1795,102 +1729,17 @@ function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
         FROM groups
         WHERE groups.system_account_id = ?
         UNION ALL
-        SELECT groups.*, 'authorized' AS access_type, ga.id AS authorization_id, ga.status AS authorization_status
-        FROM group_authorizations ga
-        INNER JOIN groups ON groups.id = ga.group_id
-        WHERE ga.grantee_system_account_id = ?
-          AND ga.status = 'active'
+        SELECT groups.*, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
+        FROM resource_authorizations ra
+        INNER JOIN groups ON groups.id = ra.resource_id
+        WHERE ra.resource_type = 'group'
+          AND ra.grantee_system_account_id = ?
+          AND ra.status = 'active'
           AND groups.system_account_id <> ?
       )
       ORDER BY updated_at DESC
     `)
     .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
-}
-
-export function listGroupAuthorizations(groupId: string, access?: AccessScope): GroupAuthorizationSummary[] {
-  const owner = groupOwnerAndProvider(groupId)
-  if (!owner || !canManageResourceOwner(owner.systemAccountId, access)) {
-    return []
-  }
-  const rows = getDatabase()
-    .prepare('SELECT * FROM group_authorizations WHERE group_id = ? AND owner_system_account_id = ? ORDER BY status ASC, created_at DESC')
-    .all(groupId, owner.systemAccountId) as unknown as GroupAuthorizationRow[]
-  return groupAuthorizationSummaries(rows)
-}
-
-export function createGroupAuthorization(groupId: string, input: Record<string, unknown>, access?: AccessScope): GroupAuthorizationSummary {
-  const owner = groupOwnerAndProvider(groupId)
-  if (!owner || !canManageResourceOwner(owner.systemAccountId, access)) {
-    throw new Error('Group not found')
-  }
-  const granteeSystemAccountId = optionalString(input.granteeSystemAccountId ?? input.grantee_system_account_id)
-  if (!granteeSystemAccountId) {
-    throw new Error('Grantee system account is required')
-  }
-  if (granteeSystemAccountId === owner.systemAccountId) {
-    throw new Error('不能授权给分组所有者自己')
-  }
-  const grantee = findSystemAccountById(granteeSystemAccountId)
-  if (!grantee || grantee.status !== 'active') {
-    throw new Error('被授权用户不存在或已停用')
-  }
-  const existing = activeGroupAuthorization(groupId, granteeSystemAccountId)
-  if (existing) {
-    throw new Error('该分组已授权给这个用户')
-  }
-  const now = nowIso()
-  const id = newId('grpauth')
-  getDatabase()
-    .prepare(`
-      INSERT INTO group_authorizations (
-        id, group_id, owner_system_account_id, grantee_system_account_id, scope, status, remark,
-        created_by, created_at, revoked_by, revoked_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'use', 'active', ?, ?, ?, NULL, NULL, ?)
-    `)
-    .run(id, groupId, owner.systemAccountId, granteeSystemAccountId, optionalString(input.remark) ?? null, currentSystemAccountId(access), now, now)
-  const created = listGroupAuthorizations(groupId, access).find((item) => item.id === id)
-  if (!created) {
-    throw new Error('Create group authorization failed')
-  }
-  return created
-}
-
-export function revokeGroupAuthorization(groupId: string, authorizationId: string, access?: AccessScope): GroupAuthorizationSummary | undefined {
-  const row = getDatabase()
-    .prepare('SELECT * FROM group_authorizations WHERE id = ? AND group_id = ?')
-    .get(authorizationId, groupId) as unknown as GroupAuthorizationRow | undefined
-  if (!row || !canManageResourceOwner(row.owner_system_account_id, access)) {
-    return undefined
-  }
-  if (row.status !== 'revoked') {
-    const now = nowIso()
-    getDatabase()
-      .prepare("UPDATE group_authorizations SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
-      .run(currentSystemAccountId(access), now, now, authorizationId)
-  }
-  return listGroupAuthorizations(groupId, access).find((item) => item.id === authorizationId)
-}
-
-function groupAuthorizationSummaries(rows: GroupAuthorizationRow[]): GroupAuthorizationSummary[] {
-  const groupNames = groupNameMap(rows.map((row) => row.group_id))
-  const systemAccountNames = systemAccountNameMap()
-  const usageByAuthorization = loadGroupAuthorizationUsageSummaries(rows.map((row) => row.id))
-  return rows.map((row) => ({
-    id: row.id,
-    groupId: row.group_id,
-    groupName: groupNames.get(row.group_id),
-    ownerSystemAccountId: row.owner_system_account_id,
-    ownerSystemAccountName: systemAccountNames.get(row.owner_system_account_id),
-    granteeSystemAccountId: row.grantee_system_account_id,
-    granteeSystemAccountName: systemAccountNames.get(row.grantee_system_account_id),
-    scope: 'use',
-    status: row.status,
-    remark: row.remark ?? undefined,
-    usage: usageByAuthorization.get(row.id) ?? emptyAccountUsageSummary(),
-    createdAt: row.created_at,
-    revokedAt: row.revoked_at ?? undefined,
-    updatedAt: row.updated_at
-  }))
 }
 
 function groupNameMap(groupIds: string[]): Map<string, string> {
@@ -1902,29 +1751,8 @@ function groupNameMap(groupIds: string[]): Map<string, string> {
   return new Map(rows.map((row) => [row.id, row.name]))
 }
 
-function loadGroupAuthorizationUsageSummaries(authorizationIds: string[]): Map<string, AccountUsageSummary> {
-  const ids = [...new Set(authorizationIds)].filter(Boolean)
-  if (!ids.length) return new Map()
-  const rows = getDatabase().prepare(`
-    SELECT
-      group_authorization_id AS authorization_id,
-      COUNT(*) AS request_count,
-      COUNT(DISTINCT COALESCE(api_key_id, client_ip, request_id)) AS client_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens,
-      COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-      COALESCE(SUM(cost_usd), 0) AS total_cost,
-      MAX(created_at) AS last_used_at
-    FROM usage_records
-    WHERE group_authorization_id IN (${sqlPlaceholders(ids.length)})
-    GROUP BY group_authorization_id
-  `).all(...ids) as unknown as Array<AccountUsageAggregateRow & { authorization_id: string }>
-
-  const result = new Map<string, AccountUsageSummary>()
-  for (const row of rows) {
-    result.set(row.authorization_id, usageSummaryFromAggregate(row))
-  }
-  return result
+function loadGroupAuthorizationUsageSummaries(authorizationIds: string[], sinceCreatedAt?: string): Map<string, AccountUsageSummary> {
+  return loadResourceAuthorizationUsageSummaries(authorizationIds, 'group', sinceCreatedAt)
 }
 
 export function createGroup(input: Record<string, unknown>): GroupSummary {
@@ -2041,6 +1869,636 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
   return listGroups().find((group) => group.id === groupId)
 }
 
+export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
+  const rows = getDatabase().prepare('SELECT * FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC').all() as unknown as SystemTeamRow[]
+  const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
+  return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
+}
+
+export function createSystemTeam(input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary {
+  const name = optionalString(input.name)
+  if (!name) throw new Error('团队名称不能为空')
+  const database = getDatabase()
+  ensureSystemTeamNameUnique(name, undefined, database)
+  const now = nowIso()
+  const id = newId('team')
+  database
+    .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .run(id, name, optionalString(input.description) ?? null, input.status === 'disabled' ? 'disabled' : 'active', currentSystemAccountId(access), now, now)
+  const created = listSystemTeams(access).find((team) => team.id === id)
+  if (!created) throw new Error('Create system team failed')
+  return created
+}
+
+export function updateSystemTeam(id: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
+  const database = getDatabase()
+  const row = database.prepare('SELECT * FROM system_teams WHERE id = ?').get(id) as unknown as SystemTeamRow | undefined
+  if (!row) return undefined
+  const name = optionalString(input.name) ?? row.name
+  ensureSystemTeamNameUnique(name, id, database)
+  const status = input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : row.status
+  const now = nowIso()
+  database.exec('BEGIN')
+  try {
+    database
+      .prepare('UPDATE system_teams SET name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?')
+      .run(name, input.description === undefined ? row.description : optionalNullableString(input.description), status, now, id)
+    if (row.status !== 'disabled' && status === 'disabled') {
+      revokeAllTeamSources(id, currentSystemAccountId(access), database, now, 'team_disabled')
+    }
+    if (row.status === 'disabled' && status === 'active') {
+      reactivateTeamGrantSources(id, access, database, now)
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+  return listSystemTeams(access).find((team) => team.id === id)
+}
+
+export function addSystemTeamMembers(teamId: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
+  const team = getDatabase().prepare("SELECT * FROM system_teams WHERE id = ? AND status = 'active'").get(teamId) as unknown as SystemTeamRow | undefined
+  if (!team) return undefined
+  const systemAccountIds = normalizeSystemAccountIds(input.systemAccountIds ?? input.systemAccountId ?? input.memberIds)
+  if (!systemAccountIds.length) throw new Error('请选择团队成员')
+  const database = getDatabase()
+  const now = nowIso()
+  database.exec('BEGIN')
+  try {
+    for (const systemAccountId of systemAccountIds) {
+      const account = findSystemAccountById(systemAccountId)
+      if (!account || account.status !== 'active') throw new Error('团队成员不存在或已停用')
+      const existing = database.prepare('SELECT * FROM system_team_members WHERE team_id = ? AND system_account_id = ? ORDER BY created_at DESC LIMIT 1').get(teamId, systemAccountId) as unknown as SystemTeamMemberRow | undefined
+      if (existing?.status === 'active') continue
+      if (existing) {
+        database.prepare("UPDATE system_team_members SET status = 'active', joined_at = ?, removed_at = NULL, updated_at = ? WHERE id = ?").run(now, now, existing.id)
+      } else {
+        database.prepare("INSERT INTO system_team_members (id, team_id, system_account_id, member_role, status, joined_at, removed_at, created_by, created_at, updated_at) VALUES (?, ?, ?, 'member', 'active', ?, NULL, ?, ?, ?)")
+          .run(newId('teammem'), teamId, systemAccountId, now, currentSystemAccountId(access), now, now)
+      }
+      applyActiveTeamGrantsToMember(teamId, systemAccountId, access, database, now)
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+  return listSystemTeams(access).find((item) => item.id === teamId)
+}
+
+export function removeSystemTeamMember(teamId: string, memberId: string, access?: AccessScope): SystemTeamSummary | undefined {
+  const database = getDatabase()
+  const member = database.prepare("SELECT * FROM system_team_members WHERE id = ? AND team_id = ? AND status = 'active'").get(memberId, teamId) as unknown as SystemTeamMemberRow | undefined
+  if (!member) return undefined
+  const now = nowIso()
+  database.exec('BEGIN')
+  try {
+    database.prepare("UPDATE system_team_members SET status = 'removed', removed_at = ?, updated_at = ? WHERE id = ?").run(now, now, memberId)
+    revokeTeamSourcesForMember(teamId, member.system_account_id, currentSystemAccountId(access), database, now)
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+  return listSystemTeams(access).find((item) => item.id === teamId)
+}
+
+export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary[] {
+  const clauses: string[] = []
+  const params: Array<string | number | null> = []
+  const resourceType = normalizeResourceType(filters.resourceType ?? filters.resource_type)
+  if (resourceType) { clauses.push('ra.resource_type = ?'); params.push(resourceType) }
+  const resourceId = optionalString(filters.resourceId ?? filters.resource_id)
+  if (resourceId) { clauses.push('ra.resource_id = ?'); params.push(resourceId) }
+  const granteeSystemAccountId = optionalString(filters.granteeSystemAccountId ?? filters.grantee_system_account_id)
+  if (granteeSystemAccountId) { clauses.push('ra.grantee_system_account_id = ?'); params.push(granteeSystemAccountId) }
+  const status = filters.status === 'revoked' ? 'revoked' : filters.status === 'all' ? undefined : 'active'
+  if (status) { clauses.push('ra.status = ?'); params.push(status) }
+  const teamId = optionalString(filters.teamId ?? filters.team_id)
+  if (teamId) {
+    clauses.push("EXISTS (SELECT 1 FROM resource_authorization_sources ras WHERE ras.authorization_id = ra.id AND ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active')")
+    params.push(teamId)
+  }
+  const ownerSystemAccountId = scopedSystemAccountId(access)
+  if (ownerSystemAccountId) { clauses.push('ra.resource_owner_system_account_id = ?'); params.push(ownerSystemAccountId) }
+  else if (!canAccessAll(access)) { clauses.push('ra.resource_owner_system_account_id = ?'); params.push(currentSystemAccountId(access)) }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
+  const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY ra.status ASC, ra.updated_at DESC, ra.created_at DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
+  return resourceAuthorizationSummaries(rows)
+}
+
+export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
+  const resourceType = normalizeResourceType(input.resourceType ?? input.resource_type)
+  const resourceId = optionalString(input.resourceId ?? input.resource_id)
+  if (!resourceType || !resourceId) throw new Error('请选择授权资源')
+  const ownerSystemAccountId = resourceOwnerSystemAccountId(resourceType, resourceId)
+  if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, access)) throw new Error('授权资源不存在')
+  const granteeType = input.granteeType === 'team' || input.grantee_type === 'team' ? 'team' : 'system_account'
+  const granteeId = optionalString(input.granteeId ?? input.grantee_id ?? input.granteeSystemAccountId ?? input.grantee_system_account_id ?? input.teamId ?? input.team_id)
+  if (!granteeId) throw new Error('请选择被授权对象')
+  const database = getDatabase()
+  const now = nowIso()
+  const actor = currentSystemAccountId(access)
+  const createdIds: string[] = []
+  database.exec('BEGIN')
+  try {
+    if (granteeType === 'team') {
+      const team = database.prepare("SELECT * FROM system_teams WHERE id = ? AND status = 'active'").get(granteeId) as unknown as SystemTeamRow | undefined
+      if (!team) throw new Error('团队不存在或已停用')
+      const members = activeTeamMemberRows(granteeId, database).filter((member) => member.system_account_id !== ownerSystemAccountId)
+      if (!members.length) throw new Error('团队暂无可授权成员，请先添加非归属人成员后再授权')
+      upsertTeamResourceGrant({ resourceType, resourceId, ownerSystemAccountId, teamId: granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      for (const member of members) {
+        const authorization = upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+        createdIds.push(authorization.id)
+      }
+    } else {
+      const grantee = findSystemAccountById(granteeId)
+      if (!grantee || grantee.status !== 'active') throw new Error('被授权用户不存在或已停用')
+      if (granteeId === ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
+      const authorization = upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      createdIds.push(authorization.id)
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+  const ids = [...new Set(createdIds)]
+  const created = ids.length ? listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === ids[0]) : undefined
+  if (created) return created
+  const fallback = listResourceAuthorizations({ resourceType, resourceId, teamId: granteeType === 'team' ? granteeId : undefined, status: 'all' }, access)[0]
+  if (!fallback) throw new Error('Create resource authorization failed')
+  return fallback
+}
+
+export function revokeResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {
+  const database = getDatabase()
+  const row = database.prepare('SELECT * FROM resource_authorizations WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
+  if (!row || !canManageResourceOwner(row.resource_owner_system_account_id, access)) return undefined
+  const now = nowIso()
+  const actor = currentSystemAccountId(access)
+  const revokeAll = input.revokeAll === true || input.revoke_all === true
+  const sourceType = normalizeSourceType(input.sourceType ?? input.source_type)
+  const sourceTeamId = optionalString(input.sourceTeamId ?? input.source_team_id ?? input.teamId ?? input.team_id)
+  database.exec('BEGIN')
+  try {
+    if (revokeAll || !sourceType) {
+      database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'authorization_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND status IN ('active', 'superseded')").run(now, actor, now, now, authorizationId)
+      database.prepare("UPDATE resource_authorizations SET status = 'revoked', effective_source_type = NULL, effective_source_team_id = NULL, revoked_by = ?, revoked_at = ?, revoked_reason = 'authorization_revoked', last_source_changed_at = ?, updated_at = ? WHERE id = ?").run(actor, now, now, now, authorizationId)
+    } else {
+      const params: Array<string | number | null> = [actor, now, now, authorizationId, sourceType]
+      let sql = "UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'source_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = ? AND status = 'active'"
+      params.unshift(now)
+      if (sourceType === 'team') { sql += ' AND source_team_id = ?'; params.push(sourceTeamId ?? '') }
+      database.prepare(sql).run(...params)
+      if (sourceType === 'team' && sourceTeamId) {
+        database
+          .prepare("UPDATE team_resource_authorization_grants SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE resource_type = ? AND resource_id = ? AND team_id = ? AND status = 'active'")
+          .run(actor, now, now, row.resource_type, row.resource_id, sourceTeamId)
+        revokeTeamGrantSources(row.resource_type, row.resource_id, sourceTeamId, actor, database, now)
+      }
+      refreshResourceAuthorizationEffectiveSource(authorizationId, actor, now, database)
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+  return listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
+}
+
+export function getResourceAuthorizationUsage(authorizationId: string, access?: AccessScope): ResourceAuthorizationSummary | undefined {
+  const authorization = listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
+  if (!authorization) return undefined
+  return {
+    ...authorization,
+    usageBySystemAccount: loadResourceAuthorizationUsageDetails(authorization)
+  }
+}
+
+function systemTeamSummaryFromRow(row: SystemTeamRow, members: SystemTeamMemberSummary[], _access?: AccessScope): SystemTeamSummary {
+  return { id: row.id, name: row.name, description: row.description ?? undefined, status: row.status, memberCount: members.length, activeMemberCount: members.filter((member) => member.status === 'active').length, members, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }
+}
+
+function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false): Map<string, SystemTeamMemberSummary[]> {
+  const ids = [...new Set(teamIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const statusClause = activeOnly ? " AND system_team_members.status = 'active'" : ''
+  const rows = getDatabase().prepare(`SELECT system_team_members.*, system_accounts.display_name, system_accounts.username FROM system_team_members INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id WHERE system_team_members.team_id IN (${sqlPlaceholders(ids.length)})${statusClause} ORDER BY system_team_members.status ASC, system_team_members.joined_at ASC`).all(...ids) as unknown as Array<SystemTeamMemberRow & { display_name?: string; username?: string }>
+  const result = new Map<string, SystemTeamMemberSummary[]>()
+  for (const row of rows) {
+    const member: SystemTeamMemberSummary = { id: row.id, teamId: row.team_id, systemAccountId: row.system_account_id, systemAccountName: row.display_name, username: row.username, memberRole: 'member', status: row.status, joinedAt: row.joined_at, removedAt: row.removed_at ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at }
+    result.set(row.team_id, [...(result.get(row.team_id) ?? []), member])
+  }
+  return result
+}
+
+function ensureSystemTeamNameUnique(name: string, excludeId?: string, database = getDatabase()): void {
+  const row = database
+    .prepare('SELECT id FROM system_teams WHERE name = ? AND id <> ? LIMIT 1')
+    .get(name, excludeId ?? '') as unknown as { id?: string } | undefined
+  if (row?.id) throw new Error('团队名称已存在')
+}
+
+function normalizeSystemAccountIds(value: unknown): string[] {
+  if (Array.isArray(value)) return [...new Set(value.map((item) => typeof item === 'string' ? item.trim() : '').filter(Boolean))]
+  return typeof value === 'string' && value.trim() ? [value.trim()] : []
+}
+
+function normalizeResourceType(value: unknown): ResourceAuthorizationResourceType | undefined {
+  return value === 'account' || value === 'group' ? value : undefined
+}
+
+function normalizeSourceType(value: unknown): ResourceAuthorizationSourceType | undefined {
+  return value === 'manual' || value === 'team' ? value : undefined
+}
+
+function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourceType, resourceId: string): string | undefined {
+  return resourceType === 'account' ? accountSystemAccountId(resourceId) : groupOwnerAndProvider(resourceId)?.systemAccountId
+}
+
+function activeTeamMemberRows(teamId: string, database = getDatabase()): SystemTeamMemberRow[] {
+  return database.prepare("SELECT * FROM system_team_members WHERE team_id = ? AND status = 'active' ORDER BY joined_at ASC").all(teamId) as unknown as SystemTeamMemberRow[]
+}
+
+function jsonObjectOrNull(value: unknown): string | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
+  return JSON.stringify(value)
+}
+
+function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
+  if (input.granteeSystemAccountId === input.ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
+  const existing = input.database.prepare('SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1').get(input.resourceType, input.resourceId, input.granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+  const authorizationId = existing?.id ?? newId('rauth')
+  const isTeamSource = input.sourceType === 'team'
+  const hasActiveTeamSource = existing ? hasActiveTeamAuthorizationSource(input.database, authorizationId) : false
+  const nextEffectiveSourceType = isTeamSource || hasActiveTeamSource ? 'team' : 'manual'
+  const nextEffectiveSourceTeamId = isTeamSource ? input.sourceTeamId ?? null : firstActiveTeamSourceId(input.database, authorizationId)
+  if (existing) {
+    input.database.prepare(`
+      UPDATE resource_authorizations
+      SET resource_owner_system_account_id = ?,
+          status = 'active',
+          effective_source_type = COALESCE(?, effective_source_type),
+          effective_source_team_id = ?,
+          activated_at = COALESCE(activated_at, ?),
+          last_source_changed_at = ?,
+          remark = COALESCE(?, remark),
+          expires_at = COALESCE(?, expires_at),
+          limits_json = COALESCE(?, limits_json),
+          model_policy_json = COALESCE(?, model_policy_json),
+          revoked_by = NULL,
+          revoked_at = NULL,
+          revoked_reason = NULL,
+          updated_at = ?
+      WHERE id = ?
+    `).run(input.ownerSystemAccountId, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.now, authorizationId)
+  } else {
+    input.database.prepare(`
+      INSERT INTO resource_authorizations (
+        id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
+        effective_source_type, effective_source_team_id, activated_at, last_source_changed_at,
+        remark, expires_at, limits_json, model_policy_json,
+        created_by, created_at, revoked_by, revoked_at, revoked_reason, updated_at
+      ) VALUES (?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
+    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
+  }
+  upsertResourceAuthorizationSource(input.database, authorizationId, input.sourceType, input.sourceTeamId, input.actor, input.now, isTeamSource ? 'active' : hasActiveTeamSource ? 'superseded' : 'active')
+  if (isTeamSource) {
+    input.database.prepare(`
+      UPDATE resource_authorization_sources
+      SET status = 'superseded',
+          ended_at = COALESCE(ended_at, ?),
+          ended_reason = COALESCE(ended_reason, 'covered_by_team'),
+          updated_at = ?
+      WHERE authorization_id = ? AND source_type = 'manual' AND status = 'active'
+    `).run(input.now, input.now, authorizationId)
+  }
+  refreshResourceAuthorizationEffectiveSource(authorizationId, input.actor, input.now, input.database)
+  const row = input.database.prepare('SELECT * FROM resource_authorizations WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
+  if (!row) throw new Error('Create resource authorization failed')
+  return row
+}
+
+function hasActiveTeamAuthorizationSource(database: DatabaseSync, authorizationId: string): boolean {
+  const row = database
+    .prepare("SELECT id FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = 'team' AND status = 'active' LIMIT 1")
+    .get(authorizationId) as unknown as { id?: string } | undefined
+  return Boolean(row?.id)
+}
+
+function firstActiveTeamSourceId(database: DatabaseSync, authorizationId: string): string | null {
+  const row = database
+    .prepare("SELECT source_team_id FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = 'team' AND status = 'active' ORDER BY activated_at ASC, created_at ASC LIMIT 1")
+    .get(authorizationId) as unknown as { source_team_id?: string | null } | undefined
+  return row?.source_team_id ?? null
+}
+
+function upsertResourceAuthorizationSource(database: DatabaseSync, authorizationId: string, sourceType: ResourceAuthorizationSourceType, sourceTeamId: string | undefined, actor: string, now: string, requestedStatus: ResourceAuthorizationSourceStatus): void {
+  const existing = database.prepare("SELECT * FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = ? AND COALESCE(source_team_id, '') = COALESCE(?, '') ORDER BY created_at DESC LIMIT 1").get(authorizationId, sourceType, sourceTeamId ?? null) as unknown as ResourceAuthorizationSourceRow | undefined
+  if (existing) {
+    database.prepare(`
+      UPDATE resource_authorization_sources
+      SET status = ?,
+          activated_at = COALESCE(activated_at, ?),
+          ended_at = CASE WHEN ? = 'active' THEN NULL ELSE COALESCE(ended_at, ?) END,
+          ended_reason = CASE WHEN ? = 'active' THEN NULL ELSE COALESCE(ended_reason, ?) END,
+          revoked_by = CASE WHEN ? = 'active' THEN NULL ELSE revoked_by END,
+          revoked_at = CASE WHEN ? = 'active' THEN NULL ELSE revoked_at END,
+          updated_at = ?
+      WHERE id = ?
+    `).run(requestedStatus, now, requestedStatus, now, requestedStatus, requestedStatus === 'superseded' ? 'covered_by_team' : null, requestedStatus, requestedStatus, now, existing.id)
+    return
+  }
+  database.prepare(`
+    INSERT INTO resource_authorization_sources (
+      id, authorization_id, source_type, source_team_id, status, activated_at, ended_at, ended_reason,
+      created_by, created_at, revoked_by, revoked_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
+  `).run(newId('rauthsrc'), authorizationId, sourceType, sourceTeamId ?? null, requestedStatus, now, requestedStatus === 'active' ? null : now, requestedStatus === 'superseded' ? 'covered_by_team' : null, actor, now, now)
+}
+
+function refreshResourceAuthorizationEffectiveSource(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
+  const activeTeamSource = database.prepare(`
+    SELECT source_team_id
+    FROM resource_authorization_sources
+    WHERE authorization_id = ? AND source_type = 'team' AND status = 'active'
+    ORDER BY activated_at ASC, created_at ASC
+    LIMIT 1
+  `).get(authorizationId) as unknown as { source_team_id?: string | null } | undefined
+
+  if (activeTeamSource?.source_team_id) {
+    database.prepare(`
+      UPDATE resource_authorizations
+      SET status = 'active',
+          effective_source_type = 'team',
+          effective_source_team_id = ?,
+          revoked_by = NULL,
+          revoked_at = NULL,
+          revoked_reason = NULL,
+          last_source_changed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(activeTeamSource.source_team_id, now, now, authorizationId)
+    return
+  }
+
+  const activeManualSource = database.prepare(`
+    SELECT id
+    FROM resource_authorization_sources
+    WHERE authorization_id = ? AND source_type = 'manual' AND status = 'active'
+    ORDER BY activated_at ASC, created_at ASC
+    LIMIT 1
+  `).get(authorizationId) as unknown as { id?: string } | undefined
+
+  if (activeManualSource?.id) {
+    database.prepare(`
+      UPDATE resource_authorizations
+      SET status = 'active',
+          effective_source_type = 'manual',
+          effective_source_team_id = NULL,
+          revoked_by = NULL,
+          revoked_at = NULL,
+          revoked_reason = NULL,
+          last_source_changed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(now, now, authorizationId)
+    return
+  }
+
+  database.prepare(`
+    UPDATE resource_authorizations
+    SET status = 'revoked',
+        effective_source_type = NULL,
+        effective_source_team_id = NULL,
+        revoked_by = COALESCE(revoked_by, ?),
+        revoked_at = COALESCE(revoked_at, ?),
+        revoked_reason = COALESCE(revoked_reason, 'no_active_source'),
+        last_source_changed_at = ?,
+        updated_at = ?
+    WHERE id = ?
+  `).run(actor, now, now, now, authorizationId)
+}
+
+function upsertTeamResourceGrant(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; teamId: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): TeamResourceAuthorizationGrantRow {
+  const existing = input.database.prepare("SELECT * FROM team_resource_authorization_grants WHERE resource_type = ? AND resource_id = ? AND team_id = ? AND status = 'active' LIMIT 1").get(input.resourceType, input.resourceId, input.teamId) as unknown as TeamResourceAuthorizationGrantRow | undefined
+  const id = existing?.id ?? newId('teamgrant')
+  if (existing) {
+    input.database.prepare('UPDATE team_resource_authorization_grants SET remark = COALESCE(?, remark), expires_at = COALESCE(?, expires_at), limits_json = COALESCE(?, limits_json), model_policy_json = COALESCE(?, model_policy_json), updated_at = ? WHERE id = ?')
+      .run(input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.now, id)
+  } else {
+    input.database.prepare("INSERT INTO team_resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, team_id, scope, status, remark, expires_at, limits_json, model_policy_json, created_by, created_at, revoked_by, revoked_at, updated_at) VALUES (?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)")
+      .run(id, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.teamId, input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
+  }
+  const row = input.database.prepare('SELECT * FROM team_resource_authorization_grants WHERE id = ?').get(id) as unknown as TeamResourceAuthorizationGrantRow | undefined
+  if (!row) throw new Error('Create team authorization grant failed')
+  return row
+}
+
+function applyActiveTeamGrantsToMember(teamId: string, systemAccountId: string, access: AccessScope | undefined, database: DatabaseSync, now: string): void {
+  const grants = database.prepare("SELECT * FROM team_resource_authorization_grants WHERE team_id = ? AND status = 'active'").all(teamId) as unknown as TeamResourceAuthorizationGrantRow[]
+  const actor = currentSystemAccountId(access)
+  for (const grant of grants) {
+    if (grant.resource_owner_system_account_id === systemAccountId) continue
+    upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: systemAccountId, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseOptionalJsonObject(grant.limits_json ?? undefined), modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined), actor, now, database })
+  }
+}
+
+function revokeTeamSourcesForMember(teamId: string, systemAccountId: string, actor: string, database: DatabaseSync, now: string): void {
+  const rows = database.prepare("SELECT ras.authorization_id FROM resource_authorization_sources ras INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id WHERE ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active' AND ra.grantee_system_account_id = ?").all(teamId, systemAccountId) as unknown as Array<{ authorization_id: string }>
+  for (const row of rows) {
+    database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'member_removed'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'").run(now, actor, now, now, row.authorization_id, teamId)
+    refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database)
+  }
+}
+
+function revokeTeamGrantSources(resourceType: ResourceAuthorizationResourceType, resourceId: string, teamId: string, actor: string, database: DatabaseSync, now: string): void {
+  const rows = database.prepare("SELECT ras.authorization_id FROM resource_authorization_sources ras INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id WHERE ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active' AND ra.resource_type = ? AND ra.resource_id = ?").all(teamId, resourceType, resourceId) as unknown as Array<{ authorization_id: string }>
+  for (const row of rows) {
+    database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'team_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'").run(now, actor, now, now, row.authorization_id, teamId)
+    refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database)
+  }
+}
+
+function revokeAllTeamSources(teamId: string, actor: string, database: DatabaseSync, now: string, reason: string): void {
+  const rows = database.prepare("SELECT DISTINCT authorization_id FROM resource_authorization_sources WHERE source_type = 'team' AND source_team_id = ? AND status = 'active'").all(teamId) as unknown as Array<{ authorization_id: string }>
+  for (const row of rows) {
+    database.prepare(`
+      UPDATE resource_authorization_sources
+      SET status = 'revoked',
+          ended_at = COALESCE(ended_at, ?),
+          ended_reason = COALESCE(ended_reason, ?),
+          revoked_by = ?,
+          revoked_at = ?,
+          updated_at = ?
+      WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'
+    `).run(now, reason, actor, now, now, row.authorization_id, teamId)
+    refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database)
+  }
+}
+
+function reactivateTeamGrantSources(teamId: string, access: AccessScope | undefined, database: DatabaseSync, now: string): void {
+  const memberRows = activeTeamMemberRows(teamId, database)
+  for (const member of memberRows) {
+    applyActiveTeamGrantsToMember(teamId, member.system_account_id, access, database, now)
+  }
+}
+
+function deactivateAuthorizationIfNoActiveSources(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
+  refreshResourceAuthorizationEffectiveSource(authorizationId, actor, now, database)
+}
+
+function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[]): ResourceAuthorizationSummary[] {
+  const accountNames = accountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
+  const groupNames = groupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
+  const systemAccounts = systemAccountRowsByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id]))
+  const teamNames = systemTeamNameMap(rows.map((row) => row.effective_source_team_id ?? ''))
+  const sources = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.id))
+  const usage = loadResourceAuthorizationUsageSummaries(rows.map((row) => row.id))
+  return rows.map((row) => {
+    const owner = systemAccounts.get(row.resource_owner_system_account_id)
+    const grantee = systemAccounts.get(row.grantee_system_account_id)
+    const authorizationSources = sources.get(row.id) ?? []
+    return {
+      id: row.id,
+      resourceType: row.resource_type,
+      resourceId: row.resource_id,
+      resourceName: row.resource_type === 'account' ? accountNames.get(row.resource_id) : groupNames.get(row.resource_id),
+      resourceOwnerSystemAccountId: row.resource_owner_system_account_id,
+      resourceOwnerSystemAccountName: owner?.displayName ?? owner?.username,
+      granteeSystemAccountId: row.grantee_system_account_id,
+      granteeSystemAccountName: grantee?.displayName ?? grantee?.username,
+      granteeUsername: grantee?.username,
+      scope: 'use',
+      status: row.status,
+      remark: row.remark ?? undefined,
+      expiresAt: row.expires_at ?? undefined,
+      limits: parseOptionalJsonObject(row.limits_json ?? undefined),
+      modelPolicy: parseOptionalJsonObject(row.model_policy_json ?? undefined),
+      effectiveSourceType: row.effective_source_type ?? undefined,
+      effectiveSourceTeamId: row.effective_source_team_id ?? undefined,
+      effectiveSourceTeamName: row.effective_source_team_id ? teamNames.get(row.effective_source_team_id) : undefined,
+      activatedAt: row.activated_at ?? undefined,
+      lastSourceChangedAt: row.last_source_changed_at ?? undefined,
+      sources: authorizationSources,
+      authorizationSources,
+      usage: usage.get(row.id) ?? emptyAccountUsageSummary(),
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+      revokedBy: row.revoked_by ?? undefined,
+      revokedAt: row.revoked_at ?? undefined,
+      revokedReason: row.revoked_reason ?? undefined,
+      updatedAt: row.updated_at
+    }
+  })
+}
+
+function systemTeamNameMap(teamIds: string[]): Map<string, string> {
+  const ids = [...new Set(teamIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase()
+    .prepare(`SELECT id, name FROM system_teams WHERE id IN (${sqlPlaceholders(ids.length)})`)
+    .all(...ids) as unknown as Array<{ id: string; name: string }>
+  return new Map(rows.map((row) => [row.id, row.name]))
+}
+
+function loadResourceAuthorizationSourcesByAuthorizationIds(authorizationIds: string[]): Map<string, ResourceAuthorizationSourceSummary[]> {
+  const ids = [...new Set(authorizationIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase().prepare(`SELECT ras.*, system_teams.name AS team_name FROM resource_authorization_sources ras LEFT JOIN system_teams ON system_teams.id = ras.source_team_id WHERE ras.authorization_id IN (${sqlPlaceholders(ids.length)}) ORDER BY ras.status ASC, ras.created_at ASC`).all(...ids) as unknown as Array<ResourceAuthorizationSourceRow & { team_name?: string | null }>
+  const result = new Map<string, ResourceAuthorizationSourceSummary[]>()
+  for (const row of rows) {
+    const summary: ResourceAuthorizationSourceSummary = { id: row.id, authorizationId: row.authorization_id, sourceType: row.source_type, sourceTeamId: row.source_team_id ?? undefined, sourceTeamName: row.team_name ?? undefined, status: row.status, activatedAt: row.activated_at ?? undefined, endedAt: row.ended_at ?? undefined, endedReason: row.ended_reason ?? undefined, createdBy: row.created_by, createdAt: row.created_at, revokedBy: row.revoked_by ?? undefined, revokedAt: row.revoked_at ?? undefined, updatedAt: row.updated_at }
+    result.set(row.authorization_id, [...(result.get(row.authorization_id) ?? []), summary])
+  }
+  return result
+}
+
+function loadResourceAuthorizationUsageSummaries(authorizationIds: string[], resourceType?: ResourceAuthorizationResourceType, sinceCreatedAt?: string): Map<string, AccountUsageSummary> {
+  const ids = [...new Set(authorizationIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const usageDateClause = sinceCreatedAt ? ' AND usage_records.created_at >= ?' : ''
+  const params = [...(sinceCreatedAt ? [sinceCreatedAt] : []), ...ids, ...(resourceType ? [resourceType] : [])]
+  const rows = getDatabase().prepare(`
+    SELECT
+      ra.id AS authorization_id,
+      COUNT(usage_records.id) AS request_count,
+      COUNT(DISTINCT COALESCE(usage_records.api_key_id, usage_records.client_ip, usage_records.request_id)) AS client_count,
+      COALESCE(SUM(usage_records.input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(usage_records.output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(usage_records.cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(usage_records.cost_usd), 0) AS total_cost,
+      MAX(usage_records.created_at) AS last_used_at
+    FROM resource_authorizations ra
+    LEFT JOIN usage_records ON (
+      (ra.resource_type = 'account' AND usage_records.account_authorization_id = ra.id)
+      OR (ra.resource_type = 'group' AND usage_records.group_authorization_id = ra.id)
+    )${usageDateClause}
+    WHERE ra.id IN (${sqlPlaceholders(ids.length)})${resourceType ? ' AND ra.resource_type = ?' : ''}
+    GROUP BY ra.id
+  `).all(...params) as unknown as Array<AccountUsageAggregateRow & { authorization_id: string }>
+  const result = new Map<string, AccountUsageSummary>()
+  for (const row of rows) result.set(row.authorization_id, usageSummaryFromAggregate(row))
+  return result
+}
+
+function loadResourceAuthorizationUsageDetails(authorization: ResourceAuthorizationSummary): ResourceAuthorizationUsageDetail[] {
+  const authorizationColumn = authorization.resourceType === 'account' ? 'account_authorization_id' : 'group_authorization_id'
+  const rows = getDatabase().prepare(`
+    SELECT
+      usage_records.system_account_id,
+      COUNT(usage_records.id) AS request_count,
+      COUNT(DISTINCT COALESCE(usage_records.api_key_id, usage_records.client_ip, usage_records.request_id)) AS client_count,
+      COALESCE(SUM(usage_records.input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(usage_records.output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(usage_records.cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(usage_records.cost_usd), 0) AS total_cost,
+      MAX(usage_records.created_at) AS last_used_at
+    FROM usage_records
+    WHERE ${authorizationColumn} = ?
+    GROUP BY usage_records.system_account_id
+  `).all(authorization.id) as unknown as Array<AccountUsageAggregateRow & { system_account_id: string }>
+
+  const systemAccounts = systemAccountRowsByIds(rows.map((row) => row.system_account_id))
+  const details = rows.map((row) => {
+    const account = systemAccounts.get(row.system_account_id)
+    return {
+      systemAccountId: row.system_account_id,
+      systemAccountName: account?.displayName ?? account?.username,
+      username: account?.username,
+      ...usageSummaryFromAggregate(row)
+    }
+  })
+
+  if (!details.some((detail) => detail.systemAccountId === authorization.granteeSystemAccountId)) {
+    details.push({
+      systemAccountId: authorization.granteeSystemAccountId,
+      systemAccountName: authorization.granteeSystemAccountName,
+      username: authorization.granteeUsername,
+      ...emptyAccountUsageSummary()
+    })
+  }
+
+  return details.sort((left, right) => {
+    const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
+    const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
+    if (rightTime !== leftTime) {
+      return rightTime - leftTime
+    }
+    return left.systemAccountId.localeCompare(right.systemAccountId)
+  })
+}
+
+function systemAccountRowsByIds(systemAccountIds: string[]): Map<string, SystemAccountSummary> {
+  const ids = [...new Set(systemAccountIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase().prepare(`SELECT * FROM system_accounts WHERE id IN (${sqlPlaceholders(ids.length)})`).all(...ids) as unknown as SystemAccountRow[]
+  return new Map(rows.map((row) => [row.id, systemAccountSummaryFromRow(row)]))
+}
+
 export function listApiKeys(access?: AccessScope): ApiKeySummary[] {
   const scope = buildSystemAccountWhereClause(access)
   const rows = getDatabase().prepare(`SELECT * FROM api_keys${scope.clause} ORDER BY updated_at DESC`).all(...scope.params) as unknown as ApiKeyRow[]
@@ -2088,7 +2546,7 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
     keyPrefix,
     status: input.status === 'disabled' ? 'disabled' : 'active',
     groupId,
-    expiresAt: optionalString(input.expiresAt ?? input.expires_at),
+    expiresAt: optionalServerDateTimeIso(input.expiresAt ?? input.expires_at),
     key
   }
   getDatabase()
@@ -2106,8 +2564,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
   const keyHash = hashSecret(key)
   const now = Date.now()
   const cached = gatewayApiKeyCache.get(keyHash)
-  if (cached && cached.expiresAtMs > now && cached.forceRevalidateAtMs > now && !isGatewayApiKeyRowExpired(cached.row, now)) {
-    cached.expiresAtMs = gatewayApiKeyCacheExpiresAt(now, cached.row)
+  if (cached && cached.forceRevalidateAtMs > now && !isGatewayApiKeyRowExpired(cached.row, now)) {
     return cached.row
   }
 
@@ -2122,9 +2579,8 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
   }
   gatewayApiKeyCache.set(keyHash, {
     row,
-    expiresAtMs: gatewayApiKeyCacheExpiresAt(now, row),
     forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
-  })
+  }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
   return row
 }
 
@@ -2134,11 +2590,10 @@ function isGatewayApiKeyRowExpired(row: GatewayApiKeyRow, now = Date.now()): boo
   return Number.isFinite(expiresAt) && expiresAt <= now
 }
 
-function gatewayApiKeyCacheExpiresAt(now: number, row: GatewayApiKeyRow): number {
-  const idleExpiresAt = now + GATEWAY_API_KEY_CACHE_TTL_MS
-  if (!row.expires_at) return idleExpiresAt
+function gatewayApiKeyCacheTtlMs(now: number, row: GatewayApiKeyRow): number {
+  if (!row.expires_at) return GATEWAY_API_KEY_CACHE_TTL_MS
   const keyExpiresAt = Date.parse(row.expires_at)
-  return Number.isFinite(keyExpiresAt) ? Math.min(idleExpiresAt, keyExpiresAt) : idleExpiresAt
+  return Number.isFinite(keyExpiresAt) ? Math.max(1, Math.min(GATEWAY_API_KEY_CACHE_TTL_MS, keyExpiresAt - now)) : GATEWAY_API_KEY_CACHE_TTL_MS
 }
 
 function invalidateGatewayApiKeyCacheById(id: string): void {
@@ -2168,7 +2623,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>): ApiKey
     name: typeof input.name === 'string' ? input.name : current.name,
     status: input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : current.status,
     groupId: nextGroupId,
-    expiresAt: optionalString(input.expiresAt ?? input.expires_at) ?? current.expiresAt
+    expiresAt: optionalServerDateTimeIso(input.expiresAt ?? input.expires_at) ?? current.expiresAt
   }
   getDatabase()
     .prepare('UPDATE api_keys SET name = ?, status = ?, group_id = ?, expires_at = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
@@ -2453,7 +2908,12 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
     if (!accountAccess) {
       continue
     }
-    if (!canScheduleAuthorizedAccount(row.id, accountAccess.accountAuthorizationId, systemAccountId)) {
+    if (!canScheduleAuthorizedAccount({
+      accountId: row.id,
+      accountAccessType: accountAccess.accountAccessType,
+      authorizationId: accountAccess.accountAuthorizationId,
+      systemAccountId
+    })) {
       continue
     }
     accounts.push({
@@ -2744,9 +3204,11 @@ function loadAccountUsageSummaries(access?: AccessScope): Map<string, AccountUsa
   return result
 }
 
-function loadAccountUsageSummariesByAccountIds(accountIds: string[]): Map<string, AccountUsageSummary> {
+function loadAccountUsageSummariesByAccountIds(accountIds: string[], statDate?: string): Map<string, AccountUsageSummary> {
   const ids = [...new Set(accountIds)].filter(Boolean)
   if (!ids.length) return new Map()
+  const sourceTable = statDate ? 'usage_stats_daily' : 'usage_stats_totals'
+  const dateClause = statDate ? ' AND stat_date = ?' : ''
   const rows = getDatabase().prepare(`
     SELECT
       scope_id AS account_id,
@@ -2757,10 +3219,10 @@ function loadAccountUsageSummariesByAccountIds(accountIds: string[]): Map<string
       COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
       COALESCE(SUM(total_cost_usd), 0) AS total_cost,
       MAX(last_used_at) AS last_used_at
-    FROM usage_stats_totals
-    WHERE scope_type = 'account' AND scope_id IN (${sqlPlaceholders(ids.length)})
+    FROM ${sourceTable}
+    WHERE scope_type = 'account'${dateClause} AND scope_id IN (${sqlPlaceholders(ids.length)})
     GROUP BY scope_id
-  `).all(...ids) as unknown as AccountUsageAggregateRow[]
+  `).all(...(statDate ? [statDate, ...ids] : ids)) as unknown as AccountUsageAggregateRow[]
 
   const result = new Map<string, AccountUsageSummary>()
   for (const row of rows) {
@@ -2933,11 +3395,18 @@ function todayDateKey(): string {
 }
 
 function dateKey(date: Date): string {
-  return date.toISOString().slice(0, 10)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
 }
 
 function hourKey(date: Date): string {
-  return date.toISOString().slice(0, 13)
+  const year = date.getFullYear()
+  const month = String(date.getMonth() + 1).padStart(2, '0')
+  const day = String(date.getDate()).padStart(2, '0')
+  const hour = String(date.getHours()).padStart(2, '0')
+  return `${year}-${month}-${day}T${hour}`
 }
 
 export function getSettings(access?: AccessScope): Record<string, unknown> {
@@ -3684,6 +4153,3 @@ function settingsNumberValue(key: string, fallback: number, min: number, max: nu
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
 }
-
-
-

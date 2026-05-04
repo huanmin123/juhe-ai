@@ -13,6 +13,7 @@ import {
 } from '../../storage/repositories.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
 import {
+  clearGatewayRuntimeCache,
   listCachedOpenAIAccountsForGroup,
   readCachedGatewaySettings,
   resolveCachedGroupUsageAccessMetadata
@@ -172,7 +173,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     }
 
     if (upstreamResponse.ok) {
-      applyAccountErrorHandling(account, { success: true, settings: gatewaySettings })
+      applyAccountErrorHandlingWithCacheInvalidation(account, { success: true, settings: gatewaySettings })
     }
 
     enqueueUsageRecord({
@@ -550,7 +551,7 @@ async function fetchFirstAvailableUpstream(
             bodyText: responseBodyText
           })
           persistOpenAICodexHeadersIfNeeded(account, response.headers, 'gateway_error')
-          applyAccountErrorHandling(account, {
+          applyAccountErrorHandlingWithCacheInvalidation(account, {
             success: false,
             statusCode: response.status,
             headers: response.headers,
@@ -581,7 +582,7 @@ async function fetchFirstAvailableUpstream(
             await waitBeforeTemporaryUnschedulableRetry(settings)
             continue
           }
-          applyAccountErrorHandling(account, { success: false, errorMessage: message, settings })
+          applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
           skipAccount = true
           break
         }
@@ -920,12 +921,23 @@ async function waitBeforeTemporaryUnschedulableRetry(settings: GatewaySettings):
   await new Promise((resolve) => setTimeout(resolve, intervalMs))
 }
 
+function applyAccountErrorHandlingWithCacheInvalidation(
+  account: UpstreamAccount,
+  input: Parameters<typeof applyAccountErrorHandling>[1]
+): ReturnType<typeof applyAccountErrorHandling> {
+  const result = applyAccountErrorHandling(account, input)
+  if (result.changed) {
+    clearGatewayRuntimeCache()
+  }
+  return result
+}
+
 function handleStreamFailure(account: UpstreamAccount, reason: string, settings: GatewaySettings): void {
   if (!settings.streamCircuitBreakerEnabled) {
     return
   }
 
-  recordAccountStreamFailure({
+  const result = recordAccountStreamFailure({
     accountId: account.id,
     thresholdCount: settings.streamFailureThresholdCount,
     thresholdWindowMinutes: settings.streamFailureThresholdWindowMinutes,
@@ -933,6 +945,12 @@ function handleStreamFailure(account: UpstreamAccount, reason: string, settings:
     cooldownMinutes: settings.defaultTemporaryUnschedulableMinutes,
     reason
   })
+
+  if (result.triggered) {
+
+    clearGatewayRuntimeCache()
+
+  }
 }
 
 async function prepareUpstreamAccount(account: UpstreamAccount): Promise<UpstreamAccount> {
@@ -950,6 +968,7 @@ async function prepareUpstreamAccount(account: UpstreamAccount): Promise<Upstrea
     ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken: account.refreshToken })
   }
   updateAccount(account.id, { credentials, status: 'active' })
+  clearGatewayRuntimeCache()
   const accessToken = typeof credentials.access_token === 'string' ? credentials.access_token : account.apiKey
   return {
     ...account,
