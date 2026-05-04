@@ -95,7 +95,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="输出停顿上限（秒）" extra="已经收到第一段内容后，如果连续这么久没有新内容，就认为本次流式响应中断。默认 30 秒。">
+              <a-form-item label="输出停顿上限（秒）" extra="已经收到第一段内容后，如果连续这么久没有新内容，就认为本次流式响应中断。默认 60 秒。">
                 <a-input-number v-model:value="systemForm.streamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>
@@ -159,7 +159,7 @@ const defaultSystemSettings: SystemForm = {
   temporaryUnschedulableRetryAttempts: 3,
   streamCircuitBreakerEnabled: true,
   streamRequestTimeoutSeconds: 180,
-  streamIdleTimeoutSeconds: 30,
+  streamIdleTimeoutSeconds: 60,
   streamFailureThresholdCount: 3,
   streamFailureThresholdWindowMinutes: 10
 }

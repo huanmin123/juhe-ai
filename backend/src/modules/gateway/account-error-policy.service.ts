@@ -44,7 +44,7 @@ export function readGatewaySettings(): GatewaySettings {
     temporaryUnschedulableRetryAttempts: numberSetting(settings.temporaryUnschedulableRetryAttempts, 3, 0, 10),
     streamCircuitBreakerEnabled: booleanSetting(settings.streamCircuitBreakerEnabled, true),
     streamRequestTimeoutSeconds: numberSetting(settings.streamRequestTimeoutSeconds, 180, 10, 3600),
-    streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 30, 1, 3600),
+    streamIdleTimeoutSeconds: numberSetting(settings.streamIdleTimeoutSeconds, 60, 1, 3600),
     streamFailureThresholdCount: numberSetting(settings.streamFailureThresholdCount, 3, 1, 100),
     streamFailureThresholdWindowMinutes: numberSetting(settings.streamFailureThresholdWindowMinutes, 10, 1, 1440)
   }

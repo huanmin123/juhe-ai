@@ -43,7 +43,7 @@
       :data-source="filteredRecords"
       row-key="id"
       :loading="loading"
-      :scroll="{ x: isAdmin ? 2030 : 1850 }"
+      :scroll="{ x: isAdmin ? 2050 : 1870 }"
       @change="handleTableChange"
     >
       <template #emptyText>
@@ -57,7 +57,7 @@
           <span :class="record.groupName ? 'name-cell' : 'muted-cell'">{{ displayName(record.groupName, record.groupId) }}</span>
         </template>
         <template v-else-if="column.key === 'account'">
-          <span :class="record.accountName ? 'name-cell' : 'muted-cell'">{{ displayName(record.accountName, record.accountId) }}</span>
+          <span :class="record.accountName || record.accountId ? 'name-cell' : 'muted-cell'">{{ accountDisplayText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">
@@ -78,10 +78,19 @@
           <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'statusCode'">
-          <a-tag :color="statusCodeColor(record.statusCode)">{{ record.statusCode ?? '-' }}</a-tag>
+          <a-tag :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'success'">
-          <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
+          <span v-if="!record.success" class="result-cell">
+            <a-tag color="red">失败</a-tag>
+            <a-popover trigger="hover" placement="right" overlay-class-name="usage-error-popover">
+              <template #content>
+                <div class="usage-error-message">{{ errorText(record) }}</div>
+              </template>
+              <InfoCircleOutlined class="usage-error-icon" />
+            </a-popover>
+          </span>
+          <a-tag v-else color="green">成功</a-tag>
         </template>
         <template v-else-if="column.key === 'tokens'">
           <div class="token-cell">
@@ -216,7 +225,7 @@ const columns = computed(() => {
     { title: '接口', dataIndex: 'endpoint', key: 'endpoint', width: 150 },
     { title: '模型', dataIndex: 'model', key: 'model', width: 170 },
     { title: '类型', key: 'stream', width: 90 },
-    { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 90 },
+    { title: '状态', dataIndex: 'statusCode', key: 'statusCode', width: 110 },
     { title: '结果', key: 'success', width: 90 },
     { title: 'Tokens', key: 'tokens', width: 150 },
     { title: '成本', key: 'cost', width: 110, sorter: true, sortOrder: columnSortOrder('costUsd') },
@@ -233,6 +242,13 @@ const columns = computed(() => {
 function displayName(name?: string, id?: string): string {
   if (name) return name
   return id ? '已删除或未知' : '-'
+}
+
+function accountDisplayText(record: UsageRecordSummary): string {
+  if (record.accountName) return record.accountName
+  if (record.accountId) return '已删除或未知'
+  if (!record.success) return '未分配账号'
+  return '-'
 }
 
 function formatTokens(value?: number): string {
@@ -256,12 +272,25 @@ function formatDuration(value?: number): string {
   return typeof value === 'number' ? `${(value / 1000).toFixed(2)} s` : '-'
 }
 
-function statusCodeColor(value?: number): string {
+function statusCodeColor(record: UsageRecordSummary): string {
+  const value = record.statusCode
   if (!value) return 'default'
   if (value >= 200 && value < 300) return 'green'
   if (value >= 400 && value < 500) return 'orange'
   if (value >= 500) return 'red'
   return 'blue'
+}
+
+function statusCodeText(record: UsageRecordSummary): string {
+  if (typeof record.statusCode === 'number') return String(record.statusCode)
+  return record.success ? '-' : '网络异常'
+}
+
+function errorText(record: UsageRecordSummary): string {
+  if (record.errorMessage) return record.errorMessage
+  if (record.responseSnapshot) return JSON.stringify(record.responseSnapshot, null, 2)
+  if (!record.accountId && !record.success) return '没有可调度的上游账号'
+  return '-'
 }
 
 function formatDateTime(value?: string): string {
@@ -446,6 +475,33 @@ onMounted(loadData)
   font-family: Consolas, 'Courier New', monospace;
 }
 
+.result-cell {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.usage-error-icon {
+  color: #94a3b8;
+  cursor: help;
+  font-size: 13px;
+}
+
+.usage-error-icon:hover {
+  color: #dc2626;
+}
+
+.usage-error-message {
+  max-width: 460px;
+  max-height: 180px;
+  overflow: auto;
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 :global(.cost-popover .ant-popover-inner) {
   background: #0f172a;
   border-radius: 8px;
@@ -453,6 +509,16 @@ onMounted(loadData)
 }
 
 :global(.cost-popover .ant-popover-arrow::before) {
+  background: #0f172a;
+}
+
+:global(.usage-error-popover .ant-popover-inner) {
+  background: #0f172a;
+  border-radius: 8px;
+  box-shadow: 0 10px 24px rgb(15 23 42 / 24%);
+}
+
+:global(.usage-error-popover .ant-popover-arrow::before) {
   background: #0f172a;
 }
 

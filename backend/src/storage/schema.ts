@@ -846,7 +846,7 @@ export function seedDefaults(database: DatabaseSync): void {
     ['temporaryUnschedulableRetryAttempts', 3],
     ['streamCircuitBreakerEnabled', true],
     ['streamRequestTimeoutSeconds', 180],
-    ['streamIdleTimeoutSeconds', 30],
+    ['streamIdleTimeoutSeconds', 60],
     ['streamFailureThresholdCount', 3],
     ['streamFailureThresholdWindowMinutes', 10],
   ] as const
@@ -875,6 +875,15 @@ export function seedDefaults(database: DatabaseSync): void {
       .prepare("UPDATE system_settings SET value_json = ?, updated_at = ? WHERE system_account_id = 'sys_admin' AND key = 'streamIdleTimeoutSeconds' AND value_json = ?")
       .run(JSON.stringify(30), now, JSON.stringify(180))
     statement.run('sys_admin', '_migration_stream_idle_default_30_20260502', JSON.stringify(true), now)
+  }
+  const streamIdleDefault60Migration = database
+    .prepare("SELECT key FROM system_settings WHERE key = '_migration_stream_idle_default_60_20260504'")
+    .get() as unknown
+  if (!streamIdleDefault60Migration) {
+    database
+      .prepare("UPDATE system_settings SET value_json = ?, updated_at = ? WHERE system_account_id = 'sys_admin' AND key = 'streamIdleTimeoutSeconds' AND value_json = ?")
+      .run(JSON.stringify(60), now, JSON.stringify(30))
+    statement.run('sys_admin', '_migration_stream_idle_default_60_20260504', JSON.stringify(true), now)
   }
   database.prepare("DELETE FROM system_settings WHERE key IN ('apiKeyPrefix', 'defaultOpenAIBaseUrl', 'defaultErrorPolicyId', 'defaultAccountConcurrencyLimit', 'streamFailureAction', 'streamAccountCooldownMinutes', 'overloadCooldownEnabled', 'overloadCooldownMinutes')").run()
 }

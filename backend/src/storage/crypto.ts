@@ -40,7 +40,7 @@ export function hashSecret(value: string): string {
 }
 
 export function createApiKey(): string {
-  return randomBytes(32).toString('hex')
+  return `sk-${randomBytes(32).toString('hex')}`
 }
 
 const passwordIterations = 120_000

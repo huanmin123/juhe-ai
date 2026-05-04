@@ -18,6 +18,7 @@ import { statsRouter } from './modules/stats/stats.routes.js'
 import { systemAccountsRouter } from './modules/system-accounts/system-accounts.routes.js'
 import { usageRecordsRouter } from './modules/usage-records/usage-records.routes.js'
 import { openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
+import { installUsageRecordQueueShutdownHooks } from './modules/gateway/usage-record-queue.service.js'
 import { openAIOAuthRouter } from './modules/openai-oauth/openai-oauth.routes.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { getDatabase } from './storage/database.js'
@@ -51,6 +52,7 @@ function captureGatewayRawBody(req: RawBodyRequest, _res: Response, next: NextFu
 }
 
 getDatabase()
+installUsageRecordQueueShutdownHooks()
 startBackgroundJobs()
 
 app.use(cors({ credentials: true, origin: true }))

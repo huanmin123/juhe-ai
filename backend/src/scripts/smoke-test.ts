@@ -1,9 +1,15 @@
 import { runtimeConfig } from '../config/runtime.js'
+import { createSession, listSystemAccounts } from '../storage/repositories.js'
 
 const backendUrl = trimTrailingSlash(runtimeConfig.smokeTest.backendUrl)
 const accountName = runtimeConfig.smokeTest.accountName
 const model = runtimeConfig.smokeTest.model
 const prompt = runtimeConfig.smokeTest.prompt
+const sessionCookie = createSmokeTestSessionCookie()
+const defaultRequestTimeoutMs = 60_000
+const accountTestTimeoutMs = 30_000
+const gatewayKeyTestTimeoutMs = 30_000
+const streamRequestTimeoutMs = 90_000
 
 interface ApiEnvelope<T> {
   data: T
@@ -25,6 +31,11 @@ interface ApiKeySummary {
   name: string
   key?: string
   status: string
+}
+
+interface SelectedGatewayKey {
+  apiKey: ApiKeySummary & { key: string }
+  models: Record<string, unknown>
 }
 
 interface AccountTestResult {
@@ -106,25 +117,20 @@ async function main(): Promise<void> {
   summary.push(`account test ok: ${accountTest.message}`)
 
   const apiKeys = await getEnvelope<ApiKeySummary[]>('/api/api-keys')
-  const gatewayKey = apiKeys.find((apiKey) => apiKey.status === 'active' && apiKey.key)?.key
-  assert(gatewayKey, '找不到可见且启用的本地网关 API Key')
-  summary.push('gateway key visible')
-
-  const models = await requestJson<Record<string, unknown>>('/v1/models', {
-    headers: { authorization: `Bearer ${gatewayKey}` }
-  })
+  const { apiKey: gatewayKey, models } = await selectFirstUsableGatewayKey(apiKeys)
   assert(models.object === 'list', '/v1/models 未返回 list')
   assert(Array.isArray(models.data), '/v1/models 未返回 data 数组')
+  summary.push(`gateway key ok: ${gatewayKey.name}`)
   summary.push(`/v1/models ok: ${(models.data as unknown[]).length} models`)
 
   const responsePayload = await requestJson<ResponsePayload>('/v1/responses', {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${gatewayKey}`,
+      authorization: `Bearer ${gatewayKey.key}`,
       'content-type': 'application/json'
     },
     body: JSON.stringify({ model, input: prompt, max_output_tokens: 16, stream: false })
-  })
+  }, streamRequestTimeoutMs)
   assert(responsePayload.status === 'completed', `非流式 responses 状态异常：${responsePayload.status ?? 'unknown'}`)
   assert(typeof responsePayload.usage?.input_tokens === 'number', '非流式 responses 未返回 input_tokens')
   assert(typeof responsePayload.usage?.output_tokens === 'number', '非流式 responses 未返回 output_tokens')
@@ -133,11 +139,11 @@ async function main(): Promise<void> {
   const streamText = await requestText('/v1/responses', {
     method: 'POST',
     headers: {
-      authorization: `Bearer ${gatewayKey}`,
+      authorization: `Bearer ${gatewayKey.key}`,
       'content-type': 'application/json'
     },
     body: JSON.stringify({ model, input: prompt, max_output_tokens: 16, stream: true })
-  })
+  }, streamRequestTimeoutMs)
   assert(streamText.includes('response.completed'), '流式 responses 未包含 response.completed')
   assert(!streamText.includes('response.failed'), '流式 responses 包含 response.failed')
   summary.push('stream responses ok')
@@ -161,6 +167,26 @@ async function checkHealth(): Promise<void> {
   assert(health.status === 'ok', `健康检查失败：${JSON.stringify(health)}`)
 }
 
+async function selectFirstUsableGatewayKey(apiKeys: ApiKeySummary[]): Promise<SelectedGatewayKey> {
+  const candidates = apiKeys.filter((apiKey): apiKey is ApiKeySummary & { key: string } => apiKey.status === 'active' && Boolean(apiKey.key))
+  assert(candidates.length > 0, '找不到可见且启用的本地网关 API Key')
+
+  const failures: string[] = []
+  for (const apiKey of candidates) {
+    try {
+      console.log(`smoke: testing gateway key ${apiKey.name}`)
+      const models = await requestJson<Record<string, unknown>>('/v1/models', {
+        headers: { authorization: `Bearer ${apiKey.key}` }
+      }, gatewayKeyTestTimeoutMs)
+      return { apiKey, models }
+    } catch (error) {
+      failures.push(`${apiKey.name}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  throw new Error(`找不到可用于烟测的本地网关 API Key；已测试 ${candidates.length} 个启用 Key 均失败：${failures.join('；')}`)
+}
+
 async function testNamedAccount(accounts: AccountSummary[], name: string): Promise<TestedAccount> {
   const account = accounts.find((item) => item.name === name)
   assert(account, `找不到目标账户：${name}`)
@@ -177,6 +203,7 @@ async function selectFirstUsableOpenAIAccount(accounts: AccountSummary[]): Promi
 
   const failures: string[] = []
   for (const account of candidates) {
+    console.log(`smoke: testing account ${account.name}`)
     const test = await testAccount(account)
     if (test.success) {
       return { account, test }
@@ -188,7 +215,7 @@ async function selectFirstUsableOpenAIAccount(accounts: AccountSummary[]): Promi
 }
 
 async function testAccount(account: AccountSummary): Promise<AccountTestResult> {
-  return postEnvelope<AccountTestResult>(`/api/accounts/${account.id}/test`, {})
+  return postEnvelope<AccountTestResult>(`/api/accounts/${account.id}/test`, {}, accountTestTimeoutMs)
 }
 
 function assertAccountCanBeTested(account: AccountSummary, prefix: string): void {
@@ -215,16 +242,16 @@ async function getEnvelope<T>(path: string): Promise<T> {
   return (await requestJson<ApiEnvelope<T>>(path)).data
 }
 
-async function postEnvelope<T>(path: string, body: unknown): Promise<T> {
+async function postEnvelope<T>(path: string, body: unknown, timeoutMs = defaultRequestTimeoutMs): Promise<T> {
   return (await requestJson<ApiEnvelope<T>>(path, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body)
-  })).data
+  }, timeoutMs)).data
 }
 
-async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${backendUrl}${path}`, init)
+async function requestJson<T>(path: string, init?: RequestInit, timeoutMs = defaultRequestTimeoutMs): Promise<T> {
+  const response = await fetchWithTimeout(path, init, timeoutMs)
   const text = await response.text()
   if (!response.ok) {
     throw new Error(`${path} HTTP ${response.status}: ${text.slice(0, 500)}`)
@@ -236,8 +263,8 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 }
 
-async function requestText(path: string, init?: RequestInit): Promise<string> {
-  const response = await fetch(`${backendUrl}${path}`, init)
+async function requestText(path: string, init?: RequestInit, timeoutMs = defaultRequestTimeoutMs): Promise<string> {
+  const response = await fetchWithTimeout(path, init, timeoutMs)
   const text = await response.text()
   if (!response.ok) {
     throw new Error(`${path} HTTP ${response.status}: ${text.slice(0, 500)}`)
@@ -247,6 +274,38 @@ async function requestText(path: string, init?: RequestInit): Promise<string> {
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '')
+}
+
+async function fetchWithTimeout(path: string, init?: RequestInit, timeoutMs = defaultRequestTimeoutMs): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(new Error(`${path} 请求超时 ${Math.ceil(timeoutMs / 1000)}s`)), timeoutMs)
+  try {
+    return await fetch(`${backendUrl}${path}`, withSmokeHeaders(path, {
+      ...init,
+      signal: controller.signal
+    }))
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function withSmokeHeaders(path: string, init?: RequestInit): RequestInit | undefined {
+  if (!path.startsWith('/api/') || path === '/api/health') {
+    return init
+  }
+  return {
+    ...init,
+    headers: {
+      cookie: sessionCookie,
+      ...init?.headers
+    }
+  }
+}
+
+function createSmokeTestSessionCookie(): string {
+  const admin = listSystemAccounts().find((account) => account.role === 'admin' && account.status === 'active')
+  assert(admin, '找不到可用于烟测的启用管理员系统账户')
+  return `juhe_ai_session=${createSession(admin.id, 1).token}`
 }
 
 function assert(condition: unknown, message: string): asserts condition {

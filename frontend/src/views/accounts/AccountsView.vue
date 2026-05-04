@@ -573,7 +573,15 @@ const statusOptions = [
   { label: '临时不可调用', value: 'temporary_unavailable' }
 ]
 
-const statusEditOptions = statusOptions.filter((item) => item.value !== 'all')
+const currentEditingAccount = computed(() => editingId.value ? accounts.value.find((account) => account.id === editingId.value) : undefined)
+
+const statusEditOptions = computed(() => {
+  const options = statusOptions.filter((item) => item.value !== 'all')
+  if (currentEditingAccount.value && isTemporaryAccountStatus(currentEditingAccount.value)) {
+    return options.filter((item) => item.value !== 'active')
+  }
+  return options
+})
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -813,7 +821,7 @@ function accountStatusTooltipLines(account: AccountSummary): string[] {
     lines.push(cooldownText)
   } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
     lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
-    lines.push('等待下一次真实请求验证，成功后恢复正常')
+    lines.push('等待后台复测；也可手动测试，成功后恢复正常')
   }
   if (account.lastErrorMessage) {
     lines.push(`原因：${account.lastErrorMessage}`)
@@ -966,7 +974,7 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   if (!canUseAccountActions(account)) return []
   return [
     { key: 'test', label: '测试' },
-    { key: 'toggle-status', label: account.status === 'active' ? '停用账户' : '启用账户', danger: account.status === 'active' },
+    { key: 'toggle-status', label: account.status === 'disabled' ? '启用账户' : '停用账户', danger: account.status !== 'disabled' },
     ...(canAuthorizeAccount(account) ? [{ key: 'authorizations', label: '授权管理' }] : [])
   ]
 }
@@ -1537,9 +1545,9 @@ async function testAccountSilently(account: AccountSummary) {
 async function batchUpdateAccounts(
   payloadBuilder: (account: AccountSummary) => Record<string, unknown>,
   loadingLabel: string,
-  successLabel: string
+  successLabel: string,
+  selected = selectedAccounts.value.filter(canEditAccount)
 ) {
-  const selected = selectedAccounts.value.filter(canEditAccount)
   if (!selected.length) {
     message.warning('请先选择账户')
     return
@@ -1590,10 +1598,22 @@ async function batchTestSelected() {
 }
 
 async function batchSetStatus(status: 'active' | 'disabled') {
+  const selected = selectedAccounts.value.filter(canEditAccount)
+  const eligible = status === 'active'
+    ? selected.filter((account) => account.status === 'disabled')
+    : selected.filter((account) => account.status !== 'disabled')
+  if (!eligible.length) {
+    message.warning(status === 'active' ? '所选账户里没有可手动启用的停用账户' : '所选账户里没有可停用的账户')
+    return
+  }
+  if (eligible.length !== selected.length) {
+    message.warning(status === 'active' ? '已跳过临时状态或错误状态的账户，只启用手动停用的账户' : '已跳过已停用的账户')
+  }
   await batchUpdateAccounts(
-    () => ({ status }),
+    (account) => ({ status: account.status === 'disabled' ? 'active' : 'disabled' }),
     status === 'active' ? '正在批量启用账户' : '正在批量停用账户',
-    status === 'active' ? '账户已批量启用' : '账户已批量停用'
+    status === 'active' ? '账户已批量启用' : '账户已批量停用',
+    eligible
   )
 }
 
@@ -1608,7 +1628,7 @@ async function updateAccountState(account: AccountSummary, payload: Record<strin
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('账户状态更新失败')
+    message.error(extractApiErrorMessage(error, '账户状态更新失败'))
   }
 }
 
@@ -1654,7 +1674,7 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
     return
   }
   if (key === 'toggle-status') {
-    const nextStatus = account.status === 'active' ? 'disabled' : 'active'
+    const nextStatus = account.status === 'disabled' ? 'active' : 'disabled'
     await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
     return
   }

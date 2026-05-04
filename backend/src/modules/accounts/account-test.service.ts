@@ -199,7 +199,7 @@ async function prepareAccountForTest(account: AccountSummary): Promise<{
         ...account.credentials,
         ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
       }
-      updateAccountAsOwner(account, { credentials, status: 'active' })
+      updateAccountAsOwner(account, { credentials })
       return {
         apiKey: stringValue(credentials.access_token),
         baseUrl: stringValue(credentials.base_url) || 'https://api.openai.com/v1',

@@ -9,8 +9,10 @@ import {
   getSettings,
   insertSystemMetricsSample,
   latestUsageStatsLagSeconds,
+  listAccountsDueForCooldownRetest,
   listAccounts
 } from '../../storage/repositories.js'
+import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import {
   isOpenAIOAuthUsageSnapshotDue,
   refreshOpenAIOAuthUsageSnapshot
@@ -28,10 +30,12 @@ export function startBackgroundJobs(): void {
   void runUsageStatsAggregation()
   void runSystemMetricsSample()
   void runOpenAIOAuthUsageRefresh()
+  void runCooldownAccountRetest()
 
   setInterval(() => { void runUsageStatsAggregation() }, settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * 1000)
   setInterval(() => { void runSystemMetricsSample() }, settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000)
   setInterval(() => { void runOpenAIOAuthUsageRefresh() }, settingsNumber('oauthUsageSnapshotRefreshIntervalSeconds', 300, 60, 86400) * 1000)
+  setInterval(() => { void runCooldownAccountRetest() }, settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000)
 }
 
 async function runUsageStatsAggregation(): Promise<void> {
@@ -77,6 +81,17 @@ async function runOpenAIOAuthUsageRefresh(): Promise<void> {
   }
 }
 
+async function runCooldownAccountRetest(): Promise<void> {
+  const candidates = listAccountsDueForCooldownRetest(settingsNumber('cooldownAccountRetestBatchSize', 10, 1, 100))
+  for (const account of candidates) {
+    try {
+      await testOpenAIAccount(account, { model: settingsString('cooldownAccountRetestModel', 'gpt-5.5'), prompt: 'hi' })
+    } catch (error) {
+      console.error(`[background] cooldown account retest failed for ${account.id}`, error)
+    }
+  }
+}
+
 function openAIOAuthUsageRefreshCandidates(): AccountSummary[] {
   const now = Date.now()
   const ttlMs = settingsNumber('oauthUsageSnapshotTtlSeconds', 900, 60, 86400) * 1000
@@ -92,6 +107,11 @@ function settingsNumber(key: string, fallback: number, min: number, max: number)
   const value = getSettings()[key]
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
+}
+
+function settingsString(key: string, fallback: string): string {
+  const value = getSettings()[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
 function listSystemAccountCount(): number {

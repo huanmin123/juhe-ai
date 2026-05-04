@@ -63,6 +63,12 @@ interface GatewayApiKeyRow {
   expires_at: string | null
 }
 
+type GatewayApiKeyCacheEntry = {
+  row: GatewayApiKeyRow
+  expiresAtMs: number
+  forceRevalidateAtMs: number
+}
+
 interface GroupAccountRow {
   account_id: string
 }
@@ -158,6 +164,9 @@ export type SystemAccountStatus = 'active' | 'disabled'
 
 const DEFAULT_OPENAI_GROUP_NAME = '默认 OpenAI 分组'
 const DEFAULT_OPENAI_GROUP_DESCRIPTION = '第一期默认分组'
+const GATEWAY_API_KEY_CACHE_TTL_MS = 60_000
+const GATEWAY_API_KEY_CACHE_MAX_STALE_MS = 5 * 60_000
+const gatewayApiKeyCache = new Map<string, GatewayApiKeyCacheEntry>()
 
 export interface SystemAccountSummary {
   id: string
@@ -1022,6 +1031,54 @@ export function findAccountForTest(accountId: string, access?: AccessScope): Acc
   }
 }
 
+export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
+  disableExpiredAccounts()
+  const rows = getDatabase()
+    .prepare(`
+      SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_schedulable
+      FROM accounts
+      WHERE provider_code = 'openai'
+        AND type IN ('api_key', 'oauth')
+        AND schedulable = 1
+        AND status IN ('rate_limited', 'temporary_unavailable')
+        AND cooldown_until IS NOT NULL
+        AND cooldown_until <= ?
+        AND (account_expires_at IS NULL OR account_expires_at > ?)
+      ORDER BY cooldown_until ASC, priority ASC
+      LIMIT ?
+    `)
+    .all(nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
+  const accountNames = systemAccountNameMap()
+  return rows.map((row) => ({
+    id: row.id,
+    systemAccountId: row.system_account_id,
+    systemAccountName: accountNames.get(row.system_account_id),
+    ownerSystemAccountId: row.system_account_id,
+    ownerSystemAccountName: accountNames.get(row.system_account_id),
+    providerCode: row.provider_code,
+    name: row.name,
+    notes: row.notes ?? undefined,
+    type: row.type,
+    credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
+    status: row.status,
+    concurrencyLimit: row.concurrency_limit,
+    currentConcurrency: 0,
+    priority: row.priority,
+    proxyProfileId: row.proxy_profile_id ?? undefined,
+    passthroughEnabled: row.passthrough_enabled === 1,
+    errorPolicyId: row.error_policy_id ?? undefined,
+    schedulable: row.schedulable === 1,
+    accountExpiresAt: row.account_expires_at ?? undefined,
+    cooldownUntil: row.cooldown_until ?? undefined,
+    lastErrorMessage: row.last_error_message ?? undefined,
+    lastUsedAt: row.last_used_at ?? undefined,
+    usage: emptyAccountUsageSummary(),
+    oauthUsage: undefined,
+    accessType: 'owner',
+    permissions: ownerPermissions()
+  }))
+}
+
 function listAccountRowsForAccess(access?: AccessScope): AccountListRow[] {
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
@@ -1418,6 +1475,9 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
 
   const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
   const requestedStatus = hasStatusInput ? normalizeAccountStatus(input.status, current.status) : current.status
+  if (hasStatusInput && requestedStatus === 'active' && isCoolingAccountStatus(current.status)) {
+    throw new Error('临时不可调用或限流中的账户不能手动启用，请等待后台复测或先执行实际测试')
+  }
   const nextStatus = expiredByPackage ? 'disabled' : requestedStatus
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorMessage = current.lastErrorMessage
@@ -2040,14 +2100,53 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
   return record
 }
 export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined {
-  const row = getDatabase().prepare('SELECT id, system_account_id, group_id, status, expires_at FROM api_keys WHERE key_hash = ?').get(hashSecret(key)) as unknown as GatewayApiKeyRow | undefined
+  if (!key.startsWith('sk-')) {
+    return undefined
+  }
+  const keyHash = hashSecret(key)
+  const now = Date.now()
+  const cached = gatewayApiKeyCache.get(keyHash)
+  if (cached && cached.expiresAtMs > now && cached.forceRevalidateAtMs > now && !isGatewayApiKeyRowExpired(cached.row, now)) {
+    cached.expiresAtMs = gatewayApiKeyCacheExpiresAt(now, cached.row)
+    return cached.row
+  }
+
+  const row = getDatabase().prepare('SELECT id, system_account_id, group_id, status, expires_at FROM api_keys WHERE key_hash = ?').get(keyHash) as unknown as GatewayApiKeyRow | undefined
   if (!row || row.status !== 'active') {
+    gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
-  if (row.expires_at && Date.parse(row.expires_at) <= Date.now()) {
+  if (isGatewayApiKeyRowExpired(row, now)) {
+    gatewayApiKeyCache.delete(keyHash)
     return undefined
   }
+  gatewayApiKeyCache.set(keyHash, {
+    row,
+    expiresAtMs: gatewayApiKeyCacheExpiresAt(now, row),
+    forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
+  })
   return row
+}
+
+function isGatewayApiKeyRowExpired(row: GatewayApiKeyRow, now = Date.now()): boolean {
+  if (!row.expires_at) return false
+  const expiresAt = Date.parse(row.expires_at)
+  return Number.isFinite(expiresAt) && expiresAt <= now
+}
+
+function gatewayApiKeyCacheExpiresAt(now: number, row: GatewayApiKeyRow): number {
+  const idleExpiresAt = now + GATEWAY_API_KEY_CACHE_TTL_MS
+  if (!row.expires_at) return idleExpiresAt
+  const keyExpiresAt = Date.parse(row.expires_at)
+  return Number.isFinite(keyExpiresAt) ? Math.min(idleExpiresAt, keyExpiresAt) : idleExpiresAt
+}
+
+function invalidateGatewayApiKeyCacheById(id: string): void {
+  for (const [keyHash, entry] of gatewayApiKeyCache.entries()) {
+    if (entry.row.id === id) {
+      gatewayApiKeyCache.delete(keyHash)
+    }
+  }
 }
 
 export function updateApiKey(id: string, input: Record<string, unknown>): ApiKeySummary | undefined {
@@ -2074,12 +2173,16 @@ export function updateApiKey(id: string, input: Record<string, unknown>): ApiKey
   getDatabase()
     .prepare('UPDATE api_keys SET name = ?, status = ?, group_id = ?, expires_at = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
     .run(next.name, next.status, next.groupId, next.expiresAt ?? null, nowIso(), id, systemAccountId)
+  invalidateGatewayApiKeyCacheById(id)
   return next
 }
 
 export function deleteApiKey(id: string): boolean {
   const scope = buildSystemAccountScopeClause()
   const result = getDatabase().prepare(`DELETE FROM api_keys WHERE id = ?${scope.clause}`).run(id, ...scope.params)
+  if (result.changes > 0) {
+    invalidateGatewayApiKeyCacheById(id)
+  }
   return result.changes > 0
 }
 
@@ -2332,12 +2435,10 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
           AND type IN ('api_key', 'oauth')
           AND schedulable = 1
           AND (account_expires_at IS NULL OR account_expires_at > ?)
-          AND (
-            (status = 'active' AND (cooldown_until IS NULL OR cooldown_until <= ?))
-            OR (status IN ('rate_limited', 'temporary_unavailable') AND cooldown_until IS NOT NULL AND cooldown_until <= ?)
-          )
+          AND status = 'active'
+          AND (cooldown_until IS NULL OR cooldown_until <= ?)
       `)
-      .get(groupAccount.account_id, now, now, now) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
+      .get(groupAccount.account_id, now, now) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
     if (!row) {
       continue
     }
@@ -2402,7 +2503,7 @@ function resolveOpenAIAccountAccess(
   return authorization ? { accountAccessType: 'account_authorized', accountAuthorizationId: authorization.id } : undefined
 }
 
-export function createUsageRecord(input: {
+export interface UsageRecordInput {
   systemAccountId?: string
   requestId: string
   clientIp?: string
@@ -2431,57 +2532,89 @@ export function createUsageRecord(input: {
   errorMessage?: string
   requestSnapshot?: unknown
   responseSnapshot?: unknown
-}): void {
-  const now = nowIso()
-  const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input)
-  const accessMetadata = usageAccessMetadata({ ...input, systemAccountId })
-  getDatabase()
-    .prepare(`
-      INSERT INTO usage_records (
-        id, system_account_id, request_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
-        status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cost_usd, error_code, error_message,
-        request_snapshot_json, response_snapshot_json,
-        account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type, account_authorization_id, group_authorization_id,
-        created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
-      newId('usage'),
-      systemAccountId,
-      input.requestId,
-      input.clientIp ?? null,
-      input.apiKeyId ?? null,
-      input.groupId ?? null,
-      input.accountId ?? null,
-      input.endpoint ?? null,
-      input.providerCode ?? null,
-      input.model ?? null,
-      input.stream ? 1 : 0,
-      input.statusCode ?? null,
-      input.success ? 1 : 0,
-      input.firstTokenMs ?? null,
-      input.durationMs ?? null,
-      input.inputTokens ?? null,
-      input.outputTokens ?? null,
-      input.cacheReadTokens ?? null,
-      input.costUsd ?? null,
-      input.errorCode ?? null,
-      input.errorMessage ?? null,
-      input.requestSnapshot ? JSON.stringify(input.requestSnapshot) : null,
-      input.responseSnapshot ? JSON.stringify(input.responseSnapshot) : null,
-      accessMetadata.accountOwnerSystemAccountId ?? null,
-      accessMetadata.groupOwnerSystemAccountId ?? null,
-      accessMetadata.accountAccessType ?? null,
-      accessMetadata.groupAccessType ?? null,
-      accessMetadata.accountAuthorizationId ?? null,
-      accessMetadata.groupAuthorizationId ?? null,
-      now
-    )
+  createdAt?: string
+}
 
-  if (input.accountId) {
-    getDatabase()
-      .prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
-      .run(now, now, input.accountId)
+export function createUsageRecord(input: UsageRecordInput): void {
+  createUsageRecordsBatch([input])
+}
+
+export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
+  if (inputs.length === 0) {
+    return
+  }
+
+  const database = getDatabase()
+  const insertStatement = database.prepare(`
+    INSERT INTO usage_records (
+      id, system_account_id, request_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
+      status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cost_usd, error_code, error_message,
+      request_snapshot_json, response_snapshot_json,
+      account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type, account_authorization_id, group_authorization_id,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  const updateAccountStatement = database.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
+  const accountLastUsedAt = new Map<string, string>()
+
+  database.exec('BEGIN')
+  try {
+    for (const input of inputs) {
+      const now = input.createdAt ?? nowIso()
+      const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input)
+      const accessMetadata = usageAccessMetadata({ ...input, systemAccountId })
+      insertStatement.run(
+        newId('usage'),
+        systemAccountId,
+        input.requestId,
+        input.clientIp ?? null,
+        input.apiKeyId ?? null,
+        input.groupId ?? null,
+        input.accountId ?? null,
+        input.endpoint ?? null,
+        input.providerCode ?? null,
+        input.model ?? null,
+        input.stream ? 1 : 0,
+        input.statusCode ?? null,
+        input.success ? 1 : 0,
+        input.firstTokenMs ?? null,
+        input.durationMs ?? null,
+        input.inputTokens ?? null,
+        input.outputTokens ?? null,
+        input.cacheReadTokens ?? null,
+        input.costUsd ?? null,
+        input.errorCode ?? null,
+        input.errorMessage ?? null,
+        input.requestSnapshot ? JSON.stringify(input.requestSnapshot) : null,
+        input.responseSnapshot ? JSON.stringify(input.responseSnapshot) : null,
+        accessMetadata.accountOwnerSystemAccountId ?? null,
+        accessMetadata.groupOwnerSystemAccountId ?? null,
+        accessMetadata.accountAccessType ?? null,
+        accessMetadata.groupAccessType ?? null,
+        accessMetadata.accountAuthorizationId ?? null,
+        accessMetadata.groupAuthorizationId ?? null,
+        now
+      )
+
+      if (input.accountId) {
+        const previous = accountLastUsedAt.get(input.accountId)
+        if (!previous || now > previous) {
+          accountLastUsedAt.set(input.accountId, now)
+        }
+      }
+    }
+
+    for (const [accountId, lastUsedAt] of accountLastUsedAt) {
+      updateAccountStatement.run(lastUsedAt, lastUsedAt, accountId)
+    }
+
+    database.exec('COMMIT')
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+    }
+    throw error
   }
 }
 

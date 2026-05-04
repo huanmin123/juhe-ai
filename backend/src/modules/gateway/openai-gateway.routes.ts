@@ -5,7 +5,6 @@ import type { IncomingHttpHeaders, IncomingMessage } from 'node:http'
 import { Router, type Request, type Response } from 'express'
 
 import {
-  createUsageRecord,
   listOpenAIAccountsForGroup,
   recordAccountStreamFailure,
   resolveGroupUsageAccessMetadata,
@@ -14,6 +13,7 @@ import {
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
+import { enqueueUsageRecord } from './usage-record-queue.service.js'
 import { estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
 import { buildOpenAIOAuthCredentials, createProxyAgent, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import {
@@ -50,7 +50,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
   if (!groupAccess) {
     const statusCode = 403
     const responsePayload = { error: { message: 'API key group authorization is unavailable', type: 'forbidden' } }
-    createUsageRecord({
+    enqueueUsageRecord({
       requestId,
       clientIp,
       systemAccountId: apiKeyRecord.system_account_id,
@@ -76,7 +76,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
   if (accounts.length === 0) {
     const statusCode = 503
     const responsePayload = { error: { message: 'No available upstream account', type: 'service_unavailable' } }
-    createUsageRecord({
+    enqueueUsageRecord({
       requestId,
       clientIp,
       systemAccountId: apiKeyRecord.system_account_id,
@@ -129,7 +129,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       firstTokenMs = streamResult.firstTokenMs
       responseBodyText = Buffer.concat(streamResult.chunks).toString('utf8')
       if (!streamResult.completed) {
-        createUsageRecord({
+        enqueueUsageRecord({
           requestId,
           clientIp,
           systemAccountId: apiKeyRecord.system_account_id,
@@ -173,7 +173,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       applyAccountErrorHandling(account, { success: true, settings: gatewaySettings })
     }
 
-    createUsageRecord({
+    enqueueUsageRecord({
       requestId,
       clientIp,
       systemAccountId: apiKeyRecord.system_account_id,
@@ -217,7 +217,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     const statusCode = 503
     const responsePayload = { error: { message: 'No available upstream account', type: 'service_unavailable' } }
     if (!lastAttempt) {
-      createUsageRecord({
+      enqueueUsageRecord({
         requestId,
         clientIp,
         systemAccountId: apiKeyRecord.system_account_id,
@@ -454,7 +454,7 @@ function recordFailedUpstreamAttempt(
     ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
     ?? (typeof input.statusCode === 'number' ? `Upstream returned HTTP ${input.statusCode}` : 'Upstream request failed')
 
-  createUsageRecord({
+  enqueueUsageRecord({
     requestId: usageContext.requestId,
     clientIp: usageContext.clientIp,
     systemAccountId: usageContext.systemAccountId,

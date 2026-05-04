@@ -83,6 +83,9 @@ const modelDistributionChart = shallowRef<ECharts>()
 const errorChart = shallowRef<ECharts>()
 const systemMetricsChart = shallowRef<ECharts>()
 
+const ERROR_TOOLTIP_MAX_WIDTH = 360
+const ERROR_TOOLTIP_EDGE_GAP = 12
+
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
@@ -270,8 +273,16 @@ function renderErrorChart() {
   const option: EChartsOption = {
     color: ['#ff4d4f'],
     tooltip: {
-      trigger: 'axis',
-      axisPointer: { type: 'shadow' },
+      trigger: 'item',
+      triggerOn: 'mousemove|click',
+      renderMode: 'html',
+      enterable: true,
+      confine: true,
+      hideDelay: 1200,
+      transitionDuration: 0,
+      className: 'stats-error-tooltip',
+      position: errorTooltipPosition,
+      extraCssText: `max-width:${ERROR_TOOLTIP_MAX_WIDTH}px;white-space:normal;overflow-wrap:anywhere;word-break:break-word;user-select:text;`,
       formatter: (params: unknown) => errorTooltip(params)
     },
     grid: {
@@ -282,7 +293,7 @@ function renderErrorChart() {
     },
     xAxis: {
       type: 'category',
-      data: errors.map((item) => errorLabel(item)),
+      data: errors.map((item, index) => errorAxisLabel(item, index)),
       axisLabel: { color: '#64748b', interval: 0, rotate: 35 },
       axisLine: { lineStyle: { color: '#d9e2ef' } }
     },
@@ -297,8 +308,9 @@ function renderErrorChart() {
         name: '错误次数',
         type: 'bar',
         barMaxWidth: 28,
-        data: errors.map((item) => ({
+        data: errors.map((item, index) => ({
           value: item.errorCount,
+          rank: index + 1,
           errorCode: item.errorCode,
           statusCode: item.statusCode,
           errorMessage: item.errorMessage,
@@ -456,13 +468,20 @@ function modelTooltip(params: unknown) {
 function errorTooltip(params: unknown) {
   const point = tooltipParams(params)[0]
   const data = tooltipData(point)
-  return [
-    `<strong>${data.errorCode ?? point?.name ?? ''}</strong>`,
-    `供应商：${data.providerCode ?? '-'}`,
-    `状态码：${data.statusCode ?? '-'}`,
-    `次数：${formatInteger(numberFromTooltip(data.value))}`,
-    data.errorMessage ? `摘要：${data.errorMessage}` : undefined
-  ].filter(Boolean).join('<br/>')
+  const errorCode = tooltipRawText(data.errorCode ?? point?.name)
+  const errorMessage = tooltipRawText(data.errorMessage, '')
+  const shouldShowMessage = Boolean(errorMessage && errorMessage !== errorCode)
+  const rows = [
+    tooltipRow('错误码', errorCode),
+    tooltipRow('供应商', data.providerCode),
+    tooltipRow('状态码', data.statusCode),
+    tooltipRow('次数', formatInteger(numberFromTooltip(data.value)))
+  ].join('')
+  const messageBlock = shouldShowMessage
+    ? `<div class="stats-tooltip-block"><div class="stats-tooltip-block-label">错误信息</div><div class="stats-tooltip-message">${escapeHtml(errorMessage)}</div></div>`
+    : ''
+
+  return `<div class="stats-tooltip-content"><div class="stats-tooltip-title">错误详情 #${escapeHtml(tooltipRawText(data.rank, '-'))}</div>${rows}${messageBlock}</div>`
 }
 
 function systemMetricsTooltip(params: unknown) {
@@ -495,6 +514,53 @@ function tooltipData(point?: TooltipPoint): Record<string, unknown> {
   return point?.data && typeof point.data === 'object' ? point.data as Record<string, unknown> : {}
 }
 
+function tooltipRow(label: string, value: unknown) {
+  return `<div class="stats-tooltip-row"><span class="stats-tooltip-label">${escapeHtml(label)}</span><span class="stats-tooltip-value">${escapeHtml(tooltipRawText(value))}</span></div>`
+}
+
+function tooltipRawText(value: unknown, fallback = '-') {
+  if (value === undefined || value === null || value === '') return fallback
+  return String(value)
+}
+
+function escapeHtml(value: unknown) {
+  const htmlEscapes: Record<string, string> = {
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }
+  return tooltipRawText(value, '').replace(/[&<>"']/g, (character) => htmlEscapes[character])
+}
+
+function errorTooltipPosition(
+  _point: [number, number],
+  _params: unknown,
+  _element: unknown,
+  rect: TooltipRectLike | null,
+  size: { contentSize: [number, number]; viewSize: [number, number] }
+) {
+  const contentWidth = Math.min(size.contentSize[0] || ERROR_TOOLTIP_MAX_WIDTH, ERROR_TOOLTIP_MAX_WIDTH)
+  const contentHeight = size.contentSize[1] || 0
+  const viewWidth = size.viewSize[0] || 0
+  const viewHeight = size.viewSize[1] || 0
+  const preferredLeft = rect ? rect.x + rect.width + ERROR_TOOLTIP_EDGE_GAP : ERROR_TOOLTIP_EDGE_GAP
+  const fallbackLeft = rect ? rect.x - contentWidth - ERROR_TOOLTIP_EDGE_GAP : viewWidth - contentWidth - ERROR_TOOLTIP_EDGE_GAP
+  const left = preferredLeft + contentWidth + ERROR_TOOLTIP_EDGE_GAP <= viewWidth ? preferredLeft : Math.max(ERROR_TOOLTIP_EDGE_GAP, fallbackLeft)
+  const preferredTop = rect ? rect.y + rect.height / 2 - contentHeight / 2 : ERROR_TOOLTIP_EDGE_GAP
+  const maxTop = Math.max(ERROR_TOOLTIP_EDGE_GAP, viewHeight - contentHeight - ERROR_TOOLTIP_EDGE_GAP)
+  const top = Math.max(ERROR_TOOLTIP_EDGE_GAP, Math.min(preferredTop, maxTop))
+  return [left, top]
+}
+
+interface TooltipRectLike {
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
 function pointValue(point?: TooltipPoint) {
   return numberFromTooltip(point?.value)
 }
@@ -512,8 +578,13 @@ function numberFromTooltip(value: unknown): number | undefined {
   return undefined
 }
 
-function errorLabel(row: UsageStatsOverview['errors'][number]) {
-  return row.statusCode ? `${row.errorCode}\n${row.statusCode}` : row.errorCode
+function errorAxisLabel(row: UsageStatsOverview['errors'][number], index: number) {
+  const label = `${index + 1}. ${truncateText(row.errorCode, 16)}`
+  return row.statusCode ? `${label}\n${row.statusCode}` : label
+}
+
+function truncateText(value: string, maxLength: number) {
+  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value
 }
 
 function formatInteger(value?: number) {
@@ -644,6 +715,54 @@ onBeforeUnmount(() => {
 
 .chart-panel-large {
   height: 340px;
+}
+
+:global(.stats-error-tooltip) {
+  cursor: text;
+  line-height: 1.55;
+  user-select: text;
+}
+
+:global(.stats-error-tooltip .stats-tooltip-content) {
+  max-width: 360px;
+}
+
+:global(.stats-error-tooltip .stats-tooltip-title) {
+  margin-bottom: 8px;
+  color: #0f172a;
+  font-weight: 700;
+}
+
+:global(.stats-error-tooltip .stats-tooltip-row) {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr);
+  gap: 8px;
+  margin-top: 4px;
+}
+
+:global(.stats-error-tooltip .stats-tooltip-label),
+:global(.stats-error-tooltip .stats-tooltip-block-label) {
+  color: #64748b;
+}
+
+:global(.stats-error-tooltip .stats-tooltip-value),
+:global(.stats-error-tooltip .stats-tooltip-message) {
+  color: #334155;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+:global(.stats-error-tooltip .stats-tooltip-block) {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid #e8edf5;
+}
+
+:global(.stats-error-tooltip .stats-tooltip-message) {
+  max-height: 128px;
+  margin-top: 4px;
+  overflow: auto;
 }
 
 @media (max-width: 768px) {

@@ -129,7 +129,7 @@ async function prepareOAuthProbeAccount(account: AccountSummary): Promise<{
       ...credentials,
       ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
     }
-    updateAccount(account.id, { credentials, status: 'active' })
+    updateAccount(account.id, { credentials })
   }
   const accessToken = stringValue(credentials.access_token)
   if (!accessToken) {
