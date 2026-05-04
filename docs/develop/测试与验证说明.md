@@ -1,0 +1,164 @@
+# 开发测试与验证说明
+
+> 面向 AI 与维护者。
+> 本文件承接代码级检查、接口验证、网关联通、账号测试和自动烟测；启动方式和运行注意事项见 [开发运行说明](运行说明.md)。
+
+## 1. 适用场景
+
+- 需要确认代码改动没有破坏类型、构建或关键路径。
+- 需要验证后端接口、管理面页面、账号测试、网关转发或使用记录。
+- 需要执行自动烟测、回归验证或问题修复后的复现检查。
+
+## 2. 代码级验证
+
+在项目根目录执行：
+
+```powershell
+pnpm typecheck
+pnpm build
+```
+
+如果只改了某一端，也可以先跑对应 workspace 的命令，再按需要补全全量验证。
+
+## 3. 后端接口快速检查
+
+项目已启动后，可用以下命令确认管理面接口可访问：
+
+```powershell
+curl.exe http://127.0.0.1:3000/api/health
+curl.exe http://127.0.0.1:3000/api/providers
+curl.exe http://127.0.0.1:3000/api/accounts
+curl.exe http://127.0.0.1:3000/api/groups
+curl.exe http://127.0.0.1:3000/api/api-keys
+curl.exe http://127.0.0.1:3000/api/proxies
+curl.exe http://127.0.0.1:3000/api/settings
+```
+
+## 4. 本地网关验证
+
+客户端接入时使用 OpenAI 兼容协议：
+
+- Base URL：`http://127.0.0.1:3000/v1`
+- API Key：API 密钥页生成的本地网关密钥
+- 常用路径：`/models`、`/responses`、`/chat/completions`
+
+`$LiteKey` 使用 API Key 页面新建后返回的明文密钥，或同步脚本首次输出的 `sync.apiKey`。
+
+```powershell
+$LiteKey = "你的本地网关 API Key"
+
+Invoke-RestMethod http://127.0.0.1:3000/v1/models `
+  -Headers @{ Authorization = "Bearer $LiteKey" }
+
+$payload = @{
+  model = "gpt-5.4-mini"
+  input = "只输出 OK"
+  max_output_tokens = 16
+  stream = $false
+} | ConvertTo-Json -Compress
+
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:3000/v1/responses" `
+  -Headers @{ Authorization = "Bearer $LiteKey" } `
+  -ContentType "application/json" `
+  -Body $payload
+```
+
+流式响应可用 `curl.exe -N` 检查：
+
+```powershell
+$streamBody = '{"model":"gpt-5.4-mini","input":"只输出 OK","max_output_tokens":16,"stream":true}'
+$bodyFile = New-TemporaryFile
+Set-Content -LiteralPath $bodyFile -Value $streamBody -NoNewline -Encoding utf8
+
+curl.exe -sS -N -X POST "http://127.0.0.1:3000/v1/responses" `
+  -H "Authorization: Bearer $LiteKey" `
+  -H "Content-Type: application/json" `
+  --data-binary "@$bodyFile" `
+  --max-time 60
+```
+
+检查点：`/v1/models` 返回模型列表；非流式 `/v1/responses` 返回完成状态；流式响应能看到完成事件；使用记录能看到 endpoint、token 和成本字段。
+
+## 5. OpenAI OAuth 账户验证
+
+前端路径：
+
+```text
+http://127.0.0.1:5173/accounts
+```
+
+点击 `OpenAI 账户授权`，可选两种方式：
+
+- `手动授权`：生成授权链接，登录完成后复制浏览器地址栏里的 `http://localhost:1455/auth/callback?code=...&state=...` 回调 URL，粘贴回弹窗创建账户。
+- `Refresh Token`：直接粘贴已有 OpenAI `refresh_token`，后端刷新成功后创建 OAuth 账户。
+
+后端授权链接接口可用以下命令做冒烟检查：
+
+```powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://127.0.0.1:3000/api/openai-oauth/auth-url" `
+  -ContentType "application/json" `
+  -Body "{}"
+```
+
+OAuth token 交换、刷新和账户测试会使用账户绑定代理；网关真实转发也会使用账号绑定代理。
+
+## 6. 账户与管理面验证
+
+账户列表“更多”菜单里的“测试”会调用后端 `POST /api/accounts/:id/test`，实际访问 `/models` 验证账户是否可用；OAuth 账户会先尝试刷新 token。
+
+```powershell
+$account = (Invoke-RestMethod http://127.0.0.1:3000/api/accounts).data |
+  Where-Object { $_.providerCode -eq "openai" -and $_.status -eq "active" } |
+  Select-Object -First 1
+
+Invoke-RestMethod -Method Post "http://127.0.0.1:3000/api/accounts/$($account.id)/test"
+```
+
+管理面重点检查：
+
+- 账户列表只显示名称、类型、供应商、并发、状态、用量、优先级、最近使用时间和操作。
+- `Access/API Key` 与 `Refresh Token` 不在列表展示，只在编辑弹窗展示和修改。
+- API Key 页面直接展示完整本地网关密钥，方便复制。
+- OAuth 账户如需代理，可在账户编辑弹窗中绑定代理配置；代理不可用时刷新 token 和测试会失败。
+
+## 7. 自动烟测
+
+项目启动后执行：
+
+```powershell
+pnpm test:smoke
+```
+
+默认会自动选择第一个启用并且可用的 OpenAI 账户，并检查可见网关 API Key、`/v1/models`、`/v1/responses` 非流式和流式、使用记录 token/cost 入库。
+
+需要固定测试账号或模型时编辑 `backend/.env`：
+
+```dotenv
+# 只影响 pnpm test:smoke，不影响正常启动和网关转发。
+JUHE_AI_BACKEND_URL=http://127.0.0.1:3000
+JUHE_AI_SMOKE_ACCOUNT_NAME=
+JUHE_AI_SMOKE_MODEL=gpt-5.4-mini
+JUHE_AI_SMOKE_PROMPT=只输出 OK
+```
+
+`JUHE_AI_SMOKE_ACCOUNT_NAME` 留空时自动选第一个启用并且可用的 OpenAI 账号；填写后必须和账户页里的账号名称完全一致。
+
+## 8. 设置与流熔断验证
+
+系统设置接口不应再返回 `defaultErrorPolicyId`，并应包含临时不可调用和流熔断字段：
+
+```powershell
+$settings = Invoke-RestMethod http://127.0.0.1:3000/api/settings
+$settings.data.PSObject.Properties.Name -contains 'defaultErrorPolicyId'
+$settings.data.defaultTemporaryUnschedulableMinutes
+$settings.data.temporaryUnschedulableRetryIntervalSeconds
+$settings.data.temporaryUnschedulableRetryAttempts
+$settings.data.streamCircuitBreakerEnabled
+$settings.data.streamRequestTimeoutSeconds
+```
+
+检查点：系统设置页能保存并回显；流式异常达到阈值后账号列表会显示临时不可调用或错误摘要；更多菜单可执行“清理错误/临时状态”。
+
+

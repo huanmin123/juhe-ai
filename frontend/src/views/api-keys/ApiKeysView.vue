@@ -148,14 +148,20 @@ const statusOptions = [
   { label: '停用', value: 'disabled' }
 ]
 
-const groupOptions = computed(() => groups.value.map((group) => ({ label: group.name, value: group.id })))
+const groupOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
 const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => matchesSystemAccountFilter(apiKey, systemAccountFilter.value, isAdmin.value)))
 const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填本页复制的密钥'].join('\n'))
 
 function groupName(groupId: string) {
-  return groups.value.find((group) => group.id === groupId)?.name ?? groupId
+  const group = groups.value.find((item) => item.id === groupId)
+  return group ? groupOptionLabel(group) : groupId
+}
+
+function groupOptionLabel(group: GroupSummary) {
+  if (group.accessType !== 'authorized') return group.name
+  return `${group.name}（来自 ${group.ownerSystemAccountName || '其他用户'} 授权）`
 }
 
 function formatKeyPreview(value?: string) {

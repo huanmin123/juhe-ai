@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, deleteAccount, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, createAccountAuthorization, deleteAccount, listAccountAuthorizations, listAccounts, listGroups, listProviders, revokeAccountAuthorization, setAccountGroup, updateAccount } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
@@ -31,8 +31,39 @@ const accountTestSchema = z.object({
   prompt: z.string().trim().optional()
 }).optional()
 
+const accountAuthorizationSchema = z.object({
+  granteeSystemAccountId: z.string().trim().min(1),
+  remark: z.string().trim().max(200).optional()
+})
+
 accountsRouter.get('/', (req, res) => {
   res.json(ok(listAccounts(getRequestAccessScope(req.query.systemAccountId))))
+})
+
+accountsRouter.get('/:id/authorizations', (req, res) => {
+  res.json(ok(listAccountAuthorizations(req.params.id, getRequestAccessScope(req.query.systemAccountId))))
+})
+
+accountsRouter.post('/:id/authorizations', (req, res) => {
+  const parsed = accountAuthorizationSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('Invalid account authorization payload'))
+    return
+  }
+  try {
+    res.status(201).json(ok(createAccountAuthorization(req.params.id, parsed.data, getRequestAccessScope(req.query.systemAccountId))))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Create account authorization failed'))
+  }
+})
+
+accountsRouter.delete('/:id/authorizations/:authorizationId', (req, res) => {
+  const authorization = revokeAccountAuthorization(req.params.id, req.params.authorizationId, getRequestAccessScope(req.query.systemAccountId))
+  if (!authorization) {
+    res.status(404).json({ message: 'Account authorization not found' })
+    return
+  }
+  res.json(ok(authorization))
 })
 
 accountsRouter.post('/', (req, res) => {
@@ -136,6 +167,10 @@ accountsRouter.post('/:id/test', async (req, res) => {
   const account = listAccounts().find((item) => item.id === req.params.id)
   if (!account) {
     res.status(404).json({ message: 'Account not found' })
+    return
+  }
+  if (account.permissions?.canViewCredentials === false) {
+    res.status(403).json({ message: '授权账户仅可使用，不能测试或查看凭据' })
     return
   }
   if (account.providerCode !== 'openai') {

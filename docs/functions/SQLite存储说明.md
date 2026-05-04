@@ -31,6 +31,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - AI 账户使用授权和分组使用授权使用独立表记录，不复制账户凭据；授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者和授权关系用于聚合统计。
+- `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
 - 登录验证码挑战暂不写入 SQLite，使用后端进程内存保存短时一次性验证码；过期和已提交的挑战会被清理。
 - 登录失败限频和账号临时锁定暂不写入 SQLite，使用后端进程内存保存短时窗口和锁定状态；后续多实例部署时再迁移到共享存储。
 
@@ -166,6 +167,15 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 分组授权共享的是动态分组集合，但第一阶段只共享分组所有者自有账户；如果分组里包含别人授权来的账户，调度时必须过滤，不能通过分组授权继续共享给第三方。
 - 统计按请求实际命中的 `group_id` 和当时的 `group_authorization_id` 记录，历史不会因后续分组账户变化而重算。
 
+## 账户套餐到期
+
+`accounts.account_expires_at` 是本地账户套餐/购买到期时间，适用于 OpenAI OAuth 和 OpenAI API Key 账户。它和 OAuth 凭据里的 `expires_at` 分离：`credentials.expires_at` 来自 OpenAI token 的 `expires_in`，只表示 access token 过期时间。
+
+- 字段为空表示不设置本地套餐到期。
+- 创建或编辑账户时如果填入过去时间，账户立即保存为 `disabled` 且 `schedulable = 0`。
+- 列表、调度和相关恢复入口会先处理已过期账户，过期后写入“账户套餐已过期，已自动停用”。
+- 网关选号和后台 OAuth 额度快照刷新只处理未到期账户。
+
 ## OpenAI OAuth 额度快照刷新
 
 OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本地 token / 成本统计。快照按 `system_account_id + account_id + kind` 存储，列表只读缓存。
@@ -195,7 +205,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 后台刷新规则：
 
 - 每个系统账户内默认并发为 1，全局并发保持较小，并加随机抖动。
-- 只处理 `provider_code = openai`、`type = oauth`、未停用且仍可调度的账户。
+- 只处理 `provider_code = openai`、`type = oauth`、未停用、未到 `account_expires_at` 且仍可调度的账户。
 - 快照未过期时不探测；账号处于限流冷却时，`next_refresh_after` 不早于 reset 时间。
 - 探测前如果 access token 即将过期，先用 `refresh_token` 自动刷新授权。
 - 探测失败保留旧快照，只更新刷新状态、错误摘要和退避后的 `next_refresh_after`。
@@ -211,7 +221,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 - `appName = 聚合 AI`
 - `appIcon = /brand-icon.svg`
-- 全局设置只保存系统名称和系统图标路径，只有管理员可修改；登录页标题由系统名称派生，角标、副标题和首页样式按 [前端设计.md](前端设计.md) 固定。
+- 全局设置只保存系统名称和系统图标路径，只有管理员可修改；登录页标题由系统名称派生，角标、副标题和首页样式按 [产品与品牌边界](../architecture/frontend/产品与品牌边界.md) 固定。
 
 系统设置默认写入：
 

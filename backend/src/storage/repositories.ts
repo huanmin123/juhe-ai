@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, ApiKeySummary, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition } from '../domain/types.js'
+import type { AccountAuthorizationSummary, AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, ApiKeySummary, AuthorizationStatus, ErrorPolicySummary, GroupAuthorizationSummary, GroupSummary, ProviderCode, ProviderDefinition, ResourcePermissions } from '../domain/types.js'
 import { getRequestAuthContext, type RequestAuthContext } from '../modules/auth/request-context.js'
 import { createApiKey, decryptJson, encryptJson, hashPassword, hashSecret, maskSecret, verifyPassword } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
@@ -65,6 +65,48 @@ interface GatewayApiKeyRow {
 
 interface GroupAccountRow {
   account_id: string
+}
+
+interface AccountAuthorizationRow {
+  id: string
+  account_id: string
+  owner_system_account_id: string
+  grantee_system_account_id: string
+  scope: 'use'
+  status: AuthorizationStatus
+  remark: string | null
+  created_by: string
+  created_at: string
+  revoked_by: string | null
+  revoked_at: string | null
+  updated_at: string
+}
+
+interface GroupAuthorizationRow {
+  id: string
+  group_id: string
+  owner_system_account_id: string
+  grantee_system_account_id: string
+  scope: 'use'
+  status: AuthorizationStatus
+  remark: string | null
+  created_by: string
+  created_at: string
+  revoked_by: string | null
+  revoked_at: string | null
+  updated_at: string
+}
+
+type AccountListRow = AccountRow & {
+  access_type?: 'owner' | 'authorized'
+  authorization_id?: string | null
+  authorization_status?: AuthorizationStatus | null
+}
+
+type GroupListRow = GroupRow & {
+  access_type?: 'owner' | 'authorized'
+  authorization_id?: string | null
+  authorization_status?: AuthorizationStatus | null
 }
 
 interface GroupRow {
@@ -211,6 +253,12 @@ export interface UsageRecordListOptions {
 export interface OpenAIAccountSecret {
   id: string
   systemAccountId: string
+  accountOwnerSystemAccountId: string
+  groupOwnerSystemAccountId: string
+  accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'
+  groupAccessType: 'owner' | 'authorized'
+  accountAuthorizationId?: string
+  groupAuthorizationId?: string
   name: string
   type: AccountType
   status: AccountStatus
@@ -224,6 +272,12 @@ export interface OpenAIAccountSecret {
   lastErrorMessage?: string
   expiresAt?: string
   credentials: Record<string, unknown>
+}
+
+export interface GroupUsageAccessMetadata {
+  groupOwnerSystemAccountId: string
+  groupAccessType: 'owner' | 'authorized'
+  groupAuthorizationId?: string
 }
 
 export interface AccountUsageSummary {
@@ -296,6 +350,12 @@ interface UsageStatsRecordRow {
   cost_usd: number | null
   error_code: string | null
   error_message: string | null
+  account_owner_system_account_id: string | null
+  group_owner_system_account_id: string | null
+  account_access_type: string | null
+  group_access_type: string | null
+  account_authorization_id: string | null
+  group_authorization_id: string | null
   created_at: string
 }
 
@@ -379,6 +439,28 @@ function includeSystemAccountFields(access?: AccessScope): boolean {
   return canAccessAll(access)
 }
 
+function ownerPermissions(): ResourcePermissions {
+  return {
+    canUse: true,
+    canEdit: true,
+    canDelete: true,
+    canAuthorize: true,
+    canViewCredentials: true,
+    canManageAccounts: true
+  }
+}
+
+function authorizedPermissions(): ResourcePermissions {
+  return {
+    canUse: true,
+    canEdit: false,
+    canDelete: false,
+    canAuthorize: false,
+    canViewCredentials: false,
+    canManageAccounts: false
+  }
+}
+
 function systemAccountNameMap(): Map<string, string> {
   return new Map(listSystemAccounts().map((account) => [account.id, account.displayName || account.username]))
 }
@@ -386,6 +468,30 @@ function systemAccountNameMap(): Map<string, string> {
 function accountSystemAccountId(accountId: string): string | undefined {
   const row = getDatabase().prepare('SELECT system_account_id FROM accounts WHERE id = ?').get(accountId) as unknown as { system_account_id?: string } | undefined
   return row?.system_account_id
+}
+
+function canUseAccount(accountId: string, systemAccountId: string): boolean {
+  const ownerId = accountSystemAccountId(accountId)
+  if (ownerId === systemAccountId) return true
+  return Boolean(activeAccountAuthorization(accountId, systemAccountId))
+}
+
+function canUseGroup(groupId: string, systemAccountId: string): boolean {
+  const group = groupOwnerAndProvider(groupId)
+  if (group?.systemAccountId === systemAccountId) return true
+  return Boolean(activeGroupAuthorization(groupId, systemAccountId))
+}
+
+function activeAccountAuthorization(accountId: string, granteeSystemAccountId: string): AccountAuthorizationRow | undefined {
+  return getDatabase()
+    .prepare("SELECT * FROM account_authorizations WHERE account_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
+    .get(accountId, granteeSystemAccountId) as unknown as AccountAuthorizationRow | undefined
+}
+
+function activeGroupAuthorization(groupId: string, granteeSystemAccountId: string): GroupAuthorizationRow | undefined {
+  return getDatabase()
+    .prepare("SELECT * FROM group_authorizations WHERE group_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
+    .get(groupId, granteeSystemAccountId) as unknown as GroupAuthorizationRow | undefined
 }
 
 export function resolveAccountSystemAccountId(accountId: string): string | undefined {
@@ -673,7 +779,12 @@ function disableExpiredAccounts(access?: AccessScope): void {
           updated_at = ?
       WHERE account_expires_at IS NOT NULL
         AND account_expires_at <= ?
-        AND status <> 'disabled'${scope.clause}
+        AND (
+          status <> 'disabled'
+          OR schedulable <> 0
+          OR cooldown_until IS NOT NULL
+          OR last_error_message IS NULL
+        )${scope.clause}
     `)
     .run('账户套餐已过期，已自动停用', now, now, ...scope.params)
 }
@@ -734,10 +845,11 @@ function emptyGroupAccountStats(): GroupAccountStats {
   }
 }
 
-function groupAccountStats(accounts: AccountSummary[], todayUsage?: AccountUsageSummary): GroupAccountStats {
+function groupAccountStats(accounts: AccountSummary[], todayUsage?: AccountUsageSummary, totalUsage?: AccountUsageSummary): GroupAccountStats {
   const stats = emptyGroupAccountStats()
   stats.total = accounts.length
   stats.todayUsage = todayUsage ?? emptyAccountUsageSummary()
+  stats.usage = totalUsage ?? emptyAccountUsageSummary()
   for (const account of accounts) {
     if (account.status === 'active') {
       stats.active += 1
@@ -754,16 +866,6 @@ function groupAccountStats(accounts: AccountSummary[], todayUsage?: AccountUsage
     }
     stats.currentConcurrency += account.currentConcurrency
     stats.concurrencyLimit += account.concurrencyLimit
-    stats.usage.requestCount += account.usage.requestCount
-    stats.usage.clientCount += account.usage.clientCount
-    stats.usage.inputTokens += account.usage.inputTokens
-    stats.usage.outputTokens += account.usage.outputTokens
-    stats.usage.cacheReadTokens += account.usage.cacheReadTokens
-    stats.usage.totalTokens += account.usage.totalTokens
-    stats.usage.totalCost += account.usage.totalCost
-    if (isLaterIso(account.usage.lastUsedAt, stats.usage.lastUsedAt)) {
-      stats.usage.lastUsedAt = account.usage.lastUsedAt
-    }
   }
   return stats
 }
@@ -782,12 +884,26 @@ function isLaterIso(value?: string, current?: string): boolean {
   return Number.isFinite(nextTime) && (!Number.isFinite(currentTime) || nextTime > currentTime)
 }
 
+function manageableSystemAccountId(access?: AccessScope): string | undefined {
+  return scopedSystemAccountId(access) ?? (canAccessAll(access) ? undefined : resolveAccessScope(access)?.systemAccountId)
+}
+
+function userVisibleSystemAccountId(access?: AccessScope): string | undefined {
+  return scopedSystemAccountId(access) ?? resolveAccessScope(access)?.systemAccountId
+}
+
+function canManageResourceOwner(ownerSystemAccountId: string, access?: AccessScope): boolean {
+  const scopedOwnerId = manageableSystemAccountId(access)
+  if (scopedOwnerId) return scopedOwnerId === ownerSystemAccountId
+  return canAccessAll(access)
+}
+
 function validAccountIdsForGroup(providerCode: string, accountIds: string[], systemAccountId = currentSystemAccountId()): string[] {
   const uniqueIds = [...new Set(accountIds)]
-  const accountsById = new Map(listAccounts().map((account) => [account.id, account]))
+  const accountsById = new Map(listAccounts({ systemAccountId, role: 'user' }).map((account) => [account.id, account]))
   return uniqueIds.filter((accountId) => {
     const account = accountsById.get(accountId)
-    return account?.providerCode === providerCode && accountSystemAccountId(accountId) === systemAccountId
+    return account?.providerCode === providerCode && canUseAccount(accountId, systemAccountId)
   })
 }
 
@@ -834,21 +950,24 @@ export function listProviders(): ProviderDefinition[] {
 }
 
 export function listAccounts(access?: AccessScope): AccountSummary[] {
-  const scope = buildSystemAccountWhereClause(access)
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
-  const rows = getDatabase().prepare(`SELECT * FROM accounts${scope.clause} ORDER BY priority ASC, updated_at DESC`).all(...scope.params) as unknown as AccountRow[]
-  const usageByAccount = loadAccountUsageSummaries(access)
-  const oauthUsageByAccount = loadOpenAICodexUsageSnapshots(access)
-  const accountNames = includeSystemAccountFields(access) ? systemAccountNameMap() : new Map<string, string>()
+  const rows = listAccountRowsForAccess(access)
+  const usageByAccount = loadAccountUsageSummariesByAccountIds(rows.map((row) => row.id))
+  const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => row.id))
+  const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
+  const accountNames = includeSystemAccountFields(access) || hasAuthorizedRows ? systemAccountNameMap() : new Map<string, string>()
   return rows.map((row) => ({
     id: row.id,
     systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
     systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
+    ownerSystemAccountId: row.system_account_id,
+    ownerSystemAccountName: accountNames.get(row.system_account_id),
     providerCode: row.provider_code,
     name: row.name,
     notes: row.notes ?? undefined,
     type: row.type,
-    credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
+    credentials: accountCredentialsForList(row),
     status: row.status,
     concurrencyLimit: row.concurrency_limit,
     currentConcurrency: 0,
@@ -862,8 +981,172 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
     lastErrorMessage: row.last_error_message ?? undefined,
     lastUsedAt: row.last_used_at ?? usageByAccount.get(row.id)?.lastUsedAt,
     usage: usageByAccount.get(row.id) ?? emptyAccountUsageSummary(),
-    oauthUsage: row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined
+    oauthUsage: row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined,
+    accessType: row.access_type ?? 'owner',
+    accountAuthorizationId: row.authorization_id ?? undefined,
+    authorizationStatus: row.authorization_status ?? undefined,
+    permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
   }))
+}
+
+function listAccountRowsForAccess(access?: AccessScope): AccountListRow[] {
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  if (!ownerSystemAccountId && canAccessAll(access)) {
+    return getDatabase()
+      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM accounts ORDER BY priority ASC, updated_at DESC")
+      .all() as unknown as AccountListRow[]
+  }
+  if (!viewerSystemAccountId) {
+    return getDatabase()
+      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM accounts ORDER BY priority ASC, updated_at DESC")
+      .all() as unknown as AccountListRow[]
+  }
+  return getDatabase()
+    .prepare(`
+      SELECT * FROM (
+        SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+        FROM accounts
+        WHERE accounts.system_account_id = ?
+        UNION ALL
+        SELECT accounts.*, 'authorized' AS access_type, aa.id AS authorization_id, aa.status AS authorization_status
+        FROM account_authorizations aa
+        INNER JOIN accounts ON accounts.id = aa.account_id
+        WHERE aa.grantee_system_account_id = ?
+          AND aa.status = 'active'
+          AND accounts.system_account_id <> ?
+      )
+      ORDER BY priority ASC, updated_at DESC
+    `)
+    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId) as unknown as AccountListRow[]
+}
+
+function accountCredentialsForList(row: AccountListRow): Record<string, unknown> {
+  const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
+  if (row.access_type !== 'authorized') {
+    return credentials
+  }
+  return typeof credentials.base_url === 'string' && credentials.base_url ? { base_url: credentials.base_url } : {}
+}
+
+export function listAccountAuthorizations(accountId: string, access?: AccessScope): AccountAuthorizationSummary[] {
+  const ownerSystemAccountId = accountSystemAccountId(accountId)
+  if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, access)) {
+    return []
+  }
+  const rows = getDatabase()
+    .prepare('SELECT * FROM account_authorizations WHERE account_id = ? AND owner_system_account_id = ? ORDER BY status ASC, created_at DESC')
+    .all(accountId, ownerSystemAccountId) as unknown as AccountAuthorizationRow[]
+  return accountAuthorizationSummaries(rows)
+}
+
+export function createAccountAuthorization(accountId: string, input: Record<string, unknown>, access?: AccessScope): AccountAuthorizationSummary {
+  const ownerSystemAccountId = accountSystemAccountId(accountId)
+  if (!ownerSystemAccountId || !canManageResourceOwner(ownerSystemAccountId, access)) {
+    throw new Error('Account not found')
+  }
+  const granteeSystemAccountId = optionalString(input.granteeSystemAccountId ?? input.grantee_system_account_id)
+  if (!granteeSystemAccountId) {
+    throw new Error('Grantee system account is required')
+  }
+  if (granteeSystemAccountId === ownerSystemAccountId) {
+    throw new Error('不能授权给账户所有者自己')
+  }
+  const grantee = findSystemAccountById(granteeSystemAccountId)
+  if (!grantee || grantee.status !== 'active') {
+    throw new Error('被授权用户不存在或已停用')
+  }
+  const existing = activeAccountAuthorization(accountId, granteeSystemAccountId)
+  if (existing) {
+    throw new Error('该账户已授权给这个用户')
+  }
+  const now = nowIso()
+  const id = newId('acctauth')
+  getDatabase()
+    .prepare(`
+      INSERT INTO account_authorizations (
+        id, account_id, owner_system_account_id, grantee_system_account_id, scope, status, remark,
+        created_by, created_at, revoked_by, revoked_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'use', 'active', ?, ?, ?, NULL, NULL, ?)
+    `)
+    .run(id, accountId, ownerSystemAccountId, granteeSystemAccountId, optionalString(input.remark) ?? null, currentSystemAccountId(access), now, now)
+  const created = listAccountAuthorizations(accountId, access).find((item) => item.id === id)
+  if (!created) {
+    throw new Error('Create account authorization failed')
+  }
+  return created
+}
+
+export function revokeAccountAuthorization(accountId: string, authorizationId: string, access?: AccessScope): AccountAuthorizationSummary | undefined {
+  const row = getDatabase()
+    .prepare('SELECT * FROM account_authorizations WHERE id = ? AND account_id = ?')
+    .get(authorizationId, accountId) as unknown as AccountAuthorizationRow | undefined
+  if (!row || !canManageResourceOwner(row.owner_system_account_id, access)) {
+    return undefined
+  }
+  if (row.status !== 'revoked') {
+    const now = nowIso()
+    getDatabase()
+      .prepare("UPDATE account_authorizations SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
+      .run(currentSystemAccountId(access), now, now, authorizationId)
+  }
+  return listAccountAuthorizations(accountId, access).find((item) => item.id === authorizationId)
+}
+
+function accountAuthorizationSummaries(rows: AccountAuthorizationRow[]): AccountAuthorizationSummary[] {
+  const accountNames = accountNameMap(rows.map((row) => row.account_id))
+  const systemAccountNames = systemAccountNameMap()
+  const usageByAuthorization = loadAccountAuthorizationUsageSummaries(rows.map((row) => row.id))
+  return rows.map((row) => ({
+    id: row.id,
+    accountId: row.account_id,
+    accountName: accountNames.get(row.account_id),
+    ownerSystemAccountId: row.owner_system_account_id,
+    ownerSystemAccountName: systemAccountNames.get(row.owner_system_account_id),
+    granteeSystemAccountId: row.grantee_system_account_id,
+    granteeSystemAccountName: systemAccountNames.get(row.grantee_system_account_id),
+    scope: 'use',
+    status: row.status,
+    remark: row.remark ?? undefined,
+    usage: usageByAuthorization.get(row.id) ?? emptyAccountUsageSummary(),
+    createdAt: row.created_at,
+    revokedAt: row.revoked_at ?? undefined,
+    updatedAt: row.updated_at
+  }))
+}
+
+function accountNameMap(accountIds: string[]): Map<string, string> {
+  const ids = [...new Set(accountIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase()
+    .prepare(`SELECT id, name FROM accounts WHERE id IN (${sqlPlaceholders(ids.length)})`)
+    .all(...ids) as unknown as Array<{ id: string; name: string }>
+  return new Map(rows.map((row) => [row.id, row.name]))
+}
+
+function loadAccountAuthorizationUsageSummaries(authorizationIds: string[]): Map<string, AccountUsageSummary> {
+  const ids = [...new Set(authorizationIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase().prepare(`
+    SELECT
+      account_authorization_id AS authorization_id,
+      COUNT(*) AS request_count,
+      COUNT(DISTINCT COALESCE(api_key_id, client_ip, request_id)) AS client_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(cost_usd), 0) AS total_cost,
+      MAX(created_at) AS last_used_at
+    FROM usage_records
+    WHERE account_authorization_id IN (${sqlPlaceholders(ids.length)})
+    GROUP BY account_authorization_id
+  `).all(...ids) as unknown as Array<AccountUsageAggregateRow & { authorization_id: string }>
+
+  const result = new Map<string, AccountUsageSummary>()
+  for (const row of rows) {
+    result.set(row.authorization_id, usageSummaryFromAggregate(row))
+  }
+  return result
 }
 
 export function listErrorPolicies(access?: AccessScope): ErrorPolicySummary[] {
@@ -893,7 +1176,8 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
   const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai')
   const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : typeof input.group_id === 'string' && input.group_id ? input.group_id : undefined
   const explicitGroup = explicitGroupId ? groupOwnerAndProvider(explicitGroupId) : undefined
-  const systemAccountId = explicitGroup?.systemAccountId ?? currentSystemAccountId()
+  const requestedSystemAccountId = currentSystemAccountId()
+  const systemAccountId = explicitGroup && canManageResourceOwner(explicitGroup.systemAccountId) ? explicitGroup.systemAccountId : requestedSystemAccountId
   const provider = listProviders().find((item) => item.code === providerCode)
   const credentials = typeof input.credentials === 'object' && input.credentials !== null ? input.credentials as Record<string, unknown> : {}
   const credentialMap = credentials as Record<string, unknown>
@@ -1011,6 +1295,9 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
     return undefined
   }
   const systemAccountId = accountSystemAccountId(id) ?? currentSystemAccountId()
+  if (!canManageResourceOwner(systemAccountId)) {
+    return undefined
+  }
   const access = resolveAccessScope()
 
   const credentials = typeof input.credentials === 'object' && input.credentials !== null
@@ -1130,6 +1417,28 @@ export function clearAccountFailureState(id: string): AccountSummary | undefined
   if (!current) {
     return undefined
   }
+  const ownerSystemAccountId = accountSystemAccountId(id)
+  if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId)) {
+    return undefined
+  }
+
+  const expiredByPackage = isAccountExpired(current.accountExpiresAt)
+  if (expiredByPackage) {
+    getDatabase()
+      .prepare(`
+        UPDATE accounts
+        SET status = 'disabled',
+            schedulable = 0,
+            cooldown_until = NULL,
+            last_error_message = ?,
+            stream_failure_count = 0,
+            stream_failure_window_started_at = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `)
+      .run('账户套餐已过期，已自动停用', nowIso(), id)
+    return listAccounts().find((account) => account.id === id)
+  }
 
   getDatabase()
     .prepare(`
@@ -1151,6 +1460,24 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
   const current = listAccounts().find((account) => account.id === id)
   if (!current) {
     return undefined
+  }
+
+  const expiredByPackage = isAccountExpired(current.accountExpiresAt)
+  if (expiredByPackage) {
+    getDatabase()
+      .prepare(`
+        UPDATE accounts
+        SET status = 'disabled',
+            schedulable = 0,
+            cooldown_until = NULL,
+            last_error_message = ?,
+            stream_failure_count = 0,
+            stream_failure_window_started_at = NULL,
+            updated_at = ?
+        WHERE id = ?
+      `)
+      .run('账户套餐已过期，已自动停用', nowIso(), id)
+    return listAccounts().find((account) => account.id === id)
   }
 
   const cooldownStatus: AccountStatus = status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
@@ -1253,34 +1580,198 @@ export function recordAccountStreamFailure(input: {
 
 export function listGroups(access?: AccessScope): GroupSummary[] {
   const database = getDatabase()
-  const scope = buildSystemAccountWhereClause(access)
-  const rows = database.prepare(`SELECT * FROM groups${scope.clause} ORDER BY updated_at DESC`).all(...scope.params) as unknown as GroupRow[]
-  const accountScope = buildSystemAccountScopeClause(access)
-  const accountRows = database.prepare(`SELECT group_id, account_id FROM group_accounts WHERE enabled = 1${accountScope.clause}`).all(...accountScope.params) as Array<{ group_id: string; account_id: string }>
-  const accountsById = new Map(listAccounts(access).map((account) => [account.id, account]))
-  const todayUsageByGroup = loadTodayGroupUsageSummaries(access)
-  const accountNames = includeSystemAccountFields(access) ? systemAccountNameMap() : new Map<string, string>()
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const rows = listGroupRowsForAccess(access)
+  const accountRows = database.prepare('SELECT system_account_id, group_id, account_id FROM group_accounts WHERE enabled = 1').all() as Array<{ system_account_id: string; group_id: string; account_id: string }>
+  const todayUsageByGroup = loadGroupUsageSummariesByGroupIds(rows.map((row) => row.id), todayDateKey())
+  const totalUsageByGroup = loadGroupUsageSummariesByGroupIds(rows.map((row) => row.id))
+  const accountNames = systemAccountNameMap()
   return rows.map((row) => ({
     id: row.id,
     systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
     systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
+    ownerSystemAccountId: row.system_account_id,
+    ownerSystemAccountName: accountNames.get(row.system_account_id),
     name: row.name,
     providerCode: row.provider_code,
     description: row.description ?? undefined,
     enabled: row.enabled === 1,
     isDefault: row.is_default === 1,
     accountIds: accountRows
-      .filter((item) => item.group_id === row.id && accountsById.get(item.account_id)?.providerCode === row.provider_code)
+      .filter((item) => item.group_id === row.id && item.system_account_id === row.system_account_id)
       .map((item) => item.account_id),
     accountStats: groupAccountStats(
-      accountRows
-        .filter((item) => item.group_id === row.id)
-        .map((item) => item.account_id)
-        .map((accountId) => accountsById.get(accountId))
-        .filter((account): account is AccountSummary => account !== undefined && account.providerCode === row.provider_code),
-      todayUsageByGroup.get(row.id)
-    )
+      accountsForGroupStats(row, accountRows),
+      todayUsageByGroup.get(row.id),
+      totalUsageByGroup.get(row.id)
+    ),
+    accessType: row.access_type ?? 'owner',
+    groupAuthorizationId: row.authorization_id ?? undefined,
+    authorizationStatus: row.authorization_status ?? undefined,
+    permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
   }))
+}
+
+function accountsForGroupStats(row: GroupListRow, accountRows: Array<{ system_account_id: string; group_id: string; account_id: string }>): AccountSummary[] {
+  const accountIds = new Set(accountRows
+    .filter((item) => item.group_id === row.id && item.system_account_id === row.system_account_id)
+    .map((item) => item.account_id))
+  return listAccounts({ systemAccountId: row.system_account_id, role: 'user' })
+    .filter((account) => accountIds.has(account.id) && account.providerCode === row.provider_code)
+    .filter((account) => row.access_type !== 'authorized' || accountSystemAccountId(account.id) === row.system_account_id)
+}
+
+function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  if (!viewerSystemAccountId && canAccessAll(access)) {
+    return getDatabase()
+      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC")
+      .all() as unknown as GroupListRow[]
+  }
+  if (!viewerSystemAccountId) {
+    return getDatabase()
+      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC")
+      .all() as unknown as GroupListRow[]
+  }
+  return getDatabase()
+    .prepare(`
+      SELECT * FROM (
+        SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+        FROM groups
+        WHERE groups.system_account_id = ?
+        UNION ALL
+        SELECT groups.*, 'authorized' AS access_type, ga.id AS authorization_id, ga.status AS authorization_status
+        FROM group_authorizations ga
+        INNER JOIN groups ON groups.id = ga.group_id
+        WHERE ga.grantee_system_account_id = ?
+          AND ga.status = 'active'
+          AND groups.system_account_id <> ?
+      )
+      ORDER BY updated_at DESC
+    `)
+    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
+}
+
+export function listGroupAuthorizations(groupId: string, access?: AccessScope): GroupAuthorizationSummary[] {
+  const owner = groupOwnerAndProvider(groupId)
+  if (!owner || !canManageResourceOwner(owner.systemAccountId, access)) {
+    return []
+  }
+  const rows = getDatabase()
+    .prepare('SELECT * FROM group_authorizations WHERE group_id = ? AND owner_system_account_id = ? ORDER BY status ASC, created_at DESC')
+    .all(groupId, owner.systemAccountId) as unknown as GroupAuthorizationRow[]
+  return groupAuthorizationSummaries(rows)
+}
+
+export function createGroupAuthorization(groupId: string, input: Record<string, unknown>, access?: AccessScope): GroupAuthorizationSummary {
+  const owner = groupOwnerAndProvider(groupId)
+  if (!owner || !canManageResourceOwner(owner.systemAccountId, access)) {
+    throw new Error('Group not found')
+  }
+  const granteeSystemAccountId = optionalString(input.granteeSystemAccountId ?? input.grantee_system_account_id)
+  if (!granteeSystemAccountId) {
+    throw new Error('Grantee system account is required')
+  }
+  if (granteeSystemAccountId === owner.systemAccountId) {
+    throw new Error('不能授权给分组所有者自己')
+  }
+  const grantee = findSystemAccountById(granteeSystemAccountId)
+  if (!grantee || grantee.status !== 'active') {
+    throw new Error('被授权用户不存在或已停用')
+  }
+  const existing = activeGroupAuthorization(groupId, granteeSystemAccountId)
+  if (existing) {
+    throw new Error('该分组已授权给这个用户')
+  }
+  const now = nowIso()
+  const id = newId('grpauth')
+  getDatabase()
+    .prepare(`
+      INSERT INTO group_authorizations (
+        id, group_id, owner_system_account_id, grantee_system_account_id, scope, status, remark,
+        created_by, created_at, revoked_by, revoked_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'use', 'active', ?, ?, ?, NULL, NULL, ?)
+    `)
+    .run(id, groupId, owner.systemAccountId, granteeSystemAccountId, optionalString(input.remark) ?? null, currentSystemAccountId(access), now, now)
+  const created = listGroupAuthorizations(groupId, access).find((item) => item.id === id)
+  if (!created) {
+    throw new Error('Create group authorization failed')
+  }
+  return created
+}
+
+export function revokeGroupAuthorization(groupId: string, authorizationId: string, access?: AccessScope): GroupAuthorizationSummary | undefined {
+  const row = getDatabase()
+    .prepare('SELECT * FROM group_authorizations WHERE id = ? AND group_id = ?')
+    .get(authorizationId, groupId) as unknown as GroupAuthorizationRow | undefined
+  if (!row || !canManageResourceOwner(row.owner_system_account_id, access)) {
+    return undefined
+  }
+  if (row.status !== 'revoked') {
+    const now = nowIso()
+    getDatabase()
+      .prepare("UPDATE group_authorizations SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
+      .run(currentSystemAccountId(access), now, now, authorizationId)
+  }
+  return listGroupAuthorizations(groupId, access).find((item) => item.id === authorizationId)
+}
+
+function groupAuthorizationSummaries(rows: GroupAuthorizationRow[]): GroupAuthorizationSummary[] {
+  const groupNames = groupNameMap(rows.map((row) => row.group_id))
+  const systemAccountNames = systemAccountNameMap()
+  const usageByAuthorization = loadGroupAuthorizationUsageSummaries(rows.map((row) => row.id))
+  return rows.map((row) => ({
+    id: row.id,
+    groupId: row.group_id,
+    groupName: groupNames.get(row.group_id),
+    ownerSystemAccountId: row.owner_system_account_id,
+    ownerSystemAccountName: systemAccountNames.get(row.owner_system_account_id),
+    granteeSystemAccountId: row.grantee_system_account_id,
+    granteeSystemAccountName: systemAccountNames.get(row.grantee_system_account_id),
+    scope: 'use',
+    status: row.status,
+    remark: row.remark ?? undefined,
+    usage: usageByAuthorization.get(row.id) ?? emptyAccountUsageSummary(),
+    createdAt: row.created_at,
+    revokedAt: row.revoked_at ?? undefined,
+    updatedAt: row.updated_at
+  }))
+}
+
+function groupNameMap(groupIds: string[]): Map<string, string> {
+  const ids = [...new Set(groupIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase()
+    .prepare(`SELECT id, name FROM groups WHERE id IN (${sqlPlaceholders(ids.length)})`)
+    .all(...ids) as unknown as Array<{ id: string; name: string }>
+  return new Map(rows.map((row) => [row.id, row.name]))
+}
+
+function loadGroupAuthorizationUsageSummaries(authorizationIds: string[]): Map<string, AccountUsageSummary> {
+  const ids = [...new Set(authorizationIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase().prepare(`
+    SELECT
+      group_authorization_id AS authorization_id,
+      COUNT(*) AS request_count,
+      COUNT(DISTINCT COALESCE(api_key_id, client_ip, request_id)) AS client_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(cost_usd), 0) AS total_cost,
+      MAX(created_at) AS last_used_at
+    FROM usage_records
+    WHERE group_authorization_id IN (${sqlPlaceholders(ids.length)})
+    GROUP BY group_authorization_id
+  `).all(...ids) as unknown as Array<AccountUsageAggregateRow & { authorization_id: string }>
+
+  const result = new Map<string, AccountUsageSummary>()
+  for (const row of rows) {
+    result.set(row.authorization_id, usageSummaryFromAggregate(row))
+  }
+  return result
 }
 
 export function createGroup(input: Record<string, unknown>): GroupSummary {
@@ -1311,6 +1802,9 @@ export function updateGroup(id: string, input: Record<string, unknown>): GroupSu
     return undefined
   }
   const systemAccountId = groupOwnerAndProvider(id)?.systemAccountId ?? currentSystemAccountId()
+  if (!canManageResourceOwner(systemAccountId)) {
+    return undefined
+  }
   const next: GroupSummary = {
     ...current,
     name: typeof input.name === 'string' ? input.name : current.name,
@@ -1333,8 +1827,11 @@ export function deleteGroup(id: string): boolean {
   if (current?.isDefault) {
     throw new Error('Default group cannot be deleted')
   }
-  const scope = buildSystemAccountScopeClause()
-  const result = getDatabase().prepare(`DELETE FROM groups WHERE id = ?${scope.clause}`).run(id, ...scope.params)
+  const owner = groupOwnerAndProvider(id)
+  if (!owner || !canManageResourceOwner(owner.systemAccountId)) {
+    return false
+  }
+  const result = getDatabase().prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
   return result.changes > 0
 }
 
@@ -1347,24 +1844,22 @@ export function setAccountGroup(accountId: string, groupId: string | null): Acco
   if (!groupId) {
     return undefined
   }
-  const systemAccountId = accountSystemAccountId(accountId)
-  if (!systemAccountId) {
+  const group = groupOwnerAndProvider(groupId)
+  if (!group || !canManageResourceOwner(group.systemAccountId)) {
     return undefined
   }
-
-  const group = groupOwnerAndProvider(groupId)
-  if (!group || group.systemAccountId !== systemAccountId) {
+  if (!canUseAccount(accountId, group.systemAccountId)) {
     return undefined
   }
   if (group.providerCode !== current.providerCode) {
     return undefined
   }
 
-  database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, systemAccountId)
+  database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, group.systemAccountId)
   const now = nowIso()
   database
     .prepare('INSERT INTO group_accounts (system_account_id, group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
-    .run(systemAccountId, groupId, accountId, 1, now, now)
+    .run(group.systemAccountId, groupId, accountId, 1, now, now)
 
   return listAccounts().find((account) => account.id === accountId)
 }
@@ -1373,6 +1868,9 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
   const database = getDatabase()
   const current = groupOwnerAndProvider(groupId)
   if (!current) {
+    return undefined
+  }
+  if (!canManageResourceOwner(current.systemAccountId)) {
     return undefined
   }
   if (!validAccountIdsForGroup(current.providerCode, [accountId], current.systemAccountId).includes(accountId)) {
@@ -1426,7 +1924,7 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
     throw new Error('Invalid API key group')
   }
   const group = groupOwnerAndProvider(groupId)
-  if (!group || group.systemAccountId !== systemAccountId) {
+  if (!group || !canUseGroup(groupId, systemAccountId)) {
     throw new Error('Invalid API key group')
   }
   const record: ApiKeySummary & { key: string } = {
@@ -1470,7 +1968,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>): ApiKey
   }
   const nextGroupId = typeof input.groupId === 'string' ? input.groupId : typeof input.group_id === 'string' ? input.group_id : current.groupId
   const nextGroup = groupOwnerAndProvider(nextGroupId)
-  if (!nextGroup || nextGroup.systemAccountId !== systemAccountId) {
+  if (!nextGroup || !canUseGroup(nextGroupId, systemAccountId)) {
     return undefined
   }
   const next: ApiKeySummary = {
@@ -1693,14 +2191,33 @@ function inferLegacyEndpoint(input: {
   return undefined
 }
 
-export function selectOpenAIAccountForGroup(groupId: string): OpenAIAccountSecret | undefined {
-  return listOpenAIAccountsForGroup(groupId)[0]
+export function selectOpenAIAccountForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret | undefined {
+  return listOpenAIAccountsForGroup(groupId, systemAccountId)[0]
 }
 
-export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret[] {
+export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
+  const group = groupOwnerAndProvider(groupId)
+  if (!group) return undefined
+  if (group.systemAccountId === systemAccountId) {
+    return { groupOwnerSystemAccountId: group.systemAccountId, groupAccessType: 'owner' }
+  }
+  const authorization = activeGroupAuthorization(groupId, systemAccountId)
+  if (!authorization) return undefined
+  return {
+    groupOwnerSystemAccountId: group.systemAccountId,
+    groupAccessType: 'authorized',
+    groupAuthorizationId: authorization.id
+  }
+}
+
+export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret[] {
   const database = getDatabase()
   const now = nowIso()
-  disableExpiredAccounts(resolveAccessScope())
+  const groupAccess = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
+  if (!groupAccess) {
+    return []
+  }
+  disableExpiredAccounts({ systemAccountId: groupAccess.groupOwnerSystemAccountId, role: 'user' })
   const groupAccountRows = database
     .prepare(`
       SELECT group_accounts.account_id
@@ -1738,9 +2255,19 @@ export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret
     if (!apiKey) {
       continue
     }
+    const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess)
+    if (!accountAccess) {
+      continue
+    }
     accounts.push({
       id: row.id,
       systemAccountId: row.system_account_id,
+      accountOwnerSystemAccountId: row.system_account_id,
+      groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
+      accountAccessType: accountAccess.accountAccessType,
+      groupAccessType: groupAccess.groupAccessType,
+      accountAuthorizationId: accountAccess.accountAuthorizationId,
+      groupAuthorizationId: groupAccess.groupAuthorizationId,
       name: row.name,
       type: row.type,
       status: row.status,
@@ -1760,6 +2287,24 @@ export function listOpenAIAccountsForGroup(groupId: string): OpenAIAccountSecret
   return accounts
 }
 
+function resolveOpenAIAccountAccess(
+  accountId: string,
+  accountOwnerSystemAccountId: string,
+  callerSystemAccountId: string,
+  groupAccess: GroupUsageAccessMetadata
+): { accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'; accountAuthorizationId?: string } | undefined {
+  if (accountOwnerSystemAccountId === callerSystemAccountId) {
+    return { accountAccessType: 'owner' }
+  }
+  if (groupAccess.groupAccessType === 'authorized') {
+    return accountOwnerSystemAccountId === groupAccess.groupOwnerSystemAccountId
+      ? { accountAccessType: 'group_authorized' }
+      : undefined
+  }
+  const authorization = activeAccountAuthorization(accountId, callerSystemAccountId)
+  return authorization ? { accountAccessType: 'account_authorized', accountAuthorizationId: authorization.id } : undefined
+}
+
 export function createUsageRecord(input: {
   systemAccountId?: string
   requestId: string
@@ -1767,6 +2312,12 @@ export function createUsageRecord(input: {
   apiKeyId?: string
   groupId?: string
   accountId?: string
+  accountOwnerSystemAccountId?: string
+  groupOwnerSystemAccountId?: string
+  accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
+  groupAccessType?: 'owner' | 'authorized'
+  accountAuthorizationId?: string
+  groupAuthorizationId?: string
   endpoint?: string
   providerCode?: string
   model?: string
@@ -1786,13 +2337,16 @@ export function createUsageRecord(input: {
 }): void {
   const now = nowIso()
   const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input)
+  const accessMetadata = usageAccessMetadata({ ...input, systemAccountId })
   getDatabase()
     .prepare(`
       INSERT INTO usage_records (
         id, system_account_id, request_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
         status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cost_usd, error_code, error_message,
-        request_snapshot_json, response_snapshot_json, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        request_snapshot_json, response_snapshot_json,
+        account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type, account_authorization_id, group_authorization_id,
+        created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
       newId('usage'),
@@ -1818,6 +2372,12 @@ export function createUsageRecord(input: {
       input.errorMessage ?? null,
       input.requestSnapshot ? JSON.stringify(input.requestSnapshot) : null,
       input.responseSnapshot ? JSON.stringify(input.responseSnapshot) : null,
+      accessMetadata.accountOwnerSystemAccountId ?? null,
+      accessMetadata.groupOwnerSystemAccountId ?? null,
+      accessMetadata.accountAccessType ?? null,
+      accessMetadata.groupAccessType ?? null,
+      accessMetadata.accountAuthorizationId ?? null,
+      accessMetadata.groupAuthorizationId ?? null,
       now
     )
 
@@ -1954,6 +2514,31 @@ function loadAccountUsageSummaries(access?: AccessScope): Map<string, AccountUsa
   return result
 }
 
+function loadAccountUsageSummariesByAccountIds(accountIds: string[]): Map<string, AccountUsageSummary> {
+  const ids = [...new Set(accountIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase().prepare(`
+    SELECT
+      scope_id AS account_id,
+      COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(client_count), 0) AS client_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(total_cost_usd), 0) AS total_cost,
+      MAX(last_used_at) AS last_used_at
+    FROM usage_stats_totals
+    WHERE scope_type = 'account' AND scope_id IN (${sqlPlaceholders(ids.length)})
+    GROUP BY scope_id
+  `).all(...ids) as unknown as AccountUsageAggregateRow[]
+
+  const result = new Map<string, AccountUsageSummary>()
+  for (const row of rows) {
+    result.set(row.account_id, usageSummaryFromAggregate(row))
+  }
+  return result
+}
+
 function loadTodayGroupUsageSummaries(access?: AccessScope): Map<string, AccountUsageSummary> {
   const scope = buildSystemAccountScopeClause(access)
   const rows = getDatabase().prepare(`
@@ -1977,6 +2562,33 @@ function loadTodayGroupUsageSummaries(access?: AccessScope): Map<string, Account
   return result
 }
 
+function loadGroupUsageSummariesByGroupIds(groupIds: string[], statDate?: string): Map<string, AccountUsageSummary> {
+  const ids = [...new Set(groupIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const sourceTable = statDate ? 'usage_stats_daily' : 'usage_stats_totals'
+  const dateClause = statDate ? ' AND stat_date = ?' : ''
+  const rows = getDatabase().prepare(`
+    SELECT
+      scope_id AS group_id,
+      COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(client_count), 0) AS client_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(total_cost_usd), 0) AS total_cost,
+      MAX(last_used_at) AS last_used_at
+    FROM ${sourceTable}
+    WHERE scope_type = 'group'${dateClause} AND scope_id IN (${sqlPlaceholders(ids.length)})
+    GROUP BY scope_id
+  `).all(...(statDate ? [statDate, ...ids] : ids)) as unknown as Array<AccountUsageAggregateRow & { group_id: string }>
+
+  const result = new Map<string, AccountUsageSummary>()
+  for (const row of rows) {
+    result.set(row.group_id, usageSummaryFromAggregate(row))
+  }
+  return result
+}
+
 function loadOpenAICodexUsageSnapshots(access?: AccessScope): Map<string, AccountOAuthUsageSnapshot> {
   const scope = buildSystemAccountScopeClause(access)
   const rows = getDatabase().prepare(`
@@ -1986,6 +2598,37 @@ function loadOpenAICodexUsageSnapshots(access?: AccessScope): Map<string, Accoun
     FROM account_usage_snapshots
     WHERE kind = 'openai_codex'${scope.clause}
   `).all(...scope.params) as unknown as AccountUsageSnapshotRow[]
+
+  const result = new Map<string, AccountOAuthUsageSnapshot>()
+  for (const row of rows) {
+    const snapshot = parseOptionalJsonObject(row.snapshot_json)
+    if (!snapshot) continue
+    result.set(row.account_id, {
+      kind: 'openai_codex',
+      source: row.source ?? optionalString(snapshot.source),
+      updatedAt: row.updated_at,
+      refreshStatus: row.refresh_status ?? undefined,
+      lastAttemptAt: row.last_attempt_at ?? undefined,
+      lastSuccessAt: row.last_success_at ?? undefined,
+      nextRefreshAfter: row.next_refresh_after ?? undefined,
+      lastErrorMessage: row.last_error_message ?? undefined,
+      fiveHour: oauthUsageWindowFromSnapshot(snapshot, '5h', row.updated_at),
+      sevenDay: oauthUsageWindowFromSnapshot(snapshot, '7d', row.updated_at)
+    })
+  }
+  return result
+}
+
+function loadOpenAICodexUsageSnapshotsByAccountIds(accountIds: string[]): Map<string, AccountOAuthUsageSnapshot> {
+  const ids = [...new Set(accountIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase().prepare(`
+    SELECT
+      account_id, kind, source, snapshot_json, refresh_status,
+      last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at
+    FROM account_usage_snapshots
+    WHERE kind = 'openai_codex' AND account_id IN (${sqlPlaceholders(ids.length)})
+  `).all(...ids) as unknown as AccountUsageSnapshotRow[]
 
   const result = new Map<string, AccountOAuthUsageSnapshot>()
   for (const row of rows) {
@@ -2280,6 +2923,65 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
   }
 }
 
+function usageAccessMetadata(input: {
+  systemAccountId: string
+  groupId?: string
+  accountId?: string
+  accountOwnerSystemAccountId?: string
+  groupOwnerSystemAccountId?: string
+  accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
+  groupAccessType?: 'owner' | 'authorized'
+  accountAuthorizationId?: string
+  groupAuthorizationId?: string
+}): {
+  accountOwnerSystemAccountId?: string
+  groupOwnerSystemAccountId?: string
+  accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
+  groupAccessType?: 'owner' | 'authorized'
+  accountAuthorizationId?: string
+  groupAuthorizationId?: string
+} {
+  const groupOwnerSystemAccountId = input.groupOwnerSystemAccountId ?? (input.groupId ? groupOwnerAndProvider(input.groupId)?.systemAccountId : undefined)
+  const groupAuthorization = input.groupAuthorizationId
+    ? undefined
+    : input.groupId && groupOwnerSystemAccountId !== input.systemAccountId
+      ? activeGroupAuthorization(input.groupId, input.systemAccountId)
+      : undefined
+  const groupAuthorizationId = input.groupAuthorizationId ?? groupAuthorization?.id
+  const groupAccessType = input.groupAccessType
+    ?? (groupOwnerSystemAccountId
+      ? groupOwnerSystemAccountId === input.systemAccountId
+        ? 'owner'
+        : groupAuthorization
+          ? 'authorized'
+          : undefined
+      : undefined)
+  const accountOwnerSystemAccountId = input.accountOwnerSystemAccountId ?? (input.accountId ? accountSystemAccountId(input.accountId) : undefined)
+  const accountAuthorization = input.accountAuthorizationId
+    ? undefined
+    : input.accountId && accountOwnerSystemAccountId !== input.systemAccountId && groupAccessType !== 'authorized'
+      ? activeAccountAuthorization(input.accountId, input.systemAccountId)
+      : undefined
+  const accountAccessType = input.accountAccessType
+    ?? (accountOwnerSystemAccountId
+      ? accountOwnerSystemAccountId === input.systemAccountId
+        ? 'owner'
+        : groupAccessType === 'authorized' && groupOwnerSystemAccountId === accountOwnerSystemAccountId
+          ? 'group_authorized'
+          : accountAuthorization
+            ? 'account_authorized'
+            : undefined
+      : undefined)
+  return {
+    accountOwnerSystemAccountId,
+    groupOwnerSystemAccountId,
+    accountAccessType,
+    groupAccessType,
+    accountAuthorizationId: accountAccessType === 'account_authorized' ? input.accountAuthorizationId ?? accountAuthorization?.id : undefined,
+    groupAuthorizationId
+  }
+}
+
 export function latestUsageStatsLagSeconds(): number {
   const row = getDatabase()
     .prepare("SELECT lag_seconds FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
@@ -2437,25 +3139,28 @@ function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecord
   const statDate = dateKey(createdAt)
   const statHour = hourKey(createdAt)
   for (const entry of usageStatsEntries(row)) {
-    upsertUsageStatsTotal(database, row.system_account_id, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt)
-    upsertUsageStatsDaily(database, row.system_account_id, entry.scopeType, entry.scopeId, statDate, entry.accumulator, updatedAt)
-    upsertUsageStatsHourly(database, row.system_account_id, entry.scopeType, entry.scopeId, statHour, entry.accumulator, updatedAt)
-    upsertUsageStatsClient(database, row, entry.scopeType, entry.scopeId, 'all')
-    upsertUsageStatsClient(database, row, entry.scopeType, entry.scopeId, statDate)
+    upsertUsageStatsTotal(database, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt)
+    upsertUsageStatsDaily(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statDate, entry.accumulator, updatedAt)
+    upsertUsageStatsHourly(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statHour, entry.accumulator, updatedAt)
+    upsertUsageStatsClient(database, row, entry.systemAccountId, entry.scopeType, entry.scopeId, 'all')
+    upsertUsageStatsClient(database, row, entry.systemAccountId, entry.scopeType, entry.scopeId, statDate)
   }
   if (row.model) upsertUsageModelDaily(database, row, statDate, updatedAt)
   if (row.success !== 1) upsertUsageErrorDaily(database, row, statDate, updatedAt)
 }
 
-function usageStatsEntries(row: UsageStatsRecordRow): Array<{ scopeType: string; scopeId: string; accumulator: UsageStatsAccumulator }> {
+function usageStatsEntries(row: UsageStatsRecordRow): Array<{ systemAccountId: string; scopeType: string; scopeId: string; accumulator: UsageStatsAccumulator }> {
   const accumulator = usageStatsAccumulatorFromRecord(row)
-  const entries = [{ scopeType: 'system_account', scopeId: row.system_account_id, accumulator }]
-  if (row.provider_code) entries.push({ scopeType: 'provider', scopeId: row.provider_code, accumulator })
-  if (row.group_id) entries.push({ scopeType: 'group', scopeId: row.group_id, accumulator })
-  if (row.account_id) entries.push({ scopeType: 'account', scopeId: row.account_id, accumulator })
-  if (row.api_key_id) entries.push({ scopeType: 'api_key', scopeId: row.api_key_id, accumulator })
-  if (row.model) entries.push({ scopeType: 'model', scopeId: row.model, accumulator })
-  if (row.endpoint) entries.push({ scopeType: 'endpoint', scopeId: row.endpoint, accumulator })
+  const callerSystemAccountId = row.system_account_id
+  const accountOwnerSystemAccountId = row.account_owner_system_account_id ?? callerSystemAccountId
+  const groupOwnerSystemAccountId = row.group_owner_system_account_id ?? callerSystemAccountId
+  const entries = [{ systemAccountId: callerSystemAccountId, scopeType: 'system_account', scopeId: callerSystemAccountId, accumulator }]
+  if (row.provider_code) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'provider', scopeId: row.provider_code, accumulator })
+  if (row.group_id) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group', scopeId: row.group_id, accumulator })
+  if (row.account_id) entries.push({ systemAccountId: accountOwnerSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
+  if (row.api_key_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'api_key', scopeId: row.api_key_id, accumulator })
+  if (row.model) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'model', scopeId: row.model, accumulator })
+  if (row.endpoint) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'endpoint', scopeId: row.endpoint, accumulator })
   return entries
 }
 
@@ -2552,26 +3257,26 @@ function statsParamsTail(stats: UsageStatsAccumulator, updatedAt: string): Array
   return [stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, stats.durationMsSum, stats.durationMsCount, stats.firstTokenMsSum, stats.firstTokenMsCount, stats.lastUsedAt ?? null, stats.lastErrorAt ?? null, updatedAt]
 }
 
-function upsertUsageStatsClient(database: DatabaseSync, row: UsageStatsRecordRow, scopeType: string, scopeId: string, statBucket: string): void {
+function upsertUsageStatsClient(database: DatabaseSync, row: UsageStatsRecordRow, systemAccountId: string, scopeType: string, scopeId: string, statBucket: string): void {
   const clientKey = row.api_key_id ?? row.client_ip ?? ''
   if (!clientKey) return
   const result = database.prepare(`
     INSERT OR IGNORE INTO usage_stats_clients (system_account_id, scope_type, scope_id, stat_bucket, client_key, first_seen_at, last_seen_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(row.system_account_id, scopeType, scopeId, statBucket, clientKey, row.created_at, row.created_at)
+  `).run(systemAccountId, scopeType, scopeId, statBucket, clientKey, row.created_at, row.created_at)
   if (result.changes <= 0) {
     database.prepare(`
       UPDATE usage_stats_clients
       SET last_seen_at = ?
       WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_bucket = ? AND client_key = ?
-    `).run(row.created_at, row.system_account_id, scopeType, scopeId, statBucket, clientKey)
+    `).run(row.created_at, systemAccountId, scopeType, scopeId, statBucket, clientKey)
     return
   }
   if (statBucket === 'all') {
-    database.prepare('UPDATE usage_stats_totals SET client_count = client_count + 1 WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?').run(row.system_account_id, scopeType, scopeId)
+    database.prepare('UPDATE usage_stats_totals SET client_count = client_count + 1 WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?').run(systemAccountId, scopeType, scopeId)
     return
   }
-  database.prepare('UPDATE usage_stats_daily SET client_count = client_count + 1 WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_date = ?').run(row.system_account_id, scopeType, scopeId, statBucket)
+  database.prepare('UPDATE usage_stats_daily SET client_count = client_count + 1 WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_date = ?').run(systemAccountId, scopeType, scopeId, statBucket)
 }
 
 function upsertUsageModelDaily(database: DatabaseSync, row: UsageStatsRecordRow, statDate: string, updatedAt: string): void {

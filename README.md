@@ -1,6 +1,6 @@
 # 聚合 AI
 
-![聚合 AI 管理后台预览](docs/images/home-page.png)
+![聚合 AI 管理后台预览](resources/images/home-page.png)
 
 聚合 AI（juhe-ai）是一个轻量级 OpenAI 兼容中转与账号调度项目，面向手里有多套中转地址、多组上游账号和多个服务商入口的个人或团队场景。它把客户端固定到一个本地 OpenAI 兼容入口，服务商、账户、代理和错误切换都放到后台统一管理，减少反复修改客户端 Base URL / API Key 带来的配置混乱和会话割裂。
 
@@ -20,6 +20,7 @@
 - 上游账号管理：支持 OpenAI OAuth 与 API Key 账号，提供启停、测试、代理和调度配置；账户与分组使用授权纳入阶段规划
 - 分组与密钥授权：账号归入分组，API Key 绑定分组，按自有或授权边界选择可用账号
 - 自动故障切换：账号异常、限流或临时不可用时，按状态、优先级和错误策略切换备用账号
+- 透传开关：账号级控制是否开启透传，前端只显示开 / 关，不暴露内部处理细节
 - 使用记录追踪：记录请求、模型、用量、耗时、错误和账号命中，方便排查与统计
 - 轻量化部署：前后端均使用 TypeScript，默认 SQLite 存储，发布包可跨平台运行
 
@@ -37,17 +38,26 @@
 - OpenAI 第一期账户类型：OAuth + API Key
 - 分组绑定账户，API Key 再绑定分组
 - 账户和分组使用授权纳入第一阶段设计：被授权用户只获得使用权，日志按调用方隔离，账户用量按真实账户统一累计，分组用量按真实分组统一累计
+- 透传能力只保留账号级开关，用户不需要理解或选择内部实现细节
 
 ## 入口文档
 
-- 整体架构：`docs/architecture.md`
-- 第一阶段计划：`docs/phase-1-plan.md`
-- 构建发布文档：`docs/deploy/build.md`
-- 部署运行文档：`docs/deploy/deploy.md`
-- 前端样式规范：`docs/前端样式规范指导.md`
-- 功能开发指导：`docs/功能开发指导.md`
-- 大文件重构指南：`docs/大文件重构指南.md`
-- 问题修复指导：`docs/问题修复指导.md`
+- 文档目录总览与命名规范：`docs/README.md`
+- 整体架构：`docs/architecture/架构总览.md`
+- 架构设计目录：`docs/architecture/README.md`
+- 第一阶段计划：`docs/plans/第一阶段计划.md`
+- 构建发布文档：`docs/deploy/构建指南.md`
+- 部署运行文档：`docs/deploy/部署指南.md`
+- 开发文档目录：`docs/develop/README.md`
+- 开发环境安装说明：`docs/develop/安装指南.md`
+- 开发运行说明：`docs/develop/运行说明.md`
+- 前端架构设计：`docs/architecture/frontend/README.md`
+- 功能文档目录：`docs/functions/`
+- 重构案例库：`docs/refactors/`
+- 功能开发指导：`docs/architecture/功能开发指导.md`
+- 大文件重构指南：`docs/architecture/大文件重构指南.md`
+- 问题记录目录：`docs/bug/README.md`
+- 问题修复指导：`docs/architecture/问题修复指导.md`
 
 ## 本地运行
 
@@ -81,7 +91,7 @@ pnpm --filter juhe-ai-backend dev
 
 ## 跨平台发布包
 
-发布体系支持任意平台打包，并部署到 Windows、macOS 或 Linux。构建说明见 `docs/deploy/build.md`，部署说明见 `docs/deploy/deploy.md`。
+发布体系支持任意平台打包，并部署到 Windows、macOS 或 Linux。构建说明见 `docs/deploy/构建指南.md`，部署说明见 `docs/deploy/部署指南.md`。
 
 打包命令：
 
@@ -136,7 +146,7 @@ bash ./scripts/package-release.sh --frontend-gateway-base-url "https://你的域
 - 系统账户管理：管理员可管理登录账号、角色和重置密码
 - 登录安全：登录接口需要一次性图形验证码，并按 IP / 用户名做短时失败限制，减少自动化撞库和暴力尝试
 - AI 账户管理：创建 / 编辑 / 删除 OpenAI OAuth 与 API Key 账户，OAuth 支持手动授权和 Refresh Token 授权
-- AI 账户管理：管理员视角会显示系统账户列；普通用户当前只看到自己的数据；账户与分组使用授权规划详见 `docs/phase-1-plan.md`
+- AI 账户管理：管理员视角会显示系统账户列；普通用户当前只看到自己的数据；账户与分组使用授权规划详见 `docs/plans/第一阶段计划.md`
 - 分组管理：创建 / 编辑 / 删除分组，并绑定账户
 - API Key 管理：创建 / 编辑 / 删除 API Key，列表直接显示完整密钥，页面展示中转 Base URL 并支持复制
 - 代理管理：创建 / 编辑 / 删除 HTTP、HTTPS、SOCKS5 代理
@@ -152,4 +162,11 @@ pnpm build
 pnpm test:smoke
 ```
 
-本地真实网关验证见 `docs/dev-runbook.md`，烟测会使用启用的 OpenAI 账户验证 `/v1/models`、`/v1/responses` 非流式与流式、用量和成本入库。
+本地真实网关验证和烟测细节见 `docs/develop/测试与验证说明.md`；运行启动与注意事项见 `docs/develop/运行说明.md`。
+
+
+
+
+
+
+

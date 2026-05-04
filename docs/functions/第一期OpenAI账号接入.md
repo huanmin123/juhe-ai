@@ -37,11 +37,12 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `refresh_token`
 - 代理
 - 并发上限
+- 账户到期时间（可选，套餐/账号购买到期时间）
 - 是否启用透传
 - 错误策略
 - 备注
 
-`expires_at`、`account_id` / `chatgpt_account_id` 属于 OpenAI OAuth token 响应或 token 解析出的系统元数据，不作为用户表单输入项。
+`expires_at`、`account_id` / `chatgpt_account_id` 属于 OpenAI OAuth token 响应或 token 解析出的系统元数据，不作为用户表单输入项。`account_expires_at` 是本系统的账户套餐到期时间，可选填写，和 OAuth token 的 `expires_at` 不是同一个字段。
 
 保存要求：
 
@@ -49,6 +50,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `refresh_token` 按凭据指纹做数据库全局唯一约束，不能被其他系统账户重复添加；无 `refresh_token` 时兜底约束 `access_token`
 - 列表不展示 Access Token 与 Refresh Token，编辑弹窗可查看和修改
 - `expires_at` 由后端根据 OpenAI 返回的 `expires_in` 自动计算和刷新
+- `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
 - 可手动启用 / 停用
 - `refresh_token` 只对 OAuth 账户需要，账户列表不展示
 
@@ -61,6 +63,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `base_url`
 - 代理
 - 并发上限
+- 账户到期时间（可选，套餐/账号购买到期时间）
 - 是否启用透传
 - 错误策略
 - 备注
@@ -71,6 +74,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - API Key 按凭据指纹做数据库全局唯一约束，不能被其他系统账户重复添加
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
+- `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
 - 可手动启用 / 停用
 
 ## 账户归属分组
@@ -145,7 +149,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 3. 用户登录 OpenAI 后浏览器会跳转到 `http://localhost:1455/auth/callback`。
 4. 如果本机没有监听该端口，浏览器显示连接失败也没关系，复制地址栏完整 URL。
 5. 前端把回调 URL 提交给后端，后端校验 `state` 并用 PKCE `code_verifier` 换取 token；Client ID 与 Redirect URI 使用后端内置默认值，不暴露给用户填写。
-6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id` 和邮箱。
+6. 创建 OpenAI OAuth 账户，保存 `access_token`、`refresh_token`、`expires_at`、`client_id`、邮箱和可选的 `account_expires_at`。
 7. 账户落库后立即触发一次首次额度快照刷新；刷新失败只更新快照状态和退避时间，不影响账户创建结果。
 
 ### Refresh Token 授权
@@ -162,6 +166,8 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
 - 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户。
 - 后台 OAuth 额度快照刷新任务探测前，如果发现 access token 即将过期，也会先自动刷新授权。
+- OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
+- 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号或后台 OAuth 额度探测。
 - 账户页不提供常驻“刷新授权”或“刷新用量”按钮；授权续期和额度快照都由真实请求与后台任务维护。
 - OAuth token 刷新、账户测试和后台额度探测会优先使用账户绑定的代理；没有绑定代理时默认直连。迁移旧账户时不再自动创建或绑定本机固定端口代理，避免换电脑或服务器部署后误连本机端口。
 
@@ -188,6 +194,7 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - 账户类型
 - 供应商
 - 并发数
+- 账户到期时间
 - 状态（正常、停用、错误、限流中、临时不可调用）
 - 用量情况
 - 优先级

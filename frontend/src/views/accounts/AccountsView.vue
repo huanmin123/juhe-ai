@@ -34,7 +34,13 @@
         <a-empty class="page-empty-card" description="还没有账户。点击「添加账户」，再选择供应商和账户类型。" />
       </template>
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'type'">
+        <template v-if="column.key === 'name'">
+          <div class="resource-name-cell">
+            <span>{{ record.name }}</span>
+            <a-tag v-if="isAuthorizedAccount(record)" color="cyan">授权自 {{ record.ownerSystemAccountName || '其他用户' }}</a-tag>
+          </div>
+        </template>
+        <template v-else-if="column.key === 'type'">
           <a-tag color="processing">{{ accountTypeText(record.type) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'providerCode'">
@@ -90,11 +96,12 @@
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
-            <a-button type="link" size="small" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm title="确认删除这个账户？" @confirm="removeAccount(record.id)">
+            <a-button v-if="canEditAccount(record)" type="link" size="small" @click="openEdit(record)">编辑</a-button>
+            <a-popconfirm v-if="canDeleteAccount(record)" title="确认删除这个账户？" @confirm="removeAccount(record.id)">
               <a-button type="link" size="small" danger>删除</a-button>
             </a-popconfirm>
-            <a-dropdown>
+            <a-tag v-if="isAuthorizedAccount(record)" color="cyan">仅可使用</a-tag>
+            <a-dropdown v-if="accountMenuItems(record).length">
               <a-button type="link" size="small">更多</a-button>
               <template #overlay>
                 <a-menu @click="handleAccountMenuClick($event, record)">
@@ -389,6 +396,42 @@
         <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="accountErrorPolicyRules" />
       </a-form>
     </a-modal>
+
+    <a-modal v-model:open="authorizationModalOpen" :title="authorizationModalTitle" width="920px" :footer="null" @cancel="closeAuthorizationModal">
+      <div v-if="authorizationAccount" class="authorization-modal">
+        <a-alert class="form-alert" type="info" show-icon message="授权后对方仅可使用账户，不能编辑、删除、测试或查看凭据；用量统一累计到账户，日志仍按实际调用者记录。" />
+        <div class="authorization-create-row">
+          <a-select v-model:value="authorizationForm.granteeSystemAccountId" show-search option-filter-prop="label" class="authorization-user-select" :options="authorizationUserOptions" placeholder="选择被授权用户" />
+          <a-input v-model:value="authorizationForm.remark" allow-clear placeholder="备注（可选）" />
+          <a-button type="primary" :loading="authorizationSaving" @click="createAuthorization">新增授权</a-button>
+        </div>
+        <a-table size="small" :columns="authorizationColumns" :data-source="accountAuthorizations" row-key="id" :loading="authorizationLoading" :pagination="false">
+          <template #emptyText>
+            <a-empty description="还没有授权记录" />
+          </template>
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'grantee'">
+              {{ record.granteeSystemAccountName || record.granteeSystemAccountId }}
+            </template>
+            <template v-else-if="column.key === 'status'">
+              <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '生效中' : '已收回' }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'usage'">
+              <span class="usage-summary">{{ formatAuthorizationUsage(record.usage) }}</span>
+            </template>
+            <template v-else-if="column.key === 'createdAt'">
+              {{ formatDateTime(record.createdAt) }}
+            </template>
+            <template v-else-if="column.key === 'actions'">
+              <a-popconfirm v-if="record.status === 'active'" title="确认收回这个授权？" @confirm="revokeAuthorization(record.id)">
+                <a-button type="link" size="small" danger>收回</a-button>
+              </a-popconfirm>
+              <span v-else class="muted-cell">-</span>
+            </template>
+          </template>
+        </a-table>
+      </div>
+    </a-modal>
   </a-card>
 </template>
 
@@ -400,7 +443,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
-import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
+import type { AccountAuthorizationSummary, AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import {
@@ -481,8 +524,13 @@ const testModalOpen = ref(false)
 const testRunning = ref(false)
 const testModelsLoading = ref(false)
 const modalOpen = ref(false)
+const authorizationModalOpen = ref(false)
+const authorizationLoading = ref(false)
+const authorizationSaving = ref(false)
 const authResult = ref<OpenAIAuthURLResult>()
 const editingId = ref<string>()
+const authorizationAccount = ref<AccountSummary>()
+const accountAuthorizations = ref<AccountAuthorizationSummary[]>([])
 const testingAccount = ref<AccountSummary>()
 const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
@@ -494,6 +542,7 @@ const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue })
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
+const authorizationForm = reactive({ granteeSystemAccountId: undefined as string | undefined, remark: '' })
 const isAdmin = authState.isAdmin
 
 const form = reactive<AccountForm>(defaultForm())
@@ -546,6 +595,17 @@ const columns = computed(() => {
 })
 const tableScrollX = computed(() => (isAdmin.value ? 2300 : 2120))
 
+const authorizationModalTitle = computed(() => authorizationAccount.value ? `授权管理：${authorizationAccount.value.name}` : '授权管理')
+
+const authorizationColumns = [
+  { title: '被授权用户', key: 'grantee', width: 180 },
+  { title: '状态', key: 'status', width: 100 },
+  { title: '授权后用量', key: 'usage', width: 260 },
+  { title: '备注', dataIndex: 'remark', key: 'remark', width: 180 },
+  { title: '授权时间', key: 'createdAt', width: 180 },
+  { title: '操作', key: 'actions', width: 100 }
+]
+
 const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const keyword = normalizeKeyword(filters.keyword)
   const keywordMatched = !keyword || [
@@ -565,6 +625,9 @@ const filteredAccounts = computed(() => accounts.value.filter((account) => {
 }))
 
 const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
+const authorizationUserOptions = computed(() => systemAccounts.value
+  .filter((account) => account.status === 'active' && account.id !== authorizationAccount.value?.ownerSystemAccountId)
+  .map((account) => ({ label: `${account.displayName || account.username}（${account.username}）`, value: account.id })))
 
 const defaultTestModelOptions = [
   'gpt-5.5',
@@ -632,11 +695,12 @@ const rowSelection = computed(() => ({
   selectedRowKeys: selectedAccountIds.value,
   onChange: (selectedRowKeys: Array<string | number>) => {
     selectedAccountIds.value = selectedRowKeys.map((key) => String(key))
-  }
+  },
+  getCheckboxProps: (account: AccountSummary) => ({ disabled: !canEditAccount(account) })
 }))
 
 const proxyOptions = computed(() => (isAdmin.value ? proxies.value : []).map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
-const providerGroups = computed(() => groups.value.filter((group) => !form.providerCode || group.providerCode === form.providerCode))
+const providerGroups = computed(() => groups.value.filter((group) => canManageGroupAccounts(group) && (!form.providerCode || group.providerCode === form.providerCode)))
 const groupOptions = computed(() => providerGroups.value.map((group) => ({ label: group.isDefault ? `${group.name}（默认）` : group.name, value: group.id })))
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
@@ -797,8 +861,32 @@ function groupNameForAccount(accountId: string) {
   return groups.value.find((group) => group.accountIds.includes(accountId))?.name
 }
 
+function isAuthorizedAccount(account: AccountSummary): boolean {
+  return account.accessType === 'authorized'
+}
+
+function canEditAccount(account: AccountSummary): boolean {
+  return account.permissions?.canEdit !== false
+}
+
+function canDeleteAccount(account: AccountSummary): boolean {
+  return account.permissions?.canDelete !== false
+}
+
+function canAuthorizeAccount(account: AccountSummary): boolean {
+  return account.permissions?.canAuthorize !== false && !isAuthorizedAccount(account)
+}
+
+function canUseAccountActions(account: AccountSummary): boolean {
+  return canEditAccount(account) && account.permissions?.canViewCredentials !== false
+}
+
+function canManageGroupAccounts(group: GroupSummary): boolean {
+  return group.permissions?.canManageAccounts !== false && group.accessType !== 'authorized'
+}
+
 function defaultGroupForProvider(providerCode: string) {
-  const candidates = groups.value.filter((group) => group.providerCode === providerCode)
+  const candidates = groups.value.filter((group) => group.providerCode === providerCode && canManageGroupAccounts(group))
   return candidates.find((group) => group.isDefault) ?? candidates[0]
 }
 
@@ -808,7 +896,7 @@ function ensureDefaultGroupSelected(providerCode = form.providerCode) {
     return
   }
   const currentGroup = groups.value.find((group) => group.id === form.groupId)
-  if (currentGroup?.providerCode === providerCode) {
+  if (currentGroup?.providerCode === providerCode && canManageGroupAccounts(currentGroup)) {
     return
   }
   form.groupId = defaultGroupForProvider(providerCode)?.id
@@ -834,13 +922,23 @@ function accountBaseUrl(account: AccountSummary): string {
 }
 
 function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
+  if (!canUseAccountActions(account)) return []
   return [
     { key: 'test', label: '测试' },
     { key: 'toggle-status', label: account.status === 'active' ? '停用账户' : '恢复正常', danger: account.status === 'active' },
     ...(!isTemporaryAccountStatus(account)
       ? [{ key: 'toggle-schedulable', label: account.schedulable ? '暂停调度' : '恢复调度' }]
       : []),
+    ...(canAuthorizeAccount(account) ? [{ key: 'authorizations', label: '授权管理' }] : [])
   ]
+}
+
+function formatAuthorizationUsage(usage: AccountUsageSummary): string {
+  return `${formatNumber(usage.requestCount)}req / ${formatUsageAmount(usage.totalTokens)} / ${formatCost(usage.totalCost)}`
+}
+
+function formatNumber(value?: number): string {
+  return new Intl.NumberFormat('zh-CN').format(value ?? 0)
 }
 
 function formatUsageAmount(value?: number): string {
@@ -969,14 +1067,14 @@ async function loadData() {
       isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
       isAdmin.value ? api.proxies.list() : Promise.resolve([] as ProxyProfileSummary[]),
       api.groups.list({ systemAccountId }),
-      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      api.systemAccounts.list()
     ])
     accounts.value = accountList
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
     proxies.value = proxyList
     groups.value = groupList
     systemAccounts.value = systemAccountList
-    selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id))
+    selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id && canEditAccount(account)))
     if (modalOpen.value && !editingId.value) {
       ensureDefaultGroupSelected()
     }
@@ -1075,6 +1173,85 @@ function openEdit(account: AccountSummary) {
   accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
   authResult.value = undefined
   modalOpen.value = true
+}
+
+async function openAuthorizationModal(account: AccountSummary) {
+  if (!canAuthorizeAccount(account)) {
+    message.warning('当前账户没有授权管理权限')
+    return
+  }
+  authorizationAccount.value = account
+  authorizationForm.granteeSystemAccountId = undefined
+  authorizationForm.remark = ''
+  authorizationModalOpen.value = true
+  authorizationLoading.value = true
+  try {
+    accountAuthorizations.value = await api.accounts.authorizations(account.id)
+  } catch (error) {
+    console.error(error)
+    message.error('加载授权记录失败')
+  } finally {
+    authorizationLoading.value = false
+  }
+}
+
+function closeAuthorizationModal() {
+  authorizationModalOpen.value = false
+  authorizationAccount.value = undefined
+  accountAuthorizations.value = []
+  authorizationForm.granteeSystemAccountId = undefined
+  authorizationForm.remark = ''
+}
+
+async function refreshAuthorizationList() {
+  if (!authorizationAccount.value) return
+  authorizationLoading.value = true
+  try {
+    accountAuthorizations.value = await api.accounts.authorizations(authorizationAccount.value.id)
+  } catch (error) {
+    console.error(error)
+    message.error('刷新授权记录失败')
+  } finally {
+    authorizationLoading.value = false
+  }
+}
+
+async function createAuthorization() {
+  if (!authorizationAccount.value) return
+  if (!authorizationForm.granteeSystemAccountId) {
+    message.warning('请选择被授权用户')
+    return
+  }
+  authorizationSaving.value = true
+  try {
+    await api.accounts.createAuthorization(authorizationAccount.value.id, {
+      granteeSystemAccountId: authorizationForm.granteeSystemAccountId,
+      remark: authorizationForm.remark.trim() || undefined
+    })
+    message.success('授权已创建')
+    authorizationForm.granteeSystemAccountId = undefined
+    authorizationForm.remark = ''
+    await refreshAuthorizationList()
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '创建授权失败'))
+  } finally {
+    authorizationSaving.value = false
+  }
+}
+
+async function revokeAuthorization(authorizationId: string) {
+  if (!authorizationAccount.value) return
+  try {
+    await api.accounts.revokeAuthorization(authorizationAccount.value.id, authorizationId)
+    message.success('授权已收回')
+    await refreshAuthorizationList()
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error('收回授权失败')
+  }
 }
 
 function buildCredentials() {
@@ -1252,6 +1429,10 @@ async function loadTestModels() {
 }
 
 async function openTestModal(account: AccountSummary) {
+  if (!canUseAccountActions(account)) {
+    message.warning('授权账户仅可使用，不能测试')
+    return
+  }
   testingAccount.value = account
   testResult.value = undefined
   testForm.model = testForm.model || 'gpt-5.5'
@@ -1308,6 +1489,7 @@ async function testAccount(account: AccountSummary) {
 }
 
 async function testAccountSilently(account: AccountSummary) {
+  if (!canUseAccountActions(account)) return undefined
   try {
     return await api.accounts.test(account.id, { model: testForm.model, prompt: testForm.prompt })
   } catch (error) {
@@ -1321,7 +1503,7 @@ async function batchUpdateAccounts(
   loadingLabel: string,
   successLabel: string
 ) {
-  const selected = selectedAccounts.value
+  const selected = selectedAccounts.value.filter(canEditAccount)
   if (!selected.length) {
     message.warning('请先选择账户')
     return
@@ -1346,7 +1528,7 @@ async function batchUpdateAccounts(
 }
 
 async function batchTestSelected() {
-  const selected = selectedAccounts.value
+  const selected = selectedAccounts.value.filter(canUseAccountActions)
   if (!selected.length) {
     message.warning('请先选择账户')
     return
@@ -1388,6 +1570,10 @@ async function batchSetSchedulable(schedulable: boolean) {
 }
 
 async function updateAccountState(account: AccountSummary, payload: Record<string, unknown>, successText: string) {
+  if (!canEditAccount(account)) {
+    message.warning('授权账户不能修改状态')
+    return
+  }
   try {
     await api.accounts.update(account.id, payload)
     message.success(successText)
@@ -1399,6 +1585,10 @@ async function updateAccountState(account: AccountSummary, payload: Record<strin
 }
 
 async function handleAccountMenu(key: string, account: AccountSummary) {
+  if (!canUseAccountActions(account)) {
+    message.warning('授权账户仅可使用，不能执行管理操作')
+    return
+  }
   if (key === 'test') {
     await testAccount(account)
     return
@@ -1410,6 +1600,10 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
   }
   if (key === 'toggle-schedulable') {
     await updateAccountState(account, { schedulable: !account.schedulable }, account.schedulable ? '账户已暂停调度' : '账户已恢复调度')
+    return
+  }
+  if (key === 'authorizations') {
+    await openAuthorizationModal(account)
     return
   }
 }
@@ -2011,6 +2205,24 @@ onMounted(loadData)
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
+}
+
+.resource-name-cell,
+.authorization-modal {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.authorization-create-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(180px, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.authorization-user-select {
+  width: 100%;
 }
 
 .account-form {

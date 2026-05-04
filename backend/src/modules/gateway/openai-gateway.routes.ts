@@ -8,8 +8,10 @@ import {
   createUsageRecord,
   listOpenAIAccountsForGroup,
   recordAccountStreamFailure,
+  resolveGroupUsageAccessMetadata,
   updateAccount,
   validateGatewayApiKey,
+  type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
@@ -44,7 +46,33 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     return
   }
 
-  const accounts = listOpenAIAccountsForGroup(apiKeyRecord.group_id)
+  const groupAccess = resolveGroupUsageAccessMetadata(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
+  if (!groupAccess) {
+    const statusCode = 403
+    const responsePayload = { error: { message: 'API key group authorization is unavailable', type: 'forbidden' } }
+    createUsageRecord({
+      requestId,
+      clientIp,
+      systemAccountId: apiKeyRecord.system_account_id,
+      apiKeyId: apiKeyRecord.id,
+      groupId: apiKeyRecord.group_id,
+      endpoint,
+      providerCode: 'openai',
+      model: requestModel(req),
+      stream: req.body?.stream === true,
+      statusCode,
+      success: false,
+      durationMs: Date.now() - startedAt,
+      errorMessage: responsePayload.error.message,
+      requestSnapshot,
+      responseSnapshot: buildGatewayErrorResponseSnapshot(statusCode, responsePayload)
+    })
+    res.status(statusCode).json(responsePayload)
+    return
+  }
+
+  const groupUsageFields = groupUsageMetadata(groupAccess)
+  const accounts = listOpenAIAccountsForGroup(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
   if (accounts.length === 0) {
     const statusCode = 503
     const responsePayload = { error: { message: 'No available upstream account', type: 'service_unavailable' } }
@@ -54,6 +82,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       systemAccountId: apiKeyRecord.system_account_id,
       apiKeyId: apiKeyRecord.id,
       groupId: apiKeyRecord.group_id,
+      ...groupUsageFields,
       endpoint,
       providerCode: 'openai',
       model: requestModel(req),
@@ -76,6 +105,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       systemAccountId: apiKeyRecord.system_account_id,
       apiKeyId: apiKeyRecord.id,
       groupId: apiKeyRecord.group_id,
+      ...groupUsageFields,
       endpoint,
       requestSnapshot
     })
@@ -106,6 +136,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
           apiKeyId: apiKeyRecord.id,
           groupId: apiKeyRecord.group_id,
           accountId: account.id,
+          ...accountUsageMetadata(account),
           endpoint,
           providerCode: 'openai',
           model: requestModel(req),
@@ -149,6 +180,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       apiKeyId: apiKeyRecord.id,
       groupId: apiKeyRecord.group_id,
       accountId: account.id,
+      ...accountUsageMetadata(account),
       endpoint,
       providerCode: 'openai',
       model: requestModel(req),
@@ -191,6 +223,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
         systemAccountId: apiKeyRecord.system_account_id,
         apiKeyId: apiKeyRecord.id,
         groupId: apiKeyRecord.group_id,
+        ...groupUsageFields,
         endpoint,
         providerCode: 'openai',
         model: requestModel(req),
@@ -208,6 +241,34 @@ openAIGatewayRouter.all('/*', async (req, res) => {
 })
 
 type UpstreamAccount = OpenAIAccountSecret
+
+type UsageAccessFields = Pick<OpenAIAccountSecret,
+  'accountOwnerSystemAccountId'
+  | 'groupOwnerSystemAccountId'
+  | 'accountAccessType'
+  | 'groupAccessType'
+  | 'accountAuthorizationId'
+  | 'groupAuthorizationId'
+>
+
+function accountUsageMetadata(account: UpstreamAccount): UsageAccessFields {
+  return {
+    accountOwnerSystemAccountId: account.accountOwnerSystemAccountId,
+    groupOwnerSystemAccountId: account.groupOwnerSystemAccountId,
+    accountAccessType: account.accountAccessType,
+    groupAccessType: account.groupAccessType,
+    accountAuthorizationId: account.accountAuthorizationId,
+    groupAuthorizationId: account.groupAuthorizationId
+  }
+}
+
+function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<UsageAccessFields, 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId'> {
+  return {
+    groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
+    groupAccessType: groupAccess.groupAccessType,
+    groupAuthorizationId: groupAccess.groupAuthorizationId
+  }
+}
 
 interface UpstreamAttempt {
   accountId: string
@@ -400,6 +461,7 @@ function recordFailedUpstreamAttempt(
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
     accountId: account.id,
+    ...accountUsageMetadata(account),
     endpoint: usageContext.endpoint,
     providerCode: 'openai',
     model: requestModel(req),

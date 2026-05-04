@@ -3,6 +3,10 @@ export type AccountType = string
 export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
 export type SystemAccountRole = 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'
+export type ResourceAccessType = 'owner' | 'authorized'
+export type AccountUsageAccessType = 'owner' | 'account_authorized' | 'group_authorized'
+export type GroupUsageAccessType = 'owner' | 'authorized'
+export type AuthorizationStatus = 'active' | 'revoked'
 
 export interface SystemAccountSummary {
   id: string
@@ -76,6 +80,15 @@ export interface AccountUsageSummary {
   lastUsedAt?: string
 }
 
+export interface ResourcePermissions {
+  canUse: boolean
+  canEdit: boolean
+  canDelete: boolean
+  canAuthorize: boolean
+  canViewCredentials: boolean
+  canManageAccounts?: boolean
+}
+
 export interface AccountOAuthUsageWindow {
   utilization: number
   resetsAt?: string
@@ -132,6 +145,29 @@ export interface AccountSummary {
   lastUsedAt?: string
   usage: AccountUsageSummary
   oauthUsage?: AccountOAuthUsageSnapshot
+  accessType?: ResourceAccessType
+  accountAuthorizationId?: string
+  ownerSystemAccountId?: string
+  ownerSystemAccountName?: string
+  authorizationStatus?: AuthorizationStatus
+  permissions?: ResourcePermissions
+}
+
+export interface AccountAuthorizationSummary {
+  id: string
+  accountId: string
+  accountName?: string
+  ownerSystemAccountId: string
+  ownerSystemAccountName?: string
+  granteeSystemAccountId: string
+  granteeSystemAccountName?: string
+  scope: 'use'
+  status: AuthorizationStatus
+  remark?: string
+  usage: AccountUsageSummary
+  createdAt: string
+  revokedAt?: string
+  updatedAt: string
 }
 
 export interface AccountTestResult {
@@ -177,6 +213,29 @@ export interface GroupSummary {
   isDefault: boolean
   accountIds: string[]
   accountStats: GroupAccountStats
+  accessType?: ResourceAccessType
+  groupAuthorizationId?: string
+  ownerSystemAccountId?: string
+  ownerSystemAccountName?: string
+  authorizationStatus?: AuthorizationStatus
+  permissions?: ResourcePermissions
+}
+
+export interface GroupAuthorizationSummary {
+  id: string
+  groupId: string
+  groupName?: string
+  ownerSystemAccountId: string
+  ownerSystemAccountName?: string
+  granteeSystemAccountId: string
+  granteeSystemAccountName?: string
+  scope: 'use'
+  status: AuthorizationStatus
+  remark?: string
+  usage: AccountUsageSummary
+  createdAt: string
+  revokedAt?: string
+  updatedAt: string
 }
 
 export interface ApiKeySummary {

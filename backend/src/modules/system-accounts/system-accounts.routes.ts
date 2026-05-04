@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
+import { requireAdmin } from '../auth/auth.middleware.js'
 import { createSystemAccount, listSystemAccounts, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
 
 export const systemAccountsRouter = Router()
@@ -28,7 +29,7 @@ systemAccountsRouter.get('/', (_req, res) => {
   res.json(ok(listSystemAccounts()))
 })
 
-systemAccountsRouter.post('/', (req, res) => {
+systemAccountsRouter.post('/', requireAdmin, (req, res) => {
   const parsed = createSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('Invalid system account payload'))
@@ -41,7 +42,7 @@ systemAccountsRouter.post('/', (req, res) => {
   }
 })
 
-systemAccountsRouter.patch('/:id', (req, res) => {
+systemAccountsRouter.patch('/:id', requireAdmin, (req, res) => {
   const parsed = updateSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('Invalid system account payload'))

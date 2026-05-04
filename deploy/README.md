@@ -1,6 +1,6 @@
 # 跨平台发布包运行说明
 
-> 这是发布包内置说明。构建说明见 `docs/deploy/build.md`，部署说明见 `docs/deploy/deploy.md`。
+> 这是发布包内置说明。构建说明见 `docs/deploy/构建指南.md`，部署说明见 `docs/deploy/部署指南.md`。
 
 ## 1. 选择启动脚本
 
@@ -162,4 +162,5 @@ backend/data/juhe-ai.sqlite3
 - `/v1` 流式断开：反向代理关闭 buffering，并增大超时。
 - 敏感字段无法解密：找回旧 `JUHE_AI_SECRET`。
 - 端口外部访问失败：直连用 `JUHE_AI_HOST=0.0.0.0`，并开放防火墙/安全组端口。
+
 

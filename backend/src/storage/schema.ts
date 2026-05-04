@@ -107,6 +107,22 @@ export function applySchema(database: DatabaseSync): void {
       FOREIGN KEY (error_policy_id) REFERENCES error_policies(id)
     );
 
+    CREATE TABLE IF NOT EXISTS account_authorizations (
+      id TEXT PRIMARY KEY,
+      account_id TEXT NOT NULL,
+      owner_system_account_id TEXT NOT NULL,
+      grantee_system_account_id TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'use',
+      status TEXT NOT NULL DEFAULT 'active',
+      remark TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_by TEXT,
+      revoked_at TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS groups (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
@@ -118,6 +134,22 @@ export function applySchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code)
+    );
+
+    CREATE TABLE IF NOT EXISTS group_authorizations (
+      id TEXT PRIMARY KEY,
+      group_id TEXT NOT NULL,
+      owner_system_account_id TEXT NOT NULL,
+      grantee_system_account_id TEXT NOT NULL,
+      scope TEXT NOT NULL DEFAULT 'use',
+      status TEXT NOT NULL DEFAULT 'active',
+      remark TEXT,
+      created_by TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      revoked_by TEXT,
+      revoked_at TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS group_accounts (
@@ -176,6 +208,12 @@ export function applySchema(database: DatabaseSync): void {
       error_message TEXT,
       request_snapshot_json TEXT,
       response_snapshot_json TEXT,
+      account_owner_system_account_id TEXT,
+      group_owner_system_account_id TEXT,
+      account_access_type TEXT,
+      group_access_type TEXT,
+      account_authorization_id TEXT,
+      group_authorization_id TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -407,6 +445,12 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'usage_records', 'cost_usd', 'REAL')
   ensureColumn(database, 'usage_records', 'request_snapshot_json', 'TEXT')
   ensureColumn(database, 'usage_records', 'response_snapshot_json', 'TEXT')
+  ensureColumn(database, 'usage_records', 'account_owner_system_account_id', 'TEXT')
+  ensureColumn(database, 'usage_records', 'group_owner_system_account_id', 'TEXT')
+  ensureColumn(database, 'usage_records', 'account_access_type', 'TEXT')
+  ensureColumn(database, 'usage_records', 'group_access_type', 'TEXT')
+  ensureColumn(database, 'usage_records', 'account_authorization_id', 'TEXT')
+  ensureColumn(database, 'usage_records', 'group_authorization_id', 'TEXT')
   ensureColumn(database, 'account_usage_snapshots', 'system_account_id', "TEXT NOT NULL DEFAULT 'sys_admin'")
   ensureColumn(database, 'account_usage_snapshots', 'refresh_status', 'TEXT')
   ensureColumn(database, 'account_usage_snapshots', 'last_attempt_at', 'TEXT')
@@ -433,10 +477,22 @@ export function applySchema(database: DatabaseSync): void {
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_account_authorizations_account ON account_authorizations(account_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_account_authorizations_owner ON account_authorizations(owner_system_account_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_account_authorizations_grantee ON account_authorizations(grantee_system_account_id, status);')
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_account_authorizations_active_unique ON account_authorizations(account_id, grantee_system_account_id) WHERE status = 'active';")
+  database.exec('CREATE INDEX IF NOT EXISTS idx_group_authorizations_group ON group_authorizations(group_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_group_authorizations_owner ON group_authorizations(owner_system_account_id, status);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_group_authorizations_grantee ON group_authorizations(grantee_system_account_id, status);')
+  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_group_authorizations_active_unique ON group_authorizations(group_id, grantee_system_account_id) WHERE status = 'active';")
   database.exec('CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_proxy_profiles_system_account ON proxy_profiles(system_account_id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_sort ON usage_records(system_account_id, created_at, id);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_account_owner ON usage_records(account_owner_system_account_id, account_id, created_at);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_group_owner ON usage_records(group_owner_system_account_id, group_id, created_at);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_account_authorization ON usage_records(account_authorization_id, created_at);')
+  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_group_authorization ON usage_records(group_authorization_id, created_at);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_first_token_sort ON usage_records(first_token_ms, created_at, id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_duration_sort ON usage_records(duration_ms, created_at, id);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_cost_sort ON usage_records(cost_usd, created_at, id);')

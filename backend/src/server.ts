@@ -60,7 +60,7 @@ app.use('/api/proxies', requireAdmin, proxiesRouter)
 app.use('/api/usage-records', usageRecordsRouter)
 app.use('/api/stats', requireAdmin, statsRouter)
 app.use('/api/settings', settingsRouter)
-app.use('/api/system-accounts', requireAdmin, systemAccountsRouter)
+app.use('/api/system-accounts', systemAccountsRouter)
 app.use('/v1', openAIGatewayRouter)
 
 if (existsSync(frontendIndexPath)) {
