@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { badRequest, ok } from '../../shared/http.js'
 import { createApiKeyRecord, deleteApiKey, listApiKeys, updateApiKey } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 export const apiKeysRouter = Router()
 
@@ -25,7 +26,9 @@ apiKeysRouter.post('/', (req, res) => {
     return
   }
   try {
-    res.status(201).json(ok(createApiKeyRecord(parsed.data), '明文密钥已保存，列表中可直接查看'))
+    const apiKey = createApiKeyRecord(parsed.data)
+    clearGatewayRuntimeCache()
+    res.status(201).json(ok(apiKey, '明文密钥已保存，列表中可直接查看'))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Invalid API key payload'))
   }
@@ -37,6 +40,7 @@ apiKeysRouter.patch('/:id', (req, res) => {
     res.status(404).json({ message: 'API key not found' })
     return
   }
+  clearGatewayRuntimeCache()
   res.json(ok(apiKey))
 })
 
@@ -45,5 +49,6 @@ apiKeysRouter.delete('/:id', (req, res) => {
     res.status(404).json({ message: 'API key not found' })
     return
   }
+  clearGatewayRuntimeCache()
   res.status(204).send()
 })
