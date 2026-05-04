@@ -1,0 +1,232 @@
+# 后端架构设计
+
+> 面向后端实现、数据库维护和 AI 维护者。
+> 本文是后端架构入口，负责说明后端职责边界、目录规划、数据库设计原则和变更落点；具体业务字段、默认参数、专题调研和运行验证仍以功能文档、计划文档和开发文档为准。
+
+## 1. 文件定位
+
+- 本文回答这些问题：
+  - 后端整体按什么边界分层
+  - 新接口、服务、脚本和存储逻辑应该放在哪里
+  - SQLite 数据库如何分区、如何演进、如何处理敏感字段
+  - 后端变更前应优先阅读哪些文档
+- 本文不替代具体业务架构和阶段计划：
+  - [../架构总览.md](../架构总览.md)
+  - [../../plans/第一阶段计划.md](../../plans/第一阶段计划.md)
+  - [../../functions/SQLite存储说明.md](../../functions/SQLite存储说明.md)
+  - [开发运行说明](../../develop/运行说明.md)
+  - [开发测试与验证说明](../../develop/测试与验证说明.md)
+
+## 2. 后端范围
+
+- 后端是 `juhe-ai` 的管理 API、OpenAI 兼容中转网关、账号调度、凭据处理、统计聚合和后台任务承载层。
+- 第一阶段优先保证 OpenAI 供应商、系统账户、AI 账户、分组、API Key、代理、使用记录、统计缓存、系统设置和 OpenAI OAuth 账号接入形成轻量闭环。
+- 后端只暴露两类入口：管理面 `/api/*` 和 OpenAI 兼容网关 `/v1/*`；客户端不直接访问上游账号凭据。
+- 后端是业务事实源；前端不传系统账户归属字段，不自行决定数据隔离、调度状态或敏感字段展示。
+
+## 3. 技术边界
+
+- 运行时：`Node.js 22+`。
+- 语言：`TypeScript`，ESM 模块。
+- Web 框架：`Express`。
+- 存储：Node 22 内置 `node:sqlite`，默认 SQLite 文件位于 `backend/data/juhe-ai.sqlite3`。
+- 配置：只读取 `backend/.env`，相对路径按 `backend/` 目录解析。
+- 网关协议：对外统一兼容 OpenAI `/v1/*`，第一阶段只实现 OpenAI 供应商适配。
+- 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
+
+## 4. 目录规划
+
+| 目录 / 文件 | 职责 | 变更规则 |
+| --- | --- | --- |
+| `backend/src/server.ts` | 应用启动、全局中间件、健康检查、管理 API 挂载、网关挂载、前端静态资源兜底 | 只放应用装配，不沉淀复杂业务逻辑 |
+| `backend/src/config/` | 运行配置读取、路径解析和默认配置 | 新增环境变量时同步 `.env.example`、开发和部署文档 |
+| `backend/src/domain/` | 后端对外返回和跨模块共享的领域类型 | 新增或修改 API 结构时同步前端类型和文档 |
+| `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
+| `backend/src/modules/gateway/` | OpenAI 兼容中转、账号选择、错误策略、SSE 透传和用量解析 | 不把网关细节泄漏成前端多套复杂选项 |
+| `backend/src/modules/background/` | 统计聚合、系统采样、OAuth 用量快照刷新等后台任务 | 保持轻量定时任务，不引入重型队列 |
+| `backend/src/storage/` | SQLite 连接、schema、seed、迁移兼容、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
+| `backend/src/shared/` | 通用响应、跨模块小工具 | 只放稳定复用能力，不堆业务逻辑 |
+| `backend/src/scripts/` | 烟测、导入导出、一次性维护脚本 | 脚本应可独立运行，并说明安全边界 |
+| `backend/src/types/` | 第三方或运行时类型补充 | 只补缺失类型，不放业务模型 |
+
+### 4.1 模块目录约定
+
+- 新模块默认放在 `backend/src/modules/<module-name>/`。
+- 管理 API 路由命名为 `<module-name>.routes.ts`。
+- 有外部请求、调度、副作用或复杂规则时拆出 `<module-name>.service.ts`。
+- 同一业务对象的数据库访问优先复用 `backend/src/storage/repositories.ts`；当文件继续膨胀到难以维护时，再按“大文件重构指南”拆分 repository，不提前拆出多套并行访问层。
+- 模块不要绕过 `auth.middleware.ts` 和 `request-context.ts` 自行信任前端传入的系统账户归属。
+
+### 4.2 当前模块落点
+
+| 模块 | 后端落点 | 说明 |
+| --- | --- | --- |
+| 登录与系统账户 | `modules/auth/`、`modules/system-accounts/` | 登录、会话、验证码、失败防护和系统账户管理 |
+| 供应商 | `modules/providers/` | 第一阶段内置 OpenAI 供应商 |
+| AI 账户 | `modules/accounts/` | 账号 CRUD、账号测试、凭据展示边界和调度属性 |
+| OpenAI OAuth | `modules/openai-oauth/` | PKCE、refresh token 创建账户、token 刷新和额度快照 |
+| 分组 | `modules/groups/` | 分组 CRUD、账号绑定、分组授权 |
+| API Key | `modules/api-keys/` | 本地网关密钥创建、展示、状态和分组绑定 |
+| 代理 | `modules/proxies/` | 服务器级代理配置和账号绑定资源 |
+| 错误策略 | `modules/error-policies/`、`modules/gateway/account-error-policy.service.ts` | 账号级错误匹配、冷却、禁用和切换动作 |
+| 使用记录 | `modules/usage-records/` | 请求事实记录查询和快照展示 |
+| 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |
+| 设置 | `modules/settings/` | 全局设置和系统账户级设置读写 |
+| 网关 | `modules/gateway/openai-gateway.routes.ts` | `/v1/*` 入口、账号调度、上游转发和使用记录写入 |
+
+## 5. 请求分层
+
+### 5.1 管理 API
+
+```mermaid
+flowchart LR
+  Client["前端管理页面"] --> Api["/api/* 路由"]
+  Api --> Auth["登录态与权限中间件"]
+  Auth --> Service["模块服务"]
+  Service --> Repo["repository"]
+  Repo --> SQLite["SQLite"]
+```
+
+- 未登录只允许访问登录、公开设置和健康检查等明确入口。
+- `/api/*` 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
+- routes 层负责解析参数、返回统一响应和 HTTP 状态；业务规则和副作用放到 service 或 repository。
+- repository 必须根据当前登录态或显式访问作用域过滤数据，避免普通用户读写其他系统账户资源。
+
+### 5.2 网关 API
+
+```mermaid
+flowchart LR
+  Client["OpenAI 兼容客户端"] --> Gateway["/v1/*"]
+  Gateway --> Key["校验本地 API Key"]
+  Key --> Group["定位绑定分组"]
+  Group --> Account["选择可调度账号"]
+  Account --> Upstream["OpenAI 上游"]
+  Upstream --> Usage["写入使用记录"]
+  Usage --> Stats["后台聚合统计缓存"]
+```
+
+- 网关入口不使用后台登录态，而使用本地 API Key 作为调用方身份。
+- API Key 只能访问绑定分组；绑定授权分组时，使用记录必须保留调用方、资源所有者和授权关系。
+- 账号选择必须过滤停用、错误、冷却中、账号套餐到期、授权失效和分组未绑定的账号。
+- 上游认证由后端替换；客户端提交的上游敏感头不应直接透传。
+- 流式响应需要稳定转发 SSE，并在超时、中断和上游异常时按错误策略或默认冷却规则处理。
+
+## 6. 数据库设计
+
+### 6.1 存储原则
+
+- SQLite 是第一阶段唯一持久化存储；不引入 Redis、ClickHouse 或独立任务队列。
+- `usage_records` 是请求事实源；统计表只做读优化和图表缓存，不替代事实记录。
+- 启动时通过 `applySchema()` 自动建表、补列、建索引和做必要兼容迁移。
+- 启动时通过 `seedDefaults()` 写入默认管理员、OpenAI 供应商、默认 OpenAI 分组、全局设置和系统设置。
+- 新字段必须明确默认值、可空性、展示边界、旧库兼容策略和是否需要索引。
+- 不通过删除本地数据库掩盖 schema 兼容问题。
+
+### 6.2 表分区
+
+| 分区 | 表 | 作用 |
+| --- | --- | --- |
+| 登录与权限 | `system_accounts`、`system_sessions` | 后台账号、角色、状态、密码哈希和登录会话 |
+| 设置 | `global_settings`、`system_settings` | 平台公开设置和系统账户级运行偏好 |
+| 供应商与资源 | `providers`、`accounts`、`proxy_profiles`、`error_policies` | 上游供应商、AI 账户、代理和账号错误策略 |
+| 授权与分组 | `account_authorizations`、`groups`、`group_authorizations`、`group_accounts` | 账户使用授权、分组、分组授权和分组账号绑定 |
+| 网关访问 | `api_keys` | 本地网关密钥、分组绑定、状态、过期和配额占位 |
+| 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
+| 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
+| 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_error_daily`、`usage_stats_clients` | 列表统计、趋势图、模型分布、错误聚合和独立客户端数 |
+| 后台任务 | `stats_job_state` | 聚合游标、任务状态、统计滞后和错误信息 |
+| 运维监控 | `system_metrics_samples`、`system_metrics_hourly` | CPU、内存、进程、事件循环、网络、数据库体积和统计滞后 |
+
+### 6.3 核心关系
+
+```mermaid
+erDiagram
+  system_accounts ||--o{ accounts : owns
+  system_accounts ||--o{ groups : owns
+  system_accounts ||--o{ api_keys : owns
+  providers ||--o{ accounts : defines
+  providers ||--o{ groups : defines
+  accounts ||--o{ account_authorizations : grants
+  groups ||--o{ group_authorizations : grants
+  groups ||--o{ group_accounts : contains
+  accounts ||--o{ group_accounts : joins
+  groups ||--o{ api_keys : binds
+  api_keys ||--o{ usage_records : calls
+  accounts ||--o{ usage_records : hits
+  groups ||--o{ usage_records : scopes
+```
+
+- `system_account_id` 是业务数据隔离主线；普通用户只访问自己拥有或被授权使用的资源。
+- `providers.code` 是供应商稳定标识；`accounts.provider_code` 和 `groups.provider_code` 以它作为逻辑归属。
+- `groups` 是 API Key 的授权边界；`group_accounts` 保存分组与账号的多对多关系。
+- `account_authorizations` 和 `group_authorizations` 只授予使用权，不授予管理权，也不泄露凭据。
+- `usage_records` 冗余账号所有者、分组所有者、授权类型和授权 id，便于授权用量统计和历史追溯。
+
+### 6.4 敏感字段
+
+| 数据 | 存储字段 | 处理规则 |
+| --- | --- | --- |
+| 系统账户密码 | `system_accounts.password_hash` | 只保存哈希，不可逆展示 |
+| 登录会话 token | `system_sessions.token_hash` | 只保存哈希，客户端持有明文 token |
+| 上游 API Key / OAuth token | `accounts.credentials_encrypted` | 加密存储，列表只展示掩码，编辑和测试按权限读取完整凭据 |
+| 凭据去重指纹 | `accounts.credential_fingerprint` | 用哈希指纹辅助识别重复凭据，不替代密文 |
+| 本地网关 API Key | `api_keys.key_hash`、`api_keys.key_secret_encrypted` | 校验用哈希，自用复制需要时按权限展示完整 key |
+| 代理密码 | `proxy_profiles.password_encrypted` | 加密存储，列表不明文暴露 |
+| 请求与响应快照 | `usage_records.request_snapshot_json`、`usage_records.response_snapshot_json` | 用于排查，必须避免额外写入不必要敏感头 |
+
+### 6.5 索引与查询
+
+- 高频列表查询按 `system_account_id` 建索引，保证普通用户数据隔离查询不全表扫描。
+- 使用记录按 `created_at`、`system_account_id + created_at` 和排序字段建索引，支撑分页、详情和统计游标。
+- 授权表按资源、所有者和被授权者建索引，支撑授权列表、撤销和网关调度过滤。
+- 统计表按 `system_account_id + scope_type + scope_id + 时间桶` 查询，避免列表页实时扫描 `usage_records`。
+- 新增索引前先确认查询路径和数据规模，避免为低频字段堆积无效索引。
+
+### 6.6 Schema 演进
+
+- 新表优先写入 `CREATE TABLE IF NOT EXISTS`。
+- 新列通过 `ensureColumn()` 或显式兼容迁移补齐旧库。
+- 涉及主键或唯一约束调整时，使用临时表迁移并保留旧数据。
+- 新默认数据通过 `INSERT OR IGNORE` 或明确迁移标记写入，保证重复启动安全。
+- 迁移逻辑应可重复执行，不依赖手工删除 `backend/data/juhe-ai.sqlite3`。
+
+## 7. 配置设计
+
+- `JUHE_AI_HOST`：后端监听地址，默认 `127.0.0.1`。
+- `JUHE_AI_PORT`：后端监听端口，默认 `3000`。
+- `JUHE_AI_DATABASE_PATH`：SQLite 文件路径，默认 `./data/juhe-ai.sqlite3`。
+- `JUHE_AI_SECRET`：本地敏感数据加密和签名相关密钥，复用旧数据库时必须保持稳定。
+- `JUHE_AI_OAUTH_PROXY_URL`：OpenAI OAuth 相关请求可选代理。
+- `JUHE_AI_BACKEND_URL`、`JUHE_AI_SMOKE_ACCOUNT_NAME`、`JUHE_AI_SMOKE_MODEL`、`JUHE_AI_SMOKE_PROMPT`：烟测配置。
+
+配置规则：
+
+- 只从 `backend/.env` 读取，不要求用户设置系统环境变量。
+- 相对路径按 `backend/` 解析，便于发布包整体迁移。
+- 新增配置必须同步 `backend/.env.example`、`docs/develop/` 和 `docs/deploy/` 相关说明。
+- 不把供应商密钥、OAuth token、代理密码等敏感业务凭据放进 `.env`；这些应通过后台写入数据库密文字段。
+
+## 8. 后台任务
+
+- 后台任务由 `startBackgroundJobs()` 在后端启动时注册。
+- 当前后台任务包括使用记录增量聚合、系统指标采样、小时级指标聚合和 OpenAI OAuth 用量快照刷新。
+- 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
+- 第一阶段不引入复杂分布式锁；如果后续支持多实例部署，再评估共享锁、任务归属和幂等边界。
+- 后台任务失败应记录错误并等待下一轮重试，不应导致管理 API 或网关进程直接退出。
+
+## 9. 开发约束
+
+- 新管理接口：先确认模块归属，再补 route、repository、领域类型、前端 API 和文档。
+- 新网关能力：先确认是否改变 `/v1/*` 主链路、错误策略、调度规则或使用记录字段。
+- 新数据库字段：先写清默认值、兼容迁移、敏感边界和索引需求。
+- 新外部请求：放在 service 层，支持超时、错误摘要和必要代理配置。
+- 新统计需求：优先从 `usage_records` 定义事实，再考虑是否需要统计缓存表。
+- 大文件继续膨胀时，按 [大文件重构指南](../大文件重构指南.md) 拆分，不在业务开发中顺手重构无关范围。
+
+## 10. 修改入口
+
+- 涉及后端目录、分层、数据库、脚本或接口时，先看本文和 [功能开发指导](../功能开发指导.md)。
+- 涉及数据库表、字段、统计缓存、敏感字段或迁移时，同时看 [SQLite 存储说明](../../functions/SQLite存储说明.md)。
+- 涉及 OpenAI OAuth、API Key 账户、上游请求或账号测试时，同时看 [第一期 OpenAI 账号接入](../../functions/第一期OpenAI账号接入.md)。
+- 涉及透传、请求头、SSE、错误切换或网关行为时，同时看 [中转透传机制调研与定位修正](../../functions/中转透传机制调研与定位修正.md)。
+- 涉及运行、联调和验证时，按 [开发运行说明](../../develop/运行说明.md) 和 [开发测试与验证说明](../../develop/测试与验证说明.md) 执行。
