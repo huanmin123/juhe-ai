@@ -267,6 +267,7 @@ export interface OpenAIAccountSecret {
   refreshToken?: string
   clientId?: string
   proxyUrl?: string
+  passthroughEnabled: boolean
   errorPolicyId?: string
   cooldownUntil?: string
   lastErrorMessage?: string
@@ -1160,6 +1161,10 @@ export function listErrorPolicies(access?: AccessScope): ErrorPolicySummary[] {
   }))
 }
 
+function providerPassthroughEnabled(_provider?: ProviderDefinition): boolean {
+  return true
+}
+
 function parseJsonRules(value: string): Array<Record<string, unknown>> {
   try {
     const parsed = JSON.parse(value) as unknown
@@ -1220,7 +1225,7 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     currentConcurrency: 0,
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? 0),
     proxyProfileId,
-    passthroughEnabled: Boolean(input.passthroughEnabled ?? input.passthrough_enabled),
+    passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
     schedulable: expiredByPackage ? false : input.schedulable !== false,
     accountExpiresAt: accountExpiresAt ?? undefined,
@@ -1317,6 +1322,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
     : current.accountExpiresAt ?? null
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
 
+  const provider = listProviders().find((item) => item.code === current.providerCode)
   const rawErrorPolicyId = Object.prototype.hasOwnProperty.call(input, 'errorPolicyId')
     ? input.errorPolicyId
     : Object.prototype.hasOwnProperty.call(input, 'error_policy_id')
@@ -1357,7 +1363,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
         ? globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
         : current.proxyProfileId)
       : current.proxyProfileId,
-    passthroughEnabled: typeof input.passthroughEnabled === 'boolean' ? input.passthroughEnabled : current.passthroughEnabled,
+    passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
     schedulable: expiredByPackage ? false : typeof input.schedulable === 'boolean' ? input.schedulable : current.schedulable,
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
@@ -2232,7 +2238,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
   for (const groupAccount of groupAccountRows) {
     const row = database
       .prepare(`
-        SELECT id, system_account_id, name, type, status, credentials_encrypted, proxy_profile_id, error_policy_id, cooldown_until, last_error_message
+        SELECT id, system_account_id, name, type, status, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message
         FROM accounts
         WHERE id = ?
           AND provider_code = 'openai'
@@ -2244,7 +2250,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
             OR (status IN ('rate_limited', 'temporary_unavailable') AND cooldown_until IS NOT NULL AND cooldown_until <= ?)
           )
       `)
-      .get(groupAccount.account_id, now, now, now) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
+      .get(groupAccount.account_id, now, now, now) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
     if (!row) {
       continue
     }
@@ -2276,6 +2282,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
       refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
       clientId: typeof credentials.client_id === 'string' ? credentials.client_id : undefined,
       proxyUrl: proxyUrlForProfile(row.proxy_profile_id),
+      passthroughEnabled: row.passthrough_enabled === 1,
       errorPolicyId: row.error_policy_id ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorMessage: row.last_error_message ?? undefined,

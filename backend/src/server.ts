@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import cors from 'cors'
-import express from 'express'
+import express, { type Request } from 'express'
 
 import { accountsRouter } from './modules/accounts/accounts.routes.js'
 import { requireAdmin, requireAuth } from './modules/auth/auth.middleware.js'
@@ -30,11 +30,21 @@ const port = runtimeConfig.port
 const frontendDistPath = resolve(backendRoot, '..', 'frontend', 'dist')
 const frontendIndexPath = resolve(frontendDistPath, 'index.html')
 
+type RawBodyRequest = Request & { rawBody?: Buffer }
+
 getDatabase()
 startBackgroundJobs()
 
 app.use(cors({ credentials: true, origin: true }))
-app.use(express.json({ limit: '2mb' }))
+app.use(express.json({
+  limit: '2mb',
+  verify: (req, _res, buffer) => {
+    const requestUrl = req.url || ''
+    if (requestUrl.startsWith('/v1')) {
+      (req as RawBodyRequest).rawBody = Buffer.from(buffer)
+    }
+  }
+}))
 
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', service: 'juhe-ai' })

@@ -89,7 +89,7 @@ export function applySchema(database: DatabaseSync): void {
       credential_mask TEXT NOT NULL DEFAULT '',
       proxy_profile_id TEXT,
       concurrency_limit INTEGER NOT NULL DEFAULT 20,
-      passthrough_enabled INTEGER NOT NULL DEFAULT 0,
+      passthrough_enabled INTEGER NOT NULL DEFAULT 1,
       error_policy_id TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
       schedulable INTEGER NOT NULL DEFAULT 1,
@@ -768,6 +768,9 @@ function migrateSystemSettingsTable(database: DatabaseSync): void {
   `)
 }
 
+function enforceProviderPassthroughDefaults(database: DatabaseSync): void {
+  database.prepare("UPDATE accounts SET passthrough_enabled = 1").run()
+}
 function ensureColumn(database: DatabaseSync, tableName: string, columnName: string, columnDefinition: string): void {
   const rows = database.prepare(`PRAGMA table_info(${tableName})`).all() as unknown as Array<{ name: string }>
   if (!rows.some((row) => row.name === columnName)) {

@@ -18,7 +18,8 @@
         </template>
         <template v-else-if="column.key === 'capabilities'">
           <a-space wrap>
-            <a-tag v-for="capability in record.capabilities" :key="capability" color="blue">{{ capability }}</a-tag>
+            <a-tag v-for="capability in visibleProviderCapabilities(record.capabilities)" :key="capability" color="blue">{{ formatProviderCapability(capability) }}</a-tag>
+            <span v-if="!visibleProviderCapabilities(record.capabilities).length" class="muted-text">-</span>
           </a-space>
         </template>
         <template v-else-if="column.key === 'baseUrl'">
@@ -128,6 +129,14 @@ const modelTypeLabels: Record<ModelTypeKey, string> = {
   audio_speech: '语音合成',
   audio_transcription: '语音转写',
   other: '其他'
+}
+
+const hiddenProviderCapabilities = new Set(['passthrough'])
+
+const providerCapabilityLabels: Record<string, string> = {
+  models: '模型',
+  responses: 'Responses',
+  stream: '流式'
 }
 
 const columns = [
@@ -276,6 +285,14 @@ function getModelTypeKey(mode?: string): ModelTypeKey {
 
 function formatModelMode(mode?: string) {
   return modelTypeLabels[getModelTypeKey(mode)]
+}
+
+function visibleProviderCapabilities(capabilities: string[]) {
+  return capabilities.filter((capability) => !hiddenProviderCapabilities.has(capability))
+}
+
+function formatProviderCapability(capability: string) {
+  return providerCapabilityLabels[capability] ?? capability
 }
 
 function formatPrice(value?: number) {

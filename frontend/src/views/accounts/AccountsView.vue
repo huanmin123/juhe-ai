@@ -36,8 +36,12 @@
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
           <div class="resource-name-cell">
-            <span>{{ record.name }}</span>
-            <a-tag v-if="isAuthorizedAccount(record)" color="cyan">授权自 {{ record.ownerSystemAccountName || '其他用户' }}</a-tag>
+            <span class="resource-name-line">
+              <span>{{ record.name }}</span>
+              <a-tooltip v-if="isAuthorizedAccount(record)" :title="authorizedAccountTooltip(record)">
+                <InfoCircleOutlined class="authorized-account-icon" />
+              </a-tooltip>
+            </span>
           </div>
         </template>
         <template v-else-if="column.key === 'type'">
@@ -364,8 +368,8 @@
         <section v-if="hasAccountType" class="form-section">
           <div class="form-section-head">
             <div>
-              <h4>调度与策略</h4>
-              <p>并发、优先级、代理和透传会影响后续请求转发与账户选择。</p>
+              <h4>请求策略</h4>
+              <p>并发、优先级和代理会影响后续请求转发与账户选择。</p>
             </div>
           </div>
           <div class="strategy-grid">
@@ -383,14 +387,6 @@
           <a-form-item v-if="isAdmin" class="strategy-proxy-field" label="代理">
             <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
           </a-form-item>
-          <div class="form-toggle-grid">
-            <a-form-item label="调度">
-              <a-switch v-model:checked="form.schedulable" checked-children="可调度" un-checked-children="停用" />
-            </a-form-item>
-            <a-form-item label="透传">
-              <a-switch v-model:checked="form.passthroughEnabled" checked-children="启用" un-checked-children="关闭" />
-            </a-form-item>
-          </div>
         </section>
 
         <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="accountErrorPolicyRules" />
@@ -439,6 +435,7 @@
 import axios from 'axios'
 import dayjs, { type Dayjs } from 'dayjs'
 import { message } from 'ant-design-vue'
+import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
@@ -500,8 +497,6 @@ interface AccountForm {
   concurrencyLimit: number
   priority: number
   proxyProfileId?: string
-  passthroughEnabled: boolean
-  schedulable: boolean
   notes: string
 }
 
@@ -745,8 +740,6 @@ function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
     proxyProfileId: undefined,
-    passthroughEnabled: true,
-    schedulable: true,
     notes: ''
   }
 }
@@ -863,6 +856,10 @@ function groupNameForAccount(accountId: string) {
 
 function isAuthorizedAccount(account: AccountSummary): boolean {
   return account.accessType === 'authorized'
+}
+
+function authorizedAccountTooltip(account: AccountSummary): string {
+  return `授权自 ${account.ownerSystemAccountName || '其他用户'}，仅可使用`
 }
 
 function canEditAccount(account: AccountSummary): boolean {
@@ -1142,8 +1139,6 @@ function selectAccountType(type: AccountType) {
     notes: form.notes,
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
-    passthroughEnabled: form.passthroughEnabled,
-    schedulable: form.schedulable,
     accountExpiresAt: form.accountExpiresAt
   })
   ensureDefaultGroupSelected(providerCode)
@@ -1160,8 +1155,6 @@ function openEdit(account: AccountSummary) {
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
     proxyProfileId: account.proxyProfileId,
-    passthroughEnabled: account.passthroughEnabled,
-    schedulable: account.schedulable,
     accountExpiresAt: parseDatePickerValue(account.accountExpiresAt),
     groupId: groupIdForAccount(account.id),
     apiKey: asString(account.credentials.api_key),
@@ -1342,8 +1335,6 @@ async function saveAccount() {
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
     proxyProfileId: form.proxyProfileId,
-    passthroughEnabled: form.passthroughEnabled,
-    schedulable: form.schedulable,
     accountExpiresAt: form.accountExpiresAt?.toISOString() ?? null,
     groupId: form.groupId,
     notes: form.notes
@@ -2214,6 +2205,19 @@ onMounted(loadData)
   gap: 8px;
 }
 
+.resource-name-line {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.authorized-account-icon {
+  color: #08979c;
+  cursor: help;
+  font-size: 14px;
+}
+
 .authorization-create-row {
   display: grid;
   grid-template-columns: minmax(180px, 240px) minmax(180px, 1fr) auto;
@@ -2275,12 +2279,6 @@ onMounted(loadData)
   margin-bottom: 16px;
 }
 
-.form-toggle-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 16px;
-}
-
 .form-alert {
   border-radius: 12px;
 }
@@ -2292,8 +2290,7 @@ onMounted(loadData)
   }
 
   .form-grid,
-  .strategy-grid,
-  .form-toggle-grid {
+  .strategy-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -2308,8 +2305,7 @@ onMounted(loadData)
   }
 
   .form-grid,
-  .strategy-grid,
-  .form-toggle-grid {
+  .strategy-grid {
     grid-template-columns: 1fr;
   }
 

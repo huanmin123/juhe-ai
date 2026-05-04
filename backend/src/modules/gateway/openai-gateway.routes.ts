@@ -488,14 +488,14 @@ async function fetchFirstAvailableUpstream(
   settings: GatewaySettings,
   usageContext: GatewayUsageContext
 ): Promise<{ account: UpstreamAccount; response: GatewayUpstreamResponse; upstreamUrl: string }> {
-  const body = req.method === 'GET' || req.method === 'HEAD' ? undefined : JSON.stringify(req.body ?? {})
   const retryAttempts = Math.max(0, settings.temporaryUnschedulableRetryAttempts)
   const isStreamRequest = req.body?.stream === true
   let lastAttempt: UpstreamAttempt | undefined
 
   for (const originalAccount of accounts) {
     const account = await prepareUpstreamAccount(originalAccount)
-    const headers = buildUpstreamHeaders(req.headers, account.apiKey)
+    const headers = buildUpstreamHeaders(req.headers, account)
+    const body = buildUpstreamRequestBody(req, account.passthroughEnabled)
     let skipAccount = false
     for (const upstreamUrl of buildUpstreamUrls(account.baseUrl, req.originalUrl)) {
       for (let attemptIndex = 0; attemptIndex <= retryAttempts; attemptIndex += 1) {
@@ -994,10 +994,47 @@ const skippedUpstreamRequestHeaders = new Set([
   'upgrade',
   'expect',
   'content-encoding',
-  'accept-encoding'
+  'accept-encoding',
+  'cookie',
+  'set-cookie',
+  'x-api-key',
+  'x-goog-api-key',
+  'api-key',
+  'x-forwarded-for',
+  'x-forwarded-host',
+  'x-forwarded-port',
+  'x-forwarded-proto',
+  'x-forwarded-server',
+  'x-real-ip',
+  'forwarded',
+  'via',
+  'cf-connecting-ip'
 ])
 
-function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, apiKey: string): Headers {
+type RawBodyRequest = Request & { rawBody?: Buffer }
+
+function buildUpstreamRequestBody(req: Request, passthroughEnabled: boolean): string | undefined {
+  if (req.method === 'GET' || req.method === 'HEAD') {
+    return undefined
+  }
+  if (!passthroughEnabled) {
+    return JSON.stringify(req.body ?? {})
+  }
+  const rawBody = (req as RawBodyRequest).rawBody
+  if (rawBody && rawBody.length > 0) {
+    return rawBody.toString('utf8')
+  }
+  if (req.body === undefined || isEmptyPlainObject(req.body)) {
+    return undefined
+  }
+  return JSON.stringify(req.body)
+}
+
+function isEmptyPlainObject(value: unknown): boolean {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 0
+}
+
+function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, account: UpstreamAccount): Headers {
   const headers = new Headers()
   for (const [name, value] of Object.entries(inputHeaders)) {
     const lowerName = name.toLowerCase()
@@ -1010,8 +1047,10 @@ function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | u
       headers.set(name, value)
     }
   }
-  headers.set('authorization', `Bearer ${apiKey}`)
-  headers.set('content-type', headers.get('content-type') ?? 'application/json')
+  headers.set('authorization', `Bearer ${account.apiKey}`)
+  if (!account.passthroughEnabled) {
+    headers.set('content-type', headers.get('content-type') ?? 'application/json')
+  }
   return headers
 }
 
