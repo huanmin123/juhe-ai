@@ -13,6 +13,7 @@ declare module 'node:sqlite' {
 
   export class DatabaseSync {
     constructor(path: string)
+    readonly isTransaction: boolean
     exec(sql: string): void
     prepare(sql: string): StatementSync
     close(): void
@@ -21,4 +22,3 @@ declare module 'node:sqlite' {
   export const constants: Record<string, number>
   export function backup(...params: unknown[]): Promise<void>
 }
-

@@ -30,18 +30,13 @@
       </template>
     </ResponsiveListToolbar>
 
-    <div v-if="selectedAccounts.length" class="batch-toolbar">
-      <div class="batch-toolbar-info">
-        <span>已选择 {{ selectedAccounts.length }} 个账户</span>
-        <span class="batch-toolbar-hint">批量操作会按当前选择逐个执行</span>
-      </div>
-      <div class="batch-toolbar-actions">
-        <a-button @click="clearSelection">清空选择</a-button>
-        <a-button type="primary" @click="batchTestSelected">批量测试</a-button>
-        <a-button @click="batchSetStatus('active')">批量启用</a-button>
-        <a-button danger @click="batchSetStatus('disabled')">批量停用</a-button>
-      </div>
-    </div>
+    <AccountBatchToolbar
+      :selected-count="selectedAccounts.length"
+      @clear="clearSelection"
+      @disable="batchSetStatus('disabled')"
+      @enable="batchSetStatus('active')"
+      @test="batchTestSelected"
+    />
 
     <ResponsiveDataList
       class="account-responsive-list"
@@ -112,26 +107,18 @@
           <span :class="isAccountPackageExpired(record) ? 'expired-cell' : 'muted-cell'">{{ formatDateTime(record.accountExpiresAt) }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space class="row-actions" :size="8">
-            <template v-if="isAuthorizedAccount(record)">
-              <a-button type="link" size="small" @click="openBindGroup(record)">{{ groupNameForAccount(record.id) ? '调整分组' : '绑定分组' }}</a-button>
-              <a-button type="link" size="small" @click="openTestModal(record)">测试</a-button>
-            </template>
-            <template v-else>
-              <a-button v-if="canEditAccount(record)" type="link" size="small" @click="openEdit(record)">编辑</a-button>
-              <a-popconfirm v-if="canDeleteAccount(record)" title="确认删除这个账户？" @confirm="removeAccount(record.id)">
-                <a-button type="link" size="small" danger>删除</a-button>
-              </a-popconfirm>
-              <a-dropdown v-if="accountMenuItems(record).length">
-                <a-button type="link" size="small">更多</a-button>
-                <template #overlay>
-                  <a-menu @click="handleAccountMenuClick($event, record)">
-                    <a-menu-item v-for="item in accountMenuItems(record)" :key="item.key" :danger="item.danger">{{ item.label }}</a-menu-item>
-                  </a-menu>
-                </template>
-              </a-dropdown>
-            </template>
-          </a-space>
+          <AccountRowActions
+            :account="record"
+            :can-delete="canDeleteAccount(record)"
+            :can-edit="canEditAccount(record)"
+            :group-name="groupNameForAccount(record.id)"
+            :menu-items="accountMenuItems(record)"
+            @bind-group="openBindGroup(record)"
+            @delete="removeAccount(record.id)"
+            @edit="openEdit(record)"
+            @menu-click="handleAccountMenuClick($event, record)"
+            @test="openTestModal(record)"
+          />
         </template>
       </template>
       <template #card="{ record }">
@@ -206,46 +193,21 @@
           @open-auth-url="openAuthUrl"
         />
 
-        <section v-if="hasAccountType" class="form-section">
-          <div class="form-section-head">
-            <div>
-              <h4>请求策略</h4>
-              <p>并发、优先级和代理会影响后续请求转发与账户选择。</p>
-            </div>
-          </div>
-          <div class="strategy-grid">
-            <a-form-item label="状态">
-              <a-select v-model:value="form.status" :options="statusEditOptions" />
-            </a-form-item>
-            <a-form-item label="并发上限">
-              <a-input-number v-model:value="form.concurrencyLimit" :min="1" style="width: 100%" />
-            </a-form-item>
-            <a-form-item label="优先级">
-              <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
-            </a-form-item>
-          </div>
-          <div class="form-help strategy-help">优先级数字越小越优先；当前账号失败后会切换到下一个可用账号。</div>
-          <a-form-item v-if="isAdmin" class="strategy-proxy-field" label="代理">
-            <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
-          </a-form-item>
-        </section>
+        <AccountStrategySection v-if="hasAccountType" :form="form" :is-admin="isAdmin" :proxy-options="proxyOptions" :status-options="statusEditOptions" />
 
         <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="accountErrorPolicyRules" />
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="bindGroupModalOpen" title="绑定分组" width="520px" :confirm-loading="bindGroupSaving" :ok-button-props="{ type: 'primary', disabled: !bindGroupForm.groupId || !bindGroupOptions.length }" @ok="saveBindGroup">
-      <a-form layout="vertical">
-        <a-alert class="form-alert" type="info" show-icon :message="bindGroupTip" />
-        <a-form-item label="授权账户">
-          <a-input :value="bindingAccount?.name || '-'" readonly />
-        </a-form-item>
-        <a-form-item label="绑定到我的分组" required>
-          <a-select v-model:value="bindGroupForm.groupId" :options="bindGroupOptions" placeholder="请选择同供应商分组" />
-          <div class="form-help">API Key 只能调用绑定分组内的账户；授权账户需要先加入你的分组。</div>
-        </a-form-item>
-      </a-form>
-    </a-modal>
+    <AccountBindGroupModal
+      v-model:open="bindGroupModalOpen"
+      v-model:group-id="bindGroupForm.groupId"
+      :account="bindingAccount"
+      :group-options="bindGroupOptions"
+      :saving="bindGroupSaving"
+      :tip="bindGroupTip"
+      @save="saveBindGroup"
+    />
   </a-card>
 </template>
 
@@ -264,12 +226,16 @@ import { authState } from '@/composables/useAuth'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AccountApiKeySection from './AccountApiKeySection.vue'
+import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
+import AccountBindGroupModal from './AccountBindGroupModal.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountMobileCard from './AccountMobileCard.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
+import AccountRowActions from './AccountRowActions.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
+import AccountStrategySection from './AccountStrategySection.vue'
 import AccountTestModal from './AccountTestModal.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
 import {
@@ -300,6 +266,7 @@ import {
   parseDatePickerValue,
   type SchedulableFilter
 } from './accountFormatters'
+import type { AccountMenuItem } from './accountActionTypes'
 import type { AccountFormModel } from './accountFormTypes'
 
 interface AccountFilters {
@@ -308,12 +275,6 @@ interface AccountFilters {
   status: 'all' | AccountStatus
   schedulable: SchedulableFilter
   systemAccountId: string
-}
-
-interface AccountMenuItem {
-  key: string
-  label: string
-  danger?: boolean
 }
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
@@ -1217,40 +1178,6 @@ onMounted(loadData)
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
-.batch-toolbar {
-  display: flex;
-  flex: 0 0 auto;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  flex-wrap: wrap;
-  padding: 14px 16px;
-  margin-bottom: 16px;
-  border: 1px solid #dbeafe;
-  border-radius: 14px;
-  background: linear-gradient(180deg, #eff6ff 0%, #ffffff 100%);
-}
-
-.batch-toolbar-info {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: #1d4ed8;
-  font-weight: 600;
-}
-
-.batch-toolbar-hint {
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 400;
-}
-
-.batch-toolbar-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
 .toolbar-select {
   min-width: 150px;
 }
@@ -1299,10 +1226,6 @@ onMounted(loadData)
 
 .expired-cell {
   color: #dc2626;
-}
-
-.row-actions :deep(.ant-btn-link) {
-  padding-inline: 2px;
 }
 
 .secret-cell {
@@ -1391,35 +1314,18 @@ onMounted(loadData)
   gap: 0 16px;
 }
 
-.strategy-grid {
-  display: grid;
-  grid-template-columns: minmax(160px, 1.3fr) minmax(120px, 1fr) minmax(120px, 1fr);
-  gap: 0 16px;
-}
-
-.strategy-help {
-  margin-top: -8px;
-  margin-bottom: 16px;
-}
-
-.strategy-proxy-field {
-  margin-bottom: 16px;
-}
-
 .form-alert {
   border-radius: 12px;
 }
 
 @media (max-width: 992px) {
-  .form-grid,
-  .strategy-grid {
+  .form-grid {
     grid-template-columns: 1fr;
   }
 }
 
 @media (max-width: 900px) {
-  .form-grid,
-  .strategy-grid {
+  .form-grid {
     grid-template-columns: 1fr;
   }
 

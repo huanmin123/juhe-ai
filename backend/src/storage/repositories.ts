@@ -8,6 +8,7 @@ import { getAccountAuthorizationUsageOverview as buildAccountAuthorizationUsageO
 import { createApiKey, decryptJson, encryptJson, hashPassword, hashSecret, maskSecret, verifyPassword } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
 import { addUsageSummaries, dateKey, emptyAccountUsageSummary, emptyUsageByWindow, mergeUsageSummaryMaps, numberFromUnknown, todayDateKey, USAGE_STATS_WINDOWS, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import {
   jsonObjectOrNull,
@@ -830,7 +831,7 @@ function isResourceAuthorizationExpired(expiresAt: string | null | undefined, no
 function disableExpiredAccounts(access?: AccessScope): void {
   const scope = buildSystemAccountScopeClause(access)
   const now = nowIso()
-  getDatabase()
+  const result = getDatabase()
     .prepare(`
       UPDATE accounts
       SET status = 'disabled',
@@ -848,6 +849,9 @@ function disableExpiredAccounts(access?: AccessScope): void {
         )${scope.clause}
     `)
     .run('账户套餐已过期，已自动停用', now, now, ...scope.params)
+  if (Number(result.changes ?? 0) > 0) {
+    refreshGroupAccountStatsAfterWrite()
+  }
 }
 
 export function expireDueResourceAuthorizations(): number {
@@ -865,8 +869,11 @@ export function expireDueResourceAuthorizations(): number {
         AND expires_at <= ?
     `)
     .run(now, now, now)
-  cleanupInactiveAuthorizationBindings(database)
-  return Number(result.changes ?? 0)
+  const changed = Number(result.changes ?? 0)
+  if (changed > 0) {
+    cleanupInactiveAuthorizationBindings(database)
+  }
+  return changed
 }
 
 const accountStatusValues: readonly AccountStatus[] = ['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
@@ -979,6 +986,13 @@ function defaultTemporaryUnschedulableMinutes(): number {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   if (!Number.isFinite(number)) return 5
   return Math.min(Math.max(Math.trunc(number), 1), 1440)
+}
+
+function refreshGroupAccountStatsAfterWrite(): void {
+  if (getDatabase().isTransaction) {
+    return
+  }
+  refreshGroupAccountStatsCache()
 }
 
 export function listProviders(): ProviderDefinition[] {
@@ -1360,6 +1374,7 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
     }
     throw error
   }
+  refreshGroupAccountStatsAfterWrite()
 
   return account
 }
@@ -1393,6 +1408,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
 
   const provider = listProviders().find((item) => item.code === current.providerCode)
+  const hasNotesInput = Object.prototype.hasOwnProperty.call(input, 'notes')
   const rawErrorPolicyId = Object.prototype.hasOwnProperty.call(input, 'errorPolicyId')
     ? input.errorPolicyId
     : Object.prototype.hasOwnProperty.call(input, 'error_policy_id')
@@ -1426,7 +1442,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
   const next: AccountSummary = {
     ...current,
     name: typeof input.name === 'string' ? input.name : current.name,
-    notes: optionalString(input.notes) ?? current.notes,
+    notes: hasNotesInput ? optionalNullableString(input.notes) ?? undefined : current.notes,
     credentials,
     status: nextStatus,
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? current.concurrencyLimit),
@@ -1447,7 +1463,7 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
   }
 
   try {
-    getDatabase()
+    const result = getDatabase()
       .prepare(`
       UPDATE accounts
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
@@ -1475,6 +1491,9 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
         id,
         systemAccountId
       )
+    if (Number(result.changes ?? 0) > 0) {
+      refreshGroupAccountStatsAfterWrite()
+    }
   } catch (error) {
     if (isDuplicateAccountCredentialError(error)) {
       throwDuplicateAccountCredentialError()
@@ -1488,6 +1507,9 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
 export function deleteAccount(id: string): boolean {
   const scope = buildSystemAccountScopeClause()
   const result = getDatabase().prepare(`DELETE FROM accounts WHERE id = ?${scope.clause}`).run(id, ...scope.params)
+  if (Number(result.changes ?? 0) > 0) {
+    refreshGroupAccountStatsAfterWrite()
+  }
   return result.changes > 0
 }
 
@@ -1503,7 +1525,7 @@ export function clearAccountFailureState(id: string): AccountSummary | undefined
 
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
   if (expiredByPackage) {
-    getDatabase()
+    const result = getDatabase()
       .prepare(`
         UPDATE accounts
         SET status = 'disabled',
@@ -1516,10 +1538,13 @@ export function clearAccountFailureState(id: string): AccountSummary | undefined
         WHERE id = ?
       `)
       .run('账户套餐已过期，已自动停用', nowIso(), id)
+    if (Number(result.changes ?? 0) > 0) {
+      refreshGroupAccountStatsAfterWrite()
+    }
     return listAccounts().find((account) => account.id === id)
   }
 
-  getDatabase()
+  const result = getDatabase()
     .prepare(`
       UPDATE accounts
       SET status = 'active',
@@ -1531,6 +1556,9 @@ export function clearAccountFailureState(id: string): AccountSummary | undefined
       WHERE id = ?
     `)
     .run(nowIso(), id)
+  if (Number(result.changes ?? 0) > 0) {
+    refreshGroupAccountStatsAfterWrite()
+  }
 
   return listAccounts().find((account) => account.id === id)
 }
@@ -1543,7 +1571,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
 
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
   if (expiredByPackage) {
-    getDatabase()
+    const result = getDatabase()
       .prepare(`
         UPDATE accounts
         SET status = 'disabled',
@@ -1556,12 +1584,15 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
         WHERE id = ?
       `)
       .run('账户套餐已过期，已自动停用', nowIso(), id)
+    if (Number(result.changes ?? 0) > 0) {
+      refreshGroupAccountStatsAfterWrite()
+    }
     return listAccounts().find((account) => account.id === id)
   }
 
   const cooldownStatus: AccountStatus = status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
 
-  getDatabase()
+  const result = getDatabase()
     .prepare(`
       UPDATE accounts
       SET status = ?,
@@ -1573,6 +1604,9 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
       WHERE id = ?
     `)
     .run(cooldownStatus, until, reason || null, nowIso(), id)
+  if (Number(result.changes ?? 0) > 0) {
+    refreshGroupAccountStatsAfterWrite()
+  }
 
   return listAccounts().find((account) => account.id === id)
 }
@@ -1583,7 +1617,7 @@ export function markAccountDisabledByFailure(id: string, reason: string): Accoun
     return undefined
   }
 
-  getDatabase()
+  const result = getDatabase()
     .prepare(`
       UPDATE accounts
       SET status = 'error',
@@ -1596,6 +1630,9 @@ export function markAccountDisabledByFailure(id: string, reason: string): Accoun
       WHERE id = ?
     `)
     .run(reason || null, nowIso(), id)
+  if (Number(result.changes ?? 0) > 0) {
+    refreshGroupAccountStatsAfterWrite()
+  }
 
   return listAccounts().find((account) => account.id === id)
 }
@@ -1653,6 +1690,7 @@ export function recordAccountStreamFailure(input: {
       WHERE id = ?
     `)
     .run(nowIsoValue, input.accountId)
+  refreshGroupAccountStatsAfterWrite()
 
   return { count, triggered: true, account: listAccounts().find((item) => item.id === input.accountId) }
 }
@@ -1811,18 +1849,19 @@ export function updateGroup(id: string, input: Record<string, unknown>): GroupSu
   if (!canManageResourceOwner(systemAccountId)) {
     return undefined
   }
+  const hasDescriptionInput = Object.prototype.hasOwnProperty.call(input, 'description')
   const next: GroupSummary = {
     ...current,
     name: typeof input.name === 'string' ? input.name : current.name,
     providerCode: typeof input.providerCode === 'string' ? input.providerCode : typeof input.provider_code === 'string' ? input.provider_code : current.providerCode,
-    description: optionalString(input.description) ?? current.description,
+    description: hasDescriptionInput ? optionalNullableString(input.description) ?? undefined : current.description,
     enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled
   }
   const database = getDatabase()
   database
-    .prepare('UPDATE groups SET name = ?, provider_code = ?, description = COALESCE(?, description), enabled = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-    .run(next.name, next.providerCode, optionalString(input.description) ?? null, next.enabled ? 1 : 0, nowIso(), id, systemAccountId)
-  database
+    .prepare('UPDATE groups SET name = ?, provider_code = ?, description = ?, enabled = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+    .run(next.name, next.providerCode, next.description ?? null, next.enabled ? 1 : 0, nowIso(), id, systemAccountId)
+  const cleanupResult = database
     .prepare(`
       DELETE FROM group_accounts
       WHERE group_id = ?
@@ -1847,6 +1886,9 @@ export function updateGroup(id: string, input: Record<string, unknown>): GroupSu
         )
     `)
     .run(id, systemAccountId, next.providerCode, systemAccountId, nowIso())
+  if (Number(cleanupResult.changes ?? 0) > 0) {
+    refreshGroupAccountStatsAfterWrite()
+  }
   return listGroups().find((group) => group.id === id)
 }
 
@@ -1860,6 +1902,9 @@ export function deleteGroup(id: string): boolean {
     return false
   }
   const result = getDatabase().prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
+  if (Number(result.changes ?? 0) > 0) {
+    refreshGroupAccountStatsAfterWrite()
+  }
   return result.changes > 0
 }
 
@@ -1903,6 +1948,7 @@ export function setAccountGroup(accountId: string, groupId: string | null): Acco
         updated_at = excluded.updated_at
     `)
     .run(group.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, 1, now, now)
+  refreshGroupAccountStatsAfterWrite()
 
   return listAccounts({ systemAccountId: group.systemAccountId, role: 'user' }).find((account) => account.id === accountId)
 }
@@ -1935,6 +1981,7 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
       ON CONFLICT(group_id, account_id) DO UPDATE SET account_authorization_id = excluded.account_authorization_id, enabled = 1, updated_at = excluded.updated_at
     `)
     .run(current.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, weight, now, now)
+  refreshGroupAccountStatsAfterWrite()
   return listGroups().find((group) => group.id === groupId)
 }
 
@@ -1978,6 +2025,7 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
   ensureSystemTeamNameUnique(name, id, database)
   const status = input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : row.status
   const now = nowIso()
+  let authorizationChanged = false
   database.exec('BEGIN')
   try {
     database
@@ -1985,14 +2033,19 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
       .run(name, input.description === undefined ? row.description : optionalNullableString(input.description), status, now, id)
     if (row.status !== 'disabled' && status === 'disabled') {
       revokeAllTeamSources(id, currentSystemAccountId(access), database, now, 'team_disabled')
+      authorizationChanged = true
     }
     if (row.status === 'disabled' && status === 'active') {
       reactivateTeamGrantSources(id, access, database, now)
+      authorizationChanged = true
     }
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
     throw error
+  }
+  if (authorizationChanged) {
+    refreshGroupAccountStatsAfterWrite()
   }
   return listSystemTeams(access).find((team) => team.id === id)
 }
@@ -2024,6 +2077,7 @@ export function addSystemTeamMembers(teamId: string, input: Record<string, unkno
     database.exec('ROLLBACK')
     throw error
   }
+  refreshGroupAccountStatsAfterWrite()
   return listSystemTeams(access).find((item) => item.id === teamId)
 }
 
@@ -2041,6 +2095,7 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
     database.exec('ROLLBACK')
     throw error
   }
+  refreshGroupAccountStatsAfterWrite()
   return listSystemTeams(access).find((item) => item.id === teamId)
 }
 
@@ -2114,6 +2169,7 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
     database.exec('ROLLBACK')
     throw error
   }
+  refreshGroupAccountStatsAfterWrite()
   const ids = [...new Set(createdIds)]
   const created = ids.length ? listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === ids[0]) : undefined
   if (created) return created
@@ -2156,6 +2212,7 @@ export function revokeResourceAuthorization(authorizationId: string, input: Reco
     database.exec('ROLLBACK')
     throw error
   }
+  refreshGroupAccountStatsAfterWrite()
   return listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
 }
 
@@ -2473,6 +2530,7 @@ function cleanupInactiveAuthorizationBindings(database = getDatabase(), authoriz
   void database
   void authorizationIds
   clearGatewayApiKeyValidationCache()
+  refreshGroupAccountStatsAfterWrite()
 }
 
 function upsertTeamResourceGrant(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; teamId: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): TeamResourceAuthorizationGrantRow {

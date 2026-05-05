@@ -6,7 +6,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table system-teams-table" :columns="columns" :data-source="teams" row-key="id" :loading="loading" :scroll-x="930" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table system-teams-table" :columns="columns" :data-source="teams" row-key="id" :loading="loading" :scroll-x="900" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有团队，先创建一个团队并添加成员。" />
       </template>
@@ -162,12 +162,12 @@ const memberForm = reactive({
 })
 
 const columns = [
-  { title: '团队名称', key: 'name', width: 220 },
+  { title: '团队名称', key: 'name', width: 180 },
   { title: '状态', key: 'status', width: 90 },
   { title: '成员数', key: 'memberCount', width: 90 },
   { title: '创建时间', key: 'createdAt', width: 170 },
   { title: '说明', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', width: 160, fixed: 'right' }
+  { title: '操作', key: 'actions', width: 150, fixed: 'right' }
 ]
 
 const memberColumns = computed(() => {

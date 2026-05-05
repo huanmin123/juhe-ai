@@ -495,6 +495,10 @@ export function applySchema(database: DatabaseSync): void {
 
   database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
   database.exec('CREATE INDEX IF NOT EXISTS idx_group_account_stats_group ON group_account_stats(group_id);')
+  ensureColumn(database, 'system_accounts', 'description', 'TEXT')
+  ensureColumn(database, 'providers', 'description', 'TEXT')
+  ensureColumn(database, 'proxy_profiles', 'description', 'TEXT')
+  ensureColumn(database, 'api_keys', 'description', 'TEXT')
   ensureColumn(database, 'group_accounts', 'account_authorization_id', 'TEXT')
   ensureColumn(database, 'api_keys', 'group_authorization_id', 'TEXT')
   database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));')

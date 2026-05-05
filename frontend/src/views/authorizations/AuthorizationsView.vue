@@ -70,14 +70,13 @@
       </template>
     </ResponsiveListToolbar>
 
-      <ResponsiveDataList table-class="page-table authorizations-table" :columns="columns" :data-source="authorizations" row-key="id" :loading="loading" :scroll-x="1280" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+      <ResponsiveDataList table-class="page-table authorizations-table" :columns="columns" :data-source="authorizations" row-key="id" :loading="loading" :scroll-x="1320" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="暂无授权记录，请先新增授权。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'resource'">
           <div class="resource-cell">
-            <span class="resource-kind-text">{{ record.resourceType === 'account' ? 'AI账户名称' : '分组名称' }}</span>
             <span class="resource-name">{{ record.resourceName || record.resourceId }}</span>
           </div>
         </template>
@@ -100,6 +99,9 @@
         </template>
         <template v-else-if="column.key === 'createdAt'">
           {{ formatDateTime(record.createdAt) }}
+        </template>
+        <template v-else-if="column.key === 'remark'">
+          <span>{{ record.remark || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <div class="authorization-actions">
@@ -149,6 +151,10 @@
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>用量(日)</span>
               <strong>{{ usageSummaryText(record.usage) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>说明</span>
+              <strong>{{ record.remark || '-' }}</strong>
             </div>
           </div>
           <div class="mobile-list-card-actions two-actions">
@@ -228,8 +234,8 @@
             :placeholder="createForm.granteeType === 'system_account' ? '选择一个用户' : '选择一个团队'"
           />
         </a-form-item>
-        <a-form-item label="备注">
-          <a-textarea v-model:value="createForm.remark" :rows="3" placeholder="可选" />
+        <a-form-item label="说明">
+          <a-textarea v-model:value="createForm.remark" :rows="3" placeholder="可选，填写授权用途或范围说明" />
         </a-form-item>
         <a-form-item label="到期时间">
           <a-date-picker v-model:value="createForm.expiresAt" show-time allow-clear style="width: 100%" />
@@ -386,12 +392,13 @@ const expireForm = reactive({
 })
 
 const columns = [
-  { title: '资源', key: 'resource', width: 260 },
+  { title: 'AI账户名称', key: 'resource', width: 260 },
   { title: '归属人', key: 'owner', width: 180 },
   { title: '被授权用户', key: 'grantee', width: 180 },
   { title: '用量(日)', key: 'usageTotal', width: 260 },
   { title: '状态', key: 'status', width: 90 },
   { title: '授权时间', key: 'createdAt', width: 170 },
+  { title: '说明', key: 'remark', width: 200 },
   { title: '操作', key: 'actions', width: 140, fixed: 'right' }
 ]
 
@@ -761,14 +768,6 @@ function applyRouteFilters() {
   align-items: center;
   gap: 8px;
   min-width: 0;
-}
-
-.resource-kind-text {
-  min-width: 0;
-  color: #64748b;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
 }
 
 .resource-name {

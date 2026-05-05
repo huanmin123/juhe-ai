@@ -6,7 +6,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :scroll-x="1050" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :scroll-x="1080" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'role'">
           <a-tag :color="record.role === 'admin' ? 'geekblue' : 'default'">{{ record.role === 'admin' ? '管理员' : '用户' }}</a-tag>
@@ -19,6 +19,9 @@
         </template>
         <template v-else-if="column.key === 'lastLoginAt'">
           <span class="muted-cell">{{ formatDateTime(record.lastLoginAt) }}</span>
+        </template>
+        <template v-else-if="column.key === 'description'">
+          <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space :size="8">
@@ -46,6 +49,10 @@
               <span>最后登录</span>
               <strong>{{ formatDateTime(record.lastLoginAt) }}</strong>
             </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>说明</span>
+              <strong>{{ record.description || '-' }}</strong>
+            </div>
           </div>
           <div class="mobile-list-card-actions two-actions">
             <a-button type="primary" @click="openEdit(record)">编辑</a-button>
@@ -62,6 +69,9 @@
         </a-form-item>
         <a-form-item label="显示名称" required>
           <a-input v-model:value="form.displayName" placeholder="例如 业务用户" />
+        </a-form-item>
+        <a-form-item label="说明">
+          <a-textarea v-model:value="form.description" :rows="3" placeholder="可选，填写账户用途或归属说明" />
         </a-form-item>
         <a-form-item v-if="!editingId" label="初始密码" required>
           <a-input-password v-model:value="form.password" placeholder="请输入初始密码" />
@@ -111,6 +121,7 @@ const accounts = ref<SystemAccountSummary[]>([])
 const form = reactive({
   username: '',
   displayName: '',
+  description: '',
   password: '',
   role: 'user' as SystemAccountRole,
   status: 'active' as SystemAccountStatus,
@@ -134,12 +145,13 @@ const columns = [
   { title: '状态', key: 'status', width: 100 },
   { title: '改密提醒', key: 'mustChangePassword', width: 110 },
   { title: '最后登录', key: 'lastLoginAt', width: 180 },
-  { title: '操作', key: 'actions', width: 180, fixed: 'right' }
+  { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
+  { title: '操作', key: 'actions', width: 160, fixed: 'right' }
 ]
 
 function openCreate() {
   editingId.value = undefined
-  Object.assign(form, { username: '', displayName: '', password: '', role: 'user', status: 'active', mustChangePassword: true })
+  Object.assign(form, { username: '', displayName: '', description: '', password: '', role: 'user', status: 'active', mustChangePassword: true })
   modalOpen.value = true
 }
 
@@ -148,6 +160,7 @@ function openEdit(record: SystemAccountSummary) {
   Object.assign(form, {
     username: record.username,
     displayName: record.displayName,
+    description: record.description ?? '',
     password: '',
     role: record.role,
     status: record.status,
@@ -185,6 +198,7 @@ async function handleSave() {
   try {
     const basePayload = {
       displayName,
+      description: form.description,
       role: form.role,
       status: form.status,
       mustChangePassword: form.mustChangePassword

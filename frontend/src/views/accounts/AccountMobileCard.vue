@@ -80,6 +80,7 @@ import { InfoCircleOutlined } from '@ant-design/icons-vue'
 
 import type { AccountSummary } from '@/types/domain'
 import AccountStatusTag from './AccountStatusTag.vue'
+import type { AccountMenuItem } from './accountActionTypes'
 import {
   accountLastUsedAt,
   accountTypeText,
@@ -89,12 +90,6 @@ import {
   isAuthorizedAccount,
   isOwnerDisabledAuthorizedAccount
 } from './accountFormatters'
-
-interface AccountMenuItem {
-  key: string
-  label: string
-  danger?: boolean
-}
 
 defineProps<{
   account: AccountSummary
