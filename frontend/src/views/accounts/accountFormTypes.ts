@@ -1,6 +1,7 @@
 import type { Dayjs } from 'dayjs'
 
 import type { AccountStatus, AccountType } from '@/types/domain'
+import type { SchedulableFilter } from './accountFormatters'
 
 export interface AccountFormModel {
   providerCode: string
@@ -19,4 +20,12 @@ export interface AccountFormModel {
   priority: number
   proxyProfileId?: string
   notes: string
+}
+
+export interface AccountFilters {
+  keyword: string
+  type: 'all' | AccountType
+  status: 'all' | AccountStatus
+  schedulable: SchedulableFilter
+  systemAccountId: string
 }

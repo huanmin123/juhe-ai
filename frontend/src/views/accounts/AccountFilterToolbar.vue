@@ -61,6 +61,7 @@
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { AccountStatus, AccountType, SystemAccountSummary } from '@/types/domain'
+import type { AccountFilters } from './accountFormTypes'
 import type { SchedulableFilter } from './accountFormatters'
 
 type FilterOption<T extends string> = {
@@ -69,17 +70,9 @@ type FilterOption<T extends string> = {
 }
 type SelectValue = string | string[] | undefined
 
-export interface AccountFilterToolbarFilters {
-  keyword: string
-  type: 'all' | AccountType
-  status: 'all' | AccountStatus
-  schedulable: SchedulableFilter
-  systemAccountId: string
-}
-
 defineProps<{
   activeFilterCount: number
-  filters: AccountFilterToolbarFilters
+  filters: AccountFilters
   isAdmin: boolean
   refreshLoading: boolean
   schedulableOptions: ReadonlyArray<FilterOption<SchedulableFilter>>

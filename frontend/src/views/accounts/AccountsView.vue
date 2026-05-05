@@ -130,7 +130,7 @@ import type { AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { authState } from '@/composables/useAuth'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountBindGroupModal from './AccountBindGroupModal.vue'
 import AccountEditModal from './AccountEditModal.vue'
@@ -140,9 +140,10 @@ import AccountTestModal from './AccountTestModal.vue'
 import {
   loadAccountErrorPolicyRules,
   validateAccountErrorPolicyRules,
-  writeAccountErrorPolicyToCredentials,
   type AccountErrorPolicyRuleForm
 } from './accountErrorPolicy'
+import { buildAccountCredentials, currentAccountCredentials } from './accountCredentials'
+import { defaultAccountForm } from './accountFormDefaults'
 import {
   accountTypeDescription,
   accountTypeText,
@@ -152,16 +153,12 @@ import {
   isAuthorizedAccount,
   isOwnerDisabledAuthorizedAccount,
   isTemporaryAccountStatus,
-  matchesSchedulableFilter,
-  normalizeKeyword,
   parseDatePickerValue,
-  type SchedulableFilter
 } from './accountFormatters'
 import type { AccountMenuItem } from './accountActionTypes'
-import type { AccountFormModel } from './accountFormTypes'
+import type { AccountFilters, AccountFormModel } from './accountFormTypes'
 import {
   ACCOUNT_PAGE_SIZE,
-  DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
   FALLBACK_PROVIDER,
   defaultTestModelOptions,
   schedulableOptions,
@@ -175,15 +172,8 @@ import {
   accountColumnSortOrder as resolveAccountColumnSortOrder,
   normalizeAccountTableSorts
 } from './accountTableColumns'
+import { countActiveAccountFilters, filterAccounts } from './accountListFilters'
 import { useAccountMobilePagination } from './useAccountMobilePagination'
-
-interface AccountFilters {
-  keyword: string
-  type: 'all' | AccountType
-  status: 'all' | AccountStatus
-  schedulable: SchedulableFilter
-  systemAccountId: string
-}
 
 const loading = ref(false)
 const saving = ref(false)
@@ -230,22 +220,11 @@ const columns = computed(() => buildAccountTableColumns(isAdmin.value, (field) =
 const tableScrollX = computed(() => accountTableScrollX(isAdmin.value))
 const tableScrollY = computed(accountTableScrollY)
 
-const filteredAccounts = computed(() => accounts.value.filter((account) => {
-  const keyword = normalizeKeyword(filters.keyword)
-  const keywordMatched = !keyword || [
-    account.name,
-    account.notes ?? '',
-    account.providerCode,
-    groupNameForAccount(account.id) ?? '',
-    account.type,
-    accountBaseUrl(account),
-    account.id
-  ].some((value) => normalizeKeyword(value).includes(keyword))
-  const typeMatched = filters.type === 'all' || account.type === filters.type
-  const statusMatched = filters.status === 'all' || account.status === filters.status
-  const schedulableMatched = matchesSchedulableFilter(account, filters.schedulable)
-  const systemAccountMatched = matchesSystemAccountFilter(account, filters.systemAccountId, isAdmin.value)
-  return keywordMatched && typeMatched && statusMatched && schedulableMatched && systemAccountMatched
+const filteredAccounts = computed(() => filterAccounts({
+  accounts: accounts.value,
+  filters,
+  groupNameForAccount,
+  isAdmin: isAdmin.value
 }))
 
 const {
@@ -262,12 +241,7 @@ const {
 } = useAccountMobilePagination(ACCOUNT_PAGE_SIZE, () => filteredAccounts.value.length, loadData)
 const mobileVisibleAccounts = computed(() => filteredAccounts.value.slice(0, mobileVisibleCount.value))
 
-const activeAdvancedFilterCount = computed(() => [
-  filters.type !== 'all',
-  filters.status !== 'all',
-  filters.schedulable !== 'all',
-  isAdmin.value && filters.systemAccountId !== allSystemAccountsValue
-].filter(Boolean).length)
+const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, isAdmin.value, allSystemAccountsValue))
 
 const testModelOptions = computed(() => {
   const models = providerModels.value.length ? providerModels.value.map((item) => item.model) : defaultTestModelOptions
@@ -335,26 +309,7 @@ const modalOkButtonProps = computed(() => ({
 const selectedAccountTypeTitle = computed(() => hasAccountType.value ? accountTypeTitle(form.providerCode, form.type) : '')
 
 function defaultForm(providerCode = '', type: AccountType = ''): AccountFormModel {
-  const providerList = providers.value.length ? providers.value : [FALLBACK_PROVIDER]
-  const provider = providerList.find((item) => item.code === providerCode) ?? (providerCode ? FALLBACK_PROVIDER : undefined)
-  return {
-    providerCode,
-    name: '',
-    type,
-    groupId: undefined,
-    apiKey: '',
-    baseUrl: provider?.baseUrl ?? 'https://api.openai.com/v1',
-    accessToken: '',
-    refreshToken: '',
-    oauthMode: 'manual',
-    callbackUrl: '',
-    accountExpiresAt: undefined,
-    status: 'active',
-    concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
-    priority: 0,
-    proxyProfileId: undefined,
-    notes: ''
-  }
+  return defaultAccountForm(providerCode, type, providers.value)
 }
 
 function resetForm(providerCode = '', type: AccountType = '') {
@@ -432,10 +387,6 @@ function ensureDefaultGroupSelected(providerCode = form.providerCode) {
     return
   }
   form.groupId = defaultGroupForProvider(providerCode)?.id
-}
-
-function accountBaseUrl(account: AccountSummary): string {
-  return asString(account.credentials.base_url)
 }
 
 function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
@@ -608,35 +559,11 @@ async function saveBindGroup() {
 }
 
 function buildCredentials() {
-  const credentials: Record<string, unknown> = form.type === 'api_key'
-    ? buildApiKeyCredentials()
-    : buildOAuthCredentials()
-  writeAccountErrorPolicyToCredentials(credentials, accountErrorPolicyRules.value)
-  return credentials
-}
-
-function buildApiKeyCredentials(): Record<string, unknown> {
-  return {
-    api_key: form.apiKey,
-    base_url: form.baseUrl
-  }
-}
-
-function buildOAuthCredentials(): Record<string, unknown> {
-  const currentCredentials = editingId.value
-    ? accounts.value.find((account) => account.id === editingId.value)?.credentials ?? {}
-    : {}
-  return compactCredentials({
-    ...currentCredentials,
-    access_token: form.accessToken,
-    refresh_token: form.refreshToken,
-    expires_at: currentCredentials.expires_at,
-    base_url: currentCredentials.base_url ?? 'https://api.openai.com/v1'
+  return buildAccountCredentials({
+    currentCredentials: currentAccountCredentials(accounts.value, editingId.value),
+    errorPolicyRules: accountErrorPolicyRules.value,
+    form
   })
-}
-
-function compactCredentials(credentials: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(credentials).filter(([, value]) => value !== undefined && value !== ''))
 }
 
 async function saveAccount() {
