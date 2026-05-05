@@ -209,6 +209,8 @@ const sensitiveQueryNames = new Set([
   'code',
   'cookie',
   'key',
+  'keyword',
+  'keywords',
   'password',
   'refresh_token',
   'secret',

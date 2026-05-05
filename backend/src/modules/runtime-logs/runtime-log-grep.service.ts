@@ -310,6 +310,7 @@ function pushMatchedLine(
   const line = lineBuffer.toString('utf8').replace(/\r$/, '')
   if (!line.trim()) return
   if (!lineMatchesKeywords(line, normalizedKeywords)) return
+  if (isRuntimeLogSearchRequestLine(line)) return
 
   items.push({
     id: `${file.path}:tail-${lineNumberFromEnd}:${items.length}`,
@@ -325,6 +326,25 @@ function pushMatchedLine(
 function lineMatchesKeywords(line: string, normalizedKeywords: string[]): boolean {
   const searchableLine = line.toLowerCase()
   return normalizedKeywords.every((keyword) => searchableLine.includes(keyword))
+}
+
+function isRuntimeLogSearchRequestLine(line: string): boolean {
+  try {
+    const parsed = JSON.parse(line) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
+    const record = parsed as Record<string, unknown>
+    const event = stringValue(record.event)
+    if (event !== 'http_request_completed' && event !== 'http_request_closed') return false
+    return isRuntimeLogSearchPath(stringValue(record.originalUrl)) || isRuntimeLogSearchPath(stringValue(record.path))
+  } catch {
+    return false
+  }
+}
+
+function isRuntimeLogSearchPath(value: string | undefined): boolean {
+  if (!value) return false
+  const path = value.split('?', 1)[0]?.replace(/\/+$/, '')
+  return path === '/api/runtime-logs' || Boolean(path?.startsWith('/api/runtime-logs/'))
 }
 
 function compareGrepItems(left: OrderedRuntimeLogGrepItem, right: OrderedRuntimeLogGrepItem): number {

@@ -45,75 +45,22 @@
         </template>
       </ResponsiveListToolbar>
 
-      <ResponsiveDataList
+      <RuntimeLogDataList
         table-class="page-table runtime-log-table"
-        :columns="columns"
-        :data-source="records"
-        row-key="id"
+        :records="records"
         :loading="loading"
-        :scroll-x="1710"
         :pagination="tablePagination"
+        empty-description="最近 3 天暂无匹配运行日志。可先用 traceId、级别或事件缩小范围。"
         mobile-pagination
         :mobile-has-more="mobileHasMore"
         :loading-more="mobileLoadingMore"
-        pull-refresh-enabled
         :refreshing="loading"
         @change="handleTableChange"
+        @detail="openRuntimeLogDetail"
         @mobile-load-more="loadMoreMobileRecords"
         @mobile-refresh="refreshMobileRecords"
-      >
-        <template #emptyText>
-          <a-empty class="page-empty-card" description="最近 3 天暂无匹配运行日志。可先用 traceId、级别或事件缩小范围。" />
-        </template>
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'time'">
-            <span class="muted-cell">{{ formatDateTime(record.time) }}</span>
-          </template>
-          <template v-else-if="column.key === 'level'">
-            <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'traceId'">
-            <button class="link-button trace-cell" type="button" @click="searchTrace(record.traceId)">{{ record.traceId ?? '-' }}</button>
-          </template>
-          <template v-else-if="column.key === 'event'">
-            <span :class="record.event ? 'mono-cell compact-cell' : 'muted-cell'">{{ record.event ?? '-' }}</span>
-          </template>
-          <template v-else-if="column.key === 'message'">
-            <span :class="record.errorMessage ? 'error-message-cell' : 'message-cell'">{{ record.errorMessage || record.message || '-' }}</span>
-          </template>
-          <template v-else-if="column.key === 'actions'">
-            <a-button type="link" size="small" @click="openDetail(record)">详情</a-button>
-          </template>
-        </template>
-        <template #card="{ record }">
-          <article class="mobile-list-card" @click="openDetail(record)">
-            <div class="mobile-list-card-head">
-              <div class="mobile-list-card-title">{{ record.event || record.message || record.errorMessage || record.id }}</div>
-              <div class="mobile-list-card-tags">
-                <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
-              </div>
-            </div>
-            <div class="mobile-list-meta-grid">
-              <div class="mobile-list-meta-item mobile-list-meta-wide">
-                <span>traceId</span>
-                <strong class="mono-cell">{{ record.traceId ?? '-' }}</strong>
-              </div>
-              <div class="mobile-list-meta-item">
-                <span>事件</span>
-                <strong>{{ record.event ?? '-' }}</strong>
-              </div>
-              <div class="mobile-list-meta-item">
-                <span>消息</span>
-                <strong>{{ record.errorMessage || record.message || '-' }}</strong>
-              </div>
-              <div class="mobile-list-meta-item">
-                <span>时间</span>
-                <strong>{{ formatDateTime(record.time) }}</strong>
-              </div>
-            </div>
-          </article>
-        </template>
-      </ResponsiveDataList>
+        @trace="searchTrace"
+      />
     </template>
 
     <template v-else>
@@ -152,69 +99,18 @@
         </template>
       </a-alert>
 
-      <ResponsiveDataList
+      <RuntimeLogDataList
         table-class="page-table grep-table"
-        :columns="columns"
-        :data-source="grepRecords"
-        row-key="id"
+        :records="grepRecords"
         :loading="loading"
-        :scroll-x="1710"
-        pull-refresh-enabled
+        :empty-description="grepKeywordFilter.trim() ? '没有匹配的日志行。' : '输入关键字后搜索文件日志。'"
+        action-label="查看"
+        message-mode="grep"
         :refreshing="loading"
+        @detail="openRuntimeGrepDetail"
         @mobile-refresh="searchGrepLogs"
-      >
-        <template #emptyText>
-          <a-empty class="page-empty-card" :description="grepKeywordFilter.trim() ? '没有匹配的日志行。' : '输入关键字后搜索文件日志。'" />
-        </template>
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'time'">
-            <span class="muted-cell">{{ formatDateTime(record.time) }}</span>
-          </template>
-          <template v-else-if="column.key === 'level'">
-            <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
-          </template>
-          <template v-else-if="column.key === 'traceId'">
-            <button class="link-button trace-cell" type="button" @click="searchTrace(record.traceId)">{{ record.traceId ?? '-' }}</button>
-          </template>
-          <template v-else-if="column.key === 'event'">
-            <span :class="record.event ? 'mono-cell compact-cell' : 'muted-cell'">{{ record.event ?? '-' }}</span>
-          </template>
-          <template v-else-if="column.key === 'message'">
-            <span :class="record.errorMessage ? 'error-message-cell' : 'message-cell'">{{ record.errorMessage || record.message || record.line || '-' }}</span>
-          </template>
-          <template v-else-if="column.key === 'actions'">
-            <a-button type="link" size="small" @click="openGrepDetail(record)">查看</a-button>
-          </template>
-        </template>
-        <template #card="{ record }">
-          <article class="mobile-list-card" @click="openGrepDetail(record)">
-            <div class="mobile-list-card-head">
-              <div class="mobile-list-card-title">{{ record.event || record.message || record.errorMessage || record.line || record.id }}</div>
-              <div class="mobile-list-card-tags">
-                <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
-              </div>
-            </div>
-            <div class="mobile-list-meta-grid">
-              <div class="mobile-list-meta-item mobile-list-meta-wide">
-                <span>traceId</span>
-                <strong class="mono-cell">{{ record.traceId ?? '-' }}</strong>
-              </div>
-              <div class="mobile-list-meta-item">
-                <span>事件</span>
-                <strong>{{ record.event ?? '-' }}</strong>
-              </div>
-              <div class="mobile-list-meta-item">
-                <span>消息</span>
-                <strong>{{ record.errorMessage || record.message || record.line || '-' }}</strong>
-              </div>
-              <div class="mobile-list-meta-item">
-                <span>时间</span>
-                <strong>{{ formatDateTime(record.time) }}</strong>
-              </div>
-            </div>
-          </article>
-        </template>
-      </ResponsiveDataList>
+        @trace="searchTrace"
+      />
     </template>
 
     <a-drawer v-model:open="detailOpen" width="min(920px, 96vw)" title="运行日志详情" :body-style="{ padding: '18px' }">
@@ -258,10 +154,21 @@ import { SearchOutlined } from '@ant-design/icons-vue'
 import { api } from '@/api/client'
 import type { RuntimeLogFacets, RuntimeLogGrepItem, RuntimeLogGrepResult, RuntimeLogLevel, RuntimeLogSummary } from '@/types/domain'
 import { formatDateTime } from '@/shared/formatters'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import {
+  grepLinePositionText,
+  levelText,
+  prettyRawJson,
+  splitGrepKeywords
+} from './runtimeLogFormatters'
+import {
+  runtimeLogLevelOptions,
+  runtimeLogViewModeOptions
+} from './runtimeLogTableColumns'
+import RuntimeLogDataList from './RuntimeLogDataList.vue'
 
 type RuntimeLogViewMode = 'index' | 'grep'
+type RuntimeLogListRecord = RuntimeLogSummary | RuntimeLogGrepItem
 
 const loading = ref(false)
 const mobileLoadingMore = ref(false)
@@ -284,29 +191,8 @@ const timeRangeFilter = ref<[Dayjs, Dayjs] | undefined>([dayjs().subtract(24, 'h
 const pageSize = 100
 const pagination = reactive({ current: 1, pageSize, total: 0 })
 
-const viewModeOptions = [
-  { label: '索引查询', value: 'index' },
-  { label: 'grep 模式', value: 'grep' }
-]
-
-const levelOptions = [
-  { label: '全部级别', value: 'all' },
-  { label: 'fatal', value: 'fatal' },
-  { label: 'error', value: 'error' },
-  { label: 'warn', value: 'warn' },
-  { label: 'info', value: 'info' },
-  { label: 'debug', value: 'debug' },
-  { label: 'trace', value: 'trace' }
-]
-
-const columns = [
-  { title: '时间', key: 'time', width: 180 },
-  { title: '级别', key: 'level', width: 90 },
-  { title: 'traceId', key: 'traceId', width: 250 },
-  { title: '事件', key: 'event', width: 230 },
-  { title: '消息', key: 'message', width: 620, responsiveFlex: true },
-  { title: '操作', key: 'actions', width: 90, fixed: 'right' }
-]
+const viewModeOptions = runtimeLogViewModeOptions
+const levelOptions = runtimeLogLevelOptions
 
 const eventOptions = computed(() => (facets.value?.events ?? []).map((event) => ({ label: event, value: event })))
 const tablePagination = computed(() => ({
@@ -460,8 +346,12 @@ function openGrepDetail(record: RuntimeLogGrepItem): void {
   grepDetailOpen.value = true
 }
 
-function grepLinePositionText(record: RuntimeLogGrepItem): string {
-  return record.lineNumber ? `第 ${record.lineNumber} 行` : `倒数第 ${record.lineNumberFromEnd} 行`
+function openRuntimeLogDetail(record: RuntimeLogListRecord): void {
+  openDetail(record as RuntimeLogSummary)
+}
+
+function openRuntimeGrepDetail(record: RuntimeLogListRecord): void {
+  openGrepDetail(record as RuntimeLogGrepItem)
 }
 
 function searchTrace(traceId?: string): void {
@@ -470,40 +360,6 @@ function searchTrace(traceId?: string): void {
   traceIdFilter.value = traceId
   pagination.current = 1
   void loadData()
-}
-
-function levelText(value: string): string {
-  return value.toLowerCase()
-}
-
-function levelColor(value: string): string {
-  const level = value.toLowerCase()
-  if (level === 'fatal' || level === 'error') return 'red'
-  if (level === 'warn') return 'orange'
-  if (level === 'debug' || level === 'trace') return 'blue'
-  return 'green'
-}
-
-function prettyRawJson(rawJson: string): string {
-  try {
-    return JSON.stringify(JSON.parse(rawJson), null, 2)
-  } catch {
-    return rawJson
-  }
-}
-
-function splitGrepKeywords(value: string): string[] {
-  const seen = new Set<string>()
-  const keywords: string[] = []
-  for (const part of value.split(/[\s,;，；]+/)) {
-    const keyword = part.trim()
-    if (!keyword) continue
-    const key = keyword.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    keywords.push(keyword)
-  }
-  return keywords
 }
 
 onMounted(loadData)
@@ -530,14 +386,6 @@ onMounted(loadData)
   width: 100%;
 }
 
-.runtime-log-table :deep(.ant-table-cell) {
-  white-space: nowrap;
-}
-
-.grep-table :deep(.ant-table-cell) {
-  white-space: nowrap;
-}
-
 .grep-alert {
   margin-bottom: 14px;
 }
@@ -545,49 +393,6 @@ onMounted(loadData)
 .install-list {
   margin: 6px 0 0;
   padding-left: 18px;
-}
-
-.link-button {
-  padding: 0;
-  color: #1677ff;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-}
-
-.trace-cell,
-.compact-cell,
-.mono-cell {
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-}
-
-.trace-cell,
-.compact-cell,
-.message-cell,
-.error-message-cell {
-  display: inline-block;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
-  white-space: nowrap;
-}
-
-.trace-cell {
-  max-width: 230px;
-}
-
-.compact-cell {
-  max-width: 210px;
-}
-
-.message-cell,
-.error-message-cell {
-  max-width: 600px;
-}
-
-.error-message-cell {
-  color: #dc2626;
 }
 
 .detail-descriptions {

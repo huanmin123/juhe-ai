@@ -29,68 +29,37 @@
       @test="batchTestSelected"
     />
 
-    <ResponsiveDataList
-      class="account-responsive-list"
-      table-class="account-table"
+    <AccountList
+      :accounts="filteredAccounts"
+      :authorized-tooltip="authorizedAccountTooltip"
+      :can-delete="canDeleteAccount"
+      :can-edit="canEditAccount"
       :columns="columns"
-      :data-source="filteredAccounts"
-      :mobile-data-source="mobileVisibleAccounts"
-      row-key="id"
+      :group-name="groupNameForAccount"
+      :is-admin="isAdmin"
+      :is-selected="isAccountSelected"
       :loading="loading"
-      :scroll-x="tableScrollX"
-      :table-scroll-y="tableScrollY"
-      :pagination="accountTablePagination"
-      :row-selection="rowSelection"
-      mobile-pagination
-      pull-refresh-enabled
-      :mobile-has-more="mobileHasMoreAccounts"
       :loading-more="mobileLoadingMore"
+      :menu-items="accountMenuItems"
+      :mobile-accounts="mobileVisibleAccounts"
+      :mobile-has-more="mobileHasMoreAccounts"
+      :pagination="accountTablePagination"
+      :provider-name="providerName"
       :refreshing="mobileRefreshing"
+      :row-selection="rowSelection"
+      :table-scroll-x="tableScrollX"
+      :table-scroll-y="tableScrollY"
+      @bind-group="openBindGroup"
       @change="handleAccountTableChange"
-      @sort-change="handleAccountSortChange"
+      @delete="removeAccount"
+      @edit="openEdit"
+      @menu-click="handleAccountMenuClick"
       @mobile-load-more="loadMoreMobileAccounts"
       @mobile-refresh="refreshMobileAccounts"
-    >
-      <template #emptyText>
-        <a-empty class="page-empty-card" description="还没有账户。点击「添加账户」，再选择供应商和账户类型。" />
-      </template>
-      <template #bodyCell="{ column, record }">
-        <AccountTableCell
-          :account="record"
-          :authorized-tooltip="authorizedAccountTooltip(record)"
-          :can-delete="canDeleteAccount(record)"
-          :can-edit="canEditAccount(record)"
-          :column-key="tableColumnKey(column)"
-          :group-name="groupNameForAccount(record.id)"
-          :menu-items="accountMenuItems(record)"
-          :provider-name="providerName(record.providerCode)"
-          @bind-group="openBindGroup"
-          @delete="removeAccount($event.id)"
-          @edit="openEdit"
-          @menu-click="handleAccountMenuClick"
-          @test="openTestModal"
-        />
-      </template>
-      <template #card="{ record }">
-        <AccountMobileCard
-          :account="record"
-          :authorized-tooltip="authorizedAccountTooltip(record)"
-          :can-delete="canDeleteAccount(record)"
-          :can-edit="canEditAccount(record)"
-          :group-name="groupNameForAccount(record.id)"
-          :is-admin="isAdmin"
-          :menu-items="accountMenuItems(record)"
-          :provider-name="providerName(record.providerCode)"
-          :selected="isAccountSelected(record.id)"
-          @delete="removeAccount(record.id)"
-          @edit="openEdit(record)"
-          @bind-group="openBindGroup(record)"
-          @menu-click="handleAccountMenuClick($event, record)"
-          @test="openTestModal(record)"
-          @toggle-selection="toggleAccountSelection(record)"
-        />
-      </template>
-    </ResponsiveDataList>
+      @sort-change="handleAccountSortChange"
+      @test="openTestModal"
+      @toggle-selection="toggleAccountSelection"
+    />
 
     <AccountTestModal
       v-model:open="testModalOpen"
@@ -158,7 +127,6 @@ import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import type { AccountListSortParam } from '@/api/client'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { authState } from '@/composables/useAuth'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
@@ -167,8 +135,7 @@ import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountBindGroupModal from './AccountBindGroupModal.vue'
 import AccountEditModal from './AccountEditModal.vue'
 import AccountFilterToolbar from './AccountFilterToolbar.vue'
-import AccountMobileCard from './AccountMobileCard.vue'
-import AccountTableCell from './AccountTableCell.vue'
+import AccountList from './AccountList.vue'
 import AccountTestModal from './AccountTestModal.vue'
 import {
   loadAccountErrorPolicyRules,
@@ -206,8 +173,7 @@ import {
   accountTableScrollY,
   buildAccountTableColumns,
   accountColumnSortOrder as resolveAccountColumnSortOrder,
-  normalizeAccountTableSorts,
-  tableColumnKey
+  normalizeAccountTableSorts
 } from './accountTableColumns'
 import { useAccountMobilePagination } from './useAccountMobilePagination'
 
@@ -1022,11 +988,6 @@ onMounted(loadData)
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
-.account-table {
-  border: 1px solid #e8edf5;
-  border-radius: 14px;
-}
-
 .credential-cell {
   display: inline-block;
   max-width: 240px;
@@ -1034,14 +995,6 @@ onMounted(loadData)
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
-}
-
-.account-table :deep(.ant-table-tbody > tr > td) {
-  vertical-align: middle;
-}
-
-.account-table :deep(.ant-table-cell) {
-  white-space: nowrap;
 }
 
 .secret-cell {
@@ -1057,10 +1010,6 @@ onMounted(loadData)
   margin-top: 4px;
   color: #64748b;
   font-size: 12px;
-}
-
-.account-table :deep(.ant-empty) {
-  margin: 12px 0;
 }
 
 .notes-cell {
@@ -1120,13 +1069,6 @@ onMounted(loadData)
 @media (max-width: 900px) {
   .form-grid {
     grid-template-columns: 1fr;
-  }
-
-  .account-table :deep(.ant-table-cell-fix-right),
-  .account-table :deep(.ant-table-cell-fix-right-first),
-  .account-table :deep(.ant-table-cell-fix-right-last) {
-    position: static !important;
-    box-shadow: none !important;
   }
 }
 </style>

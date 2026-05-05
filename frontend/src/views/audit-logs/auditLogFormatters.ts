@@ -1,0 +1,66 @@
+import type { AuditOutcome, AuditPayloadPartType } from '@/types/domain'
+
+export function outcomeText(value: AuditOutcome): string {
+  return {
+    success: '成功',
+    success_after_retry: '重试后成功',
+    gateway_failed: '网关失败',
+    upstream_failed: '上游失败',
+    stream_failed: '流式失败',
+    client_aborted: '客户端断开'
+  }[value]
+}
+
+export function outcomeColor(value: AuditOutcome): string {
+  if (value === 'success') return 'green'
+  if (value === 'success_after_retry') return 'blue'
+  if (value === 'client_aborted') return 'orange'
+  return 'red'
+}
+
+export function payloadPartText(value: AuditPayloadPartType): string {
+  return {
+    client_request: '客户端请求',
+    upstream_request: '上游请求',
+    upstream_response: '上游响应',
+    gateway_response: '返回客户端',
+    gateway_error: '网关错误'
+  }[value]
+}
+
+export function statusColor(statusCode: number | undefined, success: boolean): string {
+  if (success) return 'green'
+  if (!statusCode) return 'default'
+  return statusCode >= 500 ? 'red' : 'orange'
+}
+
+export function displayName(name?: string, id?: string): string {
+  return name || id || '-'
+}
+
+export function formatDuration(value?: number): string {
+  if (typeof value !== 'number') return '-'
+  return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${value}ms`
+}
+
+export function formatBytes(value: number): string {
+  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`
+  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
+  return `${value} B`
+}
+
+export function formatDateTime(value?: string): string {
+  if (!value) return '-'
+  return new Date(value).toLocaleString('zh-CN', { hour12: false })
+}
+
+export function prettyJson(value: unknown): string {
+  return JSON.stringify(value, null, 2)
+}
+
+export function normalizedStatusCode(value: string): number | undefined {
+  const text = value.trim()
+  if (!text) return undefined
+  const statusCode = Number(text)
+  return Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? statusCode : undefined
+}

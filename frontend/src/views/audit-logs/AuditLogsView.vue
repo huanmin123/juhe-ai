@@ -38,106 +38,17 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList
-      table-class="page-table audit-table"
-      :columns="columns"
-      :data-source="records"
-      row-key="id"
+    <AuditLogList
+      :records="records"
       :loading="loading"
-      :scroll-x="1780"
       :pagination="tablePagination"
-      mobile-pagination
       :mobile-has-more="mobileHasMore"
       :loading-more="mobileLoadingMore"
-      pull-refresh-enabled
-      :refreshing="loading"
       @change="handleTableChange"
+      @detail="openDetail"
       @mobile-load-more="loadMoreMobileRecords"
       @mobile-refresh="refreshMobileRecords"
-    >
-      <template #emptyText>
-        <a-empty class="page-empty-card" description="暂无审计日志。失败请求会全量记录，成功请求默认按 10% 采样。" />
-      </template>
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'traceId'">
-          <button class="link-button trace-cell" type="button" @click="openDetail(record)">{{ record.traceId }}</button>
-        </template>
-        <template v-else-if="column.key === 'outcome'">
-          <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'status'">
-          <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ record.finalStatusCode ?? '-' }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'endpoint'">
-          <span class="endpoint-cell">{{ record.method }} {{ record.path }}</span>
-        </template>
-        <template v-else-if="column.key === 'model'">
-          <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
-          <span v-else class="muted-cell">-</span>
-        </template>
-        <template v-else-if="column.key === 'stream'">
-          <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'account'">
-          <span>{{ displayName(record.accountName, record.accountId) }}</span>
-        </template>
-        <template v-else-if="column.key === 'apiKey'">
-          <span>{{ displayName(record.apiKeyName, record.apiKeyId) }}</span>
-        </template>
-        <template v-else-if="column.key === 'group'">
-          <span>{{ displayName(record.groupName, record.groupId) }}</span>
-        </template>
-        <template v-else-if="column.key === 'systemAccount'">
-          <span>{{ displayName(record.systemAccountName, record.systemAccountId) }}</span>
-        </template>
-        <template v-else-if="column.key === 'duration'">
-          <span>{{ formatDuration(record.durationMs) }}</span>
-        </template>
-        <template v-else-if="column.key === 'payload'">
-          <span>{{ formatBytes(record.payloadBytes) }} / {{ record.payloadCount }} 段</span>
-        </template>
-        <template v-else-if="column.key === 'createdAt'">
-          <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
-        </template>
-        <template v-else-if="column.key === 'actions'">
-          <a-button type="link" size="small" @click="openDetail(record)">详情</a-button>
-        </template>
-      </template>
-      <template #card="{ record }">
-        <article class="mobile-list-card" @click="openDetail(record)">
-          <div class="mobile-list-card-head">
-            <div class="mobile-list-card-title">{{ record.method }} {{ record.path }}</div>
-            <div class="mobile-list-card-tags">
-              <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
-              <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ record.finalStatusCode ?? '-' }}</a-tag>
-              <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
-            </div>
-          </div>
-          <div class="mobile-list-meta-grid">
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>traceId</span>
-              <strong class="mono-cell">{{ record.traceId }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>账号</span>
-              <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>耗时</span>
-              <strong>{{ formatDuration(record.durationMs) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>时间</span>
-              <strong>{{ formatDateTime(record.createdAt) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>原文</span>
-              <strong>{{ formatBytes(record.payloadBytes) }}</strong>
-            </div>
-          </div>
-        </article>
-      </template>
-    </ResponsiveDataList>
+    />
 
     <a-drawer v-model:open="detailOpen" width="min(980px, 96vw)" title="审计详情" :body-style="{ padding: '18px' }">
       <a-spin :spinning="detailLoading">
@@ -222,9 +133,24 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { message } from 'ant-design-vue'
 
 import { api } from '@/api/client'
-import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditPayloadPartType, AuditLogRuntime } from '@/types/domain'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import AuditLogList from './AuditLogList.vue'
+import {
+  displayName,
+  formatBytes,
+  formatDateTime,
+  formatDuration,
+  normalizedStatusCode,
+  outcomeText,
+  payloadPartText,
+  prettyJson
+} from './auditLogFormatters'
+import {
+  auditAttemptColumns,
+  auditOutcomeOptions,
+  auditPayloadColumns
+} from './auditLogTableColumns'
 
 const loading = ref(false)
 const detailLoading = ref(false)
@@ -245,51 +171,9 @@ const clientIpFilter = ref('')
 const pageSize = 100
 const pagination = reactive({ current: 1, pageSize, total: 0 })
 
-const outcomeOptions = [
-  { label: '全部结果', value: 'all' },
-  { label: '成功', value: 'success' },
-  { label: '重试后成功', value: 'success_after_retry' },
-  { label: '网关失败', value: 'gateway_failed' },
-  { label: '上游失败', value: 'upstream_failed' },
-  { label: '流式失败', value: 'stream_failed' },
-  { label: '客户端断开', value: 'client_aborted' }
-]
-
-const columns = [
-  { title: 'traceId', key: 'traceId', width: 250 },
-  { title: '结果', key: 'outcome', width: 120 },
-  { title: '状态码', key: 'status', width: 90 },
-  { title: '接口', key: 'endpoint', width: 190 },
-  { title: '模型', key: 'model', width: 150 },
-  { title: '类型', key: 'stream', width: 90 },
-  { title: '账号', key: 'account', width: 160 },
-  { title: 'API Key', key: 'apiKey', width: 150 },
-  { title: '分组', key: 'group', width: 150 },
-  { title: '系统账户', key: 'systemAccount', width: 150 },
-  { title: '耗时', key: 'duration', width: 90 },
-  { title: '原文', key: 'payload', width: 130 },
-  { title: '时间', key: 'createdAt', width: 180 },
-  { title: '操作', key: 'actions', width: 90, fixed: 'right' }
-]
-
-const attemptColumns = [
-  { title: '#', dataIndex: 'attemptIndex', width: 60 },
-  { title: '结果', key: 'success', width: 90 },
-  { title: '账号', key: 'account', width: 160 },
-  { title: '状态码', dataIndex: 'upstreamStatusCode', width: 90 },
-  { title: '耗时', key: 'duration', width: 90 },
-  { title: '上游 URL', key: 'url', width: 320 },
-  { title: '错误', dataIndex: 'errorMessage', width: 220 }
-]
-
-const payloadColumns = [
-  { title: '部分', key: 'partType', width: 140 },
-  { title: '序号', dataIndex: 'sequenceIndex', width: 80 },
-  { title: '类型', dataIndex: 'contentType', width: 180 },
-  { title: '大小', key: 'size', width: 100 },
-  { title: 'SHA256', dataIndex: 'bodySha256', width: 260 },
-  { title: '操作', key: 'actions', width: 110 }
-]
+const outcomeOptions = auditOutcomeOptions
+const attemptColumns = auditAttemptColumns
+const payloadColumns = auditPayloadColumns
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -371,13 +255,6 @@ function handleTableChange(paginationInfo: unknown): void {
   void loadData()
 }
 
-function normalizedStatusCode(value: string): number | undefined {
-  const text = value.trim()
-  if (!text) return undefined
-  const statusCode = Number(text)
-  return Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? statusCode : undefined
-}
-
 async function loadMoreMobileRecords(): Promise<void> {
   if (!mobileHasMore.value || mobileLoadingMore.value) return
   mobileLoadingMore.value = true
@@ -421,64 +298,6 @@ async function loadPayload(payloadId: string): Promise<void> {
   }
 }
 
-function outcomeText(value: AuditOutcome): string {
-  return {
-    success: '成功',
-    success_after_retry: '重试后成功',
-    gateway_failed: '网关失败',
-    upstream_failed: '上游失败',
-    stream_failed: '流式失败',
-    client_aborted: '客户端断开'
-  }[value]
-}
-
-function outcomeColor(value: AuditOutcome): string {
-  if (value === 'success') return 'green'
-  if (value === 'success_after_retry') return 'blue'
-  if (value === 'client_aborted') return 'orange'
-  return 'red'
-}
-
-function payloadPartText(value: AuditPayloadPartType): string {
-  return {
-    client_request: '客户端请求',
-    upstream_request: '上游请求',
-    upstream_response: '上游响应',
-    gateway_response: '返回客户端',
-    gateway_error: '网关错误'
-  }[value]
-}
-
-function statusColor(statusCode: number | undefined, success: boolean): string {
-  if (success) return 'green'
-  if (!statusCode) return 'default'
-  return statusCode >= 500 ? 'red' : 'orange'
-}
-
-function displayName(name?: string, id?: string): string {
-  return name || id || '-'
-}
-
-function formatDuration(value?: number): string {
-  if (typeof value !== 'number') return '-'
-  return value >= 1000 ? `${(value / 1000).toFixed(2)}s` : `${value}ms`
-}
-
-function formatBytes(value: number): string {
-  if (value >= 1024 * 1024) return `${(value / 1024 / 1024).toFixed(2)} MB`
-  if (value >= 1024) return `${(value / 1024).toFixed(1)} KB`
-  return `${value} B`
-}
-
-function formatDateTime(value?: string): string {
-  if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
-}
-
-function prettyJson(value: unknown): string {
-  return JSON.stringify(value, null, 2)
-}
-
 onMounted(loadData)
 </script>
 
@@ -503,39 +322,10 @@ onMounted(loadData)
   width: 150px;
 }
 
-.audit-table :deep(.ant-table-cell) {
-  white-space: nowrap;
-}
-
-.link-button {
-  padding: 0;
-  color: #1677ff;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-}
-
-.trace-cell,
-.endpoint-cell,
 .url-cell,
 .mono-cell {
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
-}
-
-.trace-cell {
-  max-width: 230px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.endpoint-cell {
-  display: inline-block;
-  max-width: 180px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  vertical-align: bottom;
 }
 
 .url-cell {

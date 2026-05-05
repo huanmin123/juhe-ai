@@ -29,4 +29,7 @@ export const authorizationResourceTypeOptions: Array<{ label: string; value: Aut
   { label: '分组', value: 'group' }
 ]
 
-export const createAuthorizationResourceTypeOptions = authorizationResourceTypeOptions.filter((item) => item.value !== 'all')
+export const createAuthorizationResourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }> = [
+  { label: 'AI账户', value: 'account' },
+  { label: '分组', value: 'group' }
+]
