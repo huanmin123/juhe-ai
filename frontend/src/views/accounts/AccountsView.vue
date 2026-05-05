@@ -150,133 +150,34 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="testModalOpen" title="测试账号连接" width="620px" :footer="null" :closable="!testRunning" :keyboard="!testRunning" :mask-closable="!testRunning" @cancel="closeTestModal">
-      <div v-if="testingAccount" class="test-modal">
-        <div class="test-account-card">
-          <div class="test-account-main">
-            <div class="test-account-icon">▶</div>
-            <div>
-              <div class="test-account-name">{{ testingAccount.name }}</div>
-              <div class="test-account-meta">
-                <a-tag color="processing">{{ accountTypeText(testingAccount.type) }}</a-tag>
-                <span>账号</span>
-              </div>
-            </div>
-          </div>
-          <a-tag :color="accountStatusColor(testingAccount)">{{ accountStatusText(testingAccount) }}</a-tag>
-        </div>
-
-        <a-form layout="vertical" class="test-form">
-          <a-form-item label="选择测试模型">
-            <a-select
-              v-model:value="testForm.model"
-              show-search
-              :loading="testModelsLoading"
-              :disabled="testRunning"
-              :options="testModelOptions"
-              placeholder="选择测试模型"
-            />
-          </a-form-item>
-        </a-form>
-
-        <div class="test-terminal">
-          <div v-if="!testOutputLines.length" class="test-output-line muted">准备开始测试</div>
-          <div v-for="(line, index) in testOutputLines" :key="index" class="test-output-line" :class="line.tone">{{ line.text }}</div>
-        </div>
-
-        <div v-if="testResult" class="test-result-meta">
-          <a-collapse class="test-result-collapse" ghost>
-            <a-collapse-panel key="result" header="完整测试结果 JSON">
-              <a-textarea :value="testResultJson" :rows="8" readonly />
-            </a-collapse-panel>
-          </a-collapse>
-        </div>
-
-        <div class="test-modal-footer">
-          <div class="test-footer-hint">
-            <span>⌘ 测试模型</span>
-            <span>提示词："{{ testForm.prompt }}"</span>
-          </div>
-          <a-space>
-            <a-button :disabled="!testResult" @click="copyTestResult">复制完整结果</a-button>
-            <a-button @click="closeTestModal">关闭</a-button>
-            <a-button type="primary" :loading="testRunning" @click="runAccountTest">{{ testResult ? '重试' : '开始测试' }}</a-button>
-          </a-space>
-        </div>
-      </div>
-    </a-modal>
+    <AccountTestModal
+      v-model:open="testModalOpen"
+      v-model:model="testForm.model"
+      :account="testingAccount"
+      :model-options="testModelOptions"
+      :models-loading="testModelsLoading"
+      :prompt="testForm.prompt"
+      :result="testResult"
+      :running="testRunning"
+      @close="closeTestModal"
+      @copy-result="copyText"
+      @run="runAccountTest"
+    />
 
     <a-modal v-model:open="modalOpen" :title="modalTitle" width="920px" :confirm-loading="modalConfirmLoading" :ok-button-props="modalOkButtonProps" @ok="saveAccount" @cancel="handleModalCancel">
       <a-form layout="vertical" class="account-form">
-        <div v-if="!editingId" class="setup-progress">
-          <div class="setup-step" :class="{ active: !form.providerCode, done: Boolean(form.providerCode) }">
-            <span>1</span>
-            <strong>选择供应商</strong>
-          </div>
-          <div class="setup-step" :class="{ active: Boolean(form.providerCode) && !form.type, done: Boolean(form.type) }">
-            <span>2</span>
-            <strong>选择类型</strong>
-          </div>
-          <div class="setup-step" :class="{ active: Boolean(form.providerCode && form.type) }">
-            <span>3</span>
-            <strong>填写配置</strong>
-          </div>
-        </div>
-
         <a-alert v-if="editingId" class="form-alert" type="info" show-icon message="编辑账户时不修改供应商和账户类型；Access/API Key 与 Refresh Token 只在这里展示和修改。" />
 
-        <section class="form-section selector-section">
-          <div class="form-section-head">
-            <div>
-              <h4>选择供应商</h4>
-              <p>未来接入 Claude Code、Gemini 等供应商时，也会从这里进入。</p>
-            </div>
-          </div>
-          <div class="choice-grid provider-choice-grid">
-            <button
-              v-for="provider in availableProviders"
-              :key="provider.code"
-              type="button"
-              class="choice-card provider-choice-card"
-              :class="{ active: form.providerCode === provider.code, disabled: editingId || !provider.enabled }"
-              :disabled="Boolean(editingId) || !provider.enabled"
-              @click="selectProvider(provider.code)"
-            >
-              <span class="choice-card-icon">{{ provider.name.slice(0, 1).toUpperCase() }}</span>
-              <span class="choice-card-content">
-                <strong>{{ provider.name }}</strong>
-                <small>{{ provider.baseUrl }}</small>
-              </span>
-              <a-tag :color="provider.enabled ? 'green' : 'default'">{{ provider.enabled ? '可用' : '停用' }}</a-tag>
-            </button>
-          </div>
-        </section>
-
-        <section v-if="selectedProvider" class="form-section selector-section">
-          <div class="form-section-head">
-            <div>
-              <h4>选择账户类型</h4>
-              <p>{{ selectedProvider.name }} 当前支持 {{ accountTypeChoices.length }} 种账户创建方式。</p>
-            </div>
-          </div>
-          <div class="choice-grid type-choice-grid">
-            <button
-              v-for="item in accountTypeChoices"
-              :key="item.value"
-              type="button"
-              class="choice-card type-choice-card"
-              :class="{ active: form.type === item.value, disabled: Boolean(editingId) }"
-              :disabled="Boolean(editingId)"
-              @click="selectAccountType(item.value)"
-            >
-              <span class="choice-card-content">
-                <strong>{{ item.label }}</strong>
-                <small>{{ item.description }}</small>
-              </span>
-              <a-tag color="blue">{{ item.tag }}</a-tag>
-            </button>
-          </div>
-        </section>
+        <AccountFormSelector
+          :account-type="form.type"
+          :account-type-choices="accountTypeChoices"
+          :editing="Boolean(editingId)"
+          :provider-code="form.providerCode"
+          :providers="availableProviders"
+          :selected-provider="selectedProvider"
+          @select-provider="selectProvider"
+          @select-type="selectAccountType"
+        />
 
         <section v-if="hasAccountType" class="form-section">
           <div class="form-section-head">
@@ -442,8 +343,10 @@ import { authState } from '@/composables/useAuth'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
+import AccountFormSelector from './AccountFormSelector.vue'
 import AccountMobileCard from './AccountMobileCard.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
+import AccountTestModal from './AccountTestModal.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
 import {
   loadAccountErrorPolicyRules,
@@ -463,9 +366,7 @@ import {
   compareAccountExpiresAt,
   compareAccountLastUsedAt,
   formatDateTime,
-  formatErrorPolicyAction,
   formatServerDateTimeInput,
-  formatTestTerminalResult,
   isAccountPackageExpired,
   isAuthorizedAccount,
   isOwnerDisabledAuthorizedAccount,
@@ -473,7 +374,6 @@ import {
   matchesSchedulableFilter,
   normalizeKeyword,
   parseDatePickerValue,
-  statusText,
   type SchedulableFilter
 } from './accountFormatters'
 
@@ -489,11 +389,6 @@ interface AccountMenuItem {
   key: string
   label: string
   danger?: boolean
-}
-
-interface TestOutputLine {
-  text: string
-  tone?: 'muted' | 'info' | 'success' | 'warning' | 'error' | 'label' | 'divider'
 }
 
 interface AccountForm {
@@ -666,51 +561,6 @@ const defaultTestModelOptions = [
 const testModelOptions = computed(() => {
   const models = providerModels.value.length ? providerModels.value.map((item) => item.model) : defaultTestModelOptions
   return [...new Set(models)].map((model) => ({ label: model, value: model }))
-})
-
-const testResultJson = computed(() => testResult.value ? JSON.stringify(testResult.value, null, 2) : '')
-
-const testOutputLines = computed<TestOutputLine[]>(() => {
-  const account = testingAccount.value
-  if (!account || (!testRunning.value && !testResult.value)) return []
-  const lines: TestOutputLine[] = [
-    { text: `开始测试账号：${account.name}`, tone: 'info' },
-    { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' }
-  ]
-
-  if (testRunning.value) {
-    lines.push({ text: '正在连接 OpenAI API...', tone: 'warning' })
-    lines.push({ text: `使用模型：${testForm.model}`, tone: 'success' })
-    lines.push({ text: `发送测试消息："${testForm.prompt}"`, tone: 'muted' })
-    return lines
-  }
-
-  if (!testResult.value) {
-    lines.push({ text: '点击「开始测试」后会显示完整返回结果。', tone: 'muted' })
-    return lines
-  }
-
-  lines.push({ text: testResult.value.statusCode && testResult.value.statusCode >= 200 && testResult.value.statusCode < 300 ? '已连接到 API' : 'API 返回错误', tone: testResult.value.success ? 'success' : 'error' })
-  lines.push({ text: `使用模型：${testResult.value.model || testForm.model}`, tone: 'success' })
-  lines.push({ text: `发送测试消息："${testForm.prompt}"`, tone: 'muted' })
-  lines.push({ text: '响应：', tone: 'label' })
-  const outputText = formatTestTerminalResult(testResult.value)
-  if (outputText) {
-    lines.push({ text: outputText, tone: testResult.value.success ? 'success' : 'error' })
-  } else {
-    lines.push({ text: testResult.value.message, tone: testResult.value.success ? 'success' : 'error' })
-  }
-  if (testResult.value.errorPolicyAction && testResult.value.errorPolicyAction !== 'none') {
-    const reason = testResult.value.errorPolicyReason ? `，原因：${testResult.value.errorPolicyReason}` : ''
-    lines.push({ text: `错误处理策略：${formatErrorPolicyAction(testResult.value.errorPolicyAction)}${reason}`, tone: 'warning' })
-  }
-  if (testResult.value.accountStatusChanged || testResult.value.accountStatus) {
-    const status = testResult.value.accountStatus ? statusText(testResult.value.accountStatus) : '未变化'
-    lines.push({ text: `账号状态：${status}`, tone: testResult.value.accountStatusChanged ? 'warning' : 'muted' })
-  }
-  lines.push({ text: '', tone: 'divider' })
-  lines.push({ text: testResult.value.success ? '✓ 测试完成！' : '✕ 测试失败！', tone: testResult.value.success ? 'success' : 'error' })
-  return lines
 })
 
 const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIds.value.includes(account.id)))
@@ -1260,10 +1110,6 @@ function closeTestModal() {
   testModalOpen.value = false
 }
 
-async function copyTestResult() {
-  await copyText(testResultJson.value)
-}
-
 async function testAccount(account: AccountSummary) {
   await openTestModal(account)
 }
@@ -1505,140 +1351,6 @@ onMounted(loadData)
   padding-inline: 2px;
 }
 
-.test-modal {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-
-.test-account-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 14px;
-  border: 1px solid #e2e8f0;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #f8fafc 0%, #ffffff 100%);
-}
-
-.test-account-main {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.test-account-icon {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  color: #fff;
-  border-radius: 10px;
-  background: #14b8a6;
-}
-
-.test-account-name {
-  overflow: hidden;
-  color: #0f172a;
-  font-size: 16px;
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.test-account-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.test-form :deep(.ant-form-item) {
-  margin-bottom: 0;
-}
-
-.test-terminal {
-  min-height: 112px;
-  max-height: 300px;
-  overflow: auto;
-  padding: 14px 16px;
-  color: #dbeafe;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 13px;
-  line-height: 1.65;
-  white-space: pre-wrap;
-  border: 1px solid #334155;
-  border-radius: 14px;
-  background: #0f172a;
-}
-
-.test-output-line.muted {
-  color: #94a3b8;
-}
-
-.test-output-line.info {
-  color: #60a5fa;
-}
-
-.test-output-line.success {
-  color: #34d399;
-}
-
-.test-output-line.warning {
-  color: #facc15;
-}
-
-.test-output-line.error {
-  color: #f87171;
-}
-
-.test-output-line.label {
-  color: #facc15;
-  font-weight: 700;
-}
-
-.test-output-line.divider {
-  height: 1px;
-  padding: 0;
-  margin: 10px 0;
-  overflow: hidden;
-  background: #334155;
-}
-
-.test-result-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.test-result-collapse {
-  border-radius: 12px;
-  background: #f8fafc;
-}
-
-.test-modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex-wrap: wrap;
-  padding-top: 12px;
-  border-top: 1px solid #e2e8f0;
-}
-
-.test-footer-hint {
-  display: flex;
-  gap: 16px;
-  color: #64748b;
-  font-size: 12px;
-}
-
 .secret-cell {
   width: 100%;
 }
@@ -1728,140 +1440,6 @@ onMounted(loadData)
   margin-top: 4px;
   color: #64748b;
   font-size: 12px;
-}
-
-.setup-progress {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.setup-step {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 14px;
-  color: #64748b;
-  border: 1px solid #e8edf5;
-  border-radius: 14px;
-  background: #f8fafc;
-}
-
-.setup-step span {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 24px;
-  color: #64748b;
-  font-weight: 700;
-  border-radius: 999px;
-  background: #e2e8f0;
-}
-
-.setup-step.active {
-  color: #1d4ed8;
-  border-color: #bfdbfe;
-  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 100%);
-}
-
-.setup-step.active span,
-.setup-step.done span {
-  color: #fff;
-  background: #2563eb;
-}
-
-.setup-step.done {
-  color: #0f172a;
-  border-color: #bbf7d0;
-  background: #f0fdf4;
-}
-
-.selector-section {
-  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-}
-
-.choice-grid {
-  display: grid;
-  gap: 12px;
-}
-
-.provider-choice-grid {
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-}
-
-.type-choice-grid {
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-}
-
-.choice-card {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  width: 100%;
-  min-height: 82px;
-  padding: 14px;
-  text-align: left;
-  cursor: pointer;
-  border: 1px solid #dbe3ef;
-  border-radius: 16px;
-  background: rgba(255, 255, 255, 0.92);
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.04);
-  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
-}
-
-.choice-card:hover:not(.disabled) {
-  border-color: #93c5fd;
-  box-shadow: 0 14px 32px rgba(37, 99, 235, 0.12);
-  transform: translateY(-1px);
-}
-
-.choice-card.active {
-  border-color: #2563eb;
-  background: linear-gradient(135deg, #eff6ff 0%, #ffffff 78%);
-  box-shadow: 0 16px 34px rgba(37, 99, 235, 0.14);
-}
-
-.choice-card.disabled {
-  cursor: not-allowed;
-  opacity: 0.68;
-}
-
-.choice-card-icon {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 42px;
-  height: 42px;
-  color: #fff;
-  font-size: 18px;
-  font-weight: 800;
-  border-radius: 14px;
-  background: linear-gradient(135deg, #2563eb 0%, #7c3aed 100%);
-}
-
-.choice-card-content {
-  display: flex;
-  flex: 1 1 auto;
-  min-width: 0;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.choice-card-content strong {
-  color: #0f172a;
-  font-size: 15px;
-}
-
-.choice-card-content small {
-  overflow: hidden;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 18px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .credential-section {
@@ -1960,7 +1538,6 @@ onMounted(loadData)
 }
 
 @media (max-width: 992px) {
-  .setup-progress,
   .oauth-step-grid {
     grid-template-columns: 1fr;
   }
@@ -1972,14 +1549,6 @@ onMounted(loadData)
 }
 
 @media (max-width: 900px) {
-  .choice-card {
-    align-items: flex-start;
-  }
-
-  .provider-choice-card {
-    flex-wrap: wrap;
-  }
-
   .form-grid,
   .strategy-grid {
     grid-template-columns: 1fr;
