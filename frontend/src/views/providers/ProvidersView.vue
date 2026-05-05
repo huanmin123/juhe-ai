@@ -1,7 +1,7 @@
 <template>
   <a-card class="page-card responsive-page-card">
     <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadProviders" />
-    <ResponsiveDataList table-class="page-table provider-table" :columns="columns" :data-source="providers" row-key="code" :loading="loading" :pagination="false" :scroll-x="1200" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadProviders">
+    <ResponsiveDataList table-class="page-table provider-table" :columns="columns" :data-source="providers" row-key="code" :loading="loading" :scroll-x="1200" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadProviders">
       <template #emptyText>
         <a-empty class="page-empty-card" description="当前仅内置 OpenAI 供应商，后续新供应商会在这里扩展。" />
       </template>
@@ -78,7 +78,7 @@
         :data-source="filteredModels"
         row-key="model"
         :loading="modelLoading"
-        :pagination="{ pageSize: 12, showSizeChanger: true }"
+        :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
         :scroll="{ x: 1500 }"
       >
         <template #emptyText>

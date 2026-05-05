@@ -1,5 +1,5 @@
 ﻿<template>
-  <div class="responsive-data-list">
+  <div ref="listRootRef" class="responsive-data-list">
     <a-table
       v-if="!isMobile"
       :class="['responsive-data-list-table', tableClass]"
@@ -8,7 +8,7 @@
       :data-source="dataSource"
       :row-key="rowKey"
       :loading="loading"
-      :pagination="pagination"
+      :pagination="tablePagination"
       :scroll="tableScroll"
       :row-selection="rowSelection"
       @change="(...args: unknown[]) => emit('change', ...args)"
@@ -83,7 +83,7 @@ const props = withDefaults(defineProps<{
   rowKey: 'id',
   loading: false,
   tableScrollY: 'calc(100dvh - 286px)',
-  pagination: false,
+  pagination: undefined,
   mobileBreakpoint: 900,
   tableClass: '',
   cardClass: '',
@@ -111,19 +111,52 @@ defineSlots<{
 const scrollLockClassName = 'responsive-data-list-scroll-lock'
 const scrollLockCountKey = '__responsiveDataListScrollLockCount'
 const isMobile = ref(initialMobileState())
+const listRootRef = ref<HTMLElement>()
+const listHeight = ref(0)
 const mobileListRef = ref<HTMLElement>()
 const pullDistance = ref(0)
 const pullRefreshRequested = ref(false)
 const touchStartY = ref(0)
 const touchStartedAtTop = ref(false)
 const pullThreshold = 64
+const defaultPageSize = 20
+const tableHeaderHeight = 47
+const tablePaginationHeight = 56
+const minTableBodyHeight = 160
+let listResizeObserver: ResizeObserver | undefined
 
 const mobileDataSource = computed(() => props.mobileDataSource ?? props.dataSource)
+const tablePagination = computed<TablePagination>(() => {
+  if (props.pagination === false) return false
+  return {
+    pageSize: defaultPageSize,
+    hideOnSinglePage: true,
+    showSizeChanger: false,
+    showTotal: (total: number) => `共 ${total} 条`,
+    ...(props.pagination ?? {})
+  }
+})
+
+const hasTablePagination = computed(() => {
+  const pagination = tablePagination.value
+  if (pagination === false) return false
+  const pageSize = numberFromPagination(pagination.pageSize) ?? defaultPageSize
+  const total = numberFromPagination(pagination.total) ?? props.dataSource.length
+  return pagination.hideOnSinglePage === false || total > pageSize
+})
 
 const tableScroll = computed(() => {
-  const scroll: Record<string, number | string> = { y: props.tableScrollY }
+  const scroll: Record<string, number | string> = { y: tableScrollY.value }
   if (props.scrollX) scroll.x = props.scrollX
   return scroll
+})
+
+const tableScrollY = computed(() => {
+  if (listHeight.value > 0) {
+    const paginationHeight = hasTablePagination.value ? tablePaginationHeight : 0
+    return Math.max(minTableBodyHeight, listHeight.value - tableHeaderHeight - paginationHeight)
+  }
+  return adjustTableScrollY(props.tableScrollY, tableHeaderHeight + (hasTablePagination.value ? tablePaginationHeight : 0))
 })
 
 const pullRefreshText = computed(() => {
@@ -145,6 +178,10 @@ function updateViewportState() {
   isMobile.value = window.innerWidth <= props.mobileBreakpoint
 }
 
+function updateListHeight() {
+  listHeight.value = listRootRef.value?.clientHeight ?? 0
+}
+
 function initialMobileState() {
   return typeof window !== 'undefined' && window.innerWidth <= props.mobileBreakpoint
 }
@@ -152,6 +189,16 @@ function initialMobileState() {
 function resolveRowKey(record: T, index: number): string | number {
   if (typeof props.rowKey === 'function') return props.rowKey(record)
   return record[props.rowKey] ?? index
+}
+
+function numberFromPagination(value: unknown): number | undefined {
+  const numberValue = Number(value)
+  return Number.isFinite(numberValue) && numberValue > 0 ? numberValue : undefined
+}
+
+function adjustTableScrollY(value: number | string, offset: number): number | string {
+  if (typeof value === 'number') return Math.max(0, value - offset)
+  return `calc(${value} - ${offset}px)`
 }
 
 function changeBodyScrollLock(delta: number) {
@@ -200,13 +247,21 @@ watch(() => props.refreshing, (refreshing) => {
 
 onMounted(() => {
   updateViewportState()
+  updateListHeight()
   changeBodyScrollLock(1)
+  if (typeof ResizeObserver !== 'undefined' && listRootRef.value) {
+    listResizeObserver = new ResizeObserver(updateListHeight)
+    listResizeObserver.observe(listRootRef.value)
+  }
   window.addEventListener('resize', updateViewportState, { passive: true })
+  window.addEventListener('resize', updateListHeight, { passive: true })
 })
 
 onBeforeUnmount(() => {
   changeBodyScrollLock(-1)
+  listResizeObserver?.disconnect()
   window.removeEventListener('resize', updateViewportState)
+  window.removeEventListener('resize', updateListHeight)
 })
 </script>
 
@@ -223,15 +278,24 @@ onBeforeUnmount(() => {
 }
 
 .responsive-data-list-table {
+  display: flex;
   flex: 1 1 auto;
   min-height: 0;
+  flex-direction: column;
   overflow: hidden;
 }
 
 .responsive-data-list-table :deep(.ant-spin-nested-loading),
-.responsive-data-list-table :deep(.ant-spin-container),
+.responsive-data-list-table :deep(.ant-spin-container) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .responsive-data-list-table :deep(.ant-table) {
-  height: 100%;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .responsive-data-list-table :deep(.ant-table-body) {

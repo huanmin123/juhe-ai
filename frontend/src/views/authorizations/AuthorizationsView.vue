@@ -14,7 +14,7 @@
           :placeholder="filters.resourceType === 'all' ? '先选择资源类型' : '筛选资源'"
           @change="loadData"
         />
-        <a-select v-model:value="filters.teamId" show-search allow-clear option-filter-prop="label" class="filter-select responsive-list-inline-filter" :options="teamOptions" placeholder="筛选团队来源" @change="loadData" />
+        <a-select v-model:value="filters.teamId" show-search allow-clear option-filter-prop="label" class="filter-select responsive-list-inline-filter" :options="teamOptions" placeholder="筛选授权来源" @change="loadData" />
         <a-select v-model:value="filters.granteeSystemAccountId" show-search allow-clear option-filter-prop="label" class="filter-select filter-user responsive-list-inline-filter" :options="userOptions" placeholder="筛选被授权用户" @change="loadData" />
       </template>
       <template #actions>
@@ -43,8 +43,8 @@
           />
         </label>
         <label class="mobile-filter-field">
-          <span>团队来源</span>
-          <a-select v-model:value="filters.teamId" show-search allow-clear option-filter-prop="label" :options="teamOptions" placeholder="筛选团队来源" @change="loadData" />
+          <span>授权来源</span>
+          <a-select v-model:value="filters.teamId" show-search allow-clear option-filter-prop="label" :options="teamOptions" placeholder="筛选授权来源" @change="loadData" />
         </label>
         <label class="mobile-filter-field">
           <span>被授权用户</span>
@@ -53,14 +53,14 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table authorizations-table" :columns="columns" :data-source="authorizations" row-key="id" :loading="loading" :scroll-x="1620" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+      <ResponsiveDataList table-class="page-table authorizations-table" :columns="columns" :data-source="authorizations" row-key="id" :loading="loading" :scroll-x="1280" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="暂无授权记录，请先新增授权。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'resource'">
           <div class="resource-cell">
-            <a-tag :color="record.resourceType === 'account' ? 'blue' : 'purple'">{{ record.resourceType === 'account' ? 'AI账户' : '分组' }}</a-tag>
+            <span class="resource-kind-text">{{ record.resourceType === 'account' ? 'AI账户名称' : '分组名称' }}</span>
             <span class="resource-name">{{ record.resourceName || record.resourceId }}</span>
           </div>
         </template>
@@ -68,44 +68,44 @@
           {{ record.resourceOwnerSystemAccountName || record.resourceOwnerSystemAccountId }}
         </template>
         <template v-else-if="column.key === 'grantee'">
-          {{ record.granteeSystemAccountName || record.granteeSystemAccountId }}
-        </template>
-        <template v-else-if="column.key === 'sources'">
-          <div class="sources-cell">
-            <a-tag v-for="source in record.authorizationSources" :key="source.id" :color="sourceTagColor(source)">
-              {{ sourceLabel(source) }}
-            </a-tag>
-            <span v-if="!record.authorizationSources?.length" class="muted-cell">-</span>
+          <div class="grantee-cell">
+            <span>{{ record.granteeSystemAccountName || record.granteeSystemAccountId }}</span>
+            <a-tag v-if="granteeSourceLabel(record)" :color="granteeSourceTagColor(record)">{{ granteeSourceLabel(record) }}</a-tag>
           </div>
         </template>
         <template v-else-if="column.key === 'usageTotal'">
           <div class="usage-total-cell">
             <span>{{ usageSummaryText(record.usage) }}</span>
-            <a-button type="link" size="small" @click="openUsageDetail(record)">查看明细</a-button>
           </div>
         </template>
         <template v-else-if="column.key === 'status'">
-          <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '生效中' : '已收回' }}</a-tag>
+          <StatusTag :color="statusTagColor(record.status)" :label="statusLabel(record.status)" />
         </template>
         <template v-else-if="column.key === 'createdAt'">
           {{ formatDateTime(record.createdAt) }}
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space :size="8">
-            <a-popconfirm v-if="record.status === 'active' && hasManualSource(record)" title="确认收回个人授权来源？" @confirm="revokeManualSource(record)">
-              <a-button type="link" size="small" danger>收回个人</a-button>
-            </a-popconfirm>
-            <a-dropdown v-if="activeTeamSources(record).length">
-              <a-button type="link" size="small">收回团队来源</a-button>
+          <div class="authorization-actions">
+            <a-button size="small" @click="openUsageDetail(record)">明细</a-button>
+            <a-dropdown>
+              <a-button size="small">
+                更多
+              </a-button>
               <template #overlay>
-                <a-menu @click="revokeTeamSourceByMenu($event, record)">
-                  <a-menu-item v-for="teamSource in activeTeamSources(record)" :key="teamSource.sourceTeamId">
-                    {{ teamSource.sourceTeamName || teamSource.sourceTeamId }}
-                  </a-menu-item>
+                <a-menu @click="handleActionMenuClick($event, record)">
+                  <a-menu-item key="edit-expire">修改到期时间</a-menu-item>
+                  <a-menu-item v-if="record.status === 'active'" key="pause">暂停授权</a-menu-item>
+                  <a-menu-item v-if="record.status === 'paused'" key="resume">恢复授权</a-menu-item>
+                  <a-menu-item v-if="record.status === 'active' && hasManualSource(record)" key="revoke-manual">回收</a-menu-item>
+                  <a-sub-menu v-if="activeTeamSources(record).length" key="revoke-team" title="回收">
+                    <a-menu-item v-for="teamSource in activeTeamSources(record)" :key="`team:${teamSource.sourceTeamId}`">
+                      {{ teamSource.sourceTeamName || teamSource.sourceTeamId }}
+                    </a-menu-item>
+                  </a-sub-menu>
                 </a-menu>
               </template>
             </a-dropdown>
-          </a-space>
+          </div>
         </template>
       </template>
 
@@ -114,8 +114,7 @@
           <div class="mobile-list-card-head">
             <div class="mobile-list-card-title">{{ record.resourceName || record.resourceId }}</div>
             <div class="mobile-list-card-tags">
-              <a-tag :color="record.resourceType === 'account' ? 'blue' : 'purple'">{{ record.resourceType === 'account' ? 'AI账户' : '分组' }}</a-tag>
-              <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '生效中' : '已收回' }}</a-tag>
+              <StatusTag :color="statusTagColor(record.status)" :label="statusLabel(record.status)" />
             </div>
           </div>
           <div class="mobile-list-meta-grid">
@@ -125,22 +124,36 @@
             </div>
             <div class="mobile-list-meta-item">
               <span>被授权用户</span>
-              <strong>{{ record.granteeSystemAccountName || record.granteeSystemAccountId }}</strong>
+              <strong class="mobile-user-tag-line">
+                <span>{{ record.granteeSystemAccountName || record.granteeSystemAccountId }}</span>
+                <a-tag v-if="granteeSourceLabel(record)" :color="granteeSourceTagColor(record)">{{ granteeSourceLabel(record) }}</a-tag>
+              </strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>授权来源</span>
-              <strong>{{ sourceText(record) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>授权后用量</span>
+              <span>用量(日)</span>
               <strong>{{ usageSummaryText(record.usage) }}</strong>
             </div>
           </div>
           <div class="mobile-list-card-actions two-actions">
-            <a-button type="primary" @click="openUsageDetail(record)">查看明细</a-button>
-            <a-popconfirm v-if="record.status === 'active' && hasManualSource(record)" title="确认收回个人授权来源？" @confirm="revokeManualSource(record)">
-              <a-button danger>收回个人</a-button>
-            </a-popconfirm>
+            <a-button @click="openUsageDetail(record)">明细</a-button>
+            <a-dropdown>
+              <a-button>
+                更多
+              </a-button>
+              <template #overlay>
+                <a-menu @click="handleActionMenuClick($event, record)">
+                  <a-menu-item key="edit-expire">修改到期时间</a-menu-item>
+                  <a-menu-item v-if="record.status === 'active'" key="pause">暂停授权</a-menu-item>
+                  <a-menu-item v-if="record.status === 'paused'" key="resume">恢复授权</a-menu-item>
+                  <a-menu-item v-if="record.status === 'active' && hasManualSource(record)" key="revoke-manual">回收</a-menu-item>
+                  <a-sub-menu v-if="activeTeamSources(record).length" key="revoke-team" title="回收">
+                    <a-menu-item v-for="teamSource in activeTeamSources(record)" :key="`team:${teamSource.sourceTeamId}`">
+                      {{ teamSource.sourceTeamName || teamSource.sourceTeamId }}
+                    </a-menu-item>
+                  </a-sub-menu>
+                </a-menu>
+              </template>
+            </a-dropdown>
           </div>
         </article>
       </template>
@@ -154,7 +167,7 @@
         </div>
         <div class="authorization-help-section">
           <span class="authorization-help-title">团队生效</span>
-          <p>团队授权会自动同步到团队内启用成员；新增成员、移除成员、团队停用或系统账户停用后，会影响对应用户是否还能继续使用。</p>
+          <p>团队授权会自动展开到团队内启用成员；新增成员、移除成员、团队停用或系统账户停用后，会影响对应用户是否还能继续使用。</p>
         </div>
         <div class="authorization-help-section">
           <span class="authorization-help-title">来源合并</span>
@@ -201,25 +214,38 @@
         <a-form-item label="备注">
           <a-textarea v-model:value="createForm.remark" :rows="3" placeholder="可选" />
         </a-form-item>
+        <a-form-item label="到期时间">
+          <a-date-picker v-model:value="createForm.expiresAt" show-time allow-clear style="width: 100%" />
+          <div class="form-help">可选，支持选择明天 0 点或中午 12 点，到期后授权自动变为“授权到期”。</div>
+        </a-form-item>
         <a-alert
           v-if="createForm.granteeType === 'team'"
           type="info"
           show-icon
-          message="团队授权会自动同步到团队内所有启用成员；成员移除后，对应团队来源授权也会自动回收。"
+          message="团队授权会自动展开到团队内所有启用成员；成员移除后，对应团队来源授权也会自动回收。"
         />
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="usageDetailOpen" :title="selectedAuthorization ? `用量明细：${selectedAuthorization.resourceName || selectedAuthorization.resourceId}` : '用量明细'" width="960px" :footer="null">
+    <a-modal v-model:open="expireModalOpen" title="修改到期时间" width="520px" @ok="confirmExpireChange">
+      <a-form layout="vertical">
+        <a-form-item label="到期时间">
+          <a-date-picker v-model:value="expireForm.expiresAt" show-time allow-clear style="width: 100%" />
+          <div class="form-help">清空后表示不设置自动回收时间。</div>
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <a-modal v-model:open="usageDetailOpen" :title="selectedAuthorization ? `今日用量明细：${selectedAuthorization.resourceName || selectedAuthorization.resourceId}` : '今日用量明细'" width="960px" :footer="null">
       <template v-if="selectedAuthorization">
         <a-alert
           class="usage-alert"
           type="info"
           show-icon
-          :message="`授权总计（不含归属人自己消耗）：${usageSummaryText(selectedAuthorization.usage)}`"
+          :message="`今日授权总计（不含归属人自己消耗）：${usageSummaryText(selectedAuthorization.usage)}`"
         />
         <div v-if="selectedTeamUsageSummaries.length" class="usage-team-section">
-          <div class="usage-section-title">团队总消耗</div>
+          <div class="usage-section-title">团队今日总消耗</div>
           <div class="usage-team-cards">
             <article v-for="summary in selectedTeamUsageSummaries" :key="summary.teamId" class="usage-team-card">
               <div class="usage-team-card-head">
@@ -230,7 +256,7 @@
               <span class="usage-team-card-meta">成员 {{ summary.memberCount }} 人</span>
             </article>
           </div>
-          <div class="usage-section-title usage-subsection-title">团队成员分别消耗</div>
+          <div class="usage-section-title usage-subsection-title">团队成员今日分别消耗</div>
           <a-table size="small" :columns="teamUsageColumns" :data-source="selectedTeamUsageRows" row-key="key" :pagination="false">
             <template #emptyText>
               <a-empty description="暂无团队成员用量" />
@@ -240,7 +266,7 @@
                 {{ record.teamName }}
               </template>
               <template v-else-if="column.key === 'memberName'">
-                {{ record.systemAccountName || record.systemAccountId }}
+                {{ record.systemAccountName || '未命名成员' }}
               </template>
               <template v-else-if="column.key === 'usage'">
                 {{ usageSummaryText(record.usage) }}
@@ -248,14 +274,14 @@
             </template>
           </a-table>
         </div>
-        <div class="usage-section-title">每系统账户消耗</div>
+        <div class="usage-section-title">每系统账户今日消耗</div>
         <a-table size="small" :columns="usageDetailColumns" :data-source="selectedAuthorizationUsageDetails" row-key="systemAccountId" :pagination="false">
           <template #emptyText>
             <a-empty description="暂无用量明细" />
           </template>
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'name'">
-              {{ record.systemAccountName || record.systemAccountId }}
+              {{ record.systemAccountName || '未知账户' }}
             </template>
             <template v-else-if="column.key === 'usage'">
               {{ usageSummaryText(record) }}
@@ -273,56 +299,41 @@
 <script setup lang="ts">
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
+import type { Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
-import type { AccountSummary, AccountUsageSummary, AuthorizationSourceSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountSummary, SystemTeamSummary } from '@/types/domain'
+import StatusTag from '@/components/StatusTag.vue'
+import type { AccountSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountSummary, SystemTeamSummary } from '@/types/domain'
+import {
+  activeTeamSources,
+  aggregateUsageBySystemAccount,
+  buildTeamUsageSummaries,
+  extractApiErrorMessage,
+  formatDateTime,
+  formatServerDateTimeInput,
+  granteeSourceLabel,
+  granteeSourceTagColor,
+  hasManualSource,
+  normalizeAuthorizationUsageResponse,
+  parseDatePickerValue,
+  statusLabel,
+  statusTagColor,
+  sumUsageSummaries,
+  usageSummaryText,
+  type TeamUsageSummary
+} from './authorizationFormatters'
 
 type AuthorizationFilterResourceType = 'all' | 'account' | 'group'
-
-interface AuthorizationUsageResponseDetail {
-  systemAccountId?: string
-  systemAccountName?: string
-  username?: string
-  usage?: Partial<AccountUsageSummary>
-  requestCount?: number
-  clientCount?: number
-  inputTokens?: number
-  outputTokens?: number
-  cacheReadTokens?: number
-  totalTokens?: number
-  totalCost?: number
-  lastUsedAt?: string
-}
-
-interface AuthorizationUsageResponseShape {
-  authorization?: ResourceAuthorizationSummary
-  usage?: Partial<AccountUsageSummary>
-  details?: AuthorizationUsageResponseDetail[]
-}
-
-interface TeamUsageSummary {
-  teamId: string
-  teamName: string
-  usage: AccountUsageSummary
-  memberCount: number
-  members: Array<{
-    key: string
-    teamId: string
-    teamName: string
-    systemAccountId: string
-    systemAccountName: string
-    usage: AccountUsageSummary
-  }>
-}
 
 const loading = ref(false)
 const createModalOpen = ref(false)
 const usageDetailOpen = ref(false)
 const helpOpen = ref(false)
+const expireModalOpen = ref(false)
 const route = useRoute()
 
 const authorizations = ref<ResourceAuthorizationSummary[]>([])
@@ -332,6 +343,7 @@ const teams = ref<SystemTeamSummary[]>([])
 const users = ref<SystemAccountSummary[]>([])
 
 const selectedAuthorization = ref<ResourceAuthorizationSummary>()
+const expireAuthorization = ref<ResourceAuthorizationSummary>()
 const selectedAuthorizationUsageDetails = ref<AuthorizationUserUsageDetail[]>([])
 const selectedResourceAuthorizations = ref<ResourceAuthorizationSummary[]>([])
 
@@ -347,32 +359,34 @@ const createForm = reactive({
   resourceId: '' as string,
   granteeType: 'system_account' as 'system_account' | 'team',
   granteeId: '' as string,
-  remark: ''
+  remark: '',
+  expiresAt: undefined as Dayjs | undefined
+})
+
+const expireForm = reactive({
+  expiresAt: undefined as Dayjs | undefined
 })
 
 const columns = [
   { title: '资源', key: 'resource', width: 260 },
   { title: '归属人', key: 'owner', width: 180 },
   { title: '被授权用户', key: 'grantee', width: 180 },
-  { title: '授权来源', key: 'sources', width: 260 },
-  { title: '授权后用量', key: 'usageTotal', width: 260 },
+  { title: '用量(日)', key: 'usageTotal', width: 260 },
   { title: '状态', key: 'status', width: 90 },
   { title: '授权时间', key: 'createdAt', width: 170 },
-  { title: '操作', key: 'actions', width: 190, fixed: 'right' }
+  { title: '操作', key: 'actions', width: 140, fixed: 'right' }
 ]
 
 const usageDetailColumns = [
   { title: '系统账户', key: 'name', width: 220 },
-  { title: '账号 ID', dataIndex: 'systemAccountId', key: 'systemAccountId', width: 260 },
-  { title: '用量汇总', key: 'usage', width: 280 },
+  { title: '今日用量', key: 'usage', width: 280 },
   { title: '最后使用', key: 'lastUsedAt', width: 180 }
 ]
 
 const teamUsageColumns = [
   { title: '团队', key: 'teamName', width: 180 },
   { title: '成员', key: 'memberName', width: 180 },
-  { title: '系统账户 ID', dataIndex: 'systemAccountId', key: 'systemAccountId', width: 240 },
-  { title: '用量汇总', key: 'usage', width: 260 }
+  { title: '今日用量', key: 'usage', width: 260 }
 ]
 
 const resourceTypeOptions = [
@@ -417,216 +431,9 @@ const selectedTeamUsageSummaries = computed<TeamUsageSummary[]>(() => {
   if (!authorization) {
     return []
   }
-  return relatedTeamSources(authorization).map((teamSource) => {
-    const members = selectedResourceAuthorizations.value
-      .filter((item) => item.resourceType === authorization.resourceType && item.resourceId === authorization.resourceId && hasTeamSource(item, teamSource.teamId))
-      .map((item) => ({
-        key: `${teamSource.teamId}:${item.granteeSystemAccountId}`,
-        teamId: teamSource.teamId,
-        teamName: teamSource.teamName,
-        systemAccountId: item.granteeSystemAccountId,
-        systemAccountName: item.granteeSystemAccountName || item.granteeUsername || item.granteeSystemAccountId,
-        usage: normalizeUsageSummary(item.usage)
-      }))
-      .sort((left, right) => left.systemAccountName.localeCompare(right.systemAccountName, 'zh-CN'))
-    return {
-      teamId: teamSource.teamId,
-      teamName: teamSource.teamName,
-      usage: sumUsageSummaries(members.map((member) => member.usage)),
-      memberCount: members.length,
-      members
-    }
-  }).filter((summary) => summary.memberCount > 0)
+  return buildTeamUsageSummaries(authorization, selectedResourceAuthorizations.value, teams.value, filters.teamId)
 })
 const selectedTeamUsageRows = computed(() => selectedTeamUsageSummaries.value.flatMap((summary) => summary.members))
-
-function sourceLabel(source: AuthorizationSourceSummary): string {
-  const baseLabel = source.sourceType === 'manual'
-    ? '个人授权'
-    : `团队授权：${source.sourceTeamName || source.sourceTeamId || '-'}`
-  if (source.status === 'active') return baseLabel
-  if (source.status === 'superseded') return `${baseLabel}（已被团队覆盖）`
-  return `${baseLabel}（已收回）`
-}
-
-function sourceTagColor(source: AuthorizationSourceSummary): string {
-  if (source.status !== 'active') return 'default'
-  return source.sourceType === 'manual' ? 'cyan' : 'gold'
-}
-
-function sourceText(item: ResourceAuthorizationSummary): string {
-  if (!item.authorizationSources?.length) return '-'
-  return item.authorizationSources.map((source) => sourceLabel(source)).join('；')
-}
-
-function hasManualSource(item: ResourceAuthorizationSummary): boolean {
-  return item.authorizationSources?.some((source) => source.sourceType === 'manual' && source.status === 'active') ?? false
-}
-
-function activeTeamSources(item: ResourceAuthorizationSummary): AuthorizationSourceSummary[] {
-  return item.authorizationSources?.filter((source) => source.sourceType === 'team' && source.status === 'active' && source.sourceTeamId) ?? []
-}
-
-function hasTeamSource(item: ResourceAuthorizationSummary, teamId: string): boolean {
-  return item.authorizationSources?.some((source) => source.sourceType === 'team' && source.sourceTeamId === teamId && source.status === 'active') ?? false
-}
-
-function relatedTeamSources(item: ResourceAuthorizationSummary): Array<{ teamId: string; teamName: string }> {
-  const sourceMap = new Map<string, string>()
-  for (const source of item.authorizationSources ?? []) {
-    if (source.sourceType !== 'team' || !source.sourceTeamId) {
-      continue
-    }
-    sourceMap.set(source.sourceTeamId, source.sourceTeamName || teams.value.find((team) => team.id === source.sourceTeamId)?.name || source.sourceTeamId)
-  }
-  if (filters.teamId && !sourceMap.has(filters.teamId)) {
-    sourceMap.set(filters.teamId, teams.value.find((team) => team.id === filters.teamId)?.name || filters.teamId)
-  }
-  return [...sourceMap.entries()].map(([teamId, teamName]) => ({ teamId, teamName }))
-}
-
-function usageSummaryText(usage?: {
-  requestCount?: number
-  totalTokens?: number
-  totalCost?: number
-}): string {
-  return `${formatNumber(usage?.requestCount)}req / ${formatUsageAmount(usage?.totalTokens)} / ${formatCost(usage?.totalCost)}`
-}
-
-function formatDateTime(value?: string): string {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
-
-function formatNumber(value?: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value ?? 0)
-}
-
-function formatUsageAmount(value?: number): string {
-  const amount = value ?? 0
-  const absoluteValue = Math.abs(amount)
-  if (absoluteValue >= 1_000_000_000) return `${(amount / 1_000_000_000).toFixed(1)}B`
-  if (absoluteValue >= 1_000_000) return `${(amount / 1_000_000).toFixed(1)}M`
-  if (absoluteValue >= 1_000) return `${(amount / 1_000).toFixed(1)}K`
-  return formatNumber(amount)
-}
-
-function formatCost(value?: number): string {
-  return `$${(value ?? 0).toFixed(2)}`
-}
-
-function emptyUsageSummary(): AccountUsageSummary {
-  return {
-    requestCount: 0,
-    clientCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    totalTokens: 0,
-    totalCost: 0
-  }
-}
-
-function normalizeUsageSummary(usage?: Partial<AccountUsageSummary>): AccountUsageSummary {
-  return {
-    requestCount: usage?.requestCount ?? 0,
-    clientCount: usage?.clientCount ?? 0,
-    inputTokens: usage?.inputTokens ?? 0,
-    outputTokens: usage?.outputTokens ?? 0,
-    cacheReadTokens: usage?.cacheReadTokens ?? 0,
-    totalTokens: usage?.totalTokens ?? 0,
-    totalCost: usage?.totalCost ?? 0,
-    lastUsedAt: usage?.lastUsedAt
-  }
-}
-
-function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | undefined>): AccountUsageSummary {
-  return items.reduce<AccountUsageSummary>((summary, usage) => {
-    const current = normalizeUsageSummary(usage)
-    const lastUsedAt = [summary.lastUsedAt, current.lastUsedAt]
-      .filter((value): value is string => Boolean(value))
-      .sort((left, right) => Date.parse(right) - Date.parse(left))[0]
-    return {
-      requestCount: summary.requestCount + current.requestCount,
-      clientCount: summary.clientCount + current.clientCount,
-      inputTokens: summary.inputTokens + current.inputTokens,
-      outputTokens: summary.outputTokens + current.outputTokens,
-      cacheReadTokens: summary.cacheReadTokens + current.cacheReadTokens,
-      totalTokens: summary.totalTokens + current.totalTokens,
-      totalCost: summary.totalCost + current.totalCost,
-      lastUsedAt
-    }
-  }, emptyUsageSummary())
-}
-
-function normalizeUsageDetail(detail: AuthorizationUsageResponseDetail): AuthorizationUserUsageDetail | undefined {
-  if (!detail.systemAccountId) {
-    return undefined
-  }
-  const usage = normalizeUsageSummary(detail.usage ?? detail)
-  return {
-    systemAccountId: detail.systemAccountId,
-    systemAccountName: detail.systemAccountName || detail.username,
-    requestCount: usage.requestCount,
-    clientCount: usage.clientCount,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cacheReadTokens: usage.cacheReadTokens,
-    totalTokens: usage.totalTokens,
-    totalCost: usage.totalCost,
-    lastUsedAt: usage.lastUsedAt
-  }
-}
-
-function normalizeAuthorizationUsageResponse(payload: unknown, fallback: ResourceAuthorizationSummary): ResourceAuthorizationSummary {
-  if (payload && typeof payload === 'object' && 'authorization' in payload) {
-    const response = payload as AuthorizationUsageResponseShape
-    const authorization = response.authorization ?? fallback
-    const usageBySystemAccount = Array.isArray(response.details)
-      ? response.details.map(normalizeUsageDetail).filter((detail): detail is AuthorizationUserUsageDetail => Boolean(detail))
-      : authorization.usageBySystemAccount ?? []
-    return {
-      ...fallback,
-      ...authorization,
-      usage: normalizeUsageSummary(response.usage ?? authorization.usage ?? fallback.usage),
-      usageBySystemAccount
-    }
-  }
-  const authorization = (payload as Partial<ResourceAuthorizationSummary>) ?? {}
-  return {
-    ...fallback,
-    ...authorization,
-    usage: normalizeUsageSummary(authorization.usage ?? fallback.usage),
-    usageBySystemAccount: Array.isArray(authorization.usageBySystemAccount) ? authorization.usageBySystemAccount : fallback.usageBySystemAccount ?? []
-  }
-}
-
-function aggregateUsageBySystemAccount(items: ResourceAuthorizationSummary[]): AuthorizationUserUsageDetail[] {
-  const summaryMap = new Map<string, AuthorizationUserUsageDetail>()
-  for (const item of items) {
-    const current = summaryMap.get(item.granteeSystemAccountId)
-    const mergedUsage = sumUsageSummaries([current, item.usage])
-    summaryMap.set(item.granteeSystemAccountId, {
-      systemAccountId: item.granteeSystemAccountId,
-      systemAccountName: item.granteeSystemAccountName || item.granteeUsername || item.granteeSystemAccountId,
-      requestCount: mergedUsage.requestCount,
-      clientCount: mergedUsage.clientCount,
-      inputTokens: mergedUsage.inputTokens,
-      outputTokens: mergedUsage.outputTokens,
-      cacheReadTokens: mergedUsage.cacheReadTokens,
-      totalTokens: mergedUsage.totalTokens,
-      totalCost: mergedUsage.totalCost,
-      lastUsedAt: mergedUsage.lastUsedAt
-    })
-  }
-  return [...summaryMap.values()].sort((left, right) => {
-    const leftName = left.systemAccountName || left.systemAccountId
-    const rightName = right.systemAccountName || right.systemAccountId
-    return leftName.localeCompare(rightName, 'zh-CN')
-  })
-}
 
 async function loadMetaData() {
   const [accountResult, groupResult, teamResult, userResult] = await Promise.allSettled([
@@ -668,7 +475,8 @@ async function loadData() {
       resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
       resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
       teamId: filters.teamId,
-      granteeSystemAccountId: filters.granteeSystemAccountId
+      granteeSystemAccountId: filters.granteeSystemAccountId,
+      status: 'all' as const
     }
     authorizations.value = await api.authorizations.list(params)
   } catch (error) {
@@ -685,6 +493,7 @@ function openCreateModal() {
   createForm.granteeType = 'system_account'
   createForm.granteeId = ''
   createForm.remark = ''
+  createForm.expiresAt = undefined
   createModalOpen.value = true
 }
 
@@ -715,19 +524,21 @@ async function createAuthorization() {
     return
   }
   try {
+    const expiresAt = formatServerDateTimeInput(createForm.expiresAt) ?? undefined
     await api.authorizations.create({
       resourceType: createForm.resourceType,
       resourceId: createForm.resourceId,
       granteeType: createForm.granteeType,
       granteeId: createForm.granteeId,
-      remark: createForm.remark.trim() || undefined
+      remark: createForm.remark.trim() || undefined,
+      expiresAt
     })
     createModalOpen.value = false
     message.success(createForm.granteeType === 'team' ? '团队授权已创建，成员会自动展开为用户授权' : '授权已创建')
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('创建授权失败')
+    message.error(extractApiErrorMessage(error, '创建授权失败'))
   }
 }
 
@@ -753,10 +564,67 @@ async function revokeTeamSource(item: ResourceAuthorizationSummary, sourceTeamId
   }
 }
 
-function revokeTeamSourceByMenu(event: { key: string | number }, item: ResourceAuthorizationSummary) {
-  const sourceTeamId = String(event.key)
-  if (!sourceTeamId) return
-  void revokeTeamSource(item, sourceTeamId)
+function handleActionMenuClick(event: { key: string | number }, item: ResourceAuthorizationSummary) {
+  const key = String(event.key)
+  if (key === 'edit-expire') {
+    openExpireModal(item)
+    return
+  }
+  if (key === 'pause') {
+    void updateAuthorizationStatus(item, 'paused')
+    return
+  }
+  if (key === 'resume') {
+    void updateAuthorizationStatus(item, 'active')
+    return
+  }
+  if (key === 'revoke-manual') {
+    void revokeManualSource(item)
+    return
+  }
+  if (key.startsWith('team:')) {
+    const sourceTeamId = key.slice('team:'.length)
+    if (sourceTeamId) {
+      void revokeTeamSource(item, sourceTeamId)
+    }
+  }
+}
+
+async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, status: 'active' | 'paused') {
+  try {
+    await api.authorizations.update(item.id, { status })
+    message.success(status === 'active' ? '授权已恢复' : '授权已暂停')
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, status === 'active' ? '恢复授权失败' : '暂停授权失败'))
+  }
+}
+
+function openExpireModal(item: ResourceAuthorizationSummary) {
+  expireAuthorization.value = item
+  expireForm.expiresAt = parseDatePickerValue(item.expiresAt)
+  expireModalOpen.value = true
+}
+
+async function confirmExpireChange() {
+  const authorization = expireAuthorization.value
+  if (!authorization) {
+    expireModalOpen.value = false
+    return
+  }
+  try {
+    await api.authorizations.updateExpire(authorization.id, {
+      expiresAt: formatServerDateTimeInput(expireForm.expiresAt)
+    })
+    expireModalOpen.value = false
+    expireAuthorization.value = undefined
+    message.success('到期时间已更新')
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '修改到期时间失败'))
+  }
 }
 
 async function openUsageDetail(item: ResourceAuthorizationSummary) {
@@ -766,7 +634,8 @@ async function openUsageDetail(item: ResourceAuthorizationSummary) {
       api.authorizations.list({
         resourceType: item.resourceType,
         resourceId: item.resourceId,
-        teamId: filters.teamId
+        teamId: filters.teamId,
+        status: 'all'
       })
     ])
     const detail = normalizeAuthorizationUsageResponse(usagePayload, item)
@@ -827,10 +696,7 @@ function applyRouteFilters() {
   min-width: 140px;
 }
 
-.filter-resource {
-  min-width: 220px;
-}
-
+.filter-resource,
 .filter-user {
   min-width: 220px;
 }
@@ -863,11 +729,21 @@ function applyRouteFilters() {
   line-height: 1.7;
 }
 
-.resource-cell {
+.resource-cell,
+.grantee-cell,
+.usage-total-cell {
   display: inline-flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.resource-kind-text {
+  min-width: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
 .resource-name {
@@ -877,18 +753,6 @@ function applyRouteFilters() {
   font-weight: 600;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.sources-cell {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.usage-total-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .usage-alert {
@@ -951,6 +815,12 @@ function applyRouteFilters() {
 
 .authorizations-table :deep(.ant-table-cell) {
   white-space: nowrap;
+}
+
+.authorization-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .mobile-filter-field {

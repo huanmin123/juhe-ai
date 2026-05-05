@@ -22,6 +22,14 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/usage-stats',
+    component: () => import('@/views/usage-stats/UsageStatsView.vue'),
+    meta: {
+      title: '用量统计',
+      description: '按账户查看多日累计用量，并查看授权用户与团队的消耗情况。'
+    }
+  },
+  {
     path: '/providers',
     component: () => import('@/views/providers/ProvidersView.vue'),
     meta: {
@@ -85,8 +93,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/system-teams/SystemTeamsView.vue'),
     meta: {
       title: '系统团队管理',
-      description: '管理团队和成员，支持把多个系统账户归纳到一个团队内。',
-      roles: ['admin']
+      description: '管理团队和成员，支持把多个系统账户归纳到一个团队内。'
     }
   },
   {

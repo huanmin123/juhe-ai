@@ -22,7 +22,7 @@
 
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="系统名称" extra="保存后同步显示到左侧菜单标题、浏览器 tab，并用于登录页“系统名称 + 管理平台”标题。">
+              <a-form-item label="系统名称" extra="保存后显示到左侧菜单标题、浏览器 tab，并用于登录页“系统名称 + 管理平台”标题。">
                 <a-input v-model:value="globalForm.appName" placeholder="请输入系统名称" />
               </a-form-item>
             </div>
@@ -95,7 +95,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="输出停顿上限（秒）" extra="已经收到第一段内容后，如果连续这么久没有新内容，就认为本次流式响应中断。默认 60 秒。">
+              <a-form-item label="输出停顿上限（秒）" extra="已收到首段内容后，服务端无法可靠续写不同客户端的上下文状态；超时或中断时会发送失败事件并结束本次流式响应，由客户端按自身上下文进行重试。">
                 <a-input-number v-model:value="systemForm.streamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>

@@ -6,7 +6,7 @@ export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'
 export type AccountUsageAccessType = 'owner' | 'authorized' | 'account_authorized' | 'group_authorized'
 export type GroupUsageAccessType = 'owner' | 'authorized'
-export type AuthorizationStatus = 'active' | 'revoked'
+export type AuthorizationStatus = 'active' | 'paused' | 'expired' | 'revoked'
 export type SystemTeamStatus = 'active' | 'disabled'
 export type SystemTeamMemberStatus = 'active' | 'removed'
 export type ResourceAuthorizationResourceType = 'account' | 'group'
@@ -130,6 +130,16 @@ export interface AccountUsageSummary {
   lastUsedAt?: string
 }
 
+export type UsageStatsWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last15d' | 'last30d' | 'total'
+
+export interface UsageStatsWindowDefinition {
+  key: UsageStatsWindowKey
+  label: string
+  days?: number
+}
+
+export type UsageByWindow = Record<UsageStatsWindowKey, AccountUsageSummary>
+
 export interface ResourcePermissions {
   canUse: boolean
   canEdit: boolean
@@ -203,6 +213,32 @@ export interface AccountSummary {
   authorizationStatus?: AuthorizationStatus
   authorizationSources?: ResourceAuthorizationSourceSummary[]
   permissions?: ResourcePermissions
+  authorizationUsageAvailable?: boolean
+  authorizationCount?: number
+  authorizationTeamCount?: number
+}
+
+export interface AccountUsageStatsRow {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  ownerSystemAccountId: string
+  ownerSystemAccountName?: string
+  providerCode: ProviderCode
+  name: string
+  type: AccountType
+  status: AccountStatus
+  accessType?: ResourceAccessType
+  usageByWindow: UsageByWindow
+  authorizationUsageAvailable: boolean
+  authorizationCount: number
+  authorizationTeamCount: number
+}
+
+export interface AccountUsageStatsOverview {
+  windows: UsageStatsWindowDefinition[]
+  rows: AccountUsageStatsRow[]
+  statsLagSeconds: number
 }
 
 export interface AccountTestResult {
@@ -305,6 +341,37 @@ export interface ResourceAuthorizationSummary {
 }
 
 export type ResourceAuthorizationUsageSummary = ResourceAuthorizationSummary
+
+export interface AuthorizationUsageWindowDetail extends ResourceAuthorizationSummary {
+  usageByWindow: UsageByWindow
+}
+
+export interface AuthorizationTeamMemberUsageDetail {
+  authorizationId: string
+  systemAccountId: string
+  systemAccountName?: string
+  username?: string
+  usageByWindow: UsageByWindow
+}
+
+export interface AuthorizationTeamUsageDetail {
+  teamId: string
+  teamName?: string
+  usageByWindow: UsageByWindow
+  memberUsage: AuthorizationTeamMemberUsageDetail[]
+}
+
+export interface AccountAuthorizationUsageOverview {
+  resourceType: 'account'
+  resourceId: string
+  resourceName: string
+  resourceOwnerSystemAccountId: string
+  resourceOwnerSystemAccountName?: string
+  windows: UsageStatsWindowDefinition[]
+  users: AuthorizationUsageWindowDetail[]
+  teams: AuthorizationTeamUsageDetail[]
+  statsLagSeconds: number
+}
 
 export interface ApiKeySummary {
   id: string

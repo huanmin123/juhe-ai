@@ -3,13 +3,11 @@ import { Router } from 'express'
 import { ok } from '../../shared/http.js'
 import { listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
-import { flushUsageRecordQueue } from '../gateway/usage-record-queue.service.js'
 import { buildProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
 
 export const usageRecordsRouter = Router()
 
 usageRecordsRouter.get('/', (req, res) => {
-  flushUsageRecordQueue()
   res.json(ok(listUsageRecords(getRequestAccessScope(req.query.systemAccountId), parseListOptions(req.query)).map((record) => ({
     ...record,
     costBreakdown: buildProviderCostBreakdown({

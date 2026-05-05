@@ -46,12 +46,15 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `usage_stats_hourly`：按 `system_account_id + scope_type + scope_id + stat_hour` 保存业务统计，用于近 24 小时和近 7 天趋势图。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 保存请求数、Token 和成本，用于模型分布。
 - `usage_error_daily`：按 `system_account_id + stat_date + error_group + error_code` 保存错误数量，用于错误情况。
+- `group_account_stats`：按 `system_account_id + group_id` 保存分组绑定账户数量、可用数、状态数量和并发上限，供分组列表直接读取。
 - `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、事件循环延迟、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。
 
 建议索引：
 
+- `system_accounts(lower(username))`：保证用户账户大小写不敏感唯一，用户账户创建后不允许修改。
+- `system_accounts(lower(display_name))`：保证用户名称大小写不敏感唯一。
 - `usage_records(system_account_id, created_at, id)`：统计 worker 增量扫描。
 - `usage_records(account_owner_system_account_id, account_id, created_at, id)`：账户所有者查看真实账户统一用量。
 - `usage_records(group_owner_system_account_id, group_id, created_at, id)`：分组所有者查看真实分组统一用量。
@@ -72,17 +75,22 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour)`：小时趋势读取。
 - `usage_model_daily(system_account_id, stat_date, model)`：模型分布读取。
 - `usage_error_daily(system_account_id, stat_date, error_group, error_code)`：错误分布读取。
+- `group_account_stats(system_account_id, group_id)`：分组列表读取账户数量与状态统计。
 - `stats_job_state(scope_type, scope_id, job_name)`：后台任务游标读取。
 
 默认任务策略：
 
 - 统计 worker 每 1 分钟按 `system_account_id` 和 `(created_at, id)` 游标增量读取 `usage_records` 并 upsert 到聚合表。
+- 用量统计菜单的多日窗口只读取 `usage_stats_daily` 的日累计行并按窗口相加：近 1 天、近 3 天、近一周、近半月和近一月分别对应最近 1 / 3 / 7 / 15 / 30 个自然日；总用量读取 `usage_stats_totals`。前端不能把 `n` 天作为查询条件去实时回扫 `usage_records`。
+- 分组账户统计 worker 定时重建 `group_account_stats`，分组列表不得在查询时临时 `COUNT/SUM group_accounts + accounts`。
 - 授权账户调用需要同时写入调用方统计、真实账户统计和授权消耗统计：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；账户所有者的账户总用量按 `account_owner_system_account_id + account_id` 聚合；授权管理按 `account_owner_system_account_id + account_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 授权分组调用需要同时写入调用方统计、真实分组统计和授权消耗统计：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权管理按 `group_owner_system_account_id + group_authorization_id` 聚合，并过滤资源归属人自用消耗。
-- 管理员全局汇总从各系统账户缓存聚合，不回扫 `usage_records`。
+- 授权管理列表和用量明细只读取 `usage_stats_daily` / `usage_stats_totals` 缓存；前端查询和详情接口不能临时 `SUM usage_records`，否则会把高频统计压力转移到页面请求。
+- 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
 - 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属。
 - 账户、分组、API Key 等列表接口只读 `usage_stats_totals` / `usage_stats_daily`，不要在列表查询里 `SUM usage_records`。
 - 概览图表接口优先读 `usage_stats_hourly`、`usage_model_daily`、`usage_error_daily` 和 `system_metrics_hourly`。
+- 全局规则：除后台 worker、离线清洗脚本、使用记录分页明细外，任何前端列表、概览、详情和下拉元数据接口都不能在请求时做统计聚合。
 
 默认保留策略：
 
@@ -94,7 +102,14 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 
 ## 系统团队与统一授权存储
 
-当前项目未正式上线，本地 SQLite 可以重建或清洗，因此新版授权不保留旧 `account_authorizations` / `group_authorizations` 兼容分支，统一使用 `resource_authorizations`。
+当前项目未正式上线，本地 SQLite 可以备份后直接重建或清洗，因此新版授权统一使用 `resource_authorizations`，不保留旧 `account_authorizations` / `group_authorizations` 分支。
+
+源码边界：
+
+- `backend/src/storage/schema.ts` 只保留当前完整表结构、索引、默认约束和外键。
+- 后端启动路径、repository、routes、前端页面都不能长期保留一次性迁移、旧数据兼容、临时同步修复、临时表改名或迁移标记代码。
+- 本地库异常或结构变化时，先备份数据库，再用直接 SQL、临时离线脚本或重建库处理；处理脚本不得挂入运行时代码。
+- 正式上线后如需支持外部用户升级，再另行设计版本化 schema 演进，不和当前预上线规则混用。
 
 建议新增 `system_teams` 表：
 
@@ -129,10 +144,10 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `source_type`：`manual`、`team`
 - `source_team_id`：团队来源 ID，手动个人授权为空
 - `scope`：第一阶段固定为 `use`
-- `expires_at`：预留字段，第一阶段不启用。
+- `expires_at`：可选自动回收时间，到期后状态变为 `expired`，记录保留。
 - `limits_json`：预留字段，第一阶段不启用。
 - `model_policy_json`：预留字段，第一阶段不启用。
-- `status`：`active`、`revoked`
+- `status`：`active`、`paused`、`expired`、`revoked`
 - `remark`
 - `created_by`
 - `created_at`
@@ -148,6 +163,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 团队授权由 service 层展开为成员用户级授权；资源所有者如果也是团队成员，其自用调用仍按自用处理，不计入授权消耗。
 - 同一个 `resource_type + resource_id + grantee_system_account_id` 同一时间只能存在一条 `active` 授权；SQLite 可用部分唯一索引或 service 层事务校验实现。
 - 收回授权只把 `status` 改为 `revoked` 并写入 `revoked_by` / `revoked_at`，不物理删除，历史统计继续可查。
+- 到期授权只把 `status` 改为 `expired`，不物理删除，后台定时任务负责自动处理。
 - 团队停用、成员移除或系统账户停用后，网关实时校验应立即阻断团队授权使用权。
 - 授权资源不能继续被被授权人二次授权给第三方。
 
@@ -174,7 +190,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 日志隔离和统计口径：
 
 - 使用记录页按 `usage_records.system_account_id` 查询，所以被授权用户只看自己的调用明细。
-- 资源所有者不按明细读取被授权用户的 `usage_records`，授权管理只读取按统一授权 ID 聚合后的请求数、Token、成本、成功失败和最后使用时间。
+- 资源所有者不按明细读取被授权用户的 `usage_records`，授权管理只读取后台 worker 按统一授权 ID 写入的统计缓存。
 - 授权消耗统计必须过滤自用记录：账户授权按 `usage_records.system_account_id != account_owner_system_account_id`，分组授权按 `usage_records.system_account_id != group_owner_system_account_id`。
 - 账户真实总用量按 `account_owner_system_account_id + account_id` 聚合，所以自用和所有用户授权都会累计到同一个真实账户维度。
 - 分组真实总用量按 `group_owner_system_account_id + group_id` 聚合，所以自用和所有用户授权都会累计到同一个真实分组维度。
@@ -258,7 +274,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `oauthUsageSnapshotPerAccountConcurrency = 1`：每个系统账户内 OAuth 快照刷新默认并发。
 - `statsLagWarningSeconds = 300`：统计任务滞后超过该值时在运维概览里提示。
 
-旧库升级时会清理不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes`，并通过一次性迁移把流熔断默认打开。
+预上线阶段如本地库仍存在不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes` 等旧设置，直接通过备份后清洗或重建库处理；源码不保留启动清理分支。
 
 ## 系统账户隔离补充
 

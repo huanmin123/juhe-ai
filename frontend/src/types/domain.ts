@@ -4,7 +4,7 @@ export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | '
 export type SystemAccountRole = 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'
-export type AuthorizationStatus = 'active' | 'revoked'
+export type AuthorizationStatus = 'active' | 'paused' | 'expired' | 'revoked'
 export type AuthorizationResourceType = 'account' | 'group'
 export type AuthorizationSourceType = 'manual' | 'team'
 export type AuthorizationSourceStatus = 'active' | 'superseded' | 'revoked'
@@ -89,6 +89,16 @@ export interface AccountUsageSummary {
   lastUsedAt?: string
 }
 
+export type UsageStatsWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last15d' | 'last30d' | 'total'
+
+export interface UsageStatsWindowDefinition {
+  key: UsageStatsWindowKey
+  label: string
+  days?: number
+}
+
+export type UsageByWindow = Record<UsageStatsWindowKey, AccountUsageSummary>
+
 export interface ResourcePermissions {
   canUse: boolean
   canEdit: boolean
@@ -161,6 +171,9 @@ export interface AccountSummary {
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
   permissions?: ResourcePermissions
+  authorizationUsageAvailable?: boolean
+  authorizationCount?: number
+  authorizationTeamCount?: number
 }
 
 export interface AccountTestResult {
@@ -261,6 +274,7 @@ export interface AuthorizationSourceSummary {
 export interface AuthorizationUserUsageDetail {
   systemAccountId: string
   systemAccountName?: string
+  username?: string
   requestCount: number
   clientCount: number
   inputTokens: number
@@ -287,15 +301,72 @@ export interface ResourceAuthorizationSummary {
   expiresAt?: string
   limits?: Record<string, unknown>
   modelPolicy?: Record<string, unknown>
+  effectiveSourceType?: AuthorizationSourceType
+  effectiveSourceTeamId?: string
+  effectiveSourceTeamName?: string
+  activatedAt?: string
+  lastSourceChangedAt?: string
   createdAt: string
   updatedAt: string
   revokedAt?: string
+  revokedReason?: string
   createdBy?: string
   revokedBy?: string
   sources?: AuthorizationSourceSummary[]
   authorizationSources: AuthorizationSourceSummary[]
   usage: AccountUsageSummary
   usageBySystemAccount?: AuthorizationUserUsageDetail[]
+  usageByWindow?: UsageByWindow
+}
+
+export interface AccountUsageStatsRow {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  ownerSystemAccountId: string
+  ownerSystemAccountName?: string
+  providerCode: ProviderCode
+  name: string
+  type: AccountType
+  status: AccountStatus
+  accessType?: ResourceAccessType
+  usageByWindow: UsageByWindow
+  authorizationUsageAvailable: boolean
+  authorizationCount: number
+  authorizationTeamCount: number
+}
+
+export interface AccountUsageStatsOverview {
+  windows: UsageStatsWindowDefinition[]
+  rows: AccountUsageStatsRow[]
+  statsLagSeconds: number
+}
+
+export interface AuthorizationTeamMemberUsageDetail {
+  authorizationId: string
+  systemAccountId: string
+  systemAccountName?: string
+  username?: string
+  usageByWindow: UsageByWindow
+}
+
+export interface AuthorizationTeamUsageDetail {
+  teamId: string
+  teamName?: string
+  usageByWindow: UsageByWindow
+  memberUsage: AuthorizationTeamMemberUsageDetail[]
+}
+
+export interface AccountAuthorizationUsageOverview {
+  resourceType: 'account'
+  resourceId: string
+  resourceName: string
+  resourceOwnerSystemAccountId: string
+  resourceOwnerSystemAccountName?: string
+  windows: UsageStatsWindowDefinition[]
+  users: Array<ResourceAuthorizationSummary & { usageByWindow: UsageByWindow }>
+  teams: AuthorizationTeamUsageDetail[]
+  statsLagSeconds: number
 }
 
 export interface ApiKeySummary {

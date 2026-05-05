@@ -58,7 +58,7 @@
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑系统账户' : '新增系统账户'" :confirm-loading="saving" @ok="handleSave">
       <a-form layout="vertical">
         <a-form-item label="用户名" required>
-          <a-input v-model:value="form.username" placeholder="例如 user01" />
+          <a-input v-model:value="form.username" :disabled="Boolean(editingId)" placeholder="例如 user01" />
         </a-form-item>
         <a-form-item label="显示名称" required>
           <a-input v-model:value="form.displayName" placeholder="例如 业务用户" />
@@ -90,6 +90,7 @@
 </template>
 
 <script setup lang="ts">
+import axios from 'axios'
 import { message } from 'ant-design-vue'
 import { onMounted, reactive, ref } from 'vue'
 
@@ -162,8 +163,18 @@ function openResetPassword(record: SystemAccountSummary) {
 }
 
 async function handleSave() {
-  if (!form.username.trim() || !form.displayName.trim()) {
+  const username = form.username.trim()
+  const displayName = form.displayName.trim()
+  if (!username || !displayName) {
     message.warning('请填写用户名和显示名称')
+    return
+  }
+  if (!editingId.value && hasDuplicateUsername(username)) {
+    message.warning('用户账户已存在')
+    return
+  }
+  if (hasDuplicateDisplayName(displayName, editingId.value)) {
+    message.warning('用户名称已存在')
     return
   }
   if (!editingId.value && form.password.length < 4) {
@@ -172,18 +183,17 @@ async function handleSave() {
   }
   saving.value = true
   try {
-    const payload = {
-      username: form.username.trim(),
-      displayName: form.displayName.trim(),
+    const basePayload = {
+      displayName,
       role: form.role,
       status: form.status,
-      mustChangePassword: form.mustChangePassword,
-      ...(!editingId.value ? { password: form.password } : {})
+      mustChangePassword: form.mustChangePassword
     }
     if (editingId.value) {
-      await api.systemAccounts.update(editingId.value, payload)
+      await api.systemAccounts.update(editingId.value, basePayload)
       message.success('系统账户已更新')
     } else {
+      const payload = { ...basePayload, username, password: form.password }
       await api.systemAccounts.create(payload)
       message.success('系统账户已创建')
     }
@@ -191,7 +201,7 @@ async function handleSave() {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('保存系统账户失败')
+    message.error(extractApiErrorMessage(error, '保存系统账户失败'))
   } finally {
     saving.value = false
   }
@@ -230,6 +240,23 @@ async function loadData() {
 
 function formatDateTime(value?: string): string {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
+}
+
+function hasDuplicateUsername(username: string): boolean {
+  const normalized = username.toLocaleLowerCase()
+  return accounts.value.some((account) => account.username.toLocaleLowerCase() === normalized)
+}
+
+function hasDuplicateDisplayName(displayName: string, excludeId?: string): boolean {
+  const normalized = displayName.toLocaleLowerCase()
+  return accounts.value.some((account) => account.id !== excludeId && account.displayName.toLocaleLowerCase() === normalized)
+}
+
+function extractApiErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError<{ message?: string }>(error)) {
+    return error.response?.data?.message ?? fallback
+  }
+  return fallback
 }
 
 onMounted(loadData)

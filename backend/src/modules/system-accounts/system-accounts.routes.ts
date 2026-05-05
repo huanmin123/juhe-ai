@@ -17,7 +17,6 @@ const createSchema = z.object({
 })
 
 const updateSchema = z.object({
-  username: z.string().trim().min(2).optional(),
   displayName: z.string().trim().min(1).optional(),
   password: z.string().min(4).optional(),
   role: z.enum(['admin', 'user']).optional(),
@@ -43,18 +42,26 @@ systemAccountsRouter.post('/', requireAdmin, (req, res) => {
 })
 
 systemAccountsRouter.patch('/:id', requireAdmin, (req, res) => {
+  if (req.body && Object.prototype.hasOwnProperty.call(req.body, 'username')) {
+    res.status(400).json(badRequest('用户账户创建后不能修改'))
+    return
+  }
   const parsed = updateSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('Invalid system account payload'))
     return
   }
-  const account = updateSystemAccount(req.params.id, parsed.data)
-  if (!account) {
-    res.status(404).json({ message: 'System account not found' })
-    return
+  try {
+    const account = updateSystemAccount(req.params.id, parsed.data)
+    if (!account) {
+      res.status(404).json({ message: 'System account not found' })
+      return
+    }
+    if (parsed.data.status === 'disabled' || parsed.data.password) {
+      revokeAllSessionsForAccount(req.params.id)
+    }
+    res.json(ok(account))
+  } catch (error) {
+    res.status(409).json({ message: error instanceof Error ? error.message : 'Update system account failed' })
   }
-  if (parsed.data.status === 'disabled' || parsed.data.password) {
-    revokeAllSessionsForAccount(req.params.id)
-  }
-  res.json(ok(account))
 })

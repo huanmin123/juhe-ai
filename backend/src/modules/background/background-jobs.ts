@@ -5,20 +5,27 @@ import { cpus, freemem, platform, totalmem } from 'node:os'
 import type { AccountSummary } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import {
-  aggregateUsageStatsBatch,
+  expireDueResourceAuthorizations,
   getSettings,
-  insertSystemMetricsSample,
-  latestUsageStatsLagSeconds,
   listAccountsDueForCooldownRetest,
   listAccounts
 } from '../../storage/repositories.js'
+import {
+  aggregateUsageStatsBatch,
+  insertSystemMetricsSample,
+  latestUsageStatsLagSeconds,
+  refreshGroupAccountStatsCache
+} from '../../storage/usage-stats.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import {
   isOpenAIOAuthUsageSnapshotDue,
   refreshOpenAIOAuthUsageSnapshot
 } from '../openai-oauth/openai-oauth-usage-refresh.service.js'
+import { flushUsageRecordQueue } from '../gateway/usage-record-queue.service.js'
+import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 let started = false
+let usageStatsAggregationRunning = false
 let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
 let lastMetricsExpectedAt = Date.now()
@@ -28,21 +35,54 @@ export function startBackgroundJobs(): void {
   started = true
 
   void runUsageStatsAggregation()
+  void runGroupAccountStatsRefresh()
+  void runResourceAuthorizationExpirySweep()
   void runSystemMetricsSample()
   void runOpenAIOAuthUsageRefresh()
   void runCooldownAccountRetest()
 
   setInterval(() => { void runUsageStatsAggregation() }, settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * 1000)
+  setInterval(() => { void runGroupAccountStatsRefresh() }, settingsNumber('groupAccountStatsRefreshIntervalSeconds', 60, 5, 3600) * 1000)
+  setInterval(() => { void runResourceAuthorizationExpirySweep() }, 60 * 1000)
   setInterval(() => { void runSystemMetricsSample() }, settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000)
   setInterval(() => { void runOpenAIOAuthUsageRefresh() }, settingsNumber('oauthUsageSnapshotRefreshIntervalSeconds', 300, 60, 86400) * 1000)
   setInterval(() => { void runCooldownAccountRetest() }, settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000)
 }
 
 async function runUsageStatsAggregation(): Promise<void> {
+  if (usageStatsAggregationRunning) return
+  usageStatsAggregationRunning = true
   try {
-    aggregateUsageStatsBatch(2000)
+    flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+    const batchSize = settingsNumber('statsAggregationBatchSize', 2000, 100, 10000)
+    const maxBatches = settingsNumber('statsAggregationMaxBatchesPerRun', 5, 1, 100)
+    for (let index = 0; index < maxBatches; index += 1) {
+      const processed = aggregateUsageStatsBatch(batchSize)
+      if (processed < batchSize) break
+    }
   } catch (error) {
     console.error('[background] usage stats aggregation failed', error)
+  } finally {
+    usageStatsAggregationRunning = false
+  }
+}
+
+async function runGroupAccountStatsRefresh(): Promise<void> {
+  try {
+    refreshGroupAccountStatsCache()
+  } catch (error) {
+    console.error('[background] group account stats refresh failed', error)
+  }
+}
+
+async function runResourceAuthorizationExpirySweep(): Promise<void> {
+  try {
+    const changed = expireDueResourceAuthorizations()
+    if (changed > 0) {
+      clearGatewayRuntimeCache()
+    }
+  } catch (error) {
+    console.error('[background] resource authorization expiry sweep failed', error)
   }
 }
 

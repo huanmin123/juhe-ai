@@ -94,37 +94,13 @@
           <span v-else class="muted-cell">未归属</span>
         </template>
         <template v-else-if="column.key === 'status'">
-          <div class="status-cell">
-            <a-tooltip v-if="accountStatusTooltipLines(record).length" placement="topLeft">
-              <template #title>
-                <div class="status-tooltip">
-                  <div v-for="line in accountStatusTooltipLines(record)" :key="line">{{ line }}</div>
-                </div>
-              </template>
-              <a-tag class="status-tag" :color="accountStatusColor(record)">{{ accountStatusText(record) }}</a-tag>
-            </a-tooltip>
-            <a-tag v-else class="status-tag" :color="accountStatusColor(record)">{{ accountStatusText(record) }}</a-tag>
-          </div>
+          <AccountStatusTag :account="record" />
         </template>
         <template v-else-if="column.key === 'concurrency'">
           <a-tag color="blue">{{ record.currentConcurrency }}/{{ record.concurrencyLimit }}</a-tag>
         </template>
         <template v-else-if="column.key === 'usage'">
-          <div class="usage-cell">
-            <div class="usage-summary-tags">
-              <a-tag class="usage-summary-tag">{{ `${record.todayUsage.requestCount}req` }}</a-tag>
-              <a-tag class="usage-summary-tag">{{ formatUsageAmount(record.todayUsage.totalTokens) }}</a-tag>
-              <a-tag class="usage-summary-tag">{{ formatCost(record.todayUsage.totalCost) }}</a-tag>
-            </div>
-            <div v-if="oauthUsageBars(record).length" class="oauth-usage-bars">
-              <div v-for="bar in oauthUsageBars(record)" :key="bar.key" class="oauth-usage-row">
-                <span class="oauth-usage-label">{{ bar.label }}</span>
-                <a-progress class="oauth-usage-progress" size="small" :percent="bar.percent" :stroke-color="bar.color" :show-info="false" />
-                <span class="oauth-usage-percent" :class="bar.tone">{{ bar.displayPercent }}</span>
-                <span class="oauth-usage-reset">{{ bar.resetText }}</span>
-              </div>
-            </div>
-          </div>
+          <AccountUsageCell :account="record" />
         </template>
         <template v-else-if="column.key === 'lastUsedAt'">
           {{ formatDateTime(accountLastUsedAt(record)) }}
@@ -155,75 +131,22 @@
         </template>
       </template>
       <template #card="{ record }">
-        <article class="account-mobile-card">
-          <div class="account-mobile-card-head">
-            <a-checkbox :checked="isAccountSelected(record.id)" :disabled="!canEditAccount(record)" @change="toggleAccountSelection(record)" />
-            <div class="account-mobile-card-title">
-              <div class="account-mobile-name-row">
-                <span class="account-mobile-name">{{ record.name }}</span>
-                <a-tooltip v-if="isAuthorizedAccount(record)" :title="authorizedAccountTooltip(record)">
-                  <InfoCircleOutlined class="authorized-account-icon" :class="{ 'owner-disabled': isOwnerDisabledAuthorizedAccount(record) }" />
-                </a-tooltip>
-              </div>
-              <div class="account-mobile-tags">
-                <a-tag color="processing">{{ accountTypeText(record.type) }}</a-tag>
-                <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
-                <a-tag class="status-tag" :color="accountStatusColor(record)">{{ accountStatusText(record) }}</a-tag>
-              </div>
-            </div>
-          </div>
-
-          <div class="account-mobile-meta-grid">
-            <div v-if="isAdmin" class="account-mobile-meta-item">
-              <span>系统账户</span>
-              <strong>{{ record.systemAccountName || record.systemAccountId || '-' }}</strong>
-            </div>
-            <div class="account-mobile-meta-item">
-              <span>归属分组</span>
-              <strong>{{ groupNameForAccount(record.id) || '未归属' }}</strong>
-            </div>
-            <div class="account-mobile-meta-item">
-              <span>并发</span>
-              <strong>{{ record.currentConcurrency }}/{{ record.concurrencyLimit }}</strong>
-            </div>
-            <div class="account-mobile-meta-item">
-              <span>优先级</span>
-              <strong>{{ record.priority }}</strong>
-            </div>
-            <div class="account-mobile-meta-item">
-              <span>用量(日)</span>
-              <strong>{{ formatAccountUsageSummary(record.todayUsage) }}</strong>
-            </div>
-            <div class="account-mobile-meta-item">
-              <span>最近使用</span>
-              <strong>{{ formatDateTime(accountLastUsedAt(record)) }}</strong>
-            </div>
-            <div v-if="record.accountExpiresAt" class="account-mobile-meta-item account-mobile-meta-wide">
-              <span>到期时间</span>
-              <strong :class="isAccountPackageExpired(record) ? 'expired-cell' : ''">{{ formatDateTime(record.accountExpiresAt) }}</strong>
-            </div>
-          </div>
-
-          <div class="account-mobile-card-actions">
-            <template v-if="isAuthorizedAccount(record)">
-              <a-button @click="openTestModal(record)">测试</a-button>
-            </template>
-            <template v-else>
-              <a-button v-if="canEditAccount(record)" type="primary" @click="openEdit(record)">编辑</a-button>
-              <a-popconfirm v-if="canDeleteAccount(record)" title="确认删除这个账户？" @confirm="removeAccount(record.id)">
-                <a-button danger>删除</a-button>
-              </a-popconfirm>
-              <a-dropdown v-if="accountMenuItems(record).length">
-                <a-button>更多</a-button>
-                <template #overlay>
-                  <a-menu @click="handleAccountMenuClick($event, record)">
-                    <a-menu-item v-for="item in accountMenuItems(record)" :key="item.key" :danger="item.danger">{{ item.label }}</a-menu-item>
-                  </a-menu>
-                </template>
-              </a-dropdown>
-            </template>
-          </div>
-        </article>
+        <AccountMobileCard
+          :account="record"
+          :authorized-tooltip="authorizedAccountTooltip(record)"
+          :can-delete="canDeleteAccount(record)"
+          :can-edit="canEditAccount(record)"
+          :group-name="groupNameForAccount(record.id)"
+          :is-admin="isAdmin"
+          :menu-items="accountMenuItems(record)"
+          :provider-name="providerName(record.providerCode)"
+          :selected="isAccountSelected(record.id)"
+          @delete="removeAccount(record.id)"
+          @edit="openEdit(record)"
+          @menu-click="handleAccountMenuClick($event, record)"
+          @test="openTestModal(record)"
+          @toggle-selection="toggleAccountSelection(record)"
+        />
       </template>
     </ResponsiveDataList>
 
@@ -506,26 +429,53 @@
 
 <script setup lang="ts">
 import axios from 'axios'
-import dayjs, { type Dayjs } from 'dayjs'
+import type { Dayjs } from 'dayjs'
 import { message } from 'ant-design-vue'
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { authState } from '@/composables/useAuth'
-import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
+import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
+import AccountMobileCard from './AccountMobileCard.vue'
+import AccountStatusTag from './AccountStatusTag.vue'
+import AccountUsageCell from './AccountUsageCell.vue'
 import {
   loadAccountErrorPolicyRules,
   validateAccountErrorPolicyRules,
   writeAccountErrorPolicyToCredentials,
   type AccountErrorPolicyRuleForm
 } from './accountErrorPolicy'
-
-type SchedulableFilter = 'all' | 'enabled' | 'disabled' | 'cooling'
+import {
+  accountLastUsedAt,
+  accountStatusColor,
+  accountStatusText,
+  accountTypeDescription,
+  accountTypeText,
+  accountTypeTitle as buildAccountTypeTitle,
+  asString,
+  compareAccountConcurrency,
+  compareAccountExpiresAt,
+  compareAccountLastUsedAt,
+  formatDateTime,
+  formatErrorPolicyAction,
+  formatServerDateTimeInput,
+  formatTestTerminalResult,
+  isAccountPackageExpired,
+  isAuthorizedAccount,
+  isOwnerDisabledAuthorizedAccount,
+  isTemporaryAccountStatus,
+  matchesSchedulableFilter,
+  normalizeKeyword,
+  parseDatePickerValue,
+  statusText,
+  type SchedulableFilter
+} from './accountFormatters'
 
 interface AccountFilters {
   keyword: string
@@ -539,16 +489,6 @@ interface AccountMenuItem {
   key: string
   label: string
   danger?: boolean
-}
-
-interface OAuthUsageBar {
-  key: string
-  label: string
-  percent: number
-  displayPercent: string
-  resetText: string
-  color: string
-  tone: string
 }
 
 interface TestOutputLine {
@@ -608,11 +548,13 @@ const proxies = ref<ProxyProfileSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue })
-const accountPagination = reactive({ current: 1, pageSize: 10 })
-const mobilePageSize = 10
+const accountPageSize = 20
+const accountPagination = reactive({ current: 1, pageSize: accountPageSize })
+const mobilePageSize = accountPageSize
 const mobileVisibleCount = ref(mobilePageSize)
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
 const isAdmin = authState.isAdmin
+const router = useRouter()
 
 const form = reactive<AccountForm>(defaultForm())
 const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
@@ -697,7 +639,8 @@ const accountTablePagination = computed(() => ({
   current: accountPagination.current,
   pageSize: accountPagination.pageSize,
   total: filteredAccounts.value.length,
-  showSizeChanger: true,
+  hideOnSinglePage: true,
+  showSizeChanger: false,
   showTotal: (total: number) => `共 ${total} 个账户`
 }))
 
@@ -848,96 +791,8 @@ function resetForm(providerCode = '', type: AccountType = '') {
   authResult.value = undefined
 }
 
-function statusColor(status: AccountStatus) {
-  if (status === 'active') return 'green'
-  if (status === 'error') return 'red'
-  if (status === 'rate_limited') return 'orange'
-  if (status === 'temporary_unavailable') return 'gold'
-  return 'default'
-}
-
-function statusText(status: AccountStatus) {
-  if (status === 'active') return '正常'
-  if (status === 'error') return '错误'
-  if (status === 'rate_limited') return '限流中'
-  if (status === 'temporary_unavailable') return '临时不可调用'
-  return '停用'
-}
-
-function formatErrorPolicyAction(action: NonNullable<AccountTestResult['errorPolicyAction']>): string {
-  if (action === 'retry_next') return '切换下一个账号'
-  if (action === 'cooldown') return '账号冷却'
-  if (action === 'disable') return '标记错误'
-  if (action === 'default_cooldown') return '默认临时不可调用'
-  return '无'
-}
-
-function accountStatusColor(account: AccountSummary) {
-  if (isOwnerDisabledAuthorizedAccount(account)) return 'default'
-  return statusColor(account.status)
-}
-
-function accountStatusText(account: AccountSummary) {
-  if (isOwnerDisabledAuthorizedAccount(account)) return '停用'
-  return statusText(account.status)
-}
-
-function accountCooldownText(account: AccountSummary) {
-  if (!isCoolingDown(account)) return ''
-  return `暂停至 ${formatDateTime(account.cooldownUntil)}`
-}
-
-function accountStatusTooltipLines(account: AccountSummary): string[] {
-  const lines: string[] = []
-  if (account.accountExpiresAt) {
-    lines.push(`账户到期时间：${formatDateTime(account.accountExpiresAt)}`)
-  }
-  const cooldownText = accountCooldownText(account)
-  if (cooldownText) {
-    lines.push(cooldownText)
-  } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
-    lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
-    lines.push('等待后台复测；也可手动测试，成功后恢复正常')
-  }
-  if (account.lastErrorMessage) {
-    lines.push(`原因：${account.lastErrorMessage}`)
-  }
-  return lines
-}
-
-function isTemporaryAccountStatus(account: AccountSummary) {
-  return account.status === 'rate_limited' || account.status === 'temporary_unavailable'
-}
-
-function isCoolingDown(account: AccountSummary) {
-  if (!account.cooldownUntil) return false
-  const time = new Date(account.cooldownUntil).getTime()
-  return Number.isFinite(time) && time > Date.now()
-}
-
-function isAccountPackageExpired(account: AccountSummary) {
-  if (!account.accountExpiresAt) return false
-  const time = new Date(account.accountExpiresAt).getTime()
-  return Number.isFinite(time) && time <= Date.now()
-}
-
-function accountTypeText(type: AccountType) {
-  if (type === 'oauth') return 'OAuth'
-  if (type === 'api_key') return 'API Key'
-  return type || '-'
-}
-
 function accountTypeTitle(providerCode: string, type: AccountType) {
-  const provider = providerName(providerCode)
-  if (type === 'oauth') return `${provider} OAuth`
-  if (type === 'api_key') return `${provider} API Key`
-  return `${provider} ${type}`.trim()
-}
-
-function accountTypeDescription(providerCode: string, type: AccountType) {
-  if (providerCode === 'openai' && type === 'oauth') return '适合 Codex / ChatGPT OAuth 授权账户，支持手动授权或 Refresh Token。'
-  if (providerCode === 'openai' && type === 'api_key') return '适合直接粘贴 OpenAI API Key，可配置 Base URL。'
-  return '该账户类型会使用供应商定义的创建流程。'
+  return buildAccountTypeTitle(providerName(providerCode), type)
 }
 
 function providerName(providerCode?: string) {
@@ -951,14 +806,6 @@ function groupIdForAccount(accountId: string) {
 
 function groupNameForAccount(accountId: string) {
   return groups.value.find((group) => group.accountIds.includes(accountId))?.name
-}
-
-function isAuthorizedAccount(account: AccountSummary): boolean {
-  return account.accessType === 'authorized'
-}
-
-function isOwnerDisabledAuthorizedAccount(account: AccountSummary): boolean {
-  return isAuthorizedAccount(account) && account.status === 'disabled'
 }
 
 function authorizedAccountTooltip(account: AccountSummary): string {
@@ -1006,27 +853,15 @@ function ensureDefaultGroupSelected(providerCode = form.providerCode) {
   form.groupId = defaultGroupForProvider(providerCode)?.id
 }
 
-function asString(value: unknown): string {
-  return typeof value === 'string' ? value : ''
-}
-
-function normalizeKeyword(value: unknown): string {
-  return String(value ?? '').trim().toLowerCase()
-}
-
-function matchesSchedulableFilter(account: AccountSummary, filter: SchedulableFilter): boolean {
-  if (filter === 'all') return true
-  if (filter === 'cooling') return isTemporaryAccountStatus(account) || isCoolingDown(account)
-  if (filter === 'enabled') return account.status === 'active' && account.schedulable && !isTemporaryAccountStatus(account) && !isCoolingDown(account)
-  return account.status === 'disabled' || !account.schedulable
-}
-
 function accountBaseUrl(account: AccountSummary): string {
   return asString(account.credentials.base_url)
 }
 
 function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
+  if (account.authorizationUsageAvailable) {
+    items.push({ key: 'authorization-usage', label: '授权用量' })
+  }
   if (canTestAccount(account)) {
     items.push({ key: 'test', label: '测试' })
   }
@@ -1034,129 +869,6 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     items.push({ key: 'toggle-status', label: account.status === 'disabled' ? '启用账户' : '停用账户', danger: account.status !== 'disabled' })
   }
   return items
-}
-
-function formatAccountUsageSummary(usage: AccountUsageSummary): string {
-  return `${formatNumber(usage.requestCount)}req / ${formatUsageAmount(usage.totalTokens)} / ${formatCost(usage.totalCost)}`
-}
-
-function formatNumber(value?: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value ?? 0)
-}
-
-function formatUsageAmount(value?: number): string {
-  const amount = value ?? 0
-  const absoluteValue = Math.abs(amount)
-  if (absoluteValue >= 1_000_000_000) {
-    return `${(amount / 1_000_000_000).toFixed(1)}B`
-  }
-  if (absoluteValue >= 1_000_000) {
-    return `${(amount / 1_000_000).toFixed(1)}M`
-  }
-  if (absoluteValue >= 1_000) {
-    return `${(amount / 1_000).toFixed(1)}K`
-  }
-  return new Intl.NumberFormat('zh-CN').format(amount)
-}
-
-function formatCost(value?: number): string {
-  return `$${(value ?? 0).toFixed(2)}`
-}
-
-function oauthUsageBars(account: AccountSummary): OAuthUsageBar[] {
-  if (account.providerCode !== 'openai' || account.type !== 'oauth') return []
-  return [
-    oauthUsageBar('5h', '5h', account.oauthUsage?.fiveHour) ?? oauthUsagePlaceholder('5h'),
-    oauthUsageBar('7d', '7d', account.oauthUsage?.sevenDay) ?? oauthUsagePlaceholder('7d')
-  ]
-}
-
-function oauthUsageBar(key: string, label: string, window?: { utilization: number; resetsAt?: string; remainingSeconds: number }): OAuthUsageBar | undefined {
-  if (!window) return undefined
-  const rawPercent = Math.max(0, window.utilization)
-  const percent = Math.min(Math.round(rawPercent), 100)
-  return {
-    key,
-    label,
-    percent,
-    displayPercent: rawPercent > 999 ? '>999%' : `${Math.round(rawPercent)}%`,
-    resetText: window.resetsAt ? formatRelativeReset(window.resetsAt) : '现在',
-    color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
-    tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal'
-  }
-}
-
-function oauthUsagePlaceholder(key: string): OAuthUsageBar {
-  return {
-    key,
-    label: key,
-    percent: 0,
-    displayPercent: '--',
-    resetText: '未获取',
-    color: '#d1d5db',
-    tone: 'normal'
-  }
-}
-
-function formatRelativeReset(value: string): string {
-  const time = Date.parse(value)
-  if (!Number.isFinite(time)) return value
-  const diffMs = time - Date.now()
-  if (diffMs <= 0) return '现在'
-  const totalMinutes = Math.ceil(diffMs / 60_000)
-  const days = Math.floor(totalMinutes / 1440)
-  const hours = Math.floor((totalMinutes % 1440) / 60)
-  const minutes = totalMinutes % 60
-  if (days > 0) return `${days}d ${hours}h`
-  if (hours > 0) return `${hours}h ${minutes}m`
-  return `${minutes}m`
-}
-
-function formatDateTime(value?: string): string {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
-
-function parseDatePickerValue(value?: string): Dayjs | undefined {
-  if (!value) return undefined
-  const parsed = dayjs(value)
-  return parsed.isValid() ? parsed : undefined
-}
-
-function formatServerDateTimeInput(value?: Dayjs | null): string | null {
-  return value ? value.format('YYYY-MM-DDTHH:mm:ss') : null
-}
-
-function accountLastUsedAt(account: AccountSummary): string | undefined {
-  return account.lastUsedAt || account.usage.lastUsedAt
-}
-
-function compareAccountLastUsedAt(left: AccountSummary, right: AccountSummary): number {
-  return timestampOf(accountLastUsedAt(left)) - timestampOf(accountLastUsedAt(right))
-}
-
-function compareAccountExpiresAt(left: AccountSummary, right: AccountSummary): number {
-  return timestampOf(left.accountExpiresAt) - timestampOf(right.accountExpiresAt)
-}
-
-function compareAccountConcurrency(left: AccountSummary, right: AccountSummary): number {
-  return left.concurrencyLimit - right.concurrencyLimit || left.currentConcurrency - right.currentConcurrency || left.name.localeCompare(right.name, 'zh-CN')
-}
-
-function timestampOf(value?: string): number {
-  if (!value) return 0
-  const timestamp = Date.parse(value)
-  return Number.isFinite(timestamp) ? timestamp : 0
-}
-
-function formatTestTerminalResult(result: AccountTestResult): string {
-  if (result.outputText?.trim()) return result.outputText.trim()
-  if (result.success) return ''
-  const rawText = result.responseText?.trim()
-  if (!rawText || rawText === result.message.trim()) return ''
-  return rawText
 }
 
 async function copyText(value: string) {
@@ -1657,6 +1369,14 @@ async function updateAccountState(account: AccountSummary, payload: Record<strin
 }
 
 async function handleAccountMenu(key: string, account: AccountSummary) {
+  if (key === 'authorization-usage') {
+    const query: Record<string, string> = { accountId: account.id, action: 'authorization-usage' }
+    if (isAdmin.value && account.systemAccountId) {
+      query.systemAccountId = account.systemAccountId
+    }
+    await router.push({ path: '/usage-stats', query })
+    return
+  }
   if (key === 'test') {
     await testAccount(account)
     return
@@ -1775,106 +1495,6 @@ onMounted(loadData)
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.usage-cell {
-  --usage-meter-width: 150px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 5px;
-  line-height: 1.4;
-  white-space: normal;
-}
-
-.usage-summary-tags {
-  display: inline-grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
-  width: var(--usage-meter-width);
-}
-
-.usage-summary-tag {
-  min-width: 0;
-  margin-inline-end: 0;
-  padding-inline: 5px;
-  color: #0f172a;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  text-align: center;
-  white-space: nowrap;
-}
-
-.oauth-usage-bars {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  width: var(--usage-meter-width);
-}
-
-.oauth-usage-row {
-  display: grid;
-  grid-template-columns: 24px minmax(0, 1fr) 36px 44px;
-  align-items: center;
-  column-gap: 4px;
-}
-
-.oauth-usage-label {
-  display: inline-flex;
-  justify-content: center;
-  border-radius: 999px;
-  background: #eef2ff;
-  color: #4338ca;
-  font-size: 11px;
-  font-weight: 600;
-}
-
-.oauth-usage-progress {
-  line-height: 1;
-  min-width: 0;
-}
-
-.oauth-usage-percent {
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  text-align: right;
-}
-
-.oauth-usage-percent.normal {
-  color: #475569;
-}
-
-.oauth-usage-percent.warning {
-  color: #d97706;
-}
-
-.oauth-usage-percent.danger {
-  color: #dc2626;
-}
-
-.oauth-usage-reset,
-.oauth-usage-updated {
-  color: #64748b;
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.status-cell {
-  display: inline-flex;
-  align-items: center;
-}
-
-.status-tag {
-  width: max-content;
-  max-width: 100%;
-  margin-inline-end: 0;
-  white-space: nowrap;
-}
-
-.status-tooltip {
-  max-width: 320px;
-  line-height: 1.7;
-  white-space: pre-wrap;
 }
 
 .expired-cell {
@@ -2368,100 +1988,6 @@ onMounted(loadData)
   .toolbar-select {
     width: 100%;
     min-width: 0;
-  }
-
-  .account-mobile-card {
-    display: grid;
-    gap: 12px;
-    padding: 14px;
-    border: 1px solid #e8edf5;
-    border-radius: 14px;
-    background: #fff;
-  }
-
-  .account-mobile-card-head {
-    display: flex;
-    gap: 10px;
-    align-items: flex-start;
-  }
-
-  .account-mobile-card-title {
-    display: grid;
-    min-width: 0;
-    flex: 1;
-    gap: 8px;
-  }
-
-  .account-mobile-name-row {
-    display: flex;
-    min-width: 0;
-    gap: 6px;
-    align-items: center;
-  }
-
-  .account-mobile-name {
-    min-width: 0;
-    overflow: hidden;
-    color: #0f172a;
-    font-weight: 700;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .account-mobile-tags {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .account-mobile-tags :deep(.ant-tag) {
-    margin-inline-end: 0;
-  }
-
-  .account-mobile-meta-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 8px;
-  }
-
-  .account-mobile-meta-item {
-    display: grid;
-    min-width: 0;
-    gap: 2px;
-    padding: 8px 10px;
-    border-radius: 10px;
-    background: #f8fafc;
-  }
-
-  .account-mobile-meta-wide {
-    grid-column: 1 / -1;
-  }
-
-  .account-mobile-meta-item span {
-    color: #64748b;
-    font-size: 12px;
-  }
-
-  .account-mobile-meta-item strong {
-    min-width: 0;
-    overflow: hidden;
-    color: #0f172a;
-    font-size: 13px;
-    font-weight: 600;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .account-mobile-card-actions {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 8px;
-  }
-
-  .account-mobile-card-actions :deep(.ant-btn),
-  .account-mobile-card-actions :deep(.ant-dropdown-trigger),
-  .account-mobile-card-actions :deep(.ant-popconfirm-open) {
-    width: 100%;
   }
 
   .account-table :deep(.ant-table-cell-fix-right),

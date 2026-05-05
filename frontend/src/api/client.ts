@@ -3,6 +3,8 @@ import axios from 'axios'
 import type {
   AccountSummary,
   AccountTestResult,
+  AccountAuthorizationUsageOverview,
+  AccountUsageStatsOverview,
   AuthorizationResourceType,
   ResourceAuthorizationSummary,
   ApiKeySummary,
@@ -45,7 +47,7 @@ export interface AuthorizationListParams extends ListParams {
   resourceId?: string
   granteeSystemAccountId?: string
   teamId?: string
-  status?: 'active' | 'revoked'
+  status?: 'active' | 'paused' | 'expired' | 'revoked' | 'all'
 }
 
 const http = axios.create({
@@ -113,7 +115,10 @@ export const api = {
       granteeType: 'system_account' | 'team'
       granteeId: string
       remark?: string
+      expiresAt?: string
     }) => unwrap<ResourceAuthorizationSummary>(http.post('/authorizations', payload)),
+    update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}`, payload)),
+    updateExpire: (id: string, payload: { expiresAt: string | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}/expire`, payload)),
     revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { data: payload })),
     usage: (id: string) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`))
   },
@@ -138,7 +143,9 @@ export const api = {
     list: (params?: UsageRecordListParams) => unwrap<UsageRecordSummary[]>(http.get('/usage-records', { params }))
   },
   stats: {
-    usageOverview: () => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview')),
+    usageOverview: (params?: ListParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
+    accountUsage: (params?: ListParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
+    accountAuthorizationUsage: (id: string, params?: ListParams) => unwrap<AccountAuthorizationUsageOverview>(http.get(`/stats/accounts/${id}/authorization-usage`, { params })),
     systemMetrics: () => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics'))
   },
   settings: {

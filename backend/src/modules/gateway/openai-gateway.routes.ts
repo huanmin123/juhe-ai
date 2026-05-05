@@ -1,7 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import * as http from 'node:http'
-import * as https from 'node:https'
-import type { IncomingHttpHeaders, IncomingMessage } from 'node:http'
 import { Router, type Request, type Response } from 'express'
 
 import {
@@ -19,13 +16,42 @@ import {
   resolveCachedGroupUsageAccessMetadata
 } from './gateway-runtime-cache.service.js'
 import { estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
-import { buildOpenAIOAuthCredentials, createProxyAgent, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
+import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import {
   applyAccountErrorHandling,
   parseErrorPayload,
   type GatewaySettings
 } from './account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
+import {
+  buildGatewayErrorResponseSnapshot,
+  buildUsageRequestSnapshot,
+  buildUsageResponseSnapshot,
+  emptyUsage,
+  extractBearerToken,
+  extractClientIp,
+  headersToObject,
+  inspectOpenAIStreamText,
+  parseOpenAIUsageFromJsonBuffer,
+  parseOpenAIUsageFromSseText,
+  requestEndpoint,
+  requestModel,
+  type UpstreamAttempt,
+  type UsageRequestSnapshot
+} from './openai-gateway-usage.js'
+import {
+  buildUpstreamHeaders,
+  buildUpstreamRequestBody,
+  copyResponseHeaders,
+  isStreamResponse,
+  preloadStreamResponseFirstChunk,
+  readStreamChunkWithIdleTimeout,
+  requestUpstream,
+  upstreamRequestTimeoutMs,
+  upstreamSocketTimeoutMs,
+  UpstreamRequestTimeoutError,
+  type GatewayUpstreamResponse
+} from './openai-gateway-upstream.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -273,23 +299,11 @@ function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<UsageAc
   }
 }
 
-interface UpstreamAttempt {
-  accountId: string
-  accountName: string
-  upstreamUrl: string
-  status?: number
-  message?: string
-  responseHeaders?: Record<string, string>
-  responseBodyText?: string
-}
-
 class UpstreamAttemptError extends Error {
   constructor(message: string, readonly lastAttempt?: UpstreamAttempt) {
     super(message)
   }
 }
-
-class UpstreamRequestTimeoutError extends Error {}
 
 interface GatewayUsageContext {
   requestId: string
@@ -299,126 +313,6 @@ interface GatewayUsageContext {
   groupId: string
   endpoint: string
   requestSnapshot: UsageRequestSnapshot
-}
-
-function extractBearerToken(authorization?: string): string | undefined {
-  if (!authorization) return undefined
-  const match = authorization.match(/^Bearer\s+(.+)$/i)
-  return match?.[1]?.trim()
-}
-
-function extractClientIp(req: Request): string | undefined {
-  const forwarded = firstHeaderValue(req.header('x-forwarded-for'))
-  const realIp = firstHeaderValue(req.header('x-real-ip'))
-  const cfIp = firstHeaderValue(req.header('cf-connecting-ip'))
-  return normalizeClientIp(forwarded ?? realIp ?? cfIp ?? req.ip ?? req.socket.remoteAddress)
-}
-
-function firstHeaderValue(value?: string): string | undefined {
-  return value?.split(',').map((item) => item.trim()).find(Boolean)
-}
-
-function normalizeClientIp(value?: string): string | undefined {
-  if (!value) return undefined
-  let ip = value.trim()
-  if (!ip) return undefined
-  if (ip.startsWith('[')) {
-    const end = ip.indexOf(']')
-    if (end > 0) ip = ip.slice(1, end)
-  }
-  if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(ip)) {
-    ip = ip.replace(/:\d+$/, '')
-  }
-  if (ip.startsWith('::ffff:')) {
-    ip = ip.slice('::ffff:'.length)
-  }
-  return ip === '::1' ? '127.0.0.1' : ip
-}
-
-
-function requestModel(req: Request): string | undefined {
-  return typeof req.body?.model === 'string' ? req.body.model : undefined
-}
-
-function requestEndpoint(req: Request): string {
-  return `${req.method.toUpperCase()} ${req.originalUrl.split('?')[0] || req.path}`
-}
-
-function buildUsageRequestSnapshot(req: Request, requestId: string, clientIp?: string): UsageRequestSnapshot {
-  const snapshot: UsageRequestSnapshot = {
-    method: req.method,
-    path: req.path,
-    originalUrl: req.originalUrl,
-    clientIp,
-    requestId,
-    headers: sanitizeRequestHeaders(req.headers)
-  }
-  if (req.body !== undefined) {
-    snapshot.body = req.body
-  }
-  return snapshot
-}
-
-function sanitizeRequestHeaders(headers: IncomingHttpHeaders): Record<string, string | string[]> {
-  const output: Record<string, string | string[]> = {}
-  const hidden = new Set(['authorization', 'proxy-authorization', 'cookie', 'set-cookie', 'x-api-key'])
-  for (const [name, value] of Object.entries(headers)) {
-    if (value === undefined) continue
-    output[name] = hidden.has(name.toLowerCase()) ? '[redacted]' : value
-  }
-  return output
-}
-
-function buildUsageResponseSnapshot(input: {
-  upstreamUrl?: string
-  statusCode?: number
-  headers?: Headers | Record<string, string>
-  bodyText?: string
-  errorMessage?: string
-  generatedBy?: 'gateway'
-}): UsageResponseSnapshot {
-  return {
-    upstreamUrl: input.upstreamUrl,
-    statusCode: input.statusCode,
-    headers: input.headers instanceof Headers ? headersToObject(input.headers) : input.headers,
-    bodyText: input.bodyText,
-    errorMessage: input.errorMessage,
-    generatedBy: input.generatedBy
-  }
-}
-
-function buildGatewayErrorResponseSnapshot(statusCode: number, payload: Record<string, unknown>, lastAttempt?: UpstreamAttempt): UsageResponseSnapshot {
-  const snapshot = buildUsageResponseSnapshot({
-    statusCode,
-    headers: { 'content-type': 'application/json; charset=utf-8' },
-    bodyText: JSON.stringify(payload),
-    errorMessage: typeof payload.error === 'object' && payload.error !== null
-      ? String((payload.error as Record<string, unknown>).message ?? '')
-      : undefined,
-    generatedBy: 'gateway'
-  })
-
-  if (lastAttempt) {
-    snapshot.lastUpstreamAttempt = {
-      accountId: lastAttempt.accountId,
-      accountName: lastAttempt.accountName,
-      upstreamUrl: lastAttempt.upstreamUrl,
-      statusCode: lastAttempt.status,
-      headers: lastAttempt.responseHeaders,
-      bodyText: lastAttempt.responseBodyText,
-      errorMessage: lastAttempt.message
-    }
-  }
-
-  return snapshot
-}
-
-function headersToObject(headers: Headers): Record<string, string> {
-  const output: Record<string, string> = {}
-  headers.forEach((value, name) => {
-    output[name] = value
-  })
-  return output
 }
 
 function buildUpstreamUrl(baseUrl: string, pathAndQuery: string): string {
@@ -601,198 +495,6 @@ async function fetchFirstAvailableUpstream(
   )
 }
 
-interface GatewayUpstreamResponse {
-  readonly status: number
-  readonly ok: boolean
-  readonly headers: Headers
-  readonly body: AsyncIterable<Uint8Array> | null
-  arrayBuffer(): Promise<ArrayBuffer>
-}
-
-interface UsageRequestSnapshot {
-  method: string
-  path: string
-  originalUrl: string
-  clientIp?: string
-  requestId: string
-  headers: Record<string, string | string[]>
-  body?: unknown
-}
-
-interface UsageResponseSnapshot {
-  upstreamUrl?: string
-  statusCode?: number
-  headers?: Record<string, string>
-  bodyText?: string
-  errorMessage?: string
-  generatedBy?: 'gateway'
-  lastUpstreamAttempt?: {
-    accountId: string
-    accountName: string
-    upstreamUrl: string
-    statusCode?: number
-    headers?: Record<string, string>
-    bodyText?: string
-    errorMessage?: string
-  }
-}
-
-interface UpstreamRequestOptions {
-  method: string
-  headers: Headers
-  body?: Buffer | string
-  proxyUrl?: string
-  timeoutMs?: number
-  requestTimeoutMs?: number
-}
-
-class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
-  constructor(private readonly message: IncomingMessage) {}
-
-  get status(): number {
-    return this.message.statusCode ?? 0
-  }
-
-  get ok(): boolean {
-    return this.status >= 200 && this.status < 300
-  }
-
-  get headers(): Headers {
-    return headersFromIncoming(this.message.headers)
-  }
-
-  get body(): AsyncIterable<Uint8Array> | null {
-    return this.message as AsyncIterable<Uint8Array>
-  }
-
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    const buffer = await collectIncomingBody(this.message)
-    const arrayBuffer = new ArrayBuffer(buffer.byteLength)
-    new Uint8Array(arrayBuffer).set(buffer)
-    return arrayBuffer
-  }
-}
-
-class PreloadedGatewayUpstreamResponse implements GatewayUpstreamResponse {
-  constructor(
-    private readonly source: GatewayUpstreamResponse,
-    private readonly iterator: AsyncIterator<Uint8Array>,
-    private readonly firstResult: IteratorResult<Uint8Array>
-  ) {}
-
-  get status(): number {
-    return this.source.status
-  }
-
-  get ok(): boolean {
-    return this.source.ok
-  }
-
-  get headers(): Headers {
-    return this.source.headers
-  }
-
-  get body(): AsyncIterable<Uint8Array> | null {
-    return iteratePreloadedStream(this.iterator, this.firstResult)
-  }
-
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    const body = this.body
-    return body ? collectAsyncIterableBody(body) : new ArrayBuffer(0)
-  }
-}
-
-async function* iteratePreloadedStream(iterator: AsyncIterator<Uint8Array>, firstResult: IteratorResult<Uint8Array>): AsyncIterable<Uint8Array> {
-  if (!firstResult.done) {
-    yield firstResult.value
-  }
-  while (true) {
-    const result = await iterator.next()
-    if (result.done) {
-      break
-    }
-    yield result.value
-  }
-}
-
-async function collectAsyncIterableBody(body: AsyncIterable<Uint8Array>): Promise<ArrayBuffer> {
-  const chunks: Buffer[] = []
-  for await (const chunk of body) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-  }
-  const buffer = Buffer.concat(chunks)
-  const arrayBuffer = new ArrayBuffer(buffer.byteLength)
-  new Uint8Array(arrayBuffer).set(buffer)
-  return arrayBuffer
-}
-
-function requestUpstream(upstreamUrl: string, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(upstreamUrl)
-    const transport = url.protocol === 'http:' ? http : https
-    const requestOptions: http.RequestOptions = {
-      method: options.method,
-      headers: headersToNodeHeaders(options.headers),
-      agent: options.proxyUrl ? createProxyAgent(options.proxyUrl) as http.Agent : undefined
-    }
-    let requestTimeout: NodeJS.Timeout | undefined
-    const clearRequestTimeout = () => {
-      if (requestTimeout) {
-        clearTimeout(requestTimeout)
-        requestTimeout = undefined
-      }
-    }
-    const request = transport.request(url, requestOptions, (message) => {
-      clearRequestTimeout()
-      resolve(new NodeGatewayUpstreamResponse(message))
-    })
-    const abort = () => request.destroy(new Error('Upstream request timed out'))
-
-    if (options.requestTimeoutMs !== undefined) {
-      const seconds = Math.ceil(options.requestTimeoutMs / 1000)
-      requestTimeout = setTimeout(() => request.destroy(new UpstreamRequestTimeoutError(`Upstream stream request timeout after ${seconds}s`)), options.requestTimeoutMs)
-    }
-    request.setTimeout(options.timeoutMs ?? 120000, abort)
-    request.on('error', (error) => {
-      clearRequestTimeout()
-      reject(error)
-    })
-    if (options.body) {
-      request.write(options.body)
-    }
-    request.end()
-  })
-}
-
-function headersToNodeHeaders(headers: Headers): http.OutgoingHttpHeaders {
-  const output: http.OutgoingHttpHeaders = {}
-  headers.forEach((value, name) => {
-    output[name] = value
-  })
-  return output
-}
-
-function headersFromIncoming(headers: IncomingHttpHeaders): Headers {
-  const output = new Headers()
-  for (const [name, value] of Object.entries(headers)) {
-    if (value === undefined) continue
-    if (Array.isArray(value)) {
-      for (const item of value) output.append(name, item)
-    } else {
-      output.set(name, value)
-    }
-  }
-  return output
-}
-
-async function collectIncomingBody(message: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = []
-  for await (const chunk of message) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-  }
-  return Buffer.concat(chunks)
-}
-
 interface StreamPipeResult {
   completed: boolean
   chunks: Buffer[]
@@ -831,16 +533,40 @@ async function pipeUpstreamStream(
       res.write(buffer)
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Upstream stream interrupted'
+    const rawMessage = error instanceof Error ? error.message : 'Upstream stream interrupted'
+    const inspection = inspectOpenAIStreamText(Buffer.concat(chunks).toString('utf8'))
+    if (inspection.terminalReceived && !inspection.failedReceived) {
+      res.end()
+      return { completed: true, chunks, message: 'completed', firstTokenMs }
+    }
+    const message = inspection.errorMessage ?? rawMessage
     handleStreamFailure(account, message, settings)
+    if (!inspection.failedReceived) {
+      const failureEvent = writeGatewayStreamFailureEvent(res, message)
+      if (failureEvent) {
+        chunks.push(failureEvent)
+      }
+    }
+    res.end()
+    return { completed: false, chunks, message, firstTokenMs }
+  }
+
+  const inspection = inspectOpenAIStreamText(Buffer.concat(chunks).toString('utf8'))
+  if (!inspection.terminalReceived) {
+    const message = 'Upstream stream ended before OpenAI terminal event'
+    handleStreamFailure(account, message, settings)
+    const failureEvent = writeGatewayStreamFailureEvent(res, message)
+    if (failureEvent) {
+      chunks.push(failureEvent)
+    }
     res.end()
     return { completed: false, chunks, message, firstTokenMs }
   }
 
   res.end()
 
-  if (!completed) {
-    const message = 'Upstream stream interrupted before completion'
+  if (!completed || inspection.failedReceived) {
+    const message = inspection.errorMessage ?? 'Upstream stream failed'
     handleStreamFailure(account, message, settings)
     return { completed: false, chunks, message, firstTokenMs }
   }
@@ -848,69 +574,34 @@ async function pipeUpstreamStream(
   return { completed: true, chunks, message: 'completed', firstTokenMs }
 }
 
-async function readStreamChunkWithIdleTimeout(
-  iterator: AsyncIterator<Uint8Array>,
-  timeoutSeconds: number
-): Promise<IteratorResult<Uint8Array>> {
-  return readStreamChunkWithTimeout(
-    iterator,
-    timeoutSeconds,
-    () => new Error(`Upstream stream idle timeout after ${timeoutSeconds}s`)
-  )
-}
-
-async function preloadStreamResponseFirstChunk(
-  response: GatewayUpstreamResponse,
-  settings: GatewaySettings
-): Promise<GatewayUpstreamResponse> {
-  if (!response.body) {
-    throw new Error('Upstream stream response has no body')
+function writeGatewayStreamFailureEvent(res: Response, message: string): Buffer | undefined {
+  if (res.writableEnded || res.destroyed) {
+    return undefined
   }
-  const iterator = response.body[Symbol.asyncIterator]()
-  try {
-    const firstResult = await readStreamChunkWithTimeout(
-      iterator,
-      settings.streamRequestTimeoutSeconds,
-      () => new UpstreamRequestTimeoutError(`Upstream stream request timeout after ${settings.streamRequestTimeoutSeconds}s`)
-    )
-    if (firstResult.done) {
-      throw new Error('Upstream stream ended before first chunk')
-    }
-    return new PreloadedGatewayUpstreamResponse(response, iterator, firstResult)
-  } catch (error) {
-    await closeAsyncIterator(iterator)
-    throw error
-  }
-}
 
-async function readStreamChunkWithTimeout(
-  iterator: AsyncIterator<Uint8Array>,
-  timeoutSeconds: number,
-  createError: () => Error
-): Promise<IteratorResult<Uint8Array>> {
-  let timeout: NodeJS.Timeout | undefined
-  try {
-    return await Promise.race([
-      iterator.next(),
-      new Promise<IteratorResult<Uint8Array>>((_, reject) => {
-        timeout = setTimeout(() => reject(createError()), timeoutSeconds * 1000)
-      })
-    ])
-  } finally {
-    if (timeout) {
-      clearTimeout(timeout)
+  const payload = {
+    type: 'response.failed',
+    response: {
+      status: 'failed',
+      error: {
+        code: gatewayStreamFailureCode(message),
+        message
+      }
     }
   }
-}
-
-async function closeAsyncIterator(iterator: AsyncIterator<Uint8Array>): Promise<void> {
-  if (!iterator.return) {
-    return
-  }
+  const buffer = Buffer.from(`event: response.failed\ndata: ${JSON.stringify(payload)}\n\n`, 'utf8')
   try {
-    await iterator.return()
+    res.write(buffer)
+    return buffer
   } catch {
+    return undefined
   }
+}
+
+function gatewayStreamFailureCode(message: string): string {
+  return message.toLowerCase().includes('idle timeout')
+    ? 'upstream_stream_idle_timeout'
+    : 'upstream_stream_interrupted'
 }
 
 async function waitBeforeTemporaryUnschedulableRetry(settings: GatewaySettings): Promise<void> {
@@ -981,171 +672,7 @@ async function prepareUpstreamAccount(account: UpstreamAccount): Promise<Upstrea
   }
 }
 
-function upstreamSocketTimeoutMs(req: Request, settings: GatewaySettings): number {
-  const isStreamRequest = req.body?.stream === true
-  if (!isStreamRequest || !settings.streamCircuitBreakerEnabled) {
-    return 120000
-  }
-  return Math.max(settings.streamRequestTimeoutSeconds, settings.streamIdleTimeoutSeconds + 15, 30) * 1000
-}
-
-function upstreamRequestTimeoutMs(req: Request, settings: GatewaySettings): number | undefined {
-  if (req.body?.stream !== true || !settings.streamCircuitBreakerEnabled) {
-    return undefined
-  }
-  return Math.max(1, settings.streamRequestTimeoutSeconds) * 1000
-}
-
-function isStreamResponse(response: GatewayUpstreamResponse): boolean {
-  const contentType = response.headers.get('content-type') ?? ''
-  return contentType.includes('text/event-stream') || contentType.includes('application/octet-stream')
-}
-
-const skippedUpstreamRequestHeaders = new Set([
-  'host',
-  'authorization',
-  'content-length',
-  'connection',
-  'keep-alive',
-  'proxy-authenticate',
-  'proxy-authorization',
-  'te',
-  'trailer',
-  'transfer-encoding',
-  'upgrade',
-  'expect',
-  'content-encoding',
-  'accept-encoding',
-  'cookie',
-  'set-cookie',
-  'x-api-key',
-  'x-goog-api-key',
-  'api-key',
-  'x-forwarded-for',
-  'x-forwarded-host',
-  'x-forwarded-port',
-  'x-forwarded-proto',
-  'x-forwarded-server',
-  'x-real-ip',
-  'forwarded',
-  'via',
-  'cf-connecting-ip'
-])
-
-type RawBodyRequest = Request & { rawBody?: Buffer }
-
-function buildUpstreamRequestBody(req: Request, passthroughEnabled: boolean): Buffer | string | undefined {
-  if (req.method === 'GET' || req.method === 'HEAD') {
-    return undefined
-  }
-  if (!passthroughEnabled) {
-    return JSON.stringify(req.body ?? {})
-  }
-  const rawBody = (req as RawBodyRequest).rawBody
-  if (rawBody && rawBody.length > 0) {
-    return rawBody
-  }
-  if (req.body === undefined || isEmptyPlainObject(req.body)) {
-    return undefined
-  }
-  return JSON.stringify(req.body)
-}
-
-function isEmptyPlainObject(value: unknown): boolean {
-  return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 0
-}
-
-function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, account: UpstreamAccount): Headers {
-  const headers = new Headers()
-  for (const [name, value] of Object.entries(inputHeaders)) {
-    const lowerName = name.toLowerCase()
-    if (skippedUpstreamRequestHeaders.has(lowerName)) {
-      continue
-    }
-    if (Array.isArray(value)) {
-      headers.set(name, value.join(', '))
-    } else if (typeof value === 'string') {
-      headers.set(name, value)
-    }
-  }
-  headers.set('authorization', `Bearer ${account.apiKey}`)
-  if (!account.passthroughEnabled) {
-    headers.set('content-type', headers.get('content-type') ?? 'application/json')
-  }
-  return headers
-}
-
 function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: Headers, source: string): void {
   if (account.type !== 'oauth') return
   persistOpenAICodexUsageHeaders(account.id, headers, source)
-}
-
-function copyResponseHeaders(upstreamResponse: GatewayUpstreamResponse, res: { setHeader: (name: string, value: string) => void }): void {
-  upstreamResponse.headers.forEach((value, name) => {
-    const lowerName = name.toLowerCase()
-    if (['content-length', 'content-encoding', 'connection', 'transfer-encoding'].includes(lowerName)) {
-      return
-    }
-    res.setHeader(name, value)
-  })
-}
-
-interface ParsedUsage {
-  inputTokens?: number
-  outputTokens?: number
-  cacheReadTokens?: number
-}
-
-function emptyUsage(): ParsedUsage {
-  return {}
-}
-
-function parseOpenAIUsageFromJsonBuffer(responseBody: Buffer): ParsedUsage {
-  if (responseBody.length === 0) return emptyUsage()
-  try {
-    const payload = JSON.parse(responseBody.toString('utf8')) as Record<string, unknown>
-    return extractUsage(payload.usage)
-  } catch {
-    return emptyUsage()
-  }
-}
-
-function parseOpenAIUsageFromSseText(text: string): ParsedUsage {
-  let usage = emptyUsage()
-  for (const line of text.split(/\r?\n/)) {
-    if (!line.startsWith('data:')) continue
-    const data = line.slice(5).trim()
-    if (!data || data === '[DONE]') continue
-    try {
-      const event = JSON.parse(data) as Record<string, unknown>
-      const eventType = typeof event.type === 'string' ? event.type : ''
-      if (eventType !== 'response.completed' && eventType !== 'response.done' && eventType !== 'response.failed') {
-        continue
-      }
-      const nextUsage = extractUsage(typeof event.response === 'object' && event.response !== null ? (event.response as Record<string, unknown>).usage : event.usage)
-      if (nextUsage.inputTokens !== undefined || nextUsage.outputTokens !== undefined || nextUsage.cacheReadTokens !== undefined) {
-        usage = nextUsage
-      }
-    } catch {
-      continue
-    }
-  }
-  return usage
-}
-
-function extractUsage(value: unknown): ParsedUsage {
-  if (typeof value !== 'object' || value === null) return emptyUsage()
-  const usage = value as Record<string, unknown>
-  const details = typeof usage.input_tokens_details === 'object' && usage.input_tokens_details !== null
-    ? usage.input_tokens_details as Record<string, unknown>
-    : {}
-  const inputTokens = numberValue(usage.input_tokens)
-  const outputTokens = numberValue(usage.output_tokens)
-  const cacheReadTokens = numberValue(details.cached_tokens)
-  return { inputTokens, outputTokens, cacheReadTokens }
-}
-
-function numberValue(value: unknown): number | undefined {
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : undefined
 }

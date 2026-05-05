@@ -2,11 +2,11 @@
   <a-card class="page-card system-teams-page-card responsive-page-card">
     <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadData">
       <template #actions>
-        <a-button type="primary" @click="openCreateTeam">新建团队</a-button>
+        <a-button v-if="isAdmin" type="primary" @click="openCreateTeam">新建团队</a-button>
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table system-teams-table" :columns="columns" :data-source="teams" row-key="id" :loading="loading" :scroll-x="1080" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table system-teams-table" :columns="columns" :data-source="teams" row-key="id" :loading="loading" :scroll-x="930" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有团队，先创建一个团队并添加成员。" />
       </template>
@@ -22,16 +22,6 @@
         <template v-else-if="column.key === 'memberCount'">
           {{ record.members?.length ?? record.memberCount ?? 0 }}
         </template>
-        <template v-else-if="column.key === 'members'">
-          <div class="team-members-cell">
-            <template v-if="activeMembers(record).length">
-              <a-tag v-for="member in activeMembers(record)" :key="member.id" color="geekblue">
-                {{ member.systemAccountName || member.username || member.systemAccountUsername || member.systemAccountId }}
-              </a-tag>
-            </template>
-            <span v-else class="muted-cell">暂无成员</span>
-          </div>
-        </template>
         <template v-else-if="column.key === 'description'">
           <span>{{ record.description || '-' }}</span>
         </template>
@@ -39,10 +29,11 @@
           {{ formatDateTime(record.createdAt) }}
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space :size="8">
+          <a-space v-if="isAdmin" :size="8">
             <a-button type="link" size="small" @click="openEditTeam(record)">编辑</a-button>
             <a-button type="link" size="small" @click="openMemberModal(record)">成员管理</a-button>
           </a-space>
+          <a-button v-else type="link" size="small" @click="openMemberModal(record)">成员查看</a-button>
         </template>
       </template>
 
@@ -67,14 +58,13 @@
               <span>说明</span>
               <strong>{{ record.description || '-' }}</strong>
             </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>成员</span>
-              <strong>{{ activeMemberText(record) }}</strong>
-            </div>
           </div>
           <div class="mobile-list-card-actions two-actions">
-            <a-button type="primary" @click="openEditTeam(record)">编辑</a-button>
-            <a-button @click="openMemberModal(record)">成员管理</a-button>
+            <template v-if="isAdmin">
+              <a-button type="primary" @click="openEditTeam(record)">编辑</a-button>
+              <a-button @click="openMemberModal(record)">成员管理</a-button>
+            </template>
+            <a-button v-else type="primary" @click="openMemberModal(record)">成员查看</a-button>
           </div>
         </article>
       </template>
@@ -94,9 +84,9 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="memberModalOpen" :title="selectedTeam ? `团队成员：${selectedTeam.name}` : '团队成员'" width="860px" :footer="null">
+    <a-modal v-model:open="memberModalOpen" :title="selectedTeam ? `团队成员：${selectedTeam.name}` : '团队成员'" width="720px" :footer="null">
       <div class="team-members-modal">
-        <div class="team-members-create-row">
+        <div v-if="isAdmin" class="team-members-create-row">
           <a-select
             v-model:value="memberForm.systemAccountIds"
             mode="multiple"
@@ -110,7 +100,7 @@
           <a-button type="primary" :loading="memberSaving" :disabled="selectedTeam?.status !== 'active'" @click="addMembers">添加成员</a-button>
         </div>
         <a-alert
-          v-if="selectedTeam?.status !== 'active'"
+          v-if="isAdmin && selectedTeam?.status !== 'active'"
           type="warning"
           show-icon
           message="团队已停用，暂时不能添加新成员；如需继续维护，请先把团队状态改为启用。"
@@ -121,7 +111,7 @@
           </template>
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'memberName'">
-              {{ record.systemAccountName || record.username || record.systemAccountUsername || record.systemAccountId }}
+              {{ memberDisplayName(record) }}
             </template>
             <template v-else-if="column.key === 'joinedAt'">
               {{ formatDateTime(record.joinedAt || record.createdAt) }}
@@ -139,12 +129,14 @@
 </template>
 
 <script setup lang="ts">
+import axios from 'axios'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import { authState } from '@/composables/useAuth'
 import type { SystemAccountSummary, SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
 const loading = ref(false)
@@ -152,6 +144,7 @@ const memberSaving = ref(false)
 
 const teams = ref<SystemTeamSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
+const isAdmin = authState.isAdmin
 
 const teamModalOpen = ref(false)
 const memberModalOpen = ref(false)
@@ -172,18 +165,21 @@ const columns = [
   { title: '团队名称', key: 'name', width: 220 },
   { title: '状态', key: 'status', width: 90 },
   { title: '成员数', key: 'memberCount', width: 90 },
-  { title: '成员列表', key: 'members', width: 300 },
   { title: '说明', key: 'description', width: 200 },
   { title: '创建时间', key: 'createdAt', width: 170 },
   { title: '操作', key: 'actions', width: 160, fixed: 'right' }
 ]
 
-const memberColumns = [
-  { title: '成员', key: 'memberName', width: 220 },
-  { title: '账号 ID', dataIndex: 'systemAccountId', key: 'systemAccountId', width: 240 },
-  { title: '加入时间', key: 'joinedAt', width: 180 },
-  { title: '操作', key: 'actions', width: 100 }
-]
+const memberColumns = computed(() => {
+  const baseColumns = [
+    { title: '成员', key: 'memberName', width: 220 },
+    { title: '加入时间', key: 'joinedAt', width: 180 }
+  ]
+  if (isAdmin.value) {
+    baseColumns.push({ title: '操作', key: 'actions', width: 100 })
+  }
+  return baseColumns
+})
 
 const selectedTeam = computed(() => teams.value.find((team) => team.id === selectedTeamId.value))
 const activeTeamMembers = computed(() => selectedTeam.value ? activeMembers(selectedTeam.value) : [])
@@ -199,10 +195,8 @@ function activeMembers(team: SystemTeamSummary): SystemTeamMemberSummary[] {
   return (team.members ?? []).filter((member) => member.status === 'active')
 }
 
-function activeMemberText(team: SystemTeamSummary): string {
-  const names = activeMembers(team).map((member) => member.systemAccountName || member.username || member.systemAccountUsername || member.systemAccountId)
-  if (!names.length) return '暂无成员'
-  return names.join('、')
+function memberDisplayName(member: SystemTeamMemberSummary): string {
+  return member.systemAccountName || member.username || member.systemAccountUsername || '未命名成员'
 }
 
 function formatDateTime(value?: string): string {
@@ -217,7 +211,7 @@ async function loadData() {
   try {
     const [teamList, accounts] = await Promise.all([
       api.systemTeams.list(),
-      api.systemAccounts.list()
+      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     teams.value = teamList
     systemAccounts.value = accounts
@@ -250,12 +244,17 @@ function openEditTeam(team: SystemTeamSummary) {
 }
 
 async function saveTeam() {
-  if (!teamForm.name.trim()) {
+  const teamName = teamForm.name.trim()
+  if (!teamName) {
     message.warning('请填写团队名称')
     return
   }
+  if (hasDuplicateTeamName(teamName, editingTeamId.value)) {
+    message.warning('团队名称已存在')
+    return
+  }
   const payload = {
-    name: teamForm.name.trim(),
+    name: teamName,
     description: teamForm.description.trim() || undefined,
     status: (teamForm.statusActive ? 'active' : 'disabled') as 'active' | 'disabled'
   }
@@ -271,7 +270,7 @@ async function saveTeam() {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('保存团队失败')
+    message.error(extractApiErrorMessage(error, '保存团队失败'))
   }
 }
 
@@ -315,6 +314,18 @@ async function removeMember(memberId: string) {
   }
 }
 
+function hasDuplicateTeamName(name: string, excludeId?: string): boolean {
+  const normalized = name.toLocaleLowerCase()
+  return teams.value.some((team) => team.id !== excludeId && team.name.toLocaleLowerCase() === normalized)
+}
+
+function extractApiErrorMessage(error: unknown, fallback: string): string {
+  if (axios.isAxiosError<{ message?: string }>(error)) {
+    return error.response?.data?.message ?? fallback
+  }
+  return fallback
+}
+
 onMounted(loadData)
 </script>
 
@@ -334,12 +345,6 @@ onMounted(loadData)
 .team-name {
   color: #0f172a;
   font-weight: 700;
-}
-
-.team-members-cell {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
 }
 
 .team-members-modal {

@@ -1,11 +1,24 @@
 import { randomBytes } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, ApiKeySummary, AuthorizationStatus, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberStatus, SystemTeamMemberSummary, SystemTeamStatus, SystemTeamSummary } from '../domain/types.js'
-import { getRequestAuthContext, type RequestAuthContext } from '../modules/auth/request-context.js'
+import type { AccountAuthorizationUsageOverview, AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, AccountUsageStatsOverview, ApiKeySummary, AuthorizationStatus, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberStatus, SystemTeamMemberSummary, SystemTeamStatus, SystemTeamSummary, UsageByWindow } from '../domain/types.js'
 import { createAppCache } from '../shared/cache.js'
+import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, resolveAccessScope, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
+import { getAccountAuthorizationUsageOverview as buildAccountAuthorizationUsageOverview, getAccountUsageStatsOverview as buildAccountUsageStatsOverview } from './account-usage.repository.js'
 import { createApiKey, decryptJson, encryptJson, hashPassword, hashSecret, maskSecret, verifyPassword } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { addUsageSummaries, dateKey, emptyAccountUsageSummary, emptyUsageByWindow, mergeUsageSummaryMaps, numberFromUnknown, todayDateKey, USAGE_STATS_WINDOWS, usageSummaryFromAggregate } from './usage-stats-helpers.js'
+import {
+  jsonObjectOrNull,
+  optionalNullableServerDateTimeIso,
+  optionalNullableString,
+  optionalServerDateTimeIso,
+  optionalString,
+  parseJsonArray,
+  parseJsonRules,
+  parseOptionalJsonObject
+} from './value-utils.js'
 
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 
@@ -248,12 +261,6 @@ interface SystemAccountRow {
   updated_at: string
 }
 
-export interface AccessScope {
-  systemAccountId: string
-  role: SystemAccountRole
-  systemAccountFilterId?: string
-}
-
 export interface SessionWithAccount {
   sessionId: string
   expiresAt: string
@@ -396,42 +403,6 @@ interface AccountUsageSnapshotRow {
   updated_at: string
 }
 
-interface UsageStatsRecordRow {
-  id: string
-  system_account_id: string
-  request_id: string
-  client_ip: string | null
-  api_key_id: string | null
-  group_id: string | null
-  account_id: string | null
-  endpoint: string | null
-  provider_code: string | null
-  model: string | null
-  status_code: number | null
-  success: number
-  first_token_ms: number | null
-  duration_ms: number | null
-  input_tokens: number | null
-  output_tokens: number | null
-  cache_read_tokens: number | null
-  cost_usd: number | null
-  error_code: string | null
-  error_message: string | null
-  account_owner_system_account_id: string | null
-  group_owner_system_account_id: string | null
-  account_access_type: string | null
-  group_access_type: string | null
-  account_authorization_id: string | null
-  group_authorization_id: string | null
-  created_at: string
-}
-
-interface StatsJobStateRow {
-  cursor_created_at: string | null
-  cursor_id: string | null
-  lag_seconds: number
-}
-
 interface GlobalSettingRow {
   key: string
   value_json: string
@@ -459,51 +430,6 @@ function systemAccountSummaryFromRow(row: SystemAccountRow): SystemAccountSummar
     createdAt: row.created_at,
     updatedAt: row.updated_at
   }
-}
-
-function resolveAccessScope(access?: AccessScope): AccessScope | undefined {
-  if (access) return access
-  const context = getRequestAuthContext()
-  return context ? { systemAccountId: context.systemAccountId, role: context.role } : undefined
-}
-
-function currentSystemAccountId(access?: AccessScope): string {
-  return resolveAccessScope(access)?.systemAccountId ?? 'sys_admin'
-}
-
-function canAccessAll(access?: AccessScope): boolean {
-  const scope = resolveAccessScope(access)
-  return !scope || scope.role === 'admin'
-}
-
-function scopedSystemAccountId(access?: AccessScope): string | undefined {
-  const scope = resolveAccessScope(access)
-  if (!scope) return undefined
-  if (scope.role === 'admin') {
-    const filterId = scope.systemAccountFilterId?.trim()
-    return filterId || undefined
-  }
-  return scope.systemAccountId
-}
-
-function buildSystemAccountScopeClause(access?: AccessScope, column = 'system_account_id'): { clause: string; params: Array<string> } {
-  const systemAccountId = scopedSystemAccountId(access)
-  if (!systemAccountId) {
-    return { clause: '', params: [] }
-  }
-  return { clause: ` AND ${column} = ?`, params: [systemAccountId] }
-}
-
-function buildSystemAccountWhereClause(access?: AccessScope, column = 'system_account_id'): { clause: string; params: Array<string> } {
-  const systemAccountId = scopedSystemAccountId(access)
-  if (!systemAccountId) {
-    return { clause: '', params: [] }
-  }
-  return { clause: ` WHERE ${column} = ?`, params: [systemAccountId] }
-}
-
-function includeSystemAccountFields(access?: AccessScope): boolean {
-  return canAccessAll(access)
 }
 
 function ownerPermissions(): ResourcePermissions {
@@ -574,9 +500,10 @@ function activeGroupAuthorization(groupId: string, granteeSystemAccountId: strin
 }
 
 function activeResourceAuthorization(resourceType: ResourceAuthorizationResourceType, resourceId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
+  const now = nowIso()
   return getDatabase()
-    .prepare("SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
-    .get(resourceType, resourceId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+    .prepare("SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
+    .get(resourceType, resourceId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
 }
 
 export function resolveAccountSystemAccountId(accountId: string): string | undefined {
@@ -640,6 +567,20 @@ export function findSystemAccountByUsername(username: string): (SystemAccountSum
   return { ...summary, passwordHash: row.password_hash }
 }
 
+function ensureSystemAccountUsernameUnique(username: string, excludeId?: string, database = getDatabase()): void {
+  const row = database
+    .prepare('SELECT id FROM system_accounts WHERE lower(username) = lower(?) AND id <> ? LIMIT 1')
+    .get(username, excludeId ?? '') as unknown as { id?: string } | undefined
+  if (row?.id) throw new Error('用户账户已存在')
+}
+
+function ensureSystemAccountDisplayNameUnique(displayName: string, excludeId?: string, database = getDatabase()): void {
+  const row = database
+    .prepare('SELECT id FROM system_accounts WHERE lower(display_name) = lower(?) AND id <> ? LIMIT 1')
+    .get(displayName, excludeId ?? '') as unknown as { id?: string } | undefined
+  if (row?.id) throw new Error('用户名称已存在')
+}
+
 export function verifySystemAccountCredentials(username: string, password: string): SystemAccountSummary | undefined {
   const account = findSystemAccountByUsername(username)
   if (!account || account.status !== 'active') {
@@ -658,17 +599,21 @@ export function createSystemAccount(input: {
 }): SystemAccountSummary {
   const now = nowIso()
   const id = newId('sysacc')
+  const username = input.username.trim()
+  const displayName = input.displayName.trim() || username
+  const database = getDatabase()
+  ensureSystemAccountUsernameUnique(username, undefined, database)
+  ensureSystemAccountDisplayNameUnique(displayName, undefined, database)
   const summary: SystemAccountSummary = {
     id,
-    username: input.username.trim(),
-    displayName: input.displayName.trim() || input.username.trim(),
+    username,
+    displayName,
     role: input.role ?? 'user',
     status: input.status ?? 'active',
     mustChangePassword: input.mustChangePassword ?? true,
     createdAt: now,
     updatedAt: now
   }
-  const database = getDatabase()
   database.exec('BEGIN')
   try {
     database
@@ -698,7 +643,6 @@ function ensureDefaultOpenAIGroupForSystemAccount(systemAccountId: string, times
 }
 
 export function updateSystemAccount(id: string, input: {
-  username?: string
   displayName?: string
   role?: SystemAccountRole
   status?: SystemAccountStatus
@@ -712,29 +656,29 @@ export function updateSystemAccount(id: string, input: {
 
   const next = {
     ...current,
-    username: input.username?.trim() || current.username,
     displayName: input.displayName?.trim() || current.displayName,
     role: input.role ?? current.role,
     status: input.status ?? current.status,
     mustChangePassword: input.mustChangePassword ?? current.mustChangePassword
   }
   const now = nowIso()
+  ensureSystemAccountDisplayNameUnique(next.displayName, id)
   if (input.password) {
     getDatabase()
       .prepare(`
         UPDATE system_accounts
-        SET username = ?, display_name = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, updated_at = ?
+        SET display_name = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(next.username, next.displayName, next.role, next.status, hashPassword(input.password), next.mustChangePassword ? 1 : 0, now, id)
+      .run(next.displayName, next.role, next.status, hashPassword(input.password), next.mustChangePassword ? 1 : 0, now, id)
   } else {
     getDatabase()
       .prepare(`
         UPDATE system_accounts
-        SET username = ?, display_name = ?, role = ?, status = ?, must_change_password = ?, updated_at = ?
+        SET display_name = ?, role = ?, status = ?, must_change_password = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(next.username, next.displayName, next.role, next.status, next.mustChangePassword ? 1 : 0, now, id)
+      .run(next.displayName, next.role, next.status, next.mustChangePassword ? 1 : 0, now, id)
   }
   return { ...next, updatedAt: now }
 }
@@ -830,46 +774,15 @@ function pickGlobalSettings(input: Record<string, unknown>): Record<string, unkn
   return Object.fromEntries(Object.entries(input).filter(([key]) => allowedKeys.has(key)))
 }
 
-function parseJsonArray(value: string): string[] {
-  const parsed = JSON.parse(value) as unknown
-  return Array.isArray(parsed) ? parsed.map(String) : []
-}
-
-function optionalString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined
-}
-
-function optionalNullableString(value: unknown): string | null {
-  if (value === undefined || value === null) return null
-  if (typeof value !== 'string') return null
-  return value.trim().length > 0 ? value : null
-}
-
-function optionalServerDateTimeIso(value: unknown): string | undefined {
-  const text = optionalString(value)?.trim()
-  if (!text) return undefined
-  const normalizedText = text.includes(' ') ? text.replace(' ', 'T') : text
-  const hasTimeZone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalizedText)
-  const timestamp = hasTimeZone ? Date.parse(normalizedText) : serverLocalDateTimeMs(normalizedText)
-  if (!Number.isFinite(timestamp)) return undefined
-  return new Date(timestamp).toISOString()
-}
-
-function optionalNullableServerDateTimeIso(value: unknown): string | null {
-  if (value === undefined || value === null) return null
-  return optionalServerDateTimeIso(value) ?? null
-}
-
-function serverLocalDateTimeMs(value: string): number {
-  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2})(?::(\d{2})(?::(\d{2}))?)?)?$/.exec(value)
-  if (!match) return Date.parse(value)
-  const [, year, month, day, hour = '0', minute = '0', second = '0'] = match
-  return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute), Number(second), 0).getTime()
-}
-
 function isAccountExpired(accountExpiresAt: string | null | undefined, now = Date.now()): boolean {
   if (!accountExpiresAt) return false
   const timestamp = Date.parse(accountExpiresAt)
+  return Number.isFinite(timestamp) && timestamp <= now
+}
+
+function isResourceAuthorizationExpired(expiresAt: string | null | undefined, now = Date.now()): boolean {
+  if (!expiresAt) return false
+  const timestamp = Date.parse(expiresAt)
   return Number.isFinite(timestamp) && timestamp <= now
 }
 
@@ -896,16 +809,21 @@ function disableExpiredAccounts(access?: AccessScope): void {
     .run('账户套餐已过期，已自动停用', now, now, ...scope.params)
 }
 
-function parseOptionalJsonObject(value: unknown): Record<string, unknown> | undefined {
-  if (typeof value !== 'string' || !value.trim()) return undefined
-  try {
-    const parsed = JSON.parse(value) as unknown
-    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : undefined
-  } catch {
-    return undefined
-  }
+export function expireDueResourceAuthorizations(): number {
+  const now = nowIso()
+  const result = getDatabase()
+    .prepare(`
+      UPDATE resource_authorizations
+      SET status = 'expired',
+          revoked_at = COALESCE(revoked_at, ?),
+          revoked_reason = 'authorization_expired',
+          updated_at = ?
+      WHERE status IN ('active', 'paused')
+        AND expires_at IS NOT NULL
+        AND expires_at <= ?
+    `)
+    .run(now, now, now)
+  return Number(result.changes ?? 0)
 }
 
 const accountStatusValues: readonly AccountStatus[] = ['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
@@ -925,18 +843,6 @@ function boolInt(value: unknown, fallback: boolean): number {
   return typeof value === 'boolean' ? (value ? 1 : 0) : fallback ? 1 : 0
 }
 
-function emptyAccountUsageSummary(): AccountUsageSummary {
-  return {
-    requestCount: 0,
-    clientCount: 0,
-    inputTokens: 0,
-    outputTokens: 0,
-    cacheReadTokens: 0,
-    totalTokens: 0,
-    totalCost: 0
-  }
-}
-
 function emptyGroupAccountStats(): GroupAccountStats {
   return {
     total: 0,
@@ -952,35 +858,32 @@ function emptyGroupAccountStats(): GroupAccountStats {
   }
 }
 
-function groupAccountStats(accounts: AccountSummary[], todayUsage?: AccountUsageSummary, totalUsage?: AccountUsageSummary): GroupAccountStats {
-  const stats = emptyGroupAccountStats()
-  stats.total = accounts.length
-  stats.todayUsage = todayUsage ?? emptyAccountUsageSummary()
-  stats.usage = totalUsage ?? emptyAccountUsageSummary()
-  for (const account of accounts) {
-    if (account.status === 'active') {
-      stats.active += 1
-    } else if (account.status === 'disabled') {
-      stats.disabled += 1
-    } else if (account.status === 'rate_limited') {
-      stats.rateLimited += 1
-      stats.error += 1
-    } else {
-      stats.error += 1
-    }
-    if (account.status === 'active' && account.schedulable && !isAccountCooling(account)) {
-      stats.available += 1
-    }
-    stats.currentConcurrency += account.currentConcurrency
-    stats.concurrencyLimit += account.concurrencyLimit
-  }
-  return stats
+type GroupAccountStatsRow = {
+  system_account_id: string
+  group_id: string
+  total: number
+  active: number
+  disabled: number
+  rate_limited: number
+  error: number
+  available: number
+  current_concurrency: number
+  concurrency_limit: number
 }
 
-function isAccountCooling(account: AccountSummary): boolean {
-  if (!account.cooldownUntil) return false
-  const cooldownUntil = Date.parse(account.cooldownUntil)
-  return Number.isFinite(cooldownUntil) && cooldownUntil > Date.now()
+function groupAccountStatsFromRow(row: GroupAccountStatsRow | undefined, todayUsage?: AccountUsageSummary, totalUsage?: AccountUsageSummary): GroupAccountStats {
+  return {
+    total: Number(row?.total ?? 0),
+    available: Number(row?.available ?? 0),
+    active: Number(row?.active ?? 0),
+    disabled: Number(row?.disabled ?? 0),
+    error: Number(row?.error ?? 0),
+    rateLimited: Number(row?.rate_limited ?? 0),
+    currentConcurrency: Number(row?.current_concurrency ?? 0),
+    concurrencyLimit: Number(row?.concurrency_limit ?? 0),
+    todayUsage: todayUsage ?? emptyAccountUsageSummary(),
+    usage: totalUsage ?? emptyAccountUsageSummary()
+  }
 }
 
 function isLaterIso(value?: string, current?: string): boolean {
@@ -989,14 +892,6 @@ function isLaterIso(value?: string, current?: string): boolean {
   const nextTime = Date.parse(value)
   const currentTime = Date.parse(current)
   return Number.isFinite(nextTime) && (!Number.isFinite(currentTime) || nextTime > currentTime)
-}
-
-function manageableSystemAccountId(access?: AccessScope): string | undefined {
-  return scopedSystemAccountId(access) ?? (canAccessAll(access) ? undefined : resolveAccessScope(access)?.systemAccountId)
-}
-
-function userVisibleSystemAccountId(access?: AccessScope): string | undefined {
-  return scopedSystemAccountId(access) ?? resolveAccessScope(access)?.systemAccountId
 }
 
 function canManageResourceOwner(ownerSystemAccountId: string, access?: AccessScope): boolean {
@@ -1063,9 +958,10 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
   const accountIds = rows.map((row) => row.id)
   const usageByAccount = loadAccountUsageSummariesByAccountIds(accountIds)
   const todayUsageByAccount = loadAccountUsageSummariesByAccountIds(accountIds, todayDateKey())
+  const authorizationStatsByAccount = loadResourceAuthorizationStatsByResourceIds('account', accountIds)
   const authorizationIds = rows.map((row) => row.authorization_id ?? '')
   const usageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationIds)
-  const todayUsageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationIds, startOfTodayIso())
+  const todayUsageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationIds, todayDateKey())
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => row.id))
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
@@ -1077,6 +973,7 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
     const todayUsage = row.access_type === 'authorized' && row.authorization_id
       ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : todayUsageByAccount.get(row.id) ?? emptyAccountUsageSummary()
+    const authorizationStats = authorizationStatsByAccount.get(row.id) ?? { authorizationCount: 0, authorizationTeamCount: 0 }
     return {
     id: row.id,
     systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -1107,8 +1004,42 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
     accountAuthorizationId: row.authorization_id ?? undefined,
     authorizationStatus: row.authorization_status ?? undefined,
     authorizationSources: row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : undefined,
-    permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
+    permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions(),
+    authorizationUsageAvailable: row.access_type !== 'authorized' && authorizationStats.authorizationCount > 0 && canManageResourceOwner(row.system_account_id, access),
+    authorizationCount: authorizationStats.authorizationCount,
+    authorizationTeamCount: authorizationStats.authorizationTeamCount
     }
+  })
+}
+
+export function getAccountUsageStatsOverview(access?: AccessScope): AccountUsageStatsOverview {
+  const accountRows = listAccounts(access)
+  return buildAccountUsageStatsOverview({
+    access,
+    accounts: accountRows,
+    loadUsageByWindow: loadUsageByWindowForScopeRequests
+  })
+}
+
+export function getAccountAuthorizationUsageOverview(accountId: string, access?: AccessScope): AccountAuthorizationUsageOverview | undefined {
+  const accountRow = getDatabase().prepare('SELECT id, system_account_id, provider_code, name, type, status FROM accounts WHERE id = ?').get(accountId) as unknown as Pick<AccountRow, 'id' | 'system_account_id' | 'provider_code' | 'name' | 'type' | 'status'> | undefined
+  if (!accountRow || !canManageResourceOwner(accountRow.system_account_id, access)) {
+    return undefined
+  }
+
+  const authorizations = listResourceAuthorizations({ resourceType: 'account', resourceId: accountId, status: 'active' }, access)
+  const accountNames = systemAccountRowsByIds([accountRow.system_account_id])
+  const owner = accountNames.get(accountRow.system_account_id)
+  return buildAccountAuthorizationUsageOverview({
+    account: {
+      id: accountRow.id,
+      systemAccountId: accountRow.system_account_id,
+      name: accountRow.name,
+      providerCode: accountRow.provider_code
+    },
+    authorizations,
+    ownerName: owner?.displayName ?? owner?.username,
+    loadUsageByWindow: loadUsageByWindowForScopeRequests
   })
 }
 
@@ -1205,11 +1136,36 @@ function listAccountRowsForAccess(access?: AccessScope): AccountListRow[] {
         WHERE ra.resource_type = 'account'
           AND ra.grantee_system_account_id = ?
           AND ra.status = 'active'
+          AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           AND accounts.system_account_id <> ?
       )
       ORDER BY priority ASC, updated_at DESC
     `)
-    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId) as unknown as AccountListRow[]
+    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as AccountListRow[]
+}
+
+function loadResourceAuthorizationStatsByResourceIds(resourceType: ResourceAuthorizationResourceType, resourceIds: string[]): Map<string, { authorizationCount: number; authorizationTeamCount: number }> {
+  const ids = [...new Set(resourceIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase().prepare(`
+    SELECT
+      ra.resource_id,
+      COUNT(DISTINCT ra.id) AS authorization_count,
+      COUNT(DISTINCT CASE WHEN ras.source_type = 'team' AND ras.status = 'active' THEN ras.source_team_id END) AS authorization_team_count
+    FROM resource_authorizations ra
+    LEFT JOIN resource_authorization_sources ras
+      ON ras.authorization_id = ra.id
+      AND ras.source_type = 'team'
+      AND ras.status = 'active'
+    WHERE ra.resource_type = ?
+      AND ra.status = 'active'
+      AND ra.resource_id IN (${sqlPlaceholders(ids.length)})
+    GROUP BY ra.resource_id
+  `).all(resourceType, ...ids) as unknown as Array<{ resource_id: string; authorization_count: number; authorization_team_count: number }>
+  return new Map(rows.map((row) => [row.resource_id, {
+    authorizationCount: Number(row.authorization_count ?? 0),
+    authorizationTeamCount: Number(row.authorization_team_count ?? 0)
+  }]))
 }
 
 function accountCredentialsForList(row: AccountListRow): Record<string, unknown> {
@@ -1229,8 +1185,8 @@ function accountNameMap(accountIds: string[]): Map<string, string> {
   return new Map(rows.map((row) => [row.id, row.name]))
 }
 
-function loadAccountAuthorizationUsageSummaries(authorizationIds: string[], sinceCreatedAt?: string): Map<string, AccountUsageSummary> {
-  return loadResourceAuthorizationUsageSummaries(authorizationIds, 'account', sinceCreatedAt)
+function loadAccountAuthorizationUsageSummaries(authorizationIds: string[], statDate?: string): Map<string, AccountUsageSummary> {
+  return loadAuthorizationUsageSummariesByIds(authorizationIds, 'account_authorization', statDate)
 }
 
 export function listErrorPolicies(access?: AccessScope): ErrorPolicySummary[] {
@@ -1246,16 +1202,6 @@ export function listErrorPolicies(access?: AccessScope): ErrorPolicySummary[] {
 
 function providerPassthroughEnabled(_provider?: ProviderDefinition): boolean {
   return true
-}
-
-function parseJsonRules(value: string): Array<Record<string, unknown>> {
-  try {
-    const parsed = JSON.parse(value) as unknown
-    if (!Array.isArray(parsed)) return []
-    return parsed.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null && !Array.isArray(item))
-  } catch {
-    return []
-  }
 }
 
 export function createAccount(input: Record<string, unknown>): AccountSummary {
@@ -1666,9 +1612,10 @@ export function recordAccountStreamFailure(input: {
 export function listGroups(access?: AccessScope): GroupSummary[] {
   const database = getDatabase()
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const ownerSystemAccountId = manageableSystemAccountId(access)
   const rows = listGroupRowsForAccess(access)
-  const accountRows = database.prepare('SELECT system_account_id, group_id, account_id FROM group_accounts WHERE enabled = 1').all() as Array<{ system_account_id: string; group_id: string; account_id: string }>
+  const groupIds = rows.map((row) => row.id)
+  const groupStatsByGroup = loadGroupAccountStatsByGroupIds(groupIds)
+  const accountIdsByGroup = loadGroupAccountIdsByGroupIds(groupIds)
   const todayUsageByGroup = loadGroupUsageSummariesByGroupIds(rows.map((row) => row.id), todayDateKey())
   const totalUsageByGroup = loadGroupUsageSummariesByGroupIds(rows.map((row) => row.id))
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
@@ -1684,29 +1631,14 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
     description: row.description ?? undefined,
     enabled: row.enabled === 1,
     isDefault: row.is_default === 1,
-    accountIds: accountRows
-      .filter((item) => item.group_id === row.id && item.system_account_id === row.system_account_id)
-      .map((item) => item.account_id),
-    accountStats: groupAccountStats(
-      accountsForGroupStats(row, accountRows),
-      todayUsageByGroup.get(row.id),
-      totalUsageByGroup.get(row.id)
-    ),
+    accountIds: accountIdsByGroup.get(row.id) ?? [],
+    accountStats: groupAccountStatsFromRow(groupStatsByGroup.get(row.id), todayUsageByGroup.get(row.id), totalUsageByGroup.get(row.id)),
     accessType: row.access_type ?? 'owner',
     groupAuthorizationId: row.authorization_id ?? undefined,
     authorizationStatus: row.authorization_status ?? undefined,
     authorizationSources: row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : undefined,
     permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
   }))
-}
-
-function accountsForGroupStats(row: GroupListRow, accountRows: Array<{ system_account_id: string; group_id: string; account_id: string }>): AccountSummary[] {
-  const accountIds = new Set(accountRows
-    .filter((item) => item.group_id === row.id && item.system_account_id === row.system_account_id)
-    .map((item) => item.account_id))
-  return listAccounts({ systemAccountId: row.system_account_id, role: 'user' })
-    .filter((account) => accountIds.has(account.id) && account.providerCode === row.provider_code)
-    .filter((account) => row.access_type !== 'authorized' || accountSystemAccountId(account.id) === row.system_account_id)
 }
 
 function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
@@ -1735,11 +1667,38 @@ function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
         WHERE ra.resource_type = 'group'
           AND ra.grantee_system_account_id = ?
           AND ra.status = 'active'
+          AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           AND groups.system_account_id <> ?
       )
       ORDER BY updated_at DESC
     `)
-    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
+    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
+}
+
+function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, string[]> {
+  const ids = [...new Set(groupIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase()
+    .prepare(`SELECT group_id, account_id FROM group_accounts WHERE enabled = 1 AND group_id IN (${sqlPlaceholders(ids.length)}) ORDER BY group_id ASC, created_at ASC`)
+    .all(...ids) as unknown as Array<{ group_id: string; account_id: string }>
+  const result = new Map<string, string[]>()
+  for (const row of rows) {
+    result.set(row.group_id, [...(result.get(row.group_id) ?? []), row.account_id])
+  }
+  return result
+}
+
+function loadGroupAccountStatsByGroupIds(groupIds: string[]): Map<string, GroupAccountStatsRow> {
+  const ids = [...new Set(groupIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const rows = getDatabase()
+    .prepare(`
+      SELECT *
+      FROM group_account_stats
+      WHERE group_id IN (${sqlPlaceholders(ids.length)})
+    `)
+    .all(...ids) as unknown as GroupAccountStatsRow[]
+  return new Map(rows.map((row) => [row.group_id, row]))
 }
 
 function groupNameMap(groupIds: string[]): Map<string, string> {
@@ -1751,8 +1710,8 @@ function groupNameMap(groupIds: string[]): Map<string, string> {
   return new Map(rows.map((row) => [row.id, row.name]))
 }
 
-function loadGroupAuthorizationUsageSummaries(authorizationIds: string[], sinceCreatedAt?: string): Map<string, AccountUsageSummary> {
-  return loadResourceAuthorizationUsageSummaries(authorizationIds, 'group', sinceCreatedAt)
+function loadGroupAuthorizationUsageSummaries(authorizationIds: string[], statDate?: string): Map<string, AccountUsageSummary> {
+  return loadAuthorizationUsageSummariesByIds(authorizationIds, 'group_authorization', statDate)
 }
 
 export function createGroup(input: Record<string, unknown>): GroupSummary {
@@ -1870,7 +1829,18 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
 }
 
 export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
-  const rows = getDatabase().prepare('SELECT * FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC').all() as unknown as SystemTeamRow[]
+  const scopedId = scopedSystemAccountId(access)
+  const rows = scopedId
+    ? getDatabase()
+      .prepare(`
+        SELECT DISTINCT system_teams.*
+        FROM system_teams
+        INNER JOIN system_team_members ON system_team_members.team_id = system_teams.id
+        WHERE system_team_members.system_account_id = ?
+        ORDER BY system_teams.status ASC, system_teams.updated_at DESC, system_teams.name ASC
+      `)
+      .all(scopedId) as unknown as SystemTeamRow[]
+    : getDatabase().prepare('SELECT * FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC').all() as unknown as SystemTeamRow[]
   const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
   return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
 }
@@ -1965,6 +1935,7 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
 }
 
 export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary[] {
+  expireDueResourceAuthorizations()
   const clauses: string[] = []
   const params: Array<string | number | null> = []
   const resourceType = normalizeResourceType(filters.resourceType ?? filters.resource_type)
@@ -1973,7 +1944,15 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
   if (resourceId) { clauses.push('ra.resource_id = ?'); params.push(resourceId) }
   const granteeSystemAccountId = optionalString(filters.granteeSystemAccountId ?? filters.grantee_system_account_id)
   if (granteeSystemAccountId) { clauses.push('ra.grantee_system_account_id = ?'); params.push(granteeSystemAccountId) }
-  const status = filters.status === 'revoked' ? 'revoked' : filters.status === 'all' ? undefined : 'active'
+  const status = filters.status === 'active'
+    ? 'active'
+    : filters.status === 'paused'
+      ? 'paused'
+      : filters.status === 'expired'
+        ? 'expired'
+        : filters.status === 'revoked'
+          ? 'revoked'
+          : undefined
   if (status) { clauses.push('ra.status = ?'); params.push(status) }
   const teamId = optionalString(filters.teamId ?? filters.team_id)
   if (teamId) {
@@ -1984,7 +1963,7 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
   if (ownerSystemAccountId) { clauses.push('ra.resource_owner_system_account_id = ?'); params.push(ownerSystemAccountId) }
   else if (!canAccessAll(access)) { clauses.push('ra.resource_owner_system_account_id = ?'); params.push(currentSystemAccountId(access)) }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
-  const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY ra.status ASC, ra.updated_at DESC, ra.created_at DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
+  const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY CASE ra.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, ra.updated_at DESC, ra.created_at DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
   return resourceAuthorizationSummaries(rows)
 }
 
@@ -2069,6 +2048,59 @@ export function revokeResourceAuthorization(authorizationId: string, input: Reco
   return listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
 }
 
+export function updateResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {
+  expireDueResourceAuthorizations()
+  const database = getDatabase()
+  const row = database.prepare('SELECT * FROM resource_authorizations WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
+  if (!row || !canManageResourceOwner(row.resource_owner_system_account_id, access)) return undefined
+  const now = nowIso()
+  const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
+    || Object.prototype.hasOwnProperty.call(input, 'expires_at')
+  const nextExpiresAt = hasExpiresAtInput
+    ? optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at)
+    : row.expires_at
+  const rawStatus = optionalString(input.status)
+  const requestedStatus = rawStatus === 'active' || rawStatus === 'paused' || rawStatus === 'expired' || rawStatus === 'revoked'
+    ? rawStatus
+    : undefined
+  if (row.status === 'revoked' && requestedStatus === 'active') {
+    throw new Error('已回收授权不能直接恢复，请重新新增授权')
+  }
+  const expiredByTime = isResourceAuthorizationExpired(nextExpiresAt)
+  const nextStatus: AuthorizationStatus = expiredByTime
+    ? 'expired'
+    : requestedStatus === 'active' || requestedStatus === 'paused'
+      ? requestedStatus
+      : row.status === 'expired' && hasExpiresAtInput
+        ? 'active'
+        : row.status === 'paused'
+          ? 'paused'
+        : row.status
+  const nextRevokedReason = nextStatus === 'expired'
+    ? 'authorization_expired'
+    : nextStatus === 'paused'
+      ? 'authorization_paused'
+      : nextStatus === 'revoked'
+        ? row.revoked_reason ?? 'authorization_revoked'
+        : null
+  const nextRevokedAt = nextStatus === 'active' || nextStatus === 'paused' ? null : row.revoked_at ?? now
+  const nextRevokedBy = nextStatus === 'active' || nextStatus === 'paused' ? null : row.revoked_by ?? currentSystemAccountId(access)
+
+  database
+    .prepare(`
+      UPDATE resource_authorizations
+      SET status = ?,
+          expires_at = ?,
+          revoked_by = ?,
+          revoked_at = ?,
+          revoked_reason = ?,
+          updated_at = ?
+      WHERE id = ?
+    `)
+    .run(nextStatus, nextExpiresAt, nextRevokedBy, nextRevokedAt, nextRevokedReason, now, authorizationId)
+  return listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
+}
+
 export function getResourceAuthorizationUsage(authorizationId: string, access?: AccessScope): ResourceAuthorizationSummary | undefined {
   const authorization = listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
   if (!authorization) return undefined
@@ -2097,7 +2129,7 @@ function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false):
 
 function ensureSystemTeamNameUnique(name: string, excludeId?: string, database = getDatabase()): void {
   const row = database
-    .prepare('SELECT id FROM system_teams WHERE name = ? AND id <> ? LIMIT 1')
+    .prepare('SELECT id FROM system_teams WHERE lower(name) = lower(?) AND id <> ? LIMIT 1')
     .get(name, excludeId ?? '') as unknown as { id?: string } | undefined
   if (row?.id) throw new Error('团队名称已存在')
 }
@@ -2123,11 +2155,6 @@ function activeTeamMemberRows(teamId: string, database = getDatabase()): SystemT
   return database.prepare("SELECT * FROM system_team_members WHERE team_id = ? AND status = 'active' ORDER BY joined_at ASC").all(teamId) as unknown as SystemTeamMemberRow[]
 }
 
-function jsonObjectOrNull(value: unknown): string | null {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null
-  return JSON.stringify(value)
-}
-
 function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
   if (input.granteeSystemAccountId === input.ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
   const existing = input.database.prepare('SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1').get(input.resourceType, input.resourceId, input.granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
@@ -2136,11 +2163,18 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
   const hasActiveTeamSource = existing ? hasActiveTeamAuthorizationSource(input.database, authorizationId) : false
   const nextEffectiveSourceType = isTeamSource || hasActiveTeamSource ? 'team' : 'manual'
   const nextEffectiveSourceTeamId = isTeamSource ? input.sourceTeamId ?? null : firstActiveTeamSourceId(input.database, authorizationId)
+  const nextExpiresAt = input.expiresAt ?? existing?.expires_at ?? null
+  const existingStatus = existing?.status
+  const nextStatus: AuthorizationStatus = isResourceAuthorizationExpired(nextExpiresAt)
+    ? 'expired'
+    : existingStatus === 'paused'
+      ? 'paused'
+      : 'active'
   if (existing) {
     input.database.prepare(`
       UPDATE resource_authorizations
       SET resource_owner_system_account_id = ?,
-          status = 'active',
+          status = ?,
           effective_source_type = COALESCE(?, effective_source_type),
           effective_source_team_id = ?,
           activated_at = COALESCE(activated_at, ?),
@@ -2149,12 +2183,12 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
           expires_at = COALESCE(?, expires_at),
           limits_json = COALESCE(?, limits_json),
           model_policy_json = COALESCE(?, model_policy_json),
-          revoked_by = NULL,
-          revoked_at = NULL,
-          revoked_reason = NULL,
+          revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_by, ?) ELSE NULL END,
+          revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_at, ?) ELSE NULL END,
+          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE NULL END,
           updated_at = ?
       WHERE id = ?
-    `).run(input.ownerSystemAccountId, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.now, authorizationId)
+    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.now, authorizationId)
   } else {
     input.database.prepare(`
       INSERT INTO resource_authorizations (
@@ -2163,7 +2197,7 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
         remark, expires_at, limits_json, model_policy_json,
         created_by, created_at, revoked_by, revoked_at, revoked_reason, updated_at
       ) VALUES (?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
-    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
+    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
   }
   upsertResourceAuthorizationSource(input.database, authorizationId, input.sourceType, input.sourceTeamId, input.actor, input.now, isTeamSource ? 'active' : hasActiveTeamSource ? 'superseded' : 'active')
   if (isTeamSource) {
@@ -2185,6 +2219,13 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
 function hasActiveTeamAuthorizationSource(database: DatabaseSync, authorizationId: string): boolean {
   const row = database
     .prepare("SELECT id FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = 'team' AND status = 'active' LIMIT 1")
+    .get(authorizationId) as unknown as { id?: string } | undefined
+  return Boolean(row?.id)
+}
+
+function hasAnyActiveAuthorizationSource(database: DatabaseSync, authorizationId: string): boolean {
+  const row = database
+    .prepare("SELECT id FROM resource_authorization_sources WHERE authorization_id = ? AND status = 'active' LIMIT 1")
     .get(authorizationId) as unknown as { id?: string } | undefined
   return Boolean(row?.id)
 }
@@ -2221,6 +2262,21 @@ function upsertResourceAuthorizationSource(database: DatabaseSync, authorization
 }
 
 function refreshResourceAuthorizationEffectiveSource(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
+  if (!hasAnyActiveAuthorizationSource(database, authorizationId)) {
+    database.prepare(`
+      UPDATE resource_authorizations
+      SET status = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired' ELSE 'revoked' END,
+          effective_source_type = NULL,
+          effective_source_team_id = NULL,
+          revoked_by = COALESCE(revoked_by, ?),
+          revoked_at = COALESCE(revoked_at, ?),
+          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE 'authorization_revoked' END,
+          last_source_changed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(now, actor, now, now, now, now, authorizationId)
+    return
+  }
   const activeTeamSource = database.prepare(`
     SELECT source_team_id
     FROM resource_authorization_sources
@@ -2232,16 +2288,20 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
   if (activeTeamSource?.source_team_id) {
     database.prepare(`
       UPDATE resource_authorizations
-      SET status = 'active',
+      SET status = CASE
+            WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired'
+            WHEN status = 'paused' THEN 'paused'
+            ELSE 'active'
+          END,
           effective_source_type = 'team',
           effective_source_team_id = ?,
-          revoked_by = NULL,
-          revoked_at = NULL,
-          revoked_reason = NULL,
+          revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_by, ?) ELSE NULL END,
+          revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_at, ?) ELSE NULL END,
+          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE NULL END,
           last_source_changed_at = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(activeTeamSource.source_team_id, now, now, authorizationId)
+    `).run(now, activeTeamSource.source_team_id, now, actor, now, now, now, now, now, authorizationId)
     return
   }
 
@@ -2256,16 +2316,20 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
   if (activeManualSource?.id) {
     database.prepare(`
       UPDATE resource_authorizations
-      SET status = 'active',
+      SET status = CASE
+            WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired'
+            WHEN status = 'paused' THEN 'paused'
+            ELSE 'active'
+          END,
           effective_source_type = 'manual',
           effective_source_team_id = NULL,
-          revoked_by = NULL,
-          revoked_at = NULL,
-          revoked_reason = NULL,
+          revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_by, ?) ELSE NULL END,
+          revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_at, ?) ELSE NULL END,
+          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE NULL END,
           last_source_changed_at = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(now, now, authorizationId)
+    `).run(now, now, actor, now, now, now, now, now, authorizationId)
     return
   }
 
@@ -2357,7 +2421,7 @@ function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[]): Resou
   const systemAccounts = systemAccountRowsByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id]))
   const teamNames = systemTeamNameMap(rows.map((row) => row.effective_source_team_id ?? ''))
   const sources = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.id))
-  const usage = loadResourceAuthorizationUsageSummaries(rows.map((row) => row.id))
+  const usage = loadResourceAuthorizationUsageSummaries(rows.map((row) => row.id), todayDateKey())
   return rows.map((row) => {
     const owner = systemAccounts.get(row.resource_owner_system_account_id)
     const grantee = systemAccounts.get(row.grantee_system_account_id)
@@ -2417,50 +2481,35 @@ function loadResourceAuthorizationSourcesByAuthorizationIds(authorizationIds: st
   return result
 }
 
-function loadResourceAuthorizationUsageSummaries(authorizationIds: string[], resourceType?: ResourceAuthorizationResourceType, sinceCreatedAt?: string): Map<string, AccountUsageSummary> {
+function loadResourceAuthorizationUsageSummaries(authorizationIds: string[], statDate?: string): Map<string, AccountUsageSummary> {
   const ids = [...new Set(authorizationIds)].filter(Boolean)
   if (!ids.length) return new Map()
-  const usageDateClause = sinceCreatedAt ? ' AND usage_records.created_at >= ?' : ''
-  const params = [...(sinceCreatedAt ? [sinceCreatedAt] : []), ...ids, ...(resourceType ? [resourceType] : [])]
-  const rows = getDatabase().prepare(`
-    SELECT
-      ra.id AS authorization_id,
-      COUNT(usage_records.id) AS request_count,
-      COUNT(DISTINCT COALESCE(usage_records.api_key_id, usage_records.client_ip, usage_records.request_id)) AS client_count,
-      COALESCE(SUM(usage_records.input_tokens), 0) AS input_tokens,
-      COALESCE(SUM(usage_records.output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(usage_records.cache_read_tokens), 0) AS cache_read_tokens,
-      COALESCE(SUM(usage_records.cost_usd), 0) AS total_cost,
-      MAX(usage_records.created_at) AS last_used_at
-    FROM resource_authorizations ra
-    LEFT JOIN usage_records ON (
-      (ra.resource_type = 'account' AND usage_records.account_authorization_id = ra.id)
-      OR (ra.resource_type = 'group' AND usage_records.group_authorization_id = ra.id)
-    )${usageDateClause}
-    WHERE ra.id IN (${sqlPlaceholders(ids.length)})${resourceType ? ' AND ra.resource_type = ?' : ''}
-    GROUP BY ra.id
-  `).all(...params) as unknown as Array<AccountUsageAggregateRow & { authorization_id: string }>
-  const result = new Map<string, AccountUsageSummary>()
-  for (const row of rows) result.set(row.authorization_id, usageSummaryFromAggregate(row))
-  return result
+  return mergeUsageSummaryMaps(
+    loadAuthorizationUsageSummariesByIds(ids, 'account_authorization', statDate),
+    loadAuthorizationUsageSummariesByIds(ids, 'group_authorization', statDate)
+  )
 }
 
 function loadResourceAuthorizationUsageDetails(authorization: ResourceAuthorizationSummary): ResourceAuthorizationUsageDetail[] {
-  const authorizationColumn = authorization.resourceType === 'account' ? 'account_authorization_id' : 'group_authorization_id'
+  const scopeType = authorization.resourceType === 'account' ? 'account_authorization' : 'group_authorization'
   const rows = getDatabase().prepare(`
     SELECT
-      usage_records.system_account_id,
-      COUNT(usage_records.id) AS request_count,
-      COUNT(DISTINCT COALESCE(usage_records.api_key_id, usage_records.client_ip, usage_records.request_id)) AS client_count,
-      COALESCE(SUM(usage_records.input_tokens), 0) AS input_tokens,
-      COALESCE(SUM(usage_records.output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(usage_records.cache_read_tokens), 0) AS cache_read_tokens,
-      COALESCE(SUM(usage_records.cost_usd), 0) AS total_cost,
-      MAX(usage_records.created_at) AS last_used_at
-    FROM usage_records
-    WHERE ${authorizationColumn} = ?
-    GROUP BY usage_records.system_account_id
-  `).all(authorization.id) as unknown as Array<AccountUsageAggregateRow & { system_account_id: string }>
+      ra.grantee_system_account_id AS system_account_id,
+      COALESCE(stats.request_count, 0) AS request_count,
+      COALESCE(stats.client_count, 0) AS client_count,
+      COALESCE(stats.input_tokens, 0) AS input_tokens,
+      COALESCE(stats.output_tokens, 0) AS output_tokens,
+      COALESCE(stats.cache_read_tokens, 0) AS cache_read_tokens,
+      COALESCE(stats.total_cost_usd, 0) AS total_cost,
+      stats.last_used_at AS last_used_at
+    FROM resource_authorizations ra
+    LEFT JOIN usage_stats_daily stats
+      ON stats.system_account_id = ra.resource_owner_system_account_id
+      AND stats.scope_type = ?
+      AND stats.scope_id = ra.id
+      AND stats.stat_date = ?
+    WHERE ra.resource_type = ? AND ra.resource_id = ?
+  `).all(scopeType, todayDateKey(), authorization.resourceType, authorization.resourceId) as unknown as Array<AccountUsageAggregateRow & { system_account_id: string }>
 
   const systemAccounts = systemAccountRowsByIds(rows.map((row) => row.system_account_id))
   const details = rows.map((row) => {
@@ -2781,7 +2830,7 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
       groupName: optionalString(row.group_name),
       accountId: optionalString(row.account_id),
       accountName: optionalString(row.account_name),
-      endpoint: optionalString(row.endpoint) ?? endpointFromSnapshot(requestSnapshot) ?? inferLegacyEndpoint({ model, success, statusCode, inputTokens, outputTokens, cacheReadTokens }),
+      endpoint: optionalString(row.endpoint) ?? endpointFromSnapshot(requestSnapshot),
       providerCode: optionalString(row.provider_code),
       model,
       stream,
@@ -2828,18 +2877,6 @@ function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | unde
   const path = typeof snapshot?.path === 'string' ? snapshot.path : undefined
   const endpoint = originalUrl ?? path
   return endpoint ? `${method ?? 'GET'} ${endpoint}` : undefined
-}
-
-function inferLegacyEndpoint(input: {
-  model?: string
-  success: boolean
-  statusCode?: number
-  inputTokens?: number
-  outputTokens?: number
-  cacheReadTokens?: number
-}): string | undefined {
-  if (input.success && input.statusCode === 200 && !input.model && input.inputTokens === undefined && input.outputTokens === undefined && input.cacheReadTokens === undefined) return 'GET /v1/models'
-  return undefined
 }
 
 export function selectOpenAIAccountForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret | undefined {
@@ -3181,29 +3218,6 @@ export function resolveProxyUrlForProfileForSystemAccount(proxyProfileId: string
   return proxyUrlForProfile(proxyProfileId)
 }
 
-function loadAccountUsageSummaries(access?: AccessScope): Map<string, AccountUsageSummary> {
-  const scope = buildSystemAccountScopeClause(access)
-  const rows = getDatabase().prepare(`
-    SELECT
-      scope_id AS account_id,
-      request_count,
-      client_count,
-      input_tokens,
-      output_tokens,
-      cache_read_tokens,
-      total_cost_usd AS total_cost,
-      last_used_at
-    FROM usage_stats_totals
-    WHERE scope_type = 'account'${scope.clause}
-  `).all(...scope.params) as unknown as AccountUsageAggregateRow[]
-
-  const result = new Map<string, AccountUsageSummary>()
-  for (const row of rows) {
-    result.set(row.account_id, usageSummaryFromAggregate(row))
-  }
-  return result
-}
-
 function loadAccountUsageSummariesByAccountIds(accountIds: string[], statDate?: string): Map<string, AccountUsageSummary> {
   const ids = [...new Set(accountIds)].filter(Boolean)
   if (!ids.length) return new Map()
@@ -3212,30 +3226,6 @@ function loadAccountUsageSummariesByAccountIds(accountIds: string[], statDate?: 
   const rows = getDatabase().prepare(`
     SELECT
       scope_id AS account_id,
-      COALESCE(SUM(request_count), 0) AS request_count,
-      COALESCE(SUM(client_count), 0) AS client_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens,
-      COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-      COALESCE(SUM(total_cost_usd), 0) AS total_cost,
-      MAX(last_used_at) AS last_used_at
-    FROM ${sourceTable}
-    WHERE scope_type = 'account'${dateClause} AND scope_id IN (${sqlPlaceholders(ids.length)})
-    GROUP BY scope_id
-  `).all(...(statDate ? [statDate, ...ids] : ids)) as unknown as AccountUsageAggregateRow[]
-
-  const result = new Map<string, AccountUsageSummary>()
-  for (const row of rows) {
-    result.set(row.account_id, usageSummaryFromAggregate(row))
-  }
-  return result
-}
-
-function loadTodayGroupUsageSummaries(access?: AccessScope): Map<string, AccountUsageSummary> {
-  const scope = buildSystemAccountScopeClause(access)
-  const rows = getDatabase().prepare(`
-    SELECT
-      scope_id AS group_id,
       request_count,
       client_count,
       input_tokens,
@@ -3243,13 +3233,13 @@ function loadTodayGroupUsageSummaries(access?: AccessScope): Map<string, Account
       cache_read_tokens,
       total_cost_usd AS total_cost,
       last_used_at
-    FROM usage_stats_daily
-    WHERE scope_type = 'group' AND stat_date = ?${scope.clause}
-  `).all(todayDateKey(), ...scope.params) as unknown as Array<AccountUsageAggregateRow & { group_id: string }>
+    FROM ${sourceTable}
+    WHERE scope_type = 'account'${dateClause} AND scope_id IN (${sqlPlaceholders(ids.length)})
+  `).all(...(statDate ? [statDate, ...ids] : ids)) as unknown as AccountUsageAggregateRow[]
 
   const result = new Map<string, AccountUsageSummary>()
   for (const row of rows) {
-    result.set(row.group_id, usageSummaryFromAggregate(row))
+    result.set(row.account_id, usageSummaryFromAggregate(row))
   }
   return result
 }
@@ -3262,16 +3252,15 @@ function loadGroupUsageSummariesByGroupIds(groupIds: string[], statDate?: string
   const rows = getDatabase().prepare(`
     SELECT
       scope_id AS group_id,
-      COALESCE(SUM(request_count), 0) AS request_count,
-      COALESCE(SUM(client_count), 0) AS client_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens,
-      COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
-      COALESCE(SUM(total_cost_usd), 0) AS total_cost,
-      MAX(last_used_at) AS last_used_at
+      request_count,
+      client_count,
+      input_tokens,
+      output_tokens,
+      cache_read_tokens,
+      total_cost_usd AS total_cost,
+      last_used_at
     FROM ${sourceTable}
     WHERE scope_type = 'group'${dateClause} AND scope_id IN (${sqlPlaceholders(ids.length)})
-    GROUP BY scope_id
   `).all(...(statDate ? [statDate, ...ids] : ids)) as unknown as Array<AccountUsageAggregateRow & { group_id: string }>
 
   const result = new Map<string, AccountUsageSummary>()
@@ -3279,6 +3268,165 @@ function loadGroupUsageSummariesByGroupIds(groupIds: string[], statDate?: string
     result.set(row.group_id, usageSummaryFromAggregate(row))
   }
   return result
+}
+
+function loadAuthorizationUsageSummariesByIds(authorizationIds: string[], scopeType: 'account_authorization' | 'group_authorization', statDate?: string): Map<string, AccountUsageSummary> {
+  const ids = [...new Set(authorizationIds)].filter(Boolean)
+  if (!ids.length) return new Map()
+  const sourceTable = statDate ? 'usage_stats_daily' : 'usage_stats_totals'
+  const dateClause = statDate ? ' AND stat_date = ?' : ''
+  const rows = getDatabase().prepare(`
+    SELECT
+      scope_id AS authorization_id,
+      request_count,
+      client_count,
+      input_tokens,
+      output_tokens,
+      cache_read_tokens,
+      total_cost_usd AS total_cost,
+      last_used_at
+    FROM ${sourceTable}
+    WHERE scope_type = ?${dateClause} AND scope_id IN (${sqlPlaceholders(ids.length)})
+  `).all(...(statDate ? [scopeType, statDate, ...ids] : [scopeType, ...ids])) as unknown as Array<AccountUsageAggregateRow & { authorization_id: string }>
+
+  const result = new Map<string, AccountUsageSummary>()
+  for (const row of rows) {
+    result.set(row.authorization_id, usageSummaryFromAggregate(row))
+  }
+  return result
+}
+
+interface UsageStatsScopeRequest {
+  rowKey: string
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+}
+
+type UsageStatsScopeAggregateRow = AccountUsageAggregateRow & {
+  system_account_id: string
+  scope_type: string
+  scope_id: string
+  stat_date?: string
+}
+
+function loadUsageByWindowForScopeRequests(scopes: UsageStatsScopeRequest[]): Map<string, UsageByWindow> {
+  const validScopes = scopes.filter((scope) => scope.rowKey && scope.systemAccountId && scope.scopeType && scope.scopeId)
+  const result = new Map<string, UsageByWindow>()
+  const rowKeysByScopeMapKey = new Map<string, Set<string>>()
+  const scopeRowsByMapKey = new Map<string, UsageStatsScopeRequest>()
+  for (const scope of validScopes) {
+    result.set(scope.rowKey, emptyUsageByWindow())
+    const mapKey = usageStatsScopeMapKey(scope)
+    scopeRowsByMapKey.set(mapKey, scope)
+    const rowKeys = rowKeysByScopeMapKey.get(mapKey) ?? new Set<string>()
+    rowKeys.add(scope.rowKey)
+    rowKeysByScopeMapKey.set(mapKey, rowKeys)
+  }
+  const normalizedScopes = [...scopeRowsByMapKey.values()]
+  if (!normalizedScopes.length) return result
+
+  const database = getDatabase()
+  const scopesBySystemAccountId = new Map<string, UsageStatsScopeRequest[]>()
+  for (const scope of normalizedScopes) {
+    scopesBySystemAccountId.set(scope.systemAccountId, [...(scopesBySystemAccountId.get(scope.systemAccountId) ?? []), scope])
+  }
+  const totalRows: UsageStatsScopeAggregateRow[] = []
+  const dailyRows: UsageStatsScopeAggregateRow[] = []
+  const maxDailyStartDate = usageWindowStartDate(30)
+
+  for (const [systemAccountId, systemScopes] of scopesBySystemAccountId) {
+    const scopeTypes = [...new Set(systemScopes.map((scope) => scope.scopeType))]
+    const scopeIds = [...new Set(systemScopes.map((scope) => scope.scopeId))]
+    for (const scopeIdChunk of chunkValues(scopeIds, 400)) {
+      totalRows.push(...database.prepare(`
+        SELECT
+          system_account_id,
+          scope_type,
+          scope_id,
+          scope_id AS account_id,
+          request_count,
+          client_count,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          total_cost_usd AS total_cost,
+          last_used_at
+        FROM usage_stats_totals
+        WHERE system_account_id = ?
+          AND scope_type IN (${sqlPlaceholders(scopeTypes.length)})
+          AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
+      `).all(systemAccountId, ...scopeTypes, ...scopeIdChunk) as unknown as UsageStatsScopeAggregateRow[])
+
+      dailyRows.push(...database.prepare(`
+        SELECT
+          system_account_id,
+          scope_type,
+          scope_id,
+          scope_id AS account_id,
+          stat_date,
+          request_count,
+          client_count,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          total_cost_usd AS total_cost,
+          last_used_at
+        FROM usage_stats_daily
+        WHERE system_account_id = ?
+          AND scope_type IN (${sqlPlaceholders(scopeTypes.length)})
+          AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
+          AND stat_date >= ?
+      `).all(systemAccountId, ...scopeTypes, ...scopeIdChunk, maxDailyStartDate) as unknown as UsageStatsScopeAggregateRow[])
+    }
+  }
+
+  for (const row of totalRows) {
+    const rowKeys = rowKeysByScopeMapKey.get(usageStatsRowMapKey(row))
+    if (!rowKeys) continue
+    for (const rowKey of rowKeys) {
+      const usageByWindow = result.get(rowKey)
+      if (usageByWindow) {
+        usageByWindow.total = usageSummaryFromAggregate(row)
+      }
+    }
+  }
+
+  const startDateByWindow = new Map(USAGE_STATS_WINDOWS
+    .filter((window) => window.days)
+    .map((window) => [window.key, usageWindowStartDate(window.days ?? 1)]))
+  for (const row of dailyRows) {
+    const rowKeys = rowKeysByScopeMapKey.get(usageStatsRowMapKey(row))
+    if (!rowKeys || !row.stat_date) continue
+    const rowUsage = usageSummaryFromAggregate(row)
+    for (const rowKey of rowKeys) {
+      const usageByWindow = result.get(rowKey)
+      if (!usageByWindow) continue
+      for (const window of USAGE_STATS_WINDOWS) {
+        if (!window.days) continue
+        const startDate = startDateByWindow.get(window.key)
+        if (startDate && row.stat_date >= startDate) {
+          usageByWindow[window.key] = addUsageSummaries(usageByWindow[window.key], rowUsage)
+        }
+      }
+    }
+  }
+
+  return result
+}
+
+function usageStatsScopeMapKey(scope: Pick<UsageStatsScopeRequest, 'systemAccountId' | 'scopeType' | 'scopeId'>): string {
+  return `${scope.systemAccountId}\u0000${scope.scopeType}\u0000${scope.scopeId}`
+}
+
+function usageStatsRowMapKey(row: { system_account_id: string; scope_type: string; scope_id: string }): string {
+  return `${row.system_account_id}\u0000${row.scope_type}\u0000${row.scope_id}`
+}
+
+function usageWindowStartDate(days: number): string {
+  const date = new Date()
+  date.setDate(date.getDate() - Math.max(0, Math.trunc(days) - 1))
+  return dateKey(date)
 }
 
 function loadOpenAICodexUsageSnapshots(access?: AccessScope): Map<string, AccountOAuthUsageSnapshot> {
@@ -3342,22 +3490,6 @@ function loadOpenAICodexUsageSnapshotsByAccountIds(accountIds: string[]): Map<st
   return result
 }
 
-function usageSummaryFromAggregate(row: AccountUsageAggregateRow): AccountUsageSummary {
-  const inputTokens = Number(row.input_tokens ?? 0)
-  const outputTokens = Number(row.output_tokens ?? 0)
-  const cacheReadTokens = Number(row.cache_read_tokens ?? 0)
-  return {
-    requestCount: Number(row.request_count ?? 0),
-    clientCount: Number(row.client_count ?? 0),
-    inputTokens,
-    outputTokens,
-    cacheReadTokens,
-    totalTokens: inputTokens + outputTokens,
-    totalCost: Number(row.total_cost ?? 0),
-    lastUsedAt: row.last_used_at ?? undefined
-  }
-}
-
 function oauthUsageWindowFromSnapshot(snapshot: Record<string, unknown>, window: '5h' | '7d', updatedAt: string): AccountOAuthUsageWindow | undefined {
   const utilization = numberFromUnknown(snapshot[`codex_${window}_used_percent`])
   if (utilization === undefined) return undefined
@@ -3377,36 +3509,6 @@ function resetAtFromSeconds(updatedAt: string, seconds?: number): string | undef
   const baseTime = Date.parse(updatedAt)
   if (!Number.isFinite(baseTime)) return undefined
   return new Date(baseTime + seconds * 1000).toISOString()
-}
-
-function numberFromUnknown(value: unknown): number | undefined {
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  return Number.isFinite(number) ? number : undefined
-}
-
-function startOfTodayIso(): string {
-  const date = new Date()
-  date.setHours(0, 0, 0, 0)
-  return date.toISOString()
-}
-
-function todayDateKey(): string {
-  return dateKey(new Date())
-}
-
-function dateKey(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
-}
-
-function hourKey(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hour = String(date.getHours()).padStart(2, '0')
-  return `${year}-${month}-${day}T${hour}`
 }
 
 export function getSettings(access?: AccessScope): Record<string, unknown> {
@@ -3433,193 +3535,7 @@ export function updateSettings(input: Record<string, unknown>, access?: AccessSc
 }
 
 function isHiddenSystemSetting(key: string): boolean {
-  return key === 'apiKeyPrefix' || key === 'defaultOpenAIBaseUrl' || key === 'defaultErrorPolicyId' || key === 'defaultAccountConcurrencyLimit' || key.startsWith('_migration')
-}
-
-interface UsageStatsAccumulator {
-  requestCount: number
-  successCount: number
-  errorCount: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  totalCostUsd: number
-  durationMsSum: number
-  durationMsCount: number
-  firstTokenMsSum: number
-  firstTokenMsCount: number
-  lastUsedAt?: string
-  lastErrorAt?: string
-}
-
-interface StatsAggregateMathRow {
-  request_count: number
-  success_count: number
-  error_count: number
-  client_count: number
-  input_tokens: number
-  output_tokens: number
-  cache_read_tokens: number
-  total_cost: number
-  duration_ms_sum: number
-  duration_ms_count: number
-  first_token_ms_sum: number
-  first_token_ms_count: number
-  last_used_at: string | null
-}
-
-interface SystemMetricsSampleInput {
-  cpuPercent?: number
-  memoryUsedPercent?: number
-  memoryTotalBytes?: number
-  memoryFreeBytes?: number
-  processRssBytes?: number
-  processHeapUsedBytes?: number
-  processHeapTotalBytes?: number
-  eventLoopLagMs?: number
-  networkRxBytesPerSecond?: number
-  networkTxBytesPerSecond?: number
-  networkRxTotalBytes?: number
-  networkTxTotalBytes?: number
-  dbFileBytes?: number
-  statsLagSeconds?: number
-}
-
-export interface UsageStatsOverview {
-  today: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
-  totals: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
-  hourlyTrend: Array<{ statHour: string; requestCount: number; totalTokens: number; totalCost: number; averageDurationMs?: number; errorCount: number }>
-  modelDistribution: Array<{ model: string; providerCode: string; requestCount: number; totalTokens: number; totalCost: number }>
-  errors: Array<{ errorCode: string; providerCode: string; statusCode?: number; errorMessage?: string; errorCount: number }>
-  statsLagSeconds: number
-}
-
-export interface SystemMetricsOverview {
-  latest?: {
-    sampledAt: string
-    cpuPercent?: number
-    memoryUsedPercent?: number
-    memoryTotalBytes?: number
-    memoryFreeBytes?: number
-    processRssBytes?: number
-    processHeapUsedBytes?: number
-    processHeapTotalBytes?: number
-    eventLoopLagMs?: number
-    networkRxBytesPerSecond?: number
-    networkTxBytesPerSecond?: number
-    networkRxTotalBytes?: number
-    networkTxTotalBytes?: number
-    dbFileBytes?: number
-    statsLagSeconds?: number
-  }
-  hourlyTrend: Array<{
-    statHour: string
-    sampleCount: number
-    cpuPercentAvg?: number
-    cpuPercentMax?: number
-    memoryUsedPercentAvg?: number
-    memoryUsedPercentMax?: number
-    eventLoopLagMsAvg?: number
-    eventLoopLagMsMax?: number
-    networkRxBytesPerSecondAvg?: number
-    networkRxBytesPerSecondMax?: number
-    networkTxBytesPerSecondAvg?: number
-    networkTxBytesPerSecondMax?: number
-    networkRxTotalBytesMax?: number
-    networkTxTotalBytesMax?: number
-    processRssBytesMax?: number
-    processHeapUsedBytesMax?: number
-    dbFileBytesMax?: number
-    statsLagSecondsMax?: number
-  }>
-}
-
-export function aggregateUsageStatsBatch(limit = 2000): number {
-  const database = getDatabase()
-  const state = usageStatsJobState(database)
-  const rows = database
-    .prepare(`
-      SELECT *
-      FROM usage_records
-      WHERE created_at > ? OR (created_at = ? AND id > ?)
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, Math.max(1, limit)) as unknown as UsageStatsRecordRow[]
-
-  if (!rows.length) {
-    updateStatsJobState(database, { lastSuccessAt: nowIso(), lagSeconds: 0 })
-    return 0
-  }
-
-  const updatedAt = nowIso()
-  database.exec('BEGIN')
-  try {
-    for (const row of rows) {
-      aggregateUsageStatsRecord(database, row, updatedAt)
-    }
-    const last = rows[rows.length - 1]
-    updateStatsJobState(database, {
-      cursorCreatedAt: last.created_at,
-      cursorId: last.id,
-      lastSuccessAt: updatedAt,
-      lagSeconds: statsLagSecondsFromCursor(last.created_at)
-    })
-    cleanupStatsCache(database, updatedAt)
-    database.exec('COMMIT')
-  } catch (error) {
-    database.exec('ROLLBACK')
-    updateStatsJobState(database, {
-      lastErrorMessage: error instanceof Error ? error.message : 'Usage stats aggregation failed',
-      lagSeconds: latestUsageStatsLagSeconds()
-    })
-    throw error
-  }
-
-  return rows.length
-}
-
-export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void {
-  const database = getDatabase()
-  const sampledAt = nowIso()
-  const statHour = hourKey(new Date(sampledAt))
-  database.exec('BEGIN')
-  try {
-    database
-      .prepare(`
-        INSERT INTO system_metrics_samples (
-          sampled_at, cpu_percent, memory_used_percent, memory_total_bytes, memory_free_bytes,
-          process_rss_bytes, process_heap_used_bytes, process_heap_total_bytes, event_loop_lag_ms,
-          network_rx_bytes_per_sec, network_tx_bytes_per_sec, network_rx_total_bytes, network_tx_total_bytes,
-          db_file_bytes, stats_lag_seconds, id, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `)
-      .run(
-        sampledAt,
-        input.cpuPercent ?? null,
-        input.memoryUsedPercent ?? null,
-        input.memoryTotalBytes ?? null,
-        input.memoryFreeBytes ?? null,
-        input.processRssBytes ?? null,
-        input.processHeapUsedBytes ?? null,
-        input.processHeapTotalBytes ?? null,
-        input.eventLoopLagMs ?? null,
-        input.networkRxBytesPerSecond ?? null,
-        input.networkTxBytesPerSecond ?? null,
-        input.networkRxTotalBytes ?? null,
-        input.networkTxTotalBytes ?? null,
-        input.dbFileBytes ?? null,
-        input.statsLagSeconds ?? null,
-        newId('metric'),
-        sampledAt
-      )
-    upsertSystemMetricsHourly(database, statHour, input, sampledAt)
-    cleanupSystemMetrics(database)
-    database.exec('COMMIT')
-  } catch (error) {
-    database.exec('ROLLBACK')
-    throw error
-  }
+  return key === 'apiKeyPrefix' || key === 'defaultOpenAIBaseUrl' || key === 'defaultErrorPolicyId' || key === 'defaultAccountConcurrencyLimit'
 }
 
 function usageAccessMetadata(input: {
@@ -3679,477 +3595,4 @@ function usageAccessMetadata(input: {
     accountAuthorizationId: accountAccessType === 'account_authorized' ? input.accountAuthorizationId ?? accountAuthorization?.id : undefined,
     groupAuthorizationId
   }
-}
-
-export function latestUsageStatsLagSeconds(): number {
-  const row = getDatabase()
-    .prepare("SELECT lag_seconds FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
-    .get() as unknown as { lag_seconds?: number } | undefined
-  return Number(row?.lag_seconds ?? 0)
-}
-
-export function getUsageStatsOverview(access?: AccessScope): UsageStatsOverview {
-  const database = getDatabase()
-  const effectiveAccess = resolveAccessScope(access)
-  const systemAccountIds = visibleSystemAccountIds(effectiveAccess)
-  const placeholders = sqlPlaceholders(systemAccountIds.length)
-  const today = todayDateKey()
-  const sinceHour = hourKey(new Date(Date.now() - 24 * 60 * 60 * 1000))
-
-  const todayRow = database.prepare(`
-    SELECT COALESCE(SUM(request_count), 0) AS request_count, COALESCE(SUM(success_count), 0) AS success_count,
-      COALESCE(SUM(error_count), 0) AS error_count, COALESCE(SUM(client_count), 0) AS client_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(total_cost_usd), 0) AS total_cost,
-      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum, COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count,
-      COALESCE(SUM(first_token_ms_sum), 0) AS first_token_ms_sum, COALESCE(SUM(first_token_ms_count), 0) AS first_token_ms_count,
-      MAX(last_used_at) AS last_used_at
-    FROM usage_stats_daily
-    WHERE scope_type = 'system_account' AND stat_date = ? AND system_account_id IN (${placeholders})
-  `).get(today, ...systemAccountIds) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow
-
-  const totalRow = database.prepare(`
-    SELECT COALESCE(SUM(request_count), 0) AS request_count, COALESCE(SUM(success_count), 0) AS success_count,
-      COALESCE(SUM(error_count), 0) AS error_count, COALESCE(SUM(client_count), 0) AS client_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(total_cost_usd), 0) AS total_cost,
-      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum, COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count,
-      COALESCE(SUM(first_token_ms_sum), 0) AS first_token_ms_sum, COALESCE(SUM(first_token_ms_count), 0) AS first_token_ms_count,
-      MAX(last_used_at) AS last_used_at
-    FROM usage_stats_totals
-    WHERE scope_type = 'system_account' AND system_account_id IN (${placeholders})
-  `).get(...systemAccountIds) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow
-
-  const hourlyRows = database.prepare(`
-    SELECT stat_hour, COALESCE(SUM(request_count), 0) AS request_count, COALESCE(SUM(error_count), 0) AS error_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(total_cost_usd), 0) AS total_cost,
-      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum, COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count
-    FROM usage_stats_hourly
-    WHERE scope_type = 'system_account' AND stat_hour >= ? AND system_account_id IN (${placeholders})
-    GROUP BY stat_hour ORDER BY stat_hour ASC
-  `).all(sinceHour, ...systemAccountIds) as unknown as Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
-
-  const modelRows = database.prepare(`
-    SELECT provider_code, model, COALESCE(SUM(request_count), 0) AS request_count,
-      COALESCE(SUM(input_tokens), 0) AS input_tokens, COALESCE(SUM(output_tokens), 0) AS output_tokens,
-      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens, COALESCE(SUM(total_cost_usd), 0) AS total_cost
-    FROM usage_model_daily
-    WHERE stat_date = ? AND system_account_id IN (${placeholders})
-    GROUP BY provider_code, model ORDER BY request_count DESC LIMIT 10
-  `).all(today, ...systemAccountIds) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
-
-  const errorRows = database.prepare(`
-    SELECT provider_code, error_code, MAX(status_code) AS status_code, MAX(error_message) AS error_message, COALESCE(SUM(error_count), 0) AS error_count
-    FROM usage_error_daily
-    WHERE stat_date = ? AND system_account_id IN (${placeholders})
-    GROUP BY provider_code, error_code ORDER BY error_count DESC LIMIT 10
-  `).all(today, ...systemAccountIds) as unknown as Array<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>
-
-  return {
-    today: usageSummaryWithMath(todayRow),
-    totals: usageSummaryWithMath(totalRow),
-    hourlyTrend: hourlyRows.map((row) => ({
-      statHour: row.stat_hour,
-      requestCount: Number(row.request_count ?? 0),
-      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0) + Number(row.cache_read_tokens ?? 0),
-      totalCost: Number(row.total_cost ?? 0),
-      averageDurationMs: averageFromSum(row.duration_ms_sum, row.duration_ms_count),
-      errorCount: Number(row.error_count ?? 0)
-    })),
-    modelDistribution: modelRows.map((row) => ({
-      providerCode: row.provider_code,
-      model: row.model,
-      requestCount: Number(row.request_count ?? 0),
-      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0) + Number(row.cache_read_tokens ?? 0),
-      totalCost: Number(row.total_cost ?? 0)
-    })),
-    errors: errorRows.map((row) => ({
-      providerCode: row.provider_code,
-      errorCode: row.error_code,
-      statusCode: row.status_code || undefined,
-      errorMessage: row.error_message ?? undefined,
-      errorCount: Number(row.error_count ?? 0)
-    })),
-    statsLagSeconds: latestUsageStatsLagSeconds()
-  }
-}
-
-export function getSystemMetricsOverview(): SystemMetricsOverview {
-  const database = getDatabase()
-  const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
-  const sinceHour = hourKey(new Date(Date.now() - 24 * 60 * 60 * 1000))
-  const rows = database.prepare('SELECT * FROM system_metrics_hourly WHERE stat_hour >= ? ORDER BY stat_hour ASC').all(sinceHour) as unknown as Array<Record<string, unknown>>
-  return {
-    latest: latest
-      ? {
-          sampledAt: String(latest.sampled_at),
-          cpuPercent: numberFromUnknown(latest.cpu_percent),
-          memoryUsedPercent: numberFromUnknown(latest.memory_used_percent),
-          memoryTotalBytes: numberFromUnknown(latest.memory_total_bytes),
-          memoryFreeBytes: numberFromUnknown(latest.memory_free_bytes),
-          processRssBytes: numberFromUnknown(latest.process_rss_bytes),
-          processHeapUsedBytes: numberFromUnknown(latest.process_heap_used_bytes),
-          processHeapTotalBytes: numberFromUnknown(latest.process_heap_total_bytes),
-          eventLoopLagMs: numberFromUnknown(latest.event_loop_lag_ms),
-          networkRxBytesPerSecond: numberFromUnknown(latest.network_rx_bytes_per_sec),
-          networkTxBytesPerSecond: numberFromUnknown(latest.network_tx_bytes_per_sec),
-          networkRxTotalBytes: numberFromUnknown(latest.network_rx_total_bytes),
-          networkTxTotalBytes: numberFromUnknown(latest.network_tx_total_bytes),
-          dbFileBytes: numberFromUnknown(latest.db_file_bytes),
-          statsLagSeconds: numberFromUnknown(latest.stats_lag_seconds)
-        }
-      : undefined,
-    hourlyTrend: rows.map((row) => {
-      const sampleCount = Number(row.sample_count ?? 0)
-      return {
-        statHour: String(row.stat_hour),
-        sampleCount,
-        cpuPercentAvg: averageFromSum(row.cpu_percent_sum, sampleCount),
-        cpuPercentMax: numberFromUnknown(row.cpu_percent_max),
-        memoryUsedPercentAvg: averageFromSum(row.memory_used_percent_sum, sampleCount),
-        memoryUsedPercentMax: numberFromUnknown(row.memory_used_percent_max),
-        eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, sampleCount),
-        eventLoopLagMsMax: numberFromUnknown(row.event_loop_lag_ms_max),
-        networkRxBytesPerSecondAvg: averageFromSum(row.network_rx_bytes_per_sec_sum, row.network_rx_bytes_per_sec_count),
-        networkRxBytesPerSecondMax: numberFromUnknown(row.network_rx_bytes_per_sec_max),
-        networkTxBytesPerSecondAvg: averageFromSum(row.network_tx_bytes_per_sec_sum, row.network_tx_bytes_per_sec_count),
-        networkTxBytesPerSecondMax: numberFromUnknown(row.network_tx_bytes_per_sec_max),
-        networkRxTotalBytesMax: numberFromUnknown(row.network_rx_total_bytes_max),
-        networkTxTotalBytesMax: numberFromUnknown(row.network_tx_total_bytes_max),
-        processRssBytesMax: numberFromUnknown(row.process_rss_bytes_max),
-        processHeapUsedBytesMax: numberFromUnknown(row.process_heap_used_bytes_max),
-        dbFileBytesMax: numberFromUnknown(row.db_file_bytes_max),
-        statsLagSecondsMax: numberFromUnknown(row.stats_lag_seconds_max)
-      }
-    })
-  }
-}
-
-function usageStatsJobState(database: DatabaseSync): { cursorCreatedAt: string; cursorId: string } {
-  const row = database
-    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
-    .get() as unknown as StatsJobStateRow | undefined
-  return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
-}
-
-function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
-  const createdAt = new Date(row.created_at)
-  const statDate = dateKey(createdAt)
-  const statHour = hourKey(createdAt)
-  for (const entry of usageStatsEntries(row)) {
-    upsertUsageStatsTotal(database, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt)
-    upsertUsageStatsDaily(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statDate, entry.accumulator, updatedAt)
-    upsertUsageStatsHourly(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statHour, entry.accumulator, updatedAt)
-    upsertUsageStatsClient(database, row, entry.systemAccountId, entry.scopeType, entry.scopeId, 'all')
-    upsertUsageStatsClient(database, row, entry.systemAccountId, entry.scopeType, entry.scopeId, statDate)
-  }
-  if (row.model) upsertUsageModelDaily(database, row, statDate, updatedAt)
-  if (row.success !== 1) upsertUsageErrorDaily(database, row, statDate, updatedAt)
-}
-
-function usageStatsEntries(row: UsageStatsRecordRow): Array<{ systemAccountId: string; scopeType: string; scopeId: string; accumulator: UsageStatsAccumulator }> {
-  const accumulator = usageStatsAccumulatorFromRecord(row)
-  const callerSystemAccountId = row.system_account_id
-  const accountOwnerSystemAccountId = row.account_owner_system_account_id ?? callerSystemAccountId
-  const groupOwnerSystemAccountId = row.group_owner_system_account_id ?? callerSystemAccountId
-  const entries = [{ systemAccountId: callerSystemAccountId, scopeType: 'system_account', scopeId: callerSystemAccountId, accumulator }]
-  if (row.provider_code) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'provider', scopeId: row.provider_code, accumulator })
-  if (row.group_id) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group', scopeId: row.group_id, accumulator })
-  if (row.account_id) entries.push({ systemAccountId: accountOwnerSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
-  if (row.api_key_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'api_key', scopeId: row.api_key_id, accumulator })
-  if (row.model) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'model', scopeId: row.model, accumulator })
-  if (row.endpoint) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'endpoint', scopeId: row.endpoint, accumulator })
-  return entries
-}
-
-function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): UsageStatsAccumulator {
-  const success = row.success === 1
-  return {
-    requestCount: 1,
-    successCount: success ? 1 : 0,
-    errorCount: success ? 0 : 1,
-    inputTokens: Math.max(0, Number(row.input_tokens ?? 0)),
-    outputTokens: Math.max(0, Number(row.output_tokens ?? 0)),
-    cacheReadTokens: Math.max(0, Number(row.cache_read_tokens ?? 0)),
-    totalCostUsd: Math.max(0, Number(row.cost_usd ?? 0)),
-    durationMsSum: row.duration_ms === null ? 0 : Math.max(0, Number(row.duration_ms ?? 0)),
-    durationMsCount: row.duration_ms === null ? 0 : 1,
-    firstTokenMsSum: row.first_token_ms === null ? 0 : Math.max(0, Number(row.first_token_ms ?? 0)),
-    firstTokenMsCount: row.first_token_ms === null ? 0 : 1,
-    lastUsedAt: row.created_at,
-    lastErrorAt: success ? undefined : row.created_at
-  }
-}
-
-function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, stats: UsageStatsAccumulator, updatedAt: string): void {
-  database.prepare(`
-    INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, duration_ms_sum, duration_ms_count,
-      first_token_ms_sum, first_token_ms_count, last_used_at, last_error_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
-      request_count = request_count + excluded.request_count,
-      success_count = success_count + excluded.success_count,
-      error_count = error_count + excluded.error_count,
-      input_tokens = input_tokens + excluded.input_tokens,
-      output_tokens = output_tokens + excluded.output_tokens,
-      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-      total_cost_usd = total_cost_usd + excluded.total_cost_usd,
-      duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
-      duration_ms_count = duration_ms_count + excluded.duration_ms_count,
-      first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
-      first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
-      last_used_at = CASE WHEN excluded.last_used_at IS NULL THEN usage_stats_totals.last_used_at WHEN usage_stats_totals.last_used_at IS NULL OR excluded.last_used_at > usage_stats_totals.last_used_at THEN excluded.last_used_at ELSE usage_stats_totals.last_used_at END,
-      last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN usage_stats_totals.last_error_at WHEN usage_stats_totals.last_error_at IS NULL OR excluded.last_error_at > usage_stats_totals.last_error_at THEN excluded.last_error_at ELSE usage_stats_totals.last_error_at END,
-      updated_at = excluded.updated_at
-  `).run(systemAccountId, scopeType, scopeId, ...statsParamsTail(stats, updatedAt))
-}
-
-function upsertUsageStatsDaily(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, statDate: string, stats: UsageStatsAccumulator, updatedAt: string): void {
-  database.prepare(`
-    INSERT INTO usage_stats_daily (system_account_id, scope_type, scope_id, stat_date, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, duration_ms_sum, duration_ms_count,
-      first_token_ms_sum, first_token_ms_count, last_used_at, last_error_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(system_account_id, scope_type, scope_id, stat_date) DO UPDATE SET
-      request_count = request_count + excluded.request_count,
-      success_count = success_count + excluded.success_count,
-      error_count = error_count + excluded.error_count,
-      input_tokens = input_tokens + excluded.input_tokens,
-      output_tokens = output_tokens + excluded.output_tokens,
-      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-      total_cost_usd = total_cost_usd + excluded.total_cost_usd,
-      duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
-      duration_ms_count = duration_ms_count + excluded.duration_ms_count,
-      first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
-      first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
-      last_used_at = CASE WHEN excluded.last_used_at IS NULL THEN usage_stats_daily.last_used_at WHEN usage_stats_daily.last_used_at IS NULL OR excluded.last_used_at > usage_stats_daily.last_used_at THEN excluded.last_used_at ELSE usage_stats_daily.last_used_at END,
-      last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN usage_stats_daily.last_error_at WHEN usage_stats_daily.last_error_at IS NULL OR excluded.last_error_at > usage_stats_daily.last_error_at THEN excluded.last_error_at ELSE usage_stats_daily.last_error_at END,
-      updated_at = excluded.updated_at
-  `).run(systemAccountId, scopeType, scopeId, statDate, ...statsParamsTail(stats, updatedAt))
-}
-
-function upsertUsageStatsHourly(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, statHour: string, stats: UsageStatsAccumulator, updatedAt: string): void {
-  database.prepare(`
-    INSERT INTO usage_stats_hourly (system_account_id, scope_type, scope_id, stat_hour, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, duration_ms_sum, duration_ms_count,
-      first_token_ms_sum, first_token_ms_count, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(system_account_id, scope_type, scope_id, stat_hour) DO UPDATE SET
-      request_count = request_count + excluded.request_count,
-      success_count = success_count + excluded.success_count,
-      error_count = error_count + excluded.error_count,
-      input_tokens = input_tokens + excluded.input_tokens,
-      output_tokens = output_tokens + excluded.output_tokens,
-      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-      total_cost_usd = total_cost_usd + excluded.total_cost_usd,
-      duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
-      duration_ms_count = duration_ms_count + excluded.duration_ms_count,
-      first_token_ms_sum = first_token_ms_sum + excluded.first_token_ms_sum,
-      first_token_ms_count = first_token_ms_count + excluded.first_token_ms_count,
-      updated_at = excluded.updated_at
-  `).run(systemAccountId, scopeType, scopeId, statHour, stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, stats.durationMsSum, stats.durationMsCount, stats.firstTokenMsSum, stats.firstTokenMsCount, updatedAt)
-}
-
-function statsParamsTail(stats: UsageStatsAccumulator, updatedAt: string): Array<number | string | null> {
-  return [stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, stats.durationMsSum, stats.durationMsCount, stats.firstTokenMsSum, stats.firstTokenMsCount, stats.lastUsedAt ?? null, stats.lastErrorAt ?? null, updatedAt]
-}
-
-function upsertUsageStatsClient(database: DatabaseSync, row: UsageStatsRecordRow, systemAccountId: string, scopeType: string, scopeId: string, statBucket: string): void {
-  const clientKey = row.api_key_id ?? row.client_ip ?? ''
-  if (!clientKey) return
-  const result = database.prepare(`
-    INSERT OR IGNORE INTO usage_stats_clients (system_account_id, scope_type, scope_id, stat_bucket, client_key, first_seen_at, last_seen_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(systemAccountId, scopeType, scopeId, statBucket, clientKey, row.created_at, row.created_at)
-  if (result.changes <= 0) {
-    database.prepare(`
-      UPDATE usage_stats_clients
-      SET last_seen_at = ?
-      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_bucket = ? AND client_key = ?
-    `).run(row.created_at, systemAccountId, scopeType, scopeId, statBucket, clientKey)
-    return
-  }
-  if (statBucket === 'all') {
-    database.prepare('UPDATE usage_stats_totals SET client_count = client_count + 1 WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?').run(systemAccountId, scopeType, scopeId)
-    return
-  }
-  database.prepare('UPDATE usage_stats_daily SET client_count = client_count + 1 WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_date = ?').run(systemAccountId, scopeType, scopeId, statBucket)
-}
-
-function upsertUsageModelDaily(database: DatabaseSync, row: UsageStatsRecordRow, statDate: string, updatedAt: string): void {
-  const stats = usageStatsAccumulatorFromRecord(row)
-  database.prepare(`
-    INSERT INTO usage_model_daily (system_account_id, stat_date, provider_code, model, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(system_account_id, stat_date, model) DO UPDATE SET
-      provider_code = excluded.provider_code,
-      request_count = request_count + excluded.request_count,
-      success_count = success_count + excluded.success_count,
-      error_count = error_count + excluded.error_count,
-      input_tokens = input_tokens + excluded.input_tokens,
-      output_tokens = output_tokens + excluded.output_tokens,
-      cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
-      total_cost_usd = total_cost_usd + excluded.total_cost_usd,
-      updated_at = excluded.updated_at
-  `).run(row.system_account_id, statDate, row.provider_code ?? 'unknown', row.model ?? 'unknown', stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, updatedAt)
-}
-
-function upsertUsageErrorDaily(database: DatabaseSync, row: UsageStatsRecordRow, statDate: string, updatedAt: string): void {
-  const errorGroup = row.provider_code ?? 'unknown'
-  const errorCode = row.error_code ?? String(row.status_code ?? 'unknown')
-  database.prepare(`
-    INSERT INTO usage_error_daily (system_account_id, stat_date, error_group, provider_code, error_code, status_code, error_message, request_count, error_count, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
-    ON CONFLICT(system_account_id, stat_date, error_group, error_code) DO UPDATE SET
-      provider_code = excluded.provider_code,
-      status_code = excluded.status_code,
-      error_message = COALESCE(excluded.error_message, usage_error_daily.error_message),
-      request_count = request_count + excluded.request_count,
-      error_count = error_count + excluded.error_count,
-      updated_at = excluded.updated_at
-  `).run(row.system_account_id, statDate, errorGroup, row.provider_code ?? 'unknown', errorCode, row.status_code ?? 0, row.error_message ?? null, updatedAt)
-}
-
-function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, input: SystemMetricsSampleInput, updatedAt: string): void {
-  database.prepare(`
-    INSERT INTO system_metrics_hourly (
-      stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
-      memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
-      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_max,
-      network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
-      network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
-      network_rx_total_bytes_max, network_tx_total_bytes_max,
-      db_file_bytes_max, stats_lag_seconds_max, updated_at
-    )
-    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(stat_hour) DO UPDATE SET
-      sample_count = sample_count + 1,
-      cpu_percent_sum = cpu_percent_sum + excluded.cpu_percent_sum,
-      cpu_percent_max = CASE WHEN excluded.cpu_percent_max IS NULL THEN system_metrics_hourly.cpu_percent_max WHEN system_metrics_hourly.cpu_percent_max IS NULL OR excluded.cpu_percent_max > system_metrics_hourly.cpu_percent_max THEN excluded.cpu_percent_max ELSE system_metrics_hourly.cpu_percent_max END,
-      memory_used_percent_sum = memory_used_percent_sum + excluded.memory_used_percent_sum,
-      memory_used_percent_max = CASE WHEN excluded.memory_used_percent_max IS NULL THEN system_metrics_hourly.memory_used_percent_max WHEN system_metrics_hourly.memory_used_percent_max IS NULL OR excluded.memory_used_percent_max > system_metrics_hourly.memory_used_percent_max THEN excluded.memory_used_percent_max ELSE system_metrics_hourly.memory_used_percent_max END,
-      process_rss_bytes_sum = process_rss_bytes_sum + excluded.process_rss_bytes_sum,
-      process_rss_bytes_max = CASE WHEN excluded.process_rss_bytes_max IS NULL THEN system_metrics_hourly.process_rss_bytes_max WHEN system_metrics_hourly.process_rss_bytes_max IS NULL OR excluded.process_rss_bytes_max > system_metrics_hourly.process_rss_bytes_max THEN excluded.process_rss_bytes_max ELSE system_metrics_hourly.process_rss_bytes_max END,
-      process_heap_used_bytes_sum = process_heap_used_bytes_sum + excluded.process_heap_used_bytes_sum,
-      process_heap_used_bytes_max = CASE WHEN excluded.process_heap_used_bytes_max IS NULL THEN system_metrics_hourly.process_heap_used_bytes_max WHEN system_metrics_hourly.process_heap_used_bytes_max IS NULL OR excluded.process_heap_used_bytes_max > system_metrics_hourly.process_heap_used_bytes_max THEN excluded.process_heap_used_bytes_max ELSE system_metrics_hourly.process_heap_used_bytes_max END,
-      event_loop_lag_ms_sum = event_loop_lag_ms_sum + excluded.event_loop_lag_ms_sum,
-      event_loop_lag_ms_max = CASE WHEN excluded.event_loop_lag_ms_max IS NULL THEN system_metrics_hourly.event_loop_lag_ms_max WHEN system_metrics_hourly.event_loop_lag_ms_max IS NULL OR excluded.event_loop_lag_ms_max > system_metrics_hourly.event_loop_lag_ms_max THEN excluded.event_loop_lag_ms_max ELSE system_metrics_hourly.event_loop_lag_ms_max END,
-      network_rx_bytes_per_sec_sum = network_rx_bytes_per_sec_sum + excluded.network_rx_bytes_per_sec_sum,
-      network_rx_bytes_per_sec_max = CASE WHEN excluded.network_rx_bytes_per_sec_max IS NULL THEN system_metrics_hourly.network_rx_bytes_per_sec_max WHEN system_metrics_hourly.network_rx_bytes_per_sec_max IS NULL OR excluded.network_rx_bytes_per_sec_max > system_metrics_hourly.network_rx_bytes_per_sec_max THEN excluded.network_rx_bytes_per_sec_max ELSE system_metrics_hourly.network_rx_bytes_per_sec_max END,
-      network_rx_bytes_per_sec_count = network_rx_bytes_per_sec_count + excluded.network_rx_bytes_per_sec_count,
-      network_tx_bytes_per_sec_sum = network_tx_bytes_per_sec_sum + excluded.network_tx_bytes_per_sec_sum,
-      network_tx_bytes_per_sec_max = CASE WHEN excluded.network_tx_bytes_per_sec_max IS NULL THEN system_metrics_hourly.network_tx_bytes_per_sec_max WHEN system_metrics_hourly.network_tx_bytes_per_sec_max IS NULL OR excluded.network_tx_bytes_per_sec_max > system_metrics_hourly.network_tx_bytes_per_sec_max THEN excluded.network_tx_bytes_per_sec_max ELSE system_metrics_hourly.network_tx_bytes_per_sec_max END,
-      network_tx_bytes_per_sec_count = network_tx_bytes_per_sec_count + excluded.network_tx_bytes_per_sec_count,
-      network_rx_total_bytes_max = CASE WHEN excluded.network_rx_total_bytes_max IS NULL THEN system_metrics_hourly.network_rx_total_bytes_max WHEN system_metrics_hourly.network_rx_total_bytes_max IS NULL OR excluded.network_rx_total_bytes_max > system_metrics_hourly.network_rx_total_bytes_max THEN excluded.network_rx_total_bytes_max ELSE system_metrics_hourly.network_rx_total_bytes_max END,
-      network_tx_total_bytes_max = CASE WHEN excluded.network_tx_total_bytes_max IS NULL THEN system_metrics_hourly.network_tx_total_bytes_max WHEN system_metrics_hourly.network_tx_total_bytes_max IS NULL OR excluded.network_tx_total_bytes_max > system_metrics_hourly.network_tx_total_bytes_max THEN excluded.network_tx_total_bytes_max ELSE system_metrics_hourly.network_tx_total_bytes_max END,
-      db_file_bytes_max = CASE WHEN excluded.db_file_bytes_max IS NULL THEN system_metrics_hourly.db_file_bytes_max WHEN system_metrics_hourly.db_file_bytes_max IS NULL OR excluded.db_file_bytes_max > system_metrics_hourly.db_file_bytes_max THEN excluded.db_file_bytes_max ELSE system_metrics_hourly.db_file_bytes_max END,
-      stats_lag_seconds_max = CASE WHEN excluded.stats_lag_seconds_max IS NULL THEN system_metrics_hourly.stats_lag_seconds_max WHEN system_metrics_hourly.stats_lag_seconds_max IS NULL OR excluded.stats_lag_seconds_max > system_metrics_hourly.stats_lag_seconds_max THEN excluded.stats_lag_seconds_max ELSE system_metrics_hourly.stats_lag_seconds_max END,
-      updated_at = excluded.updated_at
-  `).run(
-    statHour,
-    input.cpuPercent ?? 0,
-    input.cpuPercent ?? null,
-    input.memoryUsedPercent ?? 0,
-    input.memoryUsedPercent ?? null,
-    input.processRssBytes ?? 0,
-    input.processRssBytes ?? null,
-    input.processHeapUsedBytes ?? 0,
-    input.processHeapUsedBytes ?? null,
-    input.eventLoopLagMs ?? 0,
-    input.eventLoopLagMs ?? null,
-    input.networkRxBytesPerSecond ?? 0,
-    input.networkRxBytesPerSecond ?? null,
-    input.networkRxBytesPerSecond === undefined ? 0 : 1,
-    input.networkTxBytesPerSecond ?? 0,
-    input.networkTxBytesPerSecond ?? null,
-    input.networkTxBytesPerSecond === undefined ? 0 : 1,
-    input.networkRxTotalBytes ?? null,
-    input.networkTxTotalBytes ?? null,
-    input.dbFileBytes ?? null,
-    input.statsLagSeconds ?? null,
-    updatedAt
-  )
-}
-
-function updateStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {
-  database.prepare(`
-    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', 'usage_stats_aggregation', ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_created_at = COALESCE(excluded.cursor_created_at, stats_job_state.cursor_created_at),
-      cursor_id = COALESCE(excluded.cursor_id, stats_job_state.cursor_id),
-      last_success_at = COALESCE(excluded.last_success_at, stats_job_state.last_success_at),
-      last_error_message = excluded.last_error_message,
-      lag_seconds = excluded.lag_seconds,
-      updated_at = excluded.updated_at
-  `).run(input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? 0, nowIso())
-}
-
-function cleanupStatsCache(database: DatabaseSync, now: string): void {
-  const dailyRetentionDays = settingsNumberValue('usageStatsDailyRetentionDays', 180, 7, 3650)
-  const hourlyRetentionDays = settingsNumberValue('usageStatsHourlyRetentionDays', 14, 1, 365)
-  const dailyCutoff = dateKey(new Date(Date.parse(now) - dailyRetentionDays * 24 * 60 * 60 * 1000))
-  const hourlyCutoff = hourKey(new Date(Date.parse(now) - hourlyRetentionDays * 24 * 60 * 60 * 1000))
-  database.prepare('DELETE FROM usage_stats_daily WHERE stat_date < ?').run(dailyCutoff)
-  database.prepare('DELETE FROM usage_model_daily WHERE stat_date < ?').run(dailyCutoff)
-  database.prepare('DELETE FROM usage_error_daily WHERE stat_date < ?').run(dailyCutoff)
-  database.prepare('DELETE FROM usage_stats_hourly WHERE stat_hour < ?').run(hourlyCutoff)
-  database.prepare("DELETE FROM usage_stats_clients WHERE stat_bucket <> 'all' AND stat_bucket < ?").run(dailyCutoff)
-}
-
-function cleanupSystemMetrics(database: DatabaseSync): void {
-  const retentionDays = settingsNumberValue('systemMetricsRetentionDays', 14, 1, 365)
-  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString()
-  const hourlyCutoff = hourKey(new Date(Date.now() - 180 * 24 * 60 * 60 * 1000))
-  database.prepare('DELETE FROM system_metrics_samples WHERE sampled_at < ?').run(cutoff)
-  database.prepare('DELETE FROM system_metrics_hourly WHERE stat_hour < ?').run(hourlyCutoff)
-}
-
-function statsLagSecondsFromCursor(cursorCreatedAt: string): number {
-  const cursorTime = Date.parse(cursorCreatedAt)
-  return Number.isFinite(cursorTime) ? Math.max(0, Math.floor((Date.now() - cursorTime) / 1000)) : 0
-}
-
-function visibleSystemAccountIds(access?: AccessScope): string[] {
-  const scopedId = scopedSystemAccountId(access)
-  if (scopedId) return [scopedId]
-  if (canAccessAll(access)) {
-    const ids = listSystemAccounts().map((account) => account.id)
-    return ids.length ? ids : ['sys_admin']
-  }
-  return [currentSystemAccountId(access)]
-}
-
-function sqlPlaceholders(count: number): string {
-  return Array.from({ length: Math.max(1, count) }, () => '?').join(',')
-}
-
-function usageSummaryWithMath(row: AccountUsageAggregateRow & StatsAggregateMathRow): AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number } {
-  const summary = usageSummaryFromAggregate(row)
-  const successCount = Number(row.success_count ?? 0)
-  const errorCount = Number(row.error_count ?? 0)
-  const requestCount = Number(row.request_count ?? 0)
-  return {
-    ...summary,
-    successCount,
-    errorCount,
-    errorRate: requestCount > 0 ? errorCount / requestCount : 0,
-    averageDurationMs: averageFromSum(row.duration_ms_sum, row.duration_ms_count),
-    averageFirstTokenMs: averageFromSum(row.first_token_ms_sum, row.first_token_ms_count)
-  }
-}
-
-function averageFromSum(sum: unknown, count: unknown): number | undefined {
-  const numericSum = Number(sum ?? 0)
-  const numericCount = Number(count ?? 0)
-  return numericCount > 0 ? Math.round(numericSum / numericCount) : undefined
-}
-
-function settingsNumberValue(key: string, fallback: number, min: number, max: number): number {
-  const value = getSettings()[key]
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
 }

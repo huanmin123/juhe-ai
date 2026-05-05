@@ -25,11 +25,11 @@
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'status'">
-          <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
+          <StatusTag :color="record.status === 'active' ? 'green' : 'default'" :label="record.status === 'active' ? '启用' : '停用'" />
         </template>
         <template v-else-if="column.key === 'key'">
           <div class="key-preview-cell">
-            <span class="key-preview" :title="record.key || '旧数据未回填，需重新创建或回填'">{{ formatKeyPreview(record.key) }}</span>
+            <span class="key-preview" :title="record.key || '密钥明文仅创建时展示，请重新创建密钥'">{{ formatKeyPreview(record.key) }}</span>
             <a-button class="key-copy-button" type="text" size="small" :disabled="!record.key" @click="copyText(record.key)">
               <template #icon><copy-outlined /></template>
             </a-button>
@@ -55,7 +55,7 @@
           <div class="mobile-list-card-head">
             <div class="mobile-list-card-title">{{ record.name }}</div>
             <div class="mobile-list-card-tags">
-              <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
+              <StatusTag :color="record.status === 'active' ? 'green' : 'default'" :label="record.status === 'active' ? '启用' : '停用'" />
               <a-tag color="purple">{{ groupName(record.groupId) }}</a-tag>
             </div>
           </div>
@@ -148,7 +148,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import StatusTag from '@/components/StatusTag.vue'
 import { authState } from '@/composables/useAuth'
+import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
 import type { ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
@@ -210,14 +212,6 @@ function formatKeyPreview(value?: string) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`
 }
 
-function formatDateTime(value?: string) {
-  return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
-}
-
-function formatServerDateTimeInput(value?: Dayjs): string | undefined {
-  return value?.format('YYYY-MM-DDTHH:mm:ss')
-}
-
 async function loadData() {
   loading.value = true
   try {
@@ -272,7 +266,7 @@ async function saveApiKey() {
     name: form.name,
     groupId: form.groupId,
     status: form.status,
-    expiresAt: formatServerDateTimeInput(form.expiresAt)
+    expiresAt: formatServerDateTimeInput(form.expiresAt) ?? undefined
   }
   try {
     if (editingId.value) {

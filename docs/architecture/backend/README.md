@@ -44,7 +44,7 @@
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
 | `backend/src/modules/gateway/` | OpenAI 兼容中转、账号选择、错误策略、SSE 透传和用量解析 | 不把网关细节泄漏成前端多套复杂选项 |
 | `backend/src/modules/background/` | 统计聚合、系统采样、OAuth 用量快照刷新等后台任务 | 保持轻量定时任务，不引入重型队列 |
-| `backend/src/storage/` | SQLite 连接、schema、seed、迁移兼容、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
+| `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
 | `backend/src/shared/` | 通用响应、跨模块小工具 | 只放稳定复用能力，不堆业务逻辑 |
 | `backend/src/scripts/` | 烟测、导入导出、一次性维护脚本 | 脚本应可独立运行，并说明安全边界 |
 | `backend/src/types/` | 第三方或运行时类型补充 | 只补缺失类型，不放业务模型 |
@@ -120,10 +120,13 @@ flowchart LR
 
 - SQLite 是第一阶段唯一持久化存储；不引入 Redis、ClickHouse 或独立任务队列。
 - `usage_records` 是请求事实源；统计表只做读优化和图表缓存，不替代事实记录。
-- 启动时通过 `applySchema()` 自动建表、补列、建索引和做必要兼容迁移。
+- 启动时通过 `applySchema()` 创建当前版本需要的表和索引，不承载一次性旧库修复逻辑。
 - 启动时通过 `seedDefaults()` 写入默认管理员、OpenAI 供应商、默认 OpenAI 分组、全局设置和系统设置。
-- 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引；项目未上线阶段可重建或清洗本地库，正式上线后再按兼容迁移处理。
-- 未上线阶段可以按计划重建本地 SQLite；一旦正式上线，不通过删除数据库掩盖 schema 兼容问题。
+- 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
+- 当前项目未正式上线，本地 SQLite 可以备份后直接清洗或重建；源码只保留当前完整 schema、repository 和 API 逻辑。
+- 禁止在后端启动、repository、routes 或前端页面里长期保留一次性迁移、旧数据兼容、临时同步修复、临时表改名或迁移标记代码。
+- 需要处理本地旧库时，使用直接 SQL 或临时离线脚本完成；脚本不得接入正常请求路径或启动路径，完成后不作为长期源码保留。
+- 正式上线后如需支持用户升级，另开计划设计版本化 schema 演进机制，不能把预上线清库规则和上线升级逻辑混在一起。
 
 ### 6.2 表分区
 
@@ -136,7 +139,7 @@ flowchart LR
 | 网关访问 | `api_keys` | 本地网关密钥、分组绑定、状态、过期和配额占位 |
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
-| 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_error_daily`、`usage_stats_clients` | 列表统计、趋势图、模型分布、错误聚合和独立客户端数 |
+| 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_error_daily`、`usage_stats_clients`、`group_account_stats` | 列表统计、趋势图、模型分布、错误聚合、独立客户端数和分组账户状态缓存 |
 | 后台任务 | `stats_job_state` | 聚合游标、任务状态、统计滞后和错误信息 |
 | 运维监控 | `system_metrics_samples`、`system_metrics_hourly` | CPU、内存、进程、事件循环、网络、数据库体积和统计滞后 |
 
@@ -189,11 +192,12 @@ erDiagram
 
 ### 6.6 Schema 演进
 
-- 新表优先写入 `CREATE TABLE IF NOT EXISTS`。
-- 新列通过 `ensureColumn()` 或显式兼容迁移补齐旧库。
-- 涉及主键或唯一约束调整时，使用临时表迁移并保留旧数据。
-- 新默认数据通过 `INSERT OR IGNORE` 或明确迁移标记写入，保证重复启动安全。
-- 迁移逻辑应可重复执行，不依赖手工删除 `backend/data/juhe-ai.sqlite3`。
+- 预上线阶段的 `backend/src/storage/schema.ts` 只描述当前完整结构：表、索引、默认约束和外键。
+- 新表和索引可以使用 `CREATE ... IF NOT EXISTS` 保持重复启动安全，但不能夹带旧表、旧字段或临时对象处理分支。
+- 不写 `ensureColumn()`、启动补列、迁移标记、旧字段适配、临时表改名、一次性清洗分支或“同步旧数据”逻辑到运行时代码。
+- 本地库结构变化时，先备份 `backend/data/juhe-ai.sqlite3`，再通过直接 SQL、临时离线脚本或重建库处理数据。
+- 需要保留少量本地数据时，按当前模型导出、清洗、导入，不在源码里模拟多个历史版本。
+- 正式上线前若要支持外部用户升级，必须先形成独立升级方案和验证计划，再调整本节规则。
 
 ## 7. 配置设计
 
@@ -214,7 +218,7 @@ erDiagram
 ## 8. 后台任务
 
 - 后台任务由 `startBackgroundJobs()` 在后端启动时注册。
-- 当前后台任务包括使用记录增量聚合、系统指标采样、小时级指标聚合和 OpenAI OAuth 用量快照刷新。
+- 当前后台任务包括使用记录增量聚合、分组账户统计缓存刷新、系统指标采样、小时级指标聚合和 OpenAI OAuth 用量快照刷新。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
 - 第一阶段不引入复杂分布式锁；如果后续支持多实例部署，再评估共享锁、任务归属和幂等边界。
 - 后台任务失败应记录错误并等待下一轮重试，不应导致管理 API 或网关进程直接退出。
@@ -223,7 +227,7 @@ erDiagram
 
 - 新管理接口：先确认模块归属，再补 route、repository、领域类型、前端 API 和文档。
 - 新网关能力：先确认是否改变 `/v1/*` 主链路、错误策略、调度规则或使用记录字段。
-- 新数据库字段：先写清默认值、兼容迁移、敏感边界和索引需求。
+- 新数据库字段：先写清默认值、数据清洗方案、敏感边界和索引需求。
 - 新接口契约或权限变化：先确认 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
 - 新敏感字段、日志或快照变化：先确认 [安全与日志策略](../../functions/安全与日志策略.md)。
 - 新外部请求：放在 service 层，支持超时、错误摘要和必要代理配置。
@@ -233,7 +237,7 @@ erDiagram
 ## 10. 修改入口
 
 - 涉及后端目录、分层、数据库、脚本或接口时，先看本文和 [功能开发指导](../功能开发指导.md)。
-- 涉及数据库表、字段、统计缓存、敏感字段或迁移时，同时看 [SQLite 存储说明](../../functions/SQLite存储说明.md)。
+- 涉及数据库表、字段、统计缓存、敏感字段或 schema 演进时，同时看 [SQLite 存储说明](../../functions/SQLite存储说明.md)。
 - 涉及管理 API、网关接口、响应结构、错误语义、分页筛选或权限摘要时，同时看 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
 - 涉及敏感字段、凭据展示、请求快照、日志脱敏、数据保留或备份迁移时，同时看 [安全与日志策略](../../functions/安全与日志策略.md)。
 - 涉及 OpenAI OAuth、API Key 账户、上游请求或账号测试时，同时看 [第一期 OpenAI 账号接入](../../functions/第一期OpenAI账号接入.md)。

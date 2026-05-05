@@ -57,7 +57,7 @@
           </div>
         </template>
         <template v-else-if="column.key === 'status'">
-          <a-tag class="status-tag" :color="groupStatusColor(record)">{{ groupStatusText(record) }}</a-tag>
+          <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
@@ -81,7 +81,7 @@
             </div>
             <div class="mobile-list-card-tags">
               <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
-              <a-tag class="status-tag" :color="groupStatusColor(record)">{{ groupStatusText(record) }}</a-tag>
+              <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
               <a-tag v-if="isAuthorizedGroup(record)" color="cyan">仅可使用</a-tag>
             </div>
           </div>
@@ -144,7 +144,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import StatusTag from '@/components/StatusTag.vue'
 import { authState } from '@/composables/useAuth'
+import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
 import type { GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
@@ -241,34 +243,12 @@ function formatUsageSummary(usage: GroupSummary['accountStats']['usage']) {
   return `${formatNumber(usage.requestCount)}req/${formatUsageAmount(usage.totalTokens)}/${formatCost(usage.totalCost)}`
 }
 
-function formatDateTime(value?: string): string {
-  if (!value) return '-'
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
-  return date.toLocaleString('zh-CN', { hour12: false })
-}
-
-function formatNumber(value?: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value ?? 0)
-}
-
 function formatUsageAmount(value?: number): string {
-  const amount = value ?? 0
-  const absoluteValue = Math.abs(amount)
-  if (absoluteValue >= 1_000_000_000) {
-    return `${(amount / 1_000_000_000).toFixed(1)}B`
-  }
-  if (absoluteValue >= 1_000_000) {
-    return `${(amount / 1_000_000).toFixed(1)}M`
-  }
-  if (absoluteValue >= 1_000) {
-    return `${(amount / 1_000).toFixed(1)}K`
-  }
-  return formatNumber(amount)
+  return formatCompactUsageAmount(value)
 }
 
 function formatCost(value?: number): string {
-  return `$${(value ?? 0).toFixed(2)}`
+  return formatUsd(value)
 }
 
 function defaultProviderCode() {

@@ -1,12 +1,13 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
-import { badRequest, ok } from '../../shared/http.js'
+import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from '../../shared/http.js'
 import {
   createResourceAuthorization,
   getResourceAuthorizationUsage,
   listResourceAuthorizations,
-  revokeResourceAuthorization
+  revokeResourceAuthorization,
+  updateResourceAuthorization
 } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
@@ -22,7 +23,7 @@ const authorizationsQuerySchema = z.object({
   resourceId: z.string().trim().min(1, '授权资源 ID 不能为空').optional(),
   granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
-  status: z.enum(['active', 'revoked', 'all']).optional(),
+  status: z.enum(['active', 'paused', 'expired', 'revoked', 'all']).optional(),
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional()
 })
 
@@ -39,6 +40,23 @@ const createAuthorizationSchema = z.object({
   expiresAt: z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确').optional(),
   limits: z.record(z.string(), z.unknown()).optional(),
   modelPolicy: z.record(z.string(), z.unknown()).optional()
+})
+
+const updateAuthorizationSchema = z.object({
+  status: z.enum(['active', 'paused']).optional(),
+  expiresAt: z.union([
+    z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确'),
+    z.null()
+  ]).optional()
+}).refine((value) => Object.prototype.hasOwnProperty.call(value, 'status') || Object.prototype.hasOwnProperty.call(value, 'expiresAt'), {
+  message: '请提供要修改的授权内容'
+})
+
+const updateAuthorizationExpireSchema = z.object({
+  expiresAt: z.union([
+    z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确'),
+    z.null()
+  ])
 })
 
 const revokeAuthorizationSchema = z.object({
@@ -58,22 +76,18 @@ const revokeAuthorizationSchema = z.object({
   }
 })
 
-function firstIssueMessage(error: z.ZodError, fallback: string): string {
-  return error.issues[0]?.message ?? fallback
-}
-
 function parseScopeQuery(query: unknown): { systemAccountId?: string } | { message: string } {
-  const parsed = accessScopeQuerySchema.safeParse(query)
+  const parsed = parseOrBadRequest(accessScopeQuerySchema, query, '查询参数不合法')
   if (!parsed.success) {
-    return { message: firstIssueMessage(parsed.error, '查询参数不合法') }
+    return { message: parsed.message }
   }
   return parsed.data
 }
 
 authorizationsRouter.get('/', (req, res) => {
-  const parsed = authorizationsQuerySchema.safeParse(req.query)
+  const parsed = parseOrBadRequest(authorizationsQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '查询参数不合法')))
+    sendBadRequest(res, parsed.message)
     return
   }
   const { systemAccountId, ...filters } = parsed.data
@@ -83,12 +97,12 @@ authorizationsRouter.get('/', (req, res) => {
 authorizationsRouter.post('/', (req, res) => {
   const scopeQuery = parseScopeQuery(req.query)
   if ('message' in scopeQuery) {
-    res.status(400).json(badRequest(scopeQuery.message))
+    sendBadRequest(res, scopeQuery.message)
     return
   }
-  const parsed = createAuthorizationSchema.safeParse(req.body)
+  const parsed = parseOrBadRequest(createAuthorizationSchema, req.body, '授权参数不合法')
   if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '授权参数不合法')))
+    sendBadRequest(res, parsed.message)
     return
   }
   try {
@@ -103,12 +117,12 @@ authorizationsRouter.post('/', (req, res) => {
 authorizationsRouter.delete('/:id', (req, res) => {
   const scopeQuery = parseScopeQuery(req.query)
   if ('message' in scopeQuery) {
-    res.status(400).json(badRequest(scopeQuery.message))
+    sendBadRequest(res, scopeQuery.message)
     return
   }
-  const paramsParsed = authorizationIdParamsSchema.safeParse(req.params)
+  const paramsParsed = parseOrBadRequest(authorizationIdParamsSchema, req.params, '授权记录 ID 不合法')
   if (!paramsParsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(paramsParsed.error, '授权记录 ID 不合法')))
+    sendBadRequest(res, paramsParsed.message)
     return
   }
   const payload = {
@@ -116,15 +130,15 @@ authorizationsRouter.delete('/:id', (req, res) => {
     sourceTeamId: req.body?.sourceTeamId ?? req.query.sourceTeamId,
     revokeAll: req.body?.revokeAll ?? (req.query.revokeAll === 'true' ? true : req.query.revokeAll === 'false' ? false : undefined)
   }
-  const parsed = revokeAuthorizationSchema.safeParse(payload)
+  const parsed = parseOrBadRequest(revokeAuthorizationSchema, payload, '撤销授权参数不合法')
   if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '撤销授权参数不合法')))
+    sendBadRequest(res, parsed.message)
     return
   }
   try {
     const authorization = revokeResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
     if (!authorization) {
-      res.status(404).json({ message: '授权记录不存在' })
+      sendNotFound(res, '授权记录不存在')
       return
     }
     clearGatewayRuntimeCache()
@@ -134,20 +148,78 @@ authorizationsRouter.delete('/:id', (req, res) => {
   }
 })
 
+authorizationsRouter.patch('/:id', (req, res) => {
+  const scopeQuery = parseScopeQuery(req.query)
+  if ('message' in scopeQuery) {
+    sendBadRequest(res, scopeQuery.message)
+    return
+  }
+  const paramsParsed = parseOrBadRequest(authorizationIdParamsSchema, req.params, '授权记录 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  const parsed = parseOrBadRequest(updateAuthorizationSchema, req.body, '修改授权参数不合法')
+  if (!parsed.success) {
+    sendBadRequest(res, parsed.message)
+    return
+  }
+  try {
+    const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
+    if (!authorization) {
+      sendNotFound(res, '授权记录不存在')
+      return
+    }
+    clearGatewayRuntimeCache()
+    res.json(ok(authorization))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '修改授权失败'))
+  }
+})
+
+authorizationsRouter.patch('/:id/expire', (req, res) => {
+  const scopeQuery = parseScopeQuery(req.query)
+  if ('message' in scopeQuery) {
+    sendBadRequest(res, scopeQuery.message)
+    return
+  }
+  const paramsParsed = parseOrBadRequest(authorizationIdParamsSchema, req.params, '授权记录 ID 不合法')
+  if (!paramsParsed.success) {
+    sendBadRequest(res, paramsParsed.message)
+    return
+  }
+  const parsed = parseOrBadRequest(updateAuthorizationExpireSchema, req.body, '修改授权参数不合法')
+  if (!parsed.success) {
+    sendBadRequest(res, parsed.message)
+    return
+  }
+  try {
+    const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
+    if (!authorization) {
+      sendNotFound(res, '授权记录不存在')
+      return
+    }
+    clearGatewayRuntimeCache()
+    res.json(ok(authorization))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '修改授权失败'))
+  }
+})
+
 authorizationsRouter.get('/:id/usage', (req, res) => {
   const scopeQuery = parseScopeQuery(req.query)
   if ('message' in scopeQuery) {
-    res.status(400).json(badRequest(scopeQuery.message))
+    sendBadRequest(res, scopeQuery.message)
     return
   }
-  const paramsParsed = authorizationIdParamsSchema.safeParse(req.params)
+  const paramsParsed = parseOrBadRequest(authorizationIdParamsSchema, req.params, '授权记录 ID 不合法')
   if (!paramsParsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(paramsParsed.error, '授权记录 ID 不合法')))
+    sendBadRequest(res, paramsParsed.message)
     return
   }
   const authorization = getResourceAuthorizationUsage(paramsParsed.data.id, getRequestAccessScope(scopeQuery.systemAccountId))
   if (!authorization) {
-    res.status(404).json({ message: '授权记录不存在' })
+    sendNotFound(res, '授权记录不存在')
     return
   }
   res.json(ok(authorization))

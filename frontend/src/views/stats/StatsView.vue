@@ -104,7 +104,7 @@ const summaryCards = computed(() => {
   return [
     { key: 'requests', label: '今日请求', value: formatInteger(today?.requestCount), extra: `累计 ${formatInteger(totals?.requestCount)} / 错误率 ${formatPercent((today?.errorRate ?? totals?.errorRate ?? 0) * 100)}` },
     { key: 'duration', label: '今日平均响应', value: formatDuration(today?.averageDurationMs), extra: `首 Token ${formatDuration(today?.averageFirstTokenMs)}` },
-    { key: 'tokens', label: '今日 Token', value: formatInteger(today?.totalTokens), extra: `累计 ${formatInteger(totals?.totalTokens)} / 输入 ${formatInteger(today?.inputTokens)}` },
+    { key: 'tokens', label: '今日 Token', value: formatCompactInteger(today?.totalTokens), extra: `累计 ${formatCompactInteger(totals?.totalTokens)} / 输入 ${formatCompactInteger(today?.inputTokens)}` },
     { key: 'cost', label: '今日成本', value: formatCost(today?.totalCost), extra: `累计 ${formatCost(totals?.totalCost)} / 滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
   ]
 })
@@ -589,6 +589,10 @@ function truncateText(value: string, maxLength: number) {
 
 function formatInteger(value?: number) {
   return new Intl.NumberFormat('zh-CN').format(Math.round(value ?? 0))
+}
+
+function formatCompactInteger(value?: number) {
+  return compactNumber(Math.round(value ?? 0))
 }
 
 function formatCost(value?: number) {
