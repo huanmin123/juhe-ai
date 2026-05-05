@@ -26,6 +26,8 @@ interface UpstreamRequestOptions {
 interface UpstreamHeaderAccount {
   apiKey: string
   passthroughEnabled: boolean
+  type?: string
+  credentials?: Record<string, unknown>
 }
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
@@ -212,6 +214,9 @@ export function buildUpstreamHeaders(inputHeaders: Record<string, string | strin
     }
   }
   headers.set('authorization', `Bearer ${account.apiKey}`)
+  if (account.type === 'oauth') {
+    applyOpenAICodexHeaders(headers, account)
+  }
   if (!account.passthroughEnabled) {
     headers.set('content-type', headers.get('content-type') ?? 'application/json')
   }
@@ -233,6 +238,31 @@ function shouldSkipUpstreamResponseHeader(name: string): boolean {
     return true
   }
   return skippedUpstreamResponseHeaderPrefixes.some((prefix) => lowerName.startsWith(prefix))
+}
+
+function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccount): void {
+  if (!headers.get('accept')) {
+    headers.set('accept', 'text/event-stream')
+  }
+  if (!headers.get('content-type')) {
+    headers.set('content-type', 'application/json')
+  }
+  if (!headers.get('user-agent')) {
+    headers.set('user-agent', openAICodexUserAgent)
+  }
+  if (!headers.get('originator')) {
+    headers.set('originator', 'codex_cli_rs')
+  }
+  if (!headers.get('version')) {
+    headers.set('version', openAICodexVersion)
+  }
+  if (!headers.get('openai-beta')) {
+    headers.set('openai-beta', 'responses=experimental')
+  }
+  const chatGPTAccountId = stringCredential(account.credentials, 'chatgpt_account_id') ?? stringCredential(account.credentials, 'account_id')
+  if (chatGPTAccountId && !headers.get('chatgpt-account-id')) {
+    headers.set('chatgpt-account-id', chatGPTAccountId)
+  }
 }
 
 async function* iteratePreloadedStream(iterator: AsyncIterator<Uint8Array>, firstResult: IteratorResult<Uint8Array>): AsyncIterable<Uint8Array> {
@@ -322,6 +352,11 @@ function isEmptyPlainObject(value: unknown): boolean {
   return typeof value === 'object' && value !== null && !Array.isArray(value) && Object.keys(value).length === 0
 }
 
+function stringCredential(credentials: Record<string, unknown> | undefined, key: string): string | undefined {
+  const value = credentials?.[key]
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
 const skippedUpstreamRequestHeaders = new Set([
   'host',
   'authorization',
@@ -342,6 +377,7 @@ const skippedUpstreamRequestHeaders = new Set([
   'x-api-key',
   'x-goog-api-key',
   'api-key',
+  'chatgpt-account-id',
   'x-forwarded-for',
   'x-forwarded-host',
   'x-forwarded-port',
@@ -352,6 +388,9 @@ const skippedUpstreamRequestHeaders = new Set([
   'via',
   'cf-connecting-ip'
 ])
+
+const openAICodexVersion = '0.125.0'
+const openAICodexUserAgent = `codex_cli_rs/${openAICodexVersion}`
 
 const skippedUpstreamResponseHeaders = new Set([
   'connection',

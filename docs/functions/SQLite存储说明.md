@@ -124,16 +124,33 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 概览图表接口优先读 `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly` 和 `system_metrics_hourly`。
 - 全局规则：除独立 background worker、离线清洗脚本、使用记录分页明细外，任何前端列表、概览、详情和下拉元数据接口都不能在请求时做统计聚合。
 
-默认保留策略：
+表数据保留与统一清理：
 
-- `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly` 至少保留 30 天。
-- `usage_stats_daily`、`usage_model_daily`、`usage_error_daily` 保留 180 天。
-- `usage_stats_totals` 长期保留。
-- `system_metrics_samples` 保留 7 到 14 天，`system_metrics_hourly` 可保留 180 天。
-- `audit_logs`、`audit_log_attempts`、`audit_log_payloads` 默认保留 7 天，后续可按系统设置调整；清理审计日志不影响使用记录、统计缓存和 OAuth 额度快照。
-- `runtime_logs` 和 `runtime_log_search` 固定只保留最近 3 天；清理索引不删除日志文件，只影响“日志搜索”页面可检索范围。
-- 审计日志和运行日志索引的保留期清理由后台任务每天运行一次；页面不提供手动清理入口。
-- 如果统计缓存损坏，可以运行 `pnpm --filter juhe-ai-backend stats:rebuild` 从 `usage_records` 重新构建缓存，不需要删除原始使用记录。该命令会清空并重建当前 `.env` 指向数据库里的统计缓存，执行前应确认数据库路径并先备份。
+| 表 | 数据类型 | 保留策略 | 是否已有统一定时清理 | 注意事项 |
+| --- | --- | --- | --- | --- |
+| `runtime_logs`、`runtime_log_search` | 普通运行日志搜索索引 | 固定最近 3 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只删除 SQLite 搜索索引，不删除后端 `.log` 文件 |
+| `audit_logs`、`audit_log_attempts`、`audit_log_payloads` | 原始审计日志和原文 payload | 默认 7 天，系统设置最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 删除 `audit_logs` 后依赖外键级联删除 attempts 和 payloads |
+| `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只删除超过保留期且已被统计游标处理过的记录，避免破坏统计聚合 |
+| `usage_stats_daily`、`usage_model_daily`、`usage_error_daily` | 日级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 用量统计页面最大窗口为近 1 个月，不再保留 180 天日缓存 |
+| `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly` | 小时级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 统计概览近 1 天到近 1 月均从小时缓存聚合 |
+| `system_metrics_samples` | 主机监控原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只用于最新状态和短期排障 |
+| `system_metrics_hourly` | 主机监控小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 作为监控图表的 1 个月汇总缓存 |
+| `system_sessions` | 后台登录会话 | 到期即清理 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 查询时也会校验过期时间，定时清理用于回收表数据 |
+
+不按保留期物理清理：
+
+- `usage_stats_totals` 长期保留，作为账户、分组、授权和全局总量缓存。
+- `stats_job_state` 长期保留，作为统计游标和任务状态；它是删除 `usage_records` 的安全边界。
+- `account_usage_snapshots` 是每个账号最新额度快照，按主键 upsert，不按时间批量删除。
+- `group_account_stats` 是当前分组账户状态缓存，由刷新任务整表重建，不属于历史日志。
+- 普通日志文件由文件日志滚动配置清理，不属于 SQLite 表清理；`grep 模式` 扫描当前保留的 `.log` 文件。
+
+统一清理规则：
+
+- 表数据保留期统一由 `data-retention-cleanup` 每天在独立 background worker 进程内执行；页面不提供手动清理入口。
+- 清理任务按批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 10000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 10` 批，避免长时间占用 SQLite 写锁。
+- 统计聚合、系统指标采样、审计日志落库和运行日志索引队列只负责写入或聚合，不再在各自流程里顺手删除历史表数据。
+- 如果统计缓存损坏，可以运行 `pnpm --filter juhe-ai-backend stats:rebuild` 从尚未清理的 `usage_records` 重新构建缓存。该命令会清空并重建当前 `.env` 指向数据库里的统计缓存，执行前应确认数据库路径并先备份。
 
 ## 原始审计日志存储
 
@@ -393,7 +410,10 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `streamIdleTimeoutSeconds = 60`、`streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
-- `usageStatsHourlyRetentionDays = 30`、`usageStatsDailyRetentionDays = 180`、`systemMetricsRetentionDays = 14`：默认缓存保留时长。
+- `usageRecordRetentionDays = 7`：使用记录默认保留 7 天；清理时必须等统计游标已处理。
+- `usageStatsHourlyRetentionDays = 30`、`usageStatsDailyRetentionDays = 30`：统计汇总缓存默认保留 30 天。
+- `systemMetricsRetentionDays = 7`、`systemMetricsHourlyRetentionDays = 30`：系统监控原始采样默认保留 7 天，小时汇总默认保留 30 天。
+- `dataRetentionCleanupBatchSize = 10000`、`dataRetentionCleanupMaxBatchesPerRun = 10`：统一表数据清理任务的批量上限。
 - `oauthUsageSnapshotRefreshIntervalSeconds = 300`：OAuth 额度快照后台扫描间隔。
 - `oauthUsageSnapshotTtlSeconds = 900`：OAuth 额度快照默认过期时间。
 - `oauthUsageSnapshotRetryBackoffSeconds = 300`：OAuth 额度快照刷新失败后的默认退避。
@@ -406,7 +426,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `auditLogQueueMaxItems = 1000`：待写队列最多保留 1000 条终态审计请求。
 - `auditLogQueueMaxBytesMb = 256`：待写队列近似最大原文体积，单位 MB。
 - `auditLogActiveCaptureMaxBytesMb = 64`：单个请求活跃捕获上限，单位 MB，超过后丢弃整条审计记录。
-- `auditLogRetentionDays = 7`：原始审计日志默认保留 7 天。
+- `auditLogRetentionDays = 7`：原始审计日志默认保留 7 天，系统设置最多允许 7 天。
 
 预上线阶段如本地库仍存在不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes` 等旧设置，直接通过备份后清洗或重建库处理；源码不保留启动清理分支。
 

@@ -62,6 +62,13 @@ import {
 import { isOpenAIStreamRequest, resolveGatewayApiKey } from './openai-gateway-request.js'
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
+import {
+  forgetOpenAIAccountForSession,
+  orderOpenAIAccountsBySessionAffinity,
+  rememberOpenAIAccountForSession,
+  resolveOpenAIGatewaySessionAffinityKey
+} from './openai-gateway-session-affinity.service.js'
+import { listProviderModelPricing } from '../model-pricing/model-pricing.service.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -142,7 +149,45 @@ openAIGatewayRouter.all('/*', async (req, res) => {
   }
 
   const groupUsageFields = groupUsageMetadata(groupAccess)
-  const accounts = listCachedOpenAIAccountsForGroup(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
+  if (isOpenAIModelsRequest(req)) {
+    const responsePayload = buildOpenAIModelsResponse()
+    res.status(200).json(responsePayload)
+    enqueueUsageRecord({
+      traceId,
+      clientIp,
+      systemAccountId: apiKeyRecord.system_account_id,
+      apiKeyId: apiKeyRecord.id,
+      groupId: apiKeyRecord.group_id,
+      ...groupUsageFields,
+      endpoint,
+      providerCode: 'openai',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      firstTokenMs: Date.now() - startedAt,
+      durationMs: Date.now() - startedAt
+    })
+    auditCapture.finalize({
+      outcome: 'success',
+      success: true,
+      statusCode: 200,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(responsePayload),
+      responsePartType: 'gateway_response',
+      firstTokenMs: Date.now() - startedAt
+    })
+    return
+  }
+
+  const sessionAffinityKey = resolveOpenAIGatewaySessionAffinityKey(req, {
+    systemAccountId: apiKeyRecord.system_account_id,
+    apiKeyId: apiKeyRecord.id,
+    groupId: apiKeyRecord.group_id
+  })
+  const accounts = orderOpenAIAccountsBySessionAffinity(
+    listCachedOpenAIAccountsForGroup(apiKeyRecord.group_id, apiKeyRecord.system_account_id),
+    sessionAffinityKey
+  )
   if (accounts.length === 0) {
     const statusCode = 503
     const responsePayload = gatewayErrorPayload('No available upstream account', 'service_unavailable')
@@ -185,7 +230,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       ...groupUsageFields,
       endpoint,
       requestSnapshot
-    }, auditCapture)
+    }, auditCapture, sessionAffinityKey)
     const { account, response: upstreamResponse, upstreamUrl, auditAttemptId } = upstreamResult
 
     const contentType = upstreamResponse.headers.get('content-type') ?? ''
@@ -200,6 +245,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     if (isOpenAIStreamContentType(contentType)) {
       if (!upstreamResponse.body) {
         res.end()
+        forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
         auditCapture.completeAttempt(auditAttemptId, {
           statusCode: upstreamResponse.status,
           responseHeaders: upstreamResponse.headers,
@@ -237,6 +283,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
         errorMessage: streamResult.completed ? undefined : streamResult.message
       })
       if (!streamResult.completed) {
+        forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
         enqueueUsageRecord({
           traceId,
           clientIp,
@@ -414,12 +461,63 @@ function buildUpstreamUrls(baseUrl: string, pathAndQuery: string): string[] {
   return [...new Set([primary, fallback])]
 }
 
+function buildUpstreamUrlsForAccount(account: UpstreamAccount, req: Request): string[] {
+  if (account.type === 'oauth') {
+    return buildOpenAICodexUpstreamUrls(req)
+  }
+  return buildUpstreamUrls(account.baseUrl, req.originalUrl)
+}
+
+function buildOpenAICodexUpstreamUrls(req: Request): string[] {
+  if (req.method.toUpperCase() !== 'POST') {
+    return []
+  }
+  const { path, query } = splitPathAndQuery(req.originalUrl)
+  const normalizedPath = path.replace(/^\/v1(?=\/|$)/, '') || '/'
+  if (!openAICodexSupportedPaths.has(normalizedPath)) {
+    return []
+  }
+  return [`${openAICodexBaseUrl}${normalizedPath}${query}`]
+}
+
+function splitPathAndQuery(pathAndQuery: string): { path: string; query: string } {
+  const queryIndex = pathAndQuery.indexOf('?')
+  if (queryIndex < 0) {
+    return { path: pathAndQuery, query: '' }
+  }
+  return {
+    path: pathAndQuery.slice(0, queryIndex),
+    query: pathAndQuery.slice(queryIndex)
+  }
+}
+
+function isOpenAIModelsRequest(req: Request): boolean {
+  if (req.method.toUpperCase() !== 'GET') {
+    return false
+  }
+  const { path } = splitPathAndQuery(req.originalUrl)
+  return (path.replace(/^\/v1(?=\/|$)/, '') || '/') === '/models'
+}
+
+function buildOpenAIModelsResponse(): { object: 'list'; data: Array<{ id: string; object: 'model'; created: number; owned_by: string }> } {
+  return {
+    object: 'list',
+    data: listProviderModelPricing('openai').map((item) => ({
+      id: item.model,
+      object: 'model',
+      created: item.releaseDate ? Math.trunc(Date.parse(`${item.releaseDate}T00:00:00.000Z`) / 1000) : 0,
+      owned_by: 'openai'
+    }))
+  }
+}
+
 async function fetchFirstAvailableUpstream(
   req: Request,
   accounts: UpstreamAccount[],
   settings: GatewaySettings,
   usageContext: GatewayUsageContext,
-  auditCapture: AuditCaptureContext
+  auditCapture: AuditCaptureContext,
+  sessionAffinityKey?: string
 ): Promise<{ account: UpstreamAccount; response: GatewayUpstreamResponse; upstreamUrl: string; auditAttemptId: string }> {
   const retryAttempts = Math.max(0, settings.temporaryUnschedulableRetryAttempts)
   const isStreamRequest = isOpenAIStreamRequest(req)
@@ -428,10 +526,14 @@ async function fetchFirstAvailableUpstream(
 
   for (const originalAccount of accounts) {
     const account = await prepareUpstreamAccount(originalAccount)
+    const upstreamUrls = buildUpstreamUrlsForAccount(account, req)
+    if (upstreamUrls.length === 0) {
+      continue
+    }
     const headers = buildUpstreamHeaders(req.headers, account)
     const body = buildUpstreamRequestBody(req, account.passthroughEnabled)
     let skipAccount = false
-    for (const upstreamUrl of buildUpstreamUrls(account.baseUrl, req.originalUrl)) {
+    for (const upstreamUrl of upstreamUrls) {
       for (let attemptIndex = 0; attemptIndex <= retryAttempts; attemptIndex += 1) {
         const attemptStartedAt = Date.now()
         auditAttemptIndex += 1
@@ -457,6 +559,7 @@ async function fetchFirstAvailableUpstream(
             if (isStreamRequest && settings.streamCircuitBreakerEnabled && isStreamResponse(response)) {
               try {
                 const preloadedResponse = await preloadStreamResponseFirstChunk(response, settings)
+                rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
                 return { account, response: preloadedResponse, upstreamUrl, auditAttemptId }
               } catch (error) {
                 const message = error instanceof Error ? error.message : 'Upstream stream request interrupted before first chunk'
@@ -468,6 +571,7 @@ async function fetchFirstAvailableUpstream(
                   errorPhase: 'stream_preload',
                   errorMessage: message
                 })
+                forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
                 recordFailedUpstreamAttempt(req, usageContext, account, {
                   upstreamUrl,
                   startedAt: attemptStartedAt,
@@ -480,6 +584,7 @@ async function fetchFirstAvailableUpstream(
                 break
               }
             }
+            rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
             return { account, response, upstreamUrl, auditAttemptId }
           }
 
@@ -506,6 +611,7 @@ async function fetchFirstAvailableUpstream(
             bodyText: responseBodyText
           })
           persistOpenAICodexHeadersIfNeeded(account, response.headers, 'gateway_error')
+          forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
           applyAccountErrorHandlingWithCacheInvalidation(account, {
             success: false,
             statusCode: response.status,
@@ -535,6 +641,7 @@ async function fetchFirstAvailableUpstream(
           })
           if (isStreamRequest && error instanceof UpstreamRequestTimeoutError) {
             handleStreamFailure(account, message, settings)
+            forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
             skipAccount = true
             break
           }
@@ -542,6 +649,7 @@ async function fetchFirstAvailableUpstream(
             await waitBeforeTemporaryUnschedulableRetry(settings)
             continue
           }
+          forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
           applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
           skipAccount = true
           break
@@ -633,3 +741,6 @@ function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: He
   if (account.type !== 'oauth') return
   persistOpenAICodexUsageHeaders(account.id, headers, source)
 }
+
+const openAICodexBaseUrl = 'https://chatgpt.com/backend-api/codex'
+const openAICodexSupportedPaths = new Set(['/responses', '/responses/compact'])
