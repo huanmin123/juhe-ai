@@ -296,6 +296,35 @@ watch(
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  scrollbar-color: rgba(226, 232, 240, 0.28) transparent;
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+}
+
+:deep(.sidebar .ant-menu::-webkit-scrollbar) {
+  width: 8px;
+}
+
+:deep(.sidebar .ant-menu::-webkit-scrollbar-track) {
+  background: transparent;
+}
+
+:deep(.sidebar .ant-menu::-webkit-scrollbar-thumb) {
+  min-height: 44px;
+  background-color: rgba(226, 232, 240, 0.24);
+  background-clip: content-box;
+  border: 2px solid transparent;
+  border-radius: 999px;
+}
+
+:deep(.sidebar .ant-menu::-webkit-scrollbar-thumb:hover) {
+  background-color: rgba(226, 232, 240, 0.4);
+}
+
+:deep(.sidebar .ant-menu::-webkit-scrollbar-button) {
+  width: 0;
+  height: 0;
+  display: none;
 }
 
 .brand {

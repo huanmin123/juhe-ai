@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount, type AccountListOptions, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { testOpenAIAccount } from './account-test.service.js'
@@ -35,9 +35,46 @@ const accountGroupSchema = z.object({
   groupId: z.string().trim().min(1, '分组不能为空')
 })
 
+const accountListSortFields = new Set<AccountListSortField>([
+  'priority',
+  'name',
+  'type',
+  'providerCode',
+  'systemAccount',
+  'concurrency',
+  'status',
+  'accountExpiresAt',
+  'lastUsedAt',
+  'notes'
+])
+
 accountsRouter.get('/', (req, res) => {
-  res.json(ok(listAccounts(getRequestAccessScope(req.query.systemAccountId))))
+  res.json(ok(listAccounts(getRequestAccessScope(req.query.systemAccountId), parseAccountListOptions(req.query))))
 })
+
+function parseAccountListOptions(query: Record<string, unknown>): AccountListOptions {
+  const rawSorts = query.sorts ?? query.sort
+  const sorts = stringValues(rawSorts)
+    .flatMap((value) => value.split(','))
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .map(parseAccountListSort)
+    .filter((sort): sort is NonNullable<ReturnType<typeof parseAccountListSort>> => Boolean(sort))
+  return { sorts }
+}
+
+function parseAccountListSort(value: string): { field: AccountListSortField; order: AccountListSortDirection } | undefined {
+  const [field, order] = value.split(':').map((item) => item.trim())
+  if (!accountListSortFields.has(field as AccountListSortField)) return undefined
+  if (order !== 'asc' && order !== 'desc') return undefined
+  return { field: field as AccountListSortField, order }
+}
+
+function stringValues(value: unknown): string[] {
+  if (typeof value === 'string') return [value]
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string')
+  return []
+}
 
 accountsRouter.post('/', (req, res) => {
   const parsed = accountCreateSchema.safeParse(req.body)

@@ -46,9 +46,21 @@ interface ListParams {
   systemAccountId?: string
 }
 
+export type SortDirection = 'asc' | 'desc'
+export type AccountListSortField = 'priority' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
+
+export interface AccountListSortParam {
+  field: AccountListSortField
+  order: SortDirection
+}
+
+export interface AccountListParams extends ListParams {
+  sorts?: AccountListSortParam[]
+}
+
 export interface UsageRecordListParams extends ListParams {
   sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
-  sortOrder?: 'asc' | 'desc'
+  sortOrder?: SortDirection
   limit?: number
 }
 
@@ -133,7 +145,7 @@ export const api = {
     list: () => unwrap<ErrorPolicySummary[]>(http.get('/error-policies'))
   },
   accounts: {
-    list: (params?: ListParams) => unwrap<AccountSummary[]>(http.get('/accounts', { params })),
+    list: (params?: AccountListParams) => unwrap<AccountSummary[]>(http.get('/accounts', { params: accountListParams(params) })),
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload)),
     bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload)),
@@ -212,4 +224,14 @@ export const api = {
     get: () => unwrap<SystemSettings>(http.get('/settings')),
     update: (payload: SystemSettings) => unwrap<SystemSettings>(http.patch('/settings', payload))
   }
+}
+
+function accountListParams(params?: AccountListParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.sorts?.length) {
+    output.sorts = params.sorts.map((sort) => `${sort.field}:${sort.order}`).join(',')
+  }
+  return output
 }

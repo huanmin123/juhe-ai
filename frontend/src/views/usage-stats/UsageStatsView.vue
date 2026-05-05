@@ -2,7 +2,7 @@
   <a-card class="page-card usage-stats-page-card responsive-page-card">
     <ResponsiveListToolbar
       v-model:keyword="filters.keyword"
-      search-placeholder="搜索账户..."
+      search-placeholder="搜索AI账户..."
       filter-title="筛选用量"
       :active-filter-count="activeFilterCount"
       :refresh-loading="loading"
@@ -194,7 +194,7 @@ const filteredRows = computed(() => rows.value.filter((row) => {
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
-    { title: '名称', dataIndex: 'name', key: 'name', width: 230 },
+    { title: 'AI账户名称', dataIndex: 'name', key: 'name', width: 230 },
     { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
     { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }
   ]

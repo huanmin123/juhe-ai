@@ -41,12 +41,14 @@ interface BackgroundWorkerState {
   ready: boolean
   lastSnapshot?: BackgroundWorkerRuntimeSnapshot
   pendingMessageCount: number
+  pendingMessageBytes: number
 }
 
 let workerProcess: ChildProcess | undefined
 let workerReady = false
 let workerPid: number | undefined
 let workerMessageQueue: BackgroundWorkerMessage[] = []
+let workerMessageQueueBytes = 0
 let sendingMessage = false
 let sendingWorkerMessage: BackgroundWorkerMessage | undefined
 let pendingPendingMessagesWarningCount = 0
@@ -54,6 +56,7 @@ let pendingRequests = new Map<string, PendingRequest>()
 let lastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
 
 const maxPendingMessages = 5000
+const maxPendingMessageBytes = 128 * 1024 * 1024
 
 export function attachBackgroundWorkerProcess(child: ChildProcess): void {
   workerProcess = child
@@ -69,7 +72,7 @@ export function attachBackgroundWorkerProcess(child: ChildProcess): void {
       workerPid = undefined
       sendingMessage = false
       if (sendingWorkerMessage) {
-        workerMessageQueue.unshift(sendingWorkerMessage)
+        requeueWorkerMessageFirst(sendingWorkerMessage)
         sendingWorkerMessage = undefined
       }
       failPendingRequests()
@@ -137,7 +140,8 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
     pid: workerPid,
     ready: workerReady,
     lastSnapshot,
-    pendingMessageCount: workerMessageQueue.length
+    pendingMessageCount: workerMessageQueue.length,
+    pendingMessageBytes: workerMessageQueueBytes
   }
 }
 
@@ -166,13 +170,11 @@ function handleWorkerMessage(message: unknown): void {
 }
 
 function queueWorkerMessage(message: BackgroundWorkerMessage): void {
-  if (workerMessageQueue.length >= maxPendingMessages) {
-    workerMessageQueue.shift()
-    pendingPendingMessagesWarningCount += 1
-    process.stderr.write(`[background-worker] 消息队列已满，已丢弃最早消息 ${pendingPendingMessagesWarningCount} 次\n`)
-  }
-
+  const messageBytes = estimateWorkerMessageBytes(message)
   workerMessageQueue.push(message)
+  workerMessageQueueBytes += messageBytes
+  enforceWorkerMessageQueueLimits()
+
   flushWorkerMessageQueue()
 }
 
@@ -181,7 +183,7 @@ function flushWorkerMessageQueue(): void {
     return
   }
 
-  const message = workerMessageQueue.shift()
+  const message = shiftWorkerMessage()
   if (!message) {
     return
   }
@@ -193,7 +195,7 @@ function flushWorkerMessageQueue(): void {
       sendingMessage = false
       sendingWorkerMessage = undefined
       if (error) {
-        workerMessageQueue.unshift(message)
+        requeueWorkerMessageFirst(message)
         workerReady = false
         workerPid = workerProcess?.pid ?? workerPid
         return
@@ -206,10 +208,70 @@ function flushWorkerMessageQueue(): void {
   } catch (error) {
     sendingMessage = false
     sendingWorkerMessage = undefined
-    workerMessageQueue.unshift(message)
+    requeueWorkerMessageFirst(message)
     workerReady = false
     workerPid = workerProcess?.pid ?? workerPid
     process.stderr.write(`[background-worker] 向 worker 发送消息失败：${error instanceof Error ? error.message : String(error)}\n`)
+  }
+}
+
+function shiftWorkerMessage(): BackgroundWorkerMessage | undefined {
+  const message = workerMessageQueue.shift()
+  if (message) {
+    workerMessageQueueBytes = Math.max(0, workerMessageQueueBytes - estimateWorkerMessageBytes(message))
+  }
+  return message
+}
+
+function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
+  workerMessageQueue.unshift(message)
+  workerMessageQueueBytes += estimateWorkerMessageBytes(message)
+  enforceWorkerMessageQueueLimits()
+}
+
+function enforceWorkerMessageQueueLimits(): void {
+  while (workerMessageQueue.length > maxPendingMessages || workerMessageQueueBytes > maxPendingMessageBytes) {
+    const dropped = shiftWorkerMessage()
+    if (!dropped) {
+      break
+    }
+    pendingPendingMessagesWarningCount += 1
+    process.stderr.write(`[background-worker] 消息队列已满，已丢弃最早消息 ${pendingPendingMessagesWarningCount} 次\n`)
+  }
+}
+
+function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
+  switch (message.type) {
+    case 'background_worker_runtime_log_line':
+      return Buffer.byteLength(message.line, 'utf8') + 128
+    case 'background_worker_usage_records':
+      return message.items.reduce((sum, item) => sum + estimateJsonBytes(item) + 256, 128)
+    case 'background_worker_audit_logs':
+      return message.items.reduce((sum, item) => sum + estimateAuditLogBytes(item), 128)
+    case 'background_worker_status_request':
+    case 'background_worker_status_response':
+    case 'background_worker_ready':
+      return 512
+    default:
+      return 512
+  }
+}
+
+function estimateAuditLogBytes(input: AuditLogInput): number {
+  const payloadBytes = input.payloads.reduce((sum, payload) => {
+    const body = payload.body
+    const bodyBytes = Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0
+    const headerBytes = payload.headers ? estimateJsonBytes(payload.headers) : 0
+    return sum + bodyBytes + headerBytes + 512
+  }, 0)
+  return payloadBytes + input.attempts.length * 512 + 2048
+}
+
+function estimateJsonBytes(value: unknown): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8')
+  } catch {
+    return 1024
   }
 }
 

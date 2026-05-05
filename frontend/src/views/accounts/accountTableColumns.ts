@@ -1,32 +1,57 @@
+import type { AccountListSortField } from '@/api/client'
+import type { TableSortOrder } from '@/components/responsiveDataListSorting'
 import type { AccountSummary } from '@/types/domain'
-import {
-  compareAccountConcurrency,
-  compareAccountExpiresAt,
-  compareAccountLastUsedAt
-} from './accountFormatters'
 
-export function buildAccountTableColumns(isAdmin: boolean): Array<Record<string, unknown>> {
+export type AccountTableSortOrderResolver = (field: AccountListSortField) => TableSortOrder
+
+export function buildAccountTableColumns(isAdmin: boolean, sortOrder: AccountTableSortOrderResolver): Array<Record<string, unknown>> {
   const baseColumns: Array<Record<string, unknown>> = [
-    { title: '名称', dataIndex: 'name', key: 'name', width: 230 },
-    { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
-    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }
+    sortableColumn({ title: '名称', dataIndex: 'name', key: 'name', width: 230 }, 'name', sortOrder),
+    sortableColumn({ title: '账户类型', dataIndex: 'type', key: 'type', width: 120 }, 'type', sortOrder),
+    sortableColumn({ title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }, 'providerCode', sortOrder)
   ]
   if (isAdmin) {
-    baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
+    baseColumns.push(sortableColumn({ title: '系统账户', key: 'systemAccount', width: 180 }, 'systemAccount', sortOrder))
   }
   baseColumns.push(
-    { title: '并发数', key: 'concurrency', width: 100, align: 'center', sorter: compareAccountConcurrency },
-    { title: '状态', key: 'status', width: 190 },
+    sortableColumn({ title: '并发数', key: 'concurrency', width: 100, align: 'center' }, 'concurrency', sortOrder),
+    sortableColumn({ title: '状态', key: 'status', width: 190 }, 'status', sortOrder),
     { title: '用量(日)', key: 'usage', width: 380 },
     { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
-    { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
-    { title: '账户到期时间', key: 'accountExpiresAt', width: 180, sorter: compareAccountExpiresAt },
-    { title: '最近使用时间', key: 'lastUsedAt', width: 180, sorter: compareAccountLastUsedAt },
-    { title: '说明', dataIndex: 'notes', key: 'notes', width: 200 },
+    sortableColumn({ title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 }, 'priority', sortOrder),
+    sortableColumn({ title: '账户到期时间', key: 'accountExpiresAt', width: 180 }, 'accountExpiresAt', sortOrder),
+    sortableColumn({ title: '最近使用时间', key: 'lastUsedAt', width: 180 }, 'lastUsedAt', sortOrder),
+    sortableColumn({ title: '说明', dataIndex: 'notes', key: 'notes', width: 200 }, 'notes', sortOrder),
     { title: '操作', key: 'actions', width: 160, fixed: 'right' }
   )
   return baseColumns
 }
+
+function sortableColumn(column: Record<string, unknown>, field: AccountListSortField, sortOrder: AccountTableSortOrderResolver): Record<string, unknown> {
+  return {
+    ...column,
+    sorter: { multiple: accountSortMultiple(field) },
+    sortOrder: sortOrder(field)
+  }
+}
+
+function accountSortMultiple(field: AccountListSortField): number {
+  const index = accountSortFields.indexOf(field)
+  return index >= 0 ? accountSortFields.length - index : 1
+}
+
+const accountSortFields: AccountListSortField[] = [
+  'priority',
+  'name',
+  'type',
+  'providerCode',
+  'systemAccount',
+  'concurrency',
+  'status',
+  'accountExpiresAt',
+  'lastUsedAt',
+  'notes'
+]
 
 export function tableColumnKey(column: { key?: unknown; dataIndex?: unknown }): string {
   return String(column.key ?? column.dataIndex ?? '')

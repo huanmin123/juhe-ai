@@ -11,6 +11,7 @@ let workerProcess: ChildProcess | undefined
 let restartTimer: NodeJS.Timeout | undefined
 let restartAttempts = 0
 let stopping = false
+let shutdownHooksInstalled = false
 
 const currentModulePath = fileURLToPath(import.meta.url)
 const sourceRoot = resolve(dirname(currentModulePath), '../..')
@@ -112,6 +113,11 @@ function scheduleWorkerRestart(): void {
 }
 
 function installSupervisorShutdownHooks(): void {
+  if (shutdownHooksInstalled) {
+    return
+  }
+  shutdownHooksInstalled = true
+
   process.once('exit', () => stopWorkerProcess())
   process.once('SIGINT', () => exitAfterWorkerStop(0))
   process.once('SIGTERM', () => exitAfterWorkerStop(0))

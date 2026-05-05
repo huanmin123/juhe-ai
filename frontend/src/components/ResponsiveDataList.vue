@@ -11,7 +11,7 @@
       :pagination="tablePagination"
       :scroll="tableScroll"
       :row-selection="rowSelection"
-      @change="(...args: unknown[]) => emit('change', ...args)"
+      @change="handleTableChange"
     >
       <template #emptyText>
         <slot name="emptyText">
@@ -55,6 +55,7 @@
 
 <script setup lang="ts" generic="T extends Record<string, any>">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { normalizeResponsiveTableSorter, type ResponsiveDataListSort } from './responsiveDataListSorting'
 
 type RowKey = string | ((record: T) => string | number)
 type TablePagination = false | Record<string, any>
@@ -98,6 +99,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   (event: 'change', ...args: unknown[]): void
+  (event: 'sort-change', sorts: ResponsiveDataListSort[]): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
 }>()
@@ -344,6 +346,19 @@ function handleMobileScroll(event: Event) {
   const target = event.currentTarget as HTMLElement
   const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight
   if (distanceToBottom <= 80) emit('mobile-load-more')
+}
+
+function handleTableChange(...args: unknown[]) {
+  emit('change', ...args)
+  if (tableChangeAction(args[3]) === 'sort') {
+    emit('sort-change', normalizeResponsiveTableSorter(args[2]))
+  }
+}
+
+function tableChangeAction(value: unknown): string | undefined {
+  return value && typeof value === 'object' && typeof (value as { action?: unknown }).action === 'string'
+    ? (value as { action: string }).action
+    : undefined
 }
 
 function handleTouchStart(event: TouchEvent) {

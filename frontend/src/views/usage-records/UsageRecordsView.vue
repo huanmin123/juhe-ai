@@ -175,7 +175,7 @@ const filteredRecords = computed(() => {
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
-    { title: '账户', dataIndex: 'accountName', key: 'account', width: 170 }
+    { title: 'AI账户名称', dataIndex: 'accountName', key: 'account', width: 170 }
   ]
   if (isAdmin.value) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })

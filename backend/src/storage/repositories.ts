@@ -33,6 +33,33 @@ import {
 
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 
+export type AccountListSortField = 'priority' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
+export type AccountListSortDirection = 'asc' | 'desc'
+
+export interface AccountListSort {
+  field: AccountListSortField
+  order: AccountListSortDirection
+}
+
+export interface AccountListOptions {
+  sorts?: AccountListSort[]
+}
+
+const accountListSortColumns: Record<AccountListSortField, string> = {
+  priority: 'account_rows.priority',
+  name: 'account_rows.name COLLATE NOCASE',
+  type: 'account_rows.type COLLATE NOCASE',
+  providerCode: 'account_rows.provider_code COLLATE NOCASE',
+  systemAccount: "COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) COLLATE NOCASE",
+  concurrency: 'account_rows.concurrency_limit',
+  status: 'account_rows.status COLLATE NOCASE',
+  accountExpiresAt: 'account_rows.account_expires_at',
+  lastUsedAt: "COALESCE(CASE WHEN account_rows.access_type = 'authorized' AND account_rows.authorization_id IS NOT NULL THEN authorization_usage.last_used_at ELSE account_rows.last_used_at END, account_usage.last_used_at)",
+  notes: 'account_rows.notes COLLATE NOCASE'
+}
+
+const defaultAccountListSorts: AccountListSort[] = [{ field: 'priority', order: 'asc' }]
+
 interface AccountRow {
   id: string
   system_account_id: string
@@ -55,6 +82,8 @@ interface AccountRow {
   last_error_message: string | null
   stream_failure_count: number
   stream_failure_window_started_at: string | null
+  created_at: string
+  updated_at: string
 }
 
 interface AccountFailureRow {
@@ -604,10 +633,11 @@ function refreshGroupAccountStatsAfterWrite(): void {
   refreshGroupAccountStatsCache()
 }
 
-export function listAccounts(access?: AccessScope): AccountSummary[] {
+export function listAccounts(access?: AccessScope, options?: AccountListOptions): AccountSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
-  const rows = listAccountRowsForAccess(access)
+  const listOptions = normalizeAccountListOptions(options)
+  const rows = listAccountRowsForAccess(access, listOptions)
   const accountIds = rows.map((row) => row.id)
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const usageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes)
@@ -770,22 +800,56 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
   }))
 }
 
-function listAccountRowsForAccess(access?: AccessScope): AccountListRow[] {
+function listAccountRowsForAccess(access: AccessScope | undefined, options: Required<AccountListOptions>): AccountListRow[] {
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const orderClause = buildAccountListOrderClause(options)
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return getDatabase()
-      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM accounts ORDER BY priority ASC, updated_at DESC")
+      .prepare(`
+        SELECT account_rows.*
+        FROM (
+          SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+          FROM accounts
+        ) account_rows
+        LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
+        LEFT JOIN usage_stats_totals account_usage
+          ON account_usage.system_account_id = account_rows.system_account_id
+          AND account_usage.scope_type = 'account'
+          AND account_usage.scope_id = account_rows.id
+        LEFT JOIN usage_stats_totals authorization_usage
+          ON authorization_usage.system_account_id = account_rows.system_account_id
+          AND authorization_usage.scope_type = 'account_authorization'
+          AND authorization_usage.scope_id = account_rows.authorization_id
+        ${orderClause}
+      `)
       .all() as unknown as AccountListRow[]
   }
   if (!viewerSystemAccountId) {
     return getDatabase()
-      .prepare("SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM accounts ORDER BY priority ASC, updated_at DESC")
+      .prepare(`
+        SELECT account_rows.*
+        FROM (
+          SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+          FROM accounts
+        ) account_rows
+        LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
+        LEFT JOIN usage_stats_totals account_usage
+          ON account_usage.system_account_id = account_rows.system_account_id
+          AND account_usage.scope_type = 'account'
+          AND account_usage.scope_id = account_rows.id
+        LEFT JOIN usage_stats_totals authorization_usage
+          ON authorization_usage.system_account_id = account_rows.system_account_id
+          AND authorization_usage.scope_type = 'account_authorization'
+          AND authorization_usage.scope_id = account_rows.authorization_id
+        ${orderClause}
+      `)
       .all() as unknown as AccountListRow[]
   }
   return getDatabase()
     .prepare(`
-      SELECT * FROM (
+      SELECT account_rows.*
+      FROM (
         SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM accounts
         WHERE accounts.system_account_id = ?
@@ -798,10 +862,49 @@ function listAccountRowsForAccess(access?: AccessScope): AccountListRow[] {
           AND ra.status = 'active'
           AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           AND accounts.system_account_id <> ?
-      )
-      ORDER BY priority ASC, updated_at DESC
+      ) account_rows
+      LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
+      LEFT JOIN usage_stats_totals account_usage
+        ON account_usage.system_account_id = account_rows.system_account_id
+        AND account_usage.scope_type = 'account'
+        AND account_usage.scope_id = account_rows.id
+      LEFT JOIN usage_stats_totals authorization_usage
+        ON authorization_usage.system_account_id = account_rows.system_account_id
+        AND authorization_usage.scope_type = 'account_authorization'
+        AND authorization_usage.scope_id = account_rows.authorization_id
+      ${orderClause}
     `)
     .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as AccountListRow[]
+}
+
+function normalizeAccountListOptions(options?: AccountListOptions): Required<AccountListOptions> {
+  const seenFields = new Set<AccountListSortField>()
+  const sorts = (options?.sorts ?? [])
+    .filter((sort): sort is AccountListSort => isAccountListSortField(sort.field) && isAccountListSortDirection(sort.order))
+    .filter((sort) => {
+      if (seenFields.has(sort.field)) return false
+      seenFields.add(sort.field)
+      return true
+    })
+  return {
+    sorts: sorts.length ? sorts : defaultAccountListSorts
+  }
+}
+
+function isAccountListSortField(value: unknown): value is AccountListSortField {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(accountListSortColumns, value)
+}
+
+function isAccountListSortDirection(value: unknown): value is AccountListSortDirection {
+  return value === 'asc' || value === 'desc'
+}
+
+function buildAccountListOrderClause(options: Required<AccountListOptions>): string {
+  const orderParts = options.sorts.map((sort) => {
+    const direction = sort.order === 'desc' ? 'DESC' : 'ASC'
+    return `${accountListSortColumns[sort.field]} ${direction}`
+  })
+  return `ORDER BY ${orderParts.join(', ')}`
 }
 
 function accountCredentialsForList(row: AccountListRow): Record<string, unknown> {

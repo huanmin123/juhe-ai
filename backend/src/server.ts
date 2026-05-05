@@ -28,7 +28,7 @@ import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { getDatabase } from './storage/database.js'
 import { listGlobalSettings } from './storage/repositories.js'
 import { ok } from './shared/http.js'
-import { installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
+import { installProcessLogHandlers, logger } from './shared/logger.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { sendRuntimeLogLineToWorker } from './modules/background/background-ipc.js'
@@ -103,7 +103,6 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
 
 getDatabase()
 installProcessLogHandlers()
-startLogMaintenance()
 setRuntimeLogLineSink((line) => sendRuntimeLogLineToWorker(line))
 
 app.use(requestContextMiddleware)

@@ -8,13 +8,11 @@ import { enqueueAuditLogsLocal, flushAllAuditLogQueue, getAuditLogQueueRuntime }
 import { startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
   enqueueRuntimeLogLineLocal,
-  flushAllRuntimeLogIndexQueue,
   getRuntimeLogIndexRuntime,
   installRuntimeLogIndexQueueShutdownHooks
 } from './modules/runtime-logs/runtime-log-index-queue.service.js'
 import {
   enqueueUsageRecordsLocal,
-  flushAllUsageRecordQueue,
   getUsageRecordQueueRuntime,
   installUsageRecordQueueShutdownHooks
 } from './modules/gateway/usage-record-queue.service.js'
@@ -35,7 +33,6 @@ installUsageRecordQueueShutdownHooks()
 installRuntimeLogIndexQueueShutdownHooks()
 process.once('beforeExit', flushAllAuditLogQueue)
 process.once('exit', flushAllAuditLogQueue)
-process.once('beforeExit', flushAllRuntimeLogIndexQueue)
 setRuntimeLogLineSink((line) => enqueueRuntimeLogLineLocal(line))
 startRuntimeLogFileImport()
 startBackgroundJobs()

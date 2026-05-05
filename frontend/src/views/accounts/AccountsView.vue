@@ -47,6 +47,7 @@
       :loading-more="mobileLoadingMore"
       :refreshing="mobileRefreshing"
       @change="handleAccountTableChange"
+      @sort-change="handleAccountSortChange"
       @mobile-load-more="loadMoreMobileAccounts"
       @mobile-refresh="refreshMobileAccounts"
     >
@@ -167,7 +168,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
+import type { AccountListSortField, AccountListSortParam } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import type { ResponsiveDataListSort, TableSortOrder } from '@/components/responsiveDataListSorting'
 import { authState } from '@/composables/useAuth'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
@@ -245,6 +248,7 @@ const testingAccount = ref<AccountSummary>()
 const bindingAccount = ref<AccountSummary>()
 const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
+const accountSorts = ref<AccountListSortParam[]>([{ field: 'priority', order: 'asc' }])
 const accounts = ref<AccountSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const providerModels = ref<ProviderModelPricing[]>([])
@@ -270,7 +274,7 @@ const statusEditOptions = computed(() => {
   return options
 })
 
-const columns = computed(() => buildAccountTableColumns(isAdmin.value))
+const columns = computed(() => buildAccountTableColumns(isAdmin.value, accountColumnSortOrder))
 const tableScrollX = computed(() => accountTableScrollX(isAdmin.value))
 const tableScrollY = computed(accountTableScrollY)
 
@@ -454,6 +458,54 @@ function canManageGroupAccounts(group: GroupSummary): boolean {
   return group.permissions?.canManageAccounts !== false && group.accessType !== 'authorized'
 }
 
+function accountColumnSortOrder(field: AccountListSortField): TableSortOrder {
+  const sort = accountSorts.value.find((item) => item.field === field)
+  if (!sort) return null
+  return sort.order === 'asc' ? 'ascend' : 'descend'
+}
+
+async function handleAccountSortChange(sorts: ResponsiveDataListSort[]) {
+  accountSorts.value = normalizeAccountTableSorts(sorts)
+  resetAccountListPagination()
+  await loadData()
+}
+
+function normalizeAccountTableSorts(sorts: ResponsiveDataListSort[]): AccountListSortParam[] {
+  const mappedSorts = sorts
+    .map((sort) => {
+      const field = accountSortFieldFromColumn(sort.columnKey)
+      if (!field) return undefined
+      return {
+        field,
+        order: sort.order === 'ascend' ? 'asc' : 'desc',
+        priority: sort.priority
+      }
+    })
+    .filter((sort): sort is AccountListSortParam & { priority: number } => Boolean(sort))
+    .sort((left, right) => right.priority - left.priority)
+  return mappedSorts.length
+    ? mappedSorts.map(({ field, order }) => ({ field, order }))
+    : [{ field: 'priority', order: 'asc' }]
+}
+
+function accountSortFieldFromColumn(columnKey: string): AccountListSortField | undefined {
+  if (accountSortableFields.includes(columnKey as AccountListSortField)) return columnKey as AccountListSortField
+  return undefined
+}
+
+const accountSortableFields: AccountListSortField[] = [
+  'priority',
+  'name',
+  'type',
+  'providerCode',
+  'systemAccount',
+  'concurrency',
+  'status',
+  'accountExpiresAt',
+  'lastUsedAt',
+  'notes'
+]
+
 function defaultGroupForProvider(providerCode: string) {
   const candidates = groups.value.filter((group) => group.providerCode === providerCode && canManageGroupAccounts(group))
   return candidates.find((group) => group.isDefault) ?? candidates[0]
@@ -500,7 +552,7 @@ async function loadData() {
   try {
     const systemAccountId = selectedSystemAccountId(filters.systemAccountId, isAdmin.value)
     const [accountList, providerList, proxyList, groupList, systemAccountList] = await Promise.all([
-      api.accounts.list({ systemAccountId }),
+      api.accounts.list({ systemAccountId, sorts: accountSorts.value }),
       isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
       isAdmin.value ? api.proxies.list() : Promise.resolve([] as ProxyProfileSummary[]),
       api.groups.list({ systemAccountId }),
@@ -556,10 +608,6 @@ function handleSystemAccountFilterChange() {
 
 function clearSelection() {
   selectedAccountIds.value = []
-}
-
-function currentListParams() {
-  return { systemAccountId: selectedSystemAccountId(filters.systemAccountId, isAdmin.value) }
 }
 
 function openCreate() {
