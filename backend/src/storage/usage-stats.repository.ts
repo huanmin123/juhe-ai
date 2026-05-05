@@ -220,6 +220,7 @@ export function refreshGroupAccountStatsCache(): void {
   database.exec('BEGIN')
   try {
     database.prepare('DELETE FROM group_account_stats').run()
+    const activeAuthorizationUntil = updatedAt
     database.prepare(`
       INSERT INTO group_account_stats (
         system_account_id, group_id, total, available, active, disabled, error,
@@ -228,19 +229,91 @@ export function refreshGroupAccountStatsCache(): void {
       SELECT
         groups.system_account_id,
         groups.id,
-        COUNT(accounts.id) AS total,
         SUM(CASE
-          WHEN accounts.status = 'active'
+          WHEN accounts.id IS NOT NULL
+            AND (
+              accounts.system_account_id = groups.system_account_id
+              OR (
+                account_authorizations.status = 'active'
+                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
+              )
+            )
+          THEN 1 ELSE 0
+        END) AS total,
+        SUM(CASE
+          WHEN accounts.id IS NOT NULL
+            AND (
+              accounts.system_account_id = groups.system_account_id
+              OR (
+                account_authorizations.status = 'active'
+                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
+              )
+            )
+            AND accounts.status = 'active'
             AND accounts.schedulable = 1
             AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
           THEN 1 ELSE 0
         END) AS available,
-        SUM(CASE WHEN accounts.status = 'active' THEN 1 ELSE 0 END) AS active,
-        SUM(CASE WHEN accounts.status = 'disabled' THEN 1 ELSE 0 END) AS disabled,
-        SUM(CASE WHEN accounts.status NOT IN ('active', 'disabled') THEN 1 ELSE 0 END) AS error,
-        SUM(CASE WHEN accounts.status = 'rate_limited' THEN 1 ELSE 0 END) AS rate_limited,
+        SUM(CASE
+          WHEN accounts.id IS NOT NULL
+            AND (
+              accounts.system_account_id = groups.system_account_id
+              OR (
+                account_authorizations.status = 'active'
+                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
+              )
+            )
+            AND accounts.status = 'active'
+          THEN 1 ELSE 0
+        END) AS active,
+        SUM(CASE
+          WHEN accounts.id IS NOT NULL
+            AND (
+              accounts.system_account_id = groups.system_account_id
+              OR (
+                account_authorizations.status = 'active'
+                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
+              )
+            )
+            AND accounts.status = 'disabled'
+          THEN 1 ELSE 0
+        END) AS disabled,
+        SUM(CASE
+          WHEN accounts.id IS NOT NULL
+            AND (
+              accounts.system_account_id = groups.system_account_id
+              OR (
+                account_authorizations.status = 'active'
+                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
+              )
+            )
+            AND accounts.status NOT IN ('active', 'disabled')
+          THEN 1 ELSE 0
+        END) AS error,
+        SUM(CASE
+          WHEN accounts.id IS NOT NULL
+            AND (
+              accounts.system_account_id = groups.system_account_id
+              OR (
+                account_authorizations.status = 'active'
+                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
+              )
+            )
+            AND accounts.status = 'rate_limited'
+          THEN 1 ELSE 0
+        END) AS rate_limited,
         0 AS current_concurrency,
-        COALESCE(SUM(accounts.concurrency_limit), 0) AS concurrency_limit,
+        COALESCE(SUM(CASE
+          WHEN accounts.id IS NOT NULL
+            AND (
+              accounts.system_account_id = groups.system_account_id
+              OR (
+                account_authorizations.status = 'active'
+                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
+              )
+            )
+          THEN accounts.concurrency_limit ELSE 0
+        END), 0) AS concurrency_limit,
         ? AS updated_at
       FROM groups
       LEFT JOIN group_accounts
@@ -249,9 +322,20 @@ export function refreshGroupAccountStatsCache(): void {
         AND group_accounts.enabled = 1
       LEFT JOIN accounts
         ON accounts.id = group_accounts.account_id
-        AND accounts.system_account_id = group_accounts.system_account_id
+      LEFT JOIN resource_authorizations account_authorizations
+        ON account_authorizations.id = group_accounts.account_authorization_id
       GROUP BY groups.system_account_id, groups.id
-    `).run(updatedAt, updatedAt)
+    `).run(
+      activeAuthorizationUntil,
+      activeAuthorizationUntil,
+      updatedAt,
+      activeAuthorizationUntil,
+      activeAuthorizationUntil,
+      activeAuthorizationUntil,
+      activeAuthorizationUntil,
+      activeAuthorizationUntil,
+      updatedAt
+    )
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')

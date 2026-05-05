@@ -2,7 +2,7 @@
   <a-card class="page-card groups-page-card responsive-page-card">
     <ResponsiveListToolbar :show-search="false" :show-reset="isAdmin" :show-filters="isAdmin" filter-title="筛选分组" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
       <template #inline-filters>
-        <a-select v-if="isAdmin" v-model:value="systemAccountFilter" show-search option-filter-prop="label" class="toolbar-select responsive-list-inline-filter" :options="systemAccountOptions" @change="loadData" />
+        <SystemPrincipalSelect v-if="isAdmin" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="loadData" />
       </template>
       <template #actions>
         <a-button type="primary" @click="openCreate">新建分组</a-button>
@@ -10,7 +10,7 @@
       <template #filters>
         <label v-if="isAdmin" class="mobile-filter-field">
           <span>系统账户</span>
-          <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" :options="systemAccountOptions" @change="loadData" />
+          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="loadData" />
         </label>
       </template>
     </ResponsiveListToolbar>
@@ -33,6 +33,9 @@
         </template>
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ groupSystemAccountText(record) }}</span>
+        </template>
+        <template v-else-if="column.key === 'description'">
+          <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'accountCount'">
           <div class="account-count-cell">
@@ -90,6 +93,10 @@
               <span>系统账户</span>
               <strong>{{ groupSystemAccountText(record) }}</strong>
             </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>说明</span>
+              <strong>{{ record.description || '-' }}</strong>
+            </div>
             <div class="mobile-list-meta-item">
               <span>可用账号</span>
               <strong>{{ groupStats(record).available }} / {{ groupStats(record).total }}</strong>
@@ -145,10 +152,11 @@ import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { authState } from '@/composables/useAuth'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
 import type { GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
-import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
@@ -183,6 +191,7 @@ const columns = computed(() => {
     { title: '当前并发', key: 'concurrency', width: 100 },
     { title: '用量(日)', key: 'usage', width: 280 },
     { title: '状态', key: 'status', width: 100 },
+    { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
     { title: '操作', key: 'actions', width: 150, fixed: 'right' }
   )
   return baseColumns
@@ -190,7 +199,6 @@ const columns = computed(() => {
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const filteredGroups = computed(() => groups.value.filter((group) => matchesSystemAccountFilter(group, systemAccountFilter.value, isAdmin.value)))
-const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 const providerOptions = computed(() => availableProviders.value.map((provider) => ({
   label: provider.name,
   value: provider.code,

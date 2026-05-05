@@ -10,6 +10,7 @@ export const apiKeysRouter = Router()
 
 const apiKeyCreateSchema = z.object({
   name: z.string().min(1),
+  description: z.string().trim().max(200).nullable().optional(),
   groupId: z.string().min(1),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().optional()

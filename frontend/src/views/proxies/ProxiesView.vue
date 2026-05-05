@@ -5,7 +5,7 @@
         <a-button type="primary" @click="openCreate">新建代理</a-button>
       </template>
     </ResponsiveListToolbar>
-    <ResponsiveDataList table-class="page-table proxy-table" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :scroll-x="1120" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table proxy-table" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :scroll-x="1000" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建代理，再在 OAuth 账户里选择绑定。" />
       </template>
@@ -24,6 +24,9 @@
         </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'description'">
+          <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
@@ -56,6 +59,10 @@
               <span>用户</span>
               <strong :class="record.username ? 'mono-cell' : 'muted-cell'">{{ record.username || '-' }}</strong>
             </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>说明</span>
+              <strong>{{ record.description || '-' }}</strong>
+            </div>
           </div>
           <div class="mobile-list-card-actions two-actions">
             <a-button type="primary" @click="openEdit(record)">编辑</a-button>
@@ -86,6 +93,9 @@
         </a-row>
         <a-form-item label="Host" required>
           <a-input v-model:value="form.host" placeholder="127.0.0.1" />
+        </a-form-item>
+        <a-form-item label="说明">
+          <a-textarea v-model:value="form.description" :rows="3" placeholder="可选，填写用途或绑定场景" />
         </a-form-item>
         <a-row :gutter="16">
           <a-col :span="12">
@@ -120,16 +130,17 @@ const loading = ref(false)
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const proxies = ref<ProxyProfileSummary[]>([])
-const form = reactive({ name: '', type: 'http', host: '', port: 7890, username: '', password: '', enabled: true })
+const form = reactive({ name: '', description: '', type: 'http', host: '', port: 7890, username: '', password: '', enabled: true })
 
 const columns = [
-  { title: '名称', dataIndex: 'name', key: 'name', width: 240 },
-  { title: '类型', dataIndex: 'type', key: 'type', width: 110 },
-  { title: '地址', dataIndex: 'host', key: 'host', width: 200 },
-  { title: '端口', dataIndex: 'port', key: 'port', width: 90 },
-  { title: '用户', dataIndex: 'username', key: 'username', width: 160 },
-  { title: '状态', key: 'status', width: 100 },
-  { title: '操作', key: 'actions', width: 140, fixed: 'right' }
+  { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
+  { title: '类型', dataIndex: 'type', key: 'type', width: 100 },
+  { title: '地址', dataIndex: 'host', key: 'host', width: 140 },
+  { title: '端口', dataIndex: 'port', key: 'port', width: 80 },
+  { title: '用户', dataIndex: 'username', key: 'username', width: 130 },
+  { title: '状态', key: 'status', width: 90 },
+  { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
+  { title: '操作', key: 'actions', width: 100, fixed: 'right' }
 ]
 
 const typeOptions = [
@@ -159,13 +170,13 @@ async function loadData() {
 
 function openCreate() {
   editingId.value = undefined
-  Object.assign(form, { name: '', type: 'http', host: '', port: 7890, username: '', password: '', enabled: true })
+  Object.assign(form, { name: '', description: '', type: 'http', host: '', port: 7890, username: '', password: '', enabled: true })
   modalOpen.value = true
 }
 
 function openEdit(proxy: ProxyProfileSummary) {
   editingId.value = proxy.id
-  Object.assign(form, { name: proxy.name, type: proxy.type, host: proxy.host, port: proxy.port, username: proxy.username ?? '', password: '', enabled: proxy.enabled })
+  Object.assign(form, { name: proxy.name, description: proxy.description ?? '', type: proxy.type, host: proxy.host, port: proxy.port, username: proxy.username ?? '', password: '', enabled: proxy.enabled })
   modalOpen.value = true
 }
 

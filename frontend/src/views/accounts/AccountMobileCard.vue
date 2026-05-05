@@ -46,11 +46,16 @@
         <span>到期时间</span>
         <strong :class="isAccountPackageExpired(account) ? 'expired-cell' : ''">{{ formatDateTime(account.accountExpiresAt) }}</strong>
       </div>
+      <div class="account-mobile-meta-item account-mobile-meta-wide">
+        <span>说明</span>
+        <strong>{{ account.notes || '-' }}</strong>
+      </div>
     </div>
 
     <div class="account-mobile-card-actions">
       <template v-if="isAuthorizedAccount(account)">
         <a-button @click="$emit('test')">测试</a-button>
+        <a-button type="primary" @click="$emit('bind-group')">{{ groupName ? '调整分组' : '绑定分组' }}</a-button>
       </template>
       <template v-else>
         <a-button v-if="canEdit" type="primary" @click="$emit('edit')">编辑</a-button>
@@ -106,6 +111,7 @@ defineProps<{
 defineEmits<{
   (event: 'delete'): void
   (event: 'edit'): void
+  (event: 'bind-group'): void
   (event: 'menu-click', menuEvent: { key: string | number }): void
   (event: 'test'): void
   (event: 'toggle-selection'): void

@@ -5,6 +5,7 @@ export type SystemAccountRole = 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'
 export type AuthorizationStatus = 'active' | 'paused' | 'expired' | 'revoked'
+export type AccountGroupBindStatus = 'bound' | 'authorization_unavailable'
 export type AuthorizationResourceType = 'account' | 'group'
 export type AuthorizationSourceType = 'manual' | 'team'
 export type AuthorizationSourceStatus = 'active' | 'superseded' | 'revoked'
@@ -29,6 +30,7 @@ export interface SystemAccountSummary {
   id: string
   username: string
   displayName: string
+  description?: string
   role: SystemAccountRole
   status: SystemAccountStatus
   mustChangePassword: boolean
@@ -41,6 +43,7 @@ export interface ProviderDefinition {
   id: string
   code: ProviderCode
   name: string
+  description?: string
   enabled: boolean
   baseUrl: string
   accountTypes: AccountType[]
@@ -167,6 +170,9 @@ export interface AccountSummary {
   oauthUsage?: AccountOAuthUsageSnapshot
   accessType?: ResourceAccessType
   accountAuthorizationId?: string
+  boundGroupId?: string
+  boundGroupName?: string
+  groupBindStatus?: AccountGroupBindStatus
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
@@ -374,10 +380,12 @@ export interface ApiKeySummary {
   systemAccountId?: string
   systemAccountName?: string
   name: string
+  description?: string
   keyPrefix: string
   key: string
   status: 'active' | 'disabled'
   groupId: string
+  groupAuthorizationId?: string
   expiresAt?: string
 }
 
@@ -392,6 +400,7 @@ export interface OpenAIAuthURLResult {
 export interface ProxyProfileSummary {
   id: string
   name: string
+  description?: string
   type: 'http' | 'https' | 'socks5' | string
   host: string
   port: number

@@ -91,6 +91,7 @@ export const api = {
     list: (params?: ListParams) => unwrap<AccountSummary[]>(http.get('/accounts', { params })),
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload)),
+    bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload)),
     test: (id: string, payload?: { model?: string; prompt?: string }) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { timeout: 130000 })),
     delete: (id: string) => http.delete(`/accounts/${id}`)
   },

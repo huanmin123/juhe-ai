@@ -8,6 +8,7 @@ export const proxiesRouter = Router()
 
 const proxySchema = z.object({
   name: z.string().min(1),
+  description: z.string().trim().max(200).nullable().optional(),
   type: z.enum(['http', 'https', 'socks5']),
   host: z.string().min(1),
   port: z.number().int().min(1).max(65535),

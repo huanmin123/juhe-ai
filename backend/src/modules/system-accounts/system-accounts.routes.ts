@@ -3,13 +3,15 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { createSystemAccount, listSystemAccounts, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
+import { clearGatewayApiKeyValidationCache, createSystemAccount, listSystemAccounts, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
+import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 export const systemAccountsRouter = Router()
 
 const createSchema = z.object({
   username: z.string().trim().min(2),
   displayName: z.string().trim().min(1),
+  description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4),
   role: z.enum(['admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
@@ -18,6 +20,7 @@ const createSchema = z.object({
 
 const updateSchema = z.object({
   displayName: z.string().trim().min(1).optional(),
+  description: z.string().trim().max(200).nullable().optional(),
   password: z.string().min(4).optional(),
   role: z.enum(['admin', 'user']).optional(),
   status: z.enum(['active', 'disabled']).optional(),
@@ -59,6 +62,10 @@ systemAccountsRouter.patch('/:id', requireAdmin, (req, res) => {
     }
     if (parsed.data.status === 'disabled' || parsed.data.password) {
       revokeAllSessionsForAccount(req.params.id)
+    }
+    if (parsed.data.status) {
+      clearGatewayApiKeyValidationCache()
+      clearGatewayRuntimeCache()
     }
     res.json(ok(account))
   } catch (error) {

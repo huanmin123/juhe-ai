@@ -23,6 +23,9 @@
             <span v-if="!visibleProviderCapabilities(record.capabilities).length" class="muted-text">-</span>
           </a-space>
         </template>
+        <template v-else-if="column.key === 'description'">
+          <span>{{ record.description || '-' }}</span>
+        </template>
         <template v-else-if="column.key === 'baseUrl'">
           <span class="mono-cell">{{ record.baseUrl }}</span>
         </template>
@@ -47,6 +50,10 @@
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>能力</span>
               <strong>{{ formatCapabilitiesSummary(record.capabilities) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>说明</span>
+              <strong>{{ record.description || '-' }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>默认 Base URL</span>
@@ -176,7 +183,8 @@ const columns = [
   { title: '状态', key: 'status', width: 90 },
   { title: '账户类型', key: 'accountTypes', width: 180 },
   { title: '能力', key: 'capabilities', width: 360 },
-  { title: '默认 Base URL', dataIndex: 'baseUrl', key: 'baseUrl', width: 260 },
+  { title: '默认 Base URL', dataIndex: 'baseUrl', key: 'baseUrl', width: 240 },
+  { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
   { title: '操作', key: 'actions', fixed: 'right', width: 120 }
 ]
 

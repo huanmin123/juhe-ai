@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountAuthorizationUsageOverview, AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, AccountUsageStatsOverview, ApiKeySummary, AuthorizationStatus, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberStatus, SystemTeamMemberSummary, SystemTeamStatus, SystemTeamSummary, UsageByWindow } from '../domain/types.js'
+import type { AccountAuthorizationUsageOverview, AccountGroupBindStatus, AccountOAuthUsageSnapshot, AccountOAuthUsageWindow, AccountStatus, AccountSummary, AccountType, AccountUsageStatsOverview, ApiKeySummary, AuthorizationStatus, ErrorPolicySummary, GroupSummary, ProviderCode, ProviderDefinition, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberStatus, SystemTeamMemberSummary, SystemTeamStatus, SystemTeamSummary, UsageByWindow } from '../domain/types.js'
 import { createAppCache } from '../shared/cache.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, resolveAccessScope, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { getAccountAuthorizationUsageOverview as buildAccountAuthorizationUsageOverview, getAccountUsageStatsOverview as buildAccountUsageStatsOverview } from './account-usage.repository.js'
@@ -26,6 +26,7 @@ interface ProviderRow {
   id: string
   code: ProviderCode
   name: string
+  description: string | null
   enabled: number
   base_url: string
   account_types_json: string
@@ -84,6 +85,7 @@ type GatewayApiKeyCacheEntry = {
 
 interface GroupAccountRow {
   account_id: string
+  account_authorization_id?: string | null
 }
 
 interface SystemTeamRow {
@@ -194,16 +196,19 @@ interface ApiKeyRow {
   id: string
   system_account_id: string
   name: string
+  description: string | null
   key_prefix: string
   key_secret_encrypted: string | null
   status: 'active' | 'disabled'
   group_id: string
+  group_authorization_id: string | null
   expires_at: string | null
 }
 
 interface ProxyRow {
   id: string
   name: string
+  description: string | null
   type: string
   host: string
   port: number
@@ -240,6 +245,7 @@ export interface SystemAccountSummary {
   id: string
   username: string
   displayName: string
+  description?: string
   role: SystemAccountRole
   status: SystemAccountStatus
   mustChangePassword: boolean
@@ -252,6 +258,7 @@ interface SystemAccountRow {
   id: string
   username: string
   display_name: string
+  description: string | null
   role: SystemAccountRole
   status: SystemAccountStatus
   password_hash: string
@@ -270,6 +277,7 @@ export interface SessionWithAccount {
 export interface ProxyProfileSummary {
   id: string
   name: string
+  description?: string
   type: string
   host: string
   port: number
@@ -423,6 +431,7 @@ function systemAccountSummaryFromRow(row: SystemAccountRow): SystemAccountSummar
     id: row.id,
     username: row.username,
     displayName: row.display_name,
+    description: row.description ?? undefined,
     role: row.role,
     status: row.status,
     mustChangePassword: row.must_change_password === 1,
@@ -467,6 +476,34 @@ function canUseAccount(accountId: string, systemAccountId: string): boolean {
   const ownerId = accountSystemAccountId(accountId)
   if (ownerId === systemAccountId) return true
   return Boolean(activeResourceAuthorization('account', accountId, systemAccountId))
+}
+
+function accountGroupBinding(accountId: string, systemAccountId: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
+  const row = getDatabase()
+    .prepare(`
+      SELECT
+        group_accounts.group_id,
+        group_accounts.account_authorization_id,
+        groups.name AS group_name
+      FROM group_accounts
+      INNER JOIN groups ON groups.id = group_accounts.group_id
+      WHERE group_accounts.account_id = ?
+        AND group_accounts.system_account_id = ?
+        AND group_accounts.enabled = 1
+      ORDER BY group_accounts.updated_at DESC
+      LIMIT 1
+    `)
+    .get(accountId, systemAccountId) as unknown as { group_id?: string; group_name?: string; account_authorization_id?: string | null } | undefined
+  if (!row?.group_id) {
+    return undefined
+  }
+  const ownerId = accountSystemAccountId(accountId)
+  const authorization = ownerId && ownerId !== systemAccountId ? activeAccountAuthorization(accountId, systemAccountId) : undefined
+  return {
+    groupId: row.group_id,
+    groupName: row.group_name ?? row.group_id,
+    groupBindStatus: row.account_authorization_id && authorization?.id !== row.account_authorization_id ? 'authorization_unavailable' : 'bound'
+  }
 }
 
 function canScheduleAuthorizedAccount(input: {
@@ -592,6 +629,7 @@ export function verifySystemAccountCredentials(username: string, password: strin
 export function createSystemAccount(input: {
   username: string
   displayName: string
+  description?: string | null
   password: string
   role?: SystemAccountRole
   status?: SystemAccountStatus
@@ -608,6 +646,7 @@ export function createSystemAccount(input: {
     id,
     username,
     displayName,
+    description: optionalString(input.description),
     role: input.role ?? 'user',
     status: input.status ?? 'active',
     mustChangePassword: input.mustChangePassword ?? true,
@@ -619,10 +658,10 @@ export function createSystemAccount(input: {
     database
       .prepare(`
         INSERT INTO system_accounts (
-          id, username, display_name, role, status, password_hash, must_change_password, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+          id, username, display_name, description, role, status, password_hash, must_change_password, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(summary.id, summary.username, summary.displayName, summary.role, summary.status, hashPassword(input.password), summary.mustChangePassword ? 1 : 0, now, now)
+      .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, hashPassword(input.password), summary.mustChangePassword ? 1 : 0, now, now)
     ensureDefaultOpenAIGroupForSystemAccount(summary.id, now)
     database.exec('COMMIT')
   } catch (error) {
@@ -644,6 +683,7 @@ function ensureDefaultOpenAIGroupForSystemAccount(systemAccountId: string, times
 
 export function updateSystemAccount(id: string, input: {
   displayName?: string
+  description?: string | null
   role?: SystemAccountRole
   status?: SystemAccountStatus
   mustChangePassword?: boolean
@@ -657,6 +697,7 @@ export function updateSystemAccount(id: string, input: {
   const next = {
     ...current,
     displayName: input.displayName?.trim() || current.displayName,
+    description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
     role: input.role ?? current.role,
     status: input.status ?? current.status,
     mustChangePassword: input.mustChangePassword ?? current.mustChangePassword
@@ -667,18 +708,18 @@ export function updateSystemAccount(id: string, input: {
     getDatabase()
       .prepare(`
         UPDATE system_accounts
-        SET display_name = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, updated_at = ?
+        SET display_name = ?, description = ?, role = ?, status = ?, password_hash = ?, must_change_password = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(next.displayName, next.role, next.status, hashPassword(input.password), next.mustChangePassword ? 1 : 0, now, id)
+      .run(next.displayName, next.description ?? null, next.role, next.status, hashPassword(input.password), next.mustChangePassword ? 1 : 0, now, id)
   } else {
     getDatabase()
       .prepare(`
         UPDATE system_accounts
-        SET display_name = ?, role = ?, status = ?, must_change_password = ?, updated_at = ?
+        SET display_name = ?, description = ?, role = ?, status = ?, must_change_password = ?, updated_at = ?
         WHERE id = ?
       `)
-      .run(next.displayName, next.role, next.status, next.mustChangePassword ? 1 : 0, now, id)
+      .run(next.displayName, next.description ?? null, next.role, next.status, next.mustChangePassword ? 1 : 0, now, id)
   }
   return { ...next, updatedAt: now }
 }
@@ -811,7 +852,8 @@ function disableExpiredAccounts(access?: AccessScope): void {
 
 export function expireDueResourceAuthorizations(): number {
   const now = nowIso()
-  const result = getDatabase()
+  const database = getDatabase()
+  const result = database
     .prepare(`
       UPDATE resource_authorizations
       SET status = 'expired',
@@ -823,6 +865,7 @@ export function expireDueResourceAuthorizations(): number {
         AND expires_at <= ?
     `)
     .run(now, now, now)
+  cleanupInactiveAuthorizationBindings(database)
   return Number(result.changes ?? 0)
 }
 
@@ -944,6 +987,7 @@ export function listProviders(): ProviderDefinition[] {
     id: row.id,
     code: row.code,
     name: row.name,
+    description: row.description ?? undefined,
     enabled: row.enabled === 1,
     baseUrl: row.base_url,
     accountTypes: parseJsonArray(row.account_types_json) as AccountType[],
@@ -974,6 +1018,7 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
       ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : todayUsageByAccount.get(row.id) ?? emptyAccountUsageSummary()
     const authorizationStats = authorizationStatsByAccount.get(row.id) ?? { authorizationCount: 0, authorizationTeamCount: 0 }
+    const groupBinding = viewerSystemAccountId ? accountGroupBinding(row.id, viewerSystemAccountId) : undefined
     return {
     id: row.id,
     systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -1002,6 +1047,9 @@ export function listAccounts(access?: AccessScope): AccountSummary[] {
     oauthUsage: row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined,
     accessType: row.access_type ?? 'owner',
     accountAuthorizationId: row.authorization_id ?? undefined,
+    boundGroupId: groupBinding?.groupId,
+    boundGroupName: groupBinding?.groupName,
+    groupBindStatus: groupBinding?.groupBindStatus,
     authorizationStatus: row.authorization_status ?? undefined,
     authorizationSources: row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : undefined,
     permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions(),
@@ -1678,9 +1726,27 @@ function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
 function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, string[]> {
   const ids = [...new Set(groupIds)].filter(Boolean)
   if (!ids.length) return new Map()
+  const now = nowIso()
   const rows = getDatabase()
-    .prepare(`SELECT group_id, account_id FROM group_accounts WHERE enabled = 1 AND group_id IN (${sqlPlaceholders(ids.length)}) ORDER BY group_id ASC, created_at ASC`)
-    .all(...ids) as unknown as Array<{ group_id: string; account_id: string }>
+    .prepare(`
+      SELECT group_accounts.group_id, group_accounts.account_id
+      FROM group_accounts
+      INNER JOIN groups ON groups.id = group_accounts.group_id
+      INNER JOIN accounts ON accounts.id = group_accounts.account_id
+      LEFT JOIN resource_authorizations account_authorizations
+        ON account_authorizations.id = group_accounts.account_authorization_id
+      WHERE group_accounts.enabled = 1
+        AND group_accounts.group_id IN (${sqlPlaceholders(ids.length)})
+        AND (
+          accounts.system_account_id = groups.system_account_id
+          OR (
+            account_authorizations.status = 'active'
+            AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
+          )
+        )
+      ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC
+    `)
+    .all(...ids, now) as unknown as Array<{ group_id: string; account_id: string }>
   const result = new Map<string, string[]>()
   for (const row of rows) {
     result.set(row.group_id, [...(result.get(row.group_id) ?? []), row.account_id])
@@ -1757,8 +1823,30 @@ export function updateGroup(id: string, input: Record<string, unknown>): GroupSu
     .prepare('UPDATE groups SET name = ?, provider_code = ?, description = COALESCE(?, description), enabled = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
     .run(next.name, next.providerCode, optionalString(input.description) ?? null, next.enabled ? 1 : 0, nowIso(), id, systemAccountId)
   database
-    .prepare('DELETE FROM group_accounts WHERE group_id = ? AND system_account_id = ? AND account_id IN (SELECT id FROM accounts WHERE provider_code <> ? OR system_account_id <> ?)')
-    .run(id, systemAccountId, next.providerCode, systemAccountId)
+    .prepare(`
+      DELETE FROM group_accounts
+      WHERE group_id = ?
+        AND system_account_id = ?
+        AND account_id IN (
+          SELECT accounts.id
+          FROM accounts
+          LEFT JOIN resource_authorizations account_authorizations
+            ON account_authorizations.id = group_accounts.account_authorization_id
+          WHERE accounts.provider_code <> ?
+            OR (
+              accounts.system_account_id <> ?
+              AND (
+                account_authorizations.id IS NULL
+                OR account_authorizations.status <> 'active'
+                OR (
+                  account_authorizations.expires_at IS NOT NULL
+                  AND account_authorizations.expires_at <= ?
+                )
+              )
+            )
+        )
+    `)
+    .run(id, systemAccountId, next.providerCode, systemAccountId, nowIso())
   return listGroups().find((group) => group.id === id)
 }
 
@@ -1777,15 +1865,15 @@ export function deleteGroup(id: string): boolean {
 
 export function setAccountGroup(accountId: string, groupId: string | null): AccountSummary | undefined {
   const database = getDatabase()
-  const current = listAccounts().find((account) => account.id === accountId)
-  if (!current) {
-    return undefined
-  }
   if (!groupId) {
     return undefined
   }
   const group = groupOwnerAndProvider(groupId)
   if (!group || !canManageResourceOwner(group.systemAccountId)) {
+    return undefined
+  }
+  const current = listAccounts({ systemAccountId: group.systemAccountId, role: 'user' }).find((account) => account.id === accountId)
+  if (!current) {
     return undefined
   }
   if (!canUseAccount(accountId, group.systemAccountId)) {
@@ -1794,14 +1882,29 @@ export function setAccountGroup(accountId: string, groupId: string | null): Acco
   if (group.providerCode !== current.providerCode) {
     return undefined
   }
+  const accountOwnerId = accountSystemAccountId(accountId)
+  const accountAuthorization = accountOwnerId && accountOwnerId !== group.systemAccountId
+    ? activeAccountAuthorization(accountId, group.systemAccountId)
+    : undefined
+  if (accountOwnerId !== group.systemAccountId && !accountAuthorization) {
+    return undefined
+  }
 
   database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, group.systemAccountId)
   const now = nowIso()
   database
-    .prepare('INSERT INTO group_accounts (system_account_id, group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
-    .run(group.systemAccountId, groupId, accountId, 1, now, now)
+    .prepare(`
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, weight, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(group_id, account_id) DO UPDATE SET
+        account_authorization_id = excluded.account_authorization_id,
+        weight = excluded.weight,
+        enabled = 1,
+        updated_at = excluded.updated_at
+    `)
+    .run(group.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, 1, now, now)
 
-  return listAccounts().find((account) => account.id === accountId)
+  return listAccounts({ systemAccountId: group.systemAccountId, role: 'user' }).find((account) => account.id === accountId)
 }
 
 export function addAccountToGroup(groupId: string, accountId: string, weight = 1): GroupSummary | undefined {
@@ -1816,15 +1919,22 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
   if (!validAccountIdsForGroup(current.providerCode, [accountId], current.systemAccountId).includes(accountId)) {
     return undefined
   }
+  const accountOwnerId = accountSystemAccountId(accountId)
+  const accountAuthorization = accountOwnerId && accountOwnerId !== current.systemAccountId
+    ? activeAccountAuthorization(accountId, current.systemAccountId)
+    : undefined
+  if (accountOwnerId !== current.systemAccountId && !accountAuthorization) {
+    return undefined
+  }
   const now = nowIso()
   database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, current.systemAccountId)
   database
     .prepare(`
-      INSERT INTO group_accounts (system_account_id, group_id, account_id, weight, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, 1, ?, ?)
-      ON CONFLICT(group_id, account_id) DO UPDATE SET enabled = 1, updated_at = excluded.updated_at
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, weight, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(group_id, account_id) DO UPDATE SET account_authorization_id = excluded.account_authorization_id, enabled = 1, updated_at = excluded.updated_at
     `)
-    .run(current.systemAccountId, groupId, accountId, weight, now, now)
+    .run(current.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, weight, now, now)
   return listGroups().find((group) => group.id === groupId)
 }
 
@@ -2026,6 +2136,7 @@ export function revokeResourceAuthorization(authorizationId: string, input: Reco
     if (revokeAll || !sourceType) {
       database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'authorization_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND status IN ('active', 'superseded')").run(now, actor, now, now, authorizationId)
       database.prepare("UPDATE resource_authorizations SET status = 'revoked', effective_source_type = NULL, effective_source_team_id = NULL, revoked_by = ?, revoked_at = ?, revoked_reason = 'authorization_revoked', last_source_changed_at = ?, updated_at = ? WHERE id = ?").run(actor, now, now, now, authorizationId)
+      cleanupInactiveAuthorizationBindings(database)
     } else {
       const params: Array<string | number | null> = [actor, now, now, authorizationId, sourceType]
       let sql = "UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'source_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = ? AND status = 'active'"
@@ -2098,6 +2209,7 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
       WHERE id = ?
     `)
     .run(nextStatus, nextExpiresAt, nextRevokedBy, nextRevokedAt, nextRevokedReason, now, authorizationId)
+  cleanupInactiveAuthorizationBindings(database)
   return listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
 }
 
@@ -2152,7 +2264,15 @@ function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourc
 }
 
 function activeTeamMemberRows(teamId: string, database = getDatabase()): SystemTeamMemberRow[] {
-  return database.prepare("SELECT * FROM system_team_members WHERE team_id = ? AND status = 'active' ORDER BY joined_at ASC").all(teamId) as unknown as SystemTeamMemberRow[]
+  return database.prepare(`
+    SELECT system_team_members.*
+    FROM system_team_members
+    INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id
+    WHERE system_team_members.team_id = ?
+      AND system_team_members.status = 'active'
+      AND system_accounts.status = 'active'
+    ORDER BY system_team_members.joined_at ASC
+  `).all(teamId) as unknown as SystemTeamMemberRow[]
 }
 
 function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
@@ -2275,6 +2395,7 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
           updated_at = ?
       WHERE id = ?
     `).run(now, actor, now, now, now, now, authorizationId)
+    cleanupInactiveAuthorizationBindings(database, [authorizationId])
     return
   }
   const activeTeamSource = database.prepare(`
@@ -2345,6 +2466,13 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
         updated_at = ?
     WHERE id = ?
   `).run(actor, now, now, now, authorizationId)
+  cleanupInactiveAuthorizationBindings(database, [authorizationId])
+}
+
+function cleanupInactiveAuthorizationBindings(database = getDatabase(), authorizationIds?: string[]): void {
+  void database
+  void authorizationIds
+  clearGatewayApiKeyValidationCache()
 }
 
 function upsertTeamResourceGrant(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; teamId: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): TeamResourceAuthorizationGrantRow {
@@ -2557,10 +2685,12 @@ export function listApiKeys(access?: AccessScope): ApiKeySummary[] {
     systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
     systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
     name: row.name,
+    description: row.description ?? undefined,
     keyPrefix: row.key_prefix,
     key: decryptApiKeySecret(row.key_secret_encrypted),
     status: row.status,
     groupId: row.group_id,
+    groupAuthorizationId: row.group_authorization_id ?? undefined,
     expiresAt: row.expires_at ?? undefined
   }))
 }
@@ -2587,11 +2717,16 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
   if (!group || !canUseGroup(groupId, systemAccountId)) {
     throw new Error('Invalid API key group')
   }
+  const groupAuthorization = group.systemAccountId !== systemAccountId ? activeGroupAuthorization(groupId, systemAccountId) : undefined
+  if (group.systemAccountId !== systemAccountId && !groupAuthorization) {
+    throw new Error('Invalid API key group')
+  }
   const record: ApiKeySummary & { key: string } = {
     id: newId('key'),
     systemAccountId: includeSystemAccountFields() ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields() ? systemAccountNameMap().get(systemAccountId) : undefined,
     name: String(input.name ?? '未命名 API Key'),
+    description: optionalString(input.description),
     keyPrefix,
     status: input.status === 'disabled' ? 'disabled' : 'active',
     groupId,
@@ -2600,10 +2735,10 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
   }
   getDatabase()
     .prepare(`
-      INSERT INTO api_keys (id, system_account_id, name, key_hash, key_prefix, key_secret_encrypted, status, group_id, expires_at, scopes_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, scopes_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    .run(record.id, systemAccountId, record.name, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, record.expiresAt ?? null, JSON.stringify(input.scopes ?? []), now, now)
+    .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, groupAuthorization?.id ?? null, record.expiresAt ?? null, JSON.stringify(input.scopes ?? []), now, now)
   return record
 }
 export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined {
@@ -2617,7 +2752,22 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     return cached.row
   }
 
-  const row = getDatabase().prepare('SELECT id, system_account_id, group_id, status, expires_at FROM api_keys WHERE key_hash = ?').get(keyHash) as unknown as GatewayApiKeyRow | undefined
+  const row = getDatabase().prepare(`
+    SELECT api_keys.id, api_keys.system_account_id, api_keys.group_id, api_keys.status, api_keys.expires_at
+    FROM api_keys
+    INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
+    LEFT JOIN resource_authorizations group_authorizations
+      ON group_authorizations.id = api_keys.group_authorization_id
+    WHERE api_keys.key_hash = ?
+      AND system_accounts.status = 'active'
+      AND (
+        api_keys.group_authorization_id IS NULL
+        OR (
+          group_authorizations.status = 'active'
+          AND (group_authorizations.expires_at IS NULL OR group_authorizations.expires_at > ?)
+        )
+      )
+  `).get(keyHash, nowIso()) as unknown as GatewayApiKeyRow | undefined
   if (!row || row.status !== 'active') {
     gatewayApiKeyCache.delete(keyHash)
     return undefined
@@ -2631,6 +2781,10 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     forceRevalidateAtMs: now + GATEWAY_API_KEY_CACHE_MAX_STALE_MS
   }, { ttlMs: gatewayApiKeyCacheTtlMs(now, row) })
   return row
+}
+
+export function clearGatewayApiKeyValidationCache(): void {
+  gatewayApiKeyCache.clear()
 }
 
 function isGatewayApiKeyRowExpired(row: GatewayApiKeyRow, now = Date.now()): boolean {
@@ -2667,16 +2821,21 @@ export function updateApiKey(id: string, input: Record<string, unknown>): ApiKey
   if (!nextGroup || !canUseGroup(nextGroupId, systemAccountId)) {
     return undefined
   }
+  const nextGroupAuthorization = nextGroup.systemAccountId !== systemAccountId ? activeGroupAuthorization(nextGroupId, systemAccountId) : undefined
+  if (nextGroup.systemAccountId !== systemAccountId && !nextGroupAuthorization) {
+    return undefined
+  }
   const next: ApiKeySummary = {
     ...current,
     name: typeof input.name === 'string' ? input.name : current.name,
+    description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
     status: input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : current.status,
     groupId: nextGroupId,
     expiresAt: optionalServerDateTimeIso(input.expiresAt ?? input.expires_at) ?? current.expiresAt
   }
   getDatabase()
-    .prepare('UPDATE api_keys SET name = ?, status = ?, group_id = ?, expires_at = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-    .run(next.name, next.status, next.groupId, next.expiresAt ?? null, nowIso(), id, systemAccountId)
+    .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, group_authorization_id = ?, expires_at = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+    .run(next.name, next.description ?? null, next.status, next.groupId, nextGroupAuthorization?.id ?? null, next.expiresAt ?? null, nowIso(), id, systemAccountId)
   invalidateGatewayApiKeyCacheById(id)
   return next
 }
@@ -2699,6 +2858,7 @@ function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
   return {
     id: row.id,
     name: row.name,
+    description: row.description ?? undefined,
     type: row.type,
     host: row.host,
     port: row.port,
@@ -2714,6 +2874,7 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
   const proxy: ProxyProfileSummary = {
     id: newId('proxy'),
     name: String(input.name ?? '未命名代理'),
+    description: optionalString(input.description),
     type: String(input.type ?? 'http'),
     host: String(input.host ?? ''),
     port: Number(input.port ?? 0),
@@ -2723,10 +2884,10 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
   }
   getDatabase()
     .prepare(`
-      INSERT INTO proxy_profiles (id, name, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO proxy_profiles (id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    .run(proxy.id, proxy.name, proxy.type, proxy.host, proxy.port, proxy.username ?? null, input.password ? encryptJson({ password: input.password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
+    .run(proxy.id, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, input.password ? encryptJson({ password: input.password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
   return proxy
 }
 
@@ -2738,6 +2899,7 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   const next: ProxyProfileSummary = {
     ...current,
     name: typeof input.name === 'string' ? input.name : current.name,
+    description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
     type: typeof input.type === 'string' ? input.type : current.type,
     host: typeof input.host === 'string' ? input.host : current.host,
     port: Number(input.port ?? current.port),
@@ -2747,10 +2909,10 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   getDatabase()
     .prepare(`
       UPDATE proxy_profiles
-      SET name = ?, type = ?, host = ?, port = ?, username = ?, enabled = ?, updated_at = ?
+      SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, enabled = ?, updated_at = ?
       WHERE id = ?
     `)
-    .run(next.name, next.type, next.host, next.port, next.username ?? null, next.enabled ? 1 : 0, nowIso(), id)
+    .run(next.name, next.description ?? null, next.type, next.host, next.port, next.username ?? null, next.enabled ? 1 : 0, nowIso(), id)
   return next
 }
 
@@ -2908,7 +3070,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
   disableExpiredAccounts({ systemAccountId: groupAccess.groupOwnerSystemAccountId, role: 'user' })
   const groupAccountRows = database
     .prepare(`
-      SELECT group_accounts.account_id
+      SELECT group_accounts.account_id, group_accounts.account_authorization_id
       FROM group_accounts
       INNER JOIN accounts ON accounts.id = group_accounts.account_id
       WHERE group_accounts.group_id = ? AND group_accounts.enabled = 1
@@ -2941,7 +3103,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
     if (!apiKey) {
       continue
     }
-    const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess)
+    const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, groupAccount.account_authorization_id ?? undefined)
     if (!accountAccess) {
       continue
     }
@@ -2986,7 +3148,8 @@ function resolveOpenAIAccountAccess(
   accountId: string,
   accountOwnerSystemAccountId: string,
   callerSystemAccountId: string,
-  groupAccess: GroupUsageAccessMetadata
+  groupAccess: GroupUsageAccessMetadata,
+  boundAccountAuthorizationId?: string
 ): { accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'; accountAuthorizationId?: string } | undefined {
   if (accountOwnerSystemAccountId === callerSystemAccountId) {
     return { accountAccessType: 'owner' }
@@ -2997,6 +3160,9 @@ function resolveOpenAIAccountAccess(
       : undefined
   }
   const authorization = activeAccountAuthorization(accountId, callerSystemAccountId)
+  if (boundAccountAuthorizationId && authorization?.id !== boundAccountAuthorizationId) {
+    return undefined
+  }
   return authorization ? { accountAccessType: 'account_authorized', accountAuthorizationId: authorization.id } : undefined
 }
 

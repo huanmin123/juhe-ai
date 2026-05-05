@@ -2,7 +2,7 @@
   <a-card class="page-card api-keys-page-card responsive-page-card">
     <ResponsiveListToolbar :show-search="false" :show-reset="isAdmin" :show-filters="isAdmin" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
       <template #inline-filters>
-        <a-select v-if="isAdmin" v-model:value="systemAccountFilter" show-search option-filter-prop="label" class="toolbar-select responsive-list-inline-filter" :options="systemAccountOptions" @change="loadData" />
+        <SystemPrincipalSelect v-if="isAdmin" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="loadData" />
       </template>
       <template #actions>
         <a-button @click="helpOpen = true">
@@ -14,7 +14,7 @@
       <template #filters>
         <label v-if="isAdmin" class="mobile-filter-field">
           <span>系统账户</span>
-          <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" :options="systemAccountOptions" @change="loadData" />
+          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="loadData" />
         </label>
       </template>
     </ResponsiveListToolbar>
@@ -40,6 +40,9 @@
         </template>
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ apiKeySystemAccountText(record) }}</span>
+        </template>
+        <template v-else-if="column.key === 'description'">
+          <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
@@ -71,6 +74,10 @@
             <div class="mobile-list-meta-item">
               <span>过期时间</span>
               <strong>{{ formatDateTime(record.expiresAt) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>说明</span>
+              <strong>{{ record.description || '-' }}</strong>
             </div>
           </div>
           <div class="mobile-list-card-actions two-actions">
@@ -121,6 +128,9 @@
         <a-form-item label="过期时间">
           <a-date-picker v-model:value="form.expiresAt" show-time allow-clear style="width: 100%" />
         </a-form-item>
+        <a-form-item label="说明">
+          <a-textarea v-model:value="form.description" :rows="3" placeholder="可选，填写用途或接入方说明" />
+        </a-form-item>
       </a-form>
     </a-modal>
 
@@ -149,10 +159,11 @@ import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { authState } from '@/composables/useAuth'
 import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
 import type { ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
-import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const loading = ref(false)
 const modalOpen = ref(false)
@@ -164,7 +175,7 @@ const apiKeys = ref<ApiKeySummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const systemAccountFilter = ref(allSystemAccountsValue)
-const form = reactive({ name: '', groupId: '', status: 'active' as 'active' | 'disabled', expiresAt: undefined as Dayjs | undefined })
+const form = reactive({ name: '', groupId: '', status: 'active' as 'active' | 'disabled', expiresAt: undefined as Dayjs | undefined, description: '' })
 const isAdmin = authState.isAdmin
 
 const columns = computed(() => {
@@ -179,6 +190,7 @@ const columns = computed(() => {
     { title: '绑定分组', key: 'group', width: 220 },
     { title: '状态', key: 'status', width: 100 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
+    { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
     { title: '操作', key: 'actions', width: 110, fixed: 'right' }
   )
   return baseColumns
@@ -191,7 +203,6 @@ const statusOptions = [
 
 const groupOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
 const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => matchesSystemAccountFilter(apiKey, systemAccountFilter.value, isAdmin.value)))
-const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 const activeFilterCount = computed(() => systemAccountFilter.value === allSystemAccountsValue ? 0 : 1)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填本页复制的密钥'].join('\n'))
@@ -243,13 +254,13 @@ function apiKeySystemAccountText(apiKey: ApiKeySummary) {
 
 function openCreate() {
   editingId.value = undefined
-  Object.assign(form, { name: '', groupId: groups.value[0]?.id ?? '', status: 'active', expiresAt: undefined })
+  Object.assign(form, { name: '', groupId: groups.value[0]?.id ?? '', status: 'active', expiresAt: undefined, description: '' })
   modalOpen.value = true
 }
 
 function openEdit(apiKey: ApiKeySummary) {
   editingId.value = apiKey.id
-  Object.assign(form, { name: apiKey.name, groupId: apiKey.groupId, status: apiKey.status, expiresAt: undefined })
+  Object.assign(form, { name: apiKey.name, groupId: apiKey.groupId, status: apiKey.status, expiresAt: undefined, description: apiKey.description ?? '' })
   modalOpen.value = true
 }
 
@@ -266,7 +277,8 @@ async function saveApiKey() {
     name: form.name,
     groupId: form.groupId,
     status: form.status,
-    expiresAt: formatServerDateTimeInput(form.expiresAt) ?? undefined
+    expiresAt: formatServerDateTimeInput(form.expiresAt) ?? undefined,
+    description: form.description
   }
   try {
     if (editingId.value) {

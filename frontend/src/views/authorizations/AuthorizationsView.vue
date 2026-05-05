@@ -14,8 +14,25 @@
           :placeholder="filters.resourceType === 'all' ? '先选择资源类型' : '筛选资源'"
           @change="loadData"
         />
-        <a-select v-model:value="filters.teamId" show-search allow-clear option-filter-prop="label" class="filter-select responsive-list-inline-filter" :options="teamOptions" placeholder="筛选授权来源" @change="loadData" />
-        <a-select v-model:value="filters.granteeSystemAccountId" show-search allow-clear option-filter-prop="label" class="filter-select filter-user responsive-list-inline-filter" :options="userOptions" placeholder="筛选被授权用户" @change="loadData" />
+        <SystemPrincipalSelect
+          v-model:value="filters.teamId"
+          :teams="teams"
+          :active-only="false"
+          allow-clear
+          class="filter-select responsive-list-inline-filter"
+          placeholder="筛选授权来源"
+          scope="team"
+          @change="loadData"
+        />
+        <SystemPrincipalSelect
+          v-model:value="filters.granteeSystemAccountId"
+          :accounts="users"
+          :active-only="false"
+          allow-clear
+          class="filter-select filter-user responsive-list-inline-filter"
+          placeholder="筛选被授权用户"
+          @change="loadData"
+        />
       </template>
       <template #actions>
         <a-button @click="helpOpen = true">
@@ -44,11 +61,11 @@
         </label>
         <label class="mobile-filter-field">
           <span>授权来源</span>
-          <a-select v-model:value="filters.teamId" show-search allow-clear option-filter-prop="label" :options="teamOptions" placeholder="筛选授权来源" @change="loadData" />
+          <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选授权来源" @change="loadData" />
         </label>
         <label class="mobile-filter-field">
           <span>被授权用户</span>
-          <a-select v-model:value="filters.granteeSystemAccountId" show-search allow-clear option-filter-prop="label" :options="userOptions" placeholder="筛选被授权用户" @change="loadData" />
+          <SystemPrincipalSelect v-model:value="filters.granteeSystemAccountId" :accounts="users" :active-only="false" allow-clear placeholder="筛选被授权用户" @change="loadData" />
         </label>
       </template>
     </ResponsiveListToolbar>
@@ -202,12 +219,12 @@
           </a-radio-group>
         </a-form-item>
         <a-form-item :label="createForm.granteeType === 'system_account' ? '被授权用户' : '团队'" required>
-          <a-select
+          <SystemPrincipalSelect
             v-model:value="createForm.granteeId"
-            show-search
-            option-filter-prop="label"
-            :options="createForm.granteeType === 'system_account' ? userOptions : activeTeamOptions"
-            :disabled="!(createForm.granteeType === 'system_account' ? userOptions.length : activeTeamOptions.length)"
+            :accounts="users"
+            :teams="teams"
+            :scope="createForm.granteeType === 'system_account' ? 'system_account' : 'team'"
+            :disabled="!hasCreateGranteeOptions"
             :placeholder="createForm.granteeType === 'system_account' ? '选择一个用户' : '选择一个团队'"
           />
         </a-form-item>
@@ -300,13 +317,14 @@
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import StatusTag from '@/components/StatusTag.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { AccountSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountSummary, SystemTeamSummary } from '@/types/domain'
 import {
   activeTeamSources,
@@ -413,11 +431,9 @@ const createResourceOptions = computed(() => {
   return groups.value.map((group) => ({ label: group.name, value: group.id }))
 })
 
-const teamOptions = computed(() => teams.value.map((team) => ({ label: team.name, value: team.id })))
-const activeTeamOptions = computed(() => teams.value
-  .filter((team) => team.status === 'active')
-  .map((team) => ({ label: team.name, value: team.id })))
-const userOptions = computed(() => users.value.map((user) => ({ label: `${user.displayName || user.username}（${user.username}）`, value: user.id })))
+const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'system_account'
+  ? users.value.some((user) => user.status === 'active')
+  : teams.value.some((team) => team.status === 'active'))
 const activeFilterCount = computed(() => {
   let count = 0
   if (filters.resourceType !== 'all') count += 1
@@ -434,6 +450,10 @@ const selectedTeamUsageSummaries = computed<TeamUsageSummary[]>(() => {
   return buildTeamUsageSummaries(authorization, selectedResourceAuthorizations.value, teams.value, filters.teamId)
 })
 const selectedTeamUsageRows = computed(() => selectedTeamUsageSummaries.value.flatMap((summary) => summary.members))
+
+watch(() => createForm.granteeType, () => {
+  createForm.granteeId = ''
+})
 
 async function loadMetaData() {
   const [accountResult, groupResult, teamResult, userResult] = await Promise.allSettled([
@@ -517,6 +537,10 @@ async function createAuthorization() {
   }
   if (!createForm.granteeId) {
     message.warning(createForm.granteeType === 'system_account' ? '请选择被授权用户' : '请选择团队')
+    return
+  }
+  if (createForm.granteeType === 'system_account' && !users.value.some((user) => user.id === createForm.granteeId && user.status === 'active')) {
+    message.warning('请选择启用中的系统账户')
     return
   }
   if (createForm.granteeType === 'team' && !teams.value.some((team) => team.id === createForm.granteeId && team.status === 'active')) {
@@ -683,6 +707,7 @@ function applyRouteFilters() {
     filters.granteeSystemAccountId = granteeSystemAccountId
   }
 }
+
 </script>
 
 <style scoped>

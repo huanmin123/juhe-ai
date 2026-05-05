@@ -14,13 +14,13 @@
           :options="statusCodeOptions"
           placeholder="状态码"
         />
-        <a-select
+        <SystemPrincipalSelect
           v-if="isAdmin"
           v-model:value="systemAccountFilter"
-          show-search
-          option-filter-prop="label"
+          :accounts="systemAccounts"
+          :active-only="false"
+          include-all
           class="filter-select system-account-filter toolbar-select responsive-list-inline-filter"
-          :options="systemAccountOptions"
           @change="loadData"
         />
       </template>
@@ -35,7 +35,7 @@
         </label>
         <label v-if="isAdmin" class="mobile-filter-field">
           <span>系统账户</span>
-          <a-select v-model:value="systemAccountFilter" show-search option-filter-prop="label" :options="systemAccountOptions" @change="loadData" />
+          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="loadData" />
         </label>
       </template>
     </ResponsiveListToolbar>
@@ -225,9 +225,10 @@ import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { authState } from '@/composables/useAuth'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
-import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const loading = ref(false)
 const records = ref<UsageRecordSummary[]>([])
@@ -260,7 +261,6 @@ const statusCodeOptions = computed(() => {
   return uniqueCodes.map((code) => ({ label: String(code), value: String(code) }))
 })
 
-const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 const activeFilterCount = computed(() => {
   let count = 0
   if (resultFilter.value !== 'all') count += 1

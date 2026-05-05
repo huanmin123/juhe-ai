@@ -31,6 +31,10 @@ const accountTestSchema = z.object({
   prompt: z.string().trim().optional()
 }).optional()
 
+const accountGroupSchema = z.object({
+  groupId: z.string().trim().min(1, '分组不能为空')
+})
+
 accountsRouter.get('/', (req, res) => {
   res.json(ok(listAccounts(getRequestAccessScope(req.query.systemAccountId))))
 })
@@ -58,7 +62,7 @@ accountsRouter.post('/', (req, res) => {
   }
   const groupId = typeof parsed.data.groupId === 'string' && parsed.data.groupId ? parsed.data.groupId : undefined
   if (groupId) {
-    const group = listGroups().find((item) => item.id === groupId)
+    const group = listGroups(getRequestAccessScope(req.query.systemAccountId)).find((item) => item.id === groupId)
     if (!group || group.providerCode !== providerCode) {
       res.status(400).json(badRequest('Invalid account group'))
       return
@@ -81,9 +85,25 @@ accountsRouter.post('/', (req, res) => {
   }
 })
 
+accountsRouter.post('/:id/group', (req, res) => {
+  const parsed = accountGroupSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('请选择要绑定的分组'))
+    return
+  }
+
+  const account = setAccountGroup(req.params.id, parsed.data.groupId)
+  if (!account) {
+    res.status(400).json(badRequest('账户不存在、授权已失效或分组不可用'))
+    return
+  }
+  clearGatewayRuntimeCache()
+  res.json(ok(account))
+})
+
 accountsRouter.patch('/:id', (req, res) => {
   const body = req.body as Record<string, unknown>
-  const existingAccount = listAccounts().find((item) => item.id === req.params.id)
+  const existingAccount = findAccountForTest(req.params.id, getRequestAccessScope(req.query.systemAccountId))
   if (!existingAccount) {
     res.status(404).json({ message: 'Account not found' })
     return
@@ -94,7 +114,7 @@ accountsRouter.patch('/:id', (req, res) => {
     return
   }
   if (hasGroupId) {
-    const group = listGroups().find((item) => item.id === body.groupId)
+    const group = listGroups(getRequestAccessScope(req.query.systemAccountId)).find((item) => item.id === body.groupId)
     if (!group || group.providerCode !== existingAccount.providerCode) {
       res.status(400).json(badRequest('Invalid account group'))
       return

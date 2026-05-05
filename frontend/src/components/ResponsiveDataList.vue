@@ -4,7 +4,7 @@
       v-if="!isMobile"
       :class="['responsive-data-list-table', tableClass]"
       :size="size"
-      :columns="columns"
+      :columns="tableColumns"
       :data-source="dataSource"
       :row-key="rowKey"
       :loading="loading"
@@ -126,6 +126,7 @@ const minTableBodyHeight = 160
 let listResizeObserver: ResizeObserver | undefined
 
 const mobileDataSource = computed(() => props.mobileDataSource ?? props.dataSource)
+const tableColumns = computed(() => normalizeTableColumns(props.columns))
 const tablePagination = computed<TablePagination>(() => {
   if (props.pagination === false) return false
   return {
@@ -199,6 +200,135 @@ function numberFromPagination(value: unknown): number | undefined {
 function adjustTableScrollY(value: number | string, offset: number): number | string {
   if (typeof value === 'number') return Math.max(0, value - offset)
   return `calc(${value} - ${offset}px)`
+}
+
+function normalizeTableColumns(columns: Array<Record<string, any>>): Array<Record<string, any>> {
+  const flexColumnIndex = findFlexColumnIndex(columns)
+  return columns.map((column, index) => normalizeTableColumn(column, index === flexColumnIndex))
+}
+
+function normalizeTableColumn(column: Record<string, any>, isFlexColumn: boolean): Record<string, any> {
+  if (Array.isArray(column.children)) {
+    return {
+      ...column,
+      children: normalizeTableColumns(column.children)
+    }
+  }
+  if (isActionColumn(column)) {
+    const width = resolveActionColumnWidth(column.width)
+    return withCellProps({
+      ...column,
+      width,
+      className: mergeClassName(column.className, 'responsive-data-list-actions-column')
+    }, {
+      class: 'responsive-data-list-actions-column',
+      style: fixedColumnStyle(width)
+    })
+  }
+  if (isFlexColumn) {
+    const minWidth = resolveColumnMinWidth(column)
+    const { width: _width, ...restColumn } = column
+    return withCellProps({
+      ...restColumn,
+      minWidth,
+      className: mergeClassName(column.className, 'responsive-data-list-flex-column')
+    }, {
+      class: 'responsive-data-list-flex-column',
+      style: { minWidth: `${minWidth}px` }
+    })
+  }
+  return column
+}
+
+function findFlexColumnIndex(columns: Array<Record<string, any>>): number {
+  let bestIndex = -1
+  let bestScore = -1
+  columns.forEach((column, index) => {
+    if (Array.isArray(column.children) || isActionColumn(column) || column.fixed || column.responsiveFlex === false) return
+    const score = column.responsiveFlex === true ? 1000 : flexColumnScore(column, index)
+    if (score > bestScore) {
+      bestScore = score
+      bestIndex = index
+    }
+  })
+  return bestIndex
+}
+
+function flexColumnScore(column: Record<string, any>, index: number): number {
+  const key = String(column.key ?? column.dataIndex ?? '')
+  const title = String(column.title ?? '')
+  if (key === 'description' || title.includes('说明') || title.includes('备注')) return 900
+  if (key === 'notes' || key === 'remark') return 880
+  if (key === 'usage' || key === 'usageTotal' || title.includes('用量')) return 760
+  if (key === 'capabilities' || title.includes('能力')) return 740
+  if (key === 'baseUrl' || key === 'host' || key === 'key') return 720
+  if (key === 'resource' || key === 'group') return 700
+  if (key === 'displayName') return 680
+  if (key === 'name' || title.includes('名称')) return 660
+  if (key === 'systemAccount') return 620
+  return Math.max(1, 200 - index)
+}
+
+function isActionColumn(column: Record<string, any>): boolean {
+  return column.key === 'actions' || column.dataIndex === 'actions' || column.title === '操作'
+}
+
+function resolveActionColumnWidth(value: unknown): number {
+  const width = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''))
+  if (!Number.isFinite(width) || width <= 0) return 120
+  return Math.min(Math.max(width, 96), 128)
+}
+
+function resolveColumnMinWidth(column: Record<string, any>): number {
+  const minWidth = typeof column.minWidth === 'number' ? column.minWidth : Number.parseFloat(String(column.minWidth ?? ''))
+  if (Number.isFinite(minWidth) && minWidth > 0) return minWidth
+  const width = typeof column.width === 'number' ? column.width : Number.parseFloat(String(column.width ?? ''))
+  if (Number.isFinite(width) && width > 0) return width
+  return 160
+}
+
+function fixedColumnStyle(width: number): Record<string, string> {
+  const size = `${width}px`
+  return {
+    width: size,
+    minWidth: size,
+    maxWidth: size
+  }
+}
+
+function withCellProps(column: Record<string, any>, propsToMerge: Record<string, any>): Record<string, any> {
+  return {
+    ...column,
+    customHeaderCell: (...args: any[]) => mergeCellProps(column.customHeaderCell?.(...args), propsToMerge),
+    customCell: (...args: any[]) => mergeCellProps(column.customCell?.(...args), propsToMerge)
+  }
+}
+
+function mergeCellProps(baseProps: Record<string, any> | undefined, propsToMerge: Record<string, any>): Record<string, any> {
+  const base = baseProps ?? {}
+  return {
+    ...base,
+    class: mergeClassName(base.class, propsToMerge.class),
+    style: mergeStyle(base.style, propsToMerge.style)
+  }
+}
+
+function mergeClassName(...values: unknown[]): string {
+  return values.filter(Boolean).map(String).join(' ')
+}
+
+function mergeStyle(baseStyle: unknown, styleToMerge: Record<string, string>): unknown {
+  if (!baseStyle) return styleToMerge
+  if (typeof baseStyle === 'string') {
+    return `${baseStyle};${Object.entries(styleToMerge).map(([key, value]) => `${toKebabCase(key)}:${value}`).join(';')}`
+  }
+  if (Array.isArray(baseStyle)) return [...baseStyle, styleToMerge]
+  if (typeof baseStyle === 'object') return { ...(baseStyle as Record<string, unknown>), ...styleToMerge }
+  return styleToMerge
+}
+
+function toKebabCase(value: string): string {
+  return value.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)
 }
 
 function changeBodyScrollLock(delta: number) {
@@ -301,6 +431,23 @@ onBeforeUnmount(() => {
 .responsive-data-list-table :deep(.ant-table-body) {
   min-height: 0;
   overscroll-behavior: contain;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column) {
+  white-space: nowrap;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column .ant-space) {
+  column-gap: 6px !important;
+  row-gap: 6px !important;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column .ant-btn-link) {
+  padding-inline: 0 !important;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-flex-column) {
+  min-width: 0;
 }
 
 .responsive-data-list-cards {

@@ -5,7 +5,7 @@
         <a-select v-model:value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" />
         <a-select v-model:value="filters.status" class="toolbar-select responsive-list-inline-filter" :options="statusOptions" />
         <a-select v-model:value="filters.schedulable" class="toolbar-select responsive-list-inline-filter" :options="schedulableOptions" />
-        <a-select v-if="isAdmin" v-model:value="filters.systemAccountId" show-search option-filter-prop="label" class="toolbar-select responsive-list-inline-filter" :options="systemAccountOptions" @change="handleSystemAccountFilterChange" />
+        <SystemPrincipalSelect v-if="isAdmin" v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
       </template>
       <template #actions>
         <a-button type="primary" @click="openCreate">添加账户</a-button>
@@ -25,7 +25,7 @@
         </label>
         <label v-if="isAdmin" class="mobile-filter-field">
           <span>系统账户</span>
-          <a-select v-model:value="filters.systemAccountId" show-search option-filter-prop="label" :options="systemAccountOptions" @change="handleSystemAccountFilterChange" />
+          <SystemPrincipalSelect v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all @change="handleSystemAccountFilterChange" />
         </label>
       </template>
     </ResponsiveListToolbar>
@@ -87,6 +87,9 @@
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ record.systemAccountName || record.systemAccountId || '-' }}</span>
         </template>
+        <template v-else-if="column.key === 'notes'">
+          <span>{{ record.notes || '-' }}</span>
+        </template>
         <template v-else-if="column.key === 'group'">
           <a-tooltip v-if="groupNameForAccount(record.id)" :title="groupNameForAccount(record.id)">
             <span class="account-group-text">{{ groupNameForAccount(record.id) }}</span>
@@ -111,6 +114,7 @@
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
             <template v-if="isAuthorizedAccount(record)">
+              <a-button type="link" size="small" @click="openBindGroup(record)">{{ groupNameForAccount(record.id) ? '调整分组' : '绑定分组' }}</a-button>
               <a-button type="link" size="small" @click="openTestModal(record)">测试</a-button>
             </template>
             <template v-else>
@@ -143,6 +147,7 @@
           :selected="isAccountSelected(record.id)"
           @delete="removeAccount(record.id)"
           @edit="openEdit(record)"
+          @bind-group="openBindGroup(record)"
           @menu-click="handleAccountMenuClick($event, record)"
           @test="openTestModal(record)"
           @toggle-selection="toggleAccountSelection(record)"
@@ -179,124 +184,27 @@
           @select-type="selectAccountType"
         />
 
-        <section v-if="hasAccountType" class="form-section">
-          <div class="form-section-head">
-            <div>
-              <h4>基础信息</h4>
-              <p>账户主动选择归属分组；API Key 再绑定分组来统一调度该组账户。</p>
-            </div>
-          </div>
-          <div class="form-grid">
-            <a-form-item label="账户名称" :required="form.type === 'api_key' || Boolean(editingId)">
-              <a-input v-model:value="form.name" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
-            </a-form-item>
-            <a-form-item label="归属分组" required>
-              <a-select v-model:value="form.groupId" :options="groupOptions" placeholder="请选择同供应商分组" />
-              <div class="form-help">添加账户时会根据供应商默认选择默认分组。</div>
-            </a-form-item>
-            <a-form-item label="账户到期时间">
-              <a-date-picker v-model:value="form.accountExpiresAt" show-time allow-clear style="width: 100%" />
-              <div class="form-help">可选，表示套餐/账号购买到期时间；到期后后端会自动停用账户。</div>
-            </a-form-item>
-          </div>
-          <a-form-item label="备注">
-            <a-textarea v-model:value="form.notes" :rows="2" placeholder="可填写来源、用途或额度说明" />
-          </a-form-item>
-        </section>
+        <AccountBasicInfoSection v-if="hasAccountType" :editing="Boolean(editingId)" :form="form" :group-options="groupOptions" />
 
-        <section v-if="isApiKeyForm" class="form-section credential-section">
-          <div class="form-section-head">
-            <div>
-              <h4>{{ accountTypeTitle(form.providerCode, form.type) }} 配置</h4>
-              <p>API Key 会完整保存在本地；列表不展示，编辑弹窗可直接查看和修改。</p>
-            </div>
-          </div>
-          <a-form-item label="API Key" required>
-            <a-input v-model:value="form.apiKey" placeholder="粘贴完整 API Key" />
-          </a-form-item>
-          <div class="form-grid">
-            <a-form-item label="Base URL">
-              <a-input v-model:value="form.baseUrl" :placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'" />
-            </a-form-item>
-          </div>
-        </section>
+        <AccountApiKeySection
+          v-if="isApiKeyForm"
+          :base-url-placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'"
+          :form="form"
+          :title="accountTypeTitle(form.providerCode, form.type)"
+        />
 
-        <section v-else-if="isOAuthForm" class="form-section">
-          <div class="form-section-head">
-            <div>
-              <h4>{{ accountTypeTitle(form.providerCode, form.type) }} 配置</h4>
-              <p v-if="editingId">Access Token 与 Refresh Token 只在编辑弹窗展示和修改，不会出现在列表。</p>
-              <p v-else>创建时支持手动授权或直接粘贴 Refresh Token；敏感凭据不会在列表展示。</p>
-            </div>
-          </div>
-
-          <template v-if="editingId">
-            <a-form-item label="Access Token">
-              <a-textarea v-model:value="form.accessToken" :rows="3" placeholder="可直接查看和修改 Access Token" />
-            </a-form-item>
-            <a-form-item label="Refresh Token">
-              <a-textarea v-model:value="form.refreshToken" :rows="3" placeholder="可直接查看和修改 Refresh Token" />
-            </a-form-item>
-          </template>
-
-          <template v-else-if="isOpenAIOAuthForm">
-            <a-form-item class="oauth-mode-item" label="授权方式">
-              <a-segmented v-model:value="form.oauthMode" :options="[{ label: '手动授权', value: 'manual' }, { label: '粘贴 Refresh Token', value: 'refresh_token' }]" block />
-            </a-form-item>
-
-            <template v-if="form.oauthMode === 'manual'">
-              <div class="oauth-flow-panel">
-                <div class="oauth-step-grid">
-                  <div class="oauth-step-card">
-                    <span>1</span>
-                    <div>
-                      <strong>生成链接</strong>
-                      <small>获取本次授权地址</small>
-                    </div>
-                  </div>
-                  <div class="oauth-step-card">
-                    <span>2</span>
-                    <div>
-                      <strong>浏览器授权</strong>
-                      <small>登录 OpenAI 并允许跳转</small>
-                    </div>
-                  </div>
-                  <div class="oauth-step-card">
-                    <span>3</span>
-                    <div>
-                      <strong>粘贴回调 URL</strong>
-                      <small>保留 code 与 state 参数</small>
-                    </div>
-                  </div>
-                </div>
-                <a-alert class="form-alert" type="info" show-icon message="浏览器最终跳转到本地回调地址；如果页面显示连接失败，复制地址栏完整 URL 粘贴回来即可。" />
-              </div>
-              <div class="oauth-actions">
-                <a-button type="primary" :loading="authLoading" @click="generateOAuthUrl">生成授权链接</a-button>
-                <a-button :disabled="!authResult?.authUrl" @click="openAuthUrl">打开授权链接</a-button>
-                <a-button :disabled="!authResult?.authUrl" @click="copyText(authResult?.authUrl || '')">复制授权链接</a-button>
-              </div>
-              <a-form-item v-if="authResult" class="oauth-url-field" label="授权链接">
-                <a-textarea :value="authResult.authUrl" :rows="3" readonly />
-              </a-form-item>
-              <a-form-item class="oauth-callback-field" label="回调 URL" required>
-                <a-textarea v-model:value="form.callbackUrl" :rows="3" placeholder="粘贴浏览器地址栏里的 http://localhost:1455/auth/callback?code=...&state=..." />
-                <div class="form-help">需要粘贴完整地址，不能只粘贴 code 或 state。</div>
-              </a-form-item>
-            </template>
-
-            <template v-else>
-              <div class="oauth-token-panel">
-                <a-alert class="form-alert" type="info" show-icon message="已有 Refresh Token 时可跳过浏览器授权，后端会换取 Access Token 后创建账户。" />
-                <a-form-item class="oauth-token-field" label="Refresh Token" required>
-                  <a-textarea v-model:value="form.refreshToken" :rows="4" placeholder="粘贴 OpenAI 的 Refresh Token" />
-                </a-form-item>
-              </div>
-            </template>
-          </template>
-
-          <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，第一期先支持 OpenAI OAuth。" />
-        </section>
+        <AccountOAuthSection
+          v-else-if="isOAuthForm"
+          :auth-loading="authLoading"
+          :auth-result="authResult"
+          :editing="Boolean(editingId)"
+          :form="form"
+          :is-open-a-i="isOpenAIOAuthForm"
+          :title="accountTypeTitle(form.providerCode, form.type)"
+          @copy-auth-url="copyText"
+          @generate-auth-url="generateOAuthUrl"
+          @open-auth-url="openAuthUrl"
+        />
 
         <section v-if="hasAccountType" class="form-section">
           <div class="form-section-head">
@@ -325,12 +233,24 @@
         <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="accountErrorPolicyRules" />
       </a-form>
     </a-modal>
+
+    <a-modal v-model:open="bindGroupModalOpen" title="绑定分组" width="520px" :confirm-loading="bindGroupSaving" :ok-button-props="{ type: 'primary', disabled: !bindGroupForm.groupId || !bindGroupOptions.length }" @ok="saveBindGroup">
+      <a-form layout="vertical">
+        <a-alert class="form-alert" type="info" show-icon :message="bindGroupTip" />
+        <a-form-item label="授权账户">
+          <a-input :value="bindingAccount?.name || '-'" readonly />
+        </a-form-item>
+        <a-form-item label="绑定到我的分组" required>
+          <a-select v-model:value="bindGroupForm.groupId" :options="bindGroupOptions" placeholder="请选择同供应商分组" />
+          <div class="form-help">API Key 只能调用绑定分组内的账户；授权账户需要先加入你的分组。</div>
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </a-card>
 </template>
 
 <script setup lang="ts">
 import axios from 'axios'
-import type { Dayjs } from 'dayjs'
 import { message } from 'ant-design-vue'
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
@@ -339,12 +259,16 @@ import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { authState } from '@/composables/useAuth'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
-import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import AccountApiKeySection from './AccountApiKeySection.vue'
+import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountMobileCard from './AccountMobileCard.vue'
+import AccountOAuthSection from './AccountOAuthSection.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
 import AccountTestModal from './AccountTestModal.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
@@ -376,6 +300,7 @@ import {
   parseDatePickerValue,
   type SchedulableFilter
 } from './accountFormatters'
+import type { AccountFormModel } from './accountFormTypes'
 
 interface AccountFilters {
   keyword: string
@@ -389,25 +314,6 @@ interface AccountMenuItem {
   key: string
   label: string
   danger?: boolean
-}
-
-interface AccountForm {
-  providerCode: string
-  name: string
-  type: AccountType
-  groupId?: string
-  apiKey: string
-  baseUrl: string
-  accessToken: string
-  refreshToken: string
-  oauthMode: 'manual' | 'refresh_token'
-  callbackUrl: string
-  accountExpiresAt?: Dayjs | null
-  status: AccountStatus
-  concurrencyLimit: number
-  priority: number
-  proxyProfileId?: string
-  notes: string
 }
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
@@ -431,9 +337,12 @@ const testModalOpen = ref(false)
 const testRunning = ref(false)
 const testModelsLoading = ref(false)
 const modalOpen = ref(false)
+const bindGroupModalOpen = ref(false)
+const bindGroupSaving = ref(false)
 const authResult = ref<OpenAIAuthURLResult>()
 const editingId = ref<string>()
 const testingAccount = ref<AccountSummary>()
+const bindingAccount = ref<AccountSummary>()
 const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
 const accounts = ref<AccountSummary[]>([])
@@ -451,7 +360,8 @@ const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
 const isAdmin = authState.isAdmin
 const router = useRouter()
 
-const form = reactive<AccountForm>(defaultForm())
+const form = reactive<AccountFormModel>(defaultForm())
+const bindGroupForm = reactive({ groupId: '' })
 const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
 
 const typeOptions = [
@@ -503,11 +413,12 @@ const columns = computed(() => {
     { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
     { title: '账户到期时间', key: 'accountExpiresAt', width: 180, sorter: compareAccountExpiresAt },
     { title: '最近使用时间', key: 'lastUsedAt', width: 180, sorter: compareAccountLastUsedAt },
+    { title: '说明', dataIndex: 'notes', key: 'notes', width: 200 },
     { title: '操作', key: 'actions', width: 160, fixed: 'right' }
   )
   return baseColumns
 })
-const tableScrollX = computed(() => (isAdmin.value ? 2240 : 2060))
+const tableScrollX = computed(() => (isAdmin.value ? 2320 : 2140))
 const tableScrollY = computed(() => 'calc(100dvh - 286px)')
 
 const filteredAccounts = computed(() => accounts.value.filter((account) => {
@@ -545,8 +456,6 @@ const activeAdvancedFilterCount = computed(() => [
   filters.schedulable !== 'all',
   isAdmin.value && filters.systemAccountId !== allSystemAccountsValue
 ].filter(Boolean).length)
-
-const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 
 const defaultTestModelOptions = [
   'gpt-5.5',
@@ -587,6 +496,17 @@ function toggleAccountSelection(account: AccountSummary) {
 const proxyOptions = computed(() => (isAdmin.value ? proxies.value : []).map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
 const providerGroups = computed(() => groups.value.filter((group) => canManageGroupAccounts(group) && (!form.providerCode || group.providerCode === form.providerCode)))
 const groupOptions = computed(() => providerGroups.value.map((group) => ({ label: group.isDefault ? `${group.name}（默认）` : group.name, value: group.id })))
+const bindGroupOptions = computed(() => {
+  const account = bindingAccount.value
+  if (!account) return []
+  return groups.value
+    .filter((group) => canManageGroupAccounts(group) && group.providerCode === account.providerCode)
+    .map((group) => ({ label: group.isDefault ? `${group.name}（默认）` : group.name, value: group.id }))
+})
+const bindGroupTip = computed(() => {
+  const ownerName = bindingAccount.value?.ownerSystemAccountName || '其他用户'
+  return `授权账户来自 ${ownerName}。绑定到你的同供应商分组后，对应 API Key 才能调度使用。`
+})
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
 const accountTypeChoices = computed(() => (selectedProvider.value?.accountTypes ?? []).map((type) => ({
@@ -611,7 +531,7 @@ const modalOkButtonProps = computed(() => ({
   disabled: !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
 }))
 
-function defaultForm(providerCode = '', type: AccountType = ''): AccountForm {
+function defaultForm(providerCode = '', type: AccountType = ''): AccountFormModel {
   const providerList = providers.value.length ? providers.value : [FALLBACK_PROVIDER]
   const provider = providerList.find((item) => item.code === providerCode) ?? (providerCode ? FALLBACK_PROVIDER : undefined)
   return {
@@ -651,11 +571,13 @@ function providerName(providerCode?: string) {
 }
 
 function groupIdForAccount(accountId: string) {
-  return groups.value.find((group) => group.accountIds.includes(accountId))?.id
+  const account = accounts.value.find((item) => item.id === accountId)
+  return account?.boundGroupId ?? groups.value.find((group) => group.accountIds.includes(accountId))?.id
 }
 
 function groupNameForAccount(accountId: string) {
-  return groups.value.find((group) => group.accountIds.includes(accountId))?.name
+  const account = accounts.value.find((item) => item.id === accountId)
+  return account?.boundGroupName ?? groups.value.find((group) => group.accountIds.includes(accountId))?.name
 }
 
 function authorizedAccountTooltip(account: AccountSummary): string {
@@ -884,6 +806,38 @@ function openEdit(account: AccountSummary) {
   accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
   authResult.value = undefined
   modalOpen.value = true
+}
+
+function openBindGroup(account: AccountSummary) {
+  bindingAccount.value = account
+  bindGroupForm.groupId = groupIdForAccount(account.id) ?? defaultBindGroupForAccount(account)?.id ?? ''
+  bindGroupModalOpen.value = true
+}
+
+function defaultBindGroupForAccount(account: AccountSummary): GroupSummary | undefined {
+  const candidates = groups.value.filter((group) => canManageGroupAccounts(group) && group.providerCode === account.providerCode)
+  return candidates.find((group) => group.isDefault) ?? candidates[0]
+}
+
+async function saveBindGroup() {
+  if (!bindingAccount.value) return
+  if (!bindGroupForm.groupId) {
+    message.warning('请选择归属分组')
+    return
+  }
+  bindGroupSaving.value = true
+  try {
+    await api.accounts.bindGroup(bindingAccount.value.id, { groupId: bindGroupForm.groupId })
+    message.success('授权账户已绑定分组')
+    bindGroupModalOpen.value = false
+    bindingAccount.value = undefined
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '绑定分组失败'))
+  } finally {
+    bindGroupSaving.value = false
+  }
 }
 
 function buildCredentials() {
@@ -1360,91 +1314,10 @@ onMounted(loadData)
   font-family: Consolas, 'Courier New', monospace;
 }
 
-.oauth-actions {
-  display: flex;
-  width: 100%;
-  justify-content: flex-end;
-  gap: 8px;
-  margin-top: 12px;
-  margin-bottom: 16px;
-}
-
-.oauth-mode-item {
-  margin-bottom: 12px;
-}
-
-.oauth-flow-panel,
-.oauth-token-panel {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.oauth-step-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
-}
-
-.oauth-step-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  min-width: 0;
-  padding: 12px;
-  border: 1px solid #dbeafe;
-  border-radius: 14px;
-  background: #fff;
-}
-
-.oauth-step-card span {
-  display: inline-flex;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  width: 26px;
-  height: 26px;
-  color: #1d4ed8;
-  font-weight: 700;
-  border-radius: 999px;
-  background: #dbeafe;
-}
-
-.oauth-step-card div {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.oauth-step-card strong {
-  color: #0f172a;
-  font-size: 13px;
-}
-
-.oauth-step-card small {
-  overflow: hidden;
-  color: #64748b;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.oauth-url-field,
-.oauth-callback-field,
-.oauth-token-field {
-  margin-bottom: 0;
-}
-
 .form-help {
   margin-top: 4px;
   color: #64748b;
   font-size: 12px;
-}
-
-.credential-section {
-  border-color: #dbeafe;
-  background: #f8fbff;
 }
 
 .account-table :deep(.ant-empty) {
@@ -1538,10 +1411,6 @@ onMounted(loadData)
 }
 
 @media (max-width: 992px) {
-  .oauth-step-grid {
-    grid-template-columns: 1fr;
-  }
-
   .form-grid,
   .strategy-grid {
     grid-template-columns: 1fr;

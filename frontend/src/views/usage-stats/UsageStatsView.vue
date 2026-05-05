@@ -12,7 +12,7 @@
     >
       <template #inline-filters>
         <a-select v-model:value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" />
-        <a-select v-if="isAdmin" v-model:value="filters.systemAccountId" show-search option-filter-prop="label" class="toolbar-select responsive-list-inline-filter" :options="systemAccountOptions" @change="handleSystemAccountFilterChange" />
+        <SystemPrincipalSelect v-if="isAdmin" v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
       </template>
       <template #filters>
         <label class="mobile-filter-field">
@@ -21,7 +21,7 @@
         </label>
         <label v-if="isAdmin" class="mobile-filter-field">
           <span>系统账户</span>
-          <a-select v-model:value="filters.systemAccountId" show-search option-filter-prop="label" :options="systemAccountOptions" @change="handleSystemAccountFilterChange" />
+          <SystemPrincipalSelect v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all @change="handleSystemAccountFilterChange" />
         </label>
       </template>
     </ResponsiveListToolbar>
@@ -115,6 +115,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { authState } from '@/composables/useAuth'
 import type {
   AccountAuthorizationUsageOverview,
@@ -126,7 +127,7 @@ import type {
   SystemAccountSummary,
   UsageStatsWindowKey
 } from '@/types/domain'
-import { allSystemAccountsValue, buildSystemAccountOptions, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AuthorizationUsageModal from './AuthorizationUsageModal.vue'
 import UsageStatCell from './UsageStatCell.vue'
 import { defaultUsageWindows, displayWindowKeys, formatUsageBrief, isUsageWindowColumn } from './usageStatsFormatters'
@@ -172,7 +173,6 @@ const typeOptions = [
   { label: 'API Key', value: 'api_key' }
 ]
 
-const systemAccountOptions = computed(() => buildSystemAccountOptions(systemAccounts.value))
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const windows = computed(() => overview.value?.windows ?? defaultUsageWindows())
 const compactWindows = computed(() => windows.value.filter((window) => displayWindowKeys.includes(window.key)))

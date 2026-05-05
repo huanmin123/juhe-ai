@@ -11,5 +11,6 @@
 - [后端架构设计](backend/README.md)
 - [前端架构设计](frontend/README.md)
 - [前端样式规范](frontend/样式规范.md)
+- [前端通用组件规范](frontend/通用组件规范.md)
 - [产品与品牌边界](frontend/产品与品牌边界.md)
 

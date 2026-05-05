@@ -87,13 +87,12 @@
     <a-modal v-model:open="memberModalOpen" :title="selectedTeam ? `团队成员：${selectedTeam.name}` : '团队成员'" width="720px" :footer="null">
       <div class="team-members-modal">
         <div v-if="isAdmin" class="team-members-create-row">
-          <a-select
+          <SystemPrincipalSelect
             v-model:value="memberForm.systemAccountIds"
+            :accounts="systemAccounts"
+            :excluded-ids="usedMemberIds"
             mode="multiple"
-            show-search
-            option-filter-prop="label"
             class="team-member-selector"
-            :options="memberOptions"
             :disabled="selectedTeam?.status !== 'active'"
             placeholder="选择一个或多个系统账户"
           />
@@ -136,6 +135,7 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { authState } from '@/composables/useAuth'
 import type { SystemAccountSummary, SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
@@ -165,8 +165,8 @@ const columns = [
   { title: '团队名称', key: 'name', width: 220 },
   { title: '状态', key: 'status', width: 90 },
   { title: '成员数', key: 'memberCount', width: 90 },
-  { title: '说明', key: 'description', width: 200 },
   { title: '创建时间', key: 'createdAt', width: 170 },
+  { title: '说明', key: 'description', width: 200 },
   { title: '操作', key: 'actions', width: 160, fixed: 'right' }
 ]
 
@@ -183,13 +183,7 @@ const memberColumns = computed(() => {
 
 const selectedTeam = computed(() => teams.value.find((team) => team.id === selectedTeamId.value))
 const activeTeamMembers = computed(() => selectedTeam.value ? activeMembers(selectedTeam.value) : [])
-const usedMemberIdSet = computed(() => new Set(activeTeamMembers.value.map((item) => item.systemAccountId)))
-const memberOptions = computed(() => systemAccounts.value
-  .filter((account) => account.status === 'active' && !usedMemberIdSet.value.has(account.id))
-  .map((account) => ({
-    label: `${account.displayName || account.username}（${account.username}）`,
-    value: account.id
-  })))
+const usedMemberIds = computed(() => activeTeamMembers.value.map((item) => item.systemAccountId))
 
 function activeMembers(team: SystemTeamSummary): SystemTeamMemberSummary[] {
   return (team.members ?? []).filter((member) => member.status === 'active')
