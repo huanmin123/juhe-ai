@@ -170,12 +170,26 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 - API Key 账户使用 `credentials.api_key` 作为上游 Bearer token。
 - OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
+- API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`，承接通用 OpenAI `/v1/*` 兼容请求。
+- OAuth 账户不把 `access_token` 当作官方 OpenAI API Key 打到 `api.openai.com/v1`；真实转发走 ChatGPT / Codex backend 专用链路 `https://chatgpt.com/backend-api/codex`。
+- OAuth Codex 网关第一阶段只支持 Codex 原生 `POST /responses` 和 `POST /responses/compact`，暂不做 `/chat/completions` 到 Responses 的重型协议翻译。
+- `GET /v1/models` 由本地 OpenAI 模型价格目录返回，不依赖某个上游账号是否可调度，避免 OAuth-only 分组在客户端初始化阶段失败。
+- OAuth Codex 转发会补齐必要 Codex CLI 协议头，并在账号凭据包含 `chatgpt_account_id` / `account_id` 时写入 `chatgpt-account-id`；客户端传入的同名头不会透传，避免跨账号伪造。
 - 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户。
 - 后台 OAuth 额度快照刷新任务探测前，如果发现 access token 即将过期，也会先自动刷新授权。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号或后台 OAuth 额度探测。
 - 账户页不提供常驻“刷新授权”或“刷新用量”按钮；授权续期和额度快照都由真实请求与后台任务维护。
 - OAuth token 刷新、账户测试和后台额度探测会优先使用账户绑定的代理；没有绑定代理时默认直连。迁移旧账户时不再自动创建或绑定本机固定端口代理，避免换电脑或服务器部署后误连本机端口。
+
+## 会话亲和调度
+
+OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过本地 API Key、分组授权、账号状态、冷却、到期时间、并发、错误策略和上游可用性判断。
+
+- 会话标识来源包括请求头或请求体里的 `session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
+- 亲和键按 `system_account_id + api_key_id + group_id + session` 隔离，避免不同本地 API Key、分组或系统账户共享同一个上游会话绑定。
+- 首次成功命中账号后写入短期绑定；同一会话后续请求优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
+- 绑定只保存在进程内存中，服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。
 
 ### OpenAI OAuth 额度进度
 
