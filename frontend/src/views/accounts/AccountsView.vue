@@ -106,48 +106,37 @@
       @run="runAccountTest"
     />
 
-    <a-modal v-model:open="modalOpen" :title="modalTitle" width="920px" :confirm-loading="modalConfirmLoading" :ok-button-props="modalOkButtonProps" @ok="saveAccount" @cancel="handleModalCancel">
-      <a-form layout="vertical" class="account-form">
-        <a-alert v-if="editingId" class="form-alert" type="info" show-icon message="编辑账户时不修改供应商和账户类型；Access/API Key 与 Refresh Token 只在这里展示和修改。" />
-
-        <AccountFormSelector
-          :account-type="form.type"
-          :account-type-choices="accountTypeChoices"
-          :editing="Boolean(editingId)"
-          :provider-code="form.providerCode"
-          :providers="availableProviders"
-          :selected-provider="selectedProvider"
-          @select-provider="selectProvider"
-          @select-type="selectAccountType"
-        />
-
-        <AccountBasicInfoSection v-if="hasAccountType" :editing="Boolean(editingId)" :form="form" :group-options="groupOptions" />
-
-        <AccountApiKeySection
-          v-if="isApiKeyForm"
-          :base-url-placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'"
-          :form="form"
-          :title="accountTypeTitle(form.providerCode, form.type)"
-        />
-
-        <AccountOAuthSection
-          v-else-if="isOAuthForm"
-          :auth-loading="authLoading"
-          :auth-result="authResult"
-          :editing="Boolean(editingId)"
-          :form="form"
-          :is-open-a-i="isOpenAIOAuthForm"
-          :title="accountTypeTitle(form.providerCode, form.type)"
-          @copy-auth-url="copyText"
-          @generate-auth-url="generateOAuthUrl"
-          @open-auth-url="openAuthUrl"
-        />
-
-        <AccountStrategySection v-if="hasAccountType" :form="form" :is-admin="isAdmin" :proxy-options="proxyOptions" :status-options="statusEditOptions" />
-
-        <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="accountErrorPolicyRules" />
-      </a-form>
-    </a-modal>
+    <AccountEditModal
+      v-model:open="modalOpen"
+      v-model:error-policy-rules="accountErrorPolicyRules"
+      :account-type-choices="accountTypeChoices"
+      :auth-loading="authLoading"
+      :auth-result="authResult"
+      :base-url-placeholder="selectedProvider?.baseUrl || 'https://api.openai.com/v1'"
+      :confirm-loading="modalConfirmLoading"
+      :credential-title="selectedAccountTypeTitle"
+      :editing="Boolean(editingId)"
+      :form="form"
+      :group-options="groupOptions"
+      :has-account-type="hasAccountType"
+      :is-admin="isAdmin"
+      :is-api-key-form="isApiKeyForm"
+      :is-o-auth-form="isOAuthForm"
+      :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
+      :ok-button-props="modalOkButtonProps"
+      :providers="availableProviders"
+      :proxy-options="proxyOptions"
+      :selected-provider="selectedProvider"
+      :status-options="statusEditOptions"
+      :title="modalTitle"
+      @cancel="handleModalCancel"
+      @copy-auth-url="copyText"
+      @generate-auth-url="generateOAuthUrl"
+      @ok="saveAccount"
+      @open-auth-url="openAuthUrl"
+      @select-provider="selectProvider"
+      @select-type="selectAccountType"
+    />
 
     <AccountBindGroupModal
       v-model:open="bindGroupModalOpen"
@@ -168,22 +157,17 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
-import type { AccountListSortField, AccountListSortParam } from '@/api/client'
+import type { AccountListSortParam } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
-import type { ResponsiveDataListSort, TableSortOrder } from '@/components/responsiveDataListSorting'
+import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { authState } from '@/composables/useAuth'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
-import AccountApiKeySection from './AccountApiKeySection.vue'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
-import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountBindGroupModal from './AccountBindGroupModal.vue'
-import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
+import AccountEditModal from './AccountEditModal.vue'
 import AccountFilterToolbar from './AccountFilterToolbar.vue'
-import AccountFormSelector from './AccountFormSelector.vue'
 import AccountMobileCard from './AccountMobileCard.vue'
-import AccountOAuthSection from './AccountOAuthSection.vue'
-import AccountStrategySection from './AccountStrategySection.vue'
 import AccountTableCell from './AccountTableCell.vue'
 import AccountTestModal from './AccountTestModal.vue'
 import {
@@ -221,6 +205,8 @@ import {
   accountTableScrollX,
   accountTableScrollY,
   buildAccountTableColumns,
+  accountColumnSortOrder as resolveAccountColumnSortOrder,
+  normalizeAccountTableSorts,
   tableColumnKey
 } from './accountTableColumns'
 import { useAccountMobilePagination } from './useAccountMobilePagination'
@@ -274,7 +260,7 @@ const statusEditOptions = computed(() => {
   return options
 })
 
-const columns = computed(() => buildAccountTableColumns(isAdmin.value, accountColumnSortOrder))
+const columns = computed(() => buildAccountTableColumns(isAdmin.value, (field) => resolveAccountColumnSortOrder(accountSorts.value, field)))
 const tableScrollX = computed(() => accountTableScrollX(isAdmin.value))
 const tableScrollY = computed(accountTableScrollY)
 
@@ -380,6 +366,7 @@ const modalOkButtonProps = computed(() => ({
   type: 'primary' as const,
   disabled: !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
 }))
+const selectedAccountTypeTitle = computed(() => hasAccountType.value ? accountTypeTitle(form.providerCode, form.type) : '')
 
 function defaultForm(providerCode = '', type: AccountType = ''): AccountFormModel {
   const providerList = providers.value.length ? providers.value : [FALLBACK_PROVIDER]
@@ -458,53 +445,11 @@ function canManageGroupAccounts(group: GroupSummary): boolean {
   return group.permissions?.canManageAccounts !== false && group.accessType !== 'authorized'
 }
 
-function accountColumnSortOrder(field: AccountListSortField): TableSortOrder {
-  const sort = accountSorts.value.find((item) => item.field === field)
-  if (!sort) return null
-  return sort.order === 'asc' ? 'ascend' : 'descend'
-}
-
 async function handleAccountSortChange(sorts: ResponsiveDataListSort[]) {
   accountSorts.value = normalizeAccountTableSorts(sorts)
   resetAccountListPagination()
   await loadData()
 }
-
-function normalizeAccountTableSorts(sorts: ResponsiveDataListSort[]): AccountListSortParam[] {
-  const mappedSorts = sorts
-    .map((sort) => {
-      const field = accountSortFieldFromColumn(sort.columnKey)
-      if (!field) return undefined
-      return {
-        field,
-        order: sort.order === 'ascend' ? 'asc' : 'desc',
-        priority: sort.priority
-      }
-    })
-    .filter((sort): sort is AccountListSortParam & { priority: number } => Boolean(sort))
-    .sort((left, right) => right.priority - left.priority)
-  return mappedSorts.length
-    ? mappedSorts.map(({ field, order }) => ({ field, order }))
-    : [{ field: 'priority', order: 'asc' }]
-}
-
-function accountSortFieldFromColumn(columnKey: string): AccountListSortField | undefined {
-  if (accountSortableFields.includes(columnKey as AccountListSortField)) return columnKey as AccountListSortField
-  return undefined
-}
-
-const accountSortableFields: AccountListSortField[] = [
-  'priority',
-  'name',
-  'type',
-  'providerCode',
-  'systemAccount',
-  'concurrency',
-  'status',
-  'accountExpiresAt',
-  'lastUsedAt',
-  'notes'
-]
 
 function defaultGroupForProvider(providerCode: string) {
   const candidates = groups.value.filter((group) => group.providerCode === providerCode && canManageGroupAccounts(group))

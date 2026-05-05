@@ -186,7 +186,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过本地 API Key、分组授权、账号状态、冷却、到期时间、并发、错误策略和上游可用性判断。
 
-- 会话标识来源包括请求头或请求体里的 `session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
+- 会话标识来源包括请求头或请求体里的 `previous_response_id`、`session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
 - 亲和键按 `system_account_id + api_key_id + group_id + session` 隔离，避免不同本地 API Key、分组或系统账户共享同一个上游会话绑定。
 - 首次成功命中账号后写入短期绑定；同一会话后续请求优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
 - 绑定只保存在进程内存中，服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。

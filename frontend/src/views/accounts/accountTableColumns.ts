@@ -1,5 +1,5 @@
-import type { AccountListSortField } from '@/api/client'
-import type { TableSortOrder } from '@/components/responsiveDataListSorting'
+import type { AccountListSortField, AccountListSortParam } from '@/api/client'
+import type { ResponsiveDataListSort, TableSortOrder } from '@/components/responsiveDataListSorting'
 import type { AccountSummary } from '@/types/domain'
 
 export type AccountTableSortOrderResolver = (field: AccountListSortField) => TableSortOrder
@@ -25,6 +25,35 @@ export function buildAccountTableColumns(isAdmin: boolean, sortOrder: AccountTab
     { title: '操作', key: 'actions', width: 160, fixed: 'right' }
   )
   return baseColumns
+}
+
+export function accountColumnSortOrder(sorts: AccountListSortParam[], field: AccountListSortField): TableSortOrder {
+  const sort = sorts.find((item) => item.field === field)
+  if (!sort) return null
+  return sort.order === 'asc' ? 'ascend' : 'descend'
+}
+
+export function normalizeAccountTableSorts(sorts: ResponsiveDataListSort[]): AccountListSortParam[] {
+  const mappedSorts = sorts
+    .map((sort) => {
+      const field = accountSortFieldFromColumn(sort.columnKey)
+      if (!field) return undefined
+      return {
+        field,
+        order: sort.order === 'ascend' ? 'asc' : 'desc',
+        priority: sort.priority
+      }
+    })
+    .filter((sort): sort is AccountListSortParam & { priority: number } => Boolean(sort))
+    .sort((left, right) => right.priority - left.priority)
+  return mappedSorts.length
+    ? mappedSorts.map(({ field, order }) => ({ field, order }))
+    : [{ field: 'priority', order: 'asc' }]
+}
+
+function accountSortFieldFromColumn(columnKey: string): AccountListSortField | undefined {
+  if (accountSortFields.includes(columnKey as AccountListSortField)) return columnKey as AccountListSortField
+  return undefined
 }
 
 function sortableColumn(column: Record<string, unknown>, field: AccountListSortField, sortOrder: AccountTableSortOrderResolver): Record<string, unknown> {

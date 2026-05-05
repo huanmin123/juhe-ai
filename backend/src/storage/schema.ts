@@ -1,10 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { hashPassword } from './crypto.js'
+import { DEFAULT_GLOBAL_SETTINGS, DEFAULT_OPENAI_GROUP, DEFAULT_SYSTEM_SETTINGS, OPENAI_PROVIDER_SEED } from './schema-defaults.js'
 import { ensureSchemaMaintenance } from './schema-maintenance.js'
-
-const DEFAULT_OPENAI_GROUP_NAME = '默认 OpenAI 分组'
-const DEFAULT_OPENAI_GROUP_DESCRIPTION = '第一期默认分组'
 
 export function applySchema(database: DatabaseSync): void {
   database.exec(`
@@ -634,16 +632,11 @@ export function seedDefaults(database: DatabaseSync): void {
       now
     )
 
-  const globalSettings = [
-    ['appName', '聚合 AI'],
-    ['appIcon', '/brand-icon.svg']
-  ] as const
-
   const globalStatement = database.prepare(`
     INSERT OR IGNORE INTO global_settings (key, value_json, updated_at)
     VALUES (?, ?, ?)
   `)
-  for (const [key, value] of globalSettings) {
+  for (const [key, value] of DEFAULT_GLOBAL_SETTINGS) {
     globalStatement.run(key, JSON.stringify(value), now)
   }
 
@@ -656,54 +649,26 @@ export function seedDefaults(database: DatabaseSync): void {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
     .run(
-      'openai',
-      'openai',
-      'OpenAI',
-      '第一阶段内置供应商，支持 OAuth 与 API Key 两种账户接入方式',
-      1,
-      'https://api.openai.com/v1',
-      JSON.stringify(['oauth', 'api_key']),
-      JSON.stringify(['models', 'responses', 'stream', 'passthrough']),
+      OPENAI_PROVIDER_SEED.id,
+      OPENAI_PROVIDER_SEED.code,
+      OPENAI_PROVIDER_SEED.name,
+      OPENAI_PROVIDER_SEED.description,
+      OPENAI_PROVIDER_SEED.enabled,
+      OPENAI_PROVIDER_SEED.baseUrl,
+      JSON.stringify(OPENAI_PROVIDER_SEED.accountTypes),
+      JSON.stringify(OPENAI_PROVIDER_SEED.capabilities),
       now,
       now
     )
 
   seedAdminDefaultOpenAIGroup(database, now)
 
-  const settings = [
-    ['appName', '聚合 AI'],
-    ['appIcon', '/brand-icon.svg'],
-    ['defaultTemporaryUnschedulableMinutes', 5],
-    ['temporaryUnschedulableRetryIntervalSeconds', 3],
-    ['temporaryUnschedulableRetryAttempts', 3],
-    ['streamCircuitBreakerEnabled', true],
-    ['streamRequestTimeoutSeconds', 180],
-    ['streamIdleTimeoutSeconds', 60],
-    ['streamFailureThresholdCount', 3],
-    ['streamFailureThresholdWindowMinutes', 10],
-    ['auditLogEnabled', true],
-    ['auditLogSuccessSampleRate', 0.1],
-    ['auditLogFlushIntervalSeconds', 5],
-    ['auditLogBatchSize', 50],
-    ['auditLogQueueMaxItems', 1000],
-    ['auditLogQueueMaxBytesMb', 256],
-    ['auditLogActiveCaptureMaxBytesMb', 64],
-    ['auditLogRetentionDays', 7],
-    ['usageRecordRetentionDays', 7],
-    ['usageStatsDailyRetentionDays', 30],
-    ['usageStatsHourlyRetentionDays', 30],
-    ['systemMetricsRetentionDays', 7],
-    ['systemMetricsHourlyRetentionDays', 30],
-    ['dataRetentionCleanupBatchSize', 10000],
-    ['dataRetentionCleanupMaxBatchesPerRun', 10],
-  ] as const
-
   const statement = database.prepare(`
     INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at)
     VALUES (?, ?, ?, ?)
   `)
 
-  for (const [key, value] of settings) {
+  for (const [key, value] of DEFAULT_SYSTEM_SETTINGS) {
     statement.run('sys_admin', key, JSON.stringify(value), now)
   }
 
@@ -715,11 +680,19 @@ function seedAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string):
       INSERT OR IGNORE INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)
     `)
-    .run('grp_default_openai_sys_admin', 'sys_admin', DEFAULT_OPENAI_GROUP_NAME, 'openai', DEFAULT_OPENAI_GROUP_DESCRIPTION, timestamp, timestamp)
+    .run(
+      DEFAULT_OPENAI_GROUP.id,
+      DEFAULT_OPENAI_GROUP.systemAccountId,
+      DEFAULT_OPENAI_GROUP.name,
+      DEFAULT_OPENAI_GROUP.providerCode,
+      DEFAULT_OPENAI_GROUP.description,
+      timestamp,
+      timestamp
+    )
 
   database
     .prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
-    .run('grp_default_openai_sys_admin', 'sys_admin')
+    .run(DEFAULT_OPENAI_GROUP.id, DEFAULT_OPENAI_GROUP.systemAccountId)
 }
 
 

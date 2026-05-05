@@ -1,7 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountAuthorizationUsageOverview, AccountGroupBindStatus, AccountOAuthUsageSnapshot, AccountStatus, AccountSummary, AccountType, AccountUsageStatsOverview, ApiKeySummary, AuthorizationStatus, GroupSummary, ProviderCode, ProviderDefinition, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberStatus, SystemTeamMemberSummary, SystemTeamStatus, SystemTeamSummary, UsageByWindow } from '../domain/types.js'
+import type { AccountAuthorizationUsageOverview, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountUsageStatsOverview, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, resolveAccessScope, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
+import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
+import { accountCredentialsForList, listAccountRowsForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { getAccountAuthorizationUsageOverview as buildAccountAuthorizationUsageOverview, getAccountUsageStatsOverview as buildAccountUsageStatsOverview } from './account-usage.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
 import { createApiKeyRecord, deleteApiKey, listApiKeys, updateApiKey } from './api-key.repository.js'
@@ -11,16 +13,19 @@ import { getDatabase, newId, nowIso } from './database.js'
 import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
-import { loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds, type GroupAccountStatsRow } from './group-read-loaders.js'
+import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
+import { listGroupRowsForAccess, loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
+import { loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap, loadSystemAccountsByIds, loadSystemTeamNameMap } from './repository-lookups.js'
+import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow, TeamResourceAuthorizationGrantRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
 import { emptyAccountUsageSummary, numberFromUnknown, todayDateKey, usageSummaryFromAggregate } from './usage-stats-helpers.js'
-import { loadAccountUsageSummariesForScopes, loadAuthorizationUsageSummariesForScopes, loadGroupUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
+import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageByWindowForScopeRequests } from './usage-window-loaders.js'
 import {
   jsonObjectOrNull,
@@ -33,64 +38,7 @@ import {
 
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 
-export type AccountListSortField = 'priority' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
-export type AccountListSortDirection = 'asc' | 'desc'
-
-export interface AccountListSort {
-  field: AccountListSortField
-  order: AccountListSortDirection
-}
-
-export interface AccountListOptions {
-  sorts?: AccountListSort[]
-}
-
-const accountListSortColumns: Record<AccountListSortField, string> = {
-  priority: 'account_rows.priority',
-  name: 'account_rows.name COLLATE NOCASE',
-  type: 'account_rows.type COLLATE NOCASE',
-  providerCode: 'account_rows.provider_code COLLATE NOCASE',
-  systemAccount: "COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) COLLATE NOCASE",
-  concurrency: 'account_rows.concurrency_limit',
-  status: 'account_rows.status COLLATE NOCASE',
-  accountExpiresAt: 'account_rows.account_expires_at',
-  lastUsedAt: "COALESCE(CASE WHEN account_rows.access_type = 'authorized' AND account_rows.authorization_id IS NOT NULL THEN authorization_usage.last_used_at ELSE account_rows.last_used_at END, account_usage.last_used_at)",
-  notes: 'account_rows.notes COLLATE NOCASE'
-}
-
-const defaultAccountListSorts: AccountListSort[] = [{ field: 'priority', order: 'asc' }]
-
-interface AccountRow {
-  id: string
-  system_account_id: string
-  provider_code: ProviderCode
-  name: string
-  notes: string | null
-  type: AccountType
-  status: AccountStatus
-  credential_mask: string
-  credentials_encrypted: string
-  proxy_profile_id: string | null
-  concurrency_limit: number
-  passthrough_enabled: number
-  error_policy_id: string | null
-  priority: number
-  schedulable: number
-  account_expires_at: string | null
-  last_used_at: string | null
-  cooldown_until: string | null
-  last_error_message: string | null
-  stream_failure_count: number
-  stream_failure_window_started_at: string | null
-  created_at: string
-  updated_at: string
-}
-
-interface AccountFailureRow {
-  id: string
-  stream_failure_count: number
-  stream_failure_window_started_at: string | null
-}
+export type { AccountListOptions, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
 
 export class DuplicateAccountCredentialError extends Error {
   constructor() {
@@ -99,116 +47,7 @@ export class DuplicateAccountCredentialError extends Error {
   }
 }
 
-interface GroupAccountRow {
-  account_id: string
-  account_authorization_id?: string | null
-}
-
-interface SystemTeamRow {
-  id: string
-  name: string
-  description: string | null
-  status: SystemTeamStatus
-  created_by: string
-  created_at: string
-  updated_at: string
-}
-
-interface SystemTeamMemberRow {
-  id: string
-  team_id: string
-  system_account_id: string
-  member_role: 'member'
-  status: SystemTeamMemberStatus
-  joined_at: string
-  removed_at: string | null
-  created_by: string
-  created_at: string
-  updated_at: string
-}
-
-interface ResourceAuthorizationRow {
-  id: string
-  resource_type: ResourceAuthorizationResourceType
-  resource_id: string
-  resource_owner_system_account_id: string
-  grantee_system_account_id: string
-  scope: 'use'
-  status: AuthorizationStatus
-  effective_source_type: ResourceAuthorizationSourceType | null
-  effective_source_team_id: string | null
-  activated_at: string | null
-  last_source_changed_at: string | null
-  remark: string | null
-  expires_at: string | null
-  limits_json: string | null
-  model_policy_json: string | null
-  created_by: string
-  created_at: string
-  revoked_by: string | null
-  revoked_at: string | null
-  revoked_reason: string | null
-  updated_at: string
-}
-
-interface ResourceAuthorizationSourceRow {
-  id: string
-  authorization_id: string
-  source_type: ResourceAuthorizationSourceType
-  source_team_id: string | null
-  status: ResourceAuthorizationSourceStatus
-  activated_at: string | null
-  ended_at: string | null
-  ended_reason: string | null
-  created_by: string
-  created_at: string
-  revoked_by: string | null
-  revoked_at: string | null
-  updated_at: string
-}
-
-interface TeamResourceAuthorizationGrantRow {
-  id: string
-  resource_type: ResourceAuthorizationResourceType
-  resource_id: string
-  resource_owner_system_account_id: string
-  team_id: string
-  scope: 'use'
-  status: AuthorizationStatus
-  remark: string | null
-  expires_at: string | null
-  limits_json: string | null
-  model_policy_json: string | null
-  created_by: string
-  created_at: string
-  revoked_by: string | null
-  revoked_at: string | null
-  updated_at: string
-}
-
-type AccountListRow = AccountRow & {
-  access_type?: 'owner' | 'authorized'
-  authorization_id?: string | null
-  authorization_status?: AuthorizationStatus | null
-}
-
-type GroupListRow = GroupRow & {
-  access_type?: 'owner' | 'authorized'
-  authorization_id?: string | null
-  authorization_status?: AuthorizationStatus | null
-}
-
-interface GroupRow {
-  id: string
-  system_account_id: string
-  name: string
-  provider_code: ProviderCode
-  description: string | null
-  enabled: number
-  is_default: number
-}
-
-export type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
+export type { AccountUsageSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
 export {
   createApiKeyRecord,
   deleteApiKey,
@@ -314,29 +153,6 @@ export {
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
 } from './openai-account-selector.repository.js'
-
-export interface AccountUsageSummary {
-  requestCount: number
-  inputTokens: number
-  outputTokens: number
-  cacheReadTokens: number
-  totalTokens: number
-  totalCost: number
-  lastUsedAt?: string
-}
-
-interface GroupAccountStats {
-  total: number
-  available: number
-  active: number
-  disabled: number
-  error: number
-  rateLimited: number
-  currentConcurrency: number
-  concurrencyLimit: number
-  todayUsage: AccountUsageSummary
-  usage: AccountUsageSummary
-}
 
 interface AccountUsageAggregateRow {
   account_id: string
@@ -546,36 +362,6 @@ function isCoolingAccountStatus(status: AccountStatus): boolean {
 
 function boolInt(value: unknown, fallback: boolean): number {
   return typeof value === 'boolean' ? (value ? 1 : 0) : fallback ? 1 : 0
-}
-
-function emptyGroupAccountStats(): GroupAccountStats {
-  return {
-    total: 0,
-    available: 0,
-    active: 0,
-    disabled: 0,
-    error: 0,
-    rateLimited: 0,
-    currentConcurrency: 0,
-    concurrencyLimit: 0,
-    todayUsage: emptyAccountUsageSummary(),
-    usage: emptyAccountUsageSummary()
-  }
-}
-
-function groupAccountStatsFromRow(row: GroupAccountStatsRow | undefined, todayUsage?: AccountUsageSummary, totalUsage?: AccountUsageSummary): GroupAccountStats {
-  return {
-    total: Number(row?.total ?? 0),
-    available: Number(row?.available ?? 0),
-    active: Number(row?.active ?? 0),
-    disabled: Number(row?.disabled ?? 0),
-    error: Number(row?.error ?? 0),
-    rateLimited: Number(row?.rate_limited ?? 0),
-    currentConcurrency: Number(row?.current_concurrency ?? 0),
-    concurrencyLimit: Number(row?.concurrency_limit ?? 0),
-    todayUsage: todayUsage ?? emptyAccountUsageSummary(),
-    usage: totalUsage ?? emptyAccountUsageSummary()
-  }
 }
 
 function usageScope(rowKey: string, systemAccountId: string, scopeId: string): UsageSummaryScopeRequest {
@@ -806,125 +592,6 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
     accessType: 'owner',
     permissions: ownerPermissions()
   }))
-}
-
-function listAccountRowsForAccess(access: AccessScope | undefined, options: Required<AccountListOptions>): AccountListRow[] {
-  const ownerSystemAccountId = manageableSystemAccountId(access)
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const orderClause = buildAccountListOrderClause(options)
-  if (!ownerSystemAccountId && canAccessAll(access)) {
-    return getDatabase()
-      .prepare(`
-        SELECT account_rows.*
-        FROM (
-          SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
-          FROM accounts
-        ) account_rows
-        LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
-        LEFT JOIN usage_stats_totals account_usage
-          ON account_usage.system_account_id = account_rows.system_account_id
-          AND account_usage.scope_type = 'account'
-          AND account_usage.scope_id = account_rows.id
-        LEFT JOIN usage_stats_totals authorization_usage
-          ON authorization_usage.system_account_id = account_rows.system_account_id
-          AND authorization_usage.scope_type = 'account_authorization'
-          AND authorization_usage.scope_id = account_rows.authorization_id
-        ${orderClause}
-      `)
-      .all() as unknown as AccountListRow[]
-  }
-  if (!viewerSystemAccountId) {
-    return getDatabase()
-      .prepare(`
-        SELECT account_rows.*
-        FROM (
-          SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
-          FROM accounts
-        ) account_rows
-        LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
-        LEFT JOIN usage_stats_totals account_usage
-          ON account_usage.system_account_id = account_rows.system_account_id
-          AND account_usage.scope_type = 'account'
-          AND account_usage.scope_id = account_rows.id
-        LEFT JOIN usage_stats_totals authorization_usage
-          ON authorization_usage.system_account_id = account_rows.system_account_id
-          AND authorization_usage.scope_type = 'account_authorization'
-          AND authorization_usage.scope_id = account_rows.authorization_id
-        ${orderClause}
-      `)
-      .all() as unknown as AccountListRow[]
-  }
-  return getDatabase()
-    .prepare(`
-      SELECT account_rows.*
-      FROM (
-        SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
-        FROM accounts
-        WHERE accounts.system_account_id = ?
-        UNION ALL
-        SELECT accounts.*, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
-        FROM resource_authorizations ra
-        INNER JOIN accounts ON accounts.id = ra.resource_id
-        WHERE ra.resource_type = 'account'
-          AND ra.grantee_system_account_id = ?
-          AND ra.status = 'active'
-          AND (ra.expires_at IS NULL OR ra.expires_at > ?)
-          AND accounts.system_account_id <> ?
-      ) account_rows
-      LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
-      LEFT JOIN usage_stats_totals account_usage
-        ON account_usage.system_account_id = account_rows.system_account_id
-        AND account_usage.scope_type = 'account'
-        AND account_usage.scope_id = account_rows.id
-      LEFT JOIN usage_stats_totals authorization_usage
-        ON authorization_usage.system_account_id = account_rows.system_account_id
-        AND authorization_usage.scope_type = 'account_authorization'
-        AND authorization_usage.scope_id = account_rows.authorization_id
-      ${orderClause}
-    `)
-    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as AccountListRow[]
-}
-
-function normalizeAccountListOptions(options?: AccountListOptions): Required<AccountListOptions> {
-  const seenFields = new Set<AccountListSortField>()
-  const sorts = (options?.sorts ?? [])
-    .filter((sort): sort is AccountListSort => isAccountListSortField(sort.field) && isAccountListSortDirection(sort.order))
-    .filter((sort) => {
-      if (seenFields.has(sort.field)) return false
-      seenFields.add(sort.field)
-      return true
-    })
-  return {
-    sorts: sorts.length ? sorts : defaultAccountListSorts
-  }
-}
-
-function isAccountListSortField(value: unknown): value is AccountListSortField {
-  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(accountListSortColumns, value)
-}
-
-function isAccountListSortDirection(value: unknown): value is AccountListSortDirection {
-  return value === 'asc' || value === 'desc'
-}
-
-function buildAccountListOrderClause(options: Required<AccountListOptions>): string {
-  const orderParts = options.sorts.map((sort) => {
-    const direction = sort.order === 'desc' ? 'DESC' : 'ASC'
-    return `${accountListSortColumns[sort.field]} ${direction}`
-  })
-  return `ORDER BY ${orderParts.join(', ')}`
-}
-
-function accountCredentialsForList(row: AccountListRow): Record<string, unknown> {
-  const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
-  if (row.access_type !== 'authorized') {
-    return credentials
-  }
-  return typeof credentials.base_url === 'string' && credentials.base_url ? { base_url: credentials.base_url } : {}
-}
-
-function loadAccountAuthorizationUsageSummaries(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
-  return loadAuthorizationUsageSummariesForScopes(scopes, 'account_authorization', statDate)
 }
 
 export function createAccount(input: Record<string, unknown>): AccountSummary {
@@ -1399,44 +1066,6 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
       permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
   })
-}
-
-function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const ownerSystemAccountId = manageableSystemAccountId(access)
-  if (!viewerSystemAccountId && canAccessAll(access)) {
-    return getDatabase()
-      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC")
-      .all() as unknown as GroupListRow[]
-  }
-  if (!viewerSystemAccountId) {
-    return getDatabase()
-      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC")
-      .all() as unknown as GroupListRow[]
-  }
-  return getDatabase()
-    .prepare(`
-      SELECT * FROM (
-        SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
-        FROM groups
-        WHERE groups.system_account_id = ?
-        UNION ALL
-        SELECT groups.*, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
-        FROM resource_authorizations ra
-        INNER JOIN groups ON groups.id = ra.resource_id
-        WHERE ra.resource_type = 'group'
-          AND ra.grantee_system_account_id = ?
-          AND ra.status = 'active'
-          AND (ra.expires_at IS NULL OR ra.expires_at > ?)
-          AND groups.system_account_id <> ?
-      )
-      ORDER BY updated_at DESC
-    `)
-    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
-}
-
-function loadGroupAuthorizationUsageSummaries(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
-  return loadAuthorizationUsageSummariesForScopes(scopes, 'group_authorization', statDate)
 }
 
 export function createGroup(input: Record<string, unknown>): GroupSummary {

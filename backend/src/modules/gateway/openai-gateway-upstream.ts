@@ -224,20 +224,35 @@ export function buildUpstreamHeaders(inputHeaders: Record<string, string | strin
 }
 
 export function copyResponseHeaders(upstreamResponse: GatewayUpstreamResponse, res: { setHeader: (name: string, value: string) => void }): void {
+  const dynamicSkippedHeaders = parseConnectionHeaderTokens(upstreamResponse.headers.get('connection'))
   upstreamResponse.headers.forEach((value, name) => {
-    if (shouldSkipUpstreamResponseHeader(name)) {
+    if (shouldSkipUpstreamResponseHeader(name, dynamicSkippedHeaders)) {
       return
     }
     res.setHeader(name, value)
   })
 }
 
-function shouldSkipUpstreamResponseHeader(name: string): boolean {
+function shouldSkipUpstreamResponseHeader(name: string, dynamicSkippedHeaders?: Set<string>): boolean {
   const lowerName = name.toLowerCase()
   if (skippedUpstreamResponseHeaders.has(lowerName)) {
     return true
   }
+  if (dynamicSkippedHeaders?.has(lowerName)) {
+    return true
+  }
   return skippedUpstreamResponseHeaderPrefixes.some((prefix) => lowerName.startsWith(prefix))
+}
+
+function parseConnectionHeaderTokens(value: string | null): Set<string> | undefined {
+  if (!value) {
+    return undefined
+  }
+  const tokens = value
+    .split(',')
+    .map((token) => token.trim().toLowerCase())
+    .filter(Boolean)
+  return tokens.length > 0 ? new Set(tokens) : undefined
 }
 
 function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccount): void {

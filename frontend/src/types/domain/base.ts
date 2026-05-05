@@ -1,0 +1,13 @@
+export type ProviderCode = string
+export type AccountType = string
+export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
+export type SystemAccountRole = 'admin' | 'user'
+export type SystemAccountStatus = 'active' | 'disabled'
+export type ResourceAccessType = 'owner' | 'authorized'
+export type AuthorizationStatus = 'active' | 'paused' | 'expired' | 'revoked'
+export type AccountGroupBindStatus = 'bound' | 'authorization_unavailable'
+export type AuthorizationResourceType = 'account' | 'group'
+export type AuthorizationSourceType = 'manual' | 'team'
+export type AuthorizationSourceStatus = 'active' | 'superseded' | 'revoked'
+export type TeamStatus = 'active' | 'disabled'
+export type TeamMemberStatus = 'active' | 'removed'

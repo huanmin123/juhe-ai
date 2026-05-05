@@ -120,10 +120,15 @@ const sessionHeaderNames = [
   'conversation-id',
   'x-conversation-id',
   'prompt_cache_key',
-  'x-prompt-cache-key'
+  'x-prompt-cache-key',
+  'previous_response_id',
+  'previous-response-id',
+  'x-previous-response-id',
+  'x-client-request-id'
 ]
 
 const sessionBodyPaths = [
+  ['previous_response_id'],
   ['session_id'],
   ['conversation_id'],
   ['prompt_cache_key'],
