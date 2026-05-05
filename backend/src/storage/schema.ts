@@ -493,6 +493,22 @@ export function applySchema(database: DatabaseSync): void {
       PRIMARY KEY (system_account_id, stat_date, provider_code, model)
     );
 
+    CREATE TABLE IF NOT EXISTS usage_model_hourly (
+      system_account_id TEXT NOT NULL,
+      stat_hour TEXT NOT NULL,
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      model TEXT NOT NULL DEFAULT 'unknown',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_hour, provider_code, model)
+    );
+
     CREATE TABLE IF NOT EXISTS usage_error_daily (
       system_account_id TEXT NOT NULL,
       stat_date TEXT NOT NULL,
@@ -505,6 +521,20 @@ export function applySchema(database: DatabaseSync): void {
       error_count INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, stat_date, error_group, error_code)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_error_hourly (
+      system_account_id TEXT NOT NULL,
+      stat_hour TEXT NOT NULL,
+      error_group TEXT NOT NULL DEFAULT 'unknown',
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      error_code TEXT NOT NULL DEFAULT 'unknown',
+      status_code INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_hour, error_group, error_code)
     );
 
     CREATE TABLE IF NOT EXISTS stats_job_state (
@@ -659,6 +689,13 @@ export function seedDefaults(database: DatabaseSync): void {
     ['auditLogQueueMaxBytesMb', 256],
     ['auditLogActiveCaptureMaxBytesMb', 64],
     ['auditLogRetentionDays', 7],
+    ['usageRecordRetentionDays', 7],
+    ['usageStatsDailyRetentionDays', 30],
+    ['usageStatsHourlyRetentionDays', 30],
+    ['systemMetricsRetentionDays', 7],
+    ['systemMetricsHourlyRetentionDays', 30],
+    ['dataRetentionCleanupBatchSize', 10000],
+    ['dataRetentionCleanupMaxBatchesPerRun', 10],
   ] as const
 
   const statement = database.prepare(`

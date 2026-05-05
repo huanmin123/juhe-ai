@@ -3,7 +3,6 @@ import { createHash } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
 import {
-  cleanupRuntimeLogIndex,
   createRuntimeLogsBatch,
   runtimeLogIndexRetentionDays,
   type RuntimeLogIndexInput,
@@ -15,7 +14,6 @@ const runtimeLogFlushIntervalMs = 200
 const runtimeLogRetryDelayMs = 1000
 const runtimeLogBatchSize = 500
 const runtimeLogMaxPending = 20000
-const runtimeLogCleanupIntervalMs = 60 * 60 * 1000
 const runtimeLogMaxRawJsonChars = 128 * 1024
 
 let pendingRuntimeLogs: RuntimeLogIndexInput[] = []
@@ -24,7 +22,6 @@ let flushing = false
 let droppedRuntimeLogCount = 0
 let flushLastSuccessAt: string | undefined
 let flushLastError: string | undefined
-let lastCleanupAtMs = 0
 let shutdownHooksInstalled = false
 
 interface RuntimeLogFlushOptions {
@@ -65,7 +62,6 @@ export function enqueueRuntimeLogLineLocal(rawLine: string, options: { sourceKey
 
 export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}): void {
   if (flushing || pendingRuntimeLogs.length === 0) {
-    maybeCleanupRuntimeLogIndex()
     return
   }
 
@@ -98,8 +94,6 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
   } finally {
     flushing = false
   }
-
-  maybeCleanupRuntimeLogIndex()
 
   if (pendingRuntimeLogs.length > 0) {
     scheduleRuntimeLogFlush(shouldRetry ? runtimeLogRetryDelayMs : 0)
@@ -192,20 +186,6 @@ function errorMessageFromErr(value: unknown): string | undefined {
 function truncateRawJson(value: string): string {
   if (value.length <= runtimeLogMaxRawJsonChars) return value
   return `${value.slice(0, runtimeLogMaxRawJsonChars)}...[truncated]`
-}
-
-function maybeCleanupRuntimeLogIndex(): void {
-  const now = Date.now()
-  if (now - lastCleanupAtMs < runtimeLogCleanupIntervalMs) {
-    return
-  }
-  lastCleanupAtMs = now
-  try {
-    cleanupRuntimeLogIndex()
-  } catch (error) {
-    flushLastError = error instanceof Error ? error.message : String(error)
-    writeRuntimeLogIndexError(`运行日志索引清理失败：${flushLastError}`)
-  }
 }
 
 function scheduleRuntimeLogFlush(delayMs: number): void {

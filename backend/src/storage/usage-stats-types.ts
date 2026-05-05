@@ -1,4 +1,4 @@
-import type { AccountUsageSummary } from '../domain/types.js'
+import type { AccountUsageSummary, UsageOverviewWindowDefinition, UsageOverviewWindowKey } from '../domain/types.js'
 
 export const GLOBAL_STATS_SYSTEM_ACCOUNT_ID = 'global'
 export const GLOBAL_STATS_SCOPE_ID = 'global'
@@ -105,8 +105,8 @@ export interface SystemMetricsSampleInput {
 }
 
 export interface UsageStatsOverview {
-  today: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
-  totals: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
+  window: UsageOverviewWindowDefinition
+  summary: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
   hourlyTrend: Array<{ statHour: string; requestCount: number; totalTokens: number; totalCost: number; averageDurationMs?: number; errorCount: number }>
   modelDistribution: Array<{ model: string; providerCode: string; requestCount: number; totalTokens: number; totalCost: number }>
   errors: Array<{ errorCode: string; providerCode: string; statusCode?: number; errorMessage?: string; errorCount: number }>

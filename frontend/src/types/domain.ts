@@ -641,15 +641,17 @@ export interface RuntimeLogFacets {
   runtime: RuntimeLogIndexRuntime
 }
 
+export type UsageOverviewWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last30d'
+
+export interface UsageOverviewWindowDefinition {
+  key: UsageOverviewWindowKey
+  label: string
+  hours: number
+}
+
 export interface UsageStatsOverview {
-  today: AccountUsageSummary & {
-    successCount: number
-    errorCount: number
-    errorRate: number
-    averageDurationMs?: number
-    averageFirstTokenMs?: number
-  }
-  totals: AccountUsageSummary & {
+  window: UsageOverviewWindowDefinition
+  summary: AccountUsageSummary & {
     successCount: number
     errorCount: number
     errorRate: number

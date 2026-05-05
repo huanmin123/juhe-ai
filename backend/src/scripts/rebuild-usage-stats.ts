@@ -31,7 +31,9 @@ function resetUsageStatsCache(database: ReturnType<typeof getDatabase>): void {
     database.prepare('DELETE FROM usage_stats_daily').run()
     database.prepare('DELETE FROM usage_stats_hourly').run()
     database.prepare('DELETE FROM usage_model_daily').run()
+    database.prepare('DELETE FROM usage_model_hourly').run()
     database.prepare('DELETE FROM usage_error_daily').run()
+    database.prepare('DELETE FROM usage_error_hourly').run()
     database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'").run()
     database.prepare(`
       INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)

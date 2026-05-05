@@ -21,8 +21,14 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
     upsertUsageStatsDaily(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statDate, entry.accumulator, updatedAt)
     upsertUsageStatsHourly(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statHour, entry.accumulator, updatedAt)
   }
-  if (row.model) upsertUsageModelDaily(database, row, statDate, updatedAt)
-  if (row.success !== 1) upsertUsageErrorDaily(database, row, statDate, updatedAt)
+  if (row.model) {
+    upsertUsageModelDaily(database, row, statDate, updatedAt)
+    upsertUsageModelHourly(database, row, statHour, updatedAt)
+  }
+  if (row.success !== 1) {
+    upsertUsageErrorDaily(database, row, statDate, updatedAt)
+    upsertUsageErrorHourly(database, row, statHour, updatedAt)
+  }
 }
 
 function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, stats: UsageStatsAccumulator, updatedAt: string): void {
@@ -119,6 +125,28 @@ function upsertUsageModelDaily(database: DatabaseSync, row: UsageStatsRecordRow,
   }
 }
 
+function upsertUsageModelHourly(database: DatabaseSync, row: UsageStatsRecordRow, statHour: string, updatedAt: string): void {
+  const model = row.model?.trim()
+  if (!model) return
+  const stats = usageStatsAccumulatorFromRecord(row)
+  for (const systemAccountId of [row.system_account_id, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    database.prepare(`
+      INSERT INTO usage_model_hourly (system_account_id, stat_hour, provider_code, model, request_count, success_count, error_count,
+        input_tokens, output_tokens, cache_read_tokens, total_cost_usd, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(system_account_id, stat_hour, provider_code, model) DO UPDATE SET
+        request_count = request_count + excluded.request_count,
+        success_count = success_count + excluded.success_count,
+        error_count = error_count + excluded.error_count,
+        input_tokens = input_tokens + excluded.input_tokens,
+        output_tokens = output_tokens + excluded.output_tokens,
+        cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+        total_cost_usd = total_cost_usd + excluded.total_cost_usd,
+        updated_at = excluded.updated_at
+    `).run(systemAccountId, statHour, row.provider_code ?? 'unknown', model, stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, updatedAt)
+  }
+}
+
 function upsertUsageErrorDaily(database: DatabaseSync, row: UsageStatsRecordRow, statDate: string, updatedAt: string): void {
   const errorGroup = row.provider_code ?? 'unknown'
   const errorCode = row.error_code ?? String(row.status_code ?? 'unknown')
@@ -134,5 +162,23 @@ function upsertUsageErrorDaily(database: DatabaseSync, row: UsageStatsRecordRow,
         error_count = error_count + excluded.error_count,
         updated_at = excluded.updated_at
     `).run(systemAccountId, statDate, errorGroup, row.provider_code ?? 'unknown', errorCode, row.status_code ?? 0, row.error_message ?? null, updatedAt)
+  }
+}
+
+function upsertUsageErrorHourly(database: DatabaseSync, row: UsageStatsRecordRow, statHour: string, updatedAt: string): void {
+  const errorGroup = row.provider_code ?? 'unknown'
+  const errorCode = row.error_code ?? String(row.status_code ?? 'unknown')
+  for (const systemAccountId of [row.system_account_id, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    database.prepare(`
+      INSERT INTO usage_error_hourly (system_account_id, stat_hour, error_group, provider_code, error_code, status_code, error_message, request_count, error_count, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, ?)
+      ON CONFLICT(system_account_id, stat_hour, error_group, error_code) DO UPDATE SET
+        provider_code = excluded.provider_code,
+        status_code = excluded.status_code,
+        error_message = COALESCE(excluded.error_message, usage_error_hourly.error_message),
+        request_count = request_count + excluded.request_count,
+        error_count = error_count + excluded.error_count,
+        updated_at = excluded.updated_at
+    `).run(systemAccountId, statHour, errorGroup, row.provider_code ?? 'unknown', errorCode, row.status_code ?? 0, row.error_message ?? null, updatedAt)
   }
 }

@@ -122,7 +122,6 @@ import type {
   AccountType,
   AccountUsageStatsOverview,
   AccountUsageStatsRow,
-  AccountUsageSummary,
   ProviderDefinition,
   SystemAccountSummary,
   UsageStatsWindowKey
@@ -202,7 +201,7 @@ const columns = computed(() => {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 170 })
   }
   for (const window of compactWindows.value) {
-    baseColumns.push({ title: window.label, key: window.key, width: 180, sorter: (left: AccountUsageStatsRow, right: AccountUsageStatsRow) => compareUsage(left.usageByWindow[window.key], right.usageByWindow[window.key]) })
+    baseColumns.push({ title: window.label, key: window.key, width: 180 })
   }
   baseColumns.push({ title: '操作', key: 'actions', width: 120, fixed: 'right' })
   return baseColumns
@@ -350,10 +349,6 @@ function accountTypeText(type: AccountType) {
 function providerName(providerCode?: string) {
   if (!providerCode) return '未知供应商'
   return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
-}
-
-function compareUsage(left: AccountUsageSummary, right: AccountUsageSummary) {
-  return left.totalTokens - right.totalTokens || left.requestCount - right.requestCount || left.totalCost - right.totalCost
 }
 
 onMounted(loadData)

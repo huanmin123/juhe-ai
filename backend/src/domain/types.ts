@@ -132,6 +132,14 @@ export interface AccountUsageSummary {
   lastUsedAt?: string
 }
 
+export type UsageOverviewWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last30d'
+
+export interface UsageOverviewWindowDefinition {
+  key: UsageOverviewWindowKey
+  label: string
+  hours: number
+}
+
 export type UsageStatsWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last15d' | 'last30d' | 'total'
 
 export interface UsageStatsWindowDefinition {

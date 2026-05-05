@@ -1,8 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import type { UsageOverviewWindowDefinition, UsageOverviewWindowKey } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, newId, nowIso } from './database.js'
-import { averageFromSum, dateKey, hourKey } from './usage-stats-helpers.js'
+import { averageFromSum, hourKey } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateUsageStatsRecord } from './usage-stats-writers.js'
 import {
@@ -18,8 +19,23 @@ import {
 } from './usage-stats-types.js'
 
 export type { SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOverview } from './usage-stats-types.js'
+export type { UsageOverviewWindowKey } from '../domain/types.js'
 
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
+
+const USAGE_OVERVIEW_WINDOWS: UsageOverviewWindowDefinition[] = [
+  { key: 'last1d', label: '近一天', hours: 24 },
+  { key: 'last3d', label: '近三天', hours: 72 },
+  { key: 'last7d', label: '近一周', hours: 168 },
+  { key: 'last30d', label: '近一月', hours: 720 }
+]
+
+const USAGE_OVERVIEW_TREND_BUCKET_HOURS: Record<UsageOverviewWindowKey, number> = {
+  last1d: 1,
+  last3d: 6,
+  last7d: 24,
+  last30d: 24
+}
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
   const database = getDatabase()
@@ -57,7 +73,6 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
       lastSuccessAt: updatedAt,
       lagSeconds: statsLagSecondsFromCursor(last.created_at)
     })
-    cleanupStatsCache(database, updatedAt)
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
@@ -235,7 +250,6 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
         sampledAt
       )
     upsertSystemMetricsHourly(database, statHour, input, sampledAt)
-    cleanupSystemMetrics(database)
     database.exec('COMMIT')
   } catch (error) {
     database.exec('ROLLBACK')
@@ -250,27 +264,33 @@ export function latestUsageStatsLagSeconds(): number {
   return Number(row?.lag_seconds ?? 0)
 }
 
-export function getUsageStatsOverview(access?: AccessScope): UsageStatsOverview {
+export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOverviewWindowKey = 'last1d'): UsageStatsOverview {
   const database = getDatabase()
   const statsScope = usageOverviewStatsScope(access)
-  const today = dateKey(new Date())
-  const sinceHour = hourKey(new Date(Date.now() - 24 * 60 * 60 * 1000))
+  const window = usageOverviewWindow(windowKey)
+  const sinceHour = hourKey(new Date(Date.now() - window.hours * 60 * 60 * 1000))
 
-  const todayRow = database.prepare(`
-    SELECT scope_id AS account_id, request_count, success_count, error_count,
+  const summaryRow = database.prepare(`
+    SELECT ? AS account_id, request_count, success_count, error_count,
       input_tokens, output_tokens, cache_read_tokens, total_cost_usd AS total_cost,
-      duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
-    FROM usage_stats_daily
-    WHERE system_account_id = ? AND scope_type = 'system_account' AND scope_id = ? AND stat_date = ?
-  `).get(statsScope.systemAccountId, statsScope.scopeId, today) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow | undefined
-
-  const totalRow = database.prepare(`
-    SELECT scope_id AS account_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd AS total_cost,
-      duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
-    FROM usage_stats_totals
-    WHERE system_account_id = ? AND scope_type = 'system_account' AND scope_id = ?
-  `).get(statsScope.systemAccountId, statsScope.scopeId) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow | undefined
+      duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, NULL AS last_used_at
+    FROM (
+      SELECT scope_id,
+        COALESCE(SUM(request_count), 0) AS request_count,
+        COALESCE(SUM(success_count), 0) AS success_count,
+        COALESCE(SUM(error_count), 0) AS error_count,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+        COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd,
+        COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum,
+        COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count,
+        COALESCE(SUM(first_token_ms_sum), 0) AS first_token_ms_sum,
+        COALESCE(SUM(first_token_ms_count), 0) AS first_token_ms_count
+      FROM usage_stats_hourly
+      WHERE system_account_id = ? AND scope_type = 'system_account' AND scope_id = ? AND stat_hour >= ?
+    )
+  `).get(statsScope.scopeId, statsScope.systemAccountId, statsScope.scopeId, sinceHour) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow | undefined
 
   const hourlyRows = database.prepare(`
     SELECT stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
@@ -281,31 +301,31 @@ export function getUsageStatsOverview(access?: AccessScope): UsageStatsOverview 
   `).all(statsScope.systemAccountId, statsScope.scopeId, sinceHour) as unknown as Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
 
   const modelRows = database.prepare(`
-    SELECT provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens,
-      total_cost_usd AS total_cost
-    FROM usage_model_daily
-    WHERE system_account_id = ? AND stat_date = ?
+    SELECT provider_code, model,
+      SUM(request_count) AS request_count,
+      SUM(input_tokens) AS input_tokens,
+      SUM(output_tokens) AS output_tokens,
+      SUM(cache_read_tokens) AS cache_read_tokens,
+      SUM(total_cost_usd) AS total_cost
+    FROM usage_model_hourly
+    WHERE system_account_id = ? AND stat_hour >= ?
+    GROUP BY provider_code, model
     ORDER BY request_count DESC LIMIT 10
-  `).all(statsScope.systemAccountId, today) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
+  `).all(statsScope.systemAccountId, sinceHour) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
 
   const errorRows = database.prepare(`
-    SELECT provider_code, error_code, status_code, error_message, error_count
-    FROM usage_error_daily
-    WHERE system_account_id = ? AND stat_date = ?
+    SELECT provider_code, error_code, MAX(status_code) AS status_code, MAX(error_message) AS error_message,
+      SUM(error_count) AS error_count
+    FROM usage_error_hourly
+    WHERE system_account_id = ? AND stat_hour >= ?
+    GROUP BY error_group, provider_code, error_code
     ORDER BY error_count DESC LIMIT 10
-  `).all(statsScope.systemAccountId, today) as unknown as Array<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>
+  `).all(statsScope.systemAccountId, sinceHour) as unknown as Array<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>
 
   return {
-    today: usageSummaryWithMath(todayRow ?? emptyStatsAggregateMathRow()),
-    totals: usageSummaryWithMath(totalRow ?? emptyStatsAggregateMathRow()),
-    hourlyTrend: hourlyRows.map((row) => ({
-      statHour: row.stat_hour,
-      requestCount: Number(row.request_count ?? 0),
-      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0) + Number(row.cache_read_tokens ?? 0),
-      totalCost: Number(row.total_cost ?? 0),
-      averageDurationMs: averageFromSum(row.duration_ms_sum, row.duration_ms_count),
-      errorCount: Number(row.error_count ?? 0)
-    })),
+    window,
+    summary: usageSummaryWithMath(summaryRow ?? emptyStatsAggregateMathRow()),
+    hourlyTrend: aggregateUsageTrendRows(hourlyRows, trendBucketHours(window.key)),
     modelDistribution: modelRows.map((row) => ({
       providerCode: row.provider_code,
       model: row.model,
@@ -324,15 +344,141 @@ export function getUsageStatsOverview(access?: AccessScope): UsageStatsOverview 
   }
 }
 
-export function getSystemMetricsOverview(): SystemMetricsOverview {
+export function getSystemMetricsOverview(windowKey: UsageOverviewWindowKey = 'last1d'): SystemMetricsOverview {
   const database = getDatabase()
   const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
-  const sinceHour = hourKey(new Date(Date.now() - 24 * 60 * 60 * 1000))
+  const window = usageOverviewWindow(windowKey)
+  const sinceHour = hourKey(new Date(Date.now() - window.hours * 60 * 60 * 1000))
   const rows = database.prepare('SELECT * FROM system_metrics_hourly WHERE stat_hour >= ? ORDER BY stat_hour ASC').all(sinceHour) as unknown as Array<Record<string, unknown>>
   return {
     latest: latest ? mapSystemMetricsLatest(latest) : undefined,
-    hourlyTrend: rows.map(mapSystemMetricsHourly)
+    hourlyTrend: aggregateSystemMetricsRows(rows, trendBucketHours(window.key)).map(mapSystemMetricsHourly)
   }
+}
+
+function usageOverviewWindow(windowKey: UsageOverviewWindowKey): UsageOverviewWindowDefinition {
+  return USAGE_OVERVIEW_WINDOWS.find((window) => window.key === windowKey) ?? USAGE_OVERVIEW_WINDOWS[0]
+}
+
+function trendBucketHours(windowKey: UsageOverviewWindowKey): number {
+  return USAGE_OVERVIEW_TREND_BUCKET_HOURS[windowKey] ?? 1
+}
+
+function aggregateUsageTrendRows(
+  rows: Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>,
+  bucketHours: number
+): UsageStatsOverview['hourlyTrend'] {
+  const buckets = new Map<string, UsageTrendBucket>()
+  for (const row of rows) {
+    const key = trendBucketKey(row.stat_hour, bucketHours)
+    const bucket = buckets.get(key) ?? emptyUsageTrendBucket(key)
+    bucket.requestCount += Number(row.request_count ?? 0)
+    bucket.errorCount += Number(row.error_count ?? 0)
+    bucket.inputTokens += Number(row.input_tokens ?? 0)
+    bucket.outputTokens += Number(row.output_tokens ?? 0)
+    bucket.cacheReadTokens += Number(row.cache_read_tokens ?? 0)
+    bucket.totalCost += Number(row.total_cost ?? 0)
+    bucket.durationMsSum += Number(row.duration_ms_sum ?? 0)
+    bucket.durationMsCount += Number(row.duration_ms_count ?? 0)
+    buckets.set(key, bucket)
+  }
+
+  return [...buckets.values()].map((bucket) => ({
+    statHour: bucket.statHour,
+    requestCount: bucket.requestCount,
+    totalTokens: bucket.inputTokens + bucket.outputTokens + bucket.cacheReadTokens,
+    totalCost: bucket.totalCost,
+    averageDurationMs: averageFromSum(bucket.durationMsSum, bucket.durationMsCount),
+    errorCount: bucket.errorCount
+  }))
+}
+
+interface UsageTrendBucket {
+  statHour: string
+  requestCount: number
+  errorCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  totalCost: number
+  durationMsSum: number
+  durationMsCount: number
+}
+
+function emptyUsageTrendBucket(statHour: string): UsageTrendBucket {
+  return {
+    statHour,
+    requestCount: 0,
+    errorCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    totalCost: 0,
+    durationMsSum: 0,
+    durationMsCount: 0
+  }
+}
+
+function aggregateSystemMetricsRows(rows: Array<Record<string, unknown>>, bucketHours: number): Array<Record<string, unknown>> {
+  const buckets = new Map<string, Record<string, unknown>>()
+  for (const row of rows) {
+    const key = trendBucketKey(String(row.stat_hour ?? ''), bucketHours)
+    const bucket = buckets.get(key) ?? { stat_hour: key, sample_count: 0 }
+    addMetric(bucket, row, 'sample_count')
+    addMetric(bucket, row, 'cpu_percent_sum')
+    maxMetric(bucket, row, 'cpu_percent_max')
+    addMetric(bucket, row, 'memory_used_percent_sum')
+    maxMetric(bucket, row, 'memory_used_percent_max')
+    addMetric(bucket, row, 'process_rss_bytes_sum')
+    maxMetric(bucket, row, 'process_rss_bytes_max')
+    addMetric(bucket, row, 'process_heap_used_bytes_sum')
+    maxMetric(bucket, row, 'process_heap_used_bytes_max')
+    addMetric(bucket, row, 'event_loop_lag_ms_sum')
+    maxMetric(bucket, row, 'event_loop_lag_ms_max')
+    addMetric(bucket, row, 'network_rx_bytes_per_sec_sum')
+    maxMetric(bucket, row, 'network_rx_bytes_per_sec_max')
+    addMetric(bucket, row, 'network_rx_bytes_per_sec_count')
+    addMetric(bucket, row, 'network_tx_bytes_per_sec_sum')
+    maxMetric(bucket, row, 'network_tx_bytes_per_sec_max')
+    addMetric(bucket, row, 'network_tx_bytes_per_sec_count')
+    maxMetric(bucket, row, 'network_rx_total_bytes_max')
+    maxMetric(bucket, row, 'network_tx_total_bytes_max')
+    maxMetric(bucket, row, 'db_file_bytes_max')
+    maxMetric(bucket, row, 'stats_lag_seconds_max')
+    buckets.set(key, bucket)
+  }
+  return [...buckets.values()]
+}
+
+function addMetric(target: Record<string, unknown>, source: Record<string, unknown>, key: string): void {
+  target[key] = Number(target[key] ?? 0) + Number(source[key] ?? 0)
+}
+
+function maxMetric(target: Record<string, unknown>, source: Record<string, unknown>, key: string): void {
+  const value = numberValue(source[key])
+  if (value === undefined) return
+  const current = numberValue(target[key])
+  target[key] = current === undefined ? value : Math.max(current, value)
+}
+
+function numberValue(value: unknown): number | undefined {
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  return Number.isFinite(number) ? number : undefined
+}
+
+function trendBucketKey(statHour: string, bucketHours: number): string {
+  if (bucketHours >= 24) {
+    return statHour.slice(0, 10)
+  }
+  if (bucketHours <= 1) {
+    return statHour
+  }
+  const hour = Number(statHour.slice(11, 13))
+  if (!Number.isFinite(hour)) {
+    return statHour
+  }
+  const bucketHour = Math.floor(hour / bucketHours) * bucketHours
+  return `${statHour.slice(0, 11)}${String(bucketHour).padStart(2, '0')}`
 }
 
 function usageOverviewStatsScope(access?: AccessScope): { systemAccountId: string; scopeId: string } {
@@ -447,44 +593,7 @@ function updateStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: 
   `).run(input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? 0, nowIso())
 }
 
-function cleanupStatsCache(database: DatabaseSync, now: string): void {
-  const dailyRetentionDays = settingsNumberValue('usageStatsDailyRetentionDays', 180, 7, 3650)
-  const hourlyRetentionDays = settingsNumberValue('usageStatsHourlyRetentionDays', 14, 1, 365)
-  const dailyCutoff = dateKey(new Date(Date.parse(now) - dailyRetentionDays * 24 * 60 * 60 * 1000))
-  const hourlyCutoff = hourKey(new Date(Date.parse(now) - hourlyRetentionDays * 24 * 60 * 60 * 1000))
-  database.prepare('DELETE FROM usage_stats_daily WHERE stat_date < ?').run(dailyCutoff)
-  database.prepare('DELETE FROM usage_model_daily WHERE stat_date < ?').run(dailyCutoff)
-  database.prepare('DELETE FROM usage_error_daily WHERE stat_date < ?').run(dailyCutoff)
-  database.prepare('DELETE FROM usage_stats_hourly WHERE stat_hour < ?').run(hourlyCutoff)
-}
-
-function cleanupSystemMetrics(database: DatabaseSync): void {
-  const retentionDays = settingsNumberValue('systemMetricsRetentionDays', 14, 1, 365)
-  const cutoff = new Date(Date.now() - retentionDays * 24 * 60 * 60 * 1000).toISOString()
-  const hourlyCutoff = hourKey(new Date(Date.now() - 180 * 24 * 60 * 60 * 1000))
-  database.prepare('DELETE FROM system_metrics_samples WHERE sampled_at < ?').run(cutoff)
-  database.prepare('DELETE FROM system_metrics_hourly WHERE stat_hour < ?').run(hourlyCutoff)
-}
-
 function statsLagSecondsFromCursor(cursorCreatedAt: string): number {
   const cursorTime = Date.parse(cursorCreatedAt)
   return Number.isFinite(cursorTime) ? Math.max(0, Math.floor((Date.now() - cursorTime) / 1000)) : 0
-}
-
-function settingsNumberValue(key: string, fallback: number, min: number, max: number): number {
-  const value = getSettingsValue(key)
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
-}
-
-function getSettingsValue(key: string): unknown {
-  const row = getDatabase()
-    .prepare('SELECT value_json FROM system_settings WHERE system_account_id = ? AND key = ?')
-    .get(currentSystemAccountId(), key) as unknown as { value_json?: string } | undefined
-  if (!row?.value_json) return undefined
-  try {
-    return JSON.parse(row.value_json) as unknown
-  } catch {
-    return undefined
-  }
 }

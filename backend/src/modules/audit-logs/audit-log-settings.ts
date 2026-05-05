@@ -39,7 +39,7 @@ export function auditLogSettingsFromRecord(settings: Record<string, unknown>): A
     queueMaxItems: numberSetting(settings.auditLogQueueMaxItems, 1000, 1, 100000),
     queueMaxBytes: numberSetting(settings.auditLogQueueMaxBytesMb, 256, 1, 10240) * 1024 * 1024,
     activeCaptureMaxBytes: numberSetting(settings.auditLogActiveCaptureMaxBytesMb, 64, 1, 10240) * 1024 * 1024,
-    retentionDays: numberSetting(settings.auditLogRetentionDays, 7, 1, 3650)
+    retentionDays: numberSetting(settings.auditLogRetentionDays, 7, 1, 7)
   }
 }
 

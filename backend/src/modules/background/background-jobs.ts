@@ -8,7 +8,6 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   expireDueResourceAuthorizations,
   getSettings,
-  cleanupRuntimeLogIndex,
   listAccountsDueForCooldownRetest,
   listAccounts
 } from '../../storage/repositories.js'
@@ -26,7 +25,7 @@ import {
 import { flushUsageRecordQueue } from '../gateway/usage-record-queue.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
-import { cleanupExpiredAuditLogs } from '../audit-logs/audit-log-cleanup.service.js'
+import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { WorkerScheduler } from './worker-scheduler.js'
 
 let started = false
@@ -48,7 +47,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'openai-oauth-usage-refresh', intervalMs: settingsNumber('oauthUsageSnapshotRefreshIntervalSeconds', 300, 60, 86400) * 1000, task: runOpenAIOAuthUsageRefresh })
   scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000, task: runCooldownAccountRetest })
   scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * 60 * 1000, task: runRuntimeLogIndexMaintenance })
-  scheduler.schedule({ name: 'audit-log-cleanup', intervalMs: dailyIntervalMs, task: runAuditLogCleanup })
+  scheduler.schedule({ name: 'data-retention-cleanup', intervalMs: dailyIntervalMs, task: runDataRetentionCleanup })
 }
 
 async function runUsageStatsAggregation(): Promise<void> {
@@ -140,14 +139,13 @@ async function runCooldownAccountRetest(): Promise<void> {
 async function runRuntimeLogIndexMaintenance(): Promise<void> {
   try {
     flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
-    cleanupRuntimeLogIndex()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_runtime_log_index_maintenance_failed' }), 'Runtime log index maintenance failed')
   }
 }
 
-async function runAuditLogCleanup(): Promise<void> {
-  cleanupExpiredAuditLogs()
+async function runDataRetentionCleanup(): Promise<void> {
+  cleanupExpiredRetainedData()
 }
 
 function openAIOAuthUsageRefreshCandidates(): AccountSummary[] {

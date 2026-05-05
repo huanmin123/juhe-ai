@@ -14,6 +14,7 @@
   - [../架构总览.md](../架构总览.md)
   - [../../plans/第一阶段计划.md](../../plans/第一阶段计划.md)
   - [../../functions/SQLite存储说明.md](../../functions/SQLite存储说明.md)
+  - [后台任务使用说明](后台任务使用说明.md)
   - [开发运行说明](../../develop/运行说明.md)
   - [开发测试与验证说明](../../develop/测试与验证说明.md)
 
@@ -43,7 +44,7 @@
 | `backend/src/domain/` | 后端对外返回和跨模块共享的领域类型 | 新增或修改 API 结构时同步前端类型和文档 |
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
 | `backend/src/modules/gateway/` | OpenAI 兼容中转、账号选择、错误策略、SSE 透传和用量解析 | 不把网关细节泄漏成前端多套复杂选项 |
-| `backend/src/modules/background/` | 统计聚合、系统采样、OAuth 用量快照刷新等后台任务 | 任务注册和执行只允许在独立 background worker 进程内发生，不引入重型分布式队列 |
+| `backend/src/modules/background/` | 统计聚合、系统采样、OAuth 用量快照刷新等后台任务 | 任务注册和执行只允许在独立 background worker 进程内发生，不引入重型分布式队列；新增或调整任务先看 [后台任务使用说明](后台任务使用说明.md) |
 | `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
 | `backend/src/shared/` | 通用响应、跨模块小工具 | 只放稳定复用能力，不堆业务逻辑 |
 | `backend/src/scripts/` | 烟测、导入导出、一次性维护脚本 | 脚本应可独立运行，并说明安全边界 |
@@ -144,7 +145,7 @@ flowchart LR
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
 | 原始审计 | `audit_logs`、`audit_log_attempts`、`audit_log_payloads` | 客户端请求、上游尝试、上游响应和最终返回的完整链路原文 |
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
-| 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_error_daily`、`group_account_stats` | 列表统计、趋势图、模型分布、错误聚合和分组账户状态缓存 |
+| 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_model_hourly`、`usage_error_daily`、`usage_error_hourly`、`group_account_stats` | 列表统计、趋势图、模型分布、错误聚合和分组账户状态缓存 |
 | 后台任务 | `stats_job_state` | 聚合游标、任务状态、统计滞后和错误信息 |
 | 运维监控 | `system_metrics_samples`、`system_metrics_hourly` | CPU、内存、进程、事件循环、网络、数据库体积和统计滞后 |
 
@@ -224,6 +225,7 @@ erDiagram
 ## 8. 后台任务
 
 - 后台任务必须由独立 background worker 进程注册和执行，主 Web 进程不得直接调用 `startBackgroundJobs()` 或导入具体任务实现。
+- 新增或调整后台定时任务、worker IPC 消息、队列 flush 或 worker 生命周期时，先按 [后台任务使用说明](后台任务使用说明.md) 执行。
 - 主 Web 进程只负责管理 API、网关请求、静态资源和必要的 worker 启动 / 看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
 - 当前后台任务包括使用记录增量聚合、分组账户统计缓存刷新、授权到期扫描、系统指标采样、小时级指标聚合、OpenAI OAuth 用量快照刷新、冷却账号复测、运行日志索引维护、原始审计日志批量落库和保留期清理。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
@@ -251,5 +253,6 @@ erDiagram
 - 涉及管理 API、网关接口、响应结构、错误语义、分页筛选或权限摘要时，同时看 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
 - 涉及敏感字段、凭据展示、请求快照、原始审计日志、日志脱敏、数据保留或备份迁移时，同时看 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
 - 涉及 OpenAI OAuth、API Key 账户、上游请求或账号测试时，同时看 [第一期 OpenAI 账号接入](../../functions/第一期OpenAI账号接入.md)。
+- 涉及后台定时任务、worker IPC、队列 flush、统计聚合或批量清理时，同时看 [后台任务使用说明](后台任务使用说明.md)。
 - 涉及透传、请求头、SSE、错误切换或网关行为时，同时看 [中转透传机制调研与定位修正](../../functions/中转透传机制调研与定位修正.md)。
 - 涉及运行、联调和验证时，按 [开发运行说明](../../develop/运行说明.md) 和 [开发测试与验证说明](../../develop/测试与验证说明.md) 执行。

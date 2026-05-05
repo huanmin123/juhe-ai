@@ -33,6 +33,7 @@ import type {
   SystemSettings,
   SystemAccountSummary,
   SystemMetricsOverview,
+  UsageOverviewWindowKey,
   UsageStatsOverview,
   UsageRecordSummary
 } from '@/types/domain'
@@ -44,6 +45,10 @@ interface ApiResponse<T> {
 
 interface ListParams {
   systemAccountId?: string
+}
+
+interface UsageOverviewParams extends ListParams {
+  window?: UsageOverviewWindowKey
 }
 
 export type SortDirection = 'asc' | 'desc'
@@ -212,10 +217,10 @@ export const api = {
     grep: (params?: RuntimeLogGrepParams) => unwrap<RuntimeLogGrepResult>(http.get('/runtime-logs/grep', { params, ...noTimeout }))
   },
   stats: {
-    usageOverview: (params?: ListParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
+    usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
     accountUsage: (params?: ListParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
     accountAuthorizationUsage: (id: string, params?: ListParams) => unwrap<AccountAuthorizationUsageOverview>(http.get(`/stats/accounts/${id}/authorization-usage`, { params })),
-    systemMetrics: () => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics'))
+    systemMetrics: (params?: Pick<UsageOverviewParams, 'window'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params }))
   },
   settings: {
     public: () => unwrap<GlobalSettings>(http.get('/settings/public')),

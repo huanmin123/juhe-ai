@@ -8,7 +8,8 @@ import {
 } from '../../storage/repositories.js'
 import {
   getSystemMetricsOverview,
-  getUsageStatsOverview
+  getUsageStatsOverview,
+  type UsageOverviewWindowKey
 } from '../../storage/usage-stats.repository.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -19,8 +20,17 @@ const accountIdParamsSchema = z.object({
   id: z.string().trim().min(1, '账户 ID 不能为空')
 })
 
+const usageOverviewQuerySchema = z.object({
+  window: z.enum(['last1d', 'last3d', 'last7d', 'last30d']).default('last1d')
+})
+
 statsRouter.get('/usage-overview', (req, res) => {
-  res.json(ok(getUsageStatsOverview(getRequestAccessScope(req.query.systemAccountId))))
+  const parsed = usageOverviewQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '统计窗口不合法')))
+    return
+  }
+  res.json(ok(getUsageStatsOverview(getRequestAccessScope(req.query.systemAccountId), parsed.data.window as UsageOverviewWindowKey)))
 })
 
 statsRouter.get('/account-usage', (req, res) => {
@@ -41,6 +51,11 @@ statsRouter.get('/accounts/:id/authorization-usage', (req, res) => {
   res.json(ok(overview))
 })
 
-statsRouter.get('/system-metrics', requireAdmin, (_req, res) => {
-  res.json(ok(getSystemMetricsOverview()))
+statsRouter.get('/system-metrics', requireAdmin, (req, res) => {
+  const parsed = usageOverviewQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '监控窗口不合法')))
+    return
+  }
+  res.json(ok(getSystemMetricsOverview(parsed.data.window as UsageOverviewWindowKey)))
 })

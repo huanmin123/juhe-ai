@@ -220,12 +220,19 @@ export function buildUpstreamHeaders(inputHeaders: Record<string, string | strin
 
 export function copyResponseHeaders(upstreamResponse: GatewayUpstreamResponse, res: { setHeader: (name: string, value: string) => void }): void {
   upstreamResponse.headers.forEach((value, name) => {
-    const lowerName = name.toLowerCase()
-    if (['content-length', 'content-encoding', 'connection', 'transfer-encoding'].includes(lowerName)) {
+    if (shouldSkipUpstreamResponseHeader(name)) {
       return
     }
     res.setHeader(name, value)
   })
+}
+
+function shouldSkipUpstreamResponseHeader(name: string): boolean {
+  const lowerName = name.toLowerCase()
+  if (skippedUpstreamResponseHeaders.has(lowerName)) {
+    return true
+  }
+  return skippedUpstreamResponseHeaderPrefixes.some((prefix) => lowerName.startsWith(prefix))
 }
 
 async function* iteratePreloadedStream(iterator: AsyncIterator<Uint8Array>, firstResult: IteratorResult<Uint8Array>): AsyncIterable<Uint8Array> {
@@ -345,3 +352,26 @@ const skippedUpstreamRequestHeaders = new Set([
   'via',
   'cf-connecting-ip'
 ])
+
+const skippedUpstreamResponseHeaders = new Set([
+  'connection',
+  'content-encoding',
+  'content-length',
+  'keep-alive',
+  'proxy-authenticate',
+  'proxy-authorization',
+  'set-cookie',
+  'te',
+  'trailer',
+  'transfer-encoding',
+  'upgrade'
+])
+
+const skippedUpstreamResponseHeaderPrefixes = [
+  'cf-aig-',
+  'helicone-',
+  'x-bt-',
+  'x-kong-',
+  'x-litellm-',
+  'x-portkey-'
+]

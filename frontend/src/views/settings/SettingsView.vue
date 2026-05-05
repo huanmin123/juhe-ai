@@ -158,7 +158,7 @@
             </div>
             <div class="setting-item">
               <a-form-item label="保留天数" extra="后台清理任务会删除超过保留期的审计日志和 payload。">
-                <a-input-number v-model:value="systemForm.auditLogRetentionDays" :min="1" :max="3650" style="width: 100%" />
+                <a-input-number v-model:value="systemForm.auditLogRetentionDays" :min="1" :max="7" style="width: 100%" />
               </a-form-item>
             </div>
           </div>
@@ -342,7 +342,7 @@ function normalizeSystemSettings(settings: SystemSettings | SystemForm): SystemF
     auditLogQueueMaxItems: numberValue(settings.auditLogQueueMaxItems, defaultSystemSettings.auditLogQueueMaxItems, 1, 100000),
     auditLogQueueMaxBytesMb: numberValue(settings.auditLogQueueMaxBytesMb, defaultSystemSettings.auditLogQueueMaxBytesMb, 1, 10240),
     auditLogActiveCaptureMaxBytesMb: numberValue(settings.auditLogActiveCaptureMaxBytesMb, defaultSystemSettings.auditLogActiveCaptureMaxBytesMb, 1, 10240),
-    auditLogRetentionDays: numberValue(settings.auditLogRetentionDays, defaultSystemSettings.auditLogRetentionDays, 1, 3650)
+    auditLogRetentionDays: numberValue(settings.auditLogRetentionDays, defaultSystemSettings.auditLogRetentionDays, 1, 7)
   }
 }
 

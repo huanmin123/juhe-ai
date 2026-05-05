@@ -2,12 +2,14 @@
   <div class="stats-page">
     <a-card class="page-card stats-header-card">
       <div class="page-toolbar stats-toolbar">
-        <div class="toolbar-copy">
-          <strong>统计概览</strong>
-          <span>读取有效消耗缓存快照，排障类失败请到使用记录、审计日志和运行日志查看。</span>
-        </div>
+        <a-segmented v-model:value="selectedWindow" class="stats-window-segmented" :options="windowOptions" :disabled="loading" @change="handleWindowChange" />
         <div class="page-toolbar-actions">
-          <a-button :loading="loading" @click="loadData">刷新</a-button>
+          <a-button :loading="loading" @click="loadData">
+            <template #icon>
+              <ReloadOutlined />
+            </template>
+            刷新
+          </a-button>
         </div>
       </div>
     </a-card>
@@ -16,12 +18,12 @@
 
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="14">
-        <StatsChartCard title="有效请求 / Token / 平均响应（近 24 小时）" :loading="initialLoading" :has-data="hasUsageTrend" :empty-description="usageTrendEmptyDescription">
+        <StatsChartCard :title="`有效请求 / Token / 平均响应（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasUsageTrend" :empty-description="usageTrendEmptyDescription">
           <div ref="usageTrendChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
       </a-col>
       <a-col :xs="24" :xl="10">
-        <StatsChartCard title="模型分布（今日）" :loading="initialLoading" :has-data="hasModelDistribution" :empty-description="modelDistributionEmptyDescription">
+        <StatsChartCard :title="`模型分布（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasModelDistribution" :empty-description="modelDistributionEmptyDescription">
           <div ref="modelDistributionChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
       </a-col>
@@ -29,12 +31,12 @@
 
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="10">
-        <StatsChartCard title="消耗错误 Top 10（今日）" :loading="initialLoading" :has-data="hasErrors" :empty-description="errorEmptyDescription">
+        <StatsChartCard :title="`消耗错误 Top 10（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasErrors" :empty-description="errorEmptyDescription">
           <div ref="errorChartRef" class="chart-panel" />
         </StatsChartCard>
       </a-col>
       <a-col :xs="24" :xl="14">
-        <StatsChartCard title="系统性能 / 网络吞吐趋势（近 24 小时）" :loading="systemInitialLoading" :has-data="hasVisibleSystemTrend" :empty-description="systemTrendEmptyDescription">
+        <StatsChartCard :title="`系统性能 / 网络吞吐趋势（${currentWindowLabel}）`" :loading="systemInitialLoading" :has-data="hasVisibleSystemTrend" :empty-description="systemTrendEmptyDescription">
           <div ref="systemMetricsChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
       </a-col>
@@ -48,16 +50,25 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 
 import type { ECharts } from 'echarts'
 import type { Ref, ShallowRef } from 'vue'
 import { message } from 'ant-design-vue'
+import { ReloadOutlined } from '@ant-design/icons-vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
-import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
+import type { SystemMetricsOverview, UsageOverviewWindowKey, UsageStatsOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
 import { buildErrorOption, buildModelDistributionOption, buildSystemMetricsOption, buildUsageTrendOption } from './statsChartOptions'
 import { formatCompactInteger, formatCost, formatDuration, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
 
+const windowOptions: Array<{ label: string; value: UsageOverviewWindowKey }> = [
+  { label: '近一天', value: 'last1d' },
+  { label: '近三天', value: 'last3d' },
+  { label: '近一周', value: 'last7d' },
+  { label: '近一月', value: 'last30d' }
+]
+
 const loading = ref(false)
+const selectedWindow = ref<UsageOverviewWindowKey>('last1d')
 const usageOverview = ref<UsageStatsOverview>()
 const systemMetrics = ref<SystemMetricsOverview>()
 const isAdmin = authState.isAdmin
@@ -80,29 +91,30 @@ const hasVisibleSystemTrend = computed(() => isAdmin.value && hasSystemTrend.val
 const hasUsageOverview = computed(() => Boolean(usageOverview.value))
 const initialLoading = computed(() => loading.value && !hasUsageOverview.value)
 const systemInitialLoading = computed(() => loading.value && isAdmin.value && !systemMetrics.value)
-const hasHistoricalUsage = computed(() => (usageOverview.value?.totals.requestCount ?? 0) > 0)
-const usageTrendEmptyDescription = computed(() => hasHistoricalUsage.value ? '近 24 小时暂无趋势数据，累计指标已在上方展示' : '暂无趋势数据')
-const modelDistributionEmptyDescription = computed(() => hasHistoricalUsage.value ? '今日暂无模型调用，累计指标已在上方展示' : '今日暂无模型调用')
-const errorEmptyDescription = computed(() => hasHistoricalUsage.value ? '今日暂无消耗错误，排障错误请查看日志' : '今日暂无消耗错误')
+const currentWindowLabel = computed(() => usageOverview.value?.window.label ?? windowOptions.find((item) => item.value === selectedWindow.value)?.label ?? '近一天')
+const hasWindowUsage = computed(() => (usageOverview.value?.summary.requestCount ?? 0) > 0)
+const usageTrendEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无趋势数据，窗口指标已在上方展示` : `${currentWindowLabel.value}暂无趋势数据`)
+const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.value}暂无模型调用`)
+const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无消耗错误，排障错误请查看日志` : `${currentWindowLabel.value}暂无消耗错误`)
 const systemTrendEmptyDescription = computed(() => isAdmin.value ? '等待后台监控采样' : '系统监控仅管理员可见')
 
 const summaryCards = computed(() => {
-  const today = usageOverview.value?.today
-  const totals = usageOverview.value?.totals
+  const summary = usageOverview.value?.summary
+  const windowLabel = currentWindowLabel.value
   return [
-    { key: 'requests', label: '今日有效请求', value: formatInteger(today?.requestCount), extra: `累计 ${formatInteger(totals?.requestCount)} / 消耗错误率 ${formatPercent((today?.errorRate ?? totals?.errorRate ?? 0) * 100)}` },
-    { key: 'duration', label: '今日平均响应', value: formatDuration(today?.averageDurationMs), extra: `首 Token ${formatDuration(today?.averageFirstTokenMs)}` },
-    { key: 'tokens', label: '今日 Token', value: formatCompactInteger(today?.totalTokens), extra: `累计 ${formatCompactInteger(totals?.totalTokens)} / 输入 ${formatCompactInteger(today?.inputTokens)}` },
-    { key: 'cost', label: '今日成本', value: formatCost(today?.totalCost), extra: `累计 ${formatCost(totals?.totalCost)} / 滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
+    { key: 'requests', label: `${windowLabel}有效请求`, value: formatInteger(summary?.requestCount), extra: `消耗错误率 ${formatPercent((summary?.errorRate ?? 0) * 100)} / 错误 ${formatInteger(summary?.errorCount)}` },
+    { key: 'duration', label: `${windowLabel}平均响应`, value: formatDuration(summary?.averageDurationMs), extra: `首 Token ${formatDuration(summary?.averageFirstTokenMs)}` },
+    { key: 'tokens', label: `${windowLabel} Token`, value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出+缓存 ${formatCompactInteger((summary?.outputTokens ?? 0) + (summary?.cacheReadTokens ?? 0))}` },
+    { key: 'cost', label: `${windowLabel}成本`, value: formatCost(summary?.totalCost), extra: `统计滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
   ]
 })
 
 async function loadData() {
   loading.value = true
   try {
-    usageOverview.value = await api.stats.usageOverview()
+    usageOverview.value = await api.stats.usageOverview({ window: selectedWindow.value })
     if (isAdmin.value) {
-      systemMetrics.value = await api.stats.systemMetrics()
+      systemMetrics.value = await api.stats.systemMetrics({ window: selectedWindow.value })
     } else {
       systemMetrics.value = undefined
     }
@@ -113,6 +125,11 @@ async function loadData() {
     loading.value = false
     renderCharts()
   }
+}
+
+function handleWindowChange(value: string | number) {
+  selectedWindow.value = value as UsageOverviewWindowKey
+  void loadData()
 }
 
 function renderCharts() {
@@ -220,17 +237,9 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
-.toolbar-copy {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  color: #64748b;
-  font-size: 13px;
-}
-
-.toolbar-copy strong {
-  color: #0f172a;
-  font-size: 16px;
+.stats-window-segmented {
+  width: max-content;
+  max-width: 100%;
 }
 
 .stats-section {
@@ -295,6 +304,11 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 768px) {
+  .stats-window-segmented {
+    width: 100%;
+    min-width: 0;
+  }
+
   .chart-panel,
   .chart-panel-large {
     height: 280px;

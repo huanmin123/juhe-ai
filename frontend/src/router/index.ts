@@ -17,7 +17,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {
       title: '统计概览',
-      description: '查看今日有效请求、Token 使用趋势、模型分布、消耗错误和系统性能。',
+      description: '按监控窗口查看有效请求、Token 使用趋势、模型分布、消耗错误和系统性能。',
       roles: ['admin']
     }
   },

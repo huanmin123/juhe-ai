@@ -217,11 +217,11 @@ export function getRuntimeLogFacets(): RuntimeLogFacets {
   }
 }
 
-export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso()): number {
+export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit = 10000): number {
   const database = getDatabase()
   const rows = database
-    .prepare('SELECT id FROM runtime_logs WHERE time < ? LIMIT 10000')
-    .all(cutoffIso) as RuntimeLogRow[]
+    .prepare('SELECT id FROM runtime_logs WHERE time < ? ORDER BY time ASC, id ASC LIMIT ?')
+    .all(cutoffIso, Math.max(1, Math.trunc(limit))) as RuntimeLogRow[]
   const ids = rows.map((row) => String(row.id)).filter(Boolean)
   if (ids.length === 0) return 0
 

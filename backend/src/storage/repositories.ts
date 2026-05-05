@@ -300,6 +300,14 @@ export {
   type RuntimeLogSummary
 } from './runtime-logs.repository.js'
 export {
+  cleanupExpiredSystemSessions,
+  cleanupProcessedUsageRecordsBefore,
+  cleanupSystemMetricsBefore,
+  cleanupUsageStatsBucketsBefore,
+  type SystemMetricsRetentionCleanupResult,
+  type UsageStatsRetentionCleanupResult
+} from './data-retention.repository.js'
+export {
   listOpenAIAccountsForGroup,
   resolveGroupUsageAccessMetadata,
   selectOpenAIAccountForGroup,
