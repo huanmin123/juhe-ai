@@ -12,7 +12,6 @@ export const USAGE_STATS_WINDOWS: UsageStatsWindowDefinition[] = [
 export function emptyAccountUsageSummary(): AccountUsageSummary {
   return {
     requestCount: 0,
-    clientCount: 0,
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
@@ -23,7 +22,6 @@ export function emptyAccountUsageSummary(): AccountUsageSummary {
 
 export function usageSummaryFromAggregate(row: {
   request_count: number
-  client_count: number
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
@@ -35,7 +33,6 @@ export function usageSummaryFromAggregate(row: {
   const cacheReadTokens = Number(row.cache_read_tokens ?? 0)
   return {
     requestCount: Number(row.request_count ?? 0),
-    clientCount: Number(row.client_count ?? 0),
     inputTokens,
     outputTokens,
     cacheReadTokens,
@@ -57,7 +54,6 @@ export function addUsageSummaries(left: AccountUsageSummary | undefined, right: 
     .sort((leftValue, rightValue) => Date.parse(rightValue) - Date.parse(leftValue))[0]
   return {
     requestCount: leftUsage.requestCount + rightUsage.requestCount,
-    clientCount: leftUsage.clientCount + rightUsage.clientCount,
     inputTokens: leftUsage.inputTokens + rightUsage.inputTokens,
     outputTokens: leftUsage.outputTokens + rightUsage.outputTokens,
     cacheReadTokens: leftUsage.cacheReadTokens + rightUsage.cacheReadTokens,

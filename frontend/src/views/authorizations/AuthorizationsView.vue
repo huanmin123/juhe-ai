@@ -1,186 +1,27 @@
 <template>
   <a-card class="page-card authorizations-page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" filter-title="筛选授权" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
-      <template #inline-filters>
-        <a-select v-model:value="filters.resourceType" class="filter-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
-        <a-select
-          v-model:value="filters.resourceId"
-          show-search
-          allow-clear
-          option-filter-prop="label"
-          class="filter-select filter-resource responsive-list-inline-filter"
-          :options="resourceOptions"
-          :disabled="filters.resourceType === 'all'"
-          :placeholder="filters.resourceType === 'all' ? '先选择资源类型' : '筛选资源'"
-          @change="loadData"
-        />
-        <SystemPrincipalSelect
-          v-model:value="filters.teamId"
-          :teams="teams"
-          :active-only="false"
-          allow-clear
-          class="filter-select responsive-list-inline-filter"
-          placeholder="筛选授权来源"
-          scope="team"
-          @change="loadData"
-        />
-        <SystemPrincipalSelect
-          v-model:value="filters.granteeSystemAccountId"
-          :accounts="users"
-          :active-only="false"
-          allow-clear
-          class="filter-select filter-user responsive-list-inline-filter"
-          placeholder="筛选被授权用户"
-          @change="loadData"
-        />
-      </template>
-      <template #actions>
-        <a-button @click="helpOpen = true">
-          <template #icon><question-circle-outlined /></template>
-          授权帮助
-        </a-button>
-        <a-button type="primary" @click="openCreateModal">新增授权</a-button>
-      </template>
-      <template #filters>
-        <label class="mobile-filter-field">
-          <span>资源类型</span>
-          <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
-        </label>
-        <label class="mobile-filter-field">
-          <span>资源</span>
-          <a-select
-            v-model:value="filters.resourceId"
-            show-search
-            allow-clear
-            option-filter-prop="label"
-            :options="resourceOptions"
-            :disabled="filters.resourceType === 'all'"
-            :placeholder="filters.resourceType === 'all' ? '先选择资源类型' : '筛选资源'"
-            @change="loadData"
-          />
-        </label>
-        <label class="mobile-filter-field">
-          <span>授权来源</span>
-          <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选授权来源" @change="loadData" />
-        </label>
-        <label class="mobile-filter-field">
-          <span>被授权用户</span>
-          <SystemPrincipalSelect v-model:value="filters.granteeSystemAccountId" :accounts="users" :active-only="false" allow-clear placeholder="筛选被授权用户" @change="loadData" />
-        </label>
-      </template>
-    </ResponsiveListToolbar>
+    <AuthorizationFilterToolbar
+      :filters="filters"
+      :resource-type-options="resourceTypeOptions"
+      :resource-options="resourceOptions"
+      :teams="teams"
+      :users="users"
+      :active-filter-count="activeFilterCount"
+      :loading="loading"
+      @reset="resetFilters"
+      @refresh="loadData"
+      @help="helpOpen = true"
+      @create="openCreateModal"
+      @resource-type-change="handleResourceTypeChange"
+    />
 
-      <ResponsiveDataList table-class="page-table authorizations-table" :columns="columns" :data-source="authorizations" row-key="id" :loading="loading" :scroll-x="1320" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
-      <template #emptyText>
-        <a-empty class="page-empty-card" description="暂无授权记录，请先新增授权。" />
-      </template>
-      <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'resource'">
-          <div class="resource-cell">
-            <span class="resource-name">{{ record.resourceName || record.resourceId }}</span>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'owner'">
-          {{ record.resourceOwnerSystemAccountName || record.resourceOwnerSystemAccountId }}
-        </template>
-        <template v-else-if="column.key === 'grantee'">
-          <div class="grantee-cell">
-            <span>{{ record.granteeSystemAccountName || record.granteeSystemAccountId }}</span>
-            <a-tag v-if="granteeSourceLabel(record)" :color="granteeSourceTagColor(record)">{{ granteeSourceLabel(record) }}</a-tag>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'usageTotal'">
-          <div class="usage-total-cell">
-            <span>{{ usageSummaryText(record.usage) }}</span>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'status'">
-          <StatusTag :color="statusTagColor(record.status)" :label="statusLabel(record.status)" />
-        </template>
-        <template v-else-if="column.key === 'createdAt'">
-          {{ formatDateTime(record.createdAt) }}
-        </template>
-        <template v-else-if="column.key === 'remark'">
-          <span>{{ record.remark || '-' }}</span>
-        </template>
-        <template v-else-if="column.key === 'actions'">
-          <div class="authorization-actions">
-            <a-button size="small" @click="openUsageDetail(record)">明细</a-button>
-            <a-dropdown>
-              <a-button size="small">
-                更多
-              </a-button>
-              <template #overlay>
-                <a-menu @click="handleActionMenuClick($event, record)">
-                  <a-menu-item key="edit-expire">修改到期时间</a-menu-item>
-                  <a-menu-item v-if="record.status === 'active'" key="pause">暂停授权</a-menu-item>
-                  <a-menu-item v-if="record.status === 'paused'" key="resume">恢复授权</a-menu-item>
-                  <a-menu-item v-if="record.status === 'active' && hasManualSource(record)" key="revoke-manual">回收</a-menu-item>
-                  <a-sub-menu v-if="activeTeamSources(record).length" key="revoke-team" title="回收">
-                    <a-menu-item v-for="teamSource in activeTeamSources(record)" :key="`team:${teamSource.sourceTeamId}`">
-                      {{ teamSource.sourceTeamName || teamSource.sourceTeamId }}
-                    </a-menu-item>
-                  </a-sub-menu>
-                </a-menu>
-              </template>
-            </a-dropdown>
-          </div>
-        </template>
-      </template>
-
-      <template #card="{ record }">
-        <article class="mobile-list-card">
-          <div class="mobile-list-card-head">
-            <div class="mobile-list-card-title">{{ record.resourceName || record.resourceId }}</div>
-            <div class="mobile-list-card-tags">
-              <StatusTag :color="statusTagColor(record.status)" :label="statusLabel(record.status)" />
-            </div>
-          </div>
-          <div class="mobile-list-meta-grid">
-            <div class="mobile-list-meta-item">
-              <span>归属人</span>
-              <strong>{{ record.resourceOwnerSystemAccountName || record.resourceOwnerSystemAccountId }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>被授权用户</span>
-              <strong class="mobile-user-tag-line">
-                <span>{{ record.granteeSystemAccountName || record.granteeSystemAccountId }}</span>
-                <a-tag v-if="granteeSourceLabel(record)" :color="granteeSourceTagColor(record)">{{ granteeSourceLabel(record) }}</a-tag>
-              </strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>用量(日)</span>
-              <strong>{{ usageSummaryText(record.usage) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>说明</span>
-              <strong>{{ record.remark || '-' }}</strong>
-            </div>
-          </div>
-          <div class="mobile-list-card-actions two-actions">
-            <a-button @click="openUsageDetail(record)">明细</a-button>
-            <a-dropdown>
-              <a-button>
-                更多
-              </a-button>
-              <template #overlay>
-                <a-menu @click="handleActionMenuClick($event, record)">
-                  <a-menu-item key="edit-expire">修改到期时间</a-menu-item>
-                  <a-menu-item v-if="record.status === 'active'" key="pause">暂停授权</a-menu-item>
-                  <a-menu-item v-if="record.status === 'paused'" key="resume">恢复授权</a-menu-item>
-                  <a-menu-item v-if="record.status === 'active' && hasManualSource(record)" key="revoke-manual">回收</a-menu-item>
-                  <a-sub-menu v-if="activeTeamSources(record).length" key="revoke-team" title="回收">
-                    <a-menu-item v-for="teamSource in activeTeamSources(record)" :key="`team:${teamSource.sourceTeamId}`">
-                      {{ teamSource.sourceTeamName || teamSource.sourceTeamId }}
-                    </a-menu-item>
-                  </a-sub-menu>
-                </a-menu>
-              </template>
-            </a-dropdown>
-          </div>
-        </article>
-      </template>
-    </ResponsiveDataList>
+    <AuthorizationList
+      :authorizations="authorizations"
+      :loading="loading"
+      @refresh="loadData"
+      @usage-detail="openUsageDetail"
+      @menu-click="handleActionMenuClick"
+    />
 
     <a-modal v-model:open="helpOpen" title="统一授权规则" width="640px" :footer="null">
       <div class="authorization-help-content">
@@ -268,7 +109,7 @@
           :message="`今日授权总计（不含归属人自己消耗）：${usageSummaryText(selectedAuthorization.usage)}`"
         />
         <div v-if="selectedTeamUsageSummaries.length" class="usage-team-section">
-          <div class="usage-section-title">团队今日总消耗</div>
+          <div class="usage-section-title">团队来源今日消耗</div>
           <div class="usage-team-cards">
             <article v-for="summary in selectedTeamUsageSummaries" :key="summary.teamId" class="usage-team-card">
               <div class="usage-team-card-head">
@@ -279,7 +120,7 @@
               <span class="usage-team-card-meta">成员 {{ summary.memberCount }} 人</span>
             </article>
           </div>
-          <div class="usage-section-title usage-subsection-title">团队成员今日分别消耗</div>
+          <div class="usage-section-title usage-subsection-title">团队来源成员今日消耗</div>
           <a-table size="small" :columns="teamUsageColumns" :data-source="selectedTeamUsageRows" row-key="key" :pagination="false">
             <template #emptyText>
               <a-empty description="暂无团队成员用量" />
@@ -320,38 +161,33 @@
 </template>
 
 <script setup lang="ts">
-import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import type { Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
-import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
-import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
-import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { AccountSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountSummary, SystemTeamSummary } from '@/types/domain'
+import AuthorizationFilterToolbar from './AuthorizationFilterToolbar.vue'
+import AuthorizationList from './AuthorizationList.vue'
 import {
-  activeTeamSources,
-  aggregateUsageBySystemAccount,
   buildTeamUsageSummaries,
   extractApiErrorMessage,
   formatDateTime,
   formatServerDateTimeInput,
-  granteeSourceLabel,
-  granteeSourceTagColor,
-  hasManualSource,
   normalizeAuthorizationUsageResponse,
   parseDatePickerValue,
-  statusLabel,
-  statusTagColor,
-  sumUsageSummaries,
   usageSummaryText,
   type TeamUsageSummary
 } from './authorizationFormatters'
-
-type AuthorizationFilterResourceType = 'all' | 'account' | 'group'
+import {
+  type AuthorizationFilterResourceType,
+  authorizationResourceTypeOptions,
+  authorizationTeamUsageColumns,
+  authorizationUsageDetailColumns,
+  createAuthorizationResourceTypeOptions
+} from './authorizationTableColumns'
 
 const loading = ref(false)
 const createModalOpen = ref(false)
@@ -391,35 +227,10 @@ const expireForm = reactive({
   expiresAt: undefined as Dayjs | undefined
 })
 
-const columns = [
-  { title: 'AI账户名称', key: 'resource', width: 260 },
-  { title: '归属人', key: 'owner', width: 180 },
-  { title: '被授权用户', key: 'grantee', width: 180 },
-  { title: '用量(日)', key: 'usageTotal', width: 260 },
-  { title: '状态', key: 'status', width: 90 },
-  { title: '授权时间', key: 'createdAt', width: 170 },
-  { title: '说明', key: 'remark', width: 200 },
-  { title: '操作', key: 'actions', width: 140, fixed: 'right' }
-]
-
-const usageDetailColumns = [
-  { title: '系统账户', key: 'name', width: 220 },
-  { title: '今日用量', key: 'usage', width: 280 },
-  { title: '最后使用', key: 'lastUsedAt', width: 180 }
-]
-
-const teamUsageColumns = [
-  { title: '团队', key: 'teamName', width: 180 },
-  { title: '成员', key: 'memberName', width: 180 },
-  { title: '今日用量', key: 'usage', width: 260 }
-]
-
-const resourceTypeOptions = [
-  { label: '全部资源', value: 'all' },
-  { label: 'AI账户', value: 'account' },
-  { label: '分组', value: 'group' }
-]
-const createResourceTypeOptions = resourceTypeOptions.filter((item) => item.value !== 'all')
+const usageDetailColumns = authorizationUsageDetailColumns
+const teamUsageColumns = authorizationTeamUsageColumns
+const resourceTypeOptions = authorizationResourceTypeOptions
+const createResourceTypeOptions = createAuthorizationResourceTypeOptions
 
 const resourceOptions = computed(() => {
   if (filters.resourceType === 'all') {
@@ -660,24 +471,11 @@ async function confirmExpireChange() {
 
 async function openUsageDetail(item: ResourceAuthorizationSummary) {
   try {
-    const [usagePayload, resourceAuthorizations] = await Promise.all([
-      api.authorizations.usage(item.id),
-      api.authorizations.list({
-        resourceType: item.resourceType,
-        resourceId: item.resourceId,
-        teamId: filters.teamId,
-        status: 'all'
-      })
-    ])
+    const usagePayload = await api.authorizations.usage(item.id)
     const detail = normalizeAuthorizationUsageResponse(usagePayload, item)
-    selectedResourceAuthorizations.value = resourceAuthorizations
-    const usageBySystemAccount = aggregateUsageBySystemAccount(resourceAuthorizations)
-    selectedAuthorization.value = {
-      ...detail,
-      usage: sumUsageSummaries(resourceAuthorizations.map((authorization) => authorization.usage)),
-      usageBySystemAccount
-    }
-    selectedAuthorizationUsageDetails.value = usageBySystemAccount
+    selectedResourceAuthorizations.value = [detail]
+    selectedAuthorization.value = detail
+    selectedAuthorizationUsageDetails.value = detail.usageBySystemAccount ?? []
     usageDetailOpen.value = true
   } catch (error) {
     console.error(error)
@@ -724,15 +522,6 @@ function applyRouteFilters() {
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
-.filter-select {
-  min-width: 140px;
-}
-
-.filter-resource,
-.filter-user {
-  min-width: 220px;
-}
-
 .authorization-help-content {
   display: flex;
   flex-direction: column;
@@ -759,24 +548,6 @@ function applyRouteFilters() {
   color: #475569;
   font-size: 13px;
   line-height: 1.7;
-}
-
-.resource-cell,
-.grantee-cell,
-.usage-total-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.resource-name {
-  min-width: 0;
-  overflow: hidden;
-  color: #0f172a;
-  font-weight: 600;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .usage-alert {
@@ -837,21 +608,4 @@ function applyRouteFilters() {
   font-size: 12px;
 }
 
-.authorizations-table :deep(.ant-table-cell) {
-  white-space: nowrap;
-}
-
-.authorization-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-
-.mobile-filter-field {
-  display: grid;
-  gap: 8px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
-}
 </style>

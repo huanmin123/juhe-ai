@@ -5,6 +5,12 @@ import type {
   AccountTestResult,
   AccountAuthorizationUsageOverview,
   AccountUsageStatsOverview,
+  AuditLogDetail,
+  AuditLogListResult,
+  AuditLogPayloadDetail,
+  AuditLogRuntime,
+  AuditLogSummary,
+  AuditOutcome,
   AuthorizationResourceType,
   ResourceAuthorizationSummary,
   ApiKeySummary,
@@ -18,6 +24,10 @@ import type {
   ProviderDefinition,
   ProviderModelPricing,
   ProxyProfileSummary,
+  RuntimeLogFacets,
+  RuntimeLogLevel,
+  RuntimeLogGrepResult,
+  RuntimeLogSearchResult,
   SystemTeamMemberSummary,
   SystemTeamSummary,
   SystemSettings,
@@ -39,6 +49,39 @@ interface ListParams {
 export interface UsageRecordListParams extends ListParams {
   sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
   sortOrder?: 'asc' | 'desc'
+  limit?: number
+}
+
+export interface AuditLogListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  traceId?: string
+  outcome?: AuditOutcome | 'all'
+  statusCode?: number
+  path?: string
+  model?: string
+  apiKeyId?: string
+  groupId?: string
+  accountId?: string
+  clientIp?: string
+  limit?: number
+}
+
+export interface RuntimeLogGrepParams {
+  keyword?: string[]
+  keywords?: string
+  limit?: number
+}
+
+export interface RuntimeLogListParams {
+  page?: number
+  pageSize?: number
+  traceId?: string
+  level?: RuntimeLogLevel | 'all'
+  event?: string
+  keyword?: string
+  startedAt?: string
+  endedAt?: string
   limit?: number
 }
 
@@ -66,6 +109,8 @@ async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T>
   const response = await request
   return response.data.data
 }
+
+const noTimeout = { timeout: 0 }
 
 export const api = {
   auth: {
@@ -142,6 +187,17 @@ export const api = {
   },
   usageRecords: {
     list: (params?: UsageRecordListParams) => unwrap<UsageRecordSummary[]>(http.get('/usage-records', { params }))
+  },
+  auditLogs: {
+    list: (params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get('/audit-logs', { params, ...noTimeout })),
+    runtime: () => unwrap<AuditLogRuntime>(http.get('/audit-logs/runtime', noTimeout)),
+    detail: (id: string) => unwrap<AuditLogDetail>(http.get(`/audit-logs/${id}`, noTimeout)),
+    payload: (id: string, payloadId: string) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, noTimeout))
+  },
+  runtimeLogs: {
+    list: (params?: RuntimeLogListParams) => unwrap<RuntimeLogSearchResult>(http.get('/runtime-logs', { params })),
+    facets: () => unwrap<RuntimeLogFacets>(http.get('/runtime-logs/facets')),
+    grep: (params?: RuntimeLogGrepParams) => unwrap<RuntimeLogGrepResult>(http.get('/runtime-logs/grep', { params, ...noTimeout }))
   },
   stats: {
     usageOverview: (params?: ListParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),

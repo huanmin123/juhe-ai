@@ -10,6 +10,7 @@ import {
   updateResourceAuthorization
 } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 export const authorizationsRouter = Router()
@@ -24,10 +25,6 @@ const authorizationsQuerySchema = z.object({
   granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
   status: z.enum(['active', 'paused', 'expired', 'revoked', 'all']).optional(),
-  systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional()
-})
-
-const accessScopeQuerySchema = z.object({
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional()
 })
 
@@ -76,14 +73,6 @@ const revokeAuthorizationSchema = z.object({
   }
 })
 
-function parseScopeQuery(query: unknown): { systemAccountId?: string } | { message: string } {
-  const parsed = parseOrBadRequest(accessScopeQuerySchema, query, '查询参数不合法')
-  if (!parsed.success) {
-    return { message: parsed.message }
-  }
-  return parsed.data
-}
-
 authorizationsRouter.get('/', (req, res) => {
   const parsed = parseOrBadRequest(authorizationsQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
@@ -95,8 +84,8 @@ authorizationsRouter.get('/', (req, res) => {
 })
 
 authorizationsRouter.post('/', (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
@@ -106,7 +95,7 @@ authorizationsRouter.post('/', (req, res) => {
     return
   }
   try {
-    const authorization = createResourceAuthorization(parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
+    const authorization = createResourceAuthorization(parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
     clearGatewayRuntimeCache()
     res.status(201).json(ok(authorization))
   } catch (error) {
@@ -115,8 +104,8 @@ authorizationsRouter.post('/', (req, res) => {
 })
 
 authorizationsRouter.delete('/:id', (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
@@ -136,7 +125,7 @@ authorizationsRouter.delete('/:id', (req, res) => {
     return
   }
   try {
-    const authorization = revokeResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
+    const authorization = revokeResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
     if (!authorization) {
       sendNotFound(res, '授权记录不存在')
       return
@@ -149,8 +138,8 @@ authorizationsRouter.delete('/:id', (req, res) => {
 })
 
 authorizationsRouter.patch('/:id', (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
@@ -165,7 +154,7 @@ authorizationsRouter.patch('/:id', (req, res) => {
     return
   }
   try {
-    const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
+    const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
     if (!authorization) {
       sendNotFound(res, '授权记录不存在')
       return
@@ -178,8 +167,8 @@ authorizationsRouter.patch('/:id', (req, res) => {
 })
 
 authorizationsRouter.patch('/:id/expire', (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
@@ -194,7 +183,7 @@ authorizationsRouter.patch('/:id/expire', (req, res) => {
     return
   }
   try {
-    const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
+    const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
     if (!authorization) {
       sendNotFound(res, '授权记录不存在')
       return
@@ -207,8 +196,8 @@ authorizationsRouter.patch('/:id/expire', (req, res) => {
 })
 
 authorizationsRouter.get('/:id/usage', (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
@@ -217,7 +206,7 @@ authorizationsRouter.get('/:id/usage', (req, res) => {
     sendBadRequest(res, paramsParsed.message)
     return
   }
-  const authorization = getResourceAuthorizationUsage(paramsParsed.data.id, getRequestAccessScope(scopeQuery.systemAccountId))
+  const authorization = getResourceAuthorizationUsage(paramsParsed.data.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
   if (!authorization) {
     sendNotFound(res, '授权记录不存在')
     return

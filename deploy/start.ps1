@@ -73,4 +73,5 @@ $hostValue = Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_HOST' -Fallbac
 $portValue = Read-DotEnvValue -Path 'backend/.env' -Name 'JUHE_AI_PORT' -Fallback '3000'
 
 Write-Host "Starting juhe-ai at http://${hostValue}:${portValue}"
+Write-Host 'The Web/API process will supervise a separate background worker process.'
 node backend/dist/server.js

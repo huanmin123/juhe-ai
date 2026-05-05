@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { hashPassword } from './crypto.js'
+import { ensureSchemaMaintenance } from './schema-maintenance.js'
 
 const DEFAULT_OPENAI_GROUP_NAME = '默认 OpenAI 分组'
 const DEFAULT_OPENAI_GROUP_DESCRIPTION = '第一期默认分组'
@@ -268,7 +269,7 @@ export function applySchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_records (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
-      request_id TEXT NOT NULL,
+      trace_id TEXT NOT NULL,
       client_ip TEXT,
       api_key_id TEXT,
       group_id TEXT,
@@ -298,6 +299,104 @@ export function applySchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT NOT NULL,
+      system_account_id TEXT,
+      api_key_id TEXT,
+      group_id TEXT,
+      account_id TEXT,
+      provider_code TEXT,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      query_string TEXT,
+      model TEXT,
+      stream INTEGER NOT NULL DEFAULT 0,
+      client_ip TEXT,
+      user_agent TEXT,
+      audit_outcome TEXT NOT NULL,
+      success INTEGER NOT NULL DEFAULT 0,
+      final_status_code INTEGER,
+      error_phase TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      sample_bucket INTEGER NOT NULL,
+      sample_reason TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      payload_count INTEGER NOT NULL DEFAULT 0,
+      payload_bytes INTEGER NOT NULL DEFAULT 0,
+      capture_status TEXT NOT NULL DEFAULT 'complete',
+      started_at TEXT NOT NULL,
+      ended_at TEXT NOT NULL,
+      duration_ms INTEGER,
+      first_token_ms INTEGER,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_log_attempts (
+      id TEXT PRIMARY KEY,
+      audit_log_id TEXT NOT NULL,
+      attempt_index INTEGER NOT NULL,
+      account_id TEXT,
+      account_owner_system_account_id TEXT,
+      group_id TEXT,
+      proxy_url TEXT,
+      provider_code TEXT,
+      upstream_method TEXT NOT NULL,
+      upstream_url TEXT NOT NULL,
+      upstream_status_code INTEGER,
+      success INTEGER NOT NULL DEFAULT 0,
+      error_phase TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      started_at TEXT NOT NULL,
+      ended_at TEXT,
+      duration_ms INTEGER,
+      FOREIGN KEY (audit_log_id) REFERENCES audit_logs(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_log_payloads (
+      id TEXT PRIMARY KEY,
+      audit_log_id TEXT NOT NULL,
+      attempt_id TEXT,
+      part_type TEXT NOT NULL,
+      sequence_index INTEGER NOT NULL DEFAULT 0,
+      content_type TEXT,
+      content_encoding TEXT,
+      headers_encrypted TEXT,
+      body_encrypted TEXT,
+      body_sha256 TEXT,
+      size_bytes INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (audit_log_id) REFERENCES audit_logs(id) ON DELETE CASCADE,
+      FOREIGN KEY (attempt_id) REFERENCES audit_log_attempts(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS runtime_logs (
+      id TEXT PRIMARY KEY,
+      log_file TEXT,
+      log_offset INTEGER,
+      line_number INTEGER,
+      time TEXT NOT NULL,
+      level TEXT NOT NULL,
+      trace_id TEXT,
+      event TEXT,
+      message TEXT,
+      error_message TEXT,
+      raw_json TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS runtime_log_search USING fts5(
+      log_id UNINDEXED,
+      trace_id,
+      event,
+      message,
+      error_message,
+      raw_json,
+      tokenize = 'trigram'
+    );
+
     CREATE TABLE IF NOT EXISTS account_usage_snapshots (
       system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
       account_id TEXT NOT NULL,
@@ -322,7 +421,6 @@ export function applySchema(database: DatabaseSync): void {
       request_count INTEGER NOT NULL DEFAULT 0,
       success_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
-      client_count INTEGER NOT NULL DEFAULT 0,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
@@ -345,7 +443,6 @@ export function applySchema(database: DatabaseSync): void {
       request_count INTEGER NOT NULL DEFAULT 0,
       success_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
-      client_count INTEGER NOT NULL DEFAULT 0,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
@@ -408,17 +505,6 @@ export function applySchema(database: DatabaseSync): void {
       error_count INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, stat_date, error_group, error_code)
-    );
-
-    CREATE TABLE IF NOT EXISTS usage_stats_clients (
-      system_account_id TEXT NOT NULL,
-      scope_type TEXT NOT NULL,
-      scope_id TEXT NOT NULL DEFAULT '',
-      stat_bucket TEXT NOT NULL,
-      client_key TEXT NOT NULL,
-      first_seen_at TEXT NOT NULL,
-      last_seen_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, scope_type, scope_id, stat_bucket, client_key)
     );
 
     CREATE TABLE IF NOT EXISTS stats_job_state (
@@ -493,77 +579,7 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_records_created_at ON usage_records(created_at);
   `)
 
-  database.exec('CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_group_account_stats_group ON group_account_stats(group_id);')
-  ensureColumn(database, 'system_accounts', 'description', 'TEXT')
-  ensureColumn(database, 'providers', 'description', 'TEXT')
-  ensureColumn(database, 'proxy_profiles', 'description', 'TEXT')
-  ensureColumn(database, 'api_keys', 'description', 'TEXT')
-  ensureColumn(database, 'group_accounts', 'account_authorization_id', 'TEXT')
-  ensureColumn(database, 'api_keys', 'group_authorization_id', 'TEXT')
-  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));')
-  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_display_name_unique_lower ON system_accounts(lower(display_name));')
-  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_system_teams_status ON system_teams(status, updated_at);')
-  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique ON system_teams(name);')
-  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique_lower ON system_teams(lower(name));')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_system_team_members_team ON system_team_members(team_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_system_team_members_account ON system_team_members(system_account_id, status);')
-  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_system_team_members_active_unique ON system_team_members(team_id, system_account_id) WHERE status = 'active';")
-  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorizations_resource ON resource_authorizations(resource_type, resource_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorizations_owner ON resource_authorizations(resource_owner_system_account_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorizations_grantee ON resource_authorizations(grantee_system_account_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorizations_expires_at ON resource_authorizations(expires_at, status);')
-  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorizations_user_unique ON resource_authorizations(resource_type, resource_id, grantee_system_account_id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorization_sources_authorization ON resource_authorization_sources(authorization_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_resource_authorization_sources_team ON resource_authorization_sources(source_team_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_group_accounts_account_authorization ON group_accounts(account_authorization_id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_api_keys_group_authorization ON api_keys(group_authorization_id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_team ON team_resource_authorization_grants(team_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_resource ON team_resource_authorization_grants(resource_type, resource_id, status);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_owner ON team_resource_authorization_grants(resource_owner_system_account_id, status);')
-  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_active_unique ON team_resource_authorization_grants(resource_type, resource_id, team_id) WHERE status = 'active';")
-  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_sources_active_manual_unique ON resource_authorization_sources(authorization_id, source_type) WHERE status = 'active' AND source_type = 'manual';")
-  database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_sources_active_team_unique ON resource_authorization_sources(authorization_id, source_type, source_team_id) WHERE status = 'active' AND source_type = 'team';")
-  database.exec('CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_proxy_profiles_system_account ON proxy_profiles(system_account_id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_sort ON usage_records(system_account_id, created_at, id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_account_owner ON usage_records(account_owner_system_account_id, account_id, created_at);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_group_owner ON usage_records(group_owner_system_account_id, group_id, created_at);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_account_authorization ON usage_records(account_authorization_id, created_at);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_group_authorization ON usage_records(group_authorization_id, created_at);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_first_token_sort ON usage_records(first_token_ms, created_at, id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_duration_sort ON usage_records(duration_ms, created_at, id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_cost_sort ON usage_records(cost_usd, created_at, id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_first_token_sort ON usage_records(system_account_id, first_token_ms, created_at, id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_duration_sort ON usage_records(system_account_id, duration_ms, created_at, id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_cost_sort ON usage_records(system_account_id, cost_usd, created_at, id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_records_stats_cursor ON usage_records(created_at, id);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_scope_date ON usage_stats_daily(system_account_id, scope_type, scope_id, stat_date);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_date ON usage_stats_daily(stat_date);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_scope_hour ON usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_hour ON usage_stats_hourly(stat_hour);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_model_daily_date ON usage_model_daily(system_account_id, stat_date, model);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_model_daily_stat_date ON usage_model_daily(stat_date);')
-  database.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_model_daily_account_date_provider_model ON usage_model_daily(system_account_id, stat_date, provider_code, model);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_error_daily_date ON usage_error_daily(system_account_id, stat_date, error_code);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_error_daily_stat_date ON usage_error_daily(stat_date);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_usage_stats_clients_bucket ON usage_stats_clients(stat_bucket);')
-  database.exec('CREATE INDEX IF NOT EXISTS idx_system_metrics_samples_sampled_at ON system_metrics_samples(sampled_at);')
-}
-
-function ensureColumn(database: DatabaseSync, tableName: string, columnName: string, columnType: string): void {
-  const rows = database.prepare(`PRAGMA table_info(${tableName})`).all() as unknown as Array<{ name?: string }>
-  if (rows.some((row) => row.name === columnName)) {
-    return
-  }
-  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${columnType}`)
+  ensureSchemaMaintenance(database)
 }
 
 export function seedDefaults(database: DatabaseSync): void {
@@ -635,6 +651,14 @@ export function seedDefaults(database: DatabaseSync): void {
     ['streamIdleTimeoutSeconds', 60],
     ['streamFailureThresholdCount', 3],
     ['streamFailureThresholdWindowMinutes', 10],
+    ['auditLogEnabled', true],
+    ['auditLogSuccessSampleRate', 0.1],
+    ['auditLogFlushIntervalSeconds', 5],
+    ['auditLogBatchSize', 50],
+    ['auditLogQueueMaxItems', 1000],
+    ['auditLogQueueMaxBytesMb', 256],
+    ['auditLogActiveCaptureMaxBytesMb', 64],
+    ['auditLogRetentionDays', 7],
   ] as const
 
   const statement = database.prepare(`

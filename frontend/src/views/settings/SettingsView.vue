@@ -112,6 +112,58 @@
           </div>
         </section>
 
+        <section class="settings-section">
+          <div class="section-heading">
+            <div>
+              <h3>原始审计日志</h3>
+              <p>记录完整请求头、请求体和响应内容；失败请求全量保存，成功请求按比例采样。</p>
+            </div>
+            <a-switch v-model:checked="systemForm.auditLogEnabled" checked-children="启用" un-checked-children="关闭" />
+          </div>
+
+          <a-alert class="setting-alert section-alert" type="warning" show-icon>
+            <template #message>审计日志包含完整凭据和业务内容，只在管理员页面查看；队列满或单次捕获超限时会丢弃整条审计记录，不阻塞正常请求。</template>
+          </a-alert>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <a-form-item label="成功采样比例" extra="完全成功且没有重试的请求按这个比例保存；失败、重试后成功和客户端断开始终全量保存。">
+                <a-input-number v-model:value="systemForm.auditLogSuccessSampleRate" :min="0" :max="1" :step="0.01" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="批量落库间隔（秒）" extra="审计日志只先进内存队列，达到间隔或批量阈值后后台写库。">
+                <a-input-number v-model:value="systemForm.auditLogFlushIntervalSeconds" :min="1" :max="3600" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="单批写入数量" extra="每批最多写入多少条终态审计请求。">
+                <a-input-number v-model:value="systemForm.auditLogBatchSize" :min="1" :max="1000" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="队列最大条数" extra="内存队列超过上限会优先丢弃成功采样记录。">
+                <a-input-number v-model:value="systemForm.auditLogQueueMaxItems" :min="1" :max="100000" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="队列最大体积（MB）" extra="按 headers 和 body 近似体积估算，不保证精确等于数据库体积。">
+                <a-input-number v-model:value="systemForm.auditLogQueueMaxBytesMb" :min="1" :max="10240" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="单请求捕获上限（MB）" extra="超过后丢弃整条审计记录，避免写入不完整原文。">
+                <a-input-number v-model:value="systemForm.auditLogActiveCaptureMaxBytesMb" :min="1" :max="10240" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="保留天数" extra="后台清理任务会删除超过保留期的审计日志和 payload。">
+                <a-input-number v-model:value="systemForm.auditLogRetentionDays" :min="1" :max="3650" style="width: 100%" />
+              </a-form-item>
+            </div>
+          </div>
+        </section>
+
         <div class="settings-actions">
           <a-space>
             <a-button type="primary" :loading="savingSystem" @click="saveSystemSettings">保存系统设置</a-button>
@@ -146,6 +198,14 @@ interface SystemForm {
   streamIdleTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
+  auditLogEnabled: boolean
+  auditLogSuccessSampleRate: number
+  auditLogFlushIntervalSeconds: number
+  auditLogBatchSize: number
+  auditLogQueueMaxItems: number
+  auditLogQueueMaxBytesMb: number
+  auditLogActiveCaptureMaxBytesMb: number
+  auditLogRetentionDays: number
 }
 
 const defaultGlobalSettings: GlobalForm = {
@@ -161,7 +221,15 @@ const defaultSystemSettings: SystemForm = {
   streamRequestTimeoutSeconds: 180,
   streamIdleTimeoutSeconds: 60,
   streamFailureThresholdCount: 3,
-  streamFailureThresholdWindowMinutes: 10
+  streamFailureThresholdWindowMinutes: 10,
+  auditLogEnabled: true,
+  auditLogSuccessSampleRate: 0.1,
+  auditLogFlushIntervalSeconds: 5,
+  auditLogBatchSize: 50,
+  auditLogQueueMaxItems: 1000,
+  auditLogQueueMaxBytesMb: 256,
+  auditLogActiveCaptureMaxBytesMb: 64,
+  auditLogRetentionDays: 7
 }
 
 const isAdmin = authState.isAdmin
@@ -266,8 +334,22 @@ function normalizeSystemSettings(settings: SystemSettings | SystemForm): SystemF
     streamRequestTimeoutSeconds: numberValue(settings.streamRequestTimeoutSeconds, defaultSystemSettings.streamRequestTimeoutSeconds, 10, 3600),
     streamIdleTimeoutSeconds: numberValue(settings.streamIdleTimeoutSeconds, defaultSystemSettings.streamIdleTimeoutSeconds, 1, 3600),
     streamFailureThresholdCount: numberValue(settings.streamFailureThresholdCount, defaultSystemSettings.streamFailureThresholdCount, 1, 100),
-    streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSystemSettings.streamFailureThresholdWindowMinutes, 1, 1440)
+    streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSystemSettings.streamFailureThresholdWindowMinutes, 1, 1440),
+    auditLogEnabled: booleanValue(settings.auditLogEnabled, defaultSystemSettings.auditLogEnabled),
+    auditLogSuccessSampleRate: decimalValue(settings.auditLogSuccessSampleRate, defaultSystemSettings.auditLogSuccessSampleRate, 0, 1),
+    auditLogFlushIntervalSeconds: numberValue(settings.auditLogFlushIntervalSeconds, defaultSystemSettings.auditLogFlushIntervalSeconds, 1, 3600),
+    auditLogBatchSize: numberValue(settings.auditLogBatchSize, defaultSystemSettings.auditLogBatchSize, 1, 1000),
+    auditLogQueueMaxItems: numberValue(settings.auditLogQueueMaxItems, defaultSystemSettings.auditLogQueueMaxItems, 1, 100000),
+    auditLogQueueMaxBytesMb: numberValue(settings.auditLogQueueMaxBytesMb, defaultSystemSettings.auditLogQueueMaxBytesMb, 1, 10240),
+    auditLogActiveCaptureMaxBytesMb: numberValue(settings.auditLogActiveCaptureMaxBytesMb, defaultSystemSettings.auditLogActiveCaptureMaxBytesMb, 1, 10240),
+    auditLogRetentionDays: numberValue(settings.auditLogRetentionDays, defaultSystemSettings.auditLogRetentionDays, 1, 3650)
   }
+}
+
+function decimalValue(value: unknown, fallback: number, min: number, max: number): number {
+  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  if (!Number.isFinite(number)) return fallback
+  return Math.min(Math.max(number, min), max)
 }
 
 function numberValue(value: unknown, fallback: number, min: number, max: number): number {

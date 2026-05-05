@@ -19,8 +19,8 @@
 
 ## 2. 后端范围
 
-- 后端是 `juhe-ai` 的管理 API、OpenAI 兼容中转网关、账号调度、凭据处理、统计聚合和后台任务承载层。
-- 第一阶段优先保证 OpenAI 供应商、系统账户、系统团队、统一授权、AI 账户、分组、API Key、代理、使用记录、统计缓存、系统设置和 OpenAI OAuth 账号接入形成轻量闭环。
+- 后端是 `juhe-ai` 的管理 API、OpenAI 兼容中转网关、账号调度、凭据处理、使用记录、原始审计日志、统计聚合和后台任务承载层。
+- 第一阶段优先保证 OpenAI 供应商、系统账户、系统团队、统一授权、AI 账户、分组、API Key、代理、使用记录、原始审计日志、统计缓存、系统设置和 OpenAI OAuth 账号接入形成轻量闭环。
 - 后端只暴露两类入口：管理面 `/api/*` 和 OpenAI 兼容网关 `/v1/*`；客户端不直接访问上游账号凭据。
 - 后端是业务事实源；前端不传系统账户归属字段，不自行决定数据隔离、调度状态或敏感字段展示。
 
@@ -38,12 +38,12 @@
 
 | 目录 / 文件 | 职责 | 变更规则 |
 | --- | --- | --- |
-| `backend/src/server.ts` | 应用启动、全局中间件、健康检查、管理 API 挂载、网关挂载、前端静态资源兜底 | 只放应用装配，不沉淀复杂业务逻辑 |
+| `backend/src/server.ts` | Web/API/网关主进程启动、全局中间件、健康检查、管理 API 挂载、网关挂载、前端静态资源兜底 | 只放应用装配和 worker 看护，不沉淀复杂业务逻辑，不直接执行后台任务 |
 | `backend/src/config/` | 运行配置读取、路径解析和默认配置 | 新增环境变量时同步 `.env.example`、开发和部署文档 |
 | `backend/src/domain/` | 后端对外返回和跨模块共享的领域类型 | 新增或修改 API 结构时同步前端类型和文档 |
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
 | `backend/src/modules/gateway/` | OpenAI 兼容中转、账号选择、错误策略、SSE 透传和用量解析 | 不把网关细节泄漏成前端多套复杂选项 |
-| `backend/src/modules/background/` | 统计聚合、系统采样、OAuth 用量快照刷新等后台任务 | 保持轻量定时任务，不引入重型队列 |
+| `backend/src/modules/background/` | 统计聚合、系统采样、OAuth 用量快照刷新等后台任务 | 任务注册和执行只允许在独立 background worker 进程内发生，不引入重型分布式队列 |
 | `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
 | `backend/src/shared/` | 通用响应、跨模块小工具 | 只放稳定复用能力，不堆业务逻辑 |
 | `backend/src/scripts/` | 烟测、导入导出、一次性维护脚本 | 脚本应可独立运行，并说明安全边界 |
@@ -70,9 +70,10 @@
 | 代理 | `modules/proxies/` | 服务器级代理配置和账号绑定资源 |
 | 错误策略 | `modules/error-policies/`、`modules/gateway/account-error-policy.service.ts` | 账号级错误匹配、冷却、禁用和切换动作 |
 | 使用记录 | `modules/usage-records/` | 请求事实记录查询和快照展示 |
+| 原始审计日志 | `modules/audit-logs/` | 审计查询、内存队列、终态入队和批量落库 |
 | 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |
 | 设置 | `modules/settings/` | 全局设置和系统账户级设置读写 |
-| 网关 | `modules/gateway/openai-gateway.routes.ts` | `/v1/*` 入口、账号调度、上游转发和使用记录写入 |
+| 网关 | `modules/gateway/openai-gateway.routes.ts` | `/v1/*` 入口、账号调度、上游转发、使用记录写入和审计上下文捕获 |
 
 ## 5. 请求分层
 
@@ -112,14 +113,17 @@ flowchart LR
 - 账号选择必须过滤停用、错误、冷却中、账号套餐到期、授权失效和分组未绑定的账号。
 - 上游认证由后端替换；客户端提交的上游敏感头不应直接透传。
 - 流式响应需要稳定转发 SSE，并在超时、中断和上游异常时按错误策略或默认冷却规则处理。
-- 网关错误保持 OpenAI 兼容结构；网关日志、请求快照和敏感头处理见 [安全与日志策略](../../functions/安全与日志策略.md)。
+- 原始审计日志只允许在网关内维护内存捕获上下文，必须等请求结束、失败或客户端中断后终态入队；网关请求链路不能同步写审计表。
+- SSE 和其他流式响应不能按 chunk 实时写库，必须在流自然结束、失败、超时或客户端断开后，以终态记录进入审计队列。
+- 网关错误保持 OpenAI 兼容结构；网关日志、请求快照、原始审计日志和敏感头处理见 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
 
 ## 6. 数据库设计
 
 ### 6.1 存储原则
 
 - SQLite 是第一阶段唯一持久化存储；不引入 Redis、ClickHouse 或独立任务队列。
-- `usage_records` 是请求事实源；统计表只做读优化和图表缓存，不替代事实记录。
+- `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。
+- `audit_logs`、`audit_log_attempts` 和 `audit_log_payloads` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
 - 启动时通过 `applySchema()` 创建当前版本需要的表和索引，不承载一次性旧库修复逻辑。
 - 启动时通过 `seedDefaults()` 写入默认管理员、OpenAI 供应商、默认 OpenAI 分组、全局设置和系统设置。
 - 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
@@ -138,8 +142,9 @@ flowchart LR
 | 团队、授权与分组 | `system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts` | 系统团队、团队成员、统一资源授权、分组和分组账号绑定 |
 | 网关访问 | `api_keys` | 本地网关密钥、分组绑定、状态、过期和配额占位 |
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
+| 原始审计 | `audit_logs`、`audit_log_attempts`、`audit_log_payloads` | 客户端请求、上游尝试、上游响应和最终返回的完整链路原文 |
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
-| 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_error_daily`、`usage_stats_clients`、`group_account_stats` | 列表统计、趋势图、模型分布、错误聚合、独立客户端数和分组账户状态缓存 |
+| 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_error_daily`、`group_account_stats` | 列表统计、趋势图、模型分布、错误聚合和分组账户状态缓存 |
 | 后台任务 | `stats_job_state` | 聚合游标、任务状态、统计滞后和错误信息 |
 | 运维监控 | `system_metrics_samples`、`system_metrics_hourly` | CPU、内存、进程、事件循环、网络、数据库体积和统计滞后 |
 
@@ -181,6 +186,7 @@ erDiagram
 | 本地网关 API Key | `api_keys.key_hash`、`api_keys.key_secret_encrypted` | 校验用哈希，自用复制需要时按权限展示完整 key |
 | 代理密码 | `proxy_profiles.password_encrypted` | 加密存储，列表不明文暴露 |
 | 请求与响应快照 | `usage_records.request_snapshot_json`、`usage_records.response_snapshot_json` | 用于排查，必须避免额外写入不必要敏感头 |
+| 原始审计 payload | `audit_log_payloads.headers_encrypted`、`audit_log_payloads.body_encrypted` | 保存完整原文，不脱敏不截断，建议加密存储且仅管理员可读 |
 
 ### 6.5 索引与查询
 
@@ -217,19 +223,23 @@ erDiagram
 
 ## 8. 后台任务
 
-- 后台任务由 `startBackgroundJobs()` 在后端启动时注册。
-- 当前后台任务包括使用记录增量聚合、分组账户统计缓存刷新、系统指标采样、小时级指标聚合和 OpenAI OAuth 用量快照刷新。
+- 后台任务必须由独立 background worker 进程注册和执行，主 Web 进程不得直接调用 `startBackgroundJobs()` 或导入具体任务实现。
+- 主 Web 进程只负责管理 API、网关请求、静态资源和必要的 worker 启动 / 看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
+- 当前后台任务包括使用记录增量聚合、分组账户统计缓存刷新、授权到期扫描、系统指标采样、小时级指标聚合、OpenAI OAuth 用量快照刷新、冷却账号复测、运行日志索引维护、原始审计日志批量落库和保留期清理。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
+- 请求链路产生的审计、运行日志索引或使用记录批量写入数据如需异步处理，应通过有界 IPC 或等价轻量通道投递到 worker；队列上限和丢弃策略不能反向阻塞网关请求。
+- 原始审计日志队列是 best-effort 队列，不要求系统重启后恢复；队列溢出和进程重启允许丢失待落库审计记录，但必须不阻塞网关请求。
 - 第一阶段不引入复杂分布式锁；如果后续支持多实例部署，再评估共享锁、任务归属和幂等边界。
-- 后台任务失败应记录错误并等待下一轮重试，不应导致管理 API 或网关进程直接退出。
+- 后台任务失败应记录错误并等待下一轮重试；worker 崩溃不应导致管理 API 或网关主进程直接退出，主进程或进程管理器应按退避策略重启 worker。
 
 ## 9. 开发约束
 
 - 新管理接口：先确认模块归属，再补 route、repository、领域类型、前端 API 和文档。
 - 新网关能力：先确认是否改变 `/v1/*` 主链路、错误策略、调度规则或使用记录字段。
+- 新审计能力：先确认是否改变原始审计采样、队列、终态入队、SSE 结束后入队或 payload 加密边界。
 - 新数据库字段：先写清默认值、数据清洗方案、敏感边界和索引需求。
 - 新接口契约或权限变化：先确认 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
-- 新敏感字段、日志或快照变化：先确认 [安全与日志策略](../../functions/安全与日志策略.md)。
+- 新敏感字段、日志、快照或原始审计变化：先确认 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
 - 新外部请求：放在 service 层，支持超时、错误摘要和必要代理配置。
 - 新统计需求：优先从 `usage_records` 定义事实，再考虑是否需要统计缓存表。
 - 大文件继续膨胀时，按 [大文件重构指南](../大文件重构指南.md) 拆分，不在业务开发中顺手重构无关范围。
@@ -239,7 +249,7 @@ erDiagram
 - 涉及后端目录、分层、数据库、脚本或接口时，先看本文和 [功能开发指导](../功能开发指导.md)。
 - 涉及数据库表、字段、统计缓存、敏感字段或 schema 演进时，同时看 [SQLite 存储说明](../../functions/SQLite存储说明.md)。
 - 涉及管理 API、网关接口、响应结构、错误语义、分页筛选或权限摘要时，同时看 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
-- 涉及敏感字段、凭据展示、请求快照、日志脱敏、数据保留或备份迁移时，同时看 [安全与日志策略](../../functions/安全与日志策略.md)。
+- 涉及敏感字段、凭据展示、请求快照、原始审计日志、日志脱敏、数据保留或备份迁移时，同时看 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
 - 涉及 OpenAI OAuth、API Key 账户、上游请求或账号测试时，同时看 [第一期 OpenAI 账号接入](../../functions/第一期OpenAI账号接入.md)。
 - 涉及透传、请求头、SSE、错误切换或网关行为时，同时看 [中转透传机制调研与定位修正](../../functions/中转透传机制调研与定位修正.md)。
 - 涉及运行、联调和验证时，按 [开发运行说明](../../develop/运行说明.md) 和 [开发测试与验证说明](../../develop/测试与验证说明.md) 执行。

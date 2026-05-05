@@ -186,6 +186,7 @@ onBeforeUnmount(() => {
 .responsive-list-toolbar-actions {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 10px;
 }

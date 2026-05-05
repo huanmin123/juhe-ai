@@ -1,44 +1,20 @@
 <template>
   <a-card class="page-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="accountNameFilter" search-placeholder="按账户名称筛选" filter-title="筛选使用记录" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
-      <template #inline-filters>
-        <a-select
-          v-model:value="resultFilter"
-          class="filter-select toolbar-select responsive-list-inline-filter"
-          :options="resultOptions"
-        />
-        <a-select
-          v-model:value="statusCodeFilter"
-          allow-clear
-          class="filter-select toolbar-select responsive-list-inline-filter"
-          :options="statusCodeOptions"
-          placeholder="状态码"
-        />
-        <SystemPrincipalSelect
-          v-if="isAdmin"
-          v-model:value="systemAccountFilter"
-          :accounts="systemAccounts"
-          :active-only="false"
-          include-all
-          class="filter-select system-account-filter toolbar-select responsive-list-inline-filter"
-          @change="loadData"
-        />
-      </template>
-      <template #filters>
-        <label class="mobile-filter-field">
-          <span>请求结果</span>
-          <a-select v-model:value="resultFilter" :options="resultOptions" />
-        </label>
-        <label class="mobile-filter-field">
-          <span>状态码</span>
-          <a-select v-model:value="statusCodeFilter" allow-clear :options="statusCodeOptions" placeholder="状态码" />
-        </label>
-        <label v-if="isAdmin" class="mobile-filter-field">
-          <span>系统账户</span>
-          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="loadData" />
-        </label>
-      </template>
-    </ResponsiveListToolbar>
+    <UsageRecordsFilterToolbar
+      v-model:keyword="accountNameFilter"
+      v-model:result="resultFilter"
+      v-model:status-code="statusCodeFilter"
+      v-model:system-account-id="systemAccountFilter"
+      :active-filter-count="activeFilterCount"
+      :is-admin="isAdmin"
+      :refresh-loading="loading"
+      :result-options="resultOptions"
+      :status-code-options="statusCodeOptions"
+      :system-accounts="systemAccounts"
+      @reset="resetFilters"
+      @refresh="loadData"
+      @system-account-change="loadData"
+    />
 
     <ResponsiveDataList
       table-class="page-table usage-table"
@@ -67,7 +43,7 @@
         </template>
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">
-            {{ systemAccountDisplayText(record) }}
+            {{ usageRecordSystemAccountText(record) }}
           </span>
         </template>
         <template v-else-if="column.key === 'clientIp'">
@@ -87,16 +63,7 @@
           <a-tag :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'success'">
-          <span v-if="!record.success" class="result-cell">
-            <a-tag color="red">失败</a-tag>
-            <a-popover trigger="hover" placement="right" overlay-class-name="usage-error-popover">
-              <template #content>
-                <div class="usage-error-message">{{ errorText(record) }}</div>
-              </template>
-              <InfoCircleOutlined class="usage-error-icon" />
-            </a-popover>
-          </span>
-          <a-tag v-else color="green">成功</a-tag>
+          <UsageRecordResultCell :record="record" />
         </template>
         <template v-else-if="column.key === 'tokens'">
           <div class="token-cell">
@@ -106,45 +73,7 @@
           </div>
         </template>
         <template v-else-if="column.key === 'cost'">
-          <span class="cost-cell-wrap">
-            <span class="cost-cell">{{ formatCost(record.costUsd) }}</span>
-            <a-popover v-if="record.costBreakdown" trigger="hover" placement="right" overlay-class-name="cost-popover">
-              <template #content>
-                <div class="cost-detail-panel">
-                  <div class="cost-detail-title">成本明细</div>
-                  <div class="cost-detail-row">
-                    <span>输入成本</span>
-                    <span class="cost-detail-value">{{ formatCost(record.costBreakdown.inputCostUsd) }}</span>
-                  </div>
-                  <div class="cost-detail-row">
-                    <span>输出成本</span>
-                    <span class="cost-detail-value">{{ formatCost(record.costBreakdown.outputCostUsd) }}</span>
-                  </div>
-                  <div class="cost-detail-row">
-                    <span>输入单价</span>
-                    <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.inputUsdPer1M) }}</span>
-                  </div>
-                  <div class="cost-detail-row">
-                    <span>输出单价</span>
-                    <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.outputUsdPer1M) }}</span>
-                  </div>
-                  <div class="cost-detail-row">
-                    <span>缓存读取成本</span>
-                    <span class="cost-detail-value">{{ formatCost(record.costBreakdown.cacheReadCostUsd) }}</span>
-                  </div>
-                  <div class="cost-detail-row">
-                    <span>账户计费</span>
-                    <span class="cost-detail-value">{{ formatCost(record.costBreakdown.accountChargeUsd) }}</span>
-                  </div>
-                  <div class="cost-detail-row">
-                    <span>倍率</span>
-                    <span class="cost-detail-value">{{ record.costBreakdown.multiplier }}x</span>
-                  </div>
-                </div>
-              </template>
-              <InfoCircleOutlined class="cost-detail-icon" />
-            </a-popover>
-          </span>
+          <UsageRecordCostCell :record="record" />
         </template>
         <template v-else-if="column.key === 'firstTokenMs'">
           <span>{{ formatDuration(record.firstTokenMs) }}</span>
@@ -157,59 +86,7 @@
         </template>
       </template>
       <template #card="{ record }">
-        <article class="mobile-list-card">
-          <div class="mobile-list-card-head">
-            <div class="mobile-list-card-title">{{ accountDisplayText(record) }}</div>
-            <div class="mobile-list-card-tags">
-              <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
-              <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
-              <a-tag :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
-              <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
-            </div>
-          </div>
-          <div class="mobile-list-meta-grid">
-            <div v-if="isAdmin" class="mobile-list-meta-item mobile-list-meta-wide">
-              <span>系统账户</span>
-              <strong>{{ usageRecordSystemAccountText(record) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>接口</span>
-              <strong class="mono-cell">{{ formatEndpoint(record.endpoint) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>成本</span>
-              <strong>{{ formatCost(record.costUsd) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>Tokens</span>
-              <strong>{{ formatRecordTokens(record) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>耗时</span>
-              <strong>{{ formatDuration(record.durationMs) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>首 token</span>
-              <strong>{{ formatDuration(record.firstTokenMs) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>时间</span>
-              <strong>{{ formatDateTime(record.createdAt) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>API Key</span>
-              <strong>{{ displayName(record.apiKeyName, record.apiKeyId) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>分组</span>
-              <strong>{{ displayName(record.groupName, record.groupId) }}</strong>
-            </div>
-            <div class="mobile-list-meta-item">
-              <span>IP</span>
-              <strong class="mono-cell">{{ record.clientIp ?? '-' }}</strong>
-            </div>
-          </div>
-        </article>
+        <UsageRecordMobileCard :is-admin="isAdmin" :record="record" />
       </template>
     </ResponsiveDataList>
   </a-card>
@@ -217,18 +94,30 @@
 </template>
 
 <script setup lang="ts">
-import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { message } from 'ant-design-vue'
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
-import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
-import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { authState } from '@/composables/useAuth'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import UsageRecordCostCell from './UsageRecordCostCell.vue'
+import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
+import UsageRecordResultCell from './UsageRecordResultCell.vue'
+import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
+import {
+  accountDisplayText,
+  displayName,
+  formatDateTime,
+  formatDuration,
+  formatEndpoint,
+  formatTokens,
+  statusCodeColor,
+  statusCodeText,
+  usageRecordSystemAccountText
+} from './usageRecordFormatters'
 
 const loading = ref(false)
 const records = ref<UsageRecordSummary[]>([])
@@ -247,7 +136,7 @@ const resultOptions = [
   { label: '全部结果', value: 'all' },
   { label: '成功', value: 'success' },
   { label: '失败', value: 'failed' }
-]
+] satisfies Array<{ label: string; value: 'all' | 'success' | 'failed' }>
 
 const statusCodeOptions = computed(() => {
   const uniqueCodes = Array.from(
@@ -309,69 +198,6 @@ const columns = computed(() => {
   return baseColumns
 })
 
-function displayName(name?: string, id?: string): string {
-  if (name) return name
-  return id ? '已删除或未知' : '-'
-}
-
-function accountDisplayText(record: UsageRecordSummary): string {
-  if (record.accountName) return record.accountName
-  if (record.accountId) return '已删除或未知'
-  if (!record.success) return '未分配账号'
-  return '-'
-}
-
-function formatTokens(value?: number): string {
-  return new Intl.NumberFormat('zh-CN').format(value ?? 0)
-}
-
-function formatRecordTokens(record: UsageRecordSummary): string {
-  return `${formatTokens(record.inputTokens)} / ${formatTokens(record.outputTokens)} / ${formatTokens(record.cacheReadTokens)}`
-}
-
-function formatEndpoint(value?: string): string {
-  return value ?? '-'
-}
-
-function formatCost(value?: number): string {
-  if (!value) return '$0.000000'
-  return `$${value.toFixed(6)}`
-}
-
-function formatUnitPrice(value?: number): string {
-  return typeof value === 'number' ? `$${value.toFixed(4)} / 1M Token` : '-'
-}
-
-function formatDuration(value?: number): string {
-  return typeof value === 'number' ? `${(value / 1000).toFixed(2)} s` : '-'
-}
-
-function statusCodeColor(record: UsageRecordSummary): string {
-  const value = record.statusCode
-  if (!value) return 'default'
-  if (value >= 200 && value < 300) return 'green'
-  if (value >= 400 && value < 500) return 'orange'
-  if (value >= 500) return 'red'
-  return 'blue'
-}
-
-function statusCodeText(record: UsageRecordSummary): string {
-  if (typeof record.statusCode === 'number') return String(record.statusCode)
-  return record.success ? '-' : '网络异常'
-}
-
-function errorText(record: UsageRecordSummary): string {
-  if (record.errorMessage) return record.errorMessage
-  if (record.responseSnapshot) return JSON.stringify(record.responseSnapshot, null, 2)
-  if (!record.accountId && !record.success) return '没有可调度的上游账号'
-  return '-'
-}
-
-function formatDateTime(value?: string): string {
-  if (!value) return '-'
-  return new Date(value).toLocaleString('zh-CN', { hour12: false })
-}
-
 function resetFilters(): void {
   accountNameFilter.value = ''
   resultFilter.value = 'all'
@@ -424,10 +250,6 @@ async function loadData() {
   }
 }
 
-function usageRecordSystemAccountText(record: UsageRecordSummary): string {
-  return systemAccountDisplayText(record)
-}
-
 onMounted(loadData)
 </script>
 
@@ -438,14 +260,6 @@ onMounted(loadData)
 
 .usage-table :deep(.ant-empty) {
   margin: 12px 0;
-}
-
-.filter-select {
-  width: 150px;
-}
-
-.system-account-filter {
-  width: 180px;
 }
 
 .token-cell {
@@ -485,108 +299,6 @@ onMounted(loadData)
   vertical-align: bottom;
 }
 
-.cost-cell {
-  color: #059669;
-  font-family: Consolas, 'Courier New', monospace;
-}
-
-.cost-cell-wrap {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.cost-detail-icon {
-  color: #94a3b8;
-  cursor: help;
-  font-size: 13px;
-}
-
-.cost-detail-icon:hover {
-  color: #2563eb;
-}
-
-.cost-detail-panel {
-  min-width: 190px;
-  color: #e2e8f0;
-  font-size: 12px;
-}
-
-.cost-detail-title {
-  margin-bottom: 6px;
-  color: #f8fafc;
-}
-
-.cost-detail-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 18px;
-  line-height: 1.8;
-}
-
-.cost-detail-value {
-  color: #60a5fa;
-  font-family: Consolas, 'Courier New', monospace;
-}
-
-.result-cell {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-}
-
-.usage-error-icon {
-  color: #94a3b8;
-  cursor: help;
-  font-size: 13px;
-}
-
-.usage-error-icon:hover {
-  color: #dc2626;
-}
-
-.usage-error-message {
-  max-width: 460px;
-  max-height: 180px;
-  overflow: auto;
-  color: #fca5a5;
-  font-size: 12px;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
-}
-
-:global(.cost-popover .ant-popover-inner) {
-  background: #0f172a;
-  border-radius: 8px;
-  box-shadow: 0 10px 24px rgb(15 23 42 / 24%);
-}
-
-:global(.cost-popover .ant-popover-arrow::before) {
-  background: #0f172a;
-}
-
-:global(.usage-error-popover .ant-popover-inner) {
-  background: #0f172a;
-  border-radius: 8px;
-  box-shadow: 0 10px 24px rgb(15 23 42 / 24%);
-}
-
-:global(.usage-error-popover .ant-popover-arrow::before) {
-  background: #0f172a;
-}
-
-.toolbar-select {
-  min-width: 150px;
-}
-
-.mobile-filter-field {
-  display: grid;
-  gap: 8px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
-}
 </style>
 
 

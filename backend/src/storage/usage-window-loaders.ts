@@ -1,0 +1,148 @@
+import type { AccountUsageSummary, UsageByWindow } from '../domain/types.js'
+import { getDatabase } from './database.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import {
+  addUsageSummaries,
+  dateKey,
+  emptyUsageByWindow,
+  USAGE_STATS_WINDOWS,
+  usageSummaryFromAggregate
+} from './usage-stats-helpers.js'
+
+export interface UsageStatsScopeRequest {
+  rowKey: string
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+}
+
+type UsageStatsScopeAggregateRow = {
+  account_id: string
+  request_count: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  total_cost: number
+  last_used_at: string | null
+  system_account_id: string
+  scope_type: string
+  scope_id: string
+  stat_date?: string
+}
+
+export function loadUsageByWindowForScopeRequests(scopes: UsageStatsScopeRequest[]): Map<string, UsageByWindow> {
+  const validScopes = scopes.filter((scope) => scope.rowKey && scope.systemAccountId && scope.scopeType && scope.scopeId)
+  const result = new Map<string, UsageByWindow>()
+  const rowKeysByScopeMapKey = new Map<string, Set<string>>()
+  const scopeRowsByMapKey = new Map<string, UsageStatsScopeRequest>()
+  for (const scope of validScopes) {
+    result.set(scope.rowKey, emptyUsageByWindow())
+    const mapKey = usageStatsScopeMapKey(scope)
+    scopeRowsByMapKey.set(mapKey, scope)
+    const rowKeys = rowKeysByScopeMapKey.get(mapKey) ?? new Set<string>()
+    rowKeys.add(scope.rowKey)
+    rowKeysByScopeMapKey.set(mapKey, rowKeys)
+  }
+  const normalizedScopes = [...scopeRowsByMapKey.values()]
+  if (!normalizedScopes.length) return result
+
+  const database = getDatabase()
+  const scopesBySystemAccountId = new Map<string, UsageStatsScopeRequest[]>()
+  for (const scope of normalizedScopes) {
+    scopesBySystemAccountId.set(scope.systemAccountId, [...(scopesBySystemAccountId.get(scope.systemAccountId) ?? []), scope])
+  }
+  const totalRows: UsageStatsScopeAggregateRow[] = []
+  const dailyRows: UsageStatsScopeAggregateRow[] = []
+  const maxDailyStartDate = usageWindowStartDate(30)
+
+  for (const [systemAccountId, systemScopes] of scopesBySystemAccountId) {
+    const scopeTypes = [...new Set(systemScopes.map((scope) => scope.scopeType))]
+    const scopeIds = [...new Set(systemScopes.map((scope) => scope.scopeId))]
+    for (const scopeIdChunk of chunkValues(scopeIds, 400)) {
+      totalRows.push(...database.prepare(`
+        SELECT
+          system_account_id,
+          scope_type,
+          scope_id,
+          scope_id AS account_id,
+          request_count,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          total_cost_usd AS total_cost,
+          last_used_at
+        FROM usage_stats_totals
+        WHERE system_account_id = ?
+          AND scope_type IN (${sqlPlaceholders(scopeTypes.length)})
+          AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
+      `).all(systemAccountId, ...scopeTypes, ...scopeIdChunk) as unknown as UsageStatsScopeAggregateRow[])
+
+      dailyRows.push(...database.prepare(`
+        SELECT
+          system_account_id,
+          scope_type,
+          scope_id,
+          scope_id AS account_id,
+          stat_date,
+          request_count,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          total_cost_usd AS total_cost,
+          last_used_at
+        FROM usage_stats_daily
+        WHERE system_account_id = ?
+          AND scope_type IN (${sqlPlaceholders(scopeTypes.length)})
+          AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
+          AND stat_date >= ?
+      `).all(systemAccountId, ...scopeTypes, ...scopeIdChunk, maxDailyStartDate) as unknown as UsageStatsScopeAggregateRow[])
+    }
+  }
+
+  for (const row of totalRows) {
+    const rowKeys = rowKeysByScopeMapKey.get(usageStatsRowMapKey(row))
+    if (!rowKeys) continue
+    for (const rowKey of rowKeys) {
+      const usageByWindow = result.get(rowKey)
+      if (usageByWindow) {
+        usageByWindow.total = usageSummaryFromAggregate(row)
+      }
+    }
+  }
+
+  const startDateByWindow = new Map(USAGE_STATS_WINDOWS
+    .filter((window) => window.days)
+    .map((window) => [window.key, usageWindowStartDate(window.days ?? 1)]))
+  for (const row of dailyRows) {
+    const rowKeys = rowKeysByScopeMapKey.get(usageStatsRowMapKey(row))
+    if (!rowKeys || !row.stat_date) continue
+    const rowUsage = usageSummaryFromAggregate(row)
+    for (const rowKey of rowKeys) {
+      const usageByWindow = result.get(rowKey)
+      if (!usageByWindow) continue
+      for (const window of USAGE_STATS_WINDOWS) {
+        if (!window.days) continue
+        const startDate = startDateByWindow.get(window.key)
+        if (startDate && row.stat_date >= startDate) {
+          usageByWindow[window.key] = addUsageSummaries(usageByWindow[window.key], rowUsage)
+        }
+      }
+    }
+  }
+
+  return result
+}
+
+function usageStatsScopeMapKey(scope: Pick<UsageStatsScopeRequest, 'systemAccountId' | 'scopeType' | 'scopeId'>): string {
+  return `${scope.systemAccountId}\u0000${scope.scopeType}\u0000${scope.scopeId}`
+}
+
+function usageStatsRowMapKey(row: { system_account_id: string; scope_type: string; scope_id: string }): string {
+  return `${row.system_account_id}\u0000${row.scope_type}\u0000${row.scope_id}`
+}
+
+function usageWindowStartDate(days: number): string {
+  const date = new Date()
+  date.setDate(date.getDate() - Math.max(0, Math.trunc(days) - 1))
+  return dateKey(date)
+}

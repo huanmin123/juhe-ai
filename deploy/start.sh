@@ -50,4 +50,5 @@ HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-3000}"
 
 echo "Starting juhe-ai at http://${HOST}:${PORT}"
+echo "The Web/API process will supervise a separate background worker process."
 exec node backend/dist/server.js

@@ -4,9 +4,11 @@ import { cpus, freemem, platform, totalmem } from 'node:os'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   expireDueResourceAuthorizations,
   getSettings,
+  cleanupRuntimeLogIndex,
   listAccountsDueForCooldownRetest,
   listAccounts
 } from '../../storage/repositories.js'
@@ -23,30 +25,30 @@ import {
 } from '../openai-oauth/openai-oauth-usage-refresh.service.js'
 import { flushUsageRecordQueue } from '../gateway/usage-record-queue.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
+import { cleanupExpiredAuditLogs } from '../audit-logs/audit-log-cleanup.service.js'
+import { WorkerScheduler } from './worker-scheduler.js'
 
 let started = false
 let usageStatsAggregationRunning = false
 let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
 let lastMetricsExpectedAt = Date.now()
+const dailyIntervalMs = 24 * 60 * 60 * 1000
+const scheduler = new WorkerScheduler()
 
 export function startBackgroundJobs(): void {
   if (started) return
   started = true
 
-  void runUsageStatsAggregation()
-  void runGroupAccountStatsRefresh()
-  void runResourceAuthorizationExpirySweep()
-  void runSystemMetricsSample()
-  void runOpenAIOAuthUsageRefresh()
-  void runCooldownAccountRetest()
-
-  setInterval(() => { void runUsageStatsAggregation() }, settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * 1000)
-  setInterval(() => { void runGroupAccountStatsRefresh() }, settingsNumber('groupAccountStatsRefreshIntervalSeconds', 60, 5, 3600) * 1000)
-  setInterval(() => { void runResourceAuthorizationExpirySweep() }, 60 * 1000)
-  setInterval(() => { void runSystemMetricsSample() }, settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000)
-  setInterval(() => { void runOpenAIOAuthUsageRefresh() }, settingsNumber('oauthUsageSnapshotRefreshIntervalSeconds', 300, 60, 86400) * 1000)
-  setInterval(() => { void runCooldownAccountRetest() }, settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000)
+  scheduler.schedule({ name: 'usage-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * 1000, task: runUsageStatsAggregation })
+  scheduler.schedule({ name: 'group-account-stats-refresh', intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 60, 5, 3600) * 1000, task: runGroupAccountStatsRefresh })
+  scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: 60 * 1000, task: runResourceAuthorizationExpirySweep })
+  scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000, task: runSystemMetricsSample })
+  scheduler.schedule({ name: 'openai-oauth-usage-refresh', intervalMs: settingsNumber('oauthUsageSnapshotRefreshIntervalSeconds', 300, 60, 86400) * 1000, task: runOpenAIOAuthUsageRefresh })
+  scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000, task: runCooldownAccountRetest })
+  scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * 60 * 1000, task: runRuntimeLogIndexMaintenance })
+  scheduler.schedule({ name: 'audit-log-cleanup', intervalMs: dailyIntervalMs, task: runAuditLogCleanup })
 }
 
 async function runUsageStatsAggregation(): Promise<void> {
@@ -61,7 +63,7 @@ async function runUsageStatsAggregation(): Promise<void> {
       if (processed < batchSize) break
     }
   } catch (error) {
-    console.error('[background] usage stats aggregation failed', error)
+    logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), 'Usage stats aggregation failed')
   } finally {
     usageStatsAggregationRunning = false
   }
@@ -71,7 +73,7 @@ async function runGroupAccountStatsRefresh(): Promise<void> {
   try {
     refreshGroupAccountStatsCache()
   } catch (error) {
-    console.error('[background] group account stats refresh failed', error)
+    logger.error(errorLogFields(error, { event: 'background_group_account_stats_refresh_failed' }), 'Group account stats refresh failed')
   }
 }
 
@@ -82,7 +84,7 @@ async function runResourceAuthorizationExpirySweep(): Promise<void> {
       clearGatewayRuntimeCache()
     }
   } catch (error) {
-    console.error('[background] resource authorization expiry sweep failed', error)
+    logger.error(errorLogFields(error, { event: 'background_resource_authorization_expiry_sweep_failed' }), 'Resource authorization expiry sweep failed')
   }
 }
 
@@ -110,7 +112,7 @@ async function runSystemMetricsSample(): Promise<void> {
       statsLagSeconds: latestUsageStatsLagSeconds()
     })
   } catch (error) {
-    console.error('[background] system metrics sample failed', error)
+    logger.error(errorLogFields(error, { event: 'background_system_metrics_sample_failed' }), 'System metrics sample failed')
   }
 }
 
@@ -127,9 +129,25 @@ async function runCooldownAccountRetest(): Promise<void> {
     try {
       await testOpenAIAccount(account, { model: settingsString('cooldownAccountRetestModel', 'gpt-5.5'), prompt: 'hi' })
     } catch (error) {
-      console.error(`[background] cooldown account retest failed for ${account.id}`, error)
+      logger.warn(errorLogFields(error, {
+        event: 'background_cooldown_account_retest_failed',
+        accountId: account.id
+      }), 'Cooldown account retest failed')
     }
   }
+}
+
+async function runRuntimeLogIndexMaintenance(): Promise<void> {
+  try {
+    flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
+    cleanupRuntimeLogIndex()
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_runtime_log_index_maintenance_failed' }), 'Runtime log index maintenance failed')
+  }
+}
+
+async function runAuditLogCleanup(): Promise<void> {
+  cleanupExpiredAuditLogs()
 }
 
 function openAIOAuthUsageRefreshCandidates(): AccountSummary[] {

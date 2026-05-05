@@ -1,0 +1,378 @@
+import { buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
+import { getDatabase, newId, nowIso } from './database.js'
+import { loadSystemAccountNameMap } from './repository-lookups.js'
+import { optionalString, parseOptionalJsonObject } from './value-utils.js'
+
+export interface UsageRecordLogSnapshot {
+  [key: string]: unknown
+}
+
+export interface UsageRecordSummary {
+  id: string
+  systemAccountId?: string
+  systemAccountName?: string
+  traceId: string
+  clientIp?: string
+  apiKeyId?: string
+  apiKeyName?: string
+  groupId?: string
+  groupName?: string
+  accountId?: string
+  accountName?: string
+  endpoint?: string
+  providerCode?: string
+  model?: string
+  stream: boolean
+  statusCode?: number
+  success: boolean
+  firstTokenMs?: number
+  durationMs?: number
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  costUsd?: number
+  errorCode?: string
+  errorMessage?: string
+  requestSnapshot?: UsageRecordLogSnapshot
+  responseSnapshot?: UsageRecordLogSnapshot
+  createdAt: string
+}
+
+export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
+export type UsageRecordSortDirection = 'asc' | 'desc'
+
+export interface UsageRecordListOptions {
+  sortBy?: UsageRecordSortField
+  sortOrder?: UsageRecordSortDirection
+  limit?: number
+}
+
+export interface UsageRecordInput {
+  id?: string
+  systemAccountId?: string
+  traceId: string
+  clientIp?: string
+  apiKeyId?: string
+  groupId?: string
+  accountId?: string
+  accountOwnerSystemAccountId?: string
+  groupOwnerSystemAccountId?: string
+  accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
+  groupAccessType?: 'owner' | 'authorized'
+  accountAuthorizationId?: string
+  groupAuthorizationId?: string
+  endpoint?: string
+  providerCode?: string
+  model?: string
+  stream?: boolean
+  statusCode?: number
+  success: boolean
+  firstTokenMs?: number
+  durationMs?: number
+  inputTokens?: number
+  outputTokens?: number
+  cacheReadTokens?: number
+  costUsd?: number
+  errorCode?: string
+  errorMessage?: string
+  requestSnapshot?: unknown
+  responseSnapshot?: unknown
+  createdAt?: string
+}
+
+type UsageAccessMetadata = {
+  accountOwnerSystemAccountId?: string
+  groupOwnerSystemAccountId?: string
+  accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
+  groupAccessType?: 'owner' | 'authorized'
+  accountAuthorizationId?: string
+  groupAuthorizationId?: string
+}
+
+type ResourceAuthorizationRow = {
+  id: string
+  status: string
+  expires_at: string | null
+}
+
+const usageRecordSortColumns: Record<UsageRecordSortField, string> = {
+  createdAt: 'ur.created_at',
+  firstTokenMs: 'ur.first_token_ms',
+  durationMs: 'ur.duration_ms',
+  costUsd: 'ur.cost_usd'
+}
+
+const usageRecordDefaultLimit = 200
+const usageRecordMaxLimit = 500
+
+export function listUsageRecords(access?: AccessScope, options?: UsageRecordListOptions): UsageRecordSummary[] {
+  const scope = buildSystemAccountWhereClause(access, 'ur.system_account_id')
+  const listOptions = normalizeUsageRecordListOptions(options)
+  const orderClause = buildUsageRecordOrderClause(listOptions)
+  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
+  const rows = getDatabase()
+    .prepare(`
+      SELECT
+        ur.*,
+        ak.name AS api_key_name,
+        g.name AS group_name,
+        a.name AS account_name
+      FROM usage_records ur
+      LEFT JOIN api_keys ak ON ak.id = ur.api_key_id
+      LEFT JOIN groups g ON g.id = ur.group_id
+      LEFT JOIN accounts a ON a.id = ur.account_id
+      ${scope.clause}
+      ${orderClause}
+      LIMIT ?
+    `)
+    .all(...scope.params, listOptions.limit) as Array<Record<string, unknown>>
+  return rows.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
+}
+
+export function createUsageRecord(input: UsageRecordInput): void {
+  createUsageRecordsBatch([input])
+}
+
+export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
+  if (inputs.length === 0) {
+    return
+  }
+
+  const database = getDatabase()
+  const insertStatement = database.prepare(`
+    INSERT INTO usage_records (
+      id, system_account_id, trace_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
+      status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cost_usd, error_code, error_message,
+      request_snapshot_json, response_snapshot_json,
+      account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type, account_authorization_id, group_authorization_id,
+      created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO NOTHING
+  `)
+  const updateAccountStatement = database.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
+  const accountLastUsedAt = new Map<string, string>()
+
+  database.exec('BEGIN')
+  try {
+    for (const input of inputs) {
+      const now = input.createdAt ?? nowIso()
+      const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input)
+      const accessMetadata = usageAccessMetadata({ ...input, systemAccountId })
+      const result = insertStatement.run(
+        input.id ?? newId('usage'),
+        systemAccountId,
+        input.traceId,
+        input.clientIp ?? null,
+        input.apiKeyId ?? null,
+        input.groupId ?? null,
+        input.accountId ?? null,
+        input.endpoint ?? null,
+        input.providerCode ?? null,
+        input.model ?? null,
+        input.stream ? 1 : 0,
+        input.statusCode ?? null,
+        input.success ? 1 : 0,
+        input.firstTokenMs ?? null,
+        input.durationMs ?? null,
+        input.inputTokens ?? null,
+        input.outputTokens ?? null,
+        input.cacheReadTokens ?? null,
+        input.costUsd ?? null,
+        input.errorCode ?? null,
+        input.errorMessage ?? null,
+        input.requestSnapshot ? JSON.stringify(input.requestSnapshot) : null,
+        input.responseSnapshot ? JSON.stringify(input.responseSnapshot) : null,
+        accessMetadata.accountOwnerSystemAccountId ?? null,
+        accessMetadata.groupOwnerSystemAccountId ?? null,
+        accessMetadata.accountAccessType ?? null,
+        accessMetadata.groupAccessType ?? null,
+        accessMetadata.accountAuthorizationId ?? null,
+        accessMetadata.groupAuthorizationId ?? null,
+        now
+      )
+
+      if (Number(result.changes ?? 0) === 0) {
+        continue
+      }
+
+      if (input.accountId) {
+        const previous = accountLastUsedAt.get(input.accountId)
+        if (!previous || now > previous) {
+          accountLastUsedAt.set(input.accountId, now)
+        }
+      }
+    }
+
+    for (const [accountId, lastUsedAt] of accountLastUsedAt) {
+      updateAccountStatement.run(lastUsedAt, lastUsedAt, accountId)
+    }
+
+    database.exec('COMMIT')
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+    }
+    throw error
+  }
+}
+
+function usageRecordSummaryFromRow(
+  row: Record<string, unknown>,
+  shouldIncludeSystemAccountFields: boolean,
+  accountNames: Map<string, string>
+): UsageRecordSummary {
+  const requestSnapshot = parseOptionalJsonObject(row.request_snapshot_json)
+  const inputTokens = typeof row.input_tokens === 'number' ? row.input_tokens : undefined
+  const outputTokens = typeof row.output_tokens === 'number' ? row.output_tokens : undefined
+  const cacheReadTokens = typeof row.cache_read_tokens === 'number' ? row.cache_read_tokens : undefined
+  const model = optionalString(row.model)
+  const stream = row.stream === 1
+  const statusCode = typeof row.status_code === 'number' ? row.status_code : undefined
+  const success = row.success === 1
+  return {
+    id: String(row.id),
+    systemAccountId: shouldIncludeSystemAccountFields ? optionalString(row.system_account_id) : undefined,
+    systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(String(row.system_account_id)) : undefined,
+    traceId: String(row.trace_id),
+    clientIp: optionalString(row.client_ip),
+    apiKeyId: optionalString(row.api_key_id),
+    apiKeyName: optionalString(row.api_key_name),
+    groupId: optionalString(row.group_id),
+    groupName: optionalString(row.group_name),
+    accountId: optionalString(row.account_id),
+    accountName: optionalString(row.account_name),
+    endpoint: optionalString(row.endpoint) ?? endpointFromSnapshot(requestSnapshot),
+    providerCode: optionalString(row.provider_code),
+    model,
+    stream,
+    statusCode,
+    success,
+    firstTokenMs: typeof row.first_token_ms === 'number' ? row.first_token_ms : undefined,
+    durationMs: typeof row.duration_ms === 'number' ? row.duration_ms : undefined,
+    inputTokens,
+    outputTokens,
+    cacheReadTokens,
+    costUsd: typeof row.cost_usd === 'number' ? row.cost_usd : undefined,
+    errorCode: optionalString(row.error_code),
+    errorMessage: optionalString(row.error_message),
+    requestSnapshot,
+    responseSnapshot: parseOptionalJsonObject(row.response_snapshot_json),
+    createdAt: String(row.created_at)
+  }
+}
+
+function normalizeUsageRecordListOptions(options?: UsageRecordListOptions): Required<UsageRecordListOptions> {
+  const sortBy = options?.sortBy && Object.prototype.hasOwnProperty.call(usageRecordSortColumns, options.sortBy)
+    ? options.sortBy
+    : 'createdAt'
+  const sortOrder = options?.sortOrder === 'asc' ? 'asc' : 'desc'
+  const rawLimit = options?.limit
+  const limit = typeof rawLimit === 'number' && Number.isInteger(rawLimit)
+    ? Math.min(usageRecordMaxLimit, Math.max(1, rawLimit))
+    : usageRecordDefaultLimit
+  return { sortBy, sortOrder, limit }
+}
+
+function buildUsageRecordOrderClause(options: Required<UsageRecordListOptions>): string {
+  const direction = options.sortOrder === 'asc' ? 'ASC' : 'DESC'
+  if (options.sortBy === 'createdAt') {
+    return `ORDER BY ur.created_at ${direction}, ur.id ${direction}`
+  }
+  return `ORDER BY ${usageRecordSortColumns[options.sortBy]} ${direction}, ur.created_at ${direction}, ur.id ${direction}`
+}
+
+function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | undefined {
+  const method = typeof snapshot?.method === 'string' ? snapshot.method.toUpperCase() : undefined
+  const originalUrl = typeof snapshot?.originalUrl === 'string' ? snapshot.originalUrl.split('?')[0] : undefined
+  const path = typeof snapshot?.path === 'string' ? snapshot.path : undefined
+  const endpoint = originalUrl ?? path
+  return endpoint ? `${method ?? 'GET'} ${endpoint}` : undefined
+}
+
+function systemAccountIdForUsage(input: { apiKeyId?: string; groupId?: string; accountId?: string }): string {
+  const database = getDatabase()
+  if (input.apiKeyId) {
+    const row = database.prepare('SELECT system_account_id FROM api_keys WHERE id = ?').get(input.apiKeyId) as unknown as { system_account_id?: string } | undefined
+    if (row?.system_account_id) return row.system_account_id
+  }
+  if (input.groupId) {
+    const row = database.prepare('SELECT system_account_id FROM groups WHERE id = ?').get(input.groupId) as unknown as { system_account_id?: string } | undefined
+    if (row?.system_account_id) return row.system_account_id
+  }
+  if (input.accountId) {
+    const row = database.prepare('SELECT system_account_id FROM accounts WHERE id = ?').get(input.accountId) as unknown as { system_account_id?: string } | undefined
+    if (row?.system_account_id) return row.system_account_id
+  }
+  return currentSystemAccountId()
+}
+
+function usageAccessMetadata(input: {
+  systemAccountId: string
+  groupId?: string
+  accountId?: string
+  accountOwnerSystemAccountId?: string
+  groupOwnerSystemAccountId?: string
+  accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
+  groupAccessType?: 'owner' | 'authorized'
+  accountAuthorizationId?: string
+  groupAuthorizationId?: string
+}): UsageAccessMetadata {
+  const groupOwnerSystemAccountId = input.groupOwnerSystemAccountId ?? (input.groupId ? groupOwnerSystemAccountIdForUsage(input.groupId) : undefined)
+  const groupAuthorization = input.groupAuthorizationId
+    ? undefined
+    : input.groupId && groupOwnerSystemAccountId !== input.systemAccountId
+      ? activeResourceAuthorization('group', input.groupId, input.systemAccountId)
+      : undefined
+  const groupAuthorizationId = input.groupAuthorizationId ?? groupAuthorization?.id
+  const groupAccessType = input.groupAccessType
+    ?? (groupOwnerSystemAccountId
+      ? groupOwnerSystemAccountId === input.systemAccountId
+        ? 'owner'
+        : groupAuthorization
+          ? 'authorized'
+          : undefined
+      : undefined)
+  const accountOwnerSystemAccountId = input.accountOwnerSystemAccountId ?? (input.accountId ? accountSystemAccountIdForUsage(input.accountId) : undefined)
+  const accountAuthorization = input.accountAuthorizationId
+    ? undefined
+    : input.accountId && accountOwnerSystemAccountId !== input.systemAccountId && groupAccessType !== 'authorized'
+      ? activeResourceAuthorization('account', input.accountId, input.systemAccountId)
+      : undefined
+  const accountAccessType = input.accountAccessType
+    ?? (accountOwnerSystemAccountId
+      ? accountOwnerSystemAccountId === input.systemAccountId
+        ? 'owner'
+        : groupAccessType === 'authorized' && groupOwnerSystemAccountId === accountOwnerSystemAccountId
+          ? 'group_authorized'
+          : accountAuthorization
+            ? 'account_authorized'
+            : undefined
+      : undefined)
+  return {
+    accountOwnerSystemAccountId,
+    groupOwnerSystemAccountId,
+    accountAccessType,
+    groupAccessType,
+    accountAuthorizationId: accountAccessType === 'account_authorized' ? input.accountAuthorizationId ?? accountAuthorization?.id : undefined,
+    groupAuthorizationId
+  }
+}
+
+function accountSystemAccountIdForUsage(accountId: string): string | undefined {
+  const row = getDatabase().prepare('SELECT system_account_id FROM accounts WHERE id = ?').get(accountId) as unknown as { system_account_id?: string } | undefined
+  return row?.system_account_id
+}
+
+function groupOwnerSystemAccountIdForUsage(groupId: string): string | undefined {
+  const row = getDatabase().prepare('SELECT system_account_id FROM groups WHERE id = ?').get(groupId) as unknown as { system_account_id?: string } | undefined
+  return row?.system_account_id
+}
+
+function activeResourceAuthorization(resourceType: 'account' | 'group', resourceId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
+  const now = nowIso()
+  return getDatabase()
+    .prepare("SELECT id, status, expires_at FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
+    .get(resourceType, resourceId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
+}

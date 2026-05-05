@@ -16,7 +16,7 @@ export interface UsageRequestSnapshot {
   path: string
   originalUrl: string
   clientIp?: string
-  requestId: string
+  traceId: string
   headers: Record<string, string | string[]>
   body?: unknown
 }
@@ -48,6 +48,7 @@ export interface ParsedUsage {
 interface OpenAIStreamInspection {
   terminalReceived: boolean
   failedReceived: boolean
+  outputReceived: boolean
   errorCode?: string
   errorMessage?: string
   usage: ParsedUsage
@@ -74,13 +75,13 @@ export function requestEndpoint(req: Request): string {
   return `${req.method.toUpperCase()} ${req.originalUrl.split('?')[0] || req.path}`
 }
 
-export function buildUsageRequestSnapshot(req: Request, requestId: string, clientIp?: string): UsageRequestSnapshot {
+export function buildUsageRequestSnapshot(req: Request, traceId: string, clientIp?: string): UsageRequestSnapshot {
   const snapshot: UsageRequestSnapshot = {
     method: req.method,
     path: req.path,
     originalUrl: req.originalUrl,
     clientIp,
-    requestId,
+    traceId,
     headers: sanitizeRequestHeaders(req.headers)
   }
   if (req.body !== undefined) {
@@ -177,6 +178,7 @@ export function inspectOpenAIStreamText(text: string): OpenAIStreamInspection {
   const inspection: OpenAIStreamInspection = {
     terminalReceived: false,
     failedReceived: false,
+    outputReceived: false,
     usage: emptyUsage()
   }
   let eventName = ''
@@ -199,6 +201,9 @@ export function inspectOpenAIStreamText(text: string): OpenAIStreamInspection {
     try {
       const event = JSON.parse(data) as Record<string, unknown>
       const eventType = typeof event.type === 'string' ? event.type : currentEventName
+      if (openAIStreamEventHasOutput(event, eventType)) {
+        inspection.outputReceived = true
+      }
       if (eventType === 'response.completed' || eventType === 'response.done') {
         inspection.terminalReceived = true
       } else if (eventType === 'response.failed') {
@@ -240,6 +245,37 @@ export function inspectOpenAIStreamText(text: string): OpenAIStreamInspection {
   return inspection
 }
 
+function openAIStreamEventHasOutput(event: Record<string, unknown>, eventType: string): boolean {
+  if (eventType.endsWith('.delta') && hasMeaningfulDelta(event.delta)) {
+    return true
+  }
+  const choices = Array.isArray(event.choices) ? event.choices : []
+  return choices.some((choice) => {
+    if (typeof choice !== 'object' || choice === null) return false
+    const row = choice as Record<string, unknown>
+    if (hasNonEmptyString(row.text)) return true
+    const delta = typeof row.delta === 'object' && row.delta !== null ? row.delta as Record<string, unknown> : undefined
+    return Boolean(delta && hasMeaningfulChoiceDelta(delta))
+  })
+}
+
+function hasMeaningfulChoiceDelta(delta: Record<string, unknown>): boolean {
+  return hasMeaningfulDelta(delta.content)
+    || hasMeaningfulDelta(delta.refusal)
+    || hasMeaningfulDelta(delta.reasoning_content)
+    || hasMeaningfulDelta(delta.audio)
+    || hasMeaningfulDelta(delta.tool_calls)
+    || hasMeaningfulDelta(delta.function_call)
+}
+
+function hasMeaningfulDelta(value: unknown): boolean {
+  if (hasNonEmptyString(value)) return true
+  if (Array.isArray(value)) return value.some(hasMeaningfulDelta)
+  if (typeof value !== 'object' || value === null) return false
+  return Object.entries(value as Record<string, unknown>)
+    .some(([key, child]) => key !== 'index' && key !== 'type' && key !== 'id' && hasMeaningfulDelta(child))
+}
+
 function firstHeaderValue(value?: string): string | undefined {
   return value?.split(',').map((item) => item.trim()).find(Boolean)
 }
@@ -276,4 +312,8 @@ function extractUsage(value: unknown): ParsedUsage {
 function numberValue(value: unknown): number | undefined {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : undefined
+}
+
+function hasNonEmptyString(value: unknown): boolean {
+  return typeof value === 'string' && value.length > 0
 }

@@ -4,7 +4,7 @@
       <div class="page-toolbar stats-toolbar">
         <div class="toolbar-copy">
           <strong>统计概览</strong>
-          <span>读取后台缓存快照，避免列表和图表实时扫使用记录。</span>
+          <span>读取有效消耗缓存快照，排障类失败请到使用记录、审计日志和运行日志查看。</span>
         </div>
         <div class="page-toolbar-actions">
           <a-button :loading="loading" @click="loadData">刷新</a-button>
@@ -12,46 +12,31 @@
       </div>
     </a-card>
 
-    <a-row :gutter="[16, 16]">
-      <a-col v-for="item in summaryCards" :key="item.key" :xs="24" :sm="12" :lg="6">
-        <a-card class="metric-card" :loading="initialLoading">
-          <div class="metric-label">{{ item.label }}</div>
-          <div class="metric-value">{{ item.value }}</div>
-          <div class="metric-extra">{{ item.extra }}</div>
-        </a-card>
-      </a-col>
-    </a-row>
+    <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" />
 
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="14">
-        <a-card title="请求 / Token / 平均响应（近 24 小时）" class="page-card chart-card" :loading="initialLoading">
-          <a-empty v-if="!hasUsageTrend" :description="usageTrendEmptyDescription" />
-          <div v-else ref="usageTrendChartRef" class="chart-panel chart-panel-large" />
-        </a-card>
+        <StatsChartCard title="有效请求 / Token / 平均响应（近 24 小时）" :loading="initialLoading" :has-data="hasUsageTrend" :empty-description="usageTrendEmptyDescription">
+          <div ref="usageTrendChartRef" class="chart-panel chart-panel-large" />
+        </StatsChartCard>
       </a-col>
       <a-col :xs="24" :xl="10">
-        <a-card title="模型分布（今日）" class="page-card chart-card" :loading="initialLoading">
-          <a-empty v-if="!hasModelDistribution" :description="modelDistributionEmptyDescription" />
-          <div v-else ref="modelDistributionChartRef" class="chart-panel chart-panel-large" />
-        </a-card>
+        <StatsChartCard title="模型分布（今日）" :loading="initialLoading" :has-data="hasModelDistribution" :empty-description="modelDistributionEmptyDescription">
+          <div ref="modelDistributionChartRef" class="chart-panel chart-panel-large" />
+        </StatsChartCard>
       </a-col>
     </a-row>
 
     <a-row :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="10">
-        <a-card title="错误 Top 10（今日）" class="page-card chart-card" :loading="initialLoading">
-          <a-empty v-if="!hasErrors" :description="errorEmptyDescription" />
-          <div v-else ref="errorChartRef" class="chart-panel" />
-        </a-card>
+        <StatsChartCard title="消耗错误 Top 10（今日）" :loading="initialLoading" :has-data="hasErrors" :empty-description="errorEmptyDescription">
+          <div ref="errorChartRef" class="chart-panel" />
+        </StatsChartCard>
       </a-col>
       <a-col :xs="24" :xl="14">
-        <a-card title="系统性能 / 网络吞吐趋势（近 24 小时）" class="page-card chart-card" :loading="systemInitialLoading">
-          <template v-if="isAdmin">
-            <a-empty v-if="!hasSystemTrend" description="等待后台监控采样" />
-            <div v-else ref="systemMetricsChartRef" class="chart-panel chart-panel-large" />
-          </template>
-          <a-empty v-else description="系统监控仅管理员可见" />
-        </a-card>
+        <StatsChartCard title="系统性能 / 网络吞吐趋势（近 24 小时）" :loading="systemInitialLoading" :has-data="hasVisibleSystemTrend" :empty-description="systemTrendEmptyDescription">
+          <div ref="systemMetricsChartRef" class="chart-panel chart-panel-large" />
+        </StatsChartCard>
       </a-col>
     </a-row>
   </div>
@@ -60,13 +45,17 @@
 <script setup lang="ts">
 import * as echarts from 'echarts'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
-import type { ECharts, EChartsOption } from 'echarts'
+import type { ECharts } from 'echarts'
 import type { Ref, ShallowRef } from 'vue'
 import { message } from 'ant-design-vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
+import StatsChartCard from './StatsChartCard.vue'
+import StatsSummaryCards from './StatsSummaryCards.vue'
+import { buildErrorOption, buildModelDistributionOption, buildSystemMetricsOption, buildUsageTrendOption } from './statsChartOptions'
+import { formatCompactInteger, formatCost, formatDuration, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
 
 const loading = ref(false)
 const usageOverview = ref<UsageStatsOverview>()
@@ -83,26 +72,25 @@ const modelDistributionChart = shallowRef<ECharts>()
 const errorChart = shallowRef<ECharts>()
 const systemMetricsChart = shallowRef<ECharts>()
 
-const ERROR_TOOLTIP_MAX_WIDTH = 360
-const ERROR_TOOLTIP_EDGE_GAP = 12
-
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
 const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?? 0) > 0)
+const hasVisibleSystemTrend = computed(() => isAdmin.value && hasSystemTrend.value)
 const hasUsageOverview = computed(() => Boolean(usageOverview.value))
 const initialLoading = computed(() => loading.value && !hasUsageOverview.value)
 const systemInitialLoading = computed(() => loading.value && isAdmin.value && !systemMetrics.value)
 const hasHistoricalUsage = computed(() => (usageOverview.value?.totals.requestCount ?? 0) > 0)
 const usageTrendEmptyDescription = computed(() => hasHistoricalUsage.value ? '近 24 小时暂无趋势数据，累计指标已在上方展示' : '暂无趋势数据')
 const modelDistributionEmptyDescription = computed(() => hasHistoricalUsage.value ? '今日暂无模型调用，累计指标已在上方展示' : '今日暂无模型调用')
-const errorEmptyDescription = computed(() => hasHistoricalUsage.value ? '今日暂无错误，累计错误率已在上方展示' : '今日暂无错误')
+const errorEmptyDescription = computed(() => hasHistoricalUsage.value ? '今日暂无消耗错误，排障错误请查看日志' : '今日暂无消耗错误')
+const systemTrendEmptyDescription = computed(() => isAdmin.value ? '等待后台监控采样' : '系统监控仅管理员可见')
 
 const summaryCards = computed(() => {
   const today = usageOverview.value?.today
   const totals = usageOverview.value?.totals
   return [
-    { key: 'requests', label: '今日请求', value: formatInteger(today?.requestCount), extra: `累计 ${formatInteger(totals?.requestCount)} / 错误率 ${formatPercent((today?.errorRate ?? totals?.errorRate ?? 0) * 100)}` },
+    { key: 'requests', label: '今日有效请求', value: formatInteger(today?.requestCount), extra: `累计 ${formatInteger(totals?.requestCount)} / 消耗错误率 ${formatPercent((today?.errorRate ?? totals?.errorRate ?? 0) * 100)}` },
     { key: 'duration', label: '今日平均响应', value: formatDuration(today?.averageDurationMs), extra: `首 Token ${formatDuration(today?.averageFirstTokenMs)}` },
     { key: 'tokens', label: '今日 Token', value: formatCompactInteger(today?.totalTokens), extra: `累计 ${formatCompactInteger(totals?.totalTokens)} / 输入 ${formatCompactInteger(today?.inputTokens)}` },
     { key: 'cost', label: '今日成本', value: formatCost(today?.totalCost), extra: `累计 ${formatCost(totals?.totalCost)} / 滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
@@ -145,73 +133,7 @@ function renderUsageTrendChart() {
   const chart = ensureChart(usageTrendChartRef, usageTrendChart)
   if (!chart || !usageOverview.value) return
 
-  const trend = usageOverview.value.hourlyTrend
-  const option: EChartsOption = {
-    color: ['#1677ff', '#52c41a', '#faad14'],
-    tooltip: {
-      trigger: 'axis',
-      formatter: (params: unknown) => usageTrendTooltip(params)
-    },
-    legend: {
-      bottom: 0,
-      data: ['请求数', 'Token', '平均响应']
-    },
-    grid: {
-      left: 48,
-      right: 58,
-      top: 28,
-      bottom: 56
-    },
-    xAxis: {
-      type: 'category',
-      boundaryGap: true,
-      data: trend.map((item) => formatHourLabel(item.statHour)),
-      axisLabel: { color: '#64748b' },
-      axisLine: { lineStyle: { color: '#d9e2ef' } }
-    },
-    yAxis: [
-      {
-        type: 'value',
-        name: '请求 / Token',
-        axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
-        splitLine: { lineStyle: { color: '#edf2f7' } }
-      },
-      {
-        type: 'value',
-        name: '响应 ms',
-        axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
-        splitLine: { show: false }
-      }
-    ],
-    series: [
-      {
-        name: '请求数',
-        type: 'bar',
-        barMaxWidth: 18,
-        data: trend.map((item) => item.requestCount),
-        itemStyle: { borderRadius: [4, 4, 0, 0] }
-      },
-      {
-        name: 'Token',
-        type: 'line',
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => item.totalTokens),
-        areaStyle: { opacity: 0.08 }
-      },
-      {
-        name: '平均响应',
-        type: 'line',
-        yAxisIndex: 1,
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => item.averageDurationMs ?? null)
-      }
-    ]
-  }
-  chart.setOption(option, { notMerge: true })
+  chart.setOption(buildUsageTrendOption(usageOverview.value.hourlyTrend), { notMerge: true })
 }
 
 function renderModelDistributionChart() {
@@ -222,43 +144,7 @@ function renderModelDistributionChart() {
   const chart = ensureChart(modelDistributionChartRef, modelDistributionChart)
   if (!chart || !usageOverview.value) return
 
-  const option: EChartsOption = {
-    color: ['#1677ff', '#52c41a', '#722ed1', '#faad14', '#13c2c2', '#eb2f96', '#fa541c', '#2f54eb', '#a0d911', '#8c8c8c'],
-    tooltip: {
-      trigger: 'item',
-      formatter: (params: unknown) => modelTooltip(params)
-    },
-    legend: {
-      type: 'scroll',
-      bottom: 0,
-      itemWidth: 10,
-      itemHeight: 10
-    },
-    series: [
-      {
-        name: '模型分布',
-        type: 'pie',
-        radius: ['48%', '72%'],
-        center: ['50%', '45%'],
-        avoidLabelOverlap: true,
-        minAngle: 8,
-        label: {
-          formatter: '{b}\n{d}%',
-          color: '#334155'
-        },
-        labelLine: { length: 12, length2: 8 },
-        data: usageOverview.value.modelDistribution.map((item) => ({
-          name: item.model,
-          value: item.totalTokens > 0 ? item.totalTokens : item.requestCount,
-          requestCount: item.requestCount,
-          totalTokens: item.totalTokens,
-          totalCost: item.totalCost,
-          providerCode: item.providerCode
-        }))
-      }
-    ]
-  }
-  chart.setOption(option, { notMerge: true })
+  chart.setOption(buildModelDistributionOption(usageOverview.value.modelDistribution), { notMerge: true })
 }
 
 function renderErrorChart() {
@@ -269,58 +155,7 @@ function renderErrorChart() {
   const chart = ensureChart(errorChartRef, errorChart)
   if (!chart || !usageOverview.value) return
 
-  const errors = usageOverview.value.errors
-  const option: EChartsOption = {
-    color: ['#ff4d4f'],
-    tooltip: {
-      trigger: 'item',
-      triggerOn: 'mousemove|click',
-      renderMode: 'html',
-      enterable: true,
-      confine: true,
-      hideDelay: 1200,
-      transitionDuration: 0,
-      className: 'stats-error-tooltip',
-      position: errorTooltipPosition,
-      extraCssText: `max-width:${ERROR_TOOLTIP_MAX_WIDTH}px;white-space:normal;overflow-wrap:anywhere;word-break:break-word;user-select:text;`,
-      formatter: (params: unknown) => errorTooltip(params)
-    },
-    grid: {
-      left: 44,
-      right: 20,
-      top: 20,
-      bottom: 78
-    },
-    xAxis: {
-      type: 'category',
-      data: errors.map((item, index) => errorAxisLabel(item, index)),
-      axisLabel: { color: '#64748b', interval: 0, rotate: 35 },
-      axisLine: { lineStyle: { color: '#d9e2ef' } }
-    },
-    yAxis: {
-      type: 'value',
-      name: '次数',
-      axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
-      splitLine: { lineStyle: { color: '#edf2f7' } }
-    },
-    series: [
-      {
-        name: '错误次数',
-        type: 'bar',
-        barMaxWidth: 28,
-        data: errors.map((item, index) => ({
-          value: item.errorCount,
-          rank: index + 1,
-          errorCode: item.errorCode,
-          statusCode: item.statusCode,
-          errorMessage: item.errorMessage,
-          providerCode: item.providerCode
-        })),
-        itemStyle: { borderRadius: [4, 4, 0, 0] }
-      }
-    ]
-  }
-  chart.setOption(option, { notMerge: true })
+  chart.setOption(buildErrorOption(usageOverview.value.errors), { notMerge: true })
 }
 
 function renderSystemMetricsChart() {
@@ -331,91 +166,7 @@ function renderSystemMetricsChart() {
   const chart = ensureChart(systemMetricsChartRef, systemMetricsChart)
   if (!chart || !systemMetrics.value) return
 
-  const trend = systemMetrics.value.hourlyTrend
-  const option: EChartsOption = {
-    color: ['#1677ff', '#52c41a', '#13c2c2', '#722ed1', '#faad14'],
-    tooltip: {
-      trigger: 'axis',
-      formatter: (params: unknown) => systemMetricsTooltip(params)
-    },
-    legend: {
-      bottom: 0,
-      data: ['CPU 平均', '内存平均', '入站带宽', '出站带宽', '事件循环延迟']
-    },
-    grid: {
-      left: 48,
-      right: 58,
-      top: 28,
-      bottom: 56
-    },
-    xAxis: {
-      type: 'category',
-      data: trend.map((item) => formatHourLabel(item.statHour)),
-      axisLabel: { color: '#64748b' },
-      axisLine: { lineStyle: { color: '#d9e2ef' } }
-    },
-    yAxis: [
-      {
-        type: 'value',
-        name: '百分比',
-        max: 100,
-        axisLabel: { formatter: '{value}%', color: '#64748b' },
-        splitLine: { lineStyle: { color: '#edf2f7' } }
-      },
-      {
-        type: 'value',
-        name: 'Mbps / ms',
-        axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
-        splitLine: { show: false }
-      }
-    ],
-    series: [
-      {
-        name: 'CPU 平均',
-        type: 'line',
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => item.cpuPercentAvg ?? null)
-      },
-      {
-        name: '内存平均',
-        type: 'line',
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => item.memoryUsedPercentAvg ?? null)
-      },
-      {
-        name: '入站带宽',
-        type: 'line',
-        yAxisIndex: 1,
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => bytesPerSecondToMbps(item.networkRxBytesPerSecondAvg))
-      },
-      {
-        name: '出站带宽',
-        type: 'line',
-        yAxisIndex: 1,
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => bytesPerSecondToMbps(item.networkTxBytesPerSecondAvg))
-      },
-      {
-        name: '事件循环延迟',
-        type: 'line',
-        yAxisIndex: 1,
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => item.eventLoopLagMsAvg ?? null)
-      }
-    ]
-  }
-  chart.setOption(option, { notMerge: true })
+  chart.setOption(buildSystemMetricsOption(systemMetrics.value.hourlyTrend), { notMerge: true })
 }
 
 function ensureChart(elementRef: Ref<HTMLDivElement | undefined>, chartRef: ShallowRef<ECharts | undefined>) {
@@ -438,204 +189,6 @@ function resizeCharts() {
   for (const chart of [usageTrendChart.value, modelDistributionChart.value, errorChart.value, systemMetricsChart.value]) {
     if (chart && !chart.isDisposed()) chart.resize()
   }
-}
-
-function usageTrendTooltip(params: unknown) {
-  const points = tooltipParams(params)
-  const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
-  const lines = [`<strong>${title}</strong>`]
-  for (const point of points) {
-    const name = String(point.seriesName ?? '')
-    const value = pointValue(point)
-    const formatted = name === '平均响应' ? formatDuration(value) : formatInteger(value)
-    lines.push(`${point.marker ?? ''}${name}: ${formatted}`)
-  }
-  return lines.join('<br/>')
-}
-
-function modelTooltip(params: unknown) {
-  const point = tooltipParams(params)[0]
-  const data = tooltipData(point)
-  return [
-    `<strong>${point?.name ?? ''}</strong>`,
-    `供应商：${data.providerCode ?? '-'}`,
-    `请求：${formatInteger(numberFromTooltip(data.requestCount))}`,
-    `Token：${formatInteger(numberFromTooltip(data.totalTokens))}`,
-    `成本：${formatCost(numberFromTooltip(data.totalCost))}`
-  ].join('<br/>')
-}
-
-function errorTooltip(params: unknown) {
-  const point = tooltipParams(params)[0]
-  const data = tooltipData(point)
-  const errorCode = tooltipRawText(data.errorCode ?? point?.name)
-  const errorMessage = tooltipRawText(data.errorMessage, '')
-  const shouldShowMessage = Boolean(errorMessage && errorMessage !== errorCode)
-  const rows = [
-    tooltipRow('错误码', errorCode),
-    tooltipRow('供应商', data.providerCode),
-    tooltipRow('状态码', data.statusCode),
-    tooltipRow('次数', formatInteger(numberFromTooltip(data.value)))
-  ].join('')
-  const messageBlock = shouldShowMessage
-    ? `<div class="stats-tooltip-block"><div class="stats-tooltip-block-label">错误信息</div><div class="stats-tooltip-message">${escapeHtml(errorMessage)}</div></div>`
-    : ''
-
-  return `<div class="stats-tooltip-content"><div class="stats-tooltip-title">错误详情 #${escapeHtml(tooltipRawText(data.rank, '-'))}</div>${rows}${messageBlock}</div>`
-}
-
-function systemMetricsTooltip(params: unknown) {
-  const points = tooltipParams(params)
-  const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
-  const lines = [`<strong>${title}</strong>`]
-  for (const point of points) {
-    const name = String(point.seriesName ?? '')
-    const value = pointValue(point)
-    const formatted = name.includes('CPU') || name.includes('内存') ? formatPercent(value) : name.includes('带宽') ? formatNetworkRateFromMbps(value) : formatDuration(value)
-    lines.push(`${point.marker ?? ''}${name}: ${formatted}`)
-  }
-  return lines.join('<br/>')
-}
-
-interface TooltipPoint {
-  marker?: string
-  seriesName?: string
-  name?: string
-  value?: unknown
-  axisValueLabel?: string
-  data?: unknown
-}
-
-function tooltipParams(params: unknown): TooltipPoint[] {
-  return Array.isArray(params) ? params as TooltipPoint[] : [params as TooltipPoint]
-}
-
-function tooltipData(point?: TooltipPoint): Record<string, unknown> {
-  return point?.data && typeof point.data === 'object' ? point.data as Record<string, unknown> : {}
-}
-
-function tooltipRow(label: string, value: unknown) {
-  return `<div class="stats-tooltip-row"><span class="stats-tooltip-label">${escapeHtml(label)}</span><span class="stats-tooltip-value">${escapeHtml(tooltipRawText(value))}</span></div>`
-}
-
-function tooltipRawText(value: unknown, fallback = '-') {
-  if (value === undefined || value === null || value === '') return fallback
-  return String(value)
-}
-
-function escapeHtml(value: unknown) {
-  const htmlEscapes: Record<string, string> = {
-    '&': '&amp;',
-    '<': '&lt;',
-    '>': '&gt;',
-    '"': '&quot;',
-    "'": '&#39;'
-  }
-  return tooltipRawText(value, '').replace(/[&<>"']/g, (character) => htmlEscapes[character])
-}
-
-function errorTooltipPosition(
-  _point: [number, number],
-  _params: unknown,
-  _element: unknown,
-  rect: TooltipRectLike | null,
-  size: { contentSize: [number, number]; viewSize: [number, number] }
-) {
-  const contentWidth = Math.min(size.contentSize[0] || ERROR_TOOLTIP_MAX_WIDTH, ERROR_TOOLTIP_MAX_WIDTH)
-  const contentHeight = size.contentSize[1] || 0
-  const viewWidth = size.viewSize[0] || 0
-  const viewHeight = size.viewSize[1] || 0
-  const preferredLeft = rect ? rect.x + rect.width + ERROR_TOOLTIP_EDGE_GAP : ERROR_TOOLTIP_EDGE_GAP
-  const fallbackLeft = rect ? rect.x - contentWidth - ERROR_TOOLTIP_EDGE_GAP : viewWidth - contentWidth - ERROR_TOOLTIP_EDGE_GAP
-  const left = preferredLeft + contentWidth + ERROR_TOOLTIP_EDGE_GAP <= viewWidth ? preferredLeft : Math.max(ERROR_TOOLTIP_EDGE_GAP, fallbackLeft)
-  const preferredTop = rect ? rect.y + rect.height / 2 - contentHeight / 2 : ERROR_TOOLTIP_EDGE_GAP
-  const maxTop = Math.max(ERROR_TOOLTIP_EDGE_GAP, viewHeight - contentHeight - ERROR_TOOLTIP_EDGE_GAP)
-  const top = Math.max(ERROR_TOOLTIP_EDGE_GAP, Math.min(preferredTop, maxTop))
-  return [left, top]
-}
-
-interface TooltipRectLike {
-  x: number
-  y: number
-  width: number
-  height: number
-}
-
-function pointValue(point?: TooltipPoint) {
-  return numberFromTooltip(point?.value)
-}
-
-function numberFromTooltip(value: unknown): number | undefined {
-  if (typeof value === 'number') return value
-  if (typeof value === 'string') {
-    const parsed = Number(value)
-    return Number.isFinite(parsed) ? parsed : undefined
-  }
-  if (Array.isArray(value)) {
-    const candidate = value[value.length - 1]
-    return numberFromTooltip(candidate)
-  }
-  return undefined
-}
-
-function errorAxisLabel(row: UsageStatsOverview['errors'][number], index: number) {
-  const label = `${index + 1}. ${truncateText(row.errorCode, 16)}`
-  return row.statusCode ? `${label}\n${row.statusCode}` : label
-}
-
-function truncateText(value: string, maxLength: number) {
-  return value.length > maxLength ? `${value.slice(0, maxLength)}…` : value
-}
-
-function formatInteger(value?: number) {
-  return new Intl.NumberFormat('zh-CN').format(Math.round(value ?? 0))
-}
-
-function formatCompactInteger(value?: number) {
-  return compactNumber(Math.round(value ?? 0))
-}
-
-function formatCost(value?: number) {
-  return `$${(value ?? 0).toFixed(4)}`
-}
-
-function formatPercent(value?: number) {
-  if (value === undefined) return '-'
-  return `${value.toFixed(1)}%`
-}
-
-function formatDuration(value?: number) {
-  return value === undefined ? '-' : `${Math.round(value)} ms`
-}
-
-function formatSeconds(value?: number) {
-  return value === undefined ? '-' : `${Math.round(value)} 秒`
-}
-
-function bytesPerSecondToMbps(value?: number) {
-  return value === undefined ? null : (value * 8) / 1_000_000
-}
-
-function formatNetworkRateFromMbps(value?: number) {
-  return value === undefined ? '-' : `${value.toFixed(value >= 10 ? 1 : 2)} Mbps`
-}
-
-
-function formatHourLabel(value: string) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})$/.exec(value)
-  return match ? `${match[4]}:00` : value
-}
-
-function axisNumberLabel(value: number) {
-  return compactNumber(value)
-}
-
-function compactNumber(value: number) {
-  const absolute = Math.abs(value)
-  if (absolute >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
-  if (absolute >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (absolute >= 1_000) return `${(value / 1_000).toFixed(1)}K`
-  return `${Math.round(value)}`
 }
 
 onMounted(() => {
@@ -680,36 +233,8 @@ onBeforeUnmount(() => {
   font-size: 16px;
 }
 
-.metric-card {
-  border: 1px solid #e8edf5;
-  border-radius: 16px;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
-}
-
-.metric-label {
-  color: #64748b;
-  font-size: 13px;
-}
-
-.metric-value {
-  margin-top: 8px;
-  color: #0f172a;
-  font-size: 26px;
-  font-weight: 800;
-}
-
-.metric-extra {
-  margin-top: 6px;
-  color: #94a3b8;
-  font-size: 12px;
-}
-
 .stats-section {
   margin-top: 0;
-}
-
-.chart-card :deep(.ant-card-body) {
-  min-height: 328px;
 }
 
 .chart-panel {

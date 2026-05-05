@@ -117,7 +117,7 @@ macOS/Linux：
 bash ./start.sh
 ```
 
-启动脚本会检查 `node:sqlite`、启用 pnpm、创建 `backend/data`、安装后端生产依赖并启动后端。
+启动脚本会检查 `node:sqlite`、启用 pnpm、创建 `backend/data`、安装后端生产依赖并启动后端。Web/API 主进程启动后会自动 fork 并看护独立 background worker 进程；后台统计、日志索引、审计落库和清理任务不在主进程事件循环里执行。
 
 ## 6. 启动后验证
 

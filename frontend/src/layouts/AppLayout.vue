@@ -91,6 +91,8 @@ import {
   BarChartOutlined,
   FundOutlined,
   HistoryOutlined,
+  SearchOutlined,
+  FileSearchOutlined,
   MenuFoldOutlined,
   MenuOutlined,
   MenuUnfoldOutlined,
@@ -173,6 +175,8 @@ const menuIconMap = {
   '/stats': BarChartOutlined,
   '/usage-stats': FundOutlined,
   '/usage-records': HistoryOutlined,
+  '/audit-logs': FileSearchOutlined,
+  '/runtime-logs': SearchOutlined,
   '/settings': SettingOutlined,
   '/system-accounts': TeamOutlined
 }

@@ -52,7 +52,7 @@ interface TestedAccount {
 }
 
 interface UsageRecordSummary {
-  requestId: string
+  traceId: string
   endpoint?: string
   model?: string
   stream: boolean
@@ -74,6 +74,14 @@ interface SystemSettings {
   streamIdleTimeoutSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
+  auditLogEnabled?: boolean
+  auditLogSuccessSampleRate?: number
+  auditLogFlushIntervalSeconds?: number
+  auditLogBatchSize?: number
+  auditLogQueueMaxItems?: number
+  auditLogQueueMaxBytesMb?: number
+  auditLogActiveCaptureMaxBytesMb?: number
+  auditLogRetentionDays?: number
 }
 
 interface ResponsePayload {
@@ -105,6 +113,14 @@ async function main(): Promise<void> {
   assert(typeof settings.streamIdleTimeoutSeconds === 'number', '系统设置缺少 streamIdleTimeoutSeconds')
   assert(typeof settings.streamFailureThresholdCount === 'number', '系统设置缺少 streamFailureThresholdCount')
   assert(typeof settings.streamFailureThresholdWindowMinutes === 'number', '系统设置缺少 streamFailureThresholdWindowMinutes')
+  assert(typeof settings.auditLogEnabled === 'boolean', '系统设置缺少 auditLogEnabled')
+  assert(typeof settings.auditLogSuccessSampleRate === 'number', '系统设置缺少 auditLogSuccessSampleRate')
+  assert(typeof settings.auditLogFlushIntervalSeconds === 'number', '系统设置缺少 auditLogFlushIntervalSeconds')
+  assert(typeof settings.auditLogBatchSize === 'number', '系统设置缺少 auditLogBatchSize')
+  assert(typeof settings.auditLogQueueMaxItems === 'number', '系统设置缺少 auditLogQueueMaxItems')
+  assert(typeof settings.auditLogQueueMaxBytesMb === 'number', '系统设置缺少 auditLogQueueMaxBytesMb')
+  assert(typeof settings.auditLogActiveCaptureMaxBytesMb === 'number', '系统设置缺少 auditLogActiveCaptureMaxBytesMb')
+  assert(typeof settings.auditLogRetentionDays === 'number', '系统设置缺少 auditLogRetentionDays')
   summary.push('settings ok')
 
   const accounts = await getEnvelope<AccountSummary[]>('/api/accounts')
@@ -155,6 +171,12 @@ async function main(): Promise<void> {
   assert(modelUsageRecords.some((record) => record.stream && typeof record.inputTokens === 'number' && typeof record.outputTokens === 'number' && typeof record.costUsd === 'number'), '找不到流式 token/cost 使用记录')
   assert(modelUsageRecords.some((record) => !record.stream && typeof record.inputTokens === 'number' && typeof record.outputTokens === 'number' && typeof record.costUsd === 'number'), '找不到非流式 token/cost 使用记录')
   summary.push('usage records ok')
+
+  const auditRuntime = await getEnvelope<Record<string, unknown>>('/api/audit-logs/runtime')
+  assert(typeof auditRuntime.queueLength === 'number', '审计运行态缺少 queueLength')
+  assert(typeof auditRuntime.activeCaptureCount === 'number', '审计运行态缺少 activeCaptureCount')
+  assert(typeof auditRuntime.settings === 'object' && auditRuntime.settings !== null, '审计运行态缺少 settings')
+  summary.push('audit runtime ok')
 
   console.log('\njuhe-ai smoke test passed')
   for (const item of summary) {

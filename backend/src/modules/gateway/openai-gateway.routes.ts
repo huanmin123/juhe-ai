@@ -1,11 +1,10 @@
 import { randomUUID } from 'node:crypto'
 import { Router, type Request, type Response } from 'express'
 
+import { bindRequestContextFields, getTraceId } from '../../shared/request-context.js'
 import {
   recordAccountStreamFailure,
   updateAccount,
-  validateGatewayApiKey,
-  type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
@@ -24,20 +23,17 @@ import {
 } from './account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
 import {
-  buildGatewayErrorResponseSnapshot,
   buildUsageRequestSnapshot,
   buildUsageResponseSnapshot,
   emptyUsage,
-  extractBearerToken,
   extractClientIp,
   headersToObject,
-  inspectOpenAIStreamText,
   parseOpenAIUsageFromJsonBuffer,
   parseOpenAIUsageFromSseText,
   requestEndpoint,
   requestModel,
-  type UpstreamAttempt,
-  type UsageRequestSnapshot
+  extractBearerToken,
+  type UpstreamAttempt
 } from './openai-gateway-usage.js'
 import {
   buildUpstreamHeaders,
@@ -45,58 +41,103 @@ import {
   copyResponseHeaders,
   isStreamResponse,
   preloadStreamResponseFirstChunk,
-  readStreamChunkWithIdleTimeout,
   requestUpstream,
   upstreamRequestTimeoutMs,
   upstreamSocketTimeoutMs,
   UpstreamRequestTimeoutError,
   type GatewayUpstreamResponse
 } from './openai-gateway-upstream.js'
+import {
+  accountUsageMetadata,
+  groupUsageMetadata,
+  recordGatewayFailure,
+  recordFailedUpstreamAttempt,
+  type GatewayUsageContext
+} from './openai-gateway-usage-records.js'
+import {
+  gatewayErrorPayload,
+  isOpenAIStreamContentType,
+  sendGatewayJsonError
+} from './openai-gateway-responses.js'
+import { isOpenAIStreamRequest, resolveGatewayApiKey } from './openai-gateway-request.js'
+import { pipeUpstreamStream } from './openai-gateway-stream.js'
+import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 
 export const openAIGatewayRouter = Router()
 
 openAIGatewayRouter.all('/*', async (req, res) => {
   const startedAt = Date.now()
-  const requestId = randomUUID()
+  const traceId = getTraceId() ?? randomUUID()
   const clientIp = extractClientIp(req)
   const endpoint = requestEndpoint(req)
-  const requestSnapshot = buildUsageRequestSnapshot(req, requestId, clientIp)
-  const gatewayApiKey = extractBearerToken(req.header('authorization'))
+  const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
   const gatewaySettings = readCachedGatewaySettings()
+  const auditCapture = createAuditCapture({ req, traceId, clientIp, startedAtMs: startedAt })
+  req.once('aborted', () => auditCapture.markClientAborted())
+  res.once('close', () => {
+    if (!res.writableEnded) {
+      auditCapture.markClientAborted()
+    }
+  })
 
-  if (!gatewayApiKey) {
-    res.status(401).json({ error: { message: 'Missing bearer token', type: 'invalid_request_error' } })
-    return
-  }
-
-  const apiKeyRecord = validateGatewayApiKey(gatewayApiKey)
+  const apiKeyRecord = resolveGatewayApiKey(req, res)
   if (!apiKeyRecord) {
-    res.status(401).json({ error: { message: 'Invalid API key', type: 'invalid_request_error' } })
+    const authErrorMessage = extractBearerToken(req.header('authorization')) ? 'Invalid API key' : 'Missing bearer token'
+    const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error')
+    auditCapture.finalize({
+      outcome: 'gateway_failed',
+      success: false,
+      statusCode: res.statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(authErrorPayload),
+      responsePartType: 'gateway_error',
+      errorPhase: 'auth',
+      errorCode: 'invalid_request_error',
+      errorMessage: authErrorMessage
+    })
     return
   }
+  auditCapture.bindContext({
+    systemAccountId: apiKeyRecord.system_account_id,
+    apiKeyId: apiKeyRecord.id,
+    groupId: apiKeyRecord.group_id,
+    providerCode: 'openai'
+  })
+  bindRequestContextFields({
+    systemAccountId: apiKeyRecord.system_account_id,
+    apiKeyId: apiKeyRecord.id,
+    groupId: apiKeyRecord.group_id
+  })
 
   const groupAccess = resolveCachedGroupUsageAccessMetadata(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
   if (!groupAccess) {
     const statusCode = 403
-    const responsePayload = { error: { message: 'API key group authorization is unavailable', type: 'forbidden' } }
-    enqueueUsageRecord({
-      requestId,
+    const responsePayload = gatewayErrorPayload('API key group authorization is unavailable', 'forbidden')
+    recordGatewayFailure(req, {
+      traceId,
       clientIp,
       systemAccountId: apiKeyRecord.system_account_id,
       apiKeyId: apiKeyRecord.id,
       groupId: apiKeyRecord.group_id,
       endpoint,
-      providerCode: 'openai',
-      model: requestModel(req),
-      stream: req.body?.stream === true,
+      requestSnapshot
+    }, {
       statusCode,
-      success: false,
-      durationMs: Date.now() - startedAt,
-      errorMessage: responsePayload.error.message,
-      requestSnapshot,
-      responseSnapshot: buildGatewayErrorResponseSnapshot(statusCode, responsePayload)
+      startedAt,
+      responsePayload
     })
-    res.status(statusCode).json(responsePayload)
+    sendGatewayJsonError(res, statusCode, responsePayload)
+    auditCapture.finalize({
+      outcome: 'gateway_failed',
+      success: false,
+      statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(responsePayload),
+      responsePartType: 'gateway_error',
+      errorPhase: 'authorization',
+      errorCode: 'forbidden',
+      errorMessage: 'API key group authorization is unavailable'
+    })
     return
   }
 
@@ -104,32 +145,9 @@ openAIGatewayRouter.all('/*', async (req, res) => {
   const accounts = listCachedOpenAIAccountsForGroup(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
   if (accounts.length === 0) {
     const statusCode = 503
-    const responsePayload = { error: { message: 'No available upstream account', type: 'service_unavailable' } }
-    enqueueUsageRecord({
-      requestId,
-      clientIp,
-      systemAccountId: apiKeyRecord.system_account_id,
-      apiKeyId: apiKeyRecord.id,
-      groupId: apiKeyRecord.group_id,
-      ...groupUsageFields,
-      endpoint,
-      providerCode: 'openai',
-      model: requestModel(req),
-      stream: req.body?.stream === true,
-      statusCode,
-      success: false,
-      durationMs: Date.now() - startedAt,
-      errorMessage: responsePayload.error.message,
-      requestSnapshot,
-      responseSnapshot: buildGatewayErrorResponseSnapshot(statusCode, responsePayload)
-    })
-    res.status(statusCode).json(responsePayload)
-    return
-  }
-
-  try {
-    const upstreamResult = await fetchFirstAvailableUpstream(req, accounts, gatewaySettings, {
-      requestId,
+    const responsePayload = gatewayErrorPayload('No available upstream account', 'service_unavailable')
+    recordGatewayFailure(req, {
+      traceId,
       clientIp,
       systemAccountId: apiKeyRecord.system_account_id,
       apiKeyId: apiKeyRecord.id,
@@ -137,8 +155,38 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       ...groupUsageFields,
       endpoint,
       requestSnapshot
+    }, {
+      statusCode,
+      startedAt,
+      responsePayload
     })
-    const { account, response: upstreamResponse, upstreamUrl } = upstreamResult
+    sendGatewayJsonError(res, statusCode, responsePayload)
+    auditCapture.finalize({
+      outcome: 'gateway_failed',
+      success: false,
+      statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(responsePayload),
+      responsePartType: 'gateway_error',
+      errorPhase: 'dispatch',
+      errorCode: 'service_unavailable',
+      errorMessage: 'No available upstream account'
+    })
+    return
+  }
+
+  try {
+    const upstreamResult = await fetchFirstAvailableUpstream(req, accounts, gatewaySettings, {
+      traceId,
+      clientIp,
+      systemAccountId: apiKeyRecord.system_account_id,
+      apiKeyId: apiKeyRecord.id,
+      groupId: apiKeyRecord.group_id,
+      ...groupUsageFields,
+      endpoint,
+      requestSnapshot
+    }, auditCapture)
+    const { account, response: upstreamResponse, upstreamUrl, auditAttemptId } = upstreamResult
 
     const contentType = upstreamResponse.headers.get('content-type') ?? ''
     res.status(upstreamResponse.status)
@@ -149,17 +197,48 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     let firstTokenMs: number | undefined
     let responseBodyText: string | undefined
     let errorPayload: Record<string, unknown> = {}
-    if (contentType.includes('text/event-stream') || contentType.includes('application/octet-stream')) {
+    if (isOpenAIStreamContentType(contentType)) {
       if (!upstreamResponse.body) {
         res.end()
+        auditCapture.completeAttempt(auditAttemptId, {
+          statusCode: upstreamResponse.status,
+          responseHeaders: upstreamResponse.headers,
+          success: false,
+          errorPhase: 'upstream_response',
+          errorMessage: 'Upstream response body is empty'
+        })
+        auditCapture.finalize({
+          outcome: 'stream_failed',
+          success: false,
+          statusCode: upstreamResponse.status,
+          responseHeaders: responseHeadersToObject(res),
+          responsePartType: 'gateway_error',
+          errorPhase: 'upstream_response',
+          errorMessage: 'Upstream response body is empty',
+          accountId: account.id
+        })
         return
       }
-      const streamResult = await pipeUpstreamStream(upstreamResponse.body, res, account, gatewaySettings, startedAt)
+      const streamResult = await pipeUpstreamStream(
+        upstreamResponse.body,
+        res,
+        gatewaySettings,
+        startedAt,
+        (message) => handleStreamFailure(account, message, gatewaySettings)
+      )
       firstTokenMs = streamResult.firstTokenMs
       responseBodyText = Buffer.concat(streamResult.chunks).toString('utf8')
+      auditCapture.completeAttempt(auditAttemptId, {
+        statusCode: upstreamResponse.status,
+        responseHeaders: upstreamResponse.headers,
+        responseBody: Buffer.concat(streamResult.upstreamChunks),
+        success: streamResult.completed && upstreamResponse.ok,
+        errorPhase: streamResult.completed ? undefined : 'stream',
+        errorMessage: streamResult.completed ? undefined : streamResult.message
+      })
       if (!streamResult.completed) {
         enqueueUsageRecord({
-          requestId,
+          traceId,
           clientIp,
           systemAccountId: apiKeyRecord.system_account_id,
           apiKeyId: apiKeyRecord.id,
@@ -169,7 +248,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
           endpoint,
           providerCode: 'openai',
           model: requestModel(req),
-          stream: req.body?.stream === true,
+          stream: isOpenAIStreamRequest(req),
           statusCode: upstreamResponse.status,
           success: false,
           firstTokenMs: streamResult.firstTokenMs,
@@ -184,6 +263,18 @@ openAIGatewayRouter.all('/*', async (req, res) => {
             errorMessage: streamResult.message
           })
         })
+        auditCapture.finalize({
+          outcome: 'stream_failed',
+          success: false,
+          statusCode: upstreamResponse.status,
+          responseHeaders: responseHeadersToObject(res),
+          responseBody: Buffer.concat(streamResult.chunks),
+          responsePartType: 'gateway_response',
+          errorPhase: 'stream',
+          errorMessage: streamResult.message,
+          accountId: account.id,
+          firstTokenMs: streamResult.firstTokenMs
+        })
         return
       }
       usage = parseOpenAIUsageFromSseText(responseBodyText)
@@ -195,6 +286,15 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       if (!upstreamResponse.ok) {
         errorPayload = parseErrorPayload(responseBodyText, upstreamResponse.headers)
       }
+      auditCapture.completeAttempt(auditAttemptId, {
+        statusCode: upstreamResponse.status,
+        responseHeaders: upstreamResponse.headers,
+        responseBody,
+        success: upstreamResponse.ok,
+        errorPhase: upstreamResponse.ok ? undefined : 'upstream_response',
+        errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
+        errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined
+      })
       res.send(responseBody)
     }
 
@@ -203,7 +303,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     }
 
     enqueueUsageRecord({
-      requestId,
+      traceId,
       clientIp,
       systemAccountId: apiKeyRecord.system_account_id,
       apiKeyId: apiKeyRecord.id,
@@ -213,7 +313,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       endpoint,
       providerCode: 'openai',
       model: requestModel(req),
-      stream: req.body?.stream === true,
+      stream: isOpenAIStreamRequest(req),
       statusCode: upstreamResponse.status,
       success: upstreamResponse.ok,
       firstTokenMs,
@@ -240,79 +340,62 @@ openAIGatewayRouter.all('/*', async (req, res) => {
           bodyText: responseBodyText
         })
     })
+    auditCapture.finalize({
+      outcome: upstreamResponse.ok ? 'success' : 'upstream_failed',
+      success: upstreamResponse.ok,
+      statusCode: upstreamResponse.status,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: responseBodyText,
+      responsePartType: upstreamResponse.ok ? 'gateway_response' : 'gateway_error',
+      errorPhase: upstreamResponse.ok ? undefined : 'upstream_response',
+      errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
+      errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined,
+      accountId: account.id,
+      firstTokenMs
+    })
   } catch (error) {
     const lastAttempt = error instanceof UpstreamAttemptError ? error.lastAttempt : undefined
     const message = error instanceof Error ? error.message : 'No available upstream account'
     const statusCode = 503
-    const responsePayload = { error: { message: 'No available upstream account', type: 'service_unavailable' } }
+    const responsePayload = gatewayErrorPayload('No available upstream account', 'service_unavailable')
     if (!lastAttempt) {
-      enqueueUsageRecord({
-        requestId,
+      recordGatewayFailure(req, {
+        traceId,
         clientIp,
         systemAccountId: apiKeyRecord.system_account_id,
         apiKeyId: apiKeyRecord.id,
         groupId: apiKeyRecord.group_id,
         ...groupUsageFields,
         endpoint,
-        providerCode: 'openai',
-        model: requestModel(req),
-        stream: req.body?.stream === true,
+        requestSnapshot
+      }, {
         statusCode,
-        success: false,
-        durationMs: Date.now() - startedAt,
-        errorMessage: message,
-        requestSnapshot,
-        responseSnapshot: buildGatewayErrorResponseSnapshot(statusCode, responsePayload)
+        startedAt,
+        responsePayload,
+        errorMessage: message
       })
     }
-    res.status(statusCode).json(responsePayload)
+    sendGatewayJsonError(res, statusCode, responsePayload)
+    auditCapture.finalize({
+      outcome: 'upstream_failed',
+      success: false,
+      statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(responsePayload),
+      responsePartType: 'gateway_error',
+      errorPhase: 'dispatch',
+      errorCode: 'service_unavailable',
+      errorMessage: message
+    })
   }
 })
 
 type UpstreamAccount = OpenAIAccountSecret
 
-type UsageAccessFields = Pick<OpenAIAccountSecret,
-  'accountOwnerSystemAccountId'
-  | 'groupOwnerSystemAccountId'
-  | 'accountAccessType'
-  | 'groupAccessType'
-  | 'accountAuthorizationId'
-  | 'groupAuthorizationId'
->
-
-function accountUsageMetadata(account: UpstreamAccount): UsageAccessFields {
-  return {
-    accountOwnerSystemAccountId: account.accountOwnerSystemAccountId,
-    groupOwnerSystemAccountId: account.groupOwnerSystemAccountId,
-    accountAccessType: account.accountAccessType,
-    groupAccessType: account.groupAccessType,
-    accountAuthorizationId: account.accountAuthorizationId,
-    groupAuthorizationId: account.groupAuthorizationId
-  }
-}
-
-function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<UsageAccessFields, 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId'> {
-  return {
-    groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
-    groupAccessType: groupAccess.groupAccessType,
-    groupAuthorizationId: groupAccess.groupAuthorizationId
-  }
-}
-
 class UpstreamAttemptError extends Error {
   constructor(message: string, readonly lastAttempt?: UpstreamAttempt) {
     super(message)
   }
-}
-
-interface GatewayUsageContext {
-  requestId: string
-  clientIp?: string
-  systemAccountId: string
-  apiKeyId: string
-  groupId: string
-  endpoint: string
-  requestSnapshot: UsageRequestSnapshot
 }
 
 function buildUpstreamUrl(baseUrl: string, pathAndQuery: string): string {
@@ -331,63 +414,17 @@ function buildUpstreamUrls(baseUrl: string, pathAndQuery: string): string[] {
   return [...new Set([primary, fallback])]
 }
 
-function recordFailedUpstreamAttempt(
-  req: Request,
-  usageContext: GatewayUsageContext,
-  account: UpstreamAccount,
-  input: {
-    upstreamUrl: string
-    startedAt: number
-    statusCode?: number
-    headers?: Headers | Record<string, string>
-    bodyText?: string
-    errorMessage?: string
-  }
-): void {
-  const errorPayload = input.bodyText && input.headers instanceof Headers
-    ? parseErrorPayload(input.bodyText, input.headers)
-    : {}
-  const errorMessage = input.errorMessage
-    ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
-    ?? (typeof input.statusCode === 'number' ? `Upstream returned HTTP ${input.statusCode}` : 'Upstream request failed')
-
-  enqueueUsageRecord({
-    requestId: usageContext.requestId,
-    clientIp: usageContext.clientIp,
-    systemAccountId: usageContext.systemAccountId,
-    apiKeyId: usageContext.apiKeyId,
-    groupId: usageContext.groupId,
-    accountId: account.id,
-    ...accountUsageMetadata(account),
-    endpoint: usageContext.endpoint,
-    providerCode: 'openai',
-    model: requestModel(req),
-    stream: req.body?.stream === true,
-    statusCode: input.statusCode,
-    success: false,
-    durationMs: Date.now() - input.startedAt,
-    errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
-    errorMessage,
-    requestSnapshot: usageContext.requestSnapshot,
-    responseSnapshot: buildUsageResponseSnapshot({
-      upstreamUrl: input.upstreamUrl,
-      statusCode: input.statusCode,
-      headers: input.headers,
-      bodyText: input.bodyText,
-      errorMessage
-    })
-  })
-}
-
 async function fetchFirstAvailableUpstream(
   req: Request,
   accounts: UpstreamAccount[],
   settings: GatewaySettings,
-  usageContext: GatewayUsageContext
-): Promise<{ account: UpstreamAccount; response: GatewayUpstreamResponse; upstreamUrl: string }> {
+  usageContext: GatewayUsageContext,
+  auditCapture: AuditCaptureContext
+): Promise<{ account: UpstreamAccount; response: GatewayUpstreamResponse; upstreamUrl: string; auditAttemptId: string }> {
   const retryAttempts = Math.max(0, settings.temporaryUnschedulableRetryAttempts)
-  const isStreamRequest = req.body?.stream === true
+  const isStreamRequest = isOpenAIStreamRequest(req)
   let lastAttempt: UpstreamAttempt | undefined
+  let auditAttemptIndex = 0
 
   for (const originalAccount of accounts) {
     const account = await prepareUpstreamAccount(originalAccount)
@@ -397,6 +434,15 @@ async function fetchFirstAvailableUpstream(
     for (const upstreamUrl of buildUpstreamUrls(account.baseUrl, req.originalUrl)) {
       for (let attemptIndex = 0; attemptIndex <= retryAttempts; attemptIndex += 1) {
         const attemptStartedAt = Date.now()
+        auditAttemptIndex += 1
+        const auditAttemptId = auditCapture.startAttempt({
+          account,
+          attemptIndex: auditAttemptIndex,
+          upstreamUrl,
+          method: req.method,
+          headers,
+          body
+        })
         try {
           const response = await requestUpstream(upstreamUrl, {
             method: req.method,
@@ -411,10 +457,17 @@ async function fetchFirstAvailableUpstream(
             if (isStreamRequest && settings.streamCircuitBreakerEnabled && isStreamResponse(response)) {
               try {
                 const preloadedResponse = await preloadStreamResponseFirstChunk(response, settings)
-                return { account, response: preloadedResponse, upstreamUrl }
+                return { account, response: preloadedResponse, upstreamUrl, auditAttemptId }
               } catch (error) {
                 const message = error instanceof Error ? error.message : 'Upstream stream request interrupted before first chunk'
                 lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status, message }
+                auditCapture.completeAttempt(auditAttemptId, {
+                  statusCode: response.status,
+                  responseHeaders: response.headers,
+                  success: false,
+                  errorPhase: 'stream_preload',
+                  errorMessage: message
+                })
                 recordFailedUpstreamAttempt(req, usageContext, account, {
                   upstreamUrl,
                   startedAt: attemptStartedAt,
@@ -427,7 +480,7 @@ async function fetchFirstAvailableUpstream(
                 break
               }
             }
-            return { account, response, upstreamUrl }
+            return { account, response, upstreamUrl, auditAttemptId }
           }
 
           const responseBody = Buffer.from(await response.arrayBuffer())
@@ -437,6 +490,14 @@ async function fetchFirstAvailableUpstream(
             responseHeaders: headersToObject(response.headers),
             responseBodyText
           }
+          auditCapture.completeAttempt(auditAttemptId, {
+            statusCode: response.status,
+            responseHeaders: response.headers,
+            responseBody,
+            success: false,
+            errorPhase: 'upstream_response',
+            errorMessage: responseBodyText
+          })
           recordFailedUpstreamAttempt(req, usageContext, account, {
             upstreamUrl,
             startedAt: attemptStartedAt,
@@ -462,6 +523,11 @@ async function fetchFirstAvailableUpstream(
             upstreamUrl,
             message
           }
+          auditCapture.completeAttempt(auditAttemptId, {
+            success: false,
+            errorPhase: 'upstream_request',
+            errorMessage: message
+          })
           recordFailedUpstreamAttempt(req, usageContext, account, {
             upstreamUrl,
             startedAt: attemptStartedAt,
@@ -493,115 +559,6 @@ async function fetchFirstAvailableUpstream(
       : 'All upstream accounts failed',
     lastAttempt
   )
-}
-
-interface StreamPipeResult {
-  completed: boolean
-  chunks: Buffer[]
-  message: string
-  firstTokenMs?: number
-}
-
-async function pipeUpstreamStream(
-  upstreamBody: AsyncIterable<Uint8Array>,
-  res: Response,
-  account: UpstreamAccount,
-  settings: GatewaySettings,
-  startedAt: number
-): Promise<StreamPipeResult> {
-  const chunks: Buffer[] = []
-  const iterator = upstreamBody[Symbol.asyncIterator]()
-  let completed = false
-  let firstTokenMs: number | undefined
-
-  try {
-    while (true) {
-      const result = settings.streamCircuitBreakerEnabled
-        ? await readStreamChunkWithIdleTimeout(iterator, settings.streamIdleTimeoutSeconds)
-        : await iterator.next()
-
-      if (result.done) {
-        completed = true
-        break
-      }
-
-      const buffer = Buffer.from(result.value)
-      if (firstTokenMs === undefined && buffer.length > 0) {
-        firstTokenMs = Date.now() - startedAt
-      }
-      chunks.push(buffer)
-      res.write(buffer)
-    }
-  } catch (error) {
-    const rawMessage = error instanceof Error ? error.message : 'Upstream stream interrupted'
-    const inspection = inspectOpenAIStreamText(Buffer.concat(chunks).toString('utf8'))
-    if (inspection.terminalReceived && !inspection.failedReceived) {
-      res.end()
-      return { completed: true, chunks, message: 'completed', firstTokenMs }
-    }
-    const message = inspection.errorMessage ?? rawMessage
-    handleStreamFailure(account, message, settings)
-    if (!inspection.failedReceived) {
-      const failureEvent = writeGatewayStreamFailureEvent(res, message)
-      if (failureEvent) {
-        chunks.push(failureEvent)
-      }
-    }
-    res.end()
-    return { completed: false, chunks, message, firstTokenMs }
-  }
-
-  const inspection = inspectOpenAIStreamText(Buffer.concat(chunks).toString('utf8'))
-  if (!inspection.terminalReceived) {
-    const message = 'Upstream stream ended before OpenAI terminal event'
-    handleStreamFailure(account, message, settings)
-    const failureEvent = writeGatewayStreamFailureEvent(res, message)
-    if (failureEvent) {
-      chunks.push(failureEvent)
-    }
-    res.end()
-    return { completed: false, chunks, message, firstTokenMs }
-  }
-
-  res.end()
-
-  if (!completed || inspection.failedReceived) {
-    const message = inspection.errorMessage ?? 'Upstream stream failed'
-    handleStreamFailure(account, message, settings)
-    return { completed: false, chunks, message, firstTokenMs }
-  }
-
-  return { completed: true, chunks, message: 'completed', firstTokenMs }
-}
-
-function writeGatewayStreamFailureEvent(res: Response, message: string): Buffer | undefined {
-  if (res.writableEnded || res.destroyed) {
-    return undefined
-  }
-
-  const payload = {
-    type: 'response.failed',
-    response: {
-      status: 'failed',
-      error: {
-        code: gatewayStreamFailureCode(message),
-        message
-      }
-    }
-  }
-  const buffer = Buffer.from(`event: response.failed\ndata: ${JSON.stringify(payload)}\n\n`, 'utf8')
-  try {
-    res.write(buffer)
-    return buffer
-  } catch {
-    return undefined
-  }
-}
-
-function gatewayStreamFailureCode(message: string): string {
-  return message.toLowerCase().includes('idle timeout')
-    ? 'upstream_stream_idle_timeout'
-    : 'upstream_stream_interrupted'
 }
 
 async function waitBeforeTemporaryUnschedulableRetry(settings: GatewaySettings): Promise<void> {

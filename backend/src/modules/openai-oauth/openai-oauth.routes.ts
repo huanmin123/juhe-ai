@@ -1,7 +1,9 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
+import { errorLogFields } from '../../shared/logger.js'
 import { badRequest, ok } from '../../shared/http.js'
+import { getRequestLogger } from '../../shared/request-context.js'
 import { DuplicateAccountCredentialError, createAccount, listAccounts, listGroups, resolveProxyUrlForProfile } from '../../storage/repositories.js'
 import {
   buildOpenAIOAuthCredentials,
@@ -149,7 +151,10 @@ async function refreshCreatedOAuthUsage(account: ReturnType<typeof createAccount
   try {
     await refreshOpenAIOAuthUsageSnapshot(account, { source: 'account_create', requestTimeoutMs: 30000 })
   } catch (error) {
-    console.error('[openai-oauth] initial usage snapshot refresh failed', error)
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'openai_oauth_initial_usage_snapshot_refresh_failed',
+      accountId: account.id
+    }), 'Initial OpenAI OAuth usage snapshot refresh failed')
   }
   return listAccounts().find((item) => item.id === account.id) ?? account
 }

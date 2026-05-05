@@ -9,6 +9,7 @@ release/
 !.env.example
 !**/.env.example
 *.log
+logs/
 .DS_Store
 Thumbs.db
 .idea/
@@ -16,3 +17,4 @@ Thumbs.db
 *.tsbuildinfo
 
 /backend/data/
+/backend/logs/

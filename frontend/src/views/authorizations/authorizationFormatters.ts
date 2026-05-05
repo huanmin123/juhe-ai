@@ -23,7 +23,6 @@ export interface AuthorizationUsageResponseDetail {
   username?: string
   usage?: Partial<AccountUsageSummary>
   requestCount?: number
-  clientCount?: number
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
@@ -180,7 +179,6 @@ export function formatCost(value?: number): string {
 export function emptyUsageSummary(): AccountUsageSummary {
   return {
     requestCount: 0,
-    clientCount: 0,
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
@@ -192,7 +190,6 @@ export function emptyUsageSummary(): AccountUsageSummary {
 export function normalizeUsageSummary(usage?: Partial<AccountUsageSummary>): AccountUsageSummary {
   return {
     requestCount: usage?.requestCount ?? 0,
-    clientCount: usage?.clientCount ?? 0,
     inputTokens: usage?.inputTokens ?? 0,
     outputTokens: usage?.outputTokens ?? 0,
     cacheReadTokens: usage?.cacheReadTokens ?? 0,
@@ -210,7 +207,6 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
       .sort((left, right) => Date.parse(right) - Date.parse(left))[0]
     return {
       requestCount: summary.requestCount + current.requestCount,
-      clientCount: summary.clientCount + current.clientCount,
       inputTokens: summary.inputTokens + current.inputTokens,
       outputTokens: summary.outputTokens + current.outputTokens,
       cacheReadTokens: summary.cacheReadTokens + current.cacheReadTokens,
@@ -237,7 +233,6 @@ export function normalizeUsageDetail(detail: AuthorizationUsageResponseDetail): 
     systemAccountId: detail.systemAccountId,
     systemAccountName: detail.systemAccountName || detail.username || '未知账户',
     requestCount: usage.requestCount,
-    clientCount: usage.clientCount,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cacheReadTokens: usage.cacheReadTokens,
@@ -279,7 +274,6 @@ export function aggregateUsageBySystemAccount(items: ResourceAuthorizationSummar
       systemAccountId: item.granteeSystemAccountId,
       systemAccountName: item.granteeSystemAccountName || item.granteeUsername || '未知账户',
       requestCount: mergedUsage.requestCount,
-      clientCount: mergedUsage.clientCount,
       inputTokens: mergedUsage.inputTokens,
       outputTokens: mergedUsage.outputTokens,
       cacheReadTokens: mergedUsage.cacheReadTokens,

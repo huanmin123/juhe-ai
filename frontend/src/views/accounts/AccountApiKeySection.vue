@@ -3,17 +3,15 @@
     <div class="form-section-head">
       <div>
         <h4>{{ title }} 配置</h4>
-        <p>API Key 会完整保存在本地；列表不展示，编辑弹窗可直接查看和修改。</p>
+        <p>API Key 会完整保存在本地；列表不展示，编辑弹窗可通过显示按钮查看和修改。</p>
       </div>
     </div>
     <a-form-item label="API Key" required>
-      <a-input v-model:value="form.apiKey" placeholder="粘贴完整 API Key" />
+      <a-input-password v-model:value="form.apiKey" autocomplete="off" placeholder="粘贴完整 API Key" />
     </a-form-item>
-    <div class="form-grid">
-      <a-form-item label="Base URL">
-        <a-input v-model:value="form.baseUrl" :placeholder="baseUrlPlaceholder" />
-      </a-form-item>
-    </div>
+    <a-form-item label="Base URL" required>
+      <a-input v-model:value="form.baseUrl" :placeholder="baseUrlPlaceholder" />
+    </a-form-item>
   </section>
 </template>
 
@@ -51,20 +49,8 @@ defineProps<{
   font-size: 12px;
 }
 
-.form-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 16px;
-}
-
 .credential-section {
   border-color: #dbeafe;
   background: #f8fbff;
-}
-
-@media (max-width: 992px) {
-  .form-grid {
-    grid-template-columns: 1fr;
-  }
 }
 </style>

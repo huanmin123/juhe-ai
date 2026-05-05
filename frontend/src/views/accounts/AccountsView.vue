@@ -1,34 +1,25 @@
 <template>
   <a-card class="page-card accounts-page-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="filters.keyword" search-placeholder="搜索账号..." filter-title="筛选账户" :active-filter-count="activeAdvancedFilterCount" :mobile-action-count="1" :refresh-loading="loading" @search="applyFilters" @reset="resetFilters" @refresh="loadData">
-      <template #inline-filters>
-        <a-select v-model:value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" />
-        <a-select v-model:value="filters.status" class="toolbar-select responsive-list-inline-filter" :options="statusOptions" />
-        <a-select v-model:value="filters.schedulable" class="toolbar-select responsive-list-inline-filter" :options="schedulableOptions" />
-        <SystemPrincipalSelect v-if="isAdmin" v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
-      </template>
-      <template #actions>
-        <a-button type="primary" @click="openCreate">添加账户</a-button>
-      </template>
-      <template #filters>
-        <label class="mobile-filter-field">
-          <span>账户类型</span>
-          <a-select v-model:value="filters.type" :options="typeOptions" />
-        </label>
-        <label class="mobile-filter-field">
-          <span>账户状态</span>
-          <a-select v-model:value="filters.status" :options="statusOptions" />
-        </label>
-        <label class="mobile-filter-field">
-          <span>启停状态</span>
-          <a-select v-model:value="filters.schedulable" :options="schedulableOptions" />
-        </label>
-        <label v-if="isAdmin" class="mobile-filter-field">
-          <span>系统账户</span>
-          <SystemPrincipalSelect v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all @change="handleSystemAccountFilterChange" />
-        </label>
-      </template>
-    </ResponsiveListToolbar>
+    <AccountFilterToolbar
+      :active-filter-count="activeAdvancedFilterCount"
+      :filters="filters"
+      :is-admin="isAdmin"
+      :refresh-loading="loading"
+      :schedulable-options="schedulableOptions"
+      :status-options="statusOptions"
+      :system-accounts="systemAccounts"
+      :type-options="typeOptions"
+      @create="openCreate"
+      @refresh="loadData"
+      @reset="resetFilters"
+      @search="applyFilters"
+      @system-account-change="handleSystemAccountFilterChange"
+      @update:keyword="filters.keyword = $event"
+      @update:schedulable="filters.schedulable = $event"
+      @update:status="filters.status = $event"
+      @update:system-account-id="filters.systemAccountId = $event"
+      @update:type="filters.type = $event"
+    />
 
     <AccountBatchToolbar
       :selected-count="selectedAccounts.length"
@@ -63,63 +54,21 @@
         <a-empty class="page-empty-card" description="还没有账户。点击「添加账户」，再选择供应商和账户类型。" />
       </template>
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'name'">
-          <div class="resource-name-cell">
-            <span class="resource-name-line">
-              <span>{{ record.name }}</span>
-              <a-tooltip v-if="isAuthorizedAccount(record)" :title="authorizedAccountTooltip(record)">
-                <InfoCircleOutlined class="authorized-account-icon" :class="{ 'owner-disabled': isOwnerDisabledAuthorizedAccount(record) }" />
-              </a-tooltip>
-            </span>
-          </div>
-        </template>
-        <template v-else-if="column.key === 'type'">
-          <a-tag color="processing">{{ accountTypeText(record.type) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'providerCode'">
-          <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'systemAccount'">
-          <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ record.systemAccountName || record.systemAccountId || '-' }}</span>
-        </template>
-        <template v-else-if="column.key === 'notes'">
-          <span>{{ record.notes || '-' }}</span>
-        </template>
-        <template v-else-if="column.key === 'group'">
-          <a-tooltip v-if="groupNameForAccount(record.id)" :title="groupNameForAccount(record.id)">
-            <span class="account-group-text">{{ groupNameForAccount(record.id) }}</span>
-          </a-tooltip>
-          <span v-else class="muted-cell">未归属</span>
-        </template>
-        <template v-else-if="column.key === 'status'">
-          <AccountStatusTag :account="record" />
-        </template>
-        <template v-else-if="column.key === 'concurrency'">
-          <a-tag color="blue">{{ record.currentConcurrency }}/{{ record.concurrencyLimit }}</a-tag>
-        </template>
-        <template v-else-if="column.key === 'usage'">
-          <AccountUsageCell :account="record" />
-        </template>
-        <template v-else-if="column.key === 'lastUsedAt'">
-          {{ formatDateTime(accountLastUsedAt(record)) }}
-        </template>
-        <template v-else-if="column.key === 'accountExpiresAt'">
-          <span :class="isAccountPackageExpired(record) ? 'expired-cell' : 'muted-cell'">{{ formatDateTime(record.accountExpiresAt) }}</span>
-        </template>
-        <template v-else-if="column.key === 'actions'">
-          <AccountRowActions
-            :account="record"
-            :can-delete="canDeleteAccount(record)"
-            :can-edit="canEditAccount(record)"
-            :group-name="groupNameForAccount(record.id)"
-            :menu-items="accountMenuItems(record)"
-            @bind-group="openBindGroup(record)"
-            @delete="removeAccount(record.id)"
-            @edit="openEdit(record)"
-            @menu-click="handleAccountMenuClick($event, record)"
-            @test="openTestModal(record)"
-          />
-        </template>
+        <AccountTableCell
+          :account="record"
+          :authorized-tooltip="authorizedAccountTooltip(record)"
+          :can-delete="canDeleteAccount(record)"
+          :can-edit="canEditAccount(record)"
+          :column-key="tableColumnKey(column)"
+          :group-name="groupNameForAccount(record.id)"
+          :menu-items="accountMenuItems(record)"
+          :provider-name="providerName(record.providerCode)"
+          @bind-group="openBindGroup"
+          @delete="removeAccount($event.id)"
+          @edit="openEdit"
+          @menu-click="handleAccountMenuClick"
+          @test="openTestModal"
+        />
       </template>
       <template #card="{ record }">
         <AccountMobileCard
@@ -214,14 +163,11 @@
 <script setup lang="ts">
 import axios from 'axios'
 import { message } from 'ant-design-vue'
-import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
-import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
-import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { authState } from '@/composables/useAuth'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
@@ -230,14 +176,13 @@ import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountBasicInfoSection from './AccountBasicInfoSection.vue'
 import AccountBindGroupModal from './AccountBindGroupModal.vue'
 import AccountErrorPolicyCard from './AccountErrorPolicyCard.vue'
+import AccountFilterToolbar from './AccountFilterToolbar.vue'
 import AccountFormSelector from './AccountFormSelector.vue'
 import AccountMobileCard from './AccountMobileCard.vue'
 import AccountOAuthSection from './AccountOAuthSection.vue'
-import AccountRowActions from './AccountRowActions.vue'
-import AccountStatusTag from './AccountStatusTag.vue'
 import AccountStrategySection from './AccountStrategySection.vue'
+import AccountTableCell from './AccountTableCell.vue'
 import AccountTestModal from './AccountTestModal.vue'
-import AccountUsageCell from './AccountUsageCell.vue'
 import {
   loadAccountErrorPolicyRules,
   validateAccountErrorPolicyRules,
@@ -245,19 +190,11 @@ import {
   type AccountErrorPolicyRuleForm
 } from './accountErrorPolicy'
 import {
-  accountLastUsedAt,
-  accountStatusColor,
-  accountStatusText,
   accountTypeDescription,
   accountTypeText,
   accountTypeTitle as buildAccountTypeTitle,
   asString,
-  compareAccountConcurrency,
-  compareAccountExpiresAt,
-  compareAccountLastUsedAt,
-  formatDateTime,
   formatServerDateTimeInput,
-  isAccountPackageExpired,
   isAuthorizedAccount,
   isOwnerDisabledAuthorizedAccount,
   isTemporaryAccountStatus,
@@ -268,6 +205,22 @@ import {
 } from './accountFormatters'
 import type { AccountMenuItem } from './accountActionTypes'
 import type { AccountFormModel } from './accountFormTypes'
+import {
+  ACCOUNT_PAGE_SIZE,
+  DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
+  FALLBACK_PROVIDER,
+  defaultTestModelOptions,
+  schedulableOptions,
+  statusOptions,
+  typeOptions
+} from './accountOptions'
+import {
+  accountTableScrollX,
+  accountTableScrollY,
+  buildAccountTableColumns,
+  tableColumnKey
+} from './accountTableColumns'
+import { useAccountMobilePagination } from './useAccountMobilePagination'
 
 interface AccountFilters {
   keyword: string
@@ -277,21 +230,7 @@ interface AccountFilters {
   systemAccountId: string
 }
 
-const FALLBACK_PROVIDER: ProviderDefinition = {
-  id: 'openai',
-  code: 'openai',
-  name: 'OpenAI',
-  enabled: true,
-  baseUrl: 'https://api.openai.com/v1',
-  accountTypes: ['oauth', 'api_key'],
-  capabilities: ['models', 'responses', 'stream', 'passthrough']
-}
-
-const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
-
 const loading = ref(false)
-const mobileLoadingMore = ref(false)
-const mobileRefreshing = ref(false)
 const saving = ref(false)
 const authLoading = ref(false)
 const testModalOpen = ref(false)
@@ -313,10 +252,6 @@ const proxies = ref<ProxyProfileSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue })
-const accountPageSize = 20
-const accountPagination = reactive({ current: 1, pageSize: accountPageSize })
-const mobilePageSize = accountPageSize
-const mobileVisibleCount = ref(mobilePageSize)
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
 const isAdmin = authState.isAdmin
 const router = useRouter()
@@ -324,28 +259,6 @@ const router = useRouter()
 const form = reactive<AccountFormModel>(defaultForm())
 const bindGroupForm = reactive({ groupId: '' })
 const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
-
-const typeOptions = [
-  { label: '全部类型', value: 'all' },
-  { label: 'OAuth', value: 'oauth' },
-  { label: 'API Key', value: 'api_key' }
-]
-
-const schedulableOptions = [
-  { label: '全部启停', value: 'all' },
-  { label: '已启用', value: 'enabled' },
-  { label: '已停用', value: 'disabled' },
-  { label: '临时不可调用', value: 'cooling' }
-] as const
-
-const statusOptions = [
-  { label: '全部状态', value: 'all' },
-  { label: '正常', value: 'active' },
-  { label: '停用', value: 'disabled' },
-  { label: '错误', value: 'error' },
-  { label: '限流中', value: 'rate_limited' },
-  { label: '临时不可调用', value: 'temporary_unavailable' }
-]
 
 const currentEditingAccount = computed(() => editingId.value ? accounts.value.find((account) => account.id === editingId.value) : undefined)
 
@@ -357,30 +270,9 @@ const statusEditOptions = computed(() => {
   return options
 })
 
-const columns = computed(() => {
-  const baseColumns: Array<Record<string, unknown>> = [
-    { title: '名称', dataIndex: 'name', key: 'name', width: 230 },
-    { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
-    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }
-  ]
-  if (isAdmin.value) {
-    baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
-  }
-  baseColumns.push(
-    { title: '并发数', key: 'concurrency', width: 100, align: 'center', sorter: compareAccountConcurrency },
-    { title: '状态', key: 'status', width: 190 },
-    { title: '用量(日)', key: 'usage', width: 380 },
-    { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
-    { title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 },
-    { title: '账户到期时间', key: 'accountExpiresAt', width: 180, sorter: compareAccountExpiresAt },
-    { title: '最近使用时间', key: 'lastUsedAt', width: 180, sorter: compareAccountLastUsedAt },
-    { title: '说明', dataIndex: 'notes', key: 'notes', width: 200 },
-    { title: '操作', key: 'actions', width: 160, fixed: 'right' }
-  )
-  return baseColumns
-})
-const tableScrollX = computed(() => (isAdmin.value ? 2320 : 2140))
-const tableScrollY = computed(() => 'calc(100dvh - 286px)')
+const columns = computed(() => buildAccountTableColumns(isAdmin.value))
+const tableScrollX = computed(() => accountTableScrollX(isAdmin.value))
+const tableScrollY = computed(accountTableScrollY)
 
 const filteredAccounts = computed(() => accounts.value.filter((account) => {
   const keyword = normalizeKeyword(filters.keyword)
@@ -400,16 +292,19 @@ const filteredAccounts = computed(() => accounts.value.filter((account) => {
   return keywordMatched && typeMatched && statusMatched && schedulableMatched && systemAccountMatched
 }))
 
+const {
+  mobileHasMore: mobileHasMoreAccounts,
+  mobileLoadingMore,
+  mobileRefreshing,
+  mobileVisibleCount,
+  tablePagination: accountTablePagination,
+  clampPagination: clampAccountListPagination,
+  handleTableChange: handleAccountTableChange,
+  loadMoreMobile: loadMoreMobileAccounts,
+  refreshMobile: refreshMobileAccounts,
+  resetPagination: resetAccountListPagination
+} = useAccountMobilePagination(ACCOUNT_PAGE_SIZE, () => filteredAccounts.value.length, loadData)
 const mobileVisibleAccounts = computed(() => filteredAccounts.value.slice(0, mobileVisibleCount.value))
-const mobileHasMoreAccounts = computed(() => mobileVisibleAccounts.value.length < filteredAccounts.value.length)
-const accountTablePagination = computed(() => ({
-  current: accountPagination.current,
-  pageSize: accountPagination.pageSize,
-  total: filteredAccounts.value.length,
-  hideOnSinglePage: true,
-  showSizeChanger: false,
-  showTotal: (total: number) => `共 ${total} 个账户`
-}))
 
 const activeAdvancedFilterCount = computed(() => [
   filters.type !== 'all',
@@ -417,16 +312,6 @@ const activeAdvancedFilterCount = computed(() => [
   filters.schedulable !== 'all',
   isAdmin.value && filters.systemAccountId !== allSystemAccountsValue
 ].filter(Boolean).length)
-
-const defaultTestModelOptions = [
-  'gpt-5.5',
-  'gpt-5.4',
-  'gpt-5.4-mini',
-  'gpt-5.3-codex',
-  'gpt-5.2',
-  'gpt-4.1',
-  'gpt-4.1-mini'
-]
 
 const testModelOptions = computed(() => {
   const models = providerModels.value.length ? providerModels.value.map((item) => item.model) : defaultTestModelOptions
@@ -656,38 +541,6 @@ function resetFilters() {
   void loadData()
 }
 
-function resetAccountListPagination() {
-  accountPagination.current = 1
-  mobileVisibleCount.value = mobilePageSize
-}
-
-function handleAccountTableChange(pagination: unknown) {
-  if (!pagination || typeof pagination !== 'object') return
-  const nextPagination = pagination as { current?: number; pageSize?: number }
-  accountPagination.current = nextPagination.current ?? accountPagination.current
-  accountPagination.pageSize = nextPagination.pageSize ?? accountPagination.pageSize
-}
-
-function loadMoreMobileAccounts() {
-  if (mobileLoadingMore.value || !mobileHasMoreAccounts.value) return
-  mobileLoadingMore.value = true
-  window.setTimeout(() => {
-    mobileVisibleCount.value = Math.min(mobileVisibleCount.value + mobilePageSize, filteredAccounts.value.length)
-    mobileLoadingMore.value = false
-  }, 260)
-}
-
-async function refreshMobileAccounts() {
-  if (mobileRefreshing.value) return
-  mobileRefreshing.value = true
-  try {
-    resetAccountListPagination()
-    await loadData()
-  } finally {
-    mobileRefreshing.value = false
-  }
-}
-
 function extractApiErrorMessage(error: unknown, fallback: string): string {
   if (axios.isAxiosError<{ message?: string }>(error)) {
     return error.response?.data?.message ?? fallback
@@ -699,12 +552,6 @@ function handleSystemAccountFilterChange() {
   selectedAccountIds.value = []
   resetAccountListPagination()
   void loadData()
-}
-
-function clampAccountListPagination() {
-  const maxPage = Math.max(1, Math.ceil(filteredAccounts.value.length / accountPagination.pageSize))
-  accountPagination.current = Math.min(accountPagination.current, maxPage)
-  mobileVisibleCount.value = Math.min(Math.max(mobileVisibleCount.value, mobilePageSize), Math.max(filteredAccounts.value.length, mobilePageSize))
 }
 
 function clearSelection() {
@@ -852,6 +699,10 @@ async function saveAccount() {
   }
   if (form.type === 'api_key' && !form.apiKey.trim()) {
     message.warning('请填写 API Key')
+    return
+  }
+  if (form.type === 'api_key' && !form.baseUrl.trim()) {
+    message.warning('请填写 Base URL')
     return
   }
   if (editingId.value && form.type === 'oauth' && !form.accessToken.trim() && !form.refreshToken.trim()) {
@@ -1178,22 +1029,6 @@ onMounted(loadData)
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
-.toolbar-select {
-  min-width: 150px;
-}
-
-.mobile-filter-field {
-  display: grid;
-  gap: 8px;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.mobile-filter-field :deep(.ant-select) {
-  width: 100%;
-}
-
 .account-table {
   border: 1px solid #e8edf5;
   border-radius: 14px;
@@ -1214,18 +1049,6 @@ onMounted(loadData)
 
 .account-table :deep(.ant-table-cell) {
   white-space: nowrap;
-}
-
-.account-group-text {
-  display: block;
-  width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.expired-cell {
-  color: #dc2626;
 }
 
 .secret-cell {
@@ -1254,29 +1077,6 @@ onMounted(loadData)
   text-overflow: ellipsis;
   white-space: nowrap;
   vertical-align: bottom;
-}
-
-.resource-name-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.resource-name-line {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.authorized-account-icon {
-  color: #08979c;
-  cursor: help;
-  font-size: 14px;
-}
-
-.authorized-account-icon.owner-disabled {
-  color: #d48806;
 }
 
 .account-form {
@@ -1327,11 +1127,6 @@ onMounted(loadData)
 @media (max-width: 900px) {
   .form-grid {
     grid-template-columns: 1fr;
-  }
-
-  .toolbar-select {
-    width: 100%;
-    min-width: 0;
   }
 
   .account-table :deep(.ant-table-cell-fix-right),

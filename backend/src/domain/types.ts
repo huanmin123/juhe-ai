@@ -124,7 +124,6 @@ export interface AccountCredentials {
 
 export interface AccountUsageSummary {
   requestCount: number
-  clientCount: number
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
@@ -304,7 +303,6 @@ export interface ResourceAuthorizationUsageDetail {
   systemAccountName?: string
   username?: string
   requestCount: number
-  clientCount: number
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number

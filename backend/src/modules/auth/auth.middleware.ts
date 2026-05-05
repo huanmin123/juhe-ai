@@ -1,6 +1,7 @@
 import type { NextFunction, Request, Response } from 'express'
 
 import { findSessionByToken, touchSession } from '../../storage/repositories.js'
+import { bindRequestContextFields } from '../../shared/request-context.js'
 import { parseCookie, sessionCookieName } from './auth.routes.js'
 import { getRequestAuthContext, withRequestAuthContext } from './request-context.js'
 
@@ -18,6 +19,10 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
   }
 
   touchSession(session.sessionId)
+  bindRequestContextFields({
+    systemAccountId: session.account.id,
+    role: session.account.role
+  })
   withRequestAuthContext({
     systemAccountId: session.account.id,
     username: session.account.username,

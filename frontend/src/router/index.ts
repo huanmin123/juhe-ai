@@ -17,7 +17,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {
       title: '统计概览',
-      description: '查看今日请求、Token 使用趋势、模型分布、错误情况和系统性能。',
+      description: '查看今日有效请求、Token 使用趋势、模型分布、消耗错误和系统性能。',
       roles: ['admin']
     }
   },
@@ -77,6 +77,24 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '使用记录',
       description: '记录网关请求、命中账户、token 用量、成本和错误状态。'
+    }
+  },
+  {
+    path: '/audit-logs',
+    component: () => import('@/views/audit-logs/AuditLogsView.vue'),
+    meta: {
+      title: '审计日志',
+      description: '按 traceId 追溯原始请求、上游尝试、响应头和完整 payload，失败请求全量记录，成功请求按采样保存。',
+      roles: ['admin']
+    }
+  },
+  {
+    path: '/runtime-logs',
+    component: () => import('@/views/runtime-logs/RuntimeLogsView.vue'),
+    meta: {
+      title: '日志搜索',
+      description: '索引查询检索最近 3 天运行日志，grep 模式按关键字扫描日志文件，结果默认展示最新记录。',
+      roles: ['admin']
     }
   },
   {

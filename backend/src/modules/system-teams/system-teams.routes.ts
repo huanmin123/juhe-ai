@@ -11,6 +11,7 @@ import {
 } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 export const systemTeamsRouter = Router()
@@ -22,10 +23,6 @@ const teamIdParamsSchema = z.object({
 const teamMemberParamsSchema = z.object({
   id: z.string().trim().min(1, '团队 ID 不能为空'),
   memberId: z.string().trim().min(1, '团队成员 ID 不能为空')
-})
-
-const systemTeamsQuerySchema = z.object({
-  systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional()
 })
 
 const createTeamSchema = z.object({
@@ -44,26 +41,18 @@ const teamMembersSchema = z.object({
   systemAccountIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一个团队成员')
 })
 
-function parseScopeQuery(query: unknown): { systemAccountId?: string } | { message: string } {
-  const parsed = parseOrBadRequest(systemTeamsQuerySchema, query, '查询参数不合法')
-  if (!parsed.success) {
-    return { message: parsed.message }
-  }
-  return parsed.data
-}
-
 systemTeamsRouter.get('/', (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
-  res.json(ok(listSystemTeams(getRequestAccessScope(scopeQuery.systemAccountId))))
+  res.json(ok(listSystemTeams(getRequestAccessScope(scopeQuery.data.systemAccountId))))
 })
 
 systemTeamsRouter.post('/', requireAdmin, (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
@@ -73,7 +62,7 @@ systemTeamsRouter.post('/', requireAdmin, (req, res) => {
     return
   }
   try {
-    const team = createSystemTeam(parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
+    const team = createSystemTeam(parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
     clearGatewayRuntimeCache()
     res.status(201).json(ok(team))
   } catch (error) {
@@ -82,8 +71,8 @@ systemTeamsRouter.post('/', requireAdmin, (req, res) => {
 })
 
 systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
@@ -98,7 +87,7 @@ systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
     return
   }
   try {
-    const team = updateSystemTeam(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
+    const team = updateSystemTeam(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
     if (!team) {
       sendNotFound(res, '团队不存在')
       return
@@ -111,8 +100,8 @@ systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
 })
 
 systemTeamsRouter.post('/:id/members', requireAdmin, (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
@@ -127,7 +116,7 @@ systemTeamsRouter.post('/:id/members', requireAdmin, (req, res) => {
     return
   }
   try {
-    const team = addSystemTeamMembers(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.systemAccountId))
+    const team = addSystemTeamMembers(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
     if (!team) {
       sendNotFound(res, '团队不存在或已停用')
       return
@@ -140,8 +129,8 @@ systemTeamsRouter.post('/:id/members', requireAdmin, (req, res) => {
 })
 
 systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
-  const scopeQuery = parseScopeQuery(req.query)
-  if ('message' in scopeQuery) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
     return
   }
@@ -151,7 +140,7 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
     return
   }
   try {
-    const team = removeSystemTeamMember(paramsParsed.data.id, paramsParsed.data.memberId, getRequestAccessScope(scopeQuery.systemAccountId))
+    const team = removeSystemTeamMember(paramsParsed.data.id, paramsParsed.data.memberId, getRequestAccessScope(scopeQuery.data.systemAccountId))
     if (!team) {
       sendNotFound(res, '团队成员不存在')
       return

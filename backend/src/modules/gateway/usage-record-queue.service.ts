@@ -1,5 +1,10 @@
+import { randomUUID } from 'node:crypto'
+
+import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
 import { createUsageRecordsBatch, type UsageRecordInput } from '../../storage/repositories.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
+import { sendUsageRecordsToWorker } from '../background/background-ipc.js'
 
 const usageRecordFlushIntervalMs = 100
 const usageRecordRetryDelayMs = 1000
@@ -18,12 +23,32 @@ interface UsageRecordFlushOptions {
 }
 
 export function enqueueUsageRecord(input: UsageRecordInput): void {
-  pendingUsageRecords.push({ ...input, createdAt: input.createdAt ?? nowIso() })
+  const queuedInput = normalizeUsageRecordInput(input)
+  if (runtimeConfig.processRole === 'server' && sendUsageRecordsToWorker([queuedInput])) {
+    return
+  }
+
+  enqueueUsageRecordLocal(queuedInput)
+}
+
+export function enqueueUsageRecordsLocal(inputs: UsageRecordInput[]): void {
+  for (const input of inputs) {
+    enqueueUsageRecordLocal(normalizeUsageRecordInput(input))
+  }
+}
+
+function enqueueUsageRecordLocal(input: UsageRecordInput): void {
+  pendingUsageRecords.push(input)
   if (pendingUsageRecords.length > usageRecordMaxPending) {
     const overflowCount = pendingUsageRecords.length - usageRecordMaxPending
     pendingUsageRecords.splice(0, overflowCount)
     droppedUsageRecordCount += overflowCount
-    console.error(`[gateway] usage record queue overflow, dropped ${overflowCount} records; ${droppedUsageRecordCount} dropped in total`)
+    logger.error({
+      event: 'usage_record_queue_overflow',
+      overflowCount,
+      droppedUsageRecordCount,
+      pendingCount: pendingUsageRecords.length
+    }, 'Usage record queue overflow')
   }
   scheduleUsageRecordFlush(pendingUsageRecords.length >= usageRecordBatchSize ? 0 : usageRecordFlushIntervalMs)
 }
@@ -51,7 +76,11 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
         createUsageRecordsBatch(batch)
       } catch (error) {
         pendingUsageRecords = [...batch, ...pendingUsageRecords].slice(0, usageRecordMaxPending)
-        console.error('[gateway] usage record queue flush failed', error)
+        logger.error(errorLogFields(error, {
+          event: 'usage_record_queue_flush_failed',
+          batchSize: batch.length,
+          pendingCount: pendingUsageRecords.length
+        }), 'Usage record queue flush failed')
         shouldRetry = options.retryOnFailure !== false
         break
       }
@@ -67,6 +96,16 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
 
 export function flushAllUsageRecordQueue(): void {
   flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+}
+
+export function getUsageRecordQueueRuntime(): {
+  queueLength: number
+  droppedCount: number
+} {
+  return {
+    queueLength: pendingUsageRecords.length,
+    droppedCount: droppedUsageRecordCount
+  }
 }
 
 export function installUsageRecordQueueShutdownHooks(): void {
@@ -95,4 +134,12 @@ function scheduleUsageRecordFlush(delayMs: number): void {
     flushTimer = undefined
     flushUsageRecordQueue()
   }, delayMs)
+}
+
+function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
+  return {
+    ...input,
+    id: input.id ?? `usage_${Date.now()}_${randomUUID()}`,
+    createdAt: input.createdAt ?? nowIso()
+  }
 }
