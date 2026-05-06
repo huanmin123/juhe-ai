@@ -12,14 +12,14 @@
     >
       <template #inline-filters>
         <a-select v-model:value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" />
-        <SystemPrincipalSelect v-if="isAdmin" v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
+        <SystemPrincipalSelect v-if="isManagementView" v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
       </template>
       <template #filters>
         <label class="mobile-filter-field">
           <span>账户类型</span>
           <a-select v-model:value="filters.type" :options="typeOptions" />
         </label>
-        <label v-if="isAdmin" class="mobile-filter-field">
+        <label v-if="isManagementView" class="mobile-filter-field">
           <span>系统账户</span>
           <SystemPrincipalSelect v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all @change="handleSystemAccountFilterChange" />
         </label>
@@ -116,7 +116,7 @@ import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import { authState } from '@/composables/useAuth'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type {
   AccountAuthorizationUsageOverview,
   AccountType,
@@ -126,7 +126,7 @@ import type {
   SystemAccountSummary,
   UsageStatsWindowKey
 } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter } from '@/utils/systemAccountFilter'
 import AuthorizationUsageModal from './AuthorizationUsageModal.vue'
 import UsageStatCell from './UsageStatCell.vue'
 import { defaultUsageWindows, displayWindowKeys, formatUsageBrief, isUsageWindowColumn } from './usageStatsFormatters'
@@ -162,7 +162,7 @@ const routeAuthorizationUsageHandled = ref(false)
 const pageSize = 20
 const pagination = reactive({ current: 1, pageSize })
 const mobileVisibleCount = ref(pageSize)
-const isAdmin = authState.isAdmin
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const route = useRoute()
 const router = useRouter()
 
@@ -187,7 +187,7 @@ const filteredRows = computed(() => rows.value.filter((row) => {
     row.id
   ].some((value) => normalizeKeyword(value).includes(keyword))
   const typeMatched = filters.type === 'all' || row.type === filters.type
-  const systemAccountMatched = matchesSystemAccountFilter(row, filters.systemAccountId, isAdmin.value)
+  const systemAccountMatched = matchesSystemAccountFilter(row, filters.systemAccountId, isManagementView.value)
   return keywordMatched && typeMatched && systemAccountMatched
 }))
 
@@ -197,7 +197,7 @@ const columns = computed(() => {
     { title: '账户类型', dataIndex: 'type', key: 'type', width: 120 },
     { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }
   ]
-  if (isAdmin.value) {
+  if (isManagementView.value) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 170 })
   }
   for (const window of compactWindows.value) {
@@ -207,7 +207,7 @@ const columns = computed(() => {
   return baseColumns
 })
 
-const tableScrollX = computed(() => isAdmin.value ? 1670 : 1500)
+const tableScrollX = computed(() => isManagementView.value ? 1670 : 1500)
 const tableScrollY = computed(() => 'calc(100dvh - 286px)')
 const mobileVisibleRows = computed(() => filteredRows.value.slice(0, mobileVisibleCount.value))
 const mobileHasMore = computed(() => mobileVisibleRows.value.length < filteredRows.value.length)
@@ -221,17 +221,17 @@ const tablePagination = computed(() => ({
 }))
 const activeFilterCount = computed(() => [
   filters.type !== 'all',
-  isAdmin.value && filters.systemAccountId !== allSystemAccountsValue
+  isManagementView.value && filters.systemAccountId !== allSystemAccountsValue
 ].filter(Boolean).length)
 
 async function loadData() {
   loading.value = true
   try {
-    const systemAccountId = selectedSystemAccountId(filters.systemAccountId, isAdmin.value)
+    const systemAccountId = scopedSystemAccountId(filters.systemAccountId)
     const [usageOverview, providerList, systemAccountList] = await Promise.all([
       api.stats.accountUsage({ systemAccountId }),
-      isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
+      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     overview.value = usageOverview
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
@@ -249,7 +249,7 @@ async function openAuthorizationUsageFromRoute() {
   if (routeAuthorizationUsageHandled.value) return
   if (route.query.action !== 'authorization-usage' || typeof route.query.accountId !== 'string') return
   const systemAccountId = typeof route.query.systemAccountId === 'string' ? route.query.systemAccountId : undefined
-  if (isAdmin.value && systemAccountId && filters.systemAccountId !== systemAccountId) {
+  if (isManagementView.value && systemAccountId && filters.systemAccountId !== systemAccountId) {
     filters.systemAccountId = systemAccountId
   }
   const row = rows.value.find((item) => item.id === route.query.accountId)
@@ -314,7 +314,7 @@ async function reloadAuthorizationUsage() {
   if (!authorizationUsageAccountId.value) return
   authorizationUsageLoading.value = true
   try {
-    authorizationUsageOverview.value = await api.stats.accountAuthorizationUsage(authorizationUsageAccountId.value, { systemAccountId: selectedSystemAccountId(filters.systemAccountId, isAdmin.value) })
+    authorizationUsageOverview.value = await api.stats.accountAuthorizationUsage(authorizationUsageAccountId.value, { systemAccountId: scopedSystemAccountId(filters.systemAccountId) })
   } catch (error) {
     console.error(error)
     message.error('授权用量加载失败')

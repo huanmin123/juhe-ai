@@ -61,7 +61,8 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
-import type { AccountSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountSummary, SystemTeamSummary } from '@/types/domain'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import type { AccountSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
 import AuthorizationFilterToolbar from './AuthorizationFilterToolbar.vue'
@@ -92,12 +93,13 @@ const usageDetailOpen = ref(false)
 const helpOpen = ref(false)
 const expireModalOpen = ref(false)
 const route = useRoute()
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
 const authorizations = ref<ResourceAuthorizationSummary[]>([])
 const accounts = ref<AccountSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const teams = ref<SystemTeamSummary[]>([])
-const users = ref<SystemAccountSummary[]>([])
+const users = ref<SystemAccountPrincipalSummary[]>([])
 
 const selectedAuthorization = ref<ResourceAuthorizationSummary>()
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
@@ -173,11 +175,12 @@ watch(() => createForm.granteeType, () => {
 })
 
 async function loadMetaData() {
+  const systemAccountId = scopedSystemAccountId()
   const [accountResult, groupResult, teamResult, userResult] = await Promise.allSettled([
-    api.accounts.list(),
-    api.groups.list(),
-    api.systemTeams.list(),
-    api.systemAccounts.list()
+    api.accounts.list({ systemAccountId }),
+    api.groups.list({ systemAccountId }),
+    isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
+    isManagementView.value ? api.systemAccounts.list() : api.authorizationOptions.granteeAccounts()
   ])
   if (accountResult.status === 'fulfilled') {
     accounts.value = accountResult.value
@@ -208,6 +211,7 @@ async function loadMetaData() {
 async function loadData() {
   loading.value = true
   try {
+    const systemAccountId = scopedSystemAccountId()
     const params = {
       resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
       resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
@@ -215,7 +219,7 @@ async function loadData() {
       granteeSystemAccountId: filters.granteeSystemAccountId,
       status: 'all' as const
     }
-    authorizations.value = await api.authorizations.list(params)
+    authorizations.value = await api.authorizations.list(systemAccountId ? { ...params, systemAccountId } : params)
   } catch (error) {
     console.error(error)
     message.error('加载授权列表失败')

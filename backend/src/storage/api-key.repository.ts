@@ -1,5 +1,5 @@
 import type { ApiKeySummary, ProviderCode } from '../domain/types.js'
-import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { createApiKey, decryptJson, encryptJson, hashSecret } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 import { defaultOpenAIGroupIdForSystemAccount } from './default-group.repository.js'
@@ -112,12 +112,12 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
 }
 
 export function updateApiKey(id: string, input: Record<string, unknown>): ApiKeySummary | undefined {
-  const current = listApiKeys().find((apiKey) => apiKey.id === id)
-  if (!current) {
+  const systemAccountId = apiKeySystemAccountId(id)
+  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId)) {
     return undefined
   }
-  const systemAccountId = apiKeySystemAccountId(id)
-  if (!systemAccountId) {
+  const current = listApiKeys({ systemAccountId, role: 'user' }).find((apiKey) => apiKey.id === id)
+  if (!current) {
     return undefined
   }
   const nextGroupId = typeof input.groupId === 'string' ? input.groupId : typeof input.group_id === 'string' ? input.group_id : current.groupId
@@ -229,4 +229,9 @@ function groupOwnerAndProvider(groupId: string): GroupOwnerRow | undefined {
 function apiKeySystemAccountId(apiKeyId: string): string | undefined {
   const row = getDatabase().prepare('SELECT system_account_id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { system_account_id?: string } | undefined
   return row?.system_account_id
+}
+
+function canManageApiKeyOwner(ownerSystemAccountId: string): boolean {
+  const scopedOwnerId = manageableSystemAccountId()
+  return !scopedOwnerId || scopedOwnerId === ownerSystemAccountId
 }

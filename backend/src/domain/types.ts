@@ -28,6 +28,8 @@ export interface SystemAccountSummary {
   updatedAt: string
 }
 
+export type SystemAccountPrincipalSummary = Pick<SystemAccountSummary, 'id' | 'username' | 'displayName' | 'status'>
+
 export interface CurrentUserSummary {
   id: string
   username: string

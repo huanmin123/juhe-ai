@@ -1,8 +1,8 @@
 <template>
   <a-card class="page-card api-keys-page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="isAdmin" :show-filters="isAdmin" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
+    <ResponsiveListToolbar :show-search="false" :show-reset="isManagementView" :show-filters="isManagementView" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
       <template #inline-filters>
-        <SystemPrincipalSelect v-if="isAdmin" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="loadData" />
+        <SystemPrincipalSelect v-if="isManagementView" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="loadData" />
       </template>
       <template #actions>
         <a-button @click="helpOpen = true">
@@ -12,14 +12,14 @@
         <a-button type="primary" @click="openCreate">新建 API Key</a-button>
       </template>
       <template #filters>
-        <label v-if="isAdmin" class="mobile-filter-field">
+        <label v-if="isManagementView" class="mobile-filter-field">
           <span>系统账户</span>
           <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="loadData" />
         </label>
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll-x="isAdmin ? 1800 : 1620" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll-x="isManagementView ? 1800 : 1620" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
@@ -77,7 +77,7 @@
               <span>API Key</span>
               <strong>{{ formatKeyPreview(record.key) }}</strong>
             </div>
-            <div v-if="isAdmin" class="mobile-list-meta-item mobile-list-meta-wide">
+            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>系统账户</span>
               <strong>{{ apiKeySystemAccountText(record) }}</strong>
             </div>
@@ -179,10 +179,10 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import { authState } from '@/composables/useAuth'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
@@ -205,14 +205,14 @@ const form = reactive({
   description: '',
   quotaLimits: createQuotaLimitForm()
 })
-const isAdmin = authState.isAdmin
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
     { title: '密钥', key: 'key', width: 180 }
   ]
-  if (isAdmin.value) {
+  if (isManagementView.value) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
   }
   baseColumns.push(
@@ -233,7 +233,7 @@ const statusOptions = [
 ]
 
 const groupOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
-const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => matchesSystemAccountFilter(apiKey, systemAccountFilter.value, isAdmin.value)))
+const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => matchesSystemAccountFilter(apiKey, systemAccountFilter.value, isManagementView.value)))
 const activeFilterCount = computed(() => systemAccountFilter.value === allSystemAccountsValue ? 0 : 1)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填本页复制的密钥'].join('\n'))
@@ -257,11 +257,11 @@ function formatKeyPreview(value?: string) {
 async function loadData() {
   loading.value = true
   try {
-    const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, isAdmin.value)
+    const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
     const [keyList, groupList, systemAccountList] = await Promise.all([
       api.apiKeys.list({ systemAccountId }),
       api.groups.list({ systemAccountId }),
-      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     apiKeys.value = keyList
     groups.value = groupList

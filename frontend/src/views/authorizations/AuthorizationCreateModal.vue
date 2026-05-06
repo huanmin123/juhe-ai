@@ -50,7 +50,7 @@
 
 <script setup lang="ts">
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { SystemAccountSummary, SystemTeamSummary } from '@/types/domain'
+import type { SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 import RequestQuotaFields from '../shared/RequestQuotaFields.vue'
 import type { AuthorizationCreateFormModel } from './authorizationFormTypes'
 
@@ -62,7 +62,7 @@ defineProps<{
   resourceOptions: Array<{ label: string; value: string }>
   resourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }>
   teams: SystemTeamSummary[]
-  users: SystemAccountSummary[]
+  users: SystemAccountPrincipalSummary[]
 }>()
 
 defineEmits<{

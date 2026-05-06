@@ -10,12 +10,13 @@ import {
   updateSystemTeam
 } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { getRequestAccessScope } from '../auth/request-context.js'
+import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 export const systemTeamsRouter = Router()
+export const myTeamsRouter = Router()
 
 const teamIdParamsSchema = z.object({
   id: z.string().trim().min(1, '团队 ID 不能为空')
@@ -42,7 +43,16 @@ const teamMembersSchema = z.object({
   systemAccountIds: z.array(z.string().trim().min(1)).min(1, '请至少选择一个团队成员')
 })
 
-systemTeamsRouter.get('/', (req, res) => {
+function currentUserTeamScope() {
+  const context = getRequestAuthContext()
+  return getRequestAccessScope(context?.systemAccountId)
+}
+
+myTeamsRouter.get('/', (_req, res) => {
+  res.json(ok(listSystemTeams(currentUserTeamScope())))
+})
+
+systemTeamsRouter.get('/', requireAdmin, (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)

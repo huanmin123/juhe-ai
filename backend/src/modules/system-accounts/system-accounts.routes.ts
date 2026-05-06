@@ -27,7 +27,7 @@ const updateSchema = z.object({
   mustChangePassword: z.boolean().optional()
 })
 
-systemAccountsRouter.get('/', (_req, res) => {
+systemAccountsRouter.get('/', requireAdmin, (_req, res) => {
   res.json(ok(listSystemAccounts()))
 })
 

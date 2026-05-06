@@ -3,7 +3,7 @@
     <AccountFilterToolbar
       :active-filter-count="activeAdvancedFilterCount"
       :filters="filters"
-      :is-admin="isAdmin"
+      :is-management-view="isManagementView"
       :refresh-loading="loading"
       :schedulable-options="schedulableOptions"
       :status-options="statusOptions"
@@ -36,7 +36,7 @@
       :can-edit="canEditAccount"
       :columns="columns"
       :group-name="groupNameForAccount"
-      :is-admin="isAdmin"
+      :is-management-view="isManagementView"
       :is-selected="isAccountSelected"
       :loading="loading"
       :loading-more="mobileLoadingMore"
@@ -88,7 +88,6 @@
       :form="form"
       :group-options="groupOptions"
       :has-account-type="hasAccountType"
-      :is-admin="isAdmin"
       :is-api-key-form="isApiKeyForm"
       :is-o-auth-form="isOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
@@ -138,9 +137,9 @@ import { useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import type { AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
-import { authState } from '@/composables/useAuth'
-import type { AccountStatus, AccountSummary, AccountTestResult, AccountTrafficMigrationSourceStatus, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
-import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import type { AccountStatus, AccountSummary, AccountTestResult, AccountTrafficMigrationSourceStatus, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountSummary } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountBindGroupModal from './AccountBindGroupModal.vue'
 import AccountEditModal from './AccountEditModal.vue'
@@ -209,12 +208,12 @@ const accountSorts = ref<AccountListSortParam[]>([{ field: 'priority', order: 'a
 const accounts = ref<AccountSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const providerModels = ref<ProviderModelPricing[]>([])
-const proxies = ref<ProxyProfileSummary[]>([])
+const proxies = ref<ProxyProfileOptionSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue })
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
-const isAdmin = authState.isAdmin
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const router = useRouter()
 
 const form = reactive<AccountFormModel>(defaultForm())
@@ -235,15 +234,15 @@ const statusEditOptions = computed(() => {
   return options
 })
 
-const columns = computed(() => buildAccountTableColumns(isAdmin.value, (field) => resolveAccountColumnSortOrder(accountSorts.value, field)))
-const tableScrollX = computed(() => accountTableScrollX(isAdmin.value))
+const columns = computed(() => buildAccountTableColumns(isManagementView.value, (field) => resolveAccountColumnSortOrder(accountSorts.value, field)))
+const tableScrollX = computed(() => accountTableScrollX(isManagementView.value))
 const tableScrollY = computed(accountTableScrollY)
 
 const filteredAccounts = computed(() => filterAccounts({
   accounts: accounts.value,
   filters,
   groupNameForAccount,
-  isAdmin: isAdmin.value
+  isManagementView: isManagementView.value
 }))
 
 const {
@@ -260,7 +259,7 @@ const {
 } = useAccountMobilePagination(ACCOUNT_PAGE_SIZE, () => filteredAccounts.value.length, loadData)
 const mobileVisibleAccounts = computed(() => filteredAccounts.value.slice(0, mobileVisibleCount.value))
 
-const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, isAdmin.value, allSystemAccountsValue))
+const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, isManagementView.value, allSystemAccountsValue))
 
 const testModelOptions = computed(() => {
   const models = providerModels.value.length ? providerModels.value.map((item) => item.model) : defaultTestModelOptions
@@ -289,15 +288,15 @@ function toggleAccountSelection(account: AccountSummary) {
     : [...selectedAccountIds.value, account.id]
 }
 
-const proxyOptions = computed(() => (isAdmin.value ? proxies.value : []).map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
+const proxyOptions = computed(() => proxies.value.map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
 const providerGroups = computed(() => groups.value.filter((group) => canManageGroupAccounts(group) && (!form.providerCode || group.providerCode === form.providerCode)))
-const groupOptions = computed(() => providerGroups.value.map((group) => ({ label: group.isDefault ? `${group.name}（默认）` : group.name, value: group.id })))
+const groupOptions = computed(() => providerGroups.value.map((group) => ({ label: group.name, value: group.id })))
 const bindGroupOptions = computed(() => {
   const account = bindingAccount.value
   if (!account) return []
   return groups.value
     .filter((group) => canManageGroupAccounts(group) && group.providerCode === account.providerCode)
-    .map((group) => ({ label: group.isDefault ? `${group.name}（默认）` : group.name, value: group.id }))
+    .map((group) => ({ label: group.name, value: group.id }))
 })
 const bindGroupTip = computed(() => {
   const ownerName = bindingAccount.value?.ownerSystemAccountName || '其他用户'
@@ -455,13 +454,13 @@ async function copyText(value: string) {
 async function loadData() {
   loading.value = true
   try {
-    const systemAccountId = selectedSystemAccountId(filters.systemAccountId, isAdmin.value)
+    const systemAccountId = scopedSystemAccountId(filters.systemAccountId)
     const [accountList, providerList, proxyList, groupList, systemAccountList] = await Promise.all([
       api.accounts.list({ systemAccountId, sorts: accountSorts.value }),
-      isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-      isAdmin.value ? api.proxies.list() : Promise.resolve([] as ProxyProfileSummary[]),
+      isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
+      api.proxies.options(),
       api.groups.list({ systemAccountId }),
-      api.systemAccounts.list()
+      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     accounts.value = accountList
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
@@ -782,7 +781,7 @@ async function createOAuthAccountFromUnifiedForm() {
 }
 
 async function loadTestModels() {
-  if (!isAdmin.value || providerModels.value.length || testModelsLoading.value) return
+  if (!isManagementView.value || providerModels.value.length || testModelsLoading.value) return
   testModelsLoading.value = true
   try {
     providerModels.value = await api.providers.models('openai')
@@ -953,10 +952,10 @@ async function updateAccountState(account: AccountSummary, payload: Record<strin
 async function handleAccountMenu(key: string, account: AccountSummary) {
   if (key === 'authorization-usage') {
     const query: Record<string, string> = { accountId: account.id, action: 'authorization-usage' }
-    if (isAdmin.value && account.systemAccountId) {
+    if (isManagementView.value && account.systemAccountId) {
       query.systemAccountId = account.systemAccountId
     }
-    await router.push({ path: '/usage-stats', query })
+    await router.push({ path: isManagementView.value ? '/usage-stats' : '/my-usage-stats', query })
     return
   }
   if (key === 'test') {

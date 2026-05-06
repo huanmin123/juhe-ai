@@ -10,6 +10,7 @@ import { authRouter } from './modules/auth/auth.routes.js'
 import { startBackgroundWorkerSupervisor } from './modules/background/background-worker-supervisor.js'
 import { apiKeysRouter } from './modules/api-keys/api-keys.routes.js'
 import { auditLogsRouter } from './modules/audit-logs/audit-logs.routes.js'
+import { authorizationOptionsRouter } from './modules/authorization-options/authorization-options.routes.js'
 import { authorizationsRouter } from './modules/authorizations/authorizations.routes.js'
 import { errorPoliciesRouter } from './modules/error-policies/error-policies.routes.js'
 import { groupsRouter } from './modules/groups/groups.routes.js'
@@ -19,14 +20,14 @@ import { runtimeLogsRouter } from './modules/runtime-logs/runtime-logs.routes.js
 import { settingsRouter } from './modules/settings/settings.routes.js'
 import { statsRouter } from './modules/stats/stats.routes.js'
 import { systemAccountsRouter } from './modules/system-accounts/system-accounts.routes.js'
-import { systemTeamsRouter } from './modules/system-teams/system-teams.routes.js'
+import { myTeamsRouter, systemTeamsRouter } from './modules/system-teams/system-teams.routes.js'
 import { usageRecordsRouter } from './modules/usage-records/usage-records.routes.js'
 import { openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
 import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
 import { openAIOAuthRouter } from './modules/openai-oauth/openai-oauth.routes.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { getDatabase } from './storage/database.js'
-import { listGlobalSettings } from './storage/repositories.js'
+import { listPublicGlobalSettings } from './storage/repositories.js'
 import { ok } from './shared/http.js'
 import { installProcessLogHandlers, logger } from './shared/logger.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
@@ -125,7 +126,7 @@ app.get('/api/health', (_req, res) => {
 
 app.use('/api/auth', authRouter)
 app.get('/api/settings/public', (_req, res) => {
-  res.json(ok(listGlobalSettings()))
+  res.json(ok(listPublicGlobalSettings()))
 })
 
 app.use('/api', requireAuth)
@@ -134,15 +135,17 @@ app.use('/api/error-policies', errorPoliciesRouter)
 app.use('/api/accounts', accountsRouter)
 app.use('/api/groups', groupsRouter)
 app.use('/api/api-keys', apiKeysRouter)
+app.use('/api/authorization-options', authorizationOptionsRouter)
 app.use('/api/authorizations', authorizationsRouter)
 app.use('/api/openai-oauth', openAIOAuthRouter)
-app.use('/api/proxies', requireAdmin, proxiesRouter)
+app.use('/api/proxies', proxiesRouter)
 app.use('/api/usage-records', usageRecordsRouter)
 app.use('/api/audit-logs', requireAdmin, auditLogsRouter)
 app.use('/api/runtime-logs', requireAdmin, runtimeLogsRouter)
 app.use('/api/stats', statsRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/system-accounts', systemAccountsRouter)
+app.use('/api/my-teams', myTeamsRouter)
 app.use('/api/system-teams', systemTeamsRouter)
 
 if (existsSync(frontendIndexPath)) {

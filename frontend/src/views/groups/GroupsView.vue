@@ -1,31 +1,28 @@
 <template>
   <a-card class="page-card groups-page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="isAdmin" :show-filters="isAdmin" filter-title="筛选分组" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
+    <ResponsiveListToolbar :show-search="false" :show-reset="isManagementView" :show-filters="isManagementView" filter-title="筛选分组" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
       <template #inline-filters>
-        <SystemPrincipalSelect v-if="isAdmin" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="loadData" />
+        <SystemPrincipalSelect v-if="isManagementView" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="loadData" />
       </template>
       <template #actions>
         <a-button type="primary" @click="openCreate">新建分组</a-button>
       </template>
       <template #filters>
-        <label v-if="isAdmin" class="mobile-filter-field">
+        <label v-if="isManagementView" class="mobile-filter-field">
           <span>系统账户</span>
           <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="loadData" />
         </label>
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll-x="isAdmin ? 1480 : 1300" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll-x="isManagementView ? 1480 : 1300" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页选择账户的归属分组。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
           <div class="group-name-cell">
-            <span>
-              {{ record.name }}
-              <a-tag v-if="record.isDefault" class="default-group-tag" color="blue">默认</a-tag>
-            </span>
+            <span>{{ record.name }}</span>
           </div>
         </template>
         <template v-else-if="column.key === 'providerCode'">
@@ -68,9 +65,6 @@
             <a-popconfirm v-if="canDeleteGroup(record)" title="确认删除这个分组？" @confirm="removeGroup(record.id)">
               <a-button type="link" size="small" danger>删除</a-button>
             </a-popconfirm>
-            <a-tooltip v-else-if="record.isDefault" title="默认分组不允许删除">
-              <a-button type="link" size="small" danger disabled>删除</a-button>
-            </a-tooltip>
             <a-tag v-if="isAuthorizedGroup(record)" color="cyan">仅可使用</a-tag>
           </a-space>
         </template>
@@ -80,7 +74,6 @@
           <div class="mobile-list-card-head">
             <div class="mobile-list-card-title">
               {{ record.name }}
-              <a-tag v-if="record.isDefault" class="default-group-tag" color="blue">默认</a-tag>
             </div>
             <div class="mobile-list-card-tags">
               <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
@@ -89,7 +82,7 @@
             </div>
           </div>
           <div class="mobile-list-meta-grid">
-            <div v-if="isAdmin" class="mobile-list-meta-item mobile-list-meta-wide">
+            <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>系统账户</span>
               <strong>{{ groupSystemAccountText(record) }}</strong>
             </div>
@@ -115,9 +108,6 @@
             <a-popconfirm v-if="canDeleteGroup(record)" title="确认删除这个分组？" @confirm="removeGroup(record.id)">
               <a-button danger>删除</a-button>
             </a-popconfirm>
-            <a-tooltip v-else-if="record.isDefault" title="默认分组不允许删除">
-              <a-button danger disabled>删除</a-button>
-            </a-tooltip>
           </div>
         </article>
       </template>
@@ -153,10 +143,10 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import { authState } from '@/composables/useAuth'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
 import type { GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
@@ -176,14 +166,14 @@ const providers = ref<ProviderDefinition[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const systemAccountFilter = ref(allSystemAccountsValue)
 const form = reactive({ name: '', providerCode: 'openai', description: '', enabled: true })
-const isAdmin = authState.isAdmin
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '分组名称', dataIndex: 'name', key: 'name', width: 240 },
     { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 }
   ]
-  if (isAdmin.value) {
+  if (isManagementView.value) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
   }
   baseColumns.push(
@@ -198,7 +188,7 @@ const columns = computed(() => {
 })
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
-const filteredGroups = computed(() => groups.value.filter((group) => matchesSystemAccountFilter(group, systemAccountFilter.value, isAdmin.value)))
+const filteredGroups = computed(() => groups.value.filter((group) => matchesSystemAccountFilter(group, systemAccountFilter.value, isManagementView.value)))
 const providerOptions = computed(() => availableProviders.value.map((provider) => ({
   label: provider.name,
   value: provider.code,
@@ -240,7 +230,7 @@ function isAuthorizedGroup(group: GroupSummary): boolean {
 }
 
 function canEditGroup(group: GroupSummary): boolean {
-  return group.permissions?.canEdit !== false
+  return !group.isDefault && group.permissions?.canEdit !== false
 }
 
 function canDeleteGroup(group: GroupSummary): boolean {
@@ -266,11 +256,11 @@ function defaultProviderCode() {
 async function loadData() {
   loading.value = true
   try {
-    const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, isAdmin.value)
+    const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
     const [groupList, providerList, systemAccountList] = await Promise.all([
       api.groups.list({ systemAccountId }),
-      isAdmin.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-      api.systemAccounts.list()
+      isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
+      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     groups.value = groupList
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
@@ -296,7 +286,7 @@ function openCreate() {
 
 function openEdit(group: GroupSummary) {
   if (!canEditGroup(group)) {
-    message.warning('授权分组不能编辑')
+    message.warning(group.isDefault ? '默认分组不允许编辑' : '授权分组不能编辑')
     return
   }
   editingId.value = group.id
@@ -387,10 +377,6 @@ onMounted(loadData)
   flex-direction: column;
   gap: 4px;
   line-height: 1.4;
-}
-
-.default-group-tag {
-  margin-left: 8px;
 }
 
 .usage-summary {

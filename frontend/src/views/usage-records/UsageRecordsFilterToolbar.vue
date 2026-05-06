@@ -25,7 +25,7 @@
         @update:value="handleStatusCodeUpdate"
       />
       <SystemPrincipalSelect
-        v-if="isAdmin"
+        v-if="isManagementView"
         :value="systemAccountId"
         :accounts="systemAccounts"
         :active-only="false"
@@ -44,7 +44,7 @@
         <span>状态码</span>
         <a-select :value="statusCode" allow-clear :options="statusCodeOptions" placeholder="状态码" @update:value="handleStatusCodeUpdate" />
       </label>
-      <label v-if="isAdmin" class="mobile-filter-field">
+      <label v-if="isManagementView" class="mobile-filter-field">
         <span>系统账户</span>
         <SystemPrincipalSelect
           :value="systemAccountId"
@@ -73,7 +73,7 @@ type SelectValue = string | string[] | undefined
 
 defineProps<{
   activeFilterCount: number
-  isAdmin: boolean
+  isManagementView: boolean
   keyword: string
   refreshLoading: boolean
   result: ResultFilter

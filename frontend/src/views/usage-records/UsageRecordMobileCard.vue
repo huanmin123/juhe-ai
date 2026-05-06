@@ -10,7 +10,7 @@
       </div>
     </div>
     <div class="mobile-list-meta-grid">
-      <div v-if="isAdmin" class="mobile-list-meta-item mobile-list-meta-wide">
+      <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
         <span>系统账户</span>
         <strong>{{ usageRecordSystemAccountText(record) }}</strong>
       </div>
@@ -70,7 +70,7 @@ import {
 } from './usageRecordFormatters'
 
 defineProps<{
-  isAdmin: boolean
+  isManagementView: boolean
   record: UsageRecordSummary
 }>()
 </script>

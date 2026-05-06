@@ -4,13 +4,13 @@ import type { AccountSummary } from '@/types/domain'
 
 export type AccountTableSortOrderResolver = (field: AccountListSortField) => TableSortOrder
 
-export function buildAccountTableColumns(isAdmin: boolean, sortOrder: AccountTableSortOrderResolver): Array<Record<string, unknown>> {
+export function buildAccountTableColumns(isManagementView: boolean, sortOrder: AccountTableSortOrderResolver): Array<Record<string, unknown>> {
   const baseColumns: Array<Record<string, unknown>> = [
     sortableColumn({ title: '名称', dataIndex: 'name', key: 'name', width: 230 }, 'name', sortOrder),
     sortableColumn({ title: '账户类型', dataIndex: 'type', key: 'type', width: 120 }, 'type', sortOrder),
     sortableColumn({ title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }, 'providerCode', sortOrder)
   ]
-  if (isAdmin) {
+  if (isManagementView) {
     baseColumns.push(sortableColumn({ title: '系统账户', key: 'systemAccount', width: 180 }, 'systemAccount', sortOrder))
   }
   baseColumns.push(
@@ -88,8 +88,8 @@ export function tableColumnKey(column: { key?: unknown; dataIndex?: unknown }): 
   return String(column.key ?? column.dataIndex ?? '')
 }
 
-export function accountTableScrollX(isAdmin: boolean): number {
-  return (isAdmin ? 2360 : 2180) + accountSelectionColumnWidth
+export function accountTableScrollX(isManagementView: boolean): number {
+  return (isManagementView ? 2360 : 2180) + accountSelectionColumnWidth
 }
 
 export function accountTableScrollY(): string {

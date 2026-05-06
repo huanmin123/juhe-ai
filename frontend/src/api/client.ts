@@ -26,6 +26,7 @@ import type {
   OpenAIAuthURLResult,
   ProviderDefinition,
   ProviderModelPricing,
+  ProxyProfileOptionSummary,
   ProxyProfileSummary,
   ProxyTestReport,
   RuntimeLogFacets,
@@ -35,6 +36,7 @@ import type {
   SystemTeamMemberSummary,
   SystemTeamSummary,
   SystemSettings,
+  SystemAccountPrincipalSummary,
   SystemAccountSummary,
   SystemMetricsOverview,
   UsageOverviewWindowKey,
@@ -146,6 +148,9 @@ export const api = {
     create: (payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.post('/system-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.patch(`/system-accounts/${id}`, payload))
   },
+  authorizationOptions: {
+    granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/authorization-options/grantee-accounts'))
+  },
   providers: {
     list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
     models: (code: string) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`))
@@ -174,6 +179,9 @@ export const api = {
     update: (id: string, payload: { name?: string; description?: string; status?: 'active' | 'disabled' }) => unwrap<SystemTeamSummary>(http.patch(`/system-teams/${id}`, payload)),
     addMembers: (id: string, payload: { systemAccountIds: string[] }) => unwrap<SystemTeamSummary>(http.post(`/system-teams/${id}/members`, payload)),
     removeMember: (id: string, memberId: string) => unwrap<SystemTeamSummary>(http.delete(`/system-teams/${id}/members/${memberId}`))
+  },
+  myTeams: {
+    list: () => unwrap<SystemTeamSummary[]>(http.get('/my-teams'))
   },
   authorizations: {
     list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/authorizations', { params })),
@@ -204,6 +212,7 @@ export const api = {
   },
   proxies: {
     list: () => unwrap<ProxyProfileSummary[]>(http.get('/proxies')),
+    options: () => unwrap<ProxyProfileOptionSummary[]>(http.get('/proxies/options')),
     create: (payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.post('/proxies', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.patch(`/proxies/${id}`, payload)),
     test: (id: string) => unwrap<ProxyTestReport>(http.post(`/proxies/${id}/test`, {}, { timeout: 120000 })),

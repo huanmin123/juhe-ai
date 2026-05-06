@@ -128,6 +128,10 @@ export type AccountListRow = AccountRow & {
   access_type?: 'owner' | 'authorized'
   authorization_id?: string | null
   authorization_status?: AuthorizationStatus | null
+  binding_system_account_id?: string | null
+  bound_group_id?: string | null
+  bound_group_name?: string | null
+  bound_group_account_authorization_id?: string | null
 }
 
 export interface GroupRow {

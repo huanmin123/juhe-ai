@@ -3,7 +3,7 @@ export const DEFAULT_OPENAI_GROUP = {
   systemAccountId: 'sys_admin',
   name: '默认 OpenAI 分组',
   providerCode: 'openai',
-  description: '第一期默认分组'
+  description: ''
 } as const
 
 export const DEFAULT_GLOBAL_SETTINGS = [

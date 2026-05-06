@@ -1,7 +1,7 @@
 import { getDatabase, newId, nowIso } from './database.js'
 
 const DEFAULT_OPENAI_GROUP_NAME = '默认 OpenAI 分组'
-const DEFAULT_OPENAI_GROUP_DESCRIPTION = '第一期默认分组'
+const DEFAULT_OPENAI_GROUP_DESCRIPTION = ''
 
 export function defaultOpenAIGroupIdForSystemAccount(systemAccountId: string): string | undefined {
   const row = getDatabase()

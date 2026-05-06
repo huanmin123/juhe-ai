@@ -26,3 +26,5 @@ export interface SystemAccountSummary {
   createdAt: string
   updatedAt: string
 }
+
+export type SystemAccountPrincipalSummary = Pick<SystemAccountSummary, 'id' | 'username' | 'displayName' | 'status'>

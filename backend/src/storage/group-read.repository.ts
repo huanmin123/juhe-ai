@@ -7,7 +7,7 @@ import { loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest
 export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const ownerSystemAccountId = manageableSystemAccountId(access)
-  if (!viewerSystemAccountId && canAccessAll(access)) {
+  if (!ownerSystemAccountId && canAccessAll(access)) {
     return getDatabase()
       .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC")
       .all() as unknown as GroupListRow[]

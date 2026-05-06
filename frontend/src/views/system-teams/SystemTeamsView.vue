@@ -2,13 +2,13 @@
   <a-card class="page-card system-teams-page-card responsive-page-card">
     <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadData">
       <template #actions>
-        <a-button v-if="isAdmin" type="primary" @click="openCreateTeam">新建团队</a-button>
+        <a-button v-if="isManagementView" type="primary" @click="openCreateTeam">新建团队</a-button>
       </template>
     </ResponsiveListToolbar>
 
     <ResponsiveDataList table-class="page-table system-teams-table" :columns="columns" :data-source="teams" row-key="id" :loading="loading" :scroll-x="900" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
-        <a-empty class="page-empty-card" description="还没有团队，先创建一个团队并添加成员。" />
+        <a-empty class="page-empty-card" :description="emptyTeamDescription" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
@@ -29,7 +29,7 @@
           {{ formatDateTime(record.createdAt) }}
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space v-if="isAdmin" :size="8">
+          <a-space v-if="isManagementView" :size="8">
             <a-button type="link" size="small" @click="openEditTeam(record)">编辑</a-button>
             <a-button type="link" size="small" @click="openMemberModal(record)">成员管理</a-button>
           </a-space>
@@ -60,7 +60,7 @@
             </div>
           </div>
           <div class="mobile-list-card-actions two-actions">
-            <template v-if="isAdmin">
+            <template v-if="isManagementView">
               <a-button type="primary" @click="openEditTeam(record)">编辑</a-button>
               <a-button @click="openMemberModal(record)">成员管理</a-button>
             </template>
@@ -86,7 +86,7 @@
 
     <a-modal v-model:open="memberModalOpen" :title="selectedTeam ? `团队成员：${selectedTeam.name}` : '团队成员'" width="720px" :footer="null">
       <div class="team-members-modal">
-        <div v-if="isAdmin" class="team-members-create-row">
+        <div v-if="isManagementView" class="team-members-create-row">
           <SystemPrincipalSelect
             v-model:value="memberForm.systemAccountIds"
             :accounts="systemAccounts"
@@ -99,7 +99,7 @@
           <a-button type="primary" :loading="memberSaving" :disabled="selectedTeam?.status !== 'active'" @click="addMembers">添加成员</a-button>
         </div>
         <a-alert
-          v-if="isAdmin && selectedTeam?.status !== 'active'"
+          v-if="isManagementView && selectedTeam?.status !== 'active'"
           type="warning"
           show-icon
           message="团队已停用，暂时不能添加新成员；如需继续维护，请先把团队状态改为启用。"
@@ -136,7 +136,7 @@ import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import { authState } from '@/composables/useAuth'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { SystemAccountSummary, SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
 const loading = ref(false)
@@ -144,7 +144,7 @@ const memberSaving = ref(false)
 
 const teams = ref<SystemTeamSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
-const isAdmin = authState.isAdmin
+const { isManagementView } = useScopedMenuView()
 
 const teamModalOpen = ref(false)
 const memberModalOpen = ref(false)
@@ -175,7 +175,7 @@ const memberColumns = computed(() => {
     { title: '成员', key: 'memberName', width: 220 },
     { title: '加入时间', key: 'joinedAt', width: 180 }
   ]
-  if (isAdmin.value) {
+  if (isManagementView.value) {
     baseColumns.push({ title: '操作', key: 'actions', width: 100 })
   }
   return baseColumns
@@ -184,6 +184,7 @@ const memberColumns = computed(() => {
 const selectedTeam = computed(() => teams.value.find((team) => team.id === selectedTeamId.value))
 const activeTeamMembers = computed(() => selectedTeam.value ? activeMembers(selectedTeam.value) : [])
 const usedMemberIds = computed(() => activeTeamMembers.value.map((item) => item.systemAccountId))
+const emptyTeamDescription = computed(() => isManagementView.value ? '还没有团队，先创建一个团队并添加成员。' : '你还没有加入任何团队。')
 
 function activeMembers(team: SystemTeamSummary): SystemTeamMemberSummary[] {
   return (team.members ?? []).filter((member) => member.status === 'active')
@@ -204,8 +205,8 @@ async function loadData() {
   loading.value = true
   try {
     const [teamList, accounts] = await Promise.all([
-      api.systemTeams.list(),
-      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
+      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     teams.value = teamList
     systemAccounts.value = accounts

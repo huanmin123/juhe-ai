@@ -7,11 +7,75 @@ declare module 'vue-router' {
     title: string
     description: string
     public?: boolean
+    viewScope?: 'admin' | 'self'
     roles?: Array<'admin' | 'user'>
   }
 }
 
 export const menuRoutes: RouteRecordRaw[] = [
+  {
+    path: '/my-accounts',
+    component: () => import('@/views/accounts/AccountsView.vue'),
+    meta: {
+      title: '我的 AI 账户',
+      description: '创建和维护自己的 OpenAI OAuth / API Key 账户。',
+      viewScope: 'self'
+    }
+  },
+  {
+    path: '/my-groups',
+    component: () => import('@/views/groups/GroupsView.vue'),
+    meta: {
+      title: '我的分组',
+      description: '维护自己的账户分组，API Key 再绑定分组统一调度。',
+      viewScope: 'self'
+    }
+  },
+  {
+    path: '/my-teams',
+    component: () => import('@/views/system-teams/SystemTeamsView.vue'),
+    meta: {
+      title: '我的团队',
+      description: '查看自己加入的团队和团队成员。',
+      viewScope: 'self'
+    }
+  },
+  {
+    path: '/my-authorizations',
+    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
+    meta: {
+      title: '我的授权',
+      description: '管理自己授权出去或授权给自己的账户、分组和团队授权。',
+      viewScope: 'self'
+    }
+  },
+  {
+    path: '/my-api-keys',
+    component: () => import('@/views/api-keys/ApiKeysView.vue'),
+    meta: {
+      title: '我的 API Key',
+      description: '管理自己的 API Key，绑定自有或授权给自己的分组。',
+      viewScope: 'self'
+    }
+  },
+  {
+    path: '/my-usage-stats',
+    component: () => import('@/views/usage-stats/UsageStatsView.vue'),
+    meta: {
+      title: '我的用量',
+      description: '查看自己账户、授权资源和 API Key 的用量统计。',
+      viewScope: 'self'
+    }
+  },
+  {
+    path: '/my-usage-records',
+    component: () => import('@/views/usage-records/UsageRecordsView.vue'),
+    meta: {
+      title: '我的使用记录',
+      description: '查看自己的网关请求、命中账户、Token 用量、成本和错误状态。',
+      viewScope: 'self'
+    }
+  },
   {
     path: '/stats',
     component: () => import('@/views/stats/StatsView.vue'),
@@ -19,14 +83,6 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '统计概览',
       description: '按监控窗口查看有效请求、Token 使用趋势、模型分布、消耗错误和系统性能。',
       roles: ['admin']
-    }
-  },
-  {
-    path: '/usage-stats',
-    component: () => import('@/views/usage-stats/UsageStatsView.vue'),
-    meta: {
-      title: '用量统计',
-      description: '按账户查看多日累计用量，并查看授权用户与团队的消耗情况。'
     }
   },
   {
@@ -42,24 +98,50 @@ export const menuRoutes: RouteRecordRaw[] = [
     path: '/accounts',
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {
-      title: 'AI账户管理',
-      description: '创建和维护 OpenAI OAuth / API Key 账户，统一管理状态、并发、代理和错误策略。'
+      title: 'AI 账户管理',
+      description: '按系统账户管理 OpenAI OAuth / API Key 账户，统一查看状态、并发、代理和错误策略。',
+      viewScope: 'admin',
+      roles: ['admin']
     }
   },
   {
     path: '/groups',
     component: () => import('@/views/groups/GroupsView.vue'),
     meta: {
-      title: 'AI账户分组',
-      description: '按供应商划分账户，账户主动选择归属分组，API Key 再绑定分组统一调度。'
+      title: 'AI 分组管理',
+      description: '按系统账户管理账户分组、授权分组和调度边界。',
+      viewScope: 'admin',
+      roles: ['admin']
+    }
+  },
+  {
+    path: '/system-teams',
+    component: () => import('@/views/system-teams/SystemTeamsView.vue'),
+    meta: {
+      title: '系统团队管理',
+      description: '管理团队和成员，支持把多个系统账户归纳到一个团队内。',
+      viewScope: 'admin',
+      roles: ['admin']
+    }
+  },
+  {
+    path: '/authorizations',
+    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
+    meta: {
+      title: '统一授权管理',
+      description: '按系统账户统一管理账户、分组、团队授权，并查看授权用量明细。',
+      viewScope: 'admin',
+      roles: ['admin']
     }
   },
   {
     path: '/api-keys',
     component: () => import('@/views/api-keys/ApiKeysView.vue'),
     meta: {
-      title: 'API 密钥',
-      description: 'API Key 绑定分组，外部请求按分组边界完成中转调度。'
+      title: 'API Key 管理',
+      description: '按系统账户管理 API Key 和分组绑定。',
+      viewScope: 'admin',
+      roles: ['admin']
     }
   },
   {
@@ -72,11 +154,23 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/usage-stats',
+    component: () => import('@/views/usage-stats/UsageStatsView.vue'),
+    meta: {
+      title: '用量统计管理',
+      description: '按系统账户查看多日累计用量，并查看授权用户与团队的消耗情况。',
+      viewScope: 'admin',
+      roles: ['admin']
+    }
+  },
+  {
     path: '/usage-records',
     component: () => import('@/views/usage-records/UsageRecordsView.vue'),
     meta: {
-      title: '使用记录',
-      description: '记录网关请求、命中账户、token 用量、成本和错误状态。'
+      title: '使用记录管理',
+      description: '按系统账户查看网关请求、命中账户、Token 用量、成本和错误状态。',
+      viewScope: 'admin',
+      roles: ['admin']
     }
   },
   {
@@ -107,27 +201,12 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/system-teams',
-    component: () => import('@/views/system-teams/SystemTeamsView.vue'),
-    meta: {
-      title: '系统团队管理',
-      description: '管理团队和成员，支持把多个系统账户归纳到一个团队内。'
-    }
-  },
-  {
-    path: '/authorizations',
-    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
-    meta: {
-      title: '统一授权管理',
-      description: '统一管理账户、分组、团队授权，并查看团队与系统账户维度的用量明细。'
-    }
-  },
-  {
     path: '/settings',
     component: () => import('@/views/settings/SettingsView.vue'),
     meta: {
       title: '系统设置',
-      description: '配置本地网关与账户调度的默认策略，不覆盖账号里的显式配置。'
+      description: '配置本地网关与账户调度的默认策略，不覆盖账号里的显式配置。',
+      roles: ['admin']
     }
   }
 ]
@@ -144,7 +223,7 @@ export const router = createRouter({
         public: true
       }
     },
-    { path: '/', redirect: '/accounts' },
+    { path: '/', redirect: '/my-accounts' },
     ...menuRoutes
   ]
 })
@@ -152,14 +231,14 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   const user = await loadCurrentUser()
   if (to.meta.public) {
-    if (to.path === '/login' && user) return '/accounts'
+    if (to.path === '/login' && user) return '/my-accounts'
     return true
   }
   if (!user) {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
   if (to.meta.roles?.length && !to.meta.roles.includes(user.role)) {
-    return '/accounts'
+    return '/my-accounts'
   }
   return true
 })

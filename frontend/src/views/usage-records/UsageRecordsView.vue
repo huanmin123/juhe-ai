@@ -6,7 +6,7 @@
       v-model:status-code="statusCodeFilter"
       v-model:system-account-id="systemAccountFilter"
       :active-filter-count="activeFilterCount"
-      :is-admin="isAdmin"
+      :is-management-view="isManagementView"
       :refresh-loading="loading"
       :result-options="resultOptions"
       :status-code-options="statusCodeOptions"
@@ -22,7 +22,7 @@
       :data-source="filteredRecords"
       row-key="id"
       :loading="loading"
-      :scroll-x="isAdmin ? 2050 : 1870"
+      :scroll-x="isManagementView ? 2050 : 1870"
       pull-refresh-enabled
       :refreshing="loading"
       @change="handleTableChange"
@@ -86,7 +86,7 @@
         </template>
       </template>
       <template #card="{ record }">
-        <UsageRecordMobileCard :is-admin="isAdmin" :record="record" />
+        <UsageRecordMobileCard :is-management-view="isManagementView" :record="record" />
       </template>
     </ResponsiveDataList>
   </a-card>
@@ -100,9 +100,9 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
-import { authState } from '@/composables/useAuth'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, matchesSystemAccountFilter } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
 import UsageRecordResultCell from './UsageRecordResultCell.vue'
@@ -126,7 +126,7 @@ const resultFilter = ref<'all' | 'success' | 'failed'>('all')
 const statusCodeFilter = ref<string>('')
 const systemAccountFilter = ref(allSystemAccountsValue)
 const systemAccounts = ref<SystemAccountSummary[]>([])
-const isAdmin = authState.isAdmin
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
 type TableSortOrder = 'ascend' | 'descend' | null
 
@@ -161,7 +161,7 @@ const activeFilterCount = computed(() => {
 const filteredRecords = computed(() => {
   const nameTerm = accountNameFilter.value.trim().toLowerCase()
   return records.value.filter((record) => {
-    if (!matchesSystemAccountFilter(record, systemAccountFilter.value, isAdmin.value)) return false
+    if (!matchesSystemAccountFilter(record, systemAccountFilter.value, isManagementView.value)) return false
     if (nameTerm) {
       const accountText = `${record.accountName ?? ''} ${record.accountId ?? ''}`.toLowerCase()
       if (!accountText.includes(nameTerm)) return false
@@ -177,7 +177,7 @@ const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: 'AI账户名称', dataIndex: 'accountName', key: 'account', width: 170 }
   ]
-  if (isAdmin.value) {
+  if (isManagementView.value) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
   }
   baseColumns.push(
@@ -234,11 +234,11 @@ function sortFieldFromColumn(value: unknown): UsageRecordSortField | undefined {
 async function loadData() {
   loading.value = true
   try {
-    const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, isAdmin.value)
+    const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
     const sortOrder = sortState.value.order === 'ascend' ? 'asc' : 'desc'
     const [recordList, systemAccountList] = await Promise.all([
       api.usageRecords.list({ systemAccountId, sortBy: sortState.value.field, sortOrder }),
-      isAdmin.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
     records.value = recordList
     systemAccounts.value = systemAccountList

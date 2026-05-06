@@ -12,6 +12,10 @@ export function listGlobalSettings(): Record<string, unknown> {
   return Object.fromEntries(rows.map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
 }
 
+export function listPublicGlobalSettings(): Record<string, unknown> {
+  return pickGlobalSettings(listGlobalSettings())
+}
+
 export function updateGlobalSettings(input: Record<string, unknown>): Record<string, unknown> {
   const statement = getDatabase().prepare('INSERT INTO global_settings (key, value_json, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at')
   const now = nowIso()

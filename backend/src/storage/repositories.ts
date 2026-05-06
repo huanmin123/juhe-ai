@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountAuthorizationUsageOverview, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
-import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, resolveAccessScope, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
+import type { AccountAuthorizationUsageOverview, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
+import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
 import { accountCredentialsForList, listAccountRowsForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { getAccountAuthorizationUsageOverview as buildAccountAuthorizationUsageOverview, getAccountUsageStatsOverview as buildAccountUsageStatsOverview } from './account-usage.repository.js'
@@ -23,6 +23,7 @@ import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap, loadSys
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow, TeamResourceAuthorizationGrantRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
+import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
 import { emptyAccountUsageSummary, numberFromUnknown, todayDateKey, usageSummaryFromAggregate } from './usage-stats-helpers.js'
@@ -49,7 +50,14 @@ export class DuplicateAccountCredentialError extends Error {
   }
 }
 
-export type { AccountUsageSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
+export class DefaultGroupReadonlyError extends Error {
+  constructor() {
+    super('默认分组不允许修改')
+    this.name = 'DefaultGroupReadonlyError'
+  }
+}
+
+export type { AccountUsageSummary, SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
 export {
   createApiKeyRecord,
   deleteApiKey,
@@ -78,17 +86,20 @@ export {
   deleteProxy,
   getProxyTestConfig,
   listEnabledProxyTestConfigs,
+  listProxyOptions,
   listProxies,
   ProxyInUseError,
   resolveProxyUrlForProfile,
   resolveProxyUrlForProfileForSystemAccount,
   updateProxyTestState,
   updateProxy,
+  type ProxyProfileOptionSummary,
   type ProxyProfileSummary,
   type ProxyProfileTestConfig
 } from './proxy.repository.js'
 export {
   getSettings,
+  listPublicGlobalSettings,
   listGlobalSettings,
   updateGlobalSettings,
   updateSettings
@@ -255,6 +266,21 @@ function accountGroupBinding(accountId: string, systemAccountId: string): { grou
   }
 }
 
+function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
+  if (!row.bound_group_id || row.binding_system_account_id !== systemAccountId) {
+    return undefined
+  }
+  const accountOwnerId = row.system_account_id
+  const authorization = accountOwnerId && systemAccountId && accountOwnerId !== systemAccountId
+    ? activeAccountAuthorization(row.id, systemAccountId)
+    : undefined
+  return {
+    groupId: row.bound_group_id,
+    groupName: row.bound_group_name ?? row.bound_group_id,
+    groupBindStatus: row.bound_group_account_authorization_id && authorization?.id !== row.bound_group_account_authorization_id ? 'authorization_unavailable' : 'bound'
+  }
+}
+
 function canScheduleAuthorizedAccount(input: {
   accountId: string
   accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'
@@ -310,11 +336,6 @@ function globalProxyProfileId(proxyProfileId: string | undefined): string | unde
   if (!proxyProfileId) return undefined
   const row = getDatabase().prepare('SELECT id FROM proxy_profiles WHERE id = ?').get(proxyProfileId) as unknown as { id?: string } | undefined
   return row?.id
-}
-
-function canSetGlobalProxyProfile(access?: AccessScope): boolean {
-  const scope = resolveAccessScope(access)
-  return !scope || scope.role === 'admin'
 }
 
 function isAccountExpired(accountExpiresAt: string | null | undefined, now = Date.now()): boolean {
@@ -396,6 +417,22 @@ function boolInt(value: unknown, fallback: boolean): number {
 
 function usageScope(rowKey: string, systemAccountId: string, scopeId: string): UsageSummaryScopeRequest {
   return { rowKey, systemAccountId, scopeId }
+}
+
+function sanitizeAuthorizationSourcesForViewer(sources: ResourceAuthorizationSummary['authorizationSources'], limited: boolean): ResourceAuthorizationSummary['authorizationSources'] {
+  if (!sources) return sources
+  if (!limited) return sources
+  return sources.map((source) => ({
+    id: source.id,
+    authorizationId: source.authorizationId,
+    sourceType: source.sourceType,
+    status: source.status,
+    activatedAt: source.activatedAt,
+    endedReason: source.endedReason,
+    createdBy: '',
+    createdAt: source.createdAt,
+    updatedAt: source.updatedAt
+  }))
 }
 
 function isLaterIso(value?: string, current?: string): boolean {
@@ -481,54 +518,57 @@ export function listAccounts(access?: AccessScope, options?: AccountListOptions)
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const accountNames = includeSystemAccountFields(access) || hasAuthorizedRows ? loadSystemAccountNameMap() : new Map<string, string>()
   return rows.map((row) => {
-    const usage = row.access_type === 'authorized' && row.authorization_id
+    const isAuthorizedView = row.access_type === 'authorized'
+    const usage = isAuthorizedView && row.authorization_id
       ? usageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : usageByAccount.get(row.id) ?? emptyAccountUsageSummary()
-    const todayUsage = row.access_type === 'authorized' && row.authorization_id
+    const todayUsage = isAuthorizedView && row.authorization_id
       ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : todayUsageByAccount.get(row.id) ?? emptyAccountUsageSummary()
     const authorizationStats = authorizationStatsByAccount.get(row.id) ?? { authorizationCount: 0, authorizationTeamCount: 0 }
     const groupBindingSystemAccountId = row.access_type === 'authorized'
       ? viewerSystemAccountId
       : row.system_account_id
-    const groupBinding = groupBindingSystemAccountId ? accountGroupBinding(row.id, groupBindingSystemAccountId) : undefined
+    const groupBinding = groupBindingSystemAccountId
+      ? accountGroupBindingFromRow(row, groupBindingSystemAccountId) ?? accountGroupBinding(row.id, groupBindingSystemAccountId)
+      : undefined
     return {
-    id: row.id,
-    systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
-    systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
-    ownerSystemAccountId: row.system_account_id,
-    ownerSystemAccountName: accountNames.get(row.system_account_id),
-    providerCode: row.provider_code,
-    name: row.name,
-    notes: row.notes ?? undefined,
-    type: row.type,
-    credentials: accountCredentialsForList(row),
-    status: row.status,
-    concurrencyLimit: row.concurrency_limit,
-    currentConcurrency: 0,
-    priority: row.priority,
-    proxyProfileId: row.proxy_profile_id ?? undefined,
-    passthroughEnabled: row.passthrough_enabled === 1,
-    errorPolicyId: row.error_policy_id ?? undefined,
-    schedulable: row.schedulable === 1,
-    accountExpiresAt: row.account_expires_at ?? undefined,
-    cooldownUntil: row.cooldown_until ?? undefined,
-    lastErrorMessage: row.last_error_message ?? undefined,
-    lastUsedAt: row.access_type === 'authorized' ? usage.lastUsedAt : row.last_used_at ?? usage.lastUsedAt,
-    todayUsage,
-    usage,
-    oauthUsage: row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined,
-    accessType: row.access_type ?? 'owner',
-    accountAuthorizationId: row.authorization_id ?? undefined,
-    boundGroupId: groupBinding?.groupId,
-    boundGroupName: groupBinding?.groupName,
-    groupBindStatus: groupBinding?.groupBindStatus,
-    authorizationStatus: row.authorization_status ?? undefined,
-    authorizationSources: row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : undefined,
-    permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions(),
-    authorizationUsageAvailable: row.access_type !== 'authorized' && authorizationStats.authorizationCount > 0 && canManageResourceOwner(row.system_account_id, access),
-    authorizationCount: authorizationStats.authorizationCount,
-    authorizationTeamCount: authorizationStats.authorizationTeamCount
+      id: row.id,
+      systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
+      systemAccountName: includeSystemAccountFields(access) ? accountNames.get(row.system_account_id) : undefined,
+      ownerSystemAccountId: row.system_account_id,
+      ownerSystemAccountName: accountNames.get(row.system_account_id),
+      providerCode: row.provider_code,
+      name: row.name,
+      notes: isAuthorizedView ? undefined : row.notes ?? undefined,
+      type: row.type,
+      credentials: accountCredentialsForList(row),
+      status: row.status,
+      concurrencyLimit: isAuthorizedView ? 0 : row.concurrency_limit,
+      currentConcurrency: 0,
+      priority: isAuthorizedView ? 0 : row.priority,
+      proxyProfileId: isAuthorizedView ? undefined : row.proxy_profile_id ?? undefined,
+      passthroughEnabled: isAuthorizedView ? false : row.passthrough_enabled === 1,
+      errorPolicyId: isAuthorizedView ? undefined : row.error_policy_id ?? undefined,
+      schedulable: isAuthorizedView ? row.status === 'active' : row.schedulable === 1,
+      accountExpiresAt: isAuthorizedView ? undefined : row.account_expires_at ?? undefined,
+      cooldownUntil: isAuthorizedView ? undefined : row.cooldown_until ?? undefined,
+      lastErrorMessage: isAuthorizedView ? undefined : row.last_error_message ?? undefined,
+      lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? usage.lastUsedAt,
+      todayUsage,
+      usage,
+      oauthUsage: !isAuthorizedView && row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined,
+      accessType: row.access_type ?? 'owner',
+      accountAuthorizationId: row.authorization_id ?? undefined,
+      boundGroupId: groupBinding?.groupId,
+      boundGroupName: groupBinding?.groupName,
+      groupBindStatus: groupBinding?.groupBindStatus,
+      authorizationStatus: row.authorization_status ?? undefined,
+      authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(sourcesByAuthorization.get(row.authorization_id) ?? [], isAuthorizedView) : undefined,
+      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions(),
+      authorizationUsageAvailable: !isAuthorizedView && authorizationStats.authorizationCount > 0 && canManageResourceOwner(row.system_account_id, access),
+      authorizationCount: isAuthorizedView ? 0 : authorizationStats.authorizationCount,
+      authorizationTeamCount: isAuthorizedView ? 0 : authorizationStats.authorizationTeamCount
     }
   })
 }
@@ -665,8 +705,7 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
   if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode) {
     throw new Error('Invalid account group')
   }
-  const access = resolveAccessScope()
-  const proxyProfileId = canSetGlobalProxyProfile(access) ? globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id)) : undefined
+  const proxyProfileId = globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
   const account: AccountSummary = {
     id,
     systemAccountId: includeSystemAccountFields() ? systemAccountId : undefined,
@@ -753,8 +792,6 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
   if (!canManageResourceOwner(systemAccountId)) {
     return undefined
   }
-  const access = resolveAccessScope()
-
   const credentials = typeof input.credentials === 'object' && input.credentials !== null
     ? input.credentials as Record<string, unknown>
     : current.credentials
@@ -812,10 +849,8 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
     status: nextStatus,
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? current.concurrencyLimit),
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? current.priority),
-    proxyProfileId: canSetGlobalProxyProfile(access)
-      ? (Object.prototype.hasOwnProperty.call(input, 'proxyProfileId') || Object.prototype.hasOwnProperty.call(input, 'proxy_profile_id')
-        ? globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
-        : current.proxyProfileId)
+    proxyProfileId: Object.prototype.hasOwnProperty.call(input, 'proxyProfileId') || Object.prototype.hasOwnProperty.call(input, 'proxy_profile_id')
+      ? globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
       : current.proxyProfileId,
     passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
@@ -1170,10 +1205,11 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const accountNames = loadSystemAccountNameMap()
   return rows.map((row) => {
-    const todayUsage = row.access_type === 'authorized' && row.authorization_id
+    const isAuthorizedView = row.access_type === 'authorized'
+    const todayUsage = isAuthorizedView && row.authorization_id
       ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : todayUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
-    const totalUsage = row.access_type === 'authorized' && row.authorization_id
+    const totalUsage = isAuthorizedView && row.authorization_id
       ? totalUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : totalUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
     return {
@@ -1184,16 +1220,16 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
       ownerSystemAccountName: accountNames.get(row.system_account_id),
       name: row.name,
       providerCode: row.provider_code,
-      description: row.description ?? undefined,
+      description: isAuthorizedView ? undefined : row.description ?? undefined,
       enabled: row.enabled === 1,
-      isDefault: row.is_default === 1,
-      accountIds: accountIdsByGroup.get(row.id) ?? [],
-      accountStats: groupAccountStatsFromRow(groupStatsByGroup.get(row.id), todayUsage, totalUsage),
+      isDefault: isAuthorizedView ? false : row.is_default === 1,
+      accountIds: isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? [],
+      accountStats: groupAccountStatsFromRow(isAuthorizedView ? undefined : groupStatsByGroup.get(row.id), todayUsage, totalUsage),
       accessType: row.access_type ?? 'owner',
       groupAuthorizationId: row.authorization_id ?? undefined,
       authorizationStatus: row.authorization_status ?? undefined,
-      authorizationSources: row.authorization_id ? sourcesByAuthorization.get(row.authorization_id) ?? [] : undefined,
-      permissions: row.access_type === 'authorized' && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
+      authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(sourcesByAuthorization.get(row.authorization_id) ?? [], isAuthorizedView) : undefined,
+      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
   })
 }
@@ -1225,6 +1261,9 @@ export function updateGroup(id: string, input: Record<string, unknown>): GroupSu
   if (!current) {
     return undefined
   }
+  if (current.isDefault) {
+    throw new DefaultGroupReadonlyError()
+  }
   const systemAccountId = groupOwnerAndProvider(id)?.systemAccountId ?? currentSystemAccountId()
   if (!canManageResourceOwner(systemAccountId)) {
     return undefined
@@ -1237,38 +1276,13 @@ export function updateGroup(id: string, input: Record<string, unknown>): GroupSu
     description: hasDescriptionInput ? optionalNullableString(input.description) ?? undefined : current.description,
     enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled
   }
+  if (next.providerCode !== current.providerCode && current.accountStats.total > 0) {
+    throw new Error('已有账户的分组不允许修改供应商')
+  }
   const database = getDatabase()
   database
     .prepare('UPDATE groups SET name = ?, provider_code = ?, description = ?, enabled = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
     .run(next.name, next.providerCode, next.description ?? null, next.enabled ? 1 : 0, nowIso(), id, systemAccountId)
-  const cleanupResult = database
-    .prepare(`
-      DELETE FROM group_accounts
-      WHERE group_id = ?
-        AND system_account_id = ?
-        AND account_id IN (
-          SELECT accounts.id
-          FROM accounts
-          LEFT JOIN resource_authorizations account_authorizations
-            ON account_authorizations.id = group_accounts.account_authorization_id
-          WHERE accounts.provider_code <> ?
-            OR (
-              accounts.system_account_id <> ?
-              AND (
-                account_authorizations.id IS NULL
-                OR account_authorizations.status <> 'active'
-                OR (
-                  account_authorizations.expires_at IS NOT NULL
-                  AND account_authorizations.expires_at <= ?
-                )
-              )
-            )
-        )
-    `)
-    .run(id, systemAccountId, next.providerCode, systemAccountId, nowIso())
-  if (Number(cleanupResult.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite()
-  }
   return listGroups().find((group) => group.id === id)
 }
 
@@ -1374,12 +1388,41 @@ export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
         FROM system_teams
         INNER JOIN system_team_members ON system_team_members.team_id = system_teams.id
         WHERE system_team_members.system_account_id = ?
+          AND system_team_members.status = 'active'
         ORDER BY system_teams.status ASC, system_teams.updated_at DESC, system_teams.name ASC
       `)
       .all(scopedId) as unknown as SystemTeamRow[]
     : getDatabase().prepare('SELECT * FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC').all() as unknown as SystemTeamRow[]
   const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
   return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
+}
+
+export function listAuthorizationGranteeAccounts(access?: AccessScope): SystemAccountPrincipalSummary[] {
+  const database = getDatabase()
+  if (canAccessAll(access)) {
+    const rows = database.prepare('SELECT * FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC').all() as unknown as SystemAccountRow[]
+    return rows.map(systemAccountPrincipalSummaryFromRow)
+  }
+  const viewerId = currentSystemAccountId(access)
+  const rows = database
+    .prepare(`
+      SELECT DISTINCT system_accounts.*
+      FROM system_accounts
+      WHERE system_accounts.id = ?
+         OR system_accounts.id IN (
+           SELECT active_members.system_account_id
+           FROM system_team_members viewer_members
+           INNER JOIN system_team_members active_members ON active_members.team_id = viewer_members.team_id
+           INNER JOIN system_teams ON system_teams.id = viewer_members.team_id
+           WHERE viewer_members.system_account_id = ?
+             AND viewer_members.status = 'active'
+             AND active_members.status = 'active'
+             AND system_teams.status = 'active'
+         )
+      ORDER BY system_accounts.status ASC, system_accounts.display_name ASC, system_accounts.username ASC
+    `)
+    .all(viewerId, viewerId) as unknown as SystemAccountRow[]
+  return rows.map(systemAccountPrincipalSummaryFromRow)
 }
 
 export function createSystemTeam(input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary {
@@ -1501,6 +1544,10 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
   if (status) { clauses.push('ra.status = ?'); params.push(status) }
   const teamId = optionalString(filters.teamId ?? filters.team_id)
   if (teamId) {
+    if (!canAccessAll(access)) {
+      clauses.push('EXISTS (SELECT 1 FROM system_team_members stm WHERE stm.team_id = ? AND stm.system_account_id = ? AND stm.status = \'active\')')
+      params.push(teamId, currentSystemAccountId(access))
+    }
     clauses.push("EXISTS (SELECT 1 FROM resource_authorization_sources ras WHERE ras.authorization_id = ra.id AND ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active')")
     params.push(teamId)
   }
@@ -1509,7 +1556,7 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
   else if (!canAccessAll(access)) { clauses.push('ra.resource_owner_system_account_id = ?'); params.push(currentSystemAccountId(access)) }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY CASE ra.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, ra.updated_at DESC, ra.created_at DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
-  return resourceAuthorizationSummaries(rows)
+  return resourceAuthorizationSummaries(rows).map((summary) => sanitizeResourceAuthorizationSummaryForAccess(summary, access))
 }
 
 export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
@@ -1667,6 +1714,15 @@ export function getResourceAuthorizationUsage(authorizationId: string, access?: 
 
 function systemTeamSummaryFromRow(row: SystemTeamRow, members: SystemTeamMemberSummary[], _access?: AccessScope): SystemTeamSummary {
   return { id: row.id, name: row.name, description: row.description ?? undefined, status: row.status, memberCount: members.length, activeMemberCount: members.filter((member) => member.status === 'active').length, members, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }
+}
+
+function systemAccountPrincipalSummaryFromRow(row: SystemAccountRow): SystemAccountPrincipalSummary {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    status: row.status
+  }
 }
 
 function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false): Map<string, SystemTeamMemberSummary[]> {
@@ -2061,6 +2117,22 @@ function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[]): Resou
       updatedAt: row.updated_at
     }
   })
+}
+
+function sanitizeResourceAuthorizationSummaryForAccess(summary: ResourceAuthorizationSummary, access?: AccessScope): ResourceAuthorizationSummary {
+  if (canAccessAll(access) || canManageResourceOwner(summary.resourceOwnerSystemAccountId, access)) {
+    return summary
+  }
+  const sources = sanitizeAuthorizationSourcesForViewer(summary.authorizationSources ?? summary.sources, true) ?? []
+  return {
+    ...summary,
+    effectiveSourceTeamId: undefined,
+    effectiveSourceTeamName: undefined,
+    sources,
+    authorizationSources: sources,
+    createdBy: '',
+    revokedBy: undefined
+  }
 }
 
 function loadResourceAuthorizationUsageSummaries(rows: ResourceAuthorizationRow[], statDate?: string): Map<string, AccountUsageSummary> {

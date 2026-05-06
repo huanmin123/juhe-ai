@@ -16,7 +16,7 @@
       <a-select :value="filters.status" class="toolbar-select responsive-list-inline-filter" :options="statusOptions" @update:value="emit('update:status', $event)" />
       <a-select :value="filters.schedulable" class="toolbar-select responsive-list-inline-filter" :options="schedulableOptions" @update:value="emit('update:schedulable', $event)" />
       <SystemPrincipalSelect
-        v-if="isAdmin"
+        v-if="isManagementView"
         :value="filters.systemAccountId"
         :accounts="systemAccounts"
         :active-only="false"
@@ -42,7 +42,7 @@
         <span>启停状态</span>
         <a-select :value="filters.schedulable" :options="schedulableOptions" @update:value="emit('update:schedulable', $event)" />
       </label>
-      <label v-if="isAdmin" class="mobile-filter-field">
+      <label v-if="isManagementView" class="mobile-filter-field">
         <span>系统账户</span>
         <SystemPrincipalSelect
           :value="filters.systemAccountId"
@@ -73,7 +73,7 @@ type SelectValue = string | string[] | undefined
 defineProps<{
   activeFilterCount: number
   filters: AccountFilters
-  isAdmin: boolean
+  isManagementView: boolean
   refreshLoading: boolean
   schedulableOptions: ReadonlyArray<FilterOption<SchedulableFilter>>
   statusOptions: Array<FilterOption<'all' | AccountStatus>>

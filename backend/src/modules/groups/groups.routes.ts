@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createGroup, deleteGroup, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroup, deleteGroup, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
@@ -55,7 +55,17 @@ groupsRouter.patch('/:id', (req, res) => {
       return
     }
   }
-  const group = updateGroup(req.params.id, req.body as Record<string, unknown>)
+  let group: ReturnType<typeof updateGroup>
+  try {
+    group = updateGroup(req.params.id, req.body as Record<string, unknown>)
+  } catch (error) {
+    if (error instanceof DefaultGroupReadonlyError) {
+      res.status(400).json(badRequest(error.message))
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Update group failed'))
+    return
+  }
   if (!group) {
     res.status(404).json({ message: 'Group not found' })
     return

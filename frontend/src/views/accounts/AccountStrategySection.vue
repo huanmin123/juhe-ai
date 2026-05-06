@@ -18,7 +18,7 @@
       </a-form-item>
     </div>
     <div class="form-help strategy-help">优先级数字越小越优先；当前账号失败后会切换到下一个可用账号。</div>
-    <a-form-item v-if="isAdmin" class="strategy-proxy-field" label="代理">
+    <a-form-item class="strategy-proxy-field" label="代理">
       <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
     </a-form-item>
   </section>
@@ -29,7 +29,6 @@ import type { AccountFormModel } from './accountFormTypes'
 
 defineProps<{
   form: AccountFormModel
-  isAdmin: boolean
   proxyOptions: Array<{ label: string; value: string }>
   statusOptions: Array<{ label: string; value: string }>
 }>()

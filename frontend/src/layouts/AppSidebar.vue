@@ -198,6 +198,17 @@ const emit = defineEmits<{
   line-height: 40px;
 }
 
+:deep(.ant-menu-item-group-title) {
+  padding: 14px 20px 4px;
+  color: rgba(255, 255, 255, 0.48);
+  font-size: 12px;
+  line-height: 18px;
+}
+
+:deep(.ant-menu-inline-collapsed .ant-menu-item-group-title) {
+  display: none;
+}
+
 :deep(.ant-menu-dark .ant-menu-item-selected) {
   background: linear-gradient(135deg, #1677ff 0%, #2f80ed 100%);
   box-shadow: 0 8px 20px rgba(22, 119, 255, 0.26);

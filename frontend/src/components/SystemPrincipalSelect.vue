@@ -17,7 +17,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
-import type { SystemAccountSummary, SystemTeamSummary } from '@/types/domain'
+import type { SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 
 type PrincipalKind = 'system_account' | 'team'
 type PrincipalScope = PrincipalKind | 'all'
@@ -30,7 +30,7 @@ defineOptions({
 
 const props = withDefaults(defineProps<{
   value?: SelectValue
-  accounts?: SystemAccountSummary[]
+  accounts?: SystemAccountPrincipalSummary[]
   teams?: SystemTeamSummary[]
   scope?: PrincipalScope
   activeOnly?: boolean
@@ -110,7 +110,7 @@ function principalValue(kind: PrincipalKind, id: string): string {
   return props.scope === 'all' ? `${kind}:${id}` : id
 }
 
-function systemAccountLabel(account: SystemAccountSummary): string {
+function systemAccountLabel(account: SystemAccountPrincipalSummary): string {
   const displayName = account.displayName || account.username
   return displayName === account.username ? displayName : `${displayName}（${account.username}）`
 }

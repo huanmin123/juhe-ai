@@ -11,7 +11,7 @@ export function filterAccounts(input: {
   accounts: AccountSummary[]
   filters: AccountFilters
   groupNameForAccount: (accountId: string) => string | undefined
-  isAdmin: boolean
+  isManagementView: boolean
 }): AccountSummary[] {
   const keyword = normalizeKeyword(input.filters.keyword)
   return input.accounts.filter((account) => {
@@ -27,17 +27,17 @@ export function filterAccounts(input: {
     const typeMatched = input.filters.type === 'all' || account.type === input.filters.type
     const statusMatched = input.filters.status === 'all' || account.status === input.filters.status
     const schedulableMatched = matchesSchedulableFilter(account, input.filters.schedulable)
-    const systemAccountMatched = matchesSystemAccountFilter(account, input.filters.systemAccountId, input.isAdmin)
+    const systemAccountMatched = matchesSystemAccountFilter(account, input.filters.systemAccountId, input.isManagementView)
     return keywordMatched && typeMatched && statusMatched && schedulableMatched && systemAccountMatched
   })
 }
 
-export function countActiveAccountFilters(filters: AccountFilters, isAdmin: boolean, allSystemAccountsValue: string): number {
+export function countActiveAccountFilters(filters: AccountFilters, isManagementView: boolean, allSystemAccountsValue: string): number {
   return [
     filters.type !== 'all',
     filters.status !== 'all',
     filters.schedulable !== 'all',
-    isAdmin && filters.systemAccountId !== allSystemAccountsValue
+    isManagementView && filters.systemAccountId !== allSystemAccountsValue
   ].filter(Boolean).length
 }
 

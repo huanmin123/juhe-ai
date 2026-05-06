@@ -62,6 +62,8 @@ export interface ProxyProfileSummary {
   lastTestedAt?: string
 }
 
+export type ProxyProfileOptionSummary = Pick<ProxyProfileSummary, 'id' | 'name' | 'type' | 'enabled'>
+
 export type ProxyTestItemStatus = 'passed' | 'warning' | 'failed'
 export type ProxyTestOverallStatus = 'passed' | 'warning' | 'failed' | 'unknown'
 

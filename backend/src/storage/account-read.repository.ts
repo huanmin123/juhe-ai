@@ -13,11 +13,14 @@ export function listAccountRowsForAccess(access: AccessScope | undefined, option
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return getDatabase()
       .prepare(`
-        SELECT account_rows.*
+        SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
         ) account_rows
+        LEFT JOIN ${accountBindingSubquery()} group_bindings
+          ON group_bindings.account_id = account_rows.id
+          AND group_bindings.system_account_id = account_rows.system_account_id
         LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
         LEFT JOIN usage_stats_totals account_usage
           ON account_usage.system_account_id = account_rows.system_account_id
@@ -34,11 +37,14 @@ export function listAccountRowsForAccess(access: AccessScope | undefined, option
   if (!viewerSystemAccountId) {
     return getDatabase()
       .prepare(`
-        SELECT account_rows.*
+        SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
         ) account_rows
+        LEFT JOIN ${accountBindingSubquery()} group_bindings
+          ON group_bindings.account_id = account_rows.id
+          AND group_bindings.system_account_id = account_rows.system_account_id
         LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
         LEFT JOIN usage_stats_totals account_usage
           ON account_usage.system_account_id = account_rows.system_account_id
@@ -54,7 +60,7 @@ export function listAccountRowsForAccess(access: AccessScope | undefined, option
   }
   return getDatabase()
     .prepare(`
-      SELECT account_rows.*
+      SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id
       FROM (
         SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM accounts
@@ -69,6 +75,9 @@ export function listAccountRowsForAccess(access: AccessScope | undefined, option
           AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           AND accounts.system_account_id <> ?
       ) account_rows
+      LEFT JOIN ${accountBindingSubquery()} group_bindings
+        ON group_bindings.account_id = account_rows.id
+        AND group_bindings.system_account_id = CASE WHEN account_rows.access_type = 'authorized' THEN ? ELSE account_rows.system_account_id END
       LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
       LEFT JOIN usage_stats_totals account_usage
         ON account_usage.system_account_id = account_rows.system_account_id
@@ -80,7 +89,7 @@ export function listAccountRowsForAccess(access: AccessScope | undefined, option
         AND authorization_usage.scope_id = account_rows.authorization_id
       ${orderClause}
     `)
-    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as AccountListRow[]
+    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId) as unknown as AccountListRow[]
 }
 
 export function accountCredentialsForList(row: AccountListRow): Record<string, unknown> {
@@ -93,4 +102,18 @@ export function accountCredentialsForList(row: AccountListRow): Record<string, u
 
 export function loadAccountAuthorizationUsageSummaries(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
   return loadAuthorizationUsageSummariesForScopes(scopes, 'account_authorization', statDate)
+}
+
+function accountBindingSubquery(): string {
+  return `(
+    SELECT
+      group_accounts.system_account_id,
+      group_accounts.account_id,
+      group_accounts.group_id,
+      group_accounts.account_authorization_id,
+      groups.name AS group_name
+    FROM group_accounts
+    INNER JOIN groups ON groups.id = group_accounts.group_id
+    WHERE group_accounts.enabled = 1
+  )`
 }

@@ -48,7 +48,7 @@
         :can-delete="canDelete(record)"
         :can-edit="canEdit(record)"
         :group-name="groupName(record.id)"
-        :is-admin="isAdmin"
+        :is-management-view="isManagementView"
         :menu-items="menuItems(record)"
         :provider-name="providerName(record.providerCode)"
         :selected="isSelected(record.id)"
@@ -79,7 +79,7 @@ defineProps<{
   canEdit: (account: AccountSummary) => boolean
   columns: Array<Record<string, unknown>>
   groupName: (accountId: string) => string | undefined
-  isAdmin: boolean
+  isManagementView: boolean
   isSelected: (accountId: string) => boolean
   loading: boolean
   loadingMore: boolean

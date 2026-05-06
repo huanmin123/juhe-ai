@@ -1,7 +1,7 @@
 <template>
   <a-card class="page-card settings-page-card">
     <div class="settings-shell">
-      <a-form v-if="isAdmin" layout="vertical" class="settings-form">
+      <a-form layout="vertical" class="settings-form">
         <section class="settings-section global-section">
           <div class="section-heading">
             <div>
@@ -180,7 +180,6 @@ import { message } from '@/lib/antd'
 import { onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
-import { authState } from '@/composables/useAuth'
 import { applyAppBrand } from '@/composables/useAppBrand'
 import {
   defaultGlobalSettings,
@@ -191,7 +190,6 @@ import {
   type SystemForm
 } from './settingsForm'
 
-const isAdmin = authState.isAdmin
 const savingGlobal = ref(false)
 const savingSystem = ref(false)
 const globalForm = reactive<GlobalForm>({ ...defaultGlobalSettings })
@@ -201,7 +199,7 @@ async function loadSettings() {
   try {
     const [systemSettings, globalSettings] = await Promise.all([
       api.settings.get(),
-      isAdmin.value ? api.settings.global() : api.settings.public()
+      api.settings.global()
     ])
     Object.assign(systemForm, normalizeSystemSettings(systemSettings))
     Object.assign(globalForm, normalizeGlobalSettings(globalSettings))

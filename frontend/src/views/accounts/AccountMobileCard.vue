@@ -18,7 +18,7 @@
     </div>
 
     <div class="account-mobile-meta-grid">
-      <div v-if="isAdmin" class="account-mobile-meta-item">
+      <div v-if="isManagementView" class="account-mobile-meta-item">
         <span>系统账户</span>
         <strong>{{ account.systemAccountName || account.systemAccountId || '-' }}</strong>
       </div>
@@ -97,7 +97,7 @@ defineProps<{
   canDelete: boolean
   canEdit: boolean
   groupName?: string
-  isAdmin: boolean
+  isManagementView: boolean
   menuItems: AccountMenuItem[]
   providerName: string
   selected: boolean

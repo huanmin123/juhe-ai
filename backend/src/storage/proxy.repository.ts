@@ -37,6 +37,8 @@ export interface ProxyProfileSummary {
   lastTestedAt?: string
 }
 
+export type ProxyProfileOptionSummary = Pick<ProxyProfileSummary, 'id' | 'name' | 'type' | 'enabled'>
+
 export interface ProxyProfileTestConfig extends ProxyProfileSummary {
   proxyUrl: string
 }
@@ -52,6 +54,18 @@ export class ProxyInUseError extends Error {
 export function listProxies(): ProxyProfileSummary[] {
   const rows = getDatabase().prepare('SELECT * FROM proxy_profiles ORDER BY updated_at DESC').all() as unknown as ProxyRow[]
   return rows.map(proxySummaryFromRow)
+}
+
+export function listProxyOptions(): ProxyProfileOptionSummary[] {
+  const rows = getDatabase()
+    .prepare('SELECT id, name, type, enabled FROM proxy_profiles WHERE enabled = 1 ORDER BY name ASC, updated_at DESC')
+    .all() as unknown as Array<Pick<ProxyRow, 'id' | 'name' | 'type' | 'enabled'>>
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    type: row.type,
+    enabled: row.enabled === 1
+  }))
 }
 
 function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {

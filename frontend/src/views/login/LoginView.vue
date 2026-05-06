@@ -94,7 +94,7 @@ async function handleLogin() {
     if (user.mustChangePassword) {
       message.warning('当前账户仍在使用初始密码，请尽快在右上角修改密码')
     }
-    await router.replace(typeof route.query.redirect === 'string' ? route.query.redirect : '/accounts')
+    await router.replace(typeof route.query.redirect === 'string' ? route.query.redirect : '/my-accounts')
   } catch (error) {
     console.error(error)
     message.error(getLoginErrorMessage(error))

@@ -131,7 +131,8 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 22. `PATCH /api/api-keys/:id`
 23. `DELETE /api/api-keys/:id`
 24. `GET /api/proxies`
-25. `POST /api/proxies`
+25. `GET /api/proxies/options`
+26. `POST /api/proxies`
 
 ## 暂不做
 

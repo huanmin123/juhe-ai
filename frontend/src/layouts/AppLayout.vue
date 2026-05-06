@@ -112,14 +112,21 @@ const ApiKeyMenuIcon = () =>
 
 const menuIconMap = {
   '/providers': GlobalOutlined,
+  '/my-accounts': UserSwitchOutlined,
   '/accounts': UserSwitchOutlined,
+  '/my-groups': ApartmentOutlined,
   '/groups': ApartmentOutlined,
   '/system-teams': TeamOutlined,
+  '/my-teams': TeamOutlined,
+  '/my-authorizations': SafetyCertificateOutlined,
   '/authorizations': SafetyCertificateOutlined,
+  '/my-api-keys': ApiKeyMenuIcon,
   '/api-keys': ApiKeyMenuIcon,
   '/proxies': NodeIndexOutlined,
   '/stats': BarChartOutlined,
+  '/my-usage-stats': FundOutlined,
   '/usage-stats': FundOutlined,
+  '/my-usage-records': HistoryOutlined,
   '/usage-records': HistoryOutlined,
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,
@@ -127,16 +134,42 @@ const menuIconMap = {
   '/system-accounts': TeamOutlined
 }
 
-const menuItems = computed<ItemType[]>(() => menuRoutes
-  .filter((item) => !item.meta?.roles?.length || (currentUser.value && item.meta.roles.includes(currentUser.value.role)))
-  .map((item) => {
-    const iconComponent = menuIconMap[item.path as keyof typeof menuIconMap]
-    return {
-      key: item.path,
-      label: item.meta?.title ?? '',
-      ...(iconComponent ? { icon: () => h(iconComponent) } : {})
-    }
-  }))
+function canAccessRoute(item: typeof menuRoutes[number]): boolean {
+  return !item.meta?.roles?.length || Boolean(currentUser.value && item.meta.roles.includes(currentUser.value.role))
+}
+
+function routeToMenuItem(item: typeof menuRoutes[number]): ItemType {
+  const iconComponent = menuIconMap[item.path as keyof typeof menuIconMap]
+  return {
+    key: item.path,
+    label: item.meta?.title ?? '',
+    ...(iconComponent ? { icon: () => h(iconComponent) } : {})
+  }
+}
+
+const visibleMenuRoutes = computed(() => menuRoutes.filter(canAccessRoute))
+
+const menuItems = computed<ItemType[]>(() => {
+  const selfItems = visibleMenuRoutes.value
+    .filter((item) => item.meta?.viewScope === 'self')
+    .map(routeToMenuItem)
+  const adminItems = visibleMenuRoutes.value
+    .filter((item) => item.meta?.viewScope !== 'self')
+    .map(routeToMenuItem)
+
+  if (currentUser.value?.role !== 'admin') {
+    return selfItems
+  }
+
+  const groupedItems: ItemType[] = []
+  if (selfItems.length) {
+    groupedItems.push({ type: 'group', label: '我的菜单', children: selfItems } as ItemType)
+  }
+  if (adminItems.length) {
+    groupedItems.push({ type: 'group', label: '管理菜单', children: adminItems } as ItemType)
+  }
+  return groupedItems
+})
 
 function handleMenuClick(event: { key: string | number }) {
   router.push(String(event.key))

@@ -163,4 +163,3 @@ function isOpenAIGroup(groupId: string): boolean {
   return listGroups().some((group) => group.id === groupId && group.providerCode === 'openai')
 }
 
-
