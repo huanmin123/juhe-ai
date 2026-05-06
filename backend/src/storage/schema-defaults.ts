@@ -41,6 +41,8 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['auditLogQueueMaxBytesMb', 256],
   ['auditLogActiveCaptureMaxBytesMb', 64],
   ['auditLogRetentionDays', 7],
+  ['proxyLatencyRefreshIntervalSeconds', 60],
+  ['proxyLatencyRefreshBatchSize', 20],
   ['usageRecordRetentionDays', 7],
   ['usageStatsDailyRetentionDays', 30],
   ['usageStatsHourlyRetentionDays', 30],

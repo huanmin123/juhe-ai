@@ -8,6 +8,7 @@ export interface GatewayApiKeyRow {
   group_id: string
   status: 'active' | 'disabled'
   expires_at: string | null
+  quota_limits_json: string | null
 }
 
 type GatewayApiKeyCacheEntry = {
@@ -36,7 +37,7 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
   }
 
   const row = getDatabase().prepare(`
-    SELECT api_keys.id, api_keys.system_account_id, api_keys.group_id, api_keys.status, api_keys.expires_at
+    SELECT api_keys.id, api_keys.system_account_id, api_keys.group_id, api_keys.status, api_keys.expires_at, api_keys.quota_limits_json
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
     LEFT JOIN resource_authorizations group_authorizations

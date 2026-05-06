@@ -1,4 +1,4 @@
-import type { AccountGroupBindStatus, AccountStatus, AccountType, AuthorizationStatus, ProviderCode, ResourceAccessType } from './base'
+import type { AccountGroupBindStatus, AccountStatus, AccountTrafficMigrationSourceStatus, AccountType, AuthorizationStatus, ProviderCode, ResourceAccessType } from './base'
 import type { AccountUsageSummary } from './usage-stats'
 
 export interface AccountCredentials {
@@ -115,6 +115,14 @@ export interface AccountTestResult {
   accountStatus?: AccountStatus
   errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable' | 'default_cooldown'
   errorPolicyReason?: string
+}
+
+export interface AccountTrafficMigrationResult {
+  sourceAccount: AccountSummary
+  targetAccount: AccountSummary
+  migratedSessionCount: number
+  sourceStatus: AccountTrafficMigrationSourceStatus
+  sourceCooldownUntil?: string | null
 }
 
 export interface ErrorPolicySummary {

@@ -12,7 +12,7 @@
   <span v-else-if="columnKey === 'systemAccount'" :class="account.systemAccountName ? 'name-cell' : 'muted-cell'">
     {{ account.systemAccountName || account.systemAccountId || '-' }}
   </span>
-  <span v-else-if="columnKey === 'notes'">{{ account.notes || '-' }}</span>
+  <span v-else-if="columnKey === 'notes'" class="account-notes-text">{{ account.notes || '-' }}</span>
   <template v-else-if="columnKey === 'group'">
     <a-tooltip v-if="groupName" :title="groupName">
       <span class="account-group-text">{{ groupName }}</span>
@@ -84,6 +84,14 @@ defineEmits<{
 .account-group-text {
   display: block;
   width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-notes-text {
+  display: block;
+  max-width: 100%;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

@@ -23,6 +23,8 @@ export interface SystemForm {
   auditLogQueueMaxBytesMb: number
   auditLogActiveCaptureMaxBytesMb: number
   auditLogRetentionDays: number
+  proxyLatencyRefreshIntervalSeconds: number
+  proxyLatencyRefreshBatchSize: number
 }
 
 export const defaultGlobalSettings: GlobalForm = {
@@ -46,7 +48,9 @@ export const defaultSystemSettings: SystemForm = {
   auditLogQueueMaxItems: 1000,
   auditLogQueueMaxBytesMb: 256,
   auditLogActiveCaptureMaxBytesMb: 64,
-  auditLogRetentionDays: 7
+  auditLogRetentionDays: 7,
+  proxyLatencyRefreshIntervalSeconds: 60,
+  proxyLatencyRefreshBatchSize: 20
 }
 
 export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): GlobalForm {
@@ -73,7 +77,9 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     auditLogQueueMaxItems: numberValue(settings.auditLogQueueMaxItems, defaultSystemSettings.auditLogQueueMaxItems, 1, 100000),
     auditLogQueueMaxBytesMb: numberValue(settings.auditLogQueueMaxBytesMb, defaultSystemSettings.auditLogQueueMaxBytesMb, 1, 10240),
     auditLogActiveCaptureMaxBytesMb: numberValue(settings.auditLogActiveCaptureMaxBytesMb, defaultSystemSettings.auditLogActiveCaptureMaxBytesMb, 1, 10240),
-    auditLogRetentionDays: numberValue(settings.auditLogRetentionDays, defaultSystemSettings.auditLogRetentionDays, 1, 7)
+    auditLogRetentionDays: numberValue(settings.auditLogRetentionDays, defaultSystemSettings.auditLogRetentionDays, 1, 7),
+    proxyLatencyRefreshIntervalSeconds: numberValue(settings.proxyLatencyRefreshIntervalSeconds, defaultSystemSettings.proxyLatencyRefreshIntervalSeconds, 10, 3600),
+    proxyLatencyRefreshBatchSize: numberValue(settings.proxyLatencyRefreshBatchSize, defaultSystemSettings.proxyLatencyRefreshBatchSize, 1, 100)
   }
 }
 

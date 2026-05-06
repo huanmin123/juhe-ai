@@ -3,6 +3,8 @@ import axios from 'axios'
 import type {
   AccountSummary,
   AccountTestResult,
+  AccountTrafficMigrationResult,
+  AccountTrafficMigrationSourceStatus,
   AccountAuthorizationUsageOverview,
   AccountUsageStatsOverview,
   AuditLogDetail,
@@ -24,6 +26,7 @@ import type {
   ProviderDefinition,
   ProviderModelPricing,
   ProxyProfileSummary,
+  ProxyTestReport,
   RuntimeLogFacets,
   RuntimeLogLevel,
   RuntimeLogGrepResult,
@@ -154,6 +157,7 @@ export const api = {
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload)),
     bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload)),
+    migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload)),
     test: (id: string, payload?: { model?: string; prompt?: string }) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { timeout: 130000 })),
     delete: (id: string) => http.delete(`/accounts/${id}`)
   },
@@ -200,6 +204,7 @@ export const api = {
     list: () => unwrap<ProxyProfileSummary[]>(http.get('/proxies')),
     create: (payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.post('/proxies', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.patch(`/proxies/${id}`, payload)),
+    test: (id: string) => unwrap<ProxyTestReport>(http.post(`/proxies/${id}/test`, {}, { timeout: 120000 })),
     delete: (id: string) => http.delete(`/proxies/${id}`)
   },
   usageRecords: {

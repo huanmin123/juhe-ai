@@ -17,6 +17,8 @@ export interface SystemSettings {
   auditLogQueueMaxBytesMb?: number
   auditLogActiveCaptureMaxBytesMb?: number
   auditLogRetentionDays?: number
+  proxyLatencyRefreshIntervalSeconds?: number
+  proxyLatencyRefreshBatchSize?: number
   [key: string]: unknown
 }
 

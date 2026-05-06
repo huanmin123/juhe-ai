@@ -22,6 +22,7 @@ import {
   isOpenAIOAuthUsageSnapshotDue,
   refreshOpenAIOAuthUsageSnapshot
 } from '../openai-oauth/openai-oauth-usage-refresh.service.js'
+import { refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { flushUsageRecordQueue } from '../gateway/usage-record-queue.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
@@ -44,6 +45,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'group-account-stats-refresh', intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 60, 5, 3600) * 1000, task: runGroupAccountStatsRefresh })
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: 60 * 1000, task: runResourceAuthorizationExpirySweep })
   scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000, task: runSystemMetricsSample })
+  scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: settingsNumber('proxyLatencyRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runProxyLatencyRefresh })
   scheduler.schedule({ name: 'openai-oauth-usage-refresh', intervalMs: settingsNumber('oauthUsageSnapshotRefreshIntervalSeconds', 300, 60, 86400) * 1000, task: runOpenAIOAuthUsageRefresh })
   scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000, task: runCooldownAccountRetest })
   scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * 60 * 1000, task: runRuntimeLogIndexMaintenance })
@@ -119,6 +121,14 @@ async function runOpenAIOAuthUsageRefresh(): Promise<void> {
   const candidates = openAIOAuthUsageRefreshCandidates()
   for (const account of candidates) {
     await refreshOpenAIOAuthUsageSnapshot(account)
+  }
+}
+
+async function runProxyLatencyRefresh(): Promise<void> {
+  try {
+    await refreshProxyLatencyBatch(settingsNumber('proxyLatencyRefreshBatchSize', 20, 1, 100))
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_proxy_latency_refresh_failed' }), 'Proxy latency refresh failed')
   }
 }
 

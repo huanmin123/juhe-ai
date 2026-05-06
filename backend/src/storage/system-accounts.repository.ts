@@ -16,9 +16,12 @@ interface SystemSessionRow {
   last_seen_at: string
 }
 
+const sessionTouchMinIntervalMs = 60 * 1000
+
 export interface SessionWithAccount {
   sessionId: string
   expiresAt: string
+  lastSeenAt: string
   account: SystemAccountSummary
 }
 
@@ -204,15 +207,22 @@ export function findSessionByToken(token: string): (SessionWithAccount & { token
   return {
     sessionId: row.id,
     expiresAt: row.expires_at,
+    lastSeenAt: row.last_seen_at,
     tokenHash: row.token_hash,
     account: systemAccountSummaryFromRow({ ...row, id: row.account_id })
   }
 }
 
-export function touchSession(sessionId: string): void {
+export function touchSession(sessionId: string, lastSeenAt?: string): void {
+  const nowMs = Date.now()
+  if (lastSeenAt && Number.isFinite(Date.parse(lastSeenAt)) && nowMs - Date.parse(lastSeenAt) < sessionTouchMinIntervalMs) {
+    return
+  }
+
+  const cutoff = new Date(nowMs - sessionTouchMinIntervalMs).toISOString()
   getDatabase()
-    .prepare('UPDATE system_sessions SET last_seen_at = ? WHERE id = ?')
-    .run(nowIso(), sessionId)
+    .prepare('UPDATE system_sessions SET last_seen_at = ? WHERE id = ? AND last_seen_at < ?')
+    .run(new Date(nowMs).toISOString(), sessionId, cutoff)
 }
 
 export function revokeSession(token: string): void {

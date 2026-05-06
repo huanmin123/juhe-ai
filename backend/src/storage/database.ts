@@ -6,6 +6,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { applySchema, seedDefaults } from './schema.js'
 
 let database: DatabaseSync | undefined
+const sqliteBusyTimeoutMs = 5000
 
 export function getDatabase(): DatabaseSync {
   if (database) {
@@ -16,9 +17,16 @@ export function getDatabase(): DatabaseSync {
   mkdirSync(dirname(databasePath), { recursive: true })
 
   database = new DatabaseSync(databasePath)
+  configureDatabase(database)
   applySchema(database)
   seedDefaults(database)
   return database
+}
+
+function configureDatabase(database: DatabaseSync): void {
+  database.exec(`
+    PRAGMA busy_timeout = ${sqliteBusyTimeoutMs};
+  `)
 }
 
 export function nowIso(): string {

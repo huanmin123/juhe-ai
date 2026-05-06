@@ -19,13 +19,20 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll-x="isAdmin ? 1390 : 1210" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll-x="isAdmin ? 1580 : 1400" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'status'">
           <StatusTag :color="record.status === 'active' ? 'green' : 'default'" :label="record.status === 'active' ? '启用' : '停用'" />
+        </template>
+        <template v-else-if="column.key === 'usage'">
+          <div class="api-key-usage-cell">
+            <a-tag class="api-key-usage-tag">{{ `${record.usage.requestCount}req` }}</a-tag>
+            <a-tag class="api-key-usage-tag">{{ formatUsageAmount(record.usage.totalTokens) }}</a-tag>
+            <a-tag class="api-key-usage-tag">{{ formatCost(record.usage.totalCost) }}</a-tag>
+          </div>
         </template>
         <template v-else-if="column.key === 'key'">
           <div class="key-preview-cell">
@@ -47,7 +54,7 @@
         <template v-else-if="column.key === 'actions'">
           <a-space class="row-actions" :size="8">
             <a-button type="link" size="small" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm title="确认删除这个 API Key？" @confirm="removeApiKey(record.id)">
+            <a-popconfirm title="确认删除这个 API Key？相关使用记录、审计日志和统计缓存会一起删除。" @confirm="removeApiKey(record.id)">
               <a-button type="link" size="small" danger>删除</a-button>
             </a-popconfirm>
           </a-space>
@@ -76,13 +83,17 @@
               <strong>{{ formatDateTime(record.expiresAt) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>累计用量</span>
+              <strong>{{ formatUsageSummary(record.usage) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>说明</span>
               <strong>{{ record.description || '-' }}</strong>
             </div>
           </div>
           <div class="mobile-list-card-actions two-actions">
             <a-button type="primary" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm title="确认删除这个 API Key？" @confirm="removeApiKey(record.id)">
+            <a-popconfirm title="确认删除这个 API Key？相关使用记录、审计日志和统计缓存会一起删除。" @confirm="removeApiKey(record.id)">
               <a-button danger>删除</a-button>
             </a-popconfirm>
           </div>
@@ -131,6 +142,20 @@
         <a-form-item label="说明">
           <a-textarea v-model:value="form.description" :rows="3" placeholder="可选，填写用途或接入方说明" />
         </a-form-item>
+        <a-divider orientation="left">额度限制</a-divider>
+        <div class="quota-limit-grid">
+          <div class="quota-limit-item quota-limit-hourly">
+            <a-switch v-model:checked="form.quotaLimits.hourly.enabled" />
+            <span class="quota-limit-title">n 小时额度</span>
+            <a-input-number v-model:value="form.quotaLimits.hourly.hours" :min="1" :max="720" addon-after="小时" :disabled="!form.quotaLimits.hourly.enabled" class="quota-hours-input" />
+            <a-input-number v-model:value="form.quotaLimits.hourly.limit" :min="1" addon-after="次请求" :disabled="!form.quotaLimits.hourly.enabled" class="quota-limit-input" />
+          </div>
+          <div v-for="item in quotaLimitItems" :key="item.key" class="quota-limit-item">
+            <a-switch v-model:checked="form.quotaLimits[item.key].enabled" />
+            <span class="quota-limit-title">{{ item.label }}</span>
+            <a-input-number v-model:value="form.quotaLimits[item.key].limit" :min="1" addon-after="次请求" :disabled="!form.quotaLimits[item.key].enabled" class="quota-limit-input" />
+          </div>
+        </div>
       </a-form>
     </a-modal>
 
@@ -161,8 +186,8 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { authState } from '@/composables/useAuth'
-import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
-import type { ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
+import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
+import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const loading = ref(false)
@@ -175,7 +200,15 @@ const apiKeys = ref<ApiKeySummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const systemAccountFilter = ref(allSystemAccountsValue)
-const form = reactive({ name: '', groupId: '', status: 'active' as 'active' | 'disabled', expiresAt: undefined as Dayjs | undefined, description: '' })
+type QuotaPeriodKey = 'daily' | 'weekly' | 'monthly' | 'total'
+const form = reactive({
+  name: '',
+  groupId: '',
+  status: 'active' as 'active' | 'disabled',
+  expiresAt: undefined as Dayjs | undefined,
+  description: '',
+  quotaLimits: createQuotaLimitForm()
+})
 const isAdmin = authState.isAdmin
 
 const columns = computed(() => {
@@ -189,6 +222,7 @@ const columns = computed(() => {
   baseColumns.push(
     { title: '绑定分组', key: 'group', width: 220 },
     { title: '状态', key: 'status', width: 100 },
+    { title: '累计用量', key: 'usage', width: 190 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
     { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
     { title: '操作', key: 'actions', width: 110, fixed: 'right' }
@@ -199,6 +233,12 @@ const columns = computed(() => {
 const statusOptions = [
   { label: '启用', value: 'active' },
   { label: '停用', value: 'disabled' }
+]
+const quotaLimitItems: Array<{ key: QuotaPeriodKey; label: string }> = [
+  { key: 'daily', label: '日额度（每日 0 点重置）' },
+  { key: 'weekly', label: '周额度（每周一 0 点重置）' },
+  { key: 'monthly', label: '月额度（每月 1 号 0 点重置）' },
+  { key: 'total', label: '总额度（累计）' }
 ]
 
 const groupOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
@@ -252,15 +292,27 @@ function apiKeySystemAccountText(apiKey: ApiKeySummary) {
   return systemAccountDisplayText(apiKey)
 }
 
+function formatUsageSummary(usage: AccountUsageSummary): string {
+  return `${formatNumber(usage.requestCount)}req / ${formatUsageAmount(usage.totalTokens)} / ${formatCost(usage.totalCost)}`
+}
+
+function formatUsageAmount(value?: number): string {
+  return formatCompactUsageAmount(value)
+}
+
+function formatCost(value?: number): string {
+  return formatUsd(value)
+}
+
 function openCreate() {
   editingId.value = undefined
-  Object.assign(form, { name: '', groupId: groups.value[0]?.id ?? '', status: 'active', expiresAt: undefined, description: '' })
+  Object.assign(form, { name: '', groupId: groups.value[0]?.id ?? '', status: 'active', expiresAt: undefined, description: '', quotaLimits: createQuotaLimitForm() })
   modalOpen.value = true
 }
 
 function openEdit(apiKey: ApiKeySummary) {
   editingId.value = apiKey.id
-  Object.assign(form, { name: apiKey.name, groupId: apiKey.groupId, status: apiKey.status, expiresAt: undefined, description: apiKey.description ?? '' })
+  Object.assign(form, { name: apiKey.name, groupId: apiKey.groupId, status: apiKey.status, expiresAt: undefined, description: apiKey.description ?? '', quotaLimits: createQuotaLimitForm(apiKey.quotaLimits) })
   modalOpen.value = true
 }
 
@@ -278,7 +330,8 @@ async function saveApiKey() {
     groupId: form.groupId,
     status: form.status,
     expiresAt: formatServerDateTimeInput(form.expiresAt) ?? undefined,
-    description: form.description
+    description: form.description,
+    quotaLimits: quotaLimitsPayload()
   }
   try {
     if (editingId.value) {
@@ -295,6 +348,26 @@ async function saveApiKey() {
   } catch (error) {
     console.error(error)
     message.error('保存 API Key 失败')
+  }
+}
+
+function createQuotaLimitForm(source?: ApiKeyQuotaLimits) {
+  return {
+    hourly: { enabled: Boolean(source?.hourly?.enabled), hours: source?.hourly?.hours ?? 1, limit: source?.hourly?.limit ?? 1 },
+    daily: { enabled: Boolean(source?.daily?.enabled), limit: source?.daily?.limit ?? 1 },
+    weekly: { enabled: Boolean(source?.weekly?.enabled), limit: source?.weekly?.limit ?? 1 },
+    monthly: { enabled: Boolean(source?.monthly?.enabled), limit: source?.monthly?.limit ?? 1 },
+    total: { enabled: Boolean(source?.total?.enabled), limit: source?.total?.limit ?? 1 }
+  }
+}
+
+function quotaLimitsPayload(): ApiKeyQuotaLimits {
+  return {
+    ...(form.quotaLimits.hourly.enabled ? { hourly: { enabled: true, hours: form.quotaLimits.hourly.hours, limit: form.quotaLimits.hourly.limit } } : {}),
+    ...(form.quotaLimits.daily.enabled ? { daily: { enabled: true, limit: form.quotaLimits.daily.limit } } : {}),
+    ...(form.quotaLimits.weekly.enabled ? { weekly: { enabled: true, limit: form.quotaLimits.weekly.limit } } : {}),
+    ...(form.quotaLimits.monthly.enabled ? { monthly: { enabled: true, limit: form.quotaLimits.monthly.limit } } : {}),
+    ...(form.quotaLimits.total.enabled ? { total: { enabled: true, limit: form.quotaLimits.total.limit } } : {})
   }
 }
 
@@ -440,6 +513,38 @@ onMounted(loadData)
   margin-top: 16px;
 }
 
+.quota-limit-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.quota-limit-item {
+  display: grid;
+  grid-template-columns: auto minmax(150px, 1fr) minmax(160px, 220px);
+  gap: 10px;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fbfdff;
+}
+
+.quota-limit-hourly {
+  grid-template-columns: auto minmax(110px, 1fr) minmax(110px, 140px) minmax(160px, 220px);
+}
+
+.quota-limit-title {
+  min-width: 0;
+  color: #334155;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.quota-limit-input,
+.quota-hours-input {
+  width: 100%;
+}
+
 .api-keys-table :deep(.ant-empty) {
   margin: 12px 0;
 }
@@ -477,6 +582,36 @@ onMounted(loadData)
 .key-copy-button:hover:not(:disabled) {
   color: #1677ff;
   background: #eff6ff;
+}
+
+.api-key-usage-cell {
+  display: inline-grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 4px;
+  width: 160px;
+}
+
+.api-key-usage-tag {
+  min-width: 0;
+  margin-inline-end: 0;
+  padding-inline: 5px;
+  color: #0f172a;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .quota-limit-item,
+  .quota-limit-hourly {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .quota-limit-input,
+  .quota-hours-input {
+    grid-column: 1 / -1;
+  }
 }
 
 </style>

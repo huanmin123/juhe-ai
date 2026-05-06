@@ -13,6 +13,10 @@ interface ProxyRow {
   password_encrypted?: string | null
   enabled: number
   test_status: string
+  latency_ms?: number | null
+  outbound_ip?: string | null
+  outbound_region?: string | null
+  last_test_message?: string | null
   last_tested_at: string | null
 }
 
@@ -26,7 +30,23 @@ export interface ProxyProfileSummary {
   username?: string
   enabled: boolean
   testStatus: string
+  latencyMs?: number
+  outboundIp?: string
+  outboundRegion?: string
+  lastTestMessage?: string
   lastTestedAt?: string
+}
+
+export interface ProxyProfileTestConfig extends ProxyProfileSummary {
+  proxyUrl: string
+}
+
+export class ProxyInUseError extends Error {
+  constructor(readonly accountCount: number, readonly accountNames: string[]) {
+    const names = accountNames.length > 0 ? `：${accountNames.join('、')}${accountCount > accountNames.length ? ' 等' : ''}` : ''
+    super(`这个代理仍被 ${accountCount} 个账户使用，请先在账户管理中解绑或改绑后再删除${names}`)
+    this.name = 'ProxyInUseError'
+  }
 }
 
 export function listProxies(): ProxyProfileSummary[] {
@@ -45,6 +65,10 @@ function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
     username: row.username ?? undefined,
     enabled: row.enabled === 1,
     testStatus: row.test_status,
+    latencyMs: row.latency_ms ?? undefined,
+    outboundIp: row.outbound_ip ?? undefined,
+    outboundRegion: row.outbound_region ?? undefined,
+    lastTestMessage: row.last_test_message ?? undefined,
     lastTestedAt: row.last_tested_at ?? undefined
   }
 }
@@ -55,12 +79,16 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
     id: newId('proxy'),
     name: String(input.name ?? '未命名代理'),
     description: optionalString(input.description),
-    type: String(input.type ?? 'http'),
+    type: String(input.type ?? 'socks5h'),
     host: String(input.host ?? ''),
     port: Number(input.port ?? 0),
-    username: optionalString(input.username),
+    username: optionalNullableString(input.username) ?? undefined,
     enabled: input.enabled !== false,
-    testStatus: 'unknown'
+    testStatus: 'unknown',
+    latencyMs: undefined,
+    outboundIp: undefined,
+    outboundRegion: undefined,
+    lastTestMessage: undefined
   }
   getDatabase()
     .prepare(`
@@ -76,6 +104,11 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   if (!current) {
     return undefined
   }
+  const currentSecret = getDatabase()
+    .prepare('SELECT password_encrypted FROM proxy_profiles WHERE id = ?')
+    .get(id) as unknown as { password_encrypted?: string | null } | undefined
+  const shouldUpdatePassword = typeof input.password === 'string' && input.password.trim() !== ''
+  const hasUsernameInput = Object.prototype.hasOwnProperty.call(input, 'username')
   const next: ProxyProfileSummary = {
     ...current,
     name: typeof input.name === 'string' ? input.name : current.name,
@@ -83,22 +116,122 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
     type: typeof input.type === 'string' ? input.type : current.type,
     host: typeof input.host === 'string' ? input.host : current.host,
     port: Number(input.port ?? current.port),
-    username: optionalString(input.username) ?? current.username,
+    username: hasUsernameInput ? optionalNullableString(input.username) ?? undefined : current.username,
     enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled
   }
+  const shouldResetTestState = next.type !== current.type ||
+    next.host !== current.host ||
+    next.port !== current.port ||
+    next.username !== current.username ||
+    shouldUpdatePassword
+  const nextPasswordEncrypted = shouldUpdatePassword
+    ? encryptJson({ password: String(input.password) })
+    : currentSecret?.password_encrypted ?? null
   getDatabase()
     .prepare(`
       UPDATE proxy_profiles
-      SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, enabled = ?, updated_at = ?
+      SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, password_encrypted = ?, enabled = ?,
+        test_status = ?, latency_ms = ?, outbound_ip = ?, outbound_region = ?, last_test_message = ?, last_tested_at = ?, updated_at = ?
       WHERE id = ?
     `)
-    .run(next.name, next.description ?? null, next.type, next.host, next.port, next.username ?? null, next.enabled ? 1 : 0, nowIso(), id)
-  return next
+    .run(
+      next.name,
+      next.description ?? null,
+      next.type,
+      next.host,
+      next.port,
+      next.username ?? null,
+      nextPasswordEncrypted,
+      next.enabled ? 1 : 0,
+      shouldResetTestState ? 'unknown' : next.testStatus,
+      shouldResetTestState ? null : next.latencyMs ?? null,
+      shouldResetTestState ? null : next.outboundIp ?? null,
+      shouldResetTestState ? null : next.outboundRegion ?? null,
+      shouldResetTestState ? null : next.lastTestMessage ?? null,
+      shouldResetTestState ? null : next.lastTestedAt ?? null,
+      nowIso(),
+      id
+    )
+  return listProxies().find((proxy) => proxy.id === id) ?? next
+}
+
+export function getProxyTestConfig(id: string): ProxyProfileTestConfig | undefined {
+  const row = getDatabase().prepare('SELECT * FROM proxy_profiles WHERE id = ?').get(id) as unknown as ProxyRow | undefined
+  return row ? { ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) } : undefined
+}
+
+export function listEnabledProxyTestConfigs(limit = 20): ProxyProfileTestConfig[] {
+  const rows = getDatabase()
+    .prepare(`
+      SELECT *
+      FROM proxy_profiles
+      WHERE enabled = 1
+      ORDER BY last_tested_at IS NOT NULL ASC, last_tested_at ASC, updated_at DESC
+      LIMIT ?
+    `)
+    .all(Math.max(1, Math.trunc(limit))) as unknown as ProxyRow[]
+  return rows.map((row) => ({ ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) }))
+}
+
+export function updateProxyTestState(
+  id: string,
+  input: { testStatus: string; latencyMs?: number; outboundIp?: string | null; outboundRegion?: string | null; lastTestMessage?: string; lastTestedAt?: string }
+): ProxyProfileSummary | undefined {
+  const testedAt = input.lastTestedAt ?? nowIso()
+  const latencyMs = typeof input.latencyMs === 'number' && Number.isFinite(input.latencyMs)
+    ? Math.max(0, Math.trunc(input.latencyMs))
+    : null
+  const outboundIp = input.outboundIp === undefined ? undefined : optionalString(input.outboundIp) ?? null
+  const outboundRegion = input.outboundRegion === undefined ? undefined : optionalString(input.outboundRegion) ?? null
+  const outboundUpdateSql = [
+    outboundIp !== undefined ? 'outbound_ip = ?' : '',
+    outboundRegion !== undefined ? 'outbound_region = ?' : ''
+  ].filter(Boolean).join(', ')
+  const sql = `
+      UPDATE proxy_profiles
+      SET test_status = ?, latency_ms = ?, ${outboundUpdateSql ? `${outboundUpdateSql}, ` : ''}last_test_message = ?, last_tested_at = ?, updated_at = ?
+      WHERE id = ?
+    `
+  const params = [
+    input.testStatus,
+    latencyMs,
+    ...(outboundIp !== undefined ? [outboundIp] : []),
+    ...(outboundRegion !== undefined ? [outboundRegion] : []),
+    optionalString(input.lastTestMessage) ?? null,
+    testedAt,
+    nowIso(),
+    id
+  ]
+  getDatabase()
+    .prepare(sql)
+    .run(...params)
+  return listProxies().find((proxy) => proxy.id === id)
 }
 
 export function deleteProxy(id: string): boolean {
+  const usage = proxyUsageSummary(id)
+  if (usage.accountCount > 0) {
+    throw new ProxyInUseError(usage.accountCount, usage.accountNames)
+  }
   const result = getDatabase().prepare('DELETE FROM proxy_profiles WHERE id = ?').run(id)
   return result.changes > 0
+}
+
+function proxyUsageSummary(id: string): { accountCount: number; accountNames: string[] } {
+  const row = getDatabase()
+    .prepare('SELECT COUNT(*) AS account_count FROM accounts WHERE proxy_profile_id = ?')
+    .get(id) as unknown as { account_count?: number } | undefined
+  const accountCount = Number(row?.account_count ?? 0)
+  if (accountCount <= 0) {
+    return { accountCount: 0, accountNames: [] }
+  }
+  const rows = getDatabase()
+    .prepare('SELECT name FROM accounts WHERE proxy_profile_id = ? ORDER BY name ASC LIMIT 3')
+    .all(id) as unknown as Array<{ name?: string }>
+  return {
+    accountCount,
+    accountNames: rows.map((item) => item.name).filter((name): name is string => Boolean(name))
+  }
 }
 
 export function resolveProxyUrlForProfile(proxyProfileId?: string | null): string | undefined {
@@ -115,14 +248,19 @@ function proxyUrlForProfile(proxyProfileId?: string | null): string | undefined 
     .prepare('SELECT type, host, port, username, password_encrypted FROM proxy_profiles WHERE id = ? AND enabled = 1')
     .get(proxyProfileId) as unknown as ProxyRow | undefined
   if (!row) return undefined
+  return proxyUrlFromRow(row)
+}
+
+function proxyUrlFromRow(row: Pick<ProxyRow, 'type' | 'host' | 'port' | 'username' | 'password_encrypted'>): string {
   const protocol = row.type === 'socks5h' ? 'socks5h' : row.type === 'socks5' ? 'socks5h' : row.type
+  const password = proxyPassword(row)
   const credentials = row.username
-    ? `${encodeURIComponent(row.username)}${proxyPassword(row) ? `:${encodeURIComponent(proxyPassword(row) ?? '')}` : ''}@`
+    ? `${encodeURIComponent(row.username)}${password ? `:${encodeURIComponent(password)}` : ''}@`
     : ''
   return `${protocol}://${credentials}${row.host}:${row.port}`
 }
 
-function proxyPassword(row: ProxyRow): string | undefined {
+function proxyPassword(row: Pick<ProxyRow, 'password_encrypted'>): string | undefined {
   if (!row.password_encrypted) return undefined
   const decrypted = decryptJson<{ password?: unknown }>(row.password_encrypted)
   return typeof decrypted.password === 'string' ? decrypted.password : undefined

@@ -116,6 +116,16 @@
       :tip="bindGroupTip"
       @save="saveBindGroup"
     />
+
+    <AccountTrafficMigrationModal
+      v-model:open="trafficMigrationModalOpen"
+      v-model:source-status="trafficMigrationForm.sourceStatus"
+      v-model:target-account-id="trafficMigrationForm.targetAccountId"
+      :saving="trafficMigrationSaving"
+      :source-account="trafficMigrationSourceAccount"
+      :target-options="trafficMigrationTargetOptions"
+      @save="saveTrafficMigration"
+    />
   </a-card>
 </template>
 
@@ -129,7 +139,7 @@ import { api } from '@/api/client'
 import type { AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { authState } from '@/composables/useAuth'
-import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
+import type { AccountStatus, AccountSummary, AccountTestResult, AccountTrafficMigrationSourceStatus, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
 import AccountBindGroupModal from './AccountBindGroupModal.vue'
@@ -137,6 +147,7 @@ import AccountEditModal from './AccountEditModal.vue'
 import AccountFilterToolbar from './AccountFilterToolbar.vue'
 import AccountList from './AccountList.vue'
 import AccountTestModal from './AccountTestModal.vue'
+import AccountTrafficMigrationModal from './AccountTrafficMigrationModal.vue'
 import {
   loadAccountErrorPolicyRules,
   validateAccountErrorPolicyRules,
@@ -166,6 +177,7 @@ import {
   typeOptions
 } from './accountOptions'
 import {
+  accountSelectionColumnWidth,
   accountTableScrollX,
   accountTableScrollY,
   buildAccountTableColumns,
@@ -183,11 +195,14 @@ const testRunning = ref(false)
 const testModelsLoading = ref(false)
 const modalOpen = ref(false)
 const bindGroupModalOpen = ref(false)
+const trafficMigrationModalOpen = ref(false)
 const bindGroupSaving = ref(false)
+const trafficMigrationSaving = ref(false)
 const authResult = ref<OpenAIAuthURLResult>()
 const editingId = ref<string>()
 const testingAccount = ref<AccountSummary>()
 const bindingAccount = ref<AccountSummary>()
+const trafficMigrationSourceAccount = ref<AccountSummary>()
 const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
 const accountSorts = ref<AccountListSortParam[]>([{ field: 'priority', order: 'asc' }])
@@ -204,6 +219,10 @@ const router = useRouter()
 
 const form = reactive<AccountFormModel>(defaultForm())
 const bindGroupForm = reactive({ groupId: '' })
+const trafficMigrationForm = reactive({
+  targetAccountId: '',
+  sourceStatus: 'temporary_unavailable' as AccountTrafficMigrationSourceStatus
+})
 const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
 
 const currentEditingAccount = computed(() => editingId.value ? accounts.value.find((account) => account.id === editingId.value) : undefined)
@@ -251,6 +270,7 @@ const testModelOptions = computed(() => {
 const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIds.value.includes(account.id)))
 
 const rowSelection = computed(() => ({
+  columnWidth: accountSelectionColumnWidth,
   selectedRowKeys: selectedAccountIds.value,
   onChange: (selectedRowKeys: Array<string | number>) => {
     selectedAccountIds.value = selectedRowKeys.map((key) => String(key))
@@ -282,6 +302,19 @@ const bindGroupOptions = computed(() => {
 const bindGroupTip = computed(() => {
   const ownerName = bindingAccount.value?.ownerSystemAccountName || '其他用户'
   return `授权账户来自 ${ownerName}。绑定到你的同供应商分组后，对应 API Key 才能调度使用。`
+})
+const trafficMigrationTargetOptions = computed(() => {
+  const source = trafficMigrationSourceAccount.value
+  if (!source) return []
+  return accounts.value
+    .filter((account) => canUseAsTrafficMigrationTarget(source, account))
+    .map((account) => {
+      const groupName = groupNameForAccount(account.id)
+      return {
+        label: groupName ? `${account.name}（${groupName}）` : account.name,
+        value: account.id
+      }
+    })
 })
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
@@ -366,6 +399,15 @@ function canManageGroupAccounts(group: GroupSummary): boolean {
   return group.permissions?.canManageAccounts !== false && group.accessType !== 'authorized'
 }
 
+function canUseAsTrafficMigrationTarget(source: AccountSummary, target: AccountSummary): boolean {
+  if (target.id === source.id) return false
+  if (!canEditAccount(target)) return false
+  if (target.providerCode !== source.providerCode) return false
+  if (target.ownerSystemAccountId !== source.ownerSystemAccountId) return false
+  if (groupIdForAccount(target.id) !== groupIdForAccount(source.id)) return false
+  return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
+}
+
 async function handleAccountSortChange(sorts: ResponsiveDataListSort[]) {
   accountSorts.value = normalizeAccountTableSorts(sorts)
   resetAccountListPagination()
@@ -398,6 +440,7 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     items.push({ key: 'test', label: '测试' })
   }
   if (canUseAccountActions(account)) {
+    items.push({ key: 'migrate-traffic', label: '迁移流量', danger: true })
     items.push({ key: 'toggle-status', label: account.status === 'disabled' ? '启用账户' : '停用账户', danger: account.status !== 'disabled' })
   }
   return items
@@ -532,6 +575,21 @@ function openBindGroup(account: AccountSummary) {
   bindGroupModalOpen.value = true
 }
 
+function openTrafficMigration(account: AccountSummary) {
+  if (!canUseAccountActions(account)) {
+    message.warning('授权账户不能迁移流量')
+    return
+  }
+  trafficMigrationSourceAccount.value = account
+  trafficMigrationForm.sourceStatus = 'temporary_unavailable'
+  const target = accounts.value.find((candidate) => canUseAsTrafficMigrationTarget(account, candidate))
+  trafficMigrationForm.targetAccountId = target?.id ?? ''
+  trafficMigrationModalOpen.value = true
+  if (!target) {
+    message.warning('当前没有可迁移到的同供应商可用账户')
+  }
+}
+
 function defaultBindGroupForAccount(account: AccountSummary): GroupSummary | undefined {
   const candidates = groups.value.filter((group) => canManageGroupAccounts(group) && group.providerCode === account.providerCode)
   return candidates.find((group) => group.isDefault) ?? candidates[0]
@@ -555,6 +613,32 @@ async function saveBindGroup() {
     message.error(extractApiErrorMessage(error, '绑定分组失败'))
   } finally {
     bindGroupSaving.value = false
+  }
+}
+
+async function saveTrafficMigration() {
+  const source = trafficMigrationSourceAccount.value
+  if (!source) return
+  if (!trafficMigrationForm.targetAccountId) {
+    message.warning('请选择目标账户')
+    return
+  }
+  trafficMigrationSaving.value = true
+  try {
+    const result = await api.accounts.migrateTraffic(source.id, {
+      targetAccountId: trafficMigrationForm.targetAccountId,
+      sourceStatus: trafficMigrationForm.sourceStatus
+    })
+    const statusText = result.sourceStatus === 'disabled' ? '停用账户' : '临时不可调用'
+    message.success(`已迁移到 ${result.targetAccount.name}，原账户已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
+    trafficMigrationModalOpen.value = false
+    trafficMigrationSourceAccount.value = undefined
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '迁移流量失败'))
+  } finally {
+    trafficMigrationSaving.value = false
   }
 }
 
@@ -886,6 +970,10 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
   if (key === 'toggle-status') {
     const nextStatus = account.status === 'disabled' ? 'active' : 'disabled'
     await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
+    return
+  }
+  if (key === 'migrate-traffic') {
+    openTrafficMigration(account)
     return
   }
 }

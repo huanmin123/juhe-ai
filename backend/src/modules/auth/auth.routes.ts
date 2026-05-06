@@ -158,7 +158,7 @@ function requireSessionContext(req: Request, res: Response, next: NextFunction):
     return
   }
 
-  touchSession(session.sessionId)
+  touchSession(session.sessionId, session.lastSeenAt)
   withRequestAuthContext({
     systemAccountId: session.account.id,
     username: session.account.username,

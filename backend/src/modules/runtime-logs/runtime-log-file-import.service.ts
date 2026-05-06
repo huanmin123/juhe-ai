@@ -39,10 +39,8 @@ async function importRuntimeLogFile(logPath: string): Promise<void> {
   const stream = createReadStream(logPath, { encoding: 'utf8' })
   const lines = createInterface({ input: stream, crlfDelay: Infinity })
   try {
-    let lineNumber = 0
     for await (const line of lines) {
-      lineNumber += 1
-      enqueueRuntimeLogLineLocal(line, { sourceKey: `${logPath}:${lineNumber}:${line}` })
+      enqueueRuntimeLogLineLocal(line)
     }
     flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
   } catch (error) {

@@ -45,7 +45,7 @@ export interface ParsedUsage {
   cacheReadTokens?: number
 }
 
-interface OpenAIStreamInspection {
+export interface OpenAIStreamInspection {
   terminalReceived: boolean
   failedReceived: boolean
   outputReceived: boolean
@@ -243,6 +243,10 @@ export function inspectOpenAIStreamText(text: string): OpenAIStreamInspection {
   flushEvent()
 
   return inspection
+}
+
+export function isOpenAIStreamServerOverloadedErrorCode(code?: string): boolean {
+  return code === 'server_is_overloaded' || code === 'slow_down'
 }
 
 function openAIStreamEventHasOutput(event: Record<string, unknown>, eventType: string): boolean {

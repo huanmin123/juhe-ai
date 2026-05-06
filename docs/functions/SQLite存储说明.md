@@ -28,6 +28,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 启动时自动建表
 - 启动时自动写入默认管理员账号、OpenAI 供应商、默认分组、默认全局设置和默认系统设置
 - 使用 `PRAGMA journal_mode = WAL`
+- 每个 SQLite 连接必须设置短暂写锁等待时间，避免主进程和 background worker 短事务重叠时立即返回 `database is locked`
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 原始审计日志使用独立表保存完整链路原文；网关请求链路只能终态入队，后台批量写库，不能同步写审计表
@@ -109,9 +110,13 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 用量统计菜单的多日窗口只读取 `usage_stats_daily` 的日累计行并按窗口相加：近 1 天、近 3 天、近一周、近半月和近一月分别对应最近 1 / 3 / 7 / 15 / 30 个自然日；总用量读取 `usage_stats_totals`。前端不能把 `n` 天作为查询条件去实时回扫 `usage_records`。
 - 统计概览属于监控窗口，不使用 0 点重置的今日口径；默认展示近一天，并支持近一天、近三天、近一周和近一月筛选。概览摘要、趋势、模型分布和错误 Top 10 均从小时级缓存表按窗口相加，不读取 `usage_stats_totals`，也不临时回扫 `usage_records`。
 - 分组账户统计 worker 定时重建 `group_account_stats`，分组列表不得在查询时临时 `COUNT/SUM group_accounts + accounts`。
+- 代理延迟刷新 worker 默认每 1 分钟按批量大小检测启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新。
 - 授权账户调用需要同时写入调用方统计、真实账户统计和授权消耗统计：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；账户所有者的账户总用量按 `account_owner_system_account_id + account_id` 聚合；授权管理按 `account_owner_system_account_id + account_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 授权分组调用需要同时写入调用方统计、真实分组统计和授权消耗统计：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权管理按 `group_owner_system_account_id + group_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 授权管理列表和用量明细只读取 `usage_stats_daily` / `usage_stats_totals` 缓存；前端查询和详情接口不能临时 `SUM usage_records`，否则会把高频统计压力转移到页面请求。
+- API Key 列表展示累计用量，读取 `usage_stats_totals` 中 `scope_type = api_key` 的缓存，不使用今日 `usage_stats_daily` 口径；API Key 可选请求次数额度保存在 `api_keys.quota_limits_json`，网关按 `usage_stats_totals`、`usage_stats_daily` 和 `usage_stats_hourly` 的 API Key 维度缓存判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`。
+- API Key 额度是轻量异步统计口径：统计 worker 默认每 1 分钟增量推进，网关额度判断带短 TTL 内存缓存，因此允许轻微超额；统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
+- 删除 API Key 时同步删除该 Key 的使用记录、审计日志和 API Key 维度缓存，并基于该 Key 的历史使用记录从调用方、账户、分组、授权、模型和错误等相关聚合缓存中反向扣减。
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
 - 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属。
 - 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录并用单事务批量写入 `audit_logs`、`audit_log_attempts` 和 `audit_log_payloads`。
@@ -135,7 +140,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 | `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly` | 小时级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 统计概览近 1 天到近 1 月均从小时缓存聚合 |
 | `system_metrics_samples` | 主机监控原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只用于最新状态和短期排障 |
 | `system_metrics_hourly` | 主机监控小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 作为监控图表的 1 个月汇总缓存 |
-| `system_sessions` | 后台登录会话 | 到期即清理 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 查询时也会校验过期时间，定时清理用于回收表数据 |
+| `system_sessions` | 后台登录会话 | 到期即清理 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 查询时也会校验过期时间，定时清理用于回收表数据；`last_seen_at` 只允许按短间隔节流刷新，不应在每个鉴权请求中无条件写入 |
 
 不按保留期物理清理：
 
@@ -406,7 +411,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：进入临时不可调用前的默认短暂重试间隔。
 - `temporaryUnschedulableRetryAttempts = 3`：进入临时不可调用前的默认短暂重试次数。
 - `streamCircuitBreakerEnabled = true`：流熔断默认开启。
-- `streamRequestTimeoutSeconds = 180`：流式请求首包前的请求熔断时间，超时后会切换账号重发。
+- `streamRequestTimeoutSeconds = 180`：流式请求首个有效输出前的请求熔断时间；首输出前超时或收到 `response.failed(server_is_overloaded/slow_down)` 时，先复用短重试参数原地重试，耗尽后才临时不可调用并切换账号。
 - `streamIdleTimeoutSeconds = 60`、`streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
@@ -434,7 +439,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 - `accounts`、`system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`audit_logs`、`account_usage_snapshots`、`system_settings` 后续都会按 `system_account_id` 或明确的 owner/grantee 字段隔离。
 - `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_model_hourly`、`usage_error_daily`、`usage_error_hourly` 也必须按 `system_account_id` 隔离。
-- `providers`、`proxy_profiles`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly` 保持全局共享；`providers` 和 `proxy_profiles` 只允许管理员维护，主机级系统监控默认仅管理员可见。
+- `providers`、`proxy_profiles`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly` 保持全局共享；`providers` 和 `proxy_profiles` 只允许管理员维护，主机级系统监控默认仅管理员可见。`proxy_profiles.latency_ms`、`outbound_ip`、`outbound_region`、`test_status`、`last_tested_at` 和 `last_test_message` 是代理最近检测缓存，不参与账号调度事实判断。
 - 管理员可以读取所有系统账户的数据；普通用户只读取自己的系统账户数据，以及其他用户主动授权给自己的 AI 账户和分组使用摘要。
 - 原始审计日志虽然带有 `system_account_id`，第一阶段仍仅管理员可读取；普通用户不能通过审计日志接口查看自己的完整原文请求。
 
@@ -451,8 +456,6 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 API Key 明文只在创建时返回一次。
 
+API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计缓存。网关只读取 API Key 维度统计缓存判断额度，不回扫明细表，也不做实时扣减。
+
 更完整的凭据展示、请求快照、原始审计日志、日志脱敏、数据保留和备份迁移规则见 [安全与日志策略](安全与日志策略.md) 与 [原始审计日志设计](原始审计日志设计.md)。
-
-
-
-

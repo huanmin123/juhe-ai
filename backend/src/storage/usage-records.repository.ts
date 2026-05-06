@@ -156,6 +156,9 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   database.exec('BEGIN')
   try {
     for (const input of inputs) {
+      if (input.apiKeyId && !apiKeyExists(database, input.apiKeyId)) {
+        continue
+      }
       const now = input.createdAt ?? nowIso()
       const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input)
       const accessMetadata = usageAccessMetadata({ ...input, systemAccountId })
@@ -216,6 +219,11 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     }
     throw error
   }
+}
+
+function apiKeyExists(database: ReturnType<typeof getDatabase>, apiKeyId: string): boolean {
+  const row = database.prepare('SELECT id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { id?: string } | undefined
+  return Boolean(row?.id)
 }
 
 function usageRecordSummaryFromRow(

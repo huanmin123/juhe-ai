@@ -5,6 +5,10 @@ import type { Request } from 'express'
 
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
+import {
+  inspectOpenAIStreamText,
+  isOpenAIStreamServerOverloadedErrorCode
+} from './openai-gateway-usage.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
@@ -33,6 +37,15 @@ interface UpstreamHeaderAccount {
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
 export class UpstreamRequestTimeoutError extends Error {}
+export class UpstreamStreamPreloadFailedError extends Error {
+  constructor(
+    message: string,
+    readonly chunks: Buffer[],
+    readonly errorCode?: string
+  ) {
+    super(message)
+  }
+}
 
 class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
   constructor(private readonly message: IncomingMessage) {}
@@ -65,7 +78,7 @@ class PreloadedGatewayUpstreamResponse implements GatewayUpstreamResponse {
   constructor(
     private readonly source: GatewayUpstreamResponse,
     private readonly iterator: AsyncIterator<Uint8Array>,
-    private readonly firstResult: IteratorResult<Uint8Array>
+    private readonly preloadedChunks: Buffer[]
   ) {}
 
   get status(): number {
@@ -81,7 +94,7 @@ class PreloadedGatewayUpstreamResponse implements GatewayUpstreamResponse {
   }
 
   get body(): AsyncIterable<Uint8Array> | null {
-    return iteratePreloadedStream(this.iterator, this.firstResult)
+    return iteratePreloadedStream(this.iterator, this.preloadedChunks)
   }
 
   async arrayBuffer(): Promise<ArrayBuffer> {
@@ -136,20 +149,45 @@ export async function preloadStreamResponseFirstChunk(
     throw new Error('Upstream stream response has no body')
   }
   const iterator = response.body[Symbol.asyncIterator]()
+  const chunks: Buffer[] = []
   try {
-    const firstResult = await readStreamChunkWithTimeout(
-      iterator,
-      settings.streamRequestTimeoutSeconds,
-      () => new UpstreamRequestTimeoutError(`Upstream stream request timeout after ${settings.streamRequestTimeoutSeconds}s`)
-    )
-    if (firstResult.done) {
-      throw new Error('Upstream stream ended before first chunk')
+    while (true) {
+      const result = await readStreamChunkWithTimeout(
+        iterator,
+        settings.streamRequestTimeoutSeconds,
+        () => new UpstreamRequestTimeoutError(`Upstream stream request timeout after ${settings.streamRequestTimeoutSeconds}s`)
+      )
+      if (result.done) {
+        throw new UpstreamStreamPreloadFailedError('Upstream stream ended before first output or terminal event', chunks)
+      }
+
+      const buffer = Buffer.from(result.value)
+      chunks.push(buffer)
+
+      const inspection = inspectOpenAIStreamText(Buffer.concat(chunks).toString('utf8'))
+      if (inspection.outputReceived) {
+        return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
+      }
+      if (inspection.failedReceived) {
+        if (!isOpenAIStreamServerOverloadedErrorCode(inspection.errorCode)) {
+          return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
+        }
+        const message = inspection.errorMessage ?? 'Upstream stream failed before first output'
+        throw new UpstreamStreamPreloadFailedError(message, chunks, inspection.errorCode)
+      }
+      if (inspection.terminalReceived) {
+        return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
+      }
     }
-    return new PreloadedGatewayUpstreamResponse(response, iterator, firstResult)
   } catch (error) {
     await closeAsyncIterator(iterator)
     throw error
   }
+}
+
+export function isRetryableUpstreamStreamPreloadError(error: unknown): boolean {
+  return error instanceof UpstreamRequestTimeoutError
+    || (error instanceof UpstreamStreamPreloadFailedError && isOpenAIStreamServerOverloadedErrorCode(error.errorCode))
 }
 
 export async function readStreamChunkWithIdleTimeout(
@@ -280,9 +318,9 @@ function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccoun
   }
 }
 
-async function* iteratePreloadedStream(iterator: AsyncIterator<Uint8Array>, firstResult: IteratorResult<Uint8Array>): AsyncIterable<Uint8Array> {
-  if (!firstResult.done) {
-    yield firstResult.value
+async function* iteratePreloadedStream(iterator: AsyncIterator<Uint8Array>, preloadedChunks: Buffer[]): AsyncIterable<Uint8Array> {
+  for (const chunk of preloadedChunks) {
+    yield chunk
   }
   while (true) {
     const result = await iterator.next()

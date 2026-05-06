@@ -2,14 +2,16 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createProxy, deleteProxy, listProxies, updateProxy } from '../../storage/repositories.js'
+import { createProxy, deleteProxy, listProxies, ProxyInUseError, updateProxy } from '../../storage/repositories.js'
+import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { testProxyById } from './proxy-test.service.js'
 
 export const proxiesRouter = Router()
 
 const proxySchema = z.object({
   name: z.string().min(1),
   description: z.string().trim().max(200).nullable().optional(),
-  type: z.enum(['http', 'https', 'socks5']),
+  type: z.enum(['http', 'https', 'socks5', 'socks5h']),
   host: z.string().min(1),
   port: z.number().int().min(1).max(65535),
   username: z.string().optional(),
@@ -27,7 +29,9 @@ proxiesRouter.post('/', (req, res) => {
     res.status(400).json(badRequest('Invalid proxy payload'))
     return
   }
-  res.status(201).json(ok(createProxy(parsed.data)))
+  const proxy = createProxy(parsed.data)
+  clearGatewayRuntimeCache()
+  res.status(201).json(ok(proxy))
 })
 
 proxiesRouter.patch('/:id', (req, res) => {
@@ -36,13 +40,36 @@ proxiesRouter.patch('/:id', (req, res) => {
     res.status(404).json({ message: 'Proxy not found' })
     return
   }
+  clearGatewayRuntimeCache()
   res.json(ok(proxy))
 })
 
-proxiesRouter.delete('/:id', (req, res) => {
-  if (!deleteProxy(req.params.id)) {
-    res.status(404).json({ message: 'Proxy not found' })
-    return
+proxiesRouter.post('/:id/test', async (req, res) => {
+  try {
+    const report = await testProxyById(req.params.id)
+    if (!report) {
+      res.status(404).json({ message: 'Proxy not found' })
+      return
+    }
+    res.json(ok(report))
+  } catch (error) {
+    res.status(502).json({ message: error instanceof Error ? error.message : '代理检测失败' })
   }
-  res.status(204).send()
+})
+
+proxiesRouter.delete('/:id', (req, res) => {
+  try {
+    if (!deleteProxy(req.params.id)) {
+      res.status(404).json({ message: 'Proxy not found' })
+      return
+    }
+    clearGatewayRuntimeCache()
+    res.status(204).send()
+  } catch (error) {
+    if (error instanceof ProxyInUseError) {
+      res.status(409).json({ message: error.message })
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Delete proxy failed'))
+  }
 })

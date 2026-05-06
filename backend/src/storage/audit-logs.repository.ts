@@ -220,6 +220,9 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   database.exec('BEGIN')
   try {
     for (const input of inputs) {
+      if (input.apiKeyId && !apiKeyExists(database, input.apiKeyId)) {
+        continue
+      }
       const id = input.id ?? newId('audit')
       const createdAt = input.createdAt ?? nowIso()
       const payloads = input.payloads.map((payload, index) => normalizePayloadInput(payload, index))
@@ -316,6 +319,11 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
     }
     throw error
   }
+}
+
+function apiKeyExists(database: ReturnType<typeof getDatabase>, apiKeyId: string): boolean {
+  const row = database.prepare('SELECT id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { id?: string } | undefined
+  return Boolean(row?.id)
 }
 
 export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListResult {

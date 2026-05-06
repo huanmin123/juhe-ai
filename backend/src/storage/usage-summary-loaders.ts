@@ -4,7 +4,7 @@ import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { usageSummaryFromAggregate } from './usage-stats-helpers.js'
 
 type AuthorizationUsageScopeType = 'account_authorization' | 'group_authorization'
-type UsageSummaryScopeType = 'account' | 'group' | AuthorizationUsageScopeType
+type UsageSummaryScopeType = 'account' | 'group' | 'api_key' | AuthorizationUsageScopeType
 
 export interface UsageSummaryScopeRequest {
   rowKey: string
@@ -100,6 +100,10 @@ export function loadAccountUsageSummariesForScopes(scopes: UsageSummaryScopeRequ
 
 export function loadGroupUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
   return loadUsageSummariesForScopeRequests(scopes, 'group', statDate)
+}
+
+export function loadApiKeyUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
+  return loadUsageSummariesForScopeRequests(scopes, 'api_key', statDate)
 }
 
 export function loadAuthorizationUsageSummariesForScopes(scopes: UsageSummaryScopeRequest[], scopeType: AuthorizationUsageScopeType, statDate?: string): Map<string, AccountUsageSummary> {

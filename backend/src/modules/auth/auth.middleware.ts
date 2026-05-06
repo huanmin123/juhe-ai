@@ -18,7 +18,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     return
   }
 
-  touchSession(session.sessionId)
+  touchSession(session.sessionId, session.lastSeenAt)
   bindRequestContextFields({
     systemAccountId: session.account.id,
     role: session.account.role

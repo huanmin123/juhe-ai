@@ -82,12 +82,14 @@ const accountSortFields: AccountListSortField[] = [
   'notes'
 ]
 
+export const accountSelectionColumnWidth = 32
+
 export function tableColumnKey(column: { key?: unknown; dataIndex?: unknown }): string {
   return String(column.key ?? column.dataIndex ?? '')
 }
 
 export function accountTableScrollX(isAdmin: boolean): number {
-  return isAdmin ? 2320 : 2140
+  return (isAdmin ? 2360 : 2180) + accountSelectionColumnWidth
 }
 
 export function accountTableScrollY(): string {

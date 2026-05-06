@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountAuthorizationUsageOverview, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountUsageStatsOverview, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountAuthorizationUsageOverview, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, resolveAccessScope, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
 import { accountCredentialsForList, listAccountRowsForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
@@ -74,11 +74,16 @@ export {
 export {
   createProxy,
   deleteProxy,
+  getProxyTestConfig,
+  listEnabledProxyTestConfigs,
   listProxies,
+  ProxyInUseError,
   resolveProxyUrlForProfile,
   resolveProxyUrlForProfileForSystemAccount,
+  updateProxyTestState,
   updateProxy,
-  type ProxyProfileSummary
+  type ProxyProfileSummary,
+  type ProxyProfileTestConfig
 } from './proxy.repository.js'
 export {
   getSettings,
@@ -195,6 +200,29 @@ function canUseAccount(accountId: string, systemAccountId: string): boolean {
   const ownerId = accountSystemAccountId(accountId)
   if (ownerId === systemAccountId) return true
   return Boolean(activeResourceAuthorization('account', accountId, systemAccountId))
+}
+
+function accountRowForManage(accountId: string): AccountRow | undefined {
+  const row = getDatabase().prepare('SELECT * FROM accounts WHERE id = ?').get(accountId) as unknown as AccountRow | undefined
+  if (!row || !canManageResourceOwner(row.system_account_id)) {
+    return undefined
+  }
+  return row
+}
+
+function accountEnabledGroupId(accountId: string, systemAccountId: string): string | undefined {
+  const row = getDatabase()
+    .prepare(`
+      SELECT group_id
+      FROM group_accounts
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND enabled = 1
+      ORDER BY updated_at DESC
+      LIMIT 1
+    `)
+    .get(accountId, systemAccountId) as unknown as { group_id?: string } | undefined
+  return row?.group_id
 }
 
 function accountGroupBinding(accountId: string, systemAccountId: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
@@ -937,6 +965,93 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
   }
 
   return listAccounts().find((account) => account.id === id)
+}
+
+export function migrateAccountTraffic(input: {
+  sourceAccountId: string
+  targetAccountId: string
+  sourceStatus: AccountTrafficMigrationSourceStatus
+}): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string } | undefined {
+  if (input.sourceAccountId === input.targetAccountId) {
+    throw new Error('目标账户不能和当前账户相同')
+  }
+
+  const sourceRow = accountRowForManage(input.sourceAccountId)
+  if (!sourceRow) {
+    return undefined
+  }
+  const targetRow = accountRowForManage(input.targetAccountId)
+  if (!targetRow) {
+    return undefined
+  }
+  if (sourceRow.system_account_id !== targetRow.system_account_id) {
+    throw new Error('目标账户必须和当前账户归属同一个系统账户')
+  }
+  if (sourceRow.provider_code !== targetRow.provider_code) {
+    throw new Error('目标账户必须和当前账户属于同一个供应商')
+  }
+  const sourceGroupId = accountEnabledGroupId(sourceRow.id, sourceRow.system_account_id)
+  const targetGroupId = accountEnabledGroupId(targetRow.id, targetRow.system_account_id)
+  if (!sourceGroupId || !targetGroupId || sourceGroupId !== targetGroupId) {
+    throw new Error('目标账户必须和当前账户在同一个分组内')
+  }
+  const targetCooldownUntil = targetRow.cooldown_until ?? undefined
+  if (targetRow.status !== 'active' || targetRow.schedulable !== 1 || isAccountExpired(targetRow.account_expires_at) || isLaterIso(targetCooldownUntil, nowIso())) {
+    throw new Error('目标账户当前不可调度，请选择正常可用的账户')
+  }
+
+  const now = nowIso()
+  const reason = '手动迁移流量'
+  const sourceCooldownUntil = input.sourceStatus === 'temporary_unavailable'
+    ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+    : null
+  const database = getDatabase()
+  database.exec('BEGIN')
+  try {
+    const updateResult = input.sourceStatus === 'disabled'
+      ? database
+        .prepare(`
+          UPDATE accounts
+          SET status = 'disabled',
+              schedulable = 0,
+              cooldown_until = NULL,
+              last_error_message = ?,
+              stream_failure_count = 0,
+              stream_failure_window_started_at = NULL,
+              updated_at = ?
+          WHERE id = ? AND system_account_id = ?
+        `)
+        .run(reason, now, sourceRow.id, sourceRow.system_account_id)
+      : database
+        .prepare(`
+          UPDATE accounts
+          SET status = 'temporary_unavailable',
+              cooldown_until = ?,
+              last_error_message = ?,
+              stream_failure_count = 0,
+              stream_failure_window_started_at = NULL,
+              updated_at = ?
+          WHERE id = ? AND system_account_id = ?
+        `)
+        .run(sourceCooldownUntil, reason, now, sourceRow.id, sourceRow.system_account_id)
+    if (Number(updateResult.changes ?? 0) <= 0) {
+      database.exec('ROLLBACK')
+      return undefined
+    }
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+  refreshGroupAccountStatsAfterWrite()
+
+  const access = { systemAccountId: sourceRow.system_account_id, role: 'user' as const }
+  const sourceAccount = listAccounts(access).find((account) => account.id === input.sourceAccountId)
+  const targetAccount = listAccounts(access).find((account) => account.id === input.targetAccountId)
+  if (!sourceAccount || !targetAccount) {
+    return undefined
+  }
+  return { sourceAccount, targetAccount, sourceCooldownUntil: sourceCooldownUntil ?? undefined }
 }
 
 export function markAccountDisabledByFailure(id: string, reason: string): AccountSummary | undefined {
@@ -1958,5 +2073,3 @@ function loadResourceAuthorizationUsageDetails(authorization: ResourceAuthorizat
     return left.systemAccountId.localeCompare(right.systemAccountId)
   })
 }
-
-

@@ -2,9 +2,10 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccounts, listGroups, listProviders, setAccountGroup, updateAccount, type AccountListOptions, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccounts, listGroups, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, type AccountListOptions, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 export const accountsRouter = Router()
@@ -33,6 +34,11 @@ const accountTestSchema = z.object({
 
 const accountGroupSchema = z.object({
   groupId: z.string().trim().min(1, '分组不能为空')
+})
+
+const accountTrafficMigrationSchema = z.object({
+  targetAccountId: z.string().trim().min(1, '目标账户不能为空'),
+  sourceStatus: z.enum(['temporary_unavailable', 'disabled']).optional()
 })
 
 const accountListSortFields = new Set<AccountListSortField>([
@@ -136,6 +142,35 @@ accountsRouter.post('/:id/group', (req, res) => {
   }
   clearGatewayRuntimeCache()
   res.json(ok(account))
+})
+
+accountsRouter.post('/:id/traffic-migration', (req, res) => {
+  const parsed = accountTrafficMigrationSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('迁移流量参数无效'))
+    return
+  }
+
+  try {
+    const migration = migrateAccountTraffic({
+      sourceAccountId: req.params.id,
+      targetAccountId: parsed.data.targetAccountId,
+      sourceStatus: parsed.data.sourceStatus ?? 'temporary_unavailable'
+    })
+    if (!migration) {
+      res.status(404).json({ message: '账户不存在或无权迁移' })
+      return
+    }
+    const affinityResult = migrateOpenAIAccountSessionAffinity(req.params.id, parsed.data.targetAccountId)
+    clearGatewayRuntimeCache()
+    res.json(ok({
+      ...migration,
+      ...affinityResult,
+      sourceStatus: parsed.data.sourceStatus ?? 'temporary_unavailable'
+    }))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '迁移流量失败'))
+  }
 })
 
 accountsRouter.patch('/:id', (req, res) => {

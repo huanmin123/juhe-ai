@@ -1,6 +1,7 @@
 export type ProviderCode = string
 export type AccountType = string
 export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
+export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'disabled'
 export type SystemAccountRole = 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'

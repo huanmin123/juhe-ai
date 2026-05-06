@@ -2,7 +2,8 @@
   <div ref="listRootRef" class="responsive-data-list">
     <a-table
       v-if="!isMobile"
-      :class="['responsive-data-list-table', tableClass]"
+      :class="tableClassNames"
+      :style="tableStyleVars"
       :size="size"
       :columns="tableColumns"
       :data-source="dataSource"
@@ -54,7 +55,7 @@
 </template>
 
 <script setup lang="ts" generic="T extends Record<string, any>">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { normalizeResponsiveTableSorter, type ResponsiveDataListSort } from './responsiveDataListSorting'
 
 type RowKey = string | ((record: T) => string | number)
@@ -116,6 +117,8 @@ const isMobile = ref(initialMobileState())
 const listRootRef = ref<HTMLElement>()
 const listHeight = ref(0)
 const mobileListRef = ref<HTMLElement>()
+const hasOverlayScrollbarPlaceholder = ref(false)
+const scrollbarPlaceholderWidth = ref(0)
 const pullDistance = ref(0)
 const pullRefreshRequested = ref(false)
 const touchStartY = ref(0)
@@ -126,9 +129,20 @@ const tableHeaderHeight = 47
 const tablePaginationHeight = 56
 const minTableBodyHeight = 160
 let listResizeObserver: ResizeObserver | undefined
+let tableMutationObserver: MutationObserver | undefined
+let tableScrollbarPlaceholderFrame = 0
+let tableScrollbarPlaceholderTimers: number[] = []
 
 const mobileDataSource = computed(() => props.mobileDataSource ?? props.dataSource)
 const tableColumns = computed(() => normalizeTableColumns(props.columns))
+const tableClassNames = computed(() => [
+  'responsive-data-list-table',
+  props.tableClass,
+  { 'responsive-data-list-table-overlay-scrollbar': hasOverlayScrollbarPlaceholder.value }
+])
+const tableStyleVars = computed(() => ({
+  '--responsive-data-list-scrollbar-placeholder-width': `${scrollbarPlaceholderWidth.value}px`
+}))
 const tablePagination = computed<TablePagination>(() => {
   if (props.pagination === false) return false
   return {
@@ -183,6 +197,7 @@ function updateViewportState() {
 
 function updateListHeight() {
   listHeight.value = listRootRef.value?.clientHeight ?? 0
+  queueTableScrollbarPlaceholderUpdate()
 }
 
 function initialMobileState() {
@@ -205,7 +220,7 @@ function adjustTableScrollY(value: number | string, offset: number): number | st
 }
 
 function normalizeTableColumns(columns: Array<Record<string, any>>): Array<Record<string, any>> {
-  const flexColumnIndex = findFlexColumnIndex(columns)
+  const flexColumnIndex = hasFixedColumn(columns) ? -1 : findFlexColumnIndex(columns)
   return columns.map((column, index) => normalizeTableColumn(column, index === flexColumnIndex))
 }
 
@@ -223,8 +238,7 @@ function normalizeTableColumn(column: Record<string, any>, isFlexColumn: boolean
       width,
       className: mergeClassName(column.className, 'responsive-data-list-actions-column')
     }, {
-      class: 'responsive-data-list-actions-column',
-      style: fixedColumnStyle(width)
+      class: 'responsive-data-list-actions-column'
     })
   }
   if (isFlexColumn) {
@@ -240,6 +254,10 @@ function normalizeTableColumn(column: Record<string, any>, isFlexColumn: boolean
     })
   }
   return column
+}
+
+function hasFixedColumn(columns: Array<Record<string, any>>): boolean {
+  return columns.some((column) => Boolean(column.fixed) || (Array.isArray(column.children) && hasFixedColumn(column.children)))
 }
 
 function findFlexColumnIndex(columns: Array<Record<string, any>>): number {
@@ -275,10 +293,15 @@ function isActionColumn(column: Record<string, any>): boolean {
   return column.key === 'actions' || column.dataIndex === 'actions' || column.title === '操作'
 }
 
-function resolveActionColumnWidth(value: unknown): number {
-  const width = typeof value === 'number' ? value : Number.parseFloat(String(value ?? ''))
-  if (!Number.isFinite(width) || width <= 0) return 120
-  return Math.min(Math.max(width, 96), 128)
+function resolveActionColumnWidth(value: unknown): number | string {
+  if (typeof value === 'number' && Number.isFinite(value) && value > 0) return value
+  if (typeof value === 'string') {
+    const trimmedValue = value.trim()
+    const numericWidth = Number(trimmedValue)
+    if (Number.isFinite(numericWidth) && numericWidth > 0) return numericWidth
+    if (Number.isFinite(Number.parseFloat(trimmedValue)) && Number.parseFloat(trimmedValue) > 0) return trimmedValue
+  }
+  return 120
 }
 
 function resolveColumnMinWidth(column: Record<string, any>): number {
@@ -287,15 +310,6 @@ function resolveColumnMinWidth(column: Record<string, any>): number {
   const width = typeof column.width === 'number' ? column.width : Number.parseFloat(String(column.width ?? ''))
   if (Number.isFinite(width) && width > 0) return width
   return 160
-}
-
-function fixedColumnStyle(width: number): Record<string, string> {
-  const size = `${width}px`
-  return {
-    width: size,
-    minWidth: size,
-    maxWidth: size
-  }
 }
 
 function withCellProps(column: Record<string, any>, propsToMerge: Record<string, any>): Record<string, any> {
@@ -339,6 +353,51 @@ function changeBodyScrollLock(delta: number) {
   const nextCount = Math.max(0, Number(body[scrollLockCountKey] ?? 0) + delta)
   body[scrollLockCountKey] = nextCount
   body.classList.toggle(scrollLockClassName, nextCount > 0)
+}
+
+function queueTableScrollbarPlaceholderUpdate() {
+  if (typeof window === 'undefined') return
+  window.cancelAnimationFrame(tableScrollbarPlaceholderFrame)
+  tableScrollbarPlaceholderTimers.forEach((timer) => window.clearTimeout(timer))
+  tableScrollbarPlaceholderTimers = []
+  tableScrollbarPlaceholderFrame = window.requestAnimationFrame(() => {
+    updateTableScrollbarPlaceholderState()
+  })
+  tableScrollbarPlaceholderTimers = [80, 240, 600].map((delay) => window.setTimeout(updateTableScrollbarPlaceholderState, delay))
+}
+
+function updateTableScrollbarPlaceholderState() {
+  if (isMobile.value) {
+    hasOverlayScrollbarPlaceholder.value = false
+    scrollbarPlaceholderWidth.value = 0
+    return
+  }
+  const root = listRootRef.value
+  const body = root?.querySelector<HTMLElement>('.ant-table-body')
+  const scrollbarCell = root?.querySelector<HTMLElement>('.ant-table-cell-scrollbar')
+  if (!body || !scrollbarCell) {
+    hasOverlayScrollbarPlaceholder.value = false
+    scrollbarPlaceholderWidth.value = 0
+    return
+  }
+
+  const actualScrollbarWidth = Math.max(0, body.offsetWidth - body.clientWidth)
+  const measuredPlaceholderWidth = Math.round(scrollbarCell.getBoundingClientRect().width)
+  const placeholderWidth = measuredPlaceholderWidth > 0 ? measuredPlaceholderWidth : scrollbarPlaceholderWidth.value
+  hasOverlayScrollbarPlaceholder.value = placeholderWidth > 0 && actualScrollbarWidth <= 1
+  scrollbarPlaceholderWidth.value = hasOverlayScrollbarPlaceholder.value ? placeholderWidth : 0
+}
+
+function observeTableMutations() {
+  if (typeof MutationObserver === 'undefined' || !listRootRef.value) return
+  tableMutationObserver?.disconnect()
+  tableMutationObserver = new MutationObserver(queueTableScrollbarPlaceholderUpdate)
+  tableMutationObserver.observe(listRootRef.value, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'style']
+  })
 }
 
 function handleMobileScroll(event: Event) {
@@ -390,23 +449,45 @@ watch(() => props.refreshing, (refreshing) => {
   }
 })
 
+watch([
+  isMobile,
+  tableColumns,
+  tableScrollY,
+  () => props.loading,
+  () => props.dataSource.length
+], () => {
+  nextTick(queueTableScrollbarPlaceholderUpdate)
+}, { flush: 'post' })
+
 onMounted(() => {
   updateViewportState()
   updateListHeight()
+  nextTick(queueTableScrollbarPlaceholderUpdate)
   changeBodyScrollLock(1)
   if (typeof ResizeObserver !== 'undefined' && listRootRef.value) {
-    listResizeObserver = new ResizeObserver(updateListHeight)
+    listResizeObserver = new ResizeObserver(() => {
+      updateListHeight()
+      queueTableScrollbarPlaceholderUpdate()
+    })
     listResizeObserver.observe(listRootRef.value)
   }
+  observeTableMutations()
   window.addEventListener('resize', updateViewportState, { passive: true })
   window.addEventListener('resize', updateListHeight, { passive: true })
+  window.addEventListener('resize', queueTableScrollbarPlaceholderUpdate, { passive: true })
 })
 
 onBeforeUnmount(() => {
   changeBodyScrollLock(-1)
+  if (typeof window !== 'undefined') {
+    window.cancelAnimationFrame(tableScrollbarPlaceholderFrame)
+    tableScrollbarPlaceholderTimers.forEach((timer) => window.clearTimeout(timer))
+  }
   listResizeObserver?.disconnect()
+  tableMutationObserver?.disconnect()
   window.removeEventListener('resize', updateViewportState)
   window.removeEventListener('resize', updateListHeight)
+  window.removeEventListener('resize', queueTableScrollbarPlaceholderUpdate)
 })
 </script>
 
@@ -448,8 +529,30 @@ onBeforeUnmount(() => {
   overscroll-behavior: contain;
 }
 
+.responsive-data-list-table-overlay-scrollbar :deep(.ant-table-cell-scrollbar) {
+  display: none;
+}
+
+.responsive-data-list-table-overlay-scrollbar :deep(.ant-table-header table) {
+  width: calc(100% - var(--responsive-data-list-scrollbar-placeholder-width, 0px)) !important;
+}
+
+.responsive-data-list-table-overlay-scrollbar :deep(.ant-table-header .responsive-data-list-actions-column.ant-table-cell-fix-right) {
+  right: 0 !important;
+}
+
 .responsive-data-list-table :deep(.responsive-data-list-actions-column) {
   white-space: nowrap;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-first::after),
+.responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-last::after) {
+  box-shadow: none !important;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-first),
+.responsive-data-list-table :deep(.responsive-data-list-actions-column.ant-table-cell-fix-right-last) {
+  border-left: 1px solid #edf1f7;
 }
 
 .responsive-data-list-table :deep(.responsive-data-list-actions-column .ant-space) {

@@ -79,6 +79,18 @@ export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undef
   sessionAffinityCache.delete(sessionAffinityKey)
 }
 
+export function migrateOpenAIAccountSessionAffinity(sourceAccountId: string, targetAccountId: string): { migratedSessionCount: number } {
+  let migratedSessionCount = 0
+  for (const [key, binding] of sessionAffinityCache.entries()) {
+    if (binding.accountId !== sourceAccountId) {
+      continue
+    }
+    sessionAffinityCache.set(key, { accountId: targetAccountId })
+    migratedSessionCount += 1
+  }
+  return { migratedSessionCount }
+}
+
 function extractSessionIdentity(req: Request): { source: string; value: string } | undefined {
   for (const name of sessionHeaderNames) {
     const value = stringValue(req.header(name))

@@ -64,6 +64,10 @@ export function applySchema(database: DatabaseSync): void {
       password_encrypted TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       test_status TEXT NOT NULL DEFAULT 'unknown',
+      latency_ms INTEGER,
+      outbound_ip TEXT,
+      outbound_region TEXT,
+      last_test_message TEXT,
       last_tested_at TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
@@ -256,6 +260,7 @@ export function applySchema(database: DatabaseSync): void {
       expires_at TEXT,
       rate_limit INTEGER,
       quota_limit INTEGER,
+      quota_limits_json TEXT,
       scopes_json TEXT NOT NULL DEFAULT '[]',
       last_used_at TEXT,
       created_at TEXT NOT NULL,
@@ -694,5 +699,3 @@ function seedAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string):
     .prepare('UPDATE groups SET is_default = 1 WHERE id = ? AND system_account_id = ?')
     .run(DEFAULT_OPENAI_GROUP.id, DEFAULT_OPENAI_GROUP.systemAccountId)
 }
-
-

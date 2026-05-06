@@ -4,7 +4,12 @@ import { createApiKey, decryptJson, encryptJson, hashSecret } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 import { defaultOpenAIGroupIdForSystemAccount } from './default-group.repository.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
+import { apiKeyQuotaLimitsJson, emptyApiKeyQuotaLimits, normalizeApiKeyQuotaLimits, parseApiKeyQuotaLimitsJson } from './api-key-quota-limits.js'
 import { loadSystemAccountNameMap } from './repository-lookups.js'
+import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
+import type { UsageStatsRecordRow } from './usage-stats-types.js'
+import { subtractUsageStatsRecord } from './usage-stats-writers.js'
+import { loadApiKeyUsageSummariesForScopes } from './usage-summary-loaders.js'
 import { optionalNullableString, optionalServerDateTimeIso, optionalString } from './value-utils.js'
 
 interface ApiKeyRow {
@@ -18,6 +23,7 @@ interface ApiKeyRow {
   group_id: string
   group_authorization_id: string | null
   expires_at: string | null
+  quota_limits_json: string | null
 }
 
 type GroupOwnerRow = {
@@ -29,11 +35,23 @@ type ResourceAuthorizationRow = {
   id: string
 }
 
+type ApiKeyDeleteRow = {
+  id: string
+  system_account_id: string
+}
+
+type UsageStatsAggregationCursor = {
+  cursorCreatedAt: string
+  cursorId: string
+}
+
 export function listApiKeys(access?: AccessScope): ApiKeySummary[] {
   const scope = buildSystemAccountWhereClause(access)
   const rows = getDatabase().prepare(`SELECT * FROM api_keys${scope.clause} ORDER BY updated_at DESC`).all(...scope.params) as unknown as ApiKeyRow[]
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
+  const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
+  const usageByApiKey = loadApiKeyUsageSummariesForScopes(usageScopes)
   return rows.map((row) => ({
     id: row.id,
     systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
@@ -45,7 +63,9 @@ export function listApiKeys(access?: AccessScope): ApiKeySummary[] {
     status: row.status,
     groupId: row.group_id,
     groupAuthorizationId: row.group_authorization_id ?? undefined,
-    expiresAt: row.expires_at ?? undefined
+    expiresAt: row.expires_at ?? undefined,
+    quotaLimits: parseApiKeyQuotaLimitsJson(row.quota_limits_json),
+    usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
   }))
 }
 
@@ -67,6 +87,7 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
   if (group.systemAccountId !== systemAccountId && !groupAuthorization) {
     throw new Error('Invalid API key group')
   }
+  const quotaLimits = normalizeApiKeyQuotaLimits(input.quotaLimits)
   const record: ApiKeySummary & { key: string } = {
     id: newId('key'),
     systemAccountId: includeSystemAccountFields() ? systemAccountId : undefined,
@@ -77,14 +98,16 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
     status: input.status === 'disabled' ? 'disabled' : 'active',
     groupId,
     expiresAt: optionalServerDateTimeIso(input.expiresAt ?? input.expires_at),
+    quotaLimits,
+    usage: emptyAccountUsageSummary(),
     key
   }
   getDatabase()
     .prepare(`
-      INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, scopes_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, groupAuthorization?.id ?? null, record.expiresAt ?? null, JSON.stringify(input.scopes ?? []), now, now)
+    .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, groupAuthorization?.id ?? null, record.expiresAt ?? null, apiKeyQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
   return record
 }
 
@@ -112,22 +135,69 @@ export function updateApiKey(id: string, input: Record<string, unknown>): ApiKey
     description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
     status: input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : current.status,
     groupId: nextGroupId,
-    expiresAt: optionalServerDateTimeIso(input.expiresAt ?? input.expires_at) ?? current.expiresAt
+    expiresAt: optionalServerDateTimeIso(input.expiresAt ?? input.expires_at) ?? current.expiresAt,
+    quotaLimits: normalizeApiKeyQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyApiKeyQuotaLimits())
   }
   getDatabase()
-    .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, group_authorization_id = ?, expires_at = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-    .run(next.name, next.description ?? null, next.status, next.groupId, nextGroupAuthorization?.id ?? null, next.expiresAt ?? null, nowIso(), id, systemAccountId)
+    .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, group_authorization_id = ?, expires_at = ?, quota_limits_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+    .run(next.name, next.description ?? null, next.status, next.groupId, nextGroupAuthorization?.id ?? null, next.expiresAt ?? null, apiKeyQuotaLimitsJson(next.quotaLimits), nowIso(), id, systemAccountId)
   invalidateGatewayApiKeyCacheById(id)
   return next
 }
 
 export function deleteApiKey(id: string): boolean {
   const scope = buildSystemAccountScopeClause()
-  const result = getDatabase().prepare(`DELETE FROM api_keys WHERE id = ?${scope.clause}`).run(id, ...scope.params)
-  if (result.changes > 0) {
-    invalidateGatewayApiKeyCacheById(id)
+  const database = getDatabase()
+  const row = database.prepare(`SELECT id, system_account_id FROM api_keys WHERE id = ?${scope.clause}`).get(id, ...scope.params) as unknown as ApiKeyDeleteRow | undefined
+  if (!row) {
+    return false
   }
-  return result.changes > 0
+
+  database.exec('BEGIN')
+  try {
+    deleteApiKeyRelatedData(database, row)
+    const result = database.prepare('DELETE FROM api_keys WHERE id = ? AND system_account_id = ?').run(row.id, row.system_account_id)
+    database.exec('COMMIT')
+    if (result.changes > 0) {
+      invalidateGatewayApiKeyCacheById(row.id)
+    }
+    return result.changes > 0
+  } catch (error) {
+    try {
+      database.exec('ROLLBACK')
+    } catch {
+    }
+    throw error
+  }
+}
+
+function deleteApiKeyRelatedData(database: ReturnType<typeof getDatabase>, row: ApiKeyDeleteRow): void {
+  const updatedAt = nowIso()
+  const cursor = usageStatsAggregationCursor(database)
+  const usageRows = database.prepare('SELECT * FROM usage_records WHERE api_key_id = ? ORDER BY created_at ASC, id ASC').all(row.id) as unknown as UsageStatsRecordRow[]
+  for (const usageRow of usageRows) {
+    if (!isUsageRecordAlreadyAggregated(usageRow, cursor)) {
+      continue
+    }
+    subtractUsageStatsRecord(database, usageRow, updatedAt)
+  }
+  for (const tableName of ['usage_stats_totals', 'usage_stats_daily', 'usage_stats_hourly']) {
+    database.prepare(`DELETE FROM ${tableName} WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`).run(row.system_account_id, row.id)
+  }
+  database.prepare('DELETE FROM audit_logs WHERE api_key_id = ?').run(row.id)
+  database.prepare('DELETE FROM usage_records WHERE api_key_id = ?').run(row.id)
+}
+
+function usageStatsAggregationCursor(database: ReturnType<typeof getDatabase>): UsageStatsAggregationCursor {
+  const row = database
+    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
+    .get() as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
+  return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+}
+
+function isUsageRecordAlreadyAggregated(row: UsageStatsRecordRow, cursor: UsageStatsAggregationCursor): boolean {
+  if (!cursor.cursorCreatedAt) return false
+  return row.created_at < cursor.cursorCreatedAt || (row.created_at === cursor.cursorCreatedAt && row.id <= cursor.cursorId)
 }
 
 function decryptApiKeySecret(value: string | null | undefined): string {

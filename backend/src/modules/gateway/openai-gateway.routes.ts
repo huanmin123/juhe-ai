@@ -40,11 +40,11 @@ import {
   buildUpstreamRequestBody,
   copyResponseHeaders,
   isStreamResponse,
+  isRetryableUpstreamStreamPreloadError,
   preloadStreamResponseFirstChunk,
   requestUpstream,
   upstreamRequestTimeoutMs,
   upstreamSocketTimeoutMs,
-  UpstreamRequestTimeoutError,
   type GatewayUpstreamResponse
 } from './openai-gateway-upstream.js'
 import {
@@ -62,6 +62,7 @@ import {
 import { isOpenAIStreamRequest, resolveGatewayApiKey } from './openai-gateway-request.js'
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
+import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuota } from './api-key-quota.service.js'
 import {
   forgetOpenAIAccountForSession,
   orderOpenAIAccountsBySessionAffinity,
@@ -154,6 +155,39 @@ openAIGatewayRouter.all('/*', async (req, res) => {
   }
 
   const groupUsageFields = groupUsageMetadata(groupAccess)
+  const quotaDecision = checkGatewayApiKeyQuota(apiKeyRecord)
+  if (!quotaDecision.allowed) {
+    const statusCode = 429
+    const responsePayload = gatewayErrorPayload(quotaDecision.message ?? API_KEY_QUOTA_EXCEEDED_MESSAGE, 'rate_limit_exceeded')
+    recordGatewayFailure(req, {
+      traceId,
+      clientIp,
+      systemAccountId: apiKeyRecord.system_account_id,
+      apiKeyId: apiKeyRecord.id,
+      groupId: apiKeyRecord.group_id,
+      ...groupUsageFields,
+      endpoint,
+      requestSnapshot
+    }, {
+      statusCode,
+      startedAt,
+      responsePayload
+    })
+    sendGatewayJsonError(res, statusCode, responsePayload)
+    auditCapture.finalize({
+      outcome: 'gateway_failed',
+      success: false,
+      statusCode,
+      responseHeaders: responseHeadersToObject(res),
+      responseBody: JSON.stringify(responsePayload),
+      responsePartType: 'gateway_error',
+      errorPhase: 'quota',
+      errorCode: 'rate_limit_exceeded',
+      errorMessage: responsePayload.error.message
+    })
+    return
+  }
+
   if (isOpenAIModelsRequest(req)) {
     const responsePayload = buildOpenAIModelsResponse()
     res.status(200).json(responsePayload)
@@ -501,9 +535,11 @@ async function fetchFirstAvailableUpstream(
               } catch (error) {
                 const message = error instanceof Error ? error.message : 'Upstream stream request interrupted before first chunk'
                 lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status, message }
+                const preloadFailureBody = streamPreloadErrorBody(error)
                 auditCapture.completeAttempt(auditAttemptId, {
                   statusCode: response.status,
                   responseHeaders: response.headers,
+                  responseBody: preloadFailureBody,
                   success: false,
                   errorPhase: 'stream_preload',
                   errorMessage: message
@@ -514,9 +550,14 @@ async function fetchFirstAvailableUpstream(
                   startedAt: attemptStartedAt,
                   statusCode: response.status,
                   headers: response.headers,
+                  bodyText: preloadFailureBody?.toString('utf8'),
                   errorMessage: message
                 })
-                handleStreamFailure(account, message, settings)
+                if (isRetryableUpstreamStreamPreloadError(error) && attemptIndex < retryAttempts) {
+                  await waitBeforeTemporaryUnschedulableRetry(settings)
+                  continue
+                }
+                applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
                 skipAccount = true
                 break
               }
@@ -576,12 +617,6 @@ async function fetchFirstAvailableUpstream(
             startedAt: attemptStartedAt,
             errorMessage: message
           })
-          if (isStreamRequest && error instanceof UpstreamRequestTimeoutError) {
-            handleStreamFailure(account, message, settings)
-            forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-            skipAccount = true
-            break
-          }
           if (attemptIndex < retryAttempts) {
             await waitBeforeTemporaryUnschedulableRetry(settings)
             continue
@@ -644,6 +679,16 @@ function handleStreamFailure(account: UpstreamAccount, reason: string, settings:
     clearGatewayRuntimeCache()
 
   }
+}
+
+function streamPreloadErrorBody(error: unknown): Buffer | undefined {
+  if (typeof error === 'object' && error !== null && 'chunks' in error) {
+    const chunks = (error as { chunks?: unknown }).chunks
+    if (Array.isArray(chunks) && chunks.every(Buffer.isBuffer)) {
+      return Buffer.concat(chunks)
+    }
+  }
+  return undefined
 }
 
 async function prepareUpstreamAccount(account: UpstreamAccount): Promise<UpstreamAccount> {

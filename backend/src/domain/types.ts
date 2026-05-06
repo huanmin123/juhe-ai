@@ -1,6 +1,7 @@
 export type ProviderCode = string
 export type AccountType = string
 export type AccountStatus = 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable'
+export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'disabled'
 export type SystemAccountRole = 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'
@@ -231,6 +232,14 @@ export interface AccountSummary {
   authorizationTeamCount?: number
 }
 
+export interface AccountTrafficMigrationResult {
+  sourceAccount: AccountSummary
+  targetAccount: AccountSummary
+  migratedSessionCount: number
+  sourceStatus: AccountTrafficMigrationSourceStatus
+  sourceCooldownUntil?: string | null
+}
+
 export interface AccountUsageStatsRow {
   id: string
   systemAccountId?: string
@@ -397,4 +406,23 @@ export interface ApiKeySummary {
   groupId: string
   groupAuthorizationId?: string
   expiresAt?: string
+  quotaLimits: ApiKeyQuotaLimits
+  usage: AccountUsageSummary
+}
+
+export interface ApiKeyQuotaLimit {
+  enabled: boolean
+  limit: number
+}
+
+export interface ApiKeyHourlyQuotaLimit extends ApiKeyQuotaLimit {
+  hours: number
+}
+
+export interface ApiKeyQuotaLimits {
+  hourly?: ApiKeyHourlyQuotaLimit
+  daily?: ApiKeyQuotaLimit
+  weekly?: ApiKeyQuotaLimit
+  monthly?: ApiKeyQuotaLimit
+  total?: ApiKeyQuotaLimit
 }

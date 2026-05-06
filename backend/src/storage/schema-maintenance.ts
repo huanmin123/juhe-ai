@@ -4,7 +4,12 @@ const ensuredColumns: Array<{ tableName: string; columnName: string; columnType:
   { tableName: 'system_accounts', columnName: 'description', columnType: 'TEXT' },
   { tableName: 'providers', columnName: 'description', columnType: 'TEXT' },
   { tableName: 'proxy_profiles', columnName: 'description', columnType: 'TEXT' },
+  { tableName: 'proxy_profiles', columnName: 'latency_ms', columnType: 'INTEGER' },
+  { tableName: 'proxy_profiles', columnName: 'outbound_ip', columnType: 'TEXT' },
+  { tableName: 'proxy_profiles', columnName: 'outbound_region', columnType: 'TEXT' },
+  { tableName: 'proxy_profiles', columnName: 'last_test_message', columnType: 'TEXT' },
   { tableName: 'api_keys', columnName: 'description', columnType: 'TEXT' },
+  { tableName: 'api_keys', columnName: 'quota_limits_json', columnType: 'TEXT' },
   { tableName: 'group_accounts', columnName: 'account_authorization_id', columnType: 'TEXT' },
   { tableName: 'api_keys', columnName: 'group_authorization_id', columnType: 'TEXT' }
 ]
