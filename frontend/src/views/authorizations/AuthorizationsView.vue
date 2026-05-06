@@ -55,7 +55,7 @@
 </template>
 
 <script setup lang="ts">
-import { message } from 'ant-design-vue'
+import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -69,6 +69,7 @@ import AuthorizationHelpModal from './AuthorizationHelpModal.vue'
 import AuthorizationList from './AuthorizationList.vue'
 import AuthorizationUsageDetailModal from './AuthorizationUsageDetailModal.vue'
 import type { AuthorizationCreateFormModel, AuthorizationExpireFormModel } from './authorizationFormTypes'
+import { createQuotaLimitForm, quotaLimitsPayload } from '../shared/requestQuotaForm'
 import {
   buildTeamUsageSummaries,
   extractApiErrorMessage,
@@ -116,11 +117,13 @@ const createForm = reactive<AuthorizationCreateFormModel>({
   granteeType: 'system_account' as 'system_account' | 'team',
   granteeId: '' as string,
   remark: '',
-  expiresAt: undefined as Dayjs | undefined
+  expiresAt: undefined as Dayjs | undefined,
+  quotaLimits: createQuotaLimitForm()
 })
 
 const expireForm = reactive<AuthorizationExpireFormModel>({
-  expiresAt: undefined as Dayjs | undefined
+  expiresAt: undefined as Dayjs | undefined,
+  quotaLimits: createQuotaLimitForm()
 })
 
 const usageDetailColumns = authorizationUsageDetailColumns
@@ -228,6 +231,7 @@ function openCreateModal() {
   createForm.granteeId = ''
   createForm.remark = ''
   createForm.expiresAt = undefined
+  createForm.quotaLimits = createQuotaLimitForm()
   createModalOpen.value = true
 }
 
@@ -269,7 +273,8 @@ async function createAuthorization() {
       granteeType: createForm.granteeType,
       granteeId: createForm.granteeId,
       remark: createForm.remark.trim() || undefined,
-      expiresAt
+      expiresAt,
+      limits: quotaLimitsPayload(createForm.quotaLimits)
     })
     createModalOpen.value = false
     message.success(createForm.granteeType === 'team' ? '团队授权已创建，成员会自动展开为用户授权' : '授权已创建')
@@ -342,6 +347,7 @@ async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, sta
 function openExpireModal(item: ResourceAuthorizationSummary) {
   expireAuthorization.value = item
   expireForm.expiresAt = parseDatePickerValue(item.expiresAt)
+  expireForm.quotaLimits = createQuotaLimitForm(item.limits)
   expireModalOpen.value = true
 }
 
@@ -353,15 +359,16 @@ async function confirmExpireChange() {
   }
   try {
     await api.authorizations.updateExpire(authorization.id, {
-      expiresAt: formatServerDateTimeInput(expireForm.expiresAt)
+      expiresAt: formatServerDateTimeInput(expireForm.expiresAt),
+      limits: quotaLimitsPayload(expireForm.quotaLimits)
     })
     expireModalOpen.value = false
     expireAuthorization.value = undefined
-    message.success('到期时间已更新')
+    message.success('授权配置已更新')
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '修改到期时间失败'))
+    message.error(extractApiErrorMessage(error, '修改授权配置失败'))
   }
 }
 

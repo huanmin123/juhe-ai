@@ -45,15 +45,14 @@
 </template>
 
 <script setup lang="ts">
-import * as echarts from 'echarts'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
-import type { ECharts } from 'echarts'
 import type { Ref, ShallowRef } from 'vue'
-import { message } from 'ant-design-vue'
+import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
+import { init, type ECharts } from '@/lib/echarts'
 import type { SystemMetricsOverview, UsageOverviewWindowKey, UsageStatsOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
@@ -190,7 +189,7 @@ function ensureChart(elementRef: Ref<HTMLDivElement | undefined>, chartRef: Shal
   const element = elementRef.value
   if (!element) return undefined
   if (!chartRef.value || chartRef.value.isDisposed()) {
-    chartRef.value = echarts.init(element)
+    chartRef.value = init(element)
   }
   return chartRef.value
 }
@@ -315,7 +314,6 @@ onBeforeUnmount(() => {
   }
 }
 </style>
-
 
 
 

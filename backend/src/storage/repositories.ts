@@ -20,6 +20,7 @@ import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap, loadSystemAccountsByIds, loadSystemTeamNameMap } from './repository-lookups.js'
+import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow, TeamResourceAuthorizationGrantRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
@@ -37,6 +38,7 @@ import {
 } from './value-utils.js'
 
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
+const manualTrafficMigrationReason = '手动迁移流量'
 
 export type { AccountListOptions, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
 
@@ -446,6 +448,10 @@ function defaultTemporaryUnschedulableMinutes(): number {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   if (!Number.isFinite(number)) return 5
   return Math.min(Math.max(Math.trunc(number), 1), 1440)
+}
+
+function isManualTrafficMigrationState(account: Pick<AccountSummary, 'lastErrorMessage' | 'status'>): boolean {
+  return account.status === 'temporary_unavailable' && account.lastErrorMessage === manualTrafficMigrationReason
 }
 
 function refreshGroupAccountStatsAfterWrite(): void {
@@ -869,7 +875,10 @@ export function deleteAccount(id: string): boolean {
   return result.changes > 0
 }
 
-export function clearAccountFailureState(id: string): AccountSummary | undefined {
+export function clearAccountFailureState(
+  id: string,
+  options: { preserveManualTrafficMigration?: boolean } = {}
+): AccountSummary | undefined {
   const current = listAccounts().find((account) => account.id === id)
   if (!current) {
     return undefined
@@ -877,6 +886,9 @@ export function clearAccountFailureState(id: string): AccountSummary | undefined
   const ownerSystemAccountId = accountSystemAccountId(id)
   if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId)) {
     return undefined
+  }
+  if (options.preserveManualTrafficMigration && isManualTrafficMigrationState(current)) {
+    return current
   }
 
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
@@ -1001,7 +1013,7 @@ export function migrateAccountTraffic(input: {
   }
 
   const now = nowIso()
-  const reason = '手动迁移流量'
+  const reason = manualTrafficMigrationReason
   const sourceCooldownUntil = input.sourceStatus === 'temporary_unavailable'
     ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
     : null
@@ -1589,9 +1601,13 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
   const now = nowIso()
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
     || Object.prototype.hasOwnProperty.call(input, 'expires_at')
+  const hasLimitsInput = Object.prototype.hasOwnProperty.call(input, 'limits')
   const nextExpiresAt = hasExpiresAtInput
     ? optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at)
     : row.expires_at
+  const nextLimits = hasLimitsInput
+    ? requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
+    : row.limits_json
   const rawStatus = optionalString(input.status)
   const requestedStatus = rawStatus === 'active' || rawStatus === 'paused' || rawStatus === 'expired' || rawStatus === 'revoked'
     ? rawStatus
@@ -1627,10 +1643,12 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
           revoked_by = ?,
           revoked_at = ?,
           revoked_reason = ?,
+          limits_json = ?,
           updated_at = ?
       WHERE id = ?
     `)
-    .run(nextStatus, nextExpiresAt, nextRevokedBy, nextRevokedAt, nextRevokedReason, now, authorizationId)
+    .run(nextStatus, nextExpiresAt, nextRevokedBy, nextRevokedAt, nextRevokedReason, nextLimits, now, authorizationId)
+  updateEffectiveTeamGrantLimits(row, nextLimits, database, now)
   cleanupInactiveAuthorizationBindings(database)
   return listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
 }
@@ -1723,14 +1741,14 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
           last_source_changed_at = ?,
           remark = COALESCE(?, remark),
           expires_at = COALESCE(?, expires_at),
-          limits_json = COALESCE(?, limits_json),
+          limits_json = ?,
           model_policy_json = COALESCE(?, model_policy_json),
           revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_by, ?) ELSE NULL END,
           revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_at, ?) ELSE NULL END,
           revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE NULL END,
           updated_at = ?
       WHERE id = ?
-    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.now, authorizationId)
+    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.now, authorizationId)
   } else {
     input.database.prepare(`
       INSERT INTO resource_authorizations (
@@ -1739,7 +1757,7 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
         remark, expires_at, limits_json, model_policy_json,
         created_by, created_at, revoked_by, revoked_at, revoked_reason, updated_at
       ) VALUES (?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
-    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
+    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
   }
   upsertResourceAuthorizationSource(input.database, authorizationId, input.sourceType, input.sourceTeamId, input.actor, input.now, isTeamSource ? 'active' : hasActiveTeamSource ? 'superseded' : 'active')
   if (isTeamSource) {
@@ -1902,15 +1920,40 @@ function upsertTeamResourceGrant(input: { resourceType: ResourceAuthorizationRes
   const existing = input.database.prepare("SELECT * FROM team_resource_authorization_grants WHERE resource_type = ? AND resource_id = ? AND team_id = ? AND status = 'active' LIMIT 1").get(input.resourceType, input.resourceId, input.teamId) as unknown as TeamResourceAuthorizationGrantRow | undefined
   const id = existing?.id ?? newId('teamgrant')
   if (existing) {
-    input.database.prepare('UPDATE team_resource_authorization_grants SET remark = COALESCE(?, remark), expires_at = COALESCE(?, expires_at), limits_json = COALESCE(?, limits_json), model_policy_json = COALESCE(?, model_policy_json), updated_at = ? WHERE id = ?')
-      .run(input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.now, id)
+    input.database.prepare('UPDATE team_resource_authorization_grants SET remark = COALESCE(?, remark), expires_at = COALESCE(?, expires_at), limits_json = ?, model_policy_json = COALESCE(?, model_policy_json), updated_at = ? WHERE id = ?')
+      .run(input.remark ?? null, input.expiresAt ?? null, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.now, id)
   } else {
     input.database.prepare("INSERT INTO team_resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, team_id, scope, status, remark, expires_at, limits_json, model_policy_json, created_by, created_at, revoked_by, revoked_at, updated_at) VALUES (?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)")
-      .run(id, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.teamId, input.remark ?? null, input.expiresAt ?? null, jsonObjectOrNull(input.limits), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
+      .run(id, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.teamId, input.remark ?? null, input.expiresAt ?? null, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
   }
   const row = input.database.prepare('SELECT * FROM team_resource_authorization_grants WHERE id = ?').get(id) as unknown as TeamResourceAuthorizationGrantRow | undefined
   if (!row) throw new Error('Create team authorization grant failed')
   return row
+}
+
+function updateEffectiveTeamGrantLimits(row: ResourceAuthorizationRow, limitsJson: string | null, database: DatabaseSync, now: string): void {
+  if (row.effective_source_type !== 'team' || !row.effective_source_team_id) {
+    return
+  }
+  database.prepare(`
+    UPDATE team_resource_authorization_grants
+    SET limits_json = ?,
+        updated_at = ?
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND team_id = ?
+      AND status = 'active'
+  `).run(limitsJson, now, row.resource_type, row.resource_id, row.effective_source_team_id)
+  database.prepare(`
+    UPDATE resource_authorizations
+    SET limits_json = ?,
+        updated_at = ?
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND effective_source_type = 'team'
+      AND effective_source_team_id = ?
+      AND status IN ('active', 'paused')
+  `).run(limitsJson, now, row.resource_type, row.resource_id, row.effective_source_team_id)
 }
 
 function applyActiveTeamGrantsToMember(teamId: string, systemAccountId: string, access: AccessScope | undefined, database: DatabaseSync, now: string): void {
@@ -1918,7 +1961,7 @@ function applyActiveTeamGrantsToMember(teamId: string, systemAccountId: string, 
   const actor = currentSystemAccountId(access)
   for (const grant of grants) {
     if (grant.resource_owner_system_account_id === systemAccountId) continue
-    upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: systemAccountId, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseOptionalJsonObject(grant.limits_json ?? undefined), modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined), actor, now, database })
+    upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: systemAccountId, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseRequestQuotaLimitsJson(grant.limits_json), modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined), actor, now, database })
   }
 }
 
@@ -1991,7 +2034,7 @@ function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[]): Resou
       status: row.status,
       remark: row.remark ?? undefined,
       expiresAt: row.expires_at ?? undefined,
-      limits: parseOptionalJsonObject(row.limits_json ?? undefined),
+      limits: parseRequestQuotaLimitsJson(row.limits_json),
       modelPolicy: parseOptionalJsonObject(row.model_policy_json ?? undefined),
       effectiveSourceType: row.effective_source_type ?? undefined,
       effectiveSourceTeamId: row.effective_source_team_id ?? undefined,

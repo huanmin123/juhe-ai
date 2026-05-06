@@ -15,7 +15,7 @@
         class="form-alert"
         type="warning"
         show-icon
-        message="会把当前命中该账户的客户端会话切到目标账户，并立刻让当前账户退出调度。"
+        message="不会打断当前正在输出的连接；当前请求继续跑完，从下一次请求开始切到目标账户。"
       />
       <a-form-item label="当前账户">
         <a-input :value="sourceAccount?.name || '-'" readonly />
@@ -36,6 +36,7 @@
           <a-radio value="temporary_unavailable">临时不可调用</a-radio>
           <a-radio value="disabled">停用账户</a-radio>
         </a-radio-group>
+        <div class="form-help">迁移只影响后续请求；已经建立的流式输出不会被这次操作中断。</div>
       </a-form-item>
     </a-form>
   </a-modal>

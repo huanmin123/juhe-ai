@@ -63,6 +63,7 @@ import { isOpenAIStreamRequest, resolveGatewayApiKey } from './openai-gateway-re
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuota } from './api-key-quota.service.js'
+import { AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE, checkGatewayAuthorizationQuota } from './authorization-quota.service.js'
 import {
   forgetOpenAIAccountForSession,
   orderOpenAIAccountsBySessionAffinity,
@@ -188,6 +189,21 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     return
   }
 
+  const groupAuthorizationQuotaDecision = checkGatewayAuthorizationQuota({ groupAccess })
+  if (!groupAuthorizationQuotaDecision.allowed) {
+    sendQuotaExceededResponse(req, res, auditCapture, {
+      traceId,
+      clientIp,
+      systemAccountId: apiKeyRecord.system_account_id,
+      apiKeyId: apiKeyRecord.id,
+      groupId: apiKeyRecord.group_id,
+      ...groupUsageFields,
+      endpoint,
+      requestSnapshot
+    }, startedAt, groupAuthorizationQuotaDecision.message ?? AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE)
+    return
+  }
+
   if (isOpenAIModelsRequest(req)) {
     const responsePayload = buildOpenAIModelsResponse()
     res.status(200).json(responsePayload)
@@ -223,11 +239,33 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     apiKeyId: apiKeyRecord.id,
     groupId: apiKeyRecord.group_id
   })
-  const accounts = orderOpenAIAccountsBySessionAffinity(
+  const candidateAccounts = orderOpenAIAccountsBySessionAffinity(
     listCachedOpenAIAccountsForGroup(apiKeyRecord.group_id, apiKeyRecord.system_account_id),
     sessionAffinityKey
   )
+  let authorizationQuotaDeniedAccountCount = 0
+  const accounts = candidateAccounts.filter((account) => {
+    const decision = checkGatewayAuthorizationQuota({ groupAccess, account })
+    if (!decision.allowed) {
+      authorizationQuotaDeniedAccountCount += 1
+      return false
+    }
+    return true
+  })
   if (accounts.length === 0) {
+    if (authorizationQuotaDeniedAccountCount > 0) {
+      sendQuotaExceededResponse(req, res, auditCapture, {
+        traceId,
+        clientIp,
+        systemAccountId: apiKeyRecord.system_account_id,
+        apiKeyId: apiKeyRecord.id,
+        groupId: apiKeyRecord.group_id,
+        ...groupUsageFields,
+        endpoint,
+        requestSnapshot
+      }, startedAt, AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE)
+      return
+    }
     const statusCode = 503
     const responsePayload = gatewayErrorPayload('No available upstream account', 'service_unavailable')
     recordGatewayFailure(req, {
@@ -385,7 +423,11 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     }
 
     if (upstreamResponse.ok) {
-      applyAccountErrorHandlingWithCacheInvalidation(account, { success: true, settings: gatewaySettings })
+      applyAccountErrorHandlingWithCacheInvalidation(account, {
+        success: true,
+        settings: gatewaySettings,
+        preserveManualTrafficMigration: true
+      })
     }
 
     enqueueUsageRecord({
@@ -475,6 +517,35 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     })
   }
 })
+
+function sendQuotaExceededResponse(
+  req: Request,
+  res: Response,
+  auditCapture: AuditCaptureContext,
+  usageContext: GatewayUsageContext & Partial<ReturnType<typeof groupUsageMetadata>>,
+  startedAt: number,
+  message: string
+): void {
+  const statusCode = 429
+  const responsePayload = gatewayErrorPayload(message, 'rate_limit_exceeded')
+  recordGatewayFailure(req, usageContext, {
+    statusCode,
+    startedAt,
+    responsePayload
+  })
+  sendGatewayJsonError(res, statusCode, responsePayload)
+  auditCapture.finalize({
+    outcome: 'gateway_failed',
+    success: false,
+    statusCode,
+    responseHeaders: responseHeadersToObject(res),
+    responseBody: JSON.stringify(responsePayload),
+    responsePartType: 'gateway_error',
+    errorPhase: 'quota',
+    errorCode: 'rate_limit_exceeded',
+    errorMessage: responsePayload.error.message
+  })
+}
 
 class UpstreamAttemptError extends Error {
   constructor(message: string, readonly lastAttempt?: UpstreamAttempt) {

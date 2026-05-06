@@ -39,7 +39,7 @@
 
 <script setup lang="ts">
 import axios from 'axios'
-import { message } from 'ant-design-vue'
+import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref, type CSSProperties } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 

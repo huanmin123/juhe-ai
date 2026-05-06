@@ -147,7 +147,7 @@
 <script setup lang="ts">
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { message } from 'ant-design-vue'
+import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { SearchOutlined } from '@ant-design/icons-vue'
 

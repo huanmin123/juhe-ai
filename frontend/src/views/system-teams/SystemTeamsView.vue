@@ -129,7 +129,7 @@
 
 <script setup lang="ts">
 import axios from 'axios'
-import { message } from 'ant-design-vue'
+import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'

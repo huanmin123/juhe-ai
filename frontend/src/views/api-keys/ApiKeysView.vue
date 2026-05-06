@@ -143,19 +143,7 @@
           <a-textarea v-model:value="form.description" :rows="3" placeholder="可选，填写用途或接入方说明" />
         </a-form-item>
         <a-divider orientation="left">额度限制</a-divider>
-        <div class="quota-limit-grid">
-          <div class="quota-limit-item quota-limit-hourly">
-            <a-switch v-model:checked="form.quotaLimits.hourly.enabled" />
-            <span class="quota-limit-title">n 小时额度</span>
-            <a-input-number v-model:value="form.quotaLimits.hourly.hours" :min="1" :max="720" addon-after="小时" :disabled="!form.quotaLimits.hourly.enabled" class="quota-hours-input" />
-            <a-input-number v-model:value="form.quotaLimits.hourly.limit" :min="1" addon-after="次请求" :disabled="!form.quotaLimits.hourly.enabled" class="quota-limit-input" />
-          </div>
-          <div v-for="item in quotaLimitItems" :key="item.key" class="quota-limit-item">
-            <a-switch v-model:checked="form.quotaLimits[item.key].enabled" />
-            <span class="quota-limit-title">{{ item.label }}</span>
-            <a-input-number v-model:value="form.quotaLimits[item.key].limit" :min="1" addon-after="次请求" :disabled="!form.quotaLimits[item.key].enabled" class="quota-limit-input" />
-          </div>
-        </div>
+        <RequestQuotaFields :model="form.quotaLimits" />
       </a-form>
     </a-modal>
 
@@ -177,7 +165,7 @@
 <script setup lang="ts">
 import type { Dayjs } from 'dayjs'
 import { CopyOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
-import { message } from 'ant-design-vue'
+import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
@@ -189,6 +177,8 @@ import { authState } from '@/composables/useAuth'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
+import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
 
 const loading = ref(false)
 const modalOpen = ref(false)
@@ -200,7 +190,6 @@ const apiKeys = ref<ApiKeySummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const systemAccountFilter = ref(allSystemAccountsValue)
-type QuotaPeriodKey = 'daily' | 'weekly' | 'monthly' | 'total'
 const form = reactive({
   name: '',
   groupId: '',
@@ -233,12 +222,6 @@ const columns = computed(() => {
 const statusOptions = [
   { label: '启用', value: 'active' },
   { label: '停用', value: 'disabled' }
-]
-const quotaLimitItems: Array<{ key: QuotaPeriodKey; label: string }> = [
-  { key: 'daily', label: '日额度（每日 0 点重置）' },
-  { key: 'weekly', label: '周额度（每周一 0 点重置）' },
-  { key: 'monthly', label: '月额度（每月 1 号 0 点重置）' },
-  { key: 'total', label: '总额度（累计）' }
 ]
 
 const groupOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
@@ -351,24 +334,8 @@ async function saveApiKey() {
   }
 }
 
-function createQuotaLimitForm(source?: ApiKeyQuotaLimits) {
-  return {
-    hourly: { enabled: Boolean(source?.hourly?.enabled), hours: source?.hourly?.hours ?? 1, limit: source?.hourly?.limit ?? 1 },
-    daily: { enabled: Boolean(source?.daily?.enabled), limit: source?.daily?.limit ?? 1 },
-    weekly: { enabled: Boolean(source?.weekly?.enabled), limit: source?.weekly?.limit ?? 1 },
-    monthly: { enabled: Boolean(source?.monthly?.enabled), limit: source?.monthly?.limit ?? 1 },
-    total: { enabled: Boolean(source?.total?.enabled), limit: source?.total?.limit ?? 1 }
-  }
-}
-
 function quotaLimitsPayload(): ApiKeyQuotaLimits {
-  return {
-    ...(form.quotaLimits.hourly.enabled ? { hourly: { enabled: true, hours: form.quotaLimits.hourly.hours, limit: form.quotaLimits.hourly.limit } } : {}),
-    ...(form.quotaLimits.daily.enabled ? { daily: { enabled: true, limit: form.quotaLimits.daily.limit } } : {}),
-    ...(form.quotaLimits.weekly.enabled ? { weekly: { enabled: true, limit: form.quotaLimits.weekly.limit } } : {}),
-    ...(form.quotaLimits.monthly.enabled ? { monthly: { enabled: true, limit: form.quotaLimits.monthly.limit } } : {}),
-    ...(form.quotaLimits.total.enabled ? { total: { enabled: true, limit: form.quotaLimits.total.limit } } : {})
-  }
+  return buildQuotaLimitsPayload(form.quotaLimits)
 }
 
 async function copyText(value: string) {
@@ -513,38 +480,6 @@ onMounted(loadData)
   margin-top: 16px;
 }
 
-.quota-limit-grid {
-  display: grid;
-  gap: 10px;
-}
-
-.quota-limit-item {
-  display: grid;
-  grid-template-columns: auto minmax(150px, 1fr) minmax(160px, 220px);
-  gap: 10px;
-  align-items: center;
-  padding: 10px 12px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #fbfdff;
-}
-
-.quota-limit-hourly {
-  grid-template-columns: auto minmax(110px, 1fr) minmax(110px, 140px) minmax(160px, 220px);
-}
-
-.quota-limit-title {
-  min-width: 0;
-  color: #334155;
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.quota-limit-input,
-.quota-hours-input {
-  width: 100%;
-}
-
 .api-keys-table :deep(.ant-empty) {
   margin: 12px 0;
 }
@@ -600,18 +535,6 @@ onMounted(loadData)
   font-size: 12px;
   text-align: center;
   white-space: nowrap;
-}
-
-@media (max-width: 640px) {
-  .quota-limit-item,
-  .quota-limit-hourly {
-    grid-template-columns: auto minmax(0, 1fr);
-  }
-
-  .quota-limit-input,
-  .quota-hours-input {
-    grid-column: 1 / -1;
-  }
 }
 
 </style>

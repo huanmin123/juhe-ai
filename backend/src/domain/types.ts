@@ -342,7 +342,7 @@ export interface ResourceAuthorizationSummary {
   status: AuthorizationStatus
   remark?: string
   expiresAt?: string
-  limits?: Record<string, unknown>
+  limits?: RequestQuotaLimits
   modelPolicy?: Record<string, unknown>
   effectiveSourceType?: ResourceAuthorizationSourceType
   effectiveSourceTeamId?: string
@@ -410,19 +410,23 @@ export interface ApiKeySummary {
   usage: AccountUsageSummary
 }
 
-export interface ApiKeyQuotaLimit {
+export interface RequestQuotaLimit {
   enabled: boolean
   limit: number
 }
 
-export interface ApiKeyHourlyQuotaLimit extends ApiKeyQuotaLimit {
+export interface RequestHourlyQuotaLimit extends RequestQuotaLimit {
   hours: number
 }
 
-export interface ApiKeyQuotaLimits {
-  hourly?: ApiKeyHourlyQuotaLimit
-  daily?: ApiKeyQuotaLimit
-  weekly?: ApiKeyQuotaLimit
-  monthly?: ApiKeyQuotaLimit
-  total?: ApiKeyQuotaLimit
+export interface RequestQuotaLimits {
+  hourly?: RequestHourlyQuotaLimit
+  daily?: RequestQuotaLimit
+  weekly?: RequestQuotaLimit
+  monthly?: RequestQuotaLimit
+  total?: RequestQuotaLimit
 }
+
+export type ApiKeyQuotaLimit = RequestQuotaLimit
+export type ApiKeyHourlyQuotaLimit = RequestHourlyQuotaLimit
+export type ApiKeyQuotaLimits = RequestQuotaLimits

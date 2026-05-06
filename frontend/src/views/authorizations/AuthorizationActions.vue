@@ -7,7 +7,7 @@
       </a-button>
       <template #overlay>
         <a-menu @click="$emit('menu-click', $event)">
-          <a-menu-item key="edit-expire">修改到期时间</a-menu-item>
+          <a-menu-item key="edit-expire">修改配置</a-menu-item>
           <a-menu-item v-if="authorization.status === 'active'" key="pause">暂停授权</a-menu-item>
           <a-menu-item v-if="authorization.status === 'paused'" key="resume">恢复授权</a-menu-item>
           <a-menu-item v-if="authorization.status === 'active' && hasManualSource(authorization)" key="revoke-manual">回收</a-menu-item>

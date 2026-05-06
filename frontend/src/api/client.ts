@@ -14,6 +14,7 @@ import type {
   AuditLogSummary,
   AuditOutcome,
   AuthorizationResourceType,
+  RequestQuotaLimits,
   ResourceAuthorizationSummary,
   ApiKeySummary,
   CaptchaChallengeSummary,
@@ -183,9 +184,10 @@ export const api = {
       granteeId: string
       remark?: string
       expiresAt?: string
+      limits?: RequestQuotaLimits
     }) => unwrap<ResourceAuthorizationSummary>(http.post('/authorizations', payload)),
-    update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}`, payload)),
-    updateExpire: (id: string, payload: { expiresAt: string | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}/expire`, payload)),
+    update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}`, payload)),
+    updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}/expire`, payload)),
     revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { data: payload })),
     usage: (id: string) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`))
   },

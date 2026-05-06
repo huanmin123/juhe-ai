@@ -1,5 +1,22 @@
 import type { AccountUsageSummary } from './usage-stats'
 
+export interface RequestQuotaLimit {
+  enabled: boolean
+  limit: number
+}
+
+export interface RequestHourlyQuotaLimit extends RequestQuotaLimit {
+  hours: number
+}
+
+export interface RequestQuotaLimits {
+  hourly?: RequestHourlyQuotaLimit
+  daily?: RequestQuotaLimit
+  weekly?: RequestQuotaLimit
+  monthly?: RequestQuotaLimit
+  total?: RequestQuotaLimit
+}
+
 export interface ApiKeySummary {
   id: string
   systemAccountId?: string
@@ -18,22 +35,9 @@ export interface ApiKeySummary {
 
 export interface CreatedApiKey extends ApiKeySummary {}
 
-export interface ApiKeyQuotaLimit {
-  enabled: boolean
-  limit: number
-}
-
-export interface ApiKeyHourlyQuotaLimit extends ApiKeyQuotaLimit {
-  hours: number
-}
-
-export interface ApiKeyQuotaLimits {
-  hourly?: ApiKeyHourlyQuotaLimit
-  daily?: ApiKeyQuotaLimit
-  weekly?: ApiKeyQuotaLimit
-  monthly?: ApiKeyQuotaLimit
-  total?: ApiKeyQuotaLimit
-}
+export type ApiKeyQuotaLimit = RequestQuotaLimit
+export type ApiKeyHourlyQuotaLimit = RequestHourlyQuotaLimit
+export type ApiKeyQuotaLimits = RequestQuotaLimits
 
 export interface OpenAIAuthURLResult {
   authUrl: string

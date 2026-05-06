@@ -131,7 +131,7 @@
 
 <script setup lang="ts">
 import axios from 'axios'
-import { message } from 'ant-design-vue'
+import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -630,7 +630,7 @@ async function saveTrafficMigration() {
       sourceStatus: trafficMigrationForm.sourceStatus
     })
     const statusText = result.sourceStatus === 'disabled' ? '停用账户' : '临时不可调用'
-    message.success(`已迁移到 ${result.targetAccount.name}，原账户已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
+    message.success(`后续请求将切到 ${result.targetAccount.name}，当前连接不中断；原账户已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
     trafficMigrationModalOpen.value = false
     trafficMigrationSourceAccount.value = undefined
     await loadData()

@@ -176,7 +176,7 @@
 </template>
 
 <script setup lang="ts">
-import { message } from 'ant-design-vue'
+import { message } from '@/lib/antd'
 import { onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'

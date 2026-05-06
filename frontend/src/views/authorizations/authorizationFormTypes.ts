@@ -1,4 +1,5 @@
 import type { Dayjs } from 'dayjs'
+import type { RequestQuotaFormModel } from '../shared/requestQuotaForm'
 
 export interface AuthorizationCreateFormModel {
   resourceType: 'account' | 'group'
@@ -7,8 +8,10 @@ export interface AuthorizationCreateFormModel {
   granteeId: string
   remark: string
   expiresAt?: Dayjs
+  quotaLimits: RequestQuotaFormModel
 }
 
 export interface AuthorizationExpireFormModel {
   expiresAt?: Dayjs
+  quotaLimits: RequestQuotaFormModel
 }

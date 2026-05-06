@@ -11,6 +11,7 @@ import {
 } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 export const authorizationsRouter = Router()
@@ -44,8 +45,9 @@ const updateAuthorizationSchema = z.object({
   expiresAt: z.union([
     z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确'),
     z.null()
-  ]).optional()
-}).refine((value) => Object.prototype.hasOwnProperty.call(value, 'status') || Object.prototype.hasOwnProperty.call(value, 'expiresAt'), {
+  ]).optional(),
+  limits: z.record(z.string(), z.unknown()).nullable().optional()
+}).refine((value) => Object.prototype.hasOwnProperty.call(value, 'status') || Object.prototype.hasOwnProperty.call(value, 'expiresAt') || Object.prototype.hasOwnProperty.call(value, 'limits'), {
   message: '请提供要修改的授权内容'
 })
 
@@ -53,7 +55,8 @@ const updateAuthorizationExpireSchema = z.object({
   expiresAt: z.union([
     z.string().trim().refine((value) => !Number.isNaN(Date.parse(value)), '过期时间格式不正确'),
     z.null()
-  ])
+  ]),
+  limits: z.record(z.string(), z.unknown()).nullable().optional()
 })
 
 const revokeAuthorizationSchema = z.object({
@@ -97,6 +100,7 @@ authorizationsRouter.post('/', (req, res) => {
   try {
     const authorization = createResourceAuthorization(parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
     clearGatewayRuntimeCache()
+    clearAuthorizationQuotaCache()
     res.status(201).json(ok(authorization))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '创建授权失败'))
@@ -131,6 +135,7 @@ authorizationsRouter.delete('/:id', (req, res) => {
       return
     }
     clearGatewayRuntimeCache()
+    clearAuthorizationQuotaCache()
     res.json(ok(authorization))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '撤销授权失败'))
@@ -160,6 +165,7 @@ authorizationsRouter.patch('/:id', (req, res) => {
       return
     }
     clearGatewayRuntimeCache()
+    clearAuthorizationQuotaCache()
     res.json(ok(authorization))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '修改授权失败'))
@@ -189,6 +195,7 @@ authorizationsRouter.patch('/:id/expire', (req, res) => {
       return
     }
     clearGatewayRuntimeCache()
+    clearAuthorizationQuotaCache()
     res.json(ok(authorization))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '修改授权失败'))

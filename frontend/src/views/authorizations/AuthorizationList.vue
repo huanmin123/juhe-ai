@@ -5,7 +5,7 @@
     :data-source="authorizations"
     row-key="id"
     :loading="loading"
-    :scroll-x="1320"
+    :scroll-x="1540"
     pull-refresh-enabled
     :refreshing="loading"
     @mobile-refresh="$emit('refresh')"
@@ -32,6 +32,9 @@
         <div class="usage-total-cell">
           <span>{{ usageSummaryText(record.usage) }}</span>
         </div>
+      </template>
+      <template v-else-if="column.key === 'limits'">
+        <span>{{ quotaLimitSummaryText(record.limits) }}</span>
       </template>
       <template v-else-if="column.key === 'status'">
         <AuthorizationStatusTag :status="record.status" />
@@ -72,6 +75,10 @@
             <strong>{{ usageSummaryText(record.usage) }}</strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
+            <span>额度限制</span>
+            <strong>{{ quotaLimitSummaryText(record.limits) }}</strong>
+          </div>
+          <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>说明</span>
             <strong>{{ record.remark || '-' }}</strong>
           </div>
@@ -89,7 +96,7 @@ import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
 import { authorizationColumns } from './authorizationTableColumns'
-import { formatDateTime, usageSummaryText } from './authorizationFormatters'
+import { formatDateTime, quotaLimitSummaryText, usageSummaryText } from './authorizationFormatters'
 
 defineProps<{
   authorizations: ResourceAuthorizationSummary[]

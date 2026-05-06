@@ -4,8 +4,8 @@ import { createApiKey, decryptJson, encryptJson, hashSecret } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 import { defaultOpenAIGroupIdForSystemAccount } from './default-group.repository.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
-import { apiKeyQuotaLimitsJson, emptyApiKeyQuotaLimits, normalizeApiKeyQuotaLimits, parseApiKeyQuotaLimitsJson } from './api-key-quota-limits.js'
 import { loadSystemAccountNameMap } from './repository-lookups.js'
+import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import type { UsageStatsRecordRow } from './usage-stats-types.js'
 import { subtractUsageStatsRecord } from './usage-stats-writers.js'
@@ -64,7 +64,7 @@ export function listApiKeys(access?: AccessScope): ApiKeySummary[] {
     groupId: row.group_id,
     groupAuthorizationId: row.group_authorization_id ?? undefined,
     expiresAt: row.expires_at ?? undefined,
-    quotaLimits: parseApiKeyQuotaLimitsJson(row.quota_limits_json),
+    quotaLimits: parseRequestQuotaLimitsJson(row.quota_limits_json),
     usage: usageByApiKey.get(row.id) ?? emptyAccountUsageSummary()
   }))
 }
@@ -87,7 +87,7 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
   if (group.systemAccountId !== systemAccountId && !groupAuthorization) {
     throw new Error('Invalid API key group')
   }
-  const quotaLimits = normalizeApiKeyQuotaLimits(input.quotaLimits)
+  const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const record: ApiKeySummary & { key: string } = {
     id: newId('key'),
     systemAccountId: includeSystemAccountFields() ? systemAccountId : undefined,
@@ -107,7 +107,7 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
       INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `)
-    .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, groupAuthorization?.id ?? null, record.expiresAt ?? null, apiKeyQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
+    .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, groupAuthorization?.id ?? null, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
   return record
 }
 
@@ -136,11 +136,11 @@ export function updateApiKey(id: string, input: Record<string, unknown>): ApiKey
     status: input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : current.status,
     groupId: nextGroupId,
     expiresAt: optionalServerDateTimeIso(input.expiresAt ?? input.expires_at) ?? current.expiresAt,
-    quotaLimits: normalizeApiKeyQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyApiKeyQuotaLimits())
+    quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits())
   }
   getDatabase()
     .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, group_authorization_id = ?, expires_at = ?, quota_limits_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-    .run(next.name, next.description ?? null, next.status, next.groupId, nextGroupAuthorization?.id ?? null, next.expiresAt ?? null, apiKeyQuotaLimitsJson(next.quotaLimits), nowIso(), id, systemAccountId)
+    .run(next.name, next.description ?? null, next.status, next.groupId, nextGroupAuthorization?.id ?? null, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), nowIso(), id, systemAccountId)
   invalidateGatewayApiKeyCacheById(id)
   return next
 }

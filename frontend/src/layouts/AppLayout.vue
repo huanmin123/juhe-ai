@@ -44,7 +44,8 @@ import {
   TeamOutlined,
   UserSwitchOutlined
 } from '@ant-design/icons-vue'
-import { message, type MenuProps } from 'ant-design-vue'
+import type { MenuProps } from 'ant-design-vue'
+import { message } from '@/lib/antd'
 import type { ItemType } from 'ant-design-vue'
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'

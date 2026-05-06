@@ -5,6 +5,7 @@ export const authorizationColumns = [
   { title: '归属人', key: 'owner', width: 180 },
   { title: '被授权用户', key: 'grantee', width: 180 },
   { title: '用量(日)', key: 'usageTotal', width: 260 },
+  { title: '额度限制', key: 'limits', width: 220 },
   { title: '状态', key: 'status', width: 90 },
   { title: '授权时间', key: 'createdAt', width: 170 },
   { title: '说明', key: 'remark', width: 200 },

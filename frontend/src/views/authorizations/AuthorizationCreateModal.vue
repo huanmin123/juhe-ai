@@ -37,6 +37,8 @@
         <a-date-picker v-model:value="form.expiresAt" show-time allow-clear style="width: 100%" />
         <div class="form-help">可选，支持选择明天 0 点或中午 12 点，到期后授权自动变为“授权到期”。</div>
       </a-form-item>
+      <a-divider orientation="left">额度限制</a-divider>
+      <RequestQuotaFields :model="form.quotaLimits" />
       <a-alert
         v-if="form.granteeType === 'team'"
         type="info"
@@ -50,6 +52,7 @@
 <script setup lang="ts">
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { SystemAccountSummary, SystemTeamSummary } from '@/types/domain'
+import RequestQuotaFields from '../shared/RequestQuotaFields.vue'
 import type { AuthorizationCreateFormModel } from './authorizationFormTypes'
 
 const open = defineModel<boolean>('open', { required: true })

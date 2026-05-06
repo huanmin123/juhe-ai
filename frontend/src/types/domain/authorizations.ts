@@ -1,4 +1,5 @@
 import type { AccountStatus, AccountType, AuthorizationResourceType, AuthorizationSourceStatus, AuthorizationSourceType, AuthorizationStatus, ProviderCode, ResourceAccessType, TeamMemberStatus, TeamStatus } from './base'
+import type { RequestQuotaLimits } from './access'
 import type { AccountUsageSummary, UsageByWindow, UsageStatsWindowDefinition } from './usage-stats'
 
 export interface SystemTeamMemberSummary {
@@ -72,7 +73,7 @@ export interface ResourceAuthorizationSummary {
   scope: 'use'
   remark?: string
   expiresAt?: string
-  limits?: Record<string, unknown>
+  limits?: RequestQuotaLimits
   modelPolicy?: Record<string, unknown>
   effectiveSourceType?: AuthorizationSourceType
   effectiveSourceTeamId?: string
