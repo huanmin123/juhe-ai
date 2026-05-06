@@ -5,7 +5,6 @@
         <a-date-picker v-model:value="form.expiresAt" show-time allow-clear style="width: 100%" />
         <div class="form-help">清空后表示不设置自动回收时间。</div>
       </a-form-item>
-      <a-divider orientation="left">额度限制</a-divider>
       <RequestQuotaFields :model="form.quotaLimits" />
     </a-form>
   </a-modal>

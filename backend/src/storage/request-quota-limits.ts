@@ -1,7 +1,8 @@
 import type { RequestHourlyQuotaLimit, RequestQuotaLimit, RequestQuotaLimits } from '../domain/types.js'
 
 const MAX_HOURLY_WINDOW_HOURS = 24 * 30
-const MAX_SAFE_QUOTA_LIMIT = Number.MAX_SAFE_INTEGER
+const MAX_SAFE_QUOTA_AMOUNT_USD = Number.MAX_SAFE_INTEGER
+const QUOTA_AMOUNT_PRECISION = 1_000_000
 
 export function emptyRequestQuotaLimits(): RequestQuotaLimits {
   return {}
@@ -52,7 +53,7 @@ export function hasEnabledRequestQuotaLimit(value: RequestQuotaLimits | undefine
 
 function normalizeQuotaLimit(value: unknown): RequestQuotaLimit | undefined {
   const source = typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : {}
-  const limit = positiveInteger(source.limit)
+  const limit = positiveAmount(source.limit)
   return {
     enabled: source.enabled === true && limit !== undefined,
     limit: limit ?? 0
@@ -84,7 +85,14 @@ function positiveInteger(value: unknown): number | undefined {
   const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN
   if (!Number.isFinite(number)) return undefined
   const integer = Math.floor(number)
-  return integer > 0 ? clampInteger(integer, 1, MAX_SAFE_QUOTA_LIMIT) : undefined
+  return integer > 0 ? clampInteger(integer, 1, MAX_HOURLY_WINDOW_HOURS) : undefined
+}
+
+function positiveAmount(value: unknown): number | undefined {
+  const number = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : NaN
+  if (!Number.isFinite(number) || number <= 0) return undefined
+  const clamped = Math.min(number, MAX_SAFE_QUOTA_AMOUNT_USD)
+  return Math.round(clamped * QUOTA_AMOUNT_PRECISION) / QUOTA_AMOUNT_PRECISION
 }
 
 function clampInteger(value: number, min: number, max: number): number {

@@ -12,6 +12,7 @@ import {
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 export const systemTeamsRouter = Router()
@@ -93,6 +94,7 @@ systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
       return
     }
     clearGatewayRuntimeCache()
+    clearAuthorizationQuotaCache()
     res.json(ok(team))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '更新团队失败'))
@@ -122,6 +124,7 @@ systemTeamsRouter.post('/:id/members', requireAdmin, (req, res) => {
       return
     }
     clearGatewayRuntimeCache()
+    clearAuthorizationQuotaCache()
     res.json(ok(team))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '添加团队成员失败'))
@@ -146,6 +149,7 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
       return
     }
     clearGatewayRuntimeCache()
+    clearAuthorizationQuotaCache()
     res.json(ok(team))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '移除团队成员失败'))

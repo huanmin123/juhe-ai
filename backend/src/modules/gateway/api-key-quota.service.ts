@@ -2,7 +2,7 @@ import { createAppCache } from '../../shared/cache.js'
 import { getDatabase } from '../../storage/database.js'
 import type { GatewayApiKeyRow } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCounts } from './request-quota-checker.js'
+import { isRequestQuotaExceeded, loadRequestQuotaCosts } from './request-quota-checker.js'
 
 export const API_KEY_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
 
@@ -35,14 +35,14 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
     return cached
   }
 
-  const requestCounts = loadRequestQuotaCounts(getDatabase(), {
+  const quotaCosts = loadRequestQuotaCosts(getDatabase(), {
     systemAccountId: apiKey.system_account_id,
     scopeType: 'api_key',
     scopeId: apiKey.id,
     now,
     hourlyWindowHours: quotaLimits.hourly?.hours
   })
-  const allowed = !isRequestQuotaExceeded(quotaLimits, requestCounts)
+  const allowed = !isRequestQuotaExceeded(quotaLimits, quotaCosts)
   const decision: ApiKeyQuotaCacheEntry = {
     allowed,
     message: allowed ? undefined : API_KEY_QUOTA_EXCEEDED_MESSAGE,

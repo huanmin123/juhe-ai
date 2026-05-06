@@ -2,6 +2,7 @@ import type { AccountUsageSummary } from './usage-stats'
 
 export interface RequestQuotaLimit {
   enabled: boolean
+  /** USD cost quota. */
   limit: number
 }
 

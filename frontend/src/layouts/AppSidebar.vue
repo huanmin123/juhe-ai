@@ -67,13 +67,13 @@ const emit = defineEmits<{
   box-shadow: 8px 0 24px rgba(3, 17, 31, 0.08);
 }
 
-:deep(.sidebar .ant-layout-sider-children) {
+.sidebar :deep(.ant-layout-sider-children) {
   display: flex;
   flex-direction: column;
   min-height: 100%;
 }
 
-:deep(.sidebar .ant-menu) {
+.sidebar :deep(.ant-menu) {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
@@ -83,15 +83,15 @@ const emit = defineEmits<{
   scrollbar-width: thin;
 }
 
-:deep(.sidebar .ant-menu::-webkit-scrollbar) {
+.sidebar :deep(.ant-menu::-webkit-scrollbar) {
   width: 8px;
 }
 
-:deep(.sidebar .ant-menu::-webkit-scrollbar-track) {
+.sidebar :deep(.ant-menu::-webkit-scrollbar-track) {
   background: transparent;
 }
 
-:deep(.sidebar .ant-menu::-webkit-scrollbar-thumb) {
+.sidebar :deep(.ant-menu::-webkit-scrollbar-thumb) {
   min-height: 44px;
   background-color: rgba(226, 232, 240, 0.24);
   background-clip: content-box;
@@ -99,11 +99,11 @@ const emit = defineEmits<{
   border-radius: 999px;
 }
 
-:deep(.sidebar .ant-menu::-webkit-scrollbar-thumb:hover) {
+.sidebar :deep(.ant-menu::-webkit-scrollbar-thumb:hover) {
   background-color: rgba(226, 232, 240, 0.4);
 }
 
-:deep(.sidebar .ant-menu::-webkit-scrollbar-button) {
+.sidebar :deep(.ant-menu::-webkit-scrollbar-button) {
   width: 0;
   height: 0;
   display: none;

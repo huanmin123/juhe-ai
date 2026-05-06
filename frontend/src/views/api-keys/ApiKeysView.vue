@@ -19,7 +19,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll-x="isAdmin ? 1580 : 1400" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll-x="isAdmin ? 1800 : 1620" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
@@ -47,6 +47,9 @@
         </template>
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ apiKeySystemAccountText(record) }}</span>
+        </template>
+        <template v-else-if="column.key === 'quotaLimits'">
+          <span>{{ quotaLimitSummaryText(record.quotaLimits) }}</span>
         </template>
         <template v-else-if="column.key === 'description'">
           <span>{{ record.description || '-' }}</span>
@@ -85,6 +88,10 @@
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>累计用量</span>
               <strong>{{ formatUsageSummary(record.usage) }}</strong>
+            </div>
+            <div class="mobile-list-meta-item mobile-list-meta-wide">
+              <span>美元额度</span>
+              <strong>{{ quotaLimitSummaryText(record.quotaLimits) }}</strong>
             </div>
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>说明</span>
@@ -142,7 +149,6 @@
         <a-form-item label="说明">
           <a-textarea v-model:value="form.description" :rows="3" placeholder="可选，填写用途或接入方说明" />
         </a-form-item>
-        <a-divider orientation="left">额度限制</a-divider>
         <RequestQuotaFields :model="form.quotaLimits" />
       </a-form>
     </a-modal>
@@ -178,6 +184,7 @@ import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDat
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, selectedSystemAccountId, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
+import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
 
 const loading = ref(false)
@@ -212,6 +219,7 @@ const columns = computed(() => {
     { title: '绑定分组', key: 'group', width: 220 },
     { title: '状态', key: 'status', width: 100 },
     { title: '累计用量', key: 'usage', width: 190 },
+    { title: '美元额度', key: 'quotaLimits', width: 220 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
     { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
     { title: '操作', key: 'actions', width: 110, fixed: 'right' }

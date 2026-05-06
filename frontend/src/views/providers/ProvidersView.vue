@@ -6,10 +6,7 @@
         <a-empty class="page-empty-card" description="当前仅内置 OpenAI 供应商，后续新供应商会在这里扩展。" />
       </template>
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'code'">
-          <span class="mono-cell">{{ record.code }}</span>
-        </template>
-        <template v-else-if="column.key === 'status'">
+        <template v-if="column.key === 'status'">
           <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
         </template>
         <template v-else-if="column.key === 'accountTypes'">
@@ -38,7 +35,6 @@
           <div class="mobile-list-card-head">
             <div class="mobile-list-card-title">{{ record.name }}</div>
             <div class="mobile-list-card-tags">
-              <a-tag class="mono-cell">{{ record.code }}</a-tag>
               <a-tag :color="record.enabled ? 'green' : 'default'">{{ record.enabled ? '启用' : '停用' }}</a-tag>
             </div>
           </div>
@@ -178,7 +174,6 @@ const providerCapabilityLabels: Record<string, string> = {
 }
 
 const columns = [
-  { title: '编码', dataIndex: 'code', key: 'code', width: 120 },
   { title: '名称', dataIndex: 'name', key: 'name', width: 160 },
   { title: '状态', key: 'status', width: 90 },
   { title: '账户类型', key: 'accountTypes', width: 180 },

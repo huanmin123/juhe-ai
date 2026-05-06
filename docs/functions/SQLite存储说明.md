@@ -114,7 +114,9 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 授权账户调用需要同时写入调用方统计、真实账户统计和授权消耗统计：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；账户所有者的账户总用量按 `account_owner_system_account_id + account_id` 聚合；授权管理按 `account_owner_system_account_id + account_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 授权分组调用需要同时写入调用方统计、真实分组统计和授权消耗统计：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权管理按 `group_owner_system_account_id + group_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 授权管理列表和用量明细只读取 `usage_stats_daily` / `usage_stats_totals` 缓存；前端查询和详情接口不能临时 `SUM usage_records`，否则会把高频统计压力转移到页面请求。
-- API Key 列表展示累计用量，读取 `usage_stats_totals` 中 `scope_type = api_key` 的缓存，不使用今日 `usage_stats_daily` 口径；API Key 可选请求次数额度保存在 `api_keys.quota_limits_json`，网关按 `usage_stats_totals`、`usage_stats_daily` 和 `usage_stats_hourly` 的 API Key 维度缓存判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`。
+- 统一授权可选美元成本额度保存在 `resource_authorizations.limits_json` 和团队授权来源 `team_resource_authorization_grants.limits_json`；JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily` 和 `usage_stats_hourly` 的 `account_authorization` / `group_authorization` 维度读取 `total_cost_usd` 缓存，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`。
+- 团队授权美元额度按成员用户授权的 `total_cost_usd` 缓存求和判断，既保留成员展开后的用户级限制，也用团队授权来源的 `limits_json` 控制团队合计美元成本；统计 worker 默认每 1 分钟增量推进，网关额度判断带短 TTL 内存缓存，因此允许轻微超额，统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
+- API Key 列表展示累计用量，读取 `usage_stats_totals` 中 `scope_type = api_key` 的缓存，不使用今日 `usage_stats_daily` 口径；API Key 可选美元成本额度保存在 `api_keys.quota_limits_json`，JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily` 和 `usage_stats_hourly` 的 API Key 维度读取 `total_cost_usd` 缓存，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`。
 - API Key 额度是轻量异步统计口径：统计 worker 默认每 1 分钟增量推进，网关额度判断带短 TTL 内存缓存，因此允许轻微超额；统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
 - 删除 API Key 时同步删除该 Key 的使用记录、审计日志和 API Key 维度缓存，并基于该 Key 的历史使用记录从调用方、账户、分组、授权、模型和错误等相关聚合缓存中反向扣减。
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
@@ -290,7 +292,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `source_team_id`：团队来源 ID，手动个人授权为空
 - `scope`：第一阶段固定为 `use`
 - `expires_at`：可选自动回收时间，到期后状态变为 `expired`，记录保留。
-- `limits_json`：预留字段，第一阶段不启用。
+- `limits_json`：美元成本额度限制 JSON，内部 `limit` 表示美元金额，支持 n 小时、日、周、月和累计总额度；为空表示不限制。
 - `model_policy_json`：预留字段，第一阶段不启用。
 - `status`：`active`、`paused`、`expired`、`revoked`
 - `remark`
@@ -456,6 +458,6 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 API Key 明文只在创建时返回一次。
 
-API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计缓存。网关只读取 API Key 维度统计缓存判断额度，不回扫明细表，也不做实时扣减。
+API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。
 
 更完整的凭据展示、请求快照、原始审计日志、日志脱敏、数据保留和备份迁移规则见 [安全与日志策略](安全与日志策略.md) 与 [原始审计日志设计](原始审计日志设计.md)。

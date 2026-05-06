@@ -412,6 +412,7 @@ export interface ApiKeySummary {
 
 export interface RequestQuotaLimit {
   enabled: boolean
+  /** USD cost quota. */
   limit: number
 }
 

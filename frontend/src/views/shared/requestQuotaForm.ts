@@ -3,10 +3,10 @@ import type { RequestQuotaLimits } from '@/types/domain'
 export type QuotaPeriodKey = 'daily' | 'weekly' | 'monthly' | 'total'
 
 export const quotaLimitItems: Array<{ key: QuotaPeriodKey; label: string }> = [
-  { key: 'daily', label: '日额度（每日 0 点重置）' },
-  { key: 'weekly', label: '周额度（每周一 0 点重置）' },
-  { key: 'monthly', label: '月额度（每月 1 号 0 点重置）' },
-  { key: 'total', label: '总额度（累计）' }
+  { key: 'daily', label: '日美元额度（每日 0 点重置）' },
+  { key: 'weekly', label: '周美元额度（每周一 0 点重置）' },
+  { key: 'monthly', label: '月美元额度（每月 1 号 0 点重置）' },
+  { key: 'total', label: '总美元额度（累计）' }
 ]
 
 export function createQuotaLimitForm(source?: RequestQuotaLimits) {

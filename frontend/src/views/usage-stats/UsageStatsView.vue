@@ -380,7 +380,7 @@ onMounted(loadData)
   min-width: 0;
   overflow: hidden;
   color: #0f172a;
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }

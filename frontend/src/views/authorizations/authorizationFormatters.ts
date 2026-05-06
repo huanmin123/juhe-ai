@@ -13,11 +13,10 @@ import type {
   AuthorizationSourceSummary,
   AuthorizationStatus,
   AuthorizationUserUsageDetail,
-  RequestQuotaLimits,
   ResourceAuthorizationSummary,
   SystemTeamSummary
 } from '@/types/domain'
-import { hasQuotaLimits } from '../shared/requestQuotaForm'
+export { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 
 export interface AuthorizationUsageResponseDetail {
   systemAccountId?: string
@@ -168,18 +167,6 @@ export function usageSummaryText(usage?: {
   totalCost?: number
 }): string {
   return `${formatNumber(usage?.requestCount)}req / ${formatUsageAmount(usage?.totalTokens)} / ${formatCost(usage?.totalCost)}`
-}
-
-export function quotaLimitSummaryText(limits?: RequestQuotaLimits): string {
-  if (!hasQuotaLimits(limits)) return '未限制'
-  const safeLimits = limits as RequestQuotaLimits
-  const items: string[] = []
-  if (safeLimits.hourly?.enabled) items.push(`${safeLimits.hourly.hours}小时 ${formatNumber(safeLimits.hourly.limit)}次`)
-  if (safeLimits.daily?.enabled) items.push(`日 ${formatNumber(safeLimits.daily.limit)}次`)
-  if (safeLimits.weekly?.enabled) items.push(`周 ${formatNumber(safeLimits.weekly.limit)}次`)
-  if (safeLimits.monthly?.enabled) items.push(`月 ${formatNumber(safeLimits.monthly.limit)}次`)
-  if (safeLimits.total?.enabled) items.push(`总 ${formatNumber(safeLimits.total.limit)}次`)
-  return items.join(' / ')
 }
 
 export function formatUsageAmount(value?: number): string {

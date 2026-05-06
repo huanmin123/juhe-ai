@@ -488,7 +488,10 @@ export function listAccounts(access?: AccessScope, options?: AccountListOptions)
       ? todayUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : todayUsageByAccount.get(row.id) ?? emptyAccountUsageSummary()
     const authorizationStats = authorizationStatsByAccount.get(row.id) ?? { authorizationCount: 0, authorizationTeamCount: 0 }
-    const groupBinding = viewerSystemAccountId ? accountGroupBinding(row.id, viewerSystemAccountId) : undefined
+    const groupBindingSystemAccountId = row.access_type === 'authorized'
+      ? viewerSystemAccountId
+      : row.system_account_id
+    const groupBinding = groupBindingSystemAccountId ? accountGroupBinding(row.id, groupBindingSystemAccountId) : undefined
     return {
     id: row.id,
     systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -1730,6 +1733,12 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
     : existingStatus === 'paused'
       ? 'paused'
       : 'active'
+  const nextLimitsJson = !isTeamSource && hasActiveTeamSource
+    ? existing?.limits_json ?? null
+    : requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
+  const nextRevokedBy = nextStatus === 'expired' ? existing?.revoked_by ?? input.actor : null
+  const nextRevokedAt = nextStatus === 'expired' ? existing?.revoked_at ?? input.now : null
+  const nextRevokedReason = nextStatus === 'expired' ? 'authorization_expired' : null
   if (existing) {
     input.database.prepare(`
       UPDATE resource_authorizations
@@ -1743,12 +1752,12 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
           expires_at = COALESCE(?, expires_at),
           limits_json = ?,
           model_policy_json = COALESCE(?, model_policy_json),
-          revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_by, ?) ELSE NULL END,
-          revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_at, ?) ELSE NULL END,
-          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE NULL END,
+          revoked_by = ?,
+          revoked_at = ?,
+          revoked_reason = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.now, authorizationId)
+    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now, authorizationId)
   } else {
     input.database.prepare(`
       INSERT INTO resource_authorizations (
@@ -1756,8 +1765,8 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
         effective_source_type, effective_source_team_id, activated_at, last_source_changed_at,
         remark, expires_at, limits_json, model_policy_json,
         created_by, created_at, revoked_by, revoked_at, revoked_reason, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?)
-    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
+      ) VALUES (?, ?, ?, ?, ?, 'use', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), input.actor, input.now, nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now)
   }
   upsertResourceAuthorizationSource(input.database, authorizationId, input.sourceType, input.sourceTeamId, input.actor, input.now, isTeamSource ? 'active' : hasActiveTeamSource ? 'superseded' : 'active')
   if (isTeamSource) {

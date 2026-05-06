@@ -22,6 +22,7 @@
   <AccountStatusTag v-else-if="columnKey === 'status'" :account="account" />
   <a-tag v-else-if="columnKey === 'concurrency'" color="blue">{{ account.currentConcurrency }}/{{ account.concurrencyLimit }}</a-tag>
   <AccountUsageCell v-else-if="columnKey === 'usage'" :account="account" />
+  <span v-else-if="columnKey === 'priority'">{{ account.priority }}</span>
   <template v-else-if="columnKey === 'lastUsedAt'">
     {{ formatDateTime(accountLastUsedAt(account)) }}
   </template>

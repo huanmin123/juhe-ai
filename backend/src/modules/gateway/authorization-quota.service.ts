@@ -2,7 +2,7 @@ import { createAppCache } from '../../shared/cache.js'
 import { getDatabase } from '../../storage/database.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
-import { isRequestQuotaExceeded, loadRequestQuotaCounts } from './request-quota-checker.js'
+import { isRequestQuotaExceeded, loadRequestQuotaCosts } from './request-quota-checker.js'
 
 export const AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
 
@@ -109,7 +109,7 @@ function authorizationQuotaChecks(authorizationId: string, scopeType: 'account_a
 function quotaCheckForAuthorizationRow(row: AuthorizationQuotaRow, scopeType: 'account_authorization' | 'group_authorization', now: Date): AuthorizationQuotaCheck[] {
   const limits = parseRequestQuotaLimitsJson(row.limits_json)
   if (!hasEnabledRequestQuotaLimit(limits)) return []
-  const counts = loadRequestQuotaCounts(getDatabase(), {
+  const costs = loadRequestQuotaCosts(getDatabase(), {
     systemAccountId: row.resource_owner_system_account_id,
     scopeType,
     scopeId: row.id,
@@ -118,7 +118,7 @@ function quotaCheckForAuthorizationRow(row: AuthorizationQuotaRow, scopeType: 'a
   })
   return [{
     cacheKey: `authorization\u0000${row.resource_owner_system_account_id}\u0000${scopeType}\u0000${row.id}\u0000${row.limits_json ?? ''}`,
-    exceeded: isRequestQuotaExceeded(limits, counts)
+    exceeded: isRequestQuotaExceeded(limits, costs)
   }]
 }
 
@@ -127,10 +127,10 @@ function quotaCheckForTeamRow(row: TeamAuthorizationQuotaRow, scopeType: 'accoun
   if (!hasEnabledRequestQuotaLimit(limits)) return []
   const memberScopeIds = teamAuthorizationMemberScopeIds(row.id, scopeType)
   if (!memberScopeIds.length) return []
-  const counts = sumMemberQuotaCounts(row.resource_owner_system_account_id, scopeType, memberScopeIds, now, limits.hourly?.hours)
+  const costs = sumMemberQuotaCosts(row.resource_owner_system_account_id, scopeType, memberScopeIds, now, limits.hourly?.hours)
   return [{
     cacheKey: `team_authorization\u0000${row.resource_owner_system_account_id}\u0000${scopeType}\u0000${teamId}\u0000${row.id}\u0000${row.limits_json ?? ''}`,
-    exceeded: isRequestQuotaExceeded(limits, counts)
+    exceeded: isRequestQuotaExceeded(limits, costs)
   }]
 }
 
@@ -155,9 +155,9 @@ function teamAuthorizationMemberScopeIds(teamGrantId: string, scopeType: 'accoun
   return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
 }
 
-function sumMemberQuotaCounts(systemAccountId: string, scopeType: string, scopeIds: string[], now: Date, hourlyWindowHours?: number) {
+function sumMemberQuotaCosts(systemAccountId: string, scopeType: string, scopeIds: string[], now: Date, hourlyWindowHours?: number) {
   return scopeIds.reduce((summary, scopeId) => {
-    const counts = loadRequestQuotaCounts(getDatabase(), {
+    const costs = loadRequestQuotaCosts(getDatabase(), {
       systemAccountId,
       scopeType,
       scopeId,
@@ -165,11 +165,11 @@ function sumMemberQuotaCounts(systemAccountId: string, scopeType: string, scopeI
       hourlyWindowHours
     })
     return {
-      hourly: summary.hourly + counts.hourly,
-      daily: summary.daily + counts.daily,
-      weekly: summary.weekly + counts.weekly,
-      monthly: summary.monthly + counts.monthly,
-      total: summary.total + counts.total
+      hourly: summary.hourly + costs.hourly,
+      daily: summary.daily + costs.daily,
+      weekly: summary.weekly + costs.weekly,
+      monthly: summary.monthly + costs.monthly,
+      total: summary.total + costs.total
     }
   }, { hourly: 0, daily: 0, weekly: 0, monthly: 0, total: 0 })
 }
