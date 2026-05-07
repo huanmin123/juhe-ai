@@ -21,6 +21,10 @@
         </button>
         <template #overlay>
           <a-menu @click="$emit('user-menu-click', $event)">
+            <a-menu-item v-if="canSwitchMenuMode" key="switch-mode">
+              {{ switchMenuModeLabel }}
+            </a-menu-item>
+            <a-menu-divider v-if="canSwitchMenuMode" />
             <a-menu-item key="password">修改密码</a-menu-item>
             <a-menu-item key="logout" danger>退出登录</a-menu-item>
           </a-menu>
@@ -35,8 +39,10 @@ import { DownOutlined, MenuOutlined } from '@ant-design/icons-vue'
 import type { MenuProps } from 'ant-design-vue'
 
 defineProps<{
+  canSwitchMenuMode: boolean
   description: string
   isMobile: boolean
+  switchMenuModeLabel: string
   title: string
   userAvatarText: string
   userDisplayName: string

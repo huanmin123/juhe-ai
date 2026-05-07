@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 
 import { loadCurrentUser } from '@/composables/useAuth'
+import { getPreferredEntryPath } from '@/composables/useMenuMode'
 
 declare module 'vue-router' {
   interface RouteMeta {
@@ -222,6 +223,14 @@ export const router = createRouter({
   history: createWebHistory(),
   routes: [
     {
+      path: '/',
+      component: { render: () => null },
+      meta: {
+        title: '入口',
+        description: '根据登录用户偏好进入控制台'
+      }
+    },
+    {
       path: '/login',
       component: () => import('@/views/login/LoginView.vue'),
       meta: {
@@ -230,7 +239,6 @@ export const router = createRouter({
         public: true
       }
     },
-    { path: '/', redirect: '/my-accounts' },
     ...menuRoutes
   ]
 })
@@ -238,14 +246,17 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   const user = await loadCurrentUser()
   if (to.meta.public) {
-    if (to.path === '/login' && user) return '/my-accounts'
+    if (to.path === '/login' && user) return getPreferredEntryPath(user)
     return true
   }
   if (!user) {
     return { path: '/login', query: { redirect: to.fullPath } }
   }
+  if (to.path === '/') {
+    return getPreferredEntryPath(user)
+  }
   if (to.meta.roles?.length && !to.meta.roles.includes(user.role)) {
-    return '/my-accounts'
+    return getPreferredEntryPath(user)
   }
   return true
 })

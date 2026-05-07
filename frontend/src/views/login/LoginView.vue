@@ -45,6 +45,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { loadCaptcha, login } from '@/composables/useAuth'
 import { appBrand, loadGlobalBrandSettings } from '@/composables/useAppBrand'
+import { getPreferredEntryPath } from '@/composables/useMenuMode'
 import type { CaptchaChallengeSummary } from '@/types/domain'
 
 import LoginBackground from './LoginBackground.vue'
@@ -94,7 +95,7 @@ async function handleLogin() {
     if (user.mustChangePassword) {
       message.warning('当前账户仍在使用初始密码，请尽快在右上角修改密码')
     }
-    await router.replace(typeof route.query.redirect === 'string' ? route.query.redirect : '/my-accounts')
+    await router.replace(typeof route.query.redirect === 'string' ? route.query.redirect : getPreferredEntryPath(user))
   } catch (error) {
     console.error(error)
     message.error(getLoginErrorMessage(error))

@@ -12,8 +12,10 @@
     />
     <a-layout class="main-shell">
       <AppHeader
+        :can-switch-menu-mode="canSwitchMenuMode"
         :description="currentPageDescription"
         :is-mobile="isMobile"
+        :switch-menu-mode-label="switchMenuModeLabel"
         :title="currentPageTitle"
         :user-avatar-text="userAvatarText"
         :user-display-name="userDisplayName"
@@ -52,6 +54,14 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { authState, changePassword, logout } from '@/composables/useAuth'
 import { appBrand, loadAppBrandSettings } from '@/composables/useAppBrand'
+import {
+  appMenuMode,
+  getDefaultPathForMenuMode,
+  saveMenuModePreference,
+  setMenuModeFromRoute,
+  syncMenuModeWithUser,
+  type AppMenuMode
+} from '@/composables/useMenuMode'
 import { menuRoutes } from '@/router'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
@@ -70,10 +80,12 @@ const selectedKeys = computed(() => [route.path])
 const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
 const currentPageDescription = computed(() => route.meta.description || '第一期：OpenAI OAuth + API Key')
 const currentUser = authState.currentUser
+const canSwitchMenuMode = computed(() => currentUser.value?.role === 'admin')
+const switchMenuModeLabel = computed(() => (appMenuMode.value === 'admin' ? '切换到用户模式' : '切换到管理模式'))
 const userDisplayName = computed(() => currentUser.value?.displayName || currentUser.value?.username || '用户')
 const userRoleLabel = computed(() => {
-  if (currentUser.value?.role === 'admin') {
-    return '管理员'
+  if (canSwitchMenuMode.value) {
+    return appMenuMode.value === 'admin' ? '管理员 · 管理模式' : '管理员 · 用户模式'
   }
   return '普通用户'
 })
@@ -147,28 +159,12 @@ function routeToMenuItem(item: typeof menuRoutes[number]): ItemType {
   }
 }
 
-const visibleMenuRoutes = computed(() => menuRoutes.filter(canAccessRoute))
+const visibleMenuRoutes = computed(() =>
+  menuRoutes.filter((item) => canAccessRoute(item) && (item.meta?.viewScope ?? 'admin') === appMenuMode.value)
+)
 
 const menuItems = computed<ItemType[]>(() => {
-  const selfItems = visibleMenuRoutes.value
-    .filter((item) => item.meta?.viewScope === 'self')
-    .map(routeToMenuItem)
-  const adminItems = visibleMenuRoutes.value
-    .filter((item) => item.meta?.viewScope !== 'self')
-    .map(routeToMenuItem)
-
-  if (currentUser.value?.role !== 'admin') {
-    return selfItems
-  }
-
-  const groupedItems: ItemType[] = []
-  if (selfItems.length) {
-    groupedItems.push({ type: 'group', label: '我的菜单', children: selfItems } as ItemType)
-  }
-  if (adminItems.length) {
-    groupedItems.push({ type: 'group', label: '管理菜单', children: adminItems } as ItemType)
-  }
-  return groupedItems
+  return visibleMenuRoutes.value.map(routeToMenuItem)
 })
 
 function handleMenuClick(event: { key: string | number }) {
@@ -177,6 +173,10 @@ function handleMenuClick(event: { key: string | number }) {
 }
 
 async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onClick']>>[0]) {
+  if (event.key === 'switch-mode') {
+    await switchMenuMode()
+    return
+  }
   if (event.key === 'password') {
     passwordForm.newPassword = ''
     passwordForm.confirmPassword = ''
@@ -186,6 +186,16 @@ async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onCl
   if (event.key === 'logout') {
     await logout()
     await router.replace('/login')
+  }
+}
+
+async function switchMenuMode() {
+  const nextMode: AppMenuMode = appMenuMode.value === 'admin' ? 'self' : 'admin'
+  const savedMode = saveMenuModePreference(currentUser.value, nextMode)
+  const targetPath = getDefaultPathForMenuMode(savedMode)
+  message.success(savedMode === 'admin' ? '已切换到管理模式' : '已切换到用户模式')
+  if (route.path !== targetPath) {
+    await router.push(targetPath)
   }
 }
 
@@ -241,6 +251,28 @@ watch(
       sidebarOpen.value = false
     }
   }
+)
+
+watch(
+  currentUser,
+  (user) => {
+    if (route.meta.viewScope === 'admin' || route.meta.viewScope === 'self') {
+      setMenuModeFromRoute(user, route.meta.viewScope)
+      return
+    }
+    syncMenuModeWithUser(user)
+  },
+  { immediate: true }
+)
+
+watch(
+  () => route.meta.viewScope,
+  (viewScope) => {
+    if (viewScope === 'admin' || viewScope === 'self') {
+      setMenuModeFromRoute(currentUser.value, viewScope)
+    }
+  },
+  { immediate: true }
 )
 </script>
 
