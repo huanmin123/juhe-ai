@@ -76,12 +76,6 @@
       >
         <template #actions>
           <a-segmented v-model:value="viewMode" class="log-mode-segmented" :options="viewModeOptions" @change="handleModeChange" />
-          <a-button type="primary" :loading="loading" @click="searchGrepLogs">
-            <template #icon>
-              <SearchOutlined />
-            </template>
-            搜索
-          </a-button>
         </template>
       </ResponsiveListToolbar>
 
@@ -103,7 +97,7 @@
         table-class="page-table grep-table"
         :records="grepRecords"
         :loading="loading"
-        :empty-description="grepKeywordFilter.trim() ? '没有匹配的日志行。' : '输入关键字后搜索文件日志。'"
+        :empty-description="grepKeywordFilter.trim() ? '没有匹配的日志行。' : '输入关键字后刷新文件日志。'"
         action-label="查看"
         message-mode="grep"
         :refreshing="loading"
@@ -148,13 +142,13 @@
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
-import { SearchOutlined } from '@ant-design/icons-vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { RuntimeLogFacets, RuntimeLogGrepItem, RuntimeLogGrepResult, RuntimeLogLevel, RuntimeLogSummary } from '@/types/domain'
 import { formatDateTime } from '@/shared/formatters'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import {
   grepLinePositionText,
   levelText,
@@ -169,6 +163,32 @@ import RuntimeLogDataList from './RuntimeLogDataList.vue'
 
 type RuntimeLogViewMode = 'index' | 'grep'
 type RuntimeLogListRecord = RuntimeLogSummary | RuntimeLogGrepItem
+type RuntimeLogsPageState = {
+  eventFilter?: string
+  grepKeywordFilter: string
+  keywordFilter: string
+  levelFilter: RuntimeLogLevel | 'all'
+  pagination: { current: number; pageSize: number }
+  timeRangeFilter?: [string, string]
+  traceIdFilter: string
+  viewMode: RuntimeLogViewMode
+}
+const pageSize = 100
+const defaultRuntimeLogsPageState = (): RuntimeLogsPageState => {
+  const now = dayjs()
+  return {
+    eventFilter: undefined,
+    grepKeywordFilter: '',
+    keywordFilter: '',
+    levelFilter: 'all',
+    pagination: { current: 1, pageSize },
+    timeRangeFilter: [now.subtract(24, 'hour').toISOString(), now.toISOString()],
+    traceIdFilter: '',
+    viewMode: 'index'
+  }
+}
+const pageStateCache = usePageStateCache<RuntimeLogsPageState>(undefined, defaultRuntimeLogsPageState)
+const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
 const mobileLoadingMore = ref(false)
@@ -180,16 +200,15 @@ const selectedLog = ref<RuntimeLogSummary>()
 const selectedGrepItem = ref<RuntimeLogGrepItem>()
 const detailOpen = ref(false)
 const grepDetailOpen = ref(false)
-const viewMode = ref<RuntimeLogViewMode>('index')
+const viewMode = ref<RuntimeLogViewMode>(initialPageState.viewMode === 'grep' ? 'grep' : 'index')
 
-const traceIdFilter = ref('')
-const grepKeywordFilter = ref('')
-const levelFilter = ref<RuntimeLogLevel | 'all'>('all')
-const eventFilter = ref<string | undefined>()
-const keywordFilter = ref('')
-const timeRangeFilter = ref<[Dayjs, Dayjs] | undefined>([dayjs().subtract(24, 'hour'), dayjs()])
-const pageSize = 100
-const pagination = reactive({ current: 1, pageSize, total: 0 })
+const traceIdFilter = ref(initialPageState.traceIdFilter)
+const grepKeywordFilter = ref(initialPageState.grepKeywordFilter)
+const levelFilter = ref<RuntimeLogLevel | 'all'>(initialPageState.levelFilter)
+const eventFilter = ref<string | undefined>(initialPageState.eventFilter)
+const keywordFilter = ref(initialPageState.keywordFilter)
+const timeRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseTimeRangeFilter(initialPageState.timeRangeFilter))
+const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 
 const viewModeOptions = runtimeLogViewModeOptions
 const levelOptions = runtimeLogLevelOptions
@@ -207,6 +226,7 @@ const mobileHasMore = computed(() => records.value.length < pagination.total)
 
 const activeFilterCount = computed(() => {
   let count = 0
+  if (traceIdFilter.value.trim()) count += 1
   if (levelFilter.value !== 'all') count += 1
   if (eventFilter.value) count += 1
   if (keywordFilter.value.trim()) count += 1
@@ -234,12 +254,15 @@ function applyIndexFilters(): void {
 }
 
 function resetFilters(): void {
-  traceIdFilter.value = ''
-  levelFilter.value = 'all'
-  eventFilter.value = undefined
-  keywordFilter.value = ''
-  timeRangeFilter.value = [dayjs().subtract(24, 'hour'), dayjs()]
-  pagination.current = 1
+  const defaults = defaultRuntimeLogsPageState()
+  traceIdFilter.value = defaults.traceIdFilter
+  levelFilter.value = defaults.levelFilter
+  eventFilter.value = defaults.eventFilter
+  keywordFilter.value = defaults.keywordFilter
+  timeRangeFilter.value = parseTimeRangeFilter(defaults.timeRangeFilter)
+  pagination.current = defaults.pagination.current
+  pagination.pageSize = defaults.pagination.pageSize
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -247,6 +270,7 @@ function resetGrepSearch(): void {
   grepKeywordFilter.value = ''
   grepRecords.value = []
   grepResult.value = undefined
+  pageStateCache.scheduleWrite(snapshotPageState)
 }
 
 async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Promise<void> {
@@ -362,7 +386,44 @@ function searchTrace(traceId?: string): void {
   void loadData()
 }
 
-onMounted(loadData)
+function parseTimeRangeFilter(value?: [string, string]): [Dayjs, Dayjs] | undefined {
+  if (!value?.[0] || !value[1]) return undefined
+  const start = dayjs(value[0])
+  const end = dayjs(value[1])
+  if (!start.isValid() || !end.isValid()) return undefined
+  return [start, end]
+}
+
+function snapshotPageState(): RuntimeLogsPageState {
+  return {
+    eventFilter: eventFilter.value,
+    grepKeywordFilter: grepKeywordFilter.value,
+    keywordFilter: keywordFilter.value,
+    levelFilter: levelFilter.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize },
+    timeRangeFilter: serializeTimeRangeFilter(),
+    traceIdFilter: traceIdFilter.value,
+    viewMode: viewMode.value
+  }
+}
+
+function serializeTimeRangeFilter(): [string, string] | undefined {
+  const range = timeRangeFilter.value
+  if (!range?.[0] || !range[1]) return undefined
+  return [range[0].toISOString(), range[1].toISOString()]
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+
+onMounted(() => {
+  if (viewMode.value === 'grep') {
+    if (grepKeywordFilter.value.trim()) {
+      void searchGrepLogs()
+    }
+    return
+  }
+  void loadData()
+})
 </script>
 
 <style scoped>

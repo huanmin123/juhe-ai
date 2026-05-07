@@ -24,7 +24,12 @@
         @user-menu-click="handleUserMenuClick"
       />
       <a-layout-content class="content">
-        <router-view />
+        <router-view v-slot="{ Component, route: viewRoute }">
+          <KeepAlive v-if="viewRoute.meta.keepAlive !== false" :max="keepAliveMax">
+            <component :is="Component" :key="viewRoute.path" />
+          </KeepAlive>
+          <component :is="Component" v-else :key="viewRoute.path" />
+        </router-view>
       </a-layout-content>
     </a-layout>
     <ChangePasswordModal v-model:open="passwordModalOpen" :form="passwordForm" :saving="passwordSaving" @ok="handleChangePassword" />
@@ -75,6 +80,7 @@ const sidebarCollapsed = ref(false)
 const passwordModalOpen = ref(false)
 const passwordSaving = ref(false)
 const passwordForm = reactive({ newPassword: '', confirmPassword: '' })
+const keepAliveMax = 18
 
 const selectedKeys = computed(() => [route.path])
 const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')

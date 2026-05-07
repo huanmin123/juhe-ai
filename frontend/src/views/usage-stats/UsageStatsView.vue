@@ -109,13 +109,14 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type {
   AccountAuthorizationUsageOverview,
@@ -135,6 +136,11 @@ interface UsageStatsFilters {
   keyword: string
   type: 'all' | AccountType
   systemAccountId: string
+}
+
+type UsageStatsPageState = {
+  filters: UsageStatsFilters
+  pagination: { current: number; pageSize: number }
 }
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
@@ -157,10 +163,16 @@ const authorizationUsageOverview = ref<AccountAuthorizationUsageOverview>()
 const authorizationUsageAccountId = ref<string>()
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
-const filters = reactive<UsageStatsFilters>({ keyword: '', type: 'all', systemAccountId: allSystemAccountsValue })
 const routeAuthorizationUsageHandled = ref(false)
 const pageSize = 20
-const pagination = reactive({ current: 1, pageSize, total: 0 })
+const defaultUsageStatsPageState = (): UsageStatsPageState => ({
+  filters: { keyword: '', type: 'all', systemAccountId: allSystemAccountsValue },
+  pagination: { current: 1, pageSize }
+})
+const pageStateCache = usePageStateCache<UsageStatsPageState>(undefined, defaultUsageStatsPageState)
+const initialPageState = pageStateCache.read()
+const filters = reactive<UsageStatsFilters>({ ...initialPageState.filters })
+const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const route = useRoute()
 const router = useRouter()
@@ -260,10 +272,11 @@ function applyFilters() {
 }
 
 function resetFilters() {
-  filters.keyword = ''
-  filters.type = 'all'
-  filters.systemAccountId = allSystemAccountsValue
-  pagination.current = 1
+  const defaults = defaultUsageStatsPageState()
+  Object.assign(filters, defaults.filters)
+  pagination.current = defaults.pagination.current
+  pagination.pageSize = defaults.pagination.pageSize
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -361,6 +374,15 @@ function providerName(providerCode?: string) {
   if (!providerCode) return '未知供应商'
   return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
 }
+
+function snapshotPageState(): UsageStatsPageState {
+  return {
+    filters: { ...filters },
+    pagination: { current: pagination.current, pageSize: pagination.pageSize }
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>

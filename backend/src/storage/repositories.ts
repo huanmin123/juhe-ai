@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { AccountAuthorizationUsageOverview, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
+import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
 import { accountCredentialsForList, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
@@ -540,6 +541,7 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
 
 function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountSummary[] {
   const accountIds = rows.map((row) => row.id)
+  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const usageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes)
   const todayUsageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey())
@@ -581,7 +583,7 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       credentials: accountCredentialsForList(row),
       status: row.status,
       concurrencyLimit: isAuthorizedView ? 0 : row.concurrency_limit,
-      currentConcurrency: 0,
+      currentConcurrency: isAuthorizedView ? 0 : (currentConcurrencyByAccount.get(row.id) ?? 0),
       priority: isAuthorizedView ? 0 : row.priority,
       proxyProfileId: isAuthorizedView ? undefined : row.proxy_profile_id ?? undefined,
       passthroughEnabled: isAuthorizedView ? false : row.passthrough_enabled === 1,
@@ -688,6 +690,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
     `)
     .all(nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
   const accountNames = loadSystemAccountNameMap()
+  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(rows.map((row) => row.id))
   return rows.map((row) => {
     const groupBinding = accountGroupBinding(row.id, row.system_account_id)
     return {
@@ -703,7 +706,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
       status: row.status,
       concurrencyLimit: row.concurrency_limit,
-      currentConcurrency: 0,
+      currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
       priority: row.priority,
       proxyProfileId: row.proxy_profile_id ?? undefined,
       passthroughEnabled: row.passthrough_enabled === 1,
@@ -1249,6 +1252,7 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
   const groupIds = rows.map((row) => row.id)
   const groupStatsByGroup = loadGroupAccountStatsByGroupIds(groupIds)
   const accountIdsByGroup = loadGroupAccountIdsByGroupIds(groupIds)
+  const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds([...accountIdsByGroup.values()].flat())
   const groupUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const groupAuthorizationScopes = rows
     .filter((row) => row.authorization_id)
@@ -1267,6 +1271,10 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
     const totalUsage = isAuthorizedView && row.authorization_id
       ? totalUsageByAuthorization.get(row.authorization_id) ?? emptyAccountUsageSummary()
       : totalUsageByGroup.get(row.id) ?? emptyAccountUsageSummary()
+    const accountStats = groupAccountStatsFromRow(isAuthorizedView ? undefined : groupStatsByGroup.get(row.id), todayUsage, totalUsage)
+    if (!isAuthorizedView) {
+      accountStats.currentConcurrency = sumAccountCurrentConcurrency(accountIdsByGroup.get(row.id) ?? [], currentConcurrencyByAccount)
+    }
     return {
       id: row.id,
       systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -1279,7 +1287,7 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
       enabled: row.enabled === 1,
       isDefault: isAuthorizedView ? false : row.is_default === 1,
       accountIds: isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? [],
-      accountStats: groupAccountStatsFromRow(isAuthorizedView ? undefined : groupStatsByGroup.get(row.id), todayUsage, totalUsage),
+      accountStats,
       accessType: row.access_type ?? 'owner',
       groupAuthorizationId: row.authorization_id ?? undefined,
       authorizationStatus: row.authorization_status ?? undefined,

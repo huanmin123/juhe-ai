@@ -34,7 +34,7 @@
         <strong v-else>不使用</strong>
       </div>
       <div class="account-mobile-meta-item">
-        <span>并发</span>
+        <span>实时并发</span>
         <strong>{{ account.currentConcurrency }}/{{ account.concurrencyLimit }}</strong>
       </div>
       <div class="account-mobile-meta-item">

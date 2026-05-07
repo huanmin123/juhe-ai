@@ -21,6 +21,12 @@ interface NormalizedCodexLimits {
 }
 
 type HeaderInput = Headers | Record<string, string | string[] | undefined>
+type NormalizedWindowKey = '5h' | '7d'
+interface CodexWindowCandidate {
+  usedPercent?: number
+  resetAfterSeconds?: number
+  windowMinutes?: number
+}
 
 export function parseOpenAICodexUsageHeaders(headers?: HeaderInput): OpenAICodexUsageSnapshot | undefined {
   if (!headers) return undefined
@@ -103,53 +109,63 @@ function buildOpenAICodexUsageSnapshotPayload(snapshot: OpenAICodexUsageSnapshot
 }
 
 function normalizeOpenAICodexUsageSnapshot(snapshot: OpenAICodexUsageSnapshot): NormalizedCodexLimits | undefined {
-  const hasPrimaryWindow = snapshot.primaryWindowMinutes !== undefined
-  const hasSecondaryWindow = snapshot.secondaryWindowMinutes !== undefined
-  const primaryMinutes = snapshot.primaryWindowMinutes ?? 0
-  const secondaryMinutes = snapshot.secondaryWindowMinutes ?? 0
-  let use5hFromPrimary = false
-  let use7dFromPrimary = false
-
-  if (hasPrimaryWindow && hasSecondaryWindow) {
-    if (primaryMinutes < secondaryMinutes) {
-      use5hFromPrimary = true
-    } else {
-      use7dFromPrimary = true
-    }
-  } else if (hasPrimaryWindow) {
-    if (primaryMinutes <= 360) {
-      use5hFromPrimary = true
-    } else {
-      use7dFromPrimary = true
-    }
-  } else if (hasSecondaryWindow) {
-    if (secondaryMinutes <= 360) {
-      use7dFromPrimary = true
-    } else {
-      use5hFromPrimary = true
-    }
-  } else {
-    use7dFromPrimary = true
-  }
-
   const normalized: NormalizedCodexLimits = {}
-  if (use5hFromPrimary) {
-    normalized.used5hPercent = snapshot.primaryUsedPercent
-    normalized.reset5hSeconds = snapshot.primaryResetAfterSeconds
-    normalized.window5hMinutes = snapshot.primaryWindowMinutes
-    normalized.used7dPercent = snapshot.secondaryUsedPercent
-    normalized.reset7dSeconds = snapshot.secondaryResetAfterSeconds
-    normalized.window7dMinutes = snapshot.secondaryWindowMinutes
-  } else if (use7dFromPrimary) {
-    normalized.used7dPercent = snapshot.primaryUsedPercent
-    normalized.reset7dSeconds = snapshot.primaryResetAfterSeconds
-    normalized.window7dMinutes = snapshot.primaryWindowMinutes
-    normalized.used5hPercent = snapshot.secondaryUsedPercent
-    normalized.reset5hSeconds = snapshot.secondaryResetAfterSeconds
-    normalized.window5hMinutes = snapshot.secondaryWindowMinutes
+  const primary = codexWindowCandidate('primary', snapshot)
+  const secondary = codexWindowCandidate('secondary', snapshot)
+  const primaryKey = windowKeyFromMinutes(primary.windowMinutes)
+  const secondaryKey = windowKeyFromMinutes(secondary.windowMinutes)
+  const hasExplicitWindow = Boolean(primaryKey || secondaryKey)
+
+  if (primaryKey) assignNormalizedWindow(normalized, primaryKey, primary)
+  if (secondaryKey) assignNormalizedWindow(normalized, secondaryKey, secondary)
+
+  if (!hasExplicitWindow) {
+    assignNormalizedWindow(normalized, '7d', primary)
+    assignNormalizedWindow(normalized, '5h', secondary)
+  } else if (primaryKey && !secondaryKey && secondary.windowMinutes === undefined) {
+    assignNormalizedWindow(normalized, oppositeWindowKey(primaryKey), secondary)
+  } else if (secondaryKey && !primaryKey && primary.windowMinutes === undefined) {
+    assignNormalizedWindow(normalized, oppositeWindowKey(secondaryKey), primary)
   }
 
   return Object.values(normalized).some((value) => value !== undefined) ? normalized : undefined
+}
+
+function codexWindowCandidate(side: 'primary' | 'secondary', snapshot: OpenAICodexUsageSnapshot): CodexWindowCandidate {
+  return side === 'primary'
+    ? {
+        usedPercent: snapshot.primaryUsedPercent,
+        resetAfterSeconds: snapshot.primaryResetAfterSeconds,
+        windowMinutes: snapshot.primaryWindowMinutes
+      }
+    : {
+        usedPercent: snapshot.secondaryUsedPercent,
+        resetAfterSeconds: snapshot.secondaryResetAfterSeconds,
+        windowMinutes: snapshot.secondaryWindowMinutes
+      }
+}
+
+function windowKeyFromMinutes(minutes?: number): NormalizedWindowKey | undefined {
+  if (minutes === undefined || minutes <= 0) return undefined
+  return minutes <= 360 ? '5h' : '7d'
+}
+
+function oppositeWindowKey(key: NormalizedWindowKey): NormalizedWindowKey {
+  return key === '5h' ? '7d' : '5h'
+}
+
+function assignNormalizedWindow(normalized: NormalizedCodexLimits, key: NormalizedWindowKey, candidate: CodexWindowCandidate): void {
+  if (candidate.windowMinutes !== undefined && candidate.windowMinutes <= 0) return
+  if (candidate.usedPercent === undefined && candidate.resetAfterSeconds === undefined && candidate.windowMinutes === undefined) return
+  if (key === '5h') {
+    normalized.used5hPercent = candidate.usedPercent
+    normalized.reset5hSeconds = candidate.resetAfterSeconds
+    normalized.window5hMinutes = candidate.windowMinutes
+    return
+  }
+  normalized.used7dPercent = candidate.usedPercent
+  normalized.reset7dSeconds = candidate.resetAfterSeconds
+  normalized.window7dMinutes = candidate.windowMinutes
 }
 
 function calculateExhaustedSnapshotResetAt(snapshot: OpenAICodexUsageSnapshot, now: Date): string | undefined {

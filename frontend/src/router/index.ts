@@ -7,6 +7,7 @@ declare module 'vue-router' {
   interface RouteMeta {
     title: string
     description: string
+    keepAlive?: boolean
     public?: boolean
     viewScope?: 'admin' | 'self'
     roles?: Array<'admin' | 'user'>
@@ -227,7 +228,8 @@ export const router = createRouter({
       component: { render: () => null },
       meta: {
         title: '入口',
-        description: '根据登录用户偏好进入控制台'
+        description: '根据登录用户偏好进入控制台',
+        keepAlive: false
       }
     },
     {

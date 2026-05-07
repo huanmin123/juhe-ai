@@ -45,13 +45,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { init, type ECharts } from '@/lib/echarts'
 import type { SystemMetricsOverview, UsageOverviewWindowKey, UsageStatsOverview } from '@/types/domain'
 import StatsChartCard from './StatsChartCard.vue'
@@ -65,9 +66,17 @@ const windowOptions: Array<{ label: string; value: UsageOverviewWindowKey }> = [
   { label: '近一周', value: 'last7d' },
   { label: '近一月', value: 'last30d' }
 ]
+type StatsPageState = {
+  selectedWindow: UsageOverviewWindowKey
+}
+const defaultStatsPageState = (): StatsPageState => ({
+  selectedWindow: 'last1d'
+})
+const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState)
+const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
-const selectedWindow = ref<UsageOverviewWindowKey>('last1d')
+const selectedWindow = ref<UsageOverviewWindowKey>(windowOptions.some((item) => item.value === initialPageState.selectedWindow) ? initialPageState.selectedWindow : 'last1d')
 const usageOverview = ref<UsageStatsOverview>()
 const systemMetrics = ref<SystemMetricsOverview>()
 const isAdmin = authState.isAdmin
@@ -206,6 +215,14 @@ function resizeCharts() {
     if (chart && !chart.isDisposed()) chart.resize()
   }
 }
+
+function snapshotPageState(): StatsPageState {
+  return {
+    selectedWindow: selectedWindow.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(() => {
   window.addEventListener('resize', resizeCharts)

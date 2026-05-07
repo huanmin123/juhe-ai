@@ -148,10 +148,12 @@ export function formatCost(value?: number): string {
 
 export function oauthUsageBars(account: AccountSummary): OAuthUsageBar[] {
   if (account.providerCode !== 'openai' || account.type !== 'oauth') return []
+  const usage = account.oauthUsage
+  if (!usage) return []
   return [
-    oauthUsageBar('5h', '5h', account.oauthUsage?.fiveHour) ?? oauthUsagePlaceholder('5h'),
-    oauthUsageBar('7d', '7d', account.oauthUsage?.sevenDay) ?? oauthUsagePlaceholder('7d')
-  ]
+    oauthUsageBar('5h', '5h', usage.fiveHour),
+    oauthUsageBar('7d', '7d', usage.sevenDay)
+  ].filter((bar): bar is OAuthUsageBar => Boolean(bar))
 }
 
 export function formatRelativeReset(value: string): string {
@@ -206,18 +208,6 @@ function oauthUsageBar(key: string, label: string, window?: { utilization: numbe
     resetText: window.resetsAt ? formatRelativeReset(window.resetsAt) : '现在',
     color: rawPercent >= 100 ? '#ef4444' : rawPercent >= 80 ? '#f59e0b' : '#22c55e',
     tone: rawPercent >= 100 ? 'danger' : rawPercent >= 80 ? 'warning' : 'normal'
-  }
-}
-
-function oauthUsagePlaceholder(key: string): OAuthUsageBar {
-  return {
-    key,
-    label: key,
-    percent: 0,
-    displayPercent: '--',
-    resetText: '未获取',
-    color: '#d1d5db',
-    tone: 'normal'
   }
 }
 

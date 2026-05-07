@@ -183,13 +183,14 @@
 import type { Dayjs } from 'dayjs'
 import { CopyOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
@@ -204,16 +205,32 @@ const createdKeyOpen = ref(false)
 const helpOpen = ref(false)
 const editingId = ref<string>()
 const createdKey = ref('')
-const keywordFilter = ref('')
-const statusFilter = ref<'all' | 'active' | 'disabled'>('all')
-const groupFilter = ref<string | undefined>()
+const pageSize = 50
+type ApiKeysPageState = {
+  groupFilter?: string
+  keywordFilter: string
+  pagination: { current: number; pageSize: number }
+  statusFilter: 'all' | 'active' | 'disabled'
+  systemAccountFilter: string
+}
+const defaultApiKeysPageState = (): ApiKeysPageState => ({
+  groupFilter: undefined,
+  keywordFilter: '',
+  pagination: { current: 1, pageSize },
+  statusFilter: 'all',
+  systemAccountFilter: allSystemAccountsValue
+})
+const pageStateCache = usePageStateCache<ApiKeysPageState>(undefined, defaultApiKeysPageState)
+const initialPageState = pageStateCache.read()
+const keywordFilter = ref(initialPageState.keywordFilter)
+const statusFilter = ref<'all' | 'active' | 'disabled'>(initialPageState.statusFilter)
+const groupFilter = ref<string | undefined>(initialPageState.groupFilter)
 const mobileLoadingMore = ref(false)
 const apiKeys = ref<ApiKeySummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
-const systemAccountFilter = ref(allSystemAccountsValue)
-const pageSize = 50
-const pagination = reactive({ current: 1, pageSize, total: 0 })
+const systemAccountFilter = ref(initialPageState.systemAccountFilter)
+const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 const form = reactive({
   name: '',
   groupId: '',
@@ -333,11 +350,14 @@ async function fetchData(options: { append?: boolean; quiet?: boolean } = {}) {
 }
 
 function resetFilters() {
-  keywordFilter.value = ''
-  statusFilter.value = 'all'
-  groupFilter.value = undefined
-  systemAccountFilter.value = allSystemAccountsValue
-  resetPagination()
+  const defaults = defaultApiKeysPageState()
+  keywordFilter.value = defaults.keywordFilter
+  statusFilter.value = defaults.statusFilter
+  groupFilter.value = defaults.groupFilter
+  systemAccountFilter.value = defaults.systemAccountFilter
+  pagination.current = defaults.pagination.current
+  pagination.pageSize = defaults.pagination.pageSize
+  pageStateCache.clear()
   void fetchData()
 }
 
@@ -385,6 +405,16 @@ async function refreshMobileApiKeys() {
 
 function resetPagination() {
   pagination.current = 1
+}
+
+function snapshotPageState(): ApiKeysPageState {
+  return {
+    groupFilter: groupFilter.value,
+    keywordFilter: keywordFilter.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize },
+    statusFilter: statusFilter.value,
+    systemAccountFilter: systemAccountFilter.value
+  }
 }
 
 function apiKeyListParams(systemAccountId?: string) {
@@ -516,6 +546,8 @@ async function removeApiKey(id: string) {
     message.error('删除 API Key 失败')
   }
 }
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>

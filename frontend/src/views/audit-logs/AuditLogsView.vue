@@ -129,12 +129,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import AuditLogList from './AuditLogList.vue'
 import {
   displayName,
@@ -162,14 +163,35 @@ const detail = ref<AuditLogDetail>()
 const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
 
-const traceIdFilter = ref('')
-const outcomeFilter = ref<AuditOutcome | 'all'>('all')
-const pathFilter = ref('')
-const statusCodeFilter = ref('')
-const modelFilter = ref('')
-const clientIpFilter = ref('')
 const pageSize = 100
-const pagination = reactive({ current: 1, pageSize, total: 0 })
+type AuditLogsPageState = {
+  clientIpFilter: string
+  modelFilter: string
+  outcomeFilter: AuditOutcome | 'all'
+  pagination: { current: number; pageSize: number }
+  pathFilter: string
+  statusCodeFilter: string
+  traceIdFilter: string
+}
+const defaultAuditLogsPageState = (): AuditLogsPageState => ({
+  clientIpFilter: '',
+  modelFilter: '',
+  outcomeFilter: 'all',
+  pagination: { current: 1, pageSize },
+  pathFilter: '',
+  statusCodeFilter: '',
+  traceIdFilter: ''
+})
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState)
+const initialPageState = pageStateCache.read()
+
+const traceIdFilter = ref(initialPageState.traceIdFilter)
+const outcomeFilter = ref<AuditOutcome | 'all'>(initialPageState.outcomeFilter)
+const pathFilter = ref(initialPageState.pathFilter)
+const statusCodeFilter = ref(initialPageState.statusCodeFilter)
+const modelFilter = ref(initialPageState.modelFilter)
+const clientIpFilter = ref(initialPageState.clientIpFilter)
+const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 
 const outcomeOptions = auditOutcomeOptions
 const attemptColumns = auditAttemptColumns
@@ -177,6 +199,7 @@ const payloadColumns = auditPayloadColumns
 
 const activeFilterCount = computed(() => {
   let count = 0
+  if (traceIdFilter.value.trim()) count += 1
   if (outcomeFilter.value !== 'all') count += 1
   if (pathFilter.value.trim()) count += 1
   if (statusCodeFilter.value.trim()) count += 1
@@ -202,13 +225,16 @@ function applyFilters(): void {
 }
 
 function resetFilters(): void {
-  traceIdFilter.value = ''
-  outcomeFilter.value = 'all'
-  pathFilter.value = ''
-  statusCodeFilter.value = ''
-  modelFilter.value = ''
-  clientIpFilter.value = ''
-  pagination.current = 1
+  const defaults = defaultAuditLogsPageState()
+  traceIdFilter.value = defaults.traceIdFilter
+  outcomeFilter.value = defaults.outcomeFilter
+  pathFilter.value = defaults.pathFilter
+  statusCodeFilter.value = defaults.statusCodeFilter
+  modelFilter.value = defaults.modelFilter
+  clientIpFilter.value = defaults.clientIpFilter
+  pagination.current = defaults.pagination.current
+  pagination.pageSize = defaults.pagination.pageSize
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -297,6 +323,20 @@ async function loadPayload(payloadId: string): Promise<void> {
     payloadLoadingId.value = ''
   }
 }
+
+function snapshotPageState(): AuditLogsPageState {
+  return {
+    clientIpFilter: clientIpFilter.value,
+    modelFilter: modelFilter.value,
+    outcomeFilter: outcomeFilter.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize },
+    pathFilter: pathFilter.value,
+    statusCodeFilter: statusCodeFilter.value,
+    traceIdFilter: traceIdFilter.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>

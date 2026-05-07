@@ -74,7 +74,7 @@
 | 原始审计日志 | `modules/audit-logs/` | 审计查询、内存队列、终态入队和批量落库 |
 | 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |
 | 设置 | `modules/settings/` | 全局设置和系统账户级设置读写 |
-| 网关 | `modules/gateway/openai-gateway.routes.ts` | `/v1/*` 入口、账号调度、上游转发、使用记录写入和审计上下文捕获 |
+| 网关 | `modules/gateway/openai-gateway.routes.ts` | `/v1/*` 入口、账号调度、运行态并发占用、上游转发、使用记录写入和审计上下文捕获 |
 
 ## 5. 请求分层
 

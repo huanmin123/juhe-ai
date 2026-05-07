@@ -17,6 +17,7 @@ export interface OpenAIAccountSecret {
   name: string
   type: AccountType
   status: AccountStatus
+  concurrencyLimit: number
   baseUrl: string
   apiKey: string
   refreshToken?: string
@@ -90,7 +91,7 @@ export function findOpenAIAccountForGroup(
   const params = options.includeUnavailable ? [accountId, now] : [accountId, now, now]
   const row = getDatabase()
     .prepare(`
-      SELECT id, system_account_id, name, type, status, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message
+      SELECT id, system_account_id, name, type, status, concurrency_limit, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message
       FROM accounts
       WHERE id = ?
         AND provider_code = 'openai'
@@ -98,7 +99,7 @@ export function findOpenAIAccountForGroup(
         AND (account_expires_at IS NULL OR account_expires_at > ?)
         ${availabilityClause}
     `)
-    .get(...params) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
+    .get(...params) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; concurrency_limit: number; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
   if (!row) {
     return undefined
   }
@@ -144,7 +145,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
   for (const groupAccount of groupAccountRows) {
     const row = database
       .prepare(`
-        SELECT id, system_account_id, name, type, status, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message
+        SELECT id, system_account_id, name, type, status, concurrency_limit, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message
         FROM accounts
         WHERE id = ?
           AND provider_code = 'openai'
@@ -154,7 +155,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
           AND status = 'active'
           AND (cooldown_until IS NULL OR cooldown_until <= ?)
       `)
-      .get(groupAccount.account_id, now, now) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
+      .get(groupAccount.account_id, now, now) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; concurrency_limit: number; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
     if (!row) {
       continue
     }
@@ -187,7 +188,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
 }
 
 function openAIAccountSecretFromRow(
-  row: { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null },
+  row: { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; concurrency_limit: number; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null },
   groupAccess: GroupUsageAccessMetadata,
   systemAccountId: string,
   boundAccountAuthorizationId?: string,
@@ -225,6 +226,7 @@ function openAIAccountSecretFromRow(
     name: row.name,
     type: row.type,
     status: row.status,
+    concurrencyLimit: Number(row.concurrency_limit ?? 1),
     baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
     apiKey,
     refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,

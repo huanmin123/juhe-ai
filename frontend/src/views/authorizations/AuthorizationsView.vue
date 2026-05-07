@@ -67,6 +67,7 @@ import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { AccountSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
@@ -114,13 +115,29 @@ const expireAuthorization = ref<ResourceAuthorizationSummary>()
 const selectedAuthorizationUsageDetails = ref<AuthorizationUserUsageDetail[]>([])
 const selectedResourceAuthorizations = ref<ResourceAuthorizationSummary[]>([])
 
-const filters = reactive({
-  direction: 'all' as AuthorizationDirectionFilter,
-  resourceType: 'all' as AuthorizationFilterResourceType,
-  resourceId: undefined as string | undefined,
-  teamId: undefined as string | undefined,
-  granteeSystemAccountId: undefined as string | undefined
+type AuthorizationFilters = {
+  direction: AuthorizationDirectionFilter
+  resourceType: AuthorizationFilterResourceType
+  resourceId?: string
+  teamId?: string
+  granteeSystemAccountId?: string
+}
+type AuthorizationsPageState = {
+  filters: AuthorizationFilters
+}
+const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
+  filters: {
+    direction: 'all',
+    resourceType: 'all',
+    resourceId: undefined,
+    teamId: undefined,
+    granteeSystemAccountId: undefined
+  }
 })
+const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState)
+const initialPageState = pageStateCache.read()
+
+const filters = reactive<AuthorizationFilters>({ ...initialPageState.filters })
 
 const createForm = reactive<AuthorizationCreateFormModel>({
   resourceType: 'account' as 'account' | 'group',
@@ -279,11 +296,8 @@ function handleResourceTypeChange() {
 }
 
 function resetFilters() {
-  filters.direction = 'all'
-  filters.resourceType = 'all'
-  filters.resourceId = undefined
-  filters.teamId = undefined
-  filters.granteeSystemAccountId = undefined
+  Object.assign(filters, defaultAuthorizationsPageState().filters)
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -463,6 +477,13 @@ onMounted(async () => {
 })
 
 function applyRouteFilters() {
+  const hasRouteFilters = [
+    route.query.resourceType,
+    route.query.resourceId,
+    route.query.teamId,
+    route.query.granteeSystemAccountId
+  ].some((value) => value !== undefined)
+  if (!hasRouteFilters) return
   filters.resourceType = 'all'
   filters.resourceId = undefined
   filters.teamId = undefined
@@ -485,6 +506,14 @@ function applyRouteFilters() {
     filters.granteeSystemAccountId = granteeSystemAccountId
   }
 }
+
+function snapshotPageState(): AuthorizationsPageState {
+  return {
+    filters: { ...filters }
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 </script>
 

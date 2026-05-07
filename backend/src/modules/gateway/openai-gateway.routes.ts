@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { Router, type Request, type Response } from 'express'
 
+import { tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import { bindRequestContextFields, getTraceId } from '../../shared/request-context.js'
 import {
   recordAccountStreamFailure,
@@ -344,183 +345,187 @@ export async function handleOpenAIGatewayRequest(
       endpoint,
       requestSnapshot
     }, auditCapture, options.disableSessionAffinity ? undefined : sessionAffinityKey)
-    const { account, response: upstreamResponse, upstreamUrl, auditAttemptId } = upstreamResult
+    const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency } = upstreamResult
 
-    const contentType = upstreamResponse.headers.get('content-type') ?? ''
-    const shouldHandleAsStream = isOpenAIStreamContentType(contentType) || isImplicitOpenAIStreamResponse(req, account)
-    res.status(upstreamResponse.status)
-    copyResponseHeaders(upstreamResponse, res)
-    if (shouldHandleAsStream && !res.hasHeader('content-type')) {
-      res.setHeader('content-type', 'text/event-stream; charset=utf-8')
-    }
-    persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, 'gateway')
+    try {
+      const contentType = upstreamResponse.headers.get('content-type') ?? ''
+      const shouldHandleAsStream = isOpenAIStreamContentType(contentType) || isImplicitOpenAIStreamResponse(req, account)
+      res.status(upstreamResponse.status)
+      copyResponseHeaders(upstreamResponse, res)
+      if (shouldHandleAsStream && !res.hasHeader('content-type')) {
+        res.setHeader('content-type', 'text/event-stream; charset=utf-8')
+      }
+      persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, 'gateway')
 
-    let usage = emptyUsage()
-    let firstTokenMs: number | undefined
-    let responseBodyText: string | undefined
-    let errorPayload: Record<string, unknown> = {}
-    if (shouldHandleAsStream) {
-      if (!upstreamResponse.body) {
-        res.end()
-        forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+      let usage = emptyUsage()
+      let firstTokenMs: number | undefined
+      let responseBodyText: string | undefined
+      let errorPayload: Record<string, unknown> = {}
+      if (shouldHandleAsStream) {
+        if (!upstreamResponse.body) {
+          res.end()
+          forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+          auditCapture.completeAttempt(auditAttemptId, {
+            statusCode: upstreamResponse.status,
+            responseHeaders: upstreamResponse.headers,
+            success: false,
+            errorPhase: 'upstream_response',
+            errorMessage: 'Upstream response body is empty'
+          })
+          auditCapture.finalize({
+            outcome: 'stream_failed',
+            success: false,
+            statusCode: upstreamResponse.status,
+            responseHeaders: responseHeadersToObject(res),
+            responsePartType: 'gateway_error',
+            errorPhase: 'upstream_response',
+            errorMessage: 'Upstream response body is empty',
+            accountId: account.id
+          })
+          return
+        }
+        const streamResult = await pipeUpstreamStream(
+          upstreamResponse.body,
+          res,
+          gatewaySettings,
+          startedAt,
+          (message) => handleStreamFailure(account, message, gatewaySettings)
+        )
+        firstTokenMs = streamResult.firstTokenMs
+        responseBodyText = Buffer.concat(streamResult.chunks).toString('utf8')
         auditCapture.completeAttempt(auditAttemptId, {
           statusCode: upstreamResponse.status,
           responseHeaders: upstreamResponse.headers,
-          success: false,
-          errorPhase: 'upstream_response',
-          errorMessage: 'Upstream response body is empty'
+          responseBody: Buffer.concat(streamResult.upstreamChunks),
+          success: streamResult.completed && upstreamResponse.ok,
+          errorPhase: streamResult.completed ? undefined : 'stream',
+          errorMessage: streamResult.completed ? undefined : streamResult.message
         })
-        auditCapture.finalize({
-          outcome: 'stream_failed',
-          success: false,
+        if (!streamResult.completed) {
+          forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+          enqueueUsageRecord({
+            traceId,
+            clientIp,
+            systemAccountId,
+            apiKeyId,
+            groupId,
+            accountId: account.id,
+            ...accountUsageMetadata(account),
+            endpoint,
+            providerCode: 'openai',
+            model: requestModel(req),
+            stream: isOpenAIStreamRequest(req),
+            statusCode: upstreamResponse.status,
+            success: false,
+            firstTokenMs: streamResult.firstTokenMs,
+            durationMs: Date.now() - startedAt,
+            errorMessage: streamResult.message,
+            requestSnapshot,
+            responseSnapshot: buildUsageResponseSnapshot({
+              upstreamUrl,
+              statusCode: upstreamResponse.status,
+              headers: upstreamResponse.headers,
+              bodyText: responseBodyText,
+              errorMessage: streamResult.message
+            })
+          })
+          auditCapture.finalize({
+            outcome: 'stream_failed',
+            success: false,
+            statusCode: upstreamResponse.status,
+            responseHeaders: responseHeadersToObject(res),
+            responseBody: Buffer.concat(streamResult.chunks),
+            responsePartType: 'gateway_response',
+            errorPhase: 'stream',
+            errorMessage: streamResult.message,
+            accountId: account.id,
+            firstTokenMs: streamResult.firstTokenMs
+          })
+          return
+        }
+        usage = parseOpenAIUsageFromSseText(responseBodyText)
+      } else {
+        const responseBody = Buffer.from(await upstreamResponse.arrayBuffer())
+        responseBodyText = responseBody.toString('utf8')
+        firstTokenMs = Date.now() - startedAt
+        usage = parseOpenAIUsageFromJsonBuffer(responseBody)
+        if (!upstreamResponse.ok) {
+          errorPayload = parseErrorPayload(responseBodyText, upstreamResponse.headers)
+        }
+        auditCapture.completeAttempt(auditAttemptId, {
           statusCode: upstreamResponse.status,
-          responseHeaders: responseHeadersToObject(res),
-          responsePartType: 'gateway_error',
-          errorPhase: 'upstream_response',
-          errorMessage: 'Upstream response body is empty',
-          accountId: account.id
+          responseHeaders: upstreamResponse.headers,
+          responseBody,
+          success: upstreamResponse.ok,
+          errorPhase: upstreamResponse.ok ? undefined : 'upstream_response',
+          errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
+          errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined
         })
-        return
+        res.send(responseBody)
       }
-      const streamResult = await pipeUpstreamStream(
-        upstreamResponse.body,
-        res,
-        gatewaySettings,
-        startedAt,
-        (message) => handleStreamFailure(account, message, gatewaySettings)
-      )
-      firstTokenMs = streamResult.firstTokenMs
-      responseBodyText = Buffer.concat(streamResult.chunks).toString('utf8')
-      auditCapture.completeAttempt(auditAttemptId, {
+
+      if (upstreamResponse.ok) {
+        applyAccountErrorHandlingWithCacheInvalidation(account, {
+          success: true,
+          settings: gatewaySettings,
+          preserveManualTrafficMigration: true
+        })
+      }
+
+      enqueueUsageRecord({
+        traceId,
+        clientIp,
+        systemAccountId,
+        apiKeyId,
+        groupId,
+        accountId: account.id,
+        ...accountUsageMetadata(account),
+        endpoint,
+        providerCode: 'openai',
+        model: requestModel(req),
+        stream: isOpenAIStreamRequest(req),
         statusCode: upstreamResponse.status,
-        responseHeaders: upstreamResponse.headers,
-        responseBody: Buffer.concat(streamResult.upstreamChunks),
-        success: streamResult.completed && upstreamResponse.ok,
-        errorPhase: streamResult.completed ? undefined : 'stream',
-        errorMessage: streamResult.completed ? undefined : streamResult.message
-      })
-      if (!streamResult.completed) {
-        forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-        enqueueUsageRecord({
-          traceId,
-          clientIp,
-          systemAccountId,
-          apiKeyId,
-          groupId,
-          accountId: account.id,
-          ...accountUsageMetadata(account),
-          endpoint,
+        success: upstreamResponse.ok,
+        firstTokenMs,
+        durationMs: Date.now() - startedAt,
+        inputTokens: usage.inputTokens,
+        outputTokens: usage.outputTokens,
+        cacheReadTokens: usage.cacheReadTokens,
+        costUsd: estimateProviderCostUsd({
           providerCode: 'openai',
           model: requestModel(req),
-          stream: isOpenAIStreamRequest(req),
-          statusCode: upstreamResponse.status,
-          success: false,
-          firstTokenMs: streamResult.firstTokenMs,
-          durationMs: Date.now() - startedAt,
-          errorMessage: streamResult.message,
-          requestSnapshot,
-          responseSnapshot: buildUsageResponseSnapshot({
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          cacheReadTokens: usage.cacheReadTokens
+        }),
+        errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
+        errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined,
+        requestSnapshot: upstreamResponse.ok ? undefined : requestSnapshot,
+        responseSnapshot: upstreamResponse.ok
+          ? undefined
+          : buildUsageResponseSnapshot({
             upstreamUrl,
             statusCode: upstreamResponse.status,
             headers: upstreamResponse.headers,
-            bodyText: responseBodyText,
-            errorMessage: streamResult.message
+            bodyText: responseBodyText
           })
-        })
-        auditCapture.finalize({
-          outcome: 'stream_failed',
-          success: false,
-          statusCode: upstreamResponse.status,
-          responseHeaders: responseHeadersToObject(res),
-          responseBody: Buffer.concat(streamResult.chunks),
-          responsePartType: 'gateway_response',
-          errorPhase: 'stream',
-          errorMessage: streamResult.message,
-          accountId: account.id,
-          firstTokenMs: streamResult.firstTokenMs
-        })
-        return
-      }
-      usage = parseOpenAIUsageFromSseText(responseBodyText)
-    } else {
-      const responseBody = Buffer.from(await upstreamResponse.arrayBuffer())
-      responseBodyText = responseBody.toString('utf8')
-      firstTokenMs = Date.now() - startedAt
-      usage = parseOpenAIUsageFromJsonBuffer(responseBody)
-      if (!upstreamResponse.ok) {
-        errorPayload = parseErrorPayload(responseBodyText, upstreamResponse.headers)
-      }
-      auditCapture.completeAttempt(auditAttemptId, {
-        statusCode: upstreamResponse.status,
-        responseHeaders: upstreamResponse.headers,
-        responseBody,
+      })
+      auditCapture.finalize({
+        outcome: upstreamResponse.ok ? 'success' : 'upstream_failed',
         success: upstreamResponse.ok,
+        statusCode: upstreamResponse.status,
+        responseHeaders: responseHeadersToObject(res),
+        responseBody: responseBodyText,
+        responsePartType: upstreamResponse.ok ? 'gateway_response' : 'gateway_error',
         errorPhase: upstreamResponse.ok ? undefined : 'upstream_response',
         errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
-        errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined
+        errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined,
+        accountId: account.id,
+        firstTokenMs
       })
-      res.send(responseBody)
+    } finally {
+      releaseConcurrency()
     }
-
-    if (upstreamResponse.ok) {
-      applyAccountErrorHandlingWithCacheInvalidation(account, {
-        success: true,
-        settings: gatewaySettings,
-        preserveManualTrafficMigration: true
-      })
-    }
-
-    enqueueUsageRecord({
-      traceId,
-      clientIp,
-      systemAccountId,
-      apiKeyId,
-      groupId,
-      accountId: account.id,
-      ...accountUsageMetadata(account),
-      endpoint,
-      providerCode: 'openai',
-      model: requestModel(req),
-      stream: isOpenAIStreamRequest(req),
-      statusCode: upstreamResponse.status,
-      success: upstreamResponse.ok,
-      firstTokenMs,
-      durationMs: Date.now() - startedAt,
-      inputTokens: usage.inputTokens,
-      outputTokens: usage.outputTokens,
-      cacheReadTokens: usage.cacheReadTokens,
-      costUsd: estimateProviderCostUsd({
-        providerCode: 'openai',
-        model: requestModel(req),
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        cacheReadTokens: usage.cacheReadTokens
-      }),
-      errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
-      errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined,
-      requestSnapshot: upstreamResponse.ok ? undefined : requestSnapshot,
-      responseSnapshot: upstreamResponse.ok
-        ? undefined
-        : buildUsageResponseSnapshot({
-          upstreamUrl,
-          statusCode: upstreamResponse.status,
-          headers: upstreamResponse.headers,
-          bodyText: responseBodyText
-        })
-    })
-    auditCapture.finalize({
-      outcome: upstreamResponse.ok ? 'success' : 'upstream_failed',
-      success: upstreamResponse.ok,
-      statusCode: upstreamResponse.status,
-      responseHeaders: responseHeadersToObject(res),
-      responseBody: responseBodyText,
-      responsePartType: upstreamResponse.ok ? 'gateway_response' : 'gateway_error',
-      errorPhase: upstreamResponse.ok ? undefined : 'upstream_response',
-      errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
-      errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined,
-      accountId: account.id,
-      firstTokenMs
-    })
   } catch (error) {
     const lastAttempt = error instanceof UpstreamAttemptError ? error.lastAttempt : undefined
     const message = error instanceof Error ? error.message : 'No available upstream account'
@@ -600,7 +605,7 @@ async function fetchFirstAvailableUpstream(
   usageContext: GatewayUsageContext,
   auditCapture: AuditCaptureContext,
   sessionAffinityKey?: string
-): Promise<{ account: UpstreamAccount; response: GatewayUpstreamResponse; upstreamUrl: string; auditAttemptId: string }> {
+): Promise<{ account: UpstreamAccount; response: GatewayUpstreamResponse; upstreamUrl: string; auditAttemptId: string; releaseConcurrency: () => void }> {
   const retryAttempts = Math.max(0, settings.temporaryUnschedulableRetryAttempts)
   const isStreamRequest = isOpenAIStreamRequest(req)
   let lastAttempt: UpstreamAttempt | undefined
@@ -624,134 +629,153 @@ async function fetchFirstAvailableUpstream(
     if (upstreamUrls.length === 0) {
       continue
     }
+    const concurrencySlot = tryAcquireAccountConcurrency(account.id, account.concurrencyLimit)
+    if (!concurrencySlot.acquired) {
+      lastAttempt = {
+        accountId: account.id,
+        accountName: account.name,
+        upstreamUrl: 'concurrency:limit',
+        message: `账户并发已达到上限 ${concurrencySlot.current}/${concurrencySlot.limit}`
+      }
+      continue
+    }
     const headers = buildUpstreamHeaders(req.headers, account)
     const body = buildUpstreamRequestBody(req, account.passthroughEnabled)
     let skipAccount = false
-    for (const upstreamUrl of upstreamUrls) {
-      for (let attemptIndex = 0; attemptIndex <= retryAttempts; attemptIndex += 1) {
-        const attemptStartedAt = Date.now()
-        auditAttemptIndex += 1
-        const auditAttemptId = auditCapture.startAttempt({
-          account,
-          attemptIndex: auditAttemptIndex,
-          upstreamUrl,
-          method: req.method,
-          headers,
-          body
-        })
-        try {
-          const response = await requestUpstream(upstreamUrl, {
+    let keepConcurrencySlot = false
+    try {
+      for (const upstreamUrl of upstreamUrls) {
+        for (let attemptIndex = 0; attemptIndex <= retryAttempts; attemptIndex += 1) {
+          const attemptStartedAt = Date.now()
+          auditAttemptIndex += 1
+          const auditAttemptId = auditCapture.startAttempt({
+            account,
+            attemptIndex: auditAttemptIndex,
+            upstreamUrl,
             method: req.method,
             headers,
-            body,
-            proxyUrl: account.proxyUrl,
-            timeoutMs: upstreamSocketTimeoutMs(req, settings),
-            requestTimeoutMs: upstreamRequestTimeoutMs(req, settings)
+            body
           })
-          lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
-          if (response.ok) {
-            if (isStreamRequest && settings.streamCircuitBreakerEnabled && isStreamResponse(response)) {
-              try {
-                const preloadedResponse = await preloadStreamResponseFirstChunk(response, settings)
-                rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
-                return { account, response: preloadedResponse, upstreamUrl, auditAttemptId }
-              } catch (error) {
-                const message = error instanceof Error ? error.message : 'Upstream stream request interrupted before first chunk'
-                lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status, message }
-                const preloadFailureBody = streamPreloadErrorBody(error)
-                auditCapture.completeAttempt(auditAttemptId, {
-                  statusCode: response.status,
-                  responseHeaders: response.headers,
-                  responseBody: preloadFailureBody,
-                  success: false,
-                  errorPhase: 'stream_preload',
-                  errorMessage: message
-                })
-                forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-                recordFailedUpstreamAttempt(req, usageContext, account, {
-                  upstreamUrl,
-                  startedAt: attemptStartedAt,
-                  statusCode: response.status,
-                  headers: response.headers,
-                  bodyText: preloadFailureBody?.toString('utf8'),
-                  errorMessage: message
-                })
-                if (isRetryableUpstreamStreamPreloadError(error) && attemptIndex < retryAttempts) {
-                  await waitBeforeTemporaryUnschedulableRetry(settings)
-                  continue
+          try {
+            const response = await requestUpstream(upstreamUrl, {
+              method: req.method,
+              headers,
+              body,
+              proxyUrl: account.proxyUrl,
+              timeoutMs: upstreamSocketTimeoutMs(req, settings),
+              requestTimeoutMs: upstreamRequestTimeoutMs(req, settings)
+            })
+            lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
+            if (response.ok) {
+              if (isStreamRequest && settings.streamCircuitBreakerEnabled && isStreamResponse(response)) {
+                try {
+                  const preloadedResponse = await preloadStreamResponseFirstChunk(response, settings)
+                  rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
+                  keepConcurrencySlot = true
+                  return { account, response: preloadedResponse, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
+                } catch (error) {
+                  const message = error instanceof Error ? error.message : 'Upstream stream request interrupted before first chunk'
+                  lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status, message }
+                  const preloadFailureBody = streamPreloadErrorBody(error)
+                  auditCapture.completeAttempt(auditAttemptId, {
+                    statusCode: response.status,
+                    responseHeaders: response.headers,
+                    responseBody: preloadFailureBody,
+                    success: false,
+                    errorPhase: 'stream_preload',
+                    errorMessage: message
+                  })
+                  forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+                  recordFailedUpstreamAttempt(req, usageContext, account, {
+                    upstreamUrl,
+                    startedAt: attemptStartedAt,
+                    statusCode: response.status,
+                    headers: response.headers,
+                    bodyText: preloadFailureBody?.toString('utf8'),
+                    errorMessage: message
+                  })
+                  if (isRetryableUpstreamStreamPreloadError(error) && attemptIndex < retryAttempts) {
+                    await waitBeforeTemporaryUnschedulableRetry(settings)
+                    continue
+                  }
+                  applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
+                  skipAccount = true
+                  break
                 }
-                applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
-                skipAccount = true
-                break
               }
+              rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
+              keepConcurrencySlot = true
+              return { account, response, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
             }
-            rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
-            return { account, response, upstreamUrl, auditAttemptId }
-          }
 
-          const responseBody = Buffer.from(await response.arrayBuffer())
-          const responseBodyText = responseBody.toString('utf8')
-          lastAttempt = {
-            ...lastAttempt,
-            responseHeaders: headersToObject(response.headers),
-            responseBodyText
+            const responseBody = Buffer.from(await response.arrayBuffer())
+            const responseBodyText = responseBody.toString('utf8')
+            lastAttempt = {
+              ...lastAttempt,
+              responseHeaders: headersToObject(response.headers),
+              responseBodyText
+            }
+            auditCapture.completeAttempt(auditAttemptId, {
+              statusCode: response.status,
+              responseHeaders: response.headers,
+              responseBody,
+              success: false,
+              errorPhase: 'upstream_response',
+              errorMessage: responseBodyText
+            })
+            recordFailedUpstreamAttempt(req, usageContext, account, {
+              upstreamUrl,
+              startedAt: attemptStartedAt,
+              statusCode: response.status,
+              headers: response.headers,
+              bodyText: responseBodyText
+            })
+            persistOpenAICodexHeadersIfNeeded(account, response.headers, 'gateway_error')
+            forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+            applyAccountErrorHandlingWithCacheInvalidation(account, {
+              success: false,
+              statusCode: response.status,
+              headers: response.headers,
+              bodyText: responseBodyText,
+              settings
+            })
+            skipAccount = true
+            break
+          } catch (error) {
+            const message = error instanceof Error ? error.message : 'request failed'
+            lastAttempt = {
+              accountId: account.id,
+              accountName: account.name,
+              upstreamUrl,
+              message
+            }
+            auditCapture.completeAttempt(auditAttemptId, {
+              success: false,
+              errorPhase: 'upstream_request',
+              errorMessage: message
+            })
+            recordFailedUpstreamAttempt(req, usageContext, account, {
+              upstreamUrl,
+              startedAt: attemptStartedAt,
+              errorMessage: message
+            })
+            if (attemptIndex < retryAttempts) {
+              await waitBeforeTemporaryUnschedulableRetry(settings)
+              continue
+            }
+            forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+            applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
+            skipAccount = true
+            break
           }
-          auditCapture.completeAttempt(auditAttemptId, {
-            statusCode: response.status,
-            responseHeaders: response.headers,
-            responseBody,
-            success: false,
-            errorPhase: 'upstream_response',
-            errorMessage: responseBodyText
-          })
-          recordFailedUpstreamAttempt(req, usageContext, account, {
-            upstreamUrl,
-            startedAt: attemptStartedAt,
-            statusCode: response.status,
-            headers: response.headers,
-            bodyText: responseBodyText
-          })
-          persistOpenAICodexHeadersIfNeeded(account, response.headers, 'gateway_error')
-          forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-          applyAccountErrorHandlingWithCacheInvalidation(account, {
-            success: false,
-            statusCode: response.status,
-            headers: response.headers,
-            bodyText: responseBodyText,
-            settings
-          })
-          skipAccount = true
-          break
-        } catch (error) {
-          const message = error instanceof Error ? error.message : 'request failed'
-          lastAttempt = {
-            accountId: account.id,
-            accountName: account.name,
-            upstreamUrl,
-            message
-          }
-          auditCapture.completeAttempt(auditAttemptId, {
-            success: false,
-            errorPhase: 'upstream_request',
-            errorMessage: message
-          })
-          recordFailedUpstreamAttempt(req, usageContext, account, {
-            upstreamUrl,
-            startedAt: attemptStartedAt,
-            errorMessage: message
-          })
-          if (attemptIndex < retryAttempts) {
-            await waitBeforeTemporaryUnschedulableRetry(settings)
-            continue
-          }
-          forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-          applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
-          skipAccount = true
+        }
+        if (skipAccount) {
           break
         }
       }
-      if (skipAccount) {
-        break
+    } finally {
+      if (!keepConcurrencySlot) {
+        concurrencySlot.release()
       }
     }
   }

@@ -134,12 +134,13 @@
 <script setup lang="ts">
 import axios from 'axios'
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import type { AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountTrafficMigrationSourceStatus, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
@@ -207,15 +208,27 @@ const bindingAccount = ref<AccountSummary>()
 const trafficMigrationSourceAccount = ref<AccountSummary>()
 const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
-const accountSorts = ref<AccountListSortParam[]>([{ field: 'priority', order: 'asc' }])
+type AccountsPageState = {
+  filters: AccountFilters
+  pagination: { current: number; pageSize: number }
+  sorts: AccountListSortParam[]
+}
+const defaultAccountsPageState = (): AccountsPageState => ({
+  filters: { keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue },
+  pagination: { current: 1, pageSize: ACCOUNT_PAGE_SIZE },
+  sorts: [{ field: 'priority', order: 'asc' }]
+})
+const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState)
+const initialPageState = pageStateCache.read()
+const accountSorts = ref<AccountListSortParam[]>(initialPageState.sorts)
 const accounts = ref<AccountSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const providerModels = ref<ProviderModelPricing[]>([])
 const proxies = ref<ProxyProfileOptionSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
-const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue })
-const accountPagination = reactive({ current: 1, pageSize: ACCOUNT_PAGE_SIZE, total: 0 })
+const filters = reactive<AccountFilters>({ ...initialPageState.filters })
+const accountPagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const router = useRouter()
@@ -528,14 +541,13 @@ function resetAccountPagination() {
 }
 
 function resetFilters() {
-  Object.assign(filters, {
-    keyword: '',
-    type: 'all',
-    status: 'all',
-    schedulable: 'all',
-    systemAccountId: allSystemAccountsValue
-  })
-  resetAccountPagination()
+  const defaults = defaultAccountsPageState()
+  Object.assign(filters, defaults.filters)
+  accountSorts.value = defaults.sorts
+  accountPagination.current = defaults.pagination.current
+  accountPagination.pageSize = defaults.pagination.pageSize
+  resetAccountListPagination()
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -1078,6 +1090,16 @@ async function removeAccount(id: string) {
     message.error('删除账户失败')
   }
 }
+
+function snapshotPageState(): AccountsPageState {
+  return {
+    filters: { ...filters },
+    pagination: { current: accountPagination.current, pageSize: accountPagination.pageSize },
+    sorts: accountSorts.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>

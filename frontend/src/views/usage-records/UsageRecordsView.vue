@@ -111,11 +111,12 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
@@ -136,23 +137,42 @@ import {
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
 
+type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
+type TableSortOrder = 'ascend' | 'descend' | null
+type UsageRecordsPageState = {
+  accountNameFilter: string
+  pagination: { current: number; pageSize: number }
+  resultFilter: 'all' | 'success' | 'failed'
+  sortState: { field: UsageRecordSortField; order: TableSortOrder }
+  statusCodeFilter: string
+  systemAccountFilter: string
+}
+
+const pageSize = 100
+const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
+  accountNameFilter: '',
+  pagination: { current: 1, pageSize },
+  resultFilter: 'all',
+  sortState: { field: 'createdAt', order: 'descend' },
+  statusCodeFilter: '',
+  systemAccountFilter: allSystemAccountsValue
+})
+const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState)
+const initialPageState = pageStateCache.read()
+
 const loading = ref(false)
 const mobileLoadingMore = ref(false)
 const records = ref<UsageRecordSummary[]>([])
 const detailOpen = ref(false)
 const selectedRecord = ref<UsageRecordSummary>()
-const accountNameFilter = ref('')
-const resultFilter = ref<'all' | 'success' | 'failed'>('all')
-const statusCodeFilter = ref<string>('')
-const systemAccountFilter = ref(allSystemAccountsValue)
+const accountNameFilter = ref(initialPageState.accountNameFilter)
+const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
+const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
+const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
-type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
-type TableSortOrder = 'ascend' | 'descend' | null
-
-const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>({ field: 'createdAt', order: 'descend' })
-const pageSize = 100
-const pagination = reactive({ current: 1, pageSize, total: 0 })
+const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>(initialPageState.sortState)
+const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 
 const resultOptions = [
   { label: '全部结果', value: 'all' },
@@ -217,11 +237,15 @@ function closeDetail(): void {
 }
 
 function resetFilters(): void {
-  accountNameFilter.value = ''
-  resultFilter.value = 'all'
-  statusCodeFilter.value = ''
-  systemAccountFilter.value = allSystemAccountsValue
-  pagination.current = 1
+  const defaults = defaultUsageRecordsPageState()
+  accountNameFilter.value = defaults.accountNameFilter
+  resultFilter.value = defaults.resultFilter
+  statusCodeFilter.value = defaults.statusCodeFilter
+  systemAccountFilter.value = defaults.systemAccountFilter
+  sortState.value = defaults.sortState
+  pagination.current = defaults.pagination.current
+  pagination.pageSize = defaults.pagination.pageSize
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -334,6 +358,19 @@ function normalizedStatusCode(value: string): number | undefined {
   const statusCode = Number(text)
   return Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? statusCode : undefined
 }
+
+function snapshotPageState(): UsageRecordsPageState {
+  return {
+    accountNameFilter: accountNameFilter.value,
+    pagination: { current: pagination.current, pageSize: pagination.pageSize },
+    resultFilter: resultFilter.value,
+    sortState: sortState.value,
+    statusCodeFilter: statusCodeFilter.value,
+    systemAccountFilter: systemAccountFilter.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>

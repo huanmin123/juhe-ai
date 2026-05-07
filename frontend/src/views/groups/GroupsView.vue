@@ -137,13 +137,14 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
 import type { GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
@@ -165,7 +166,15 @@ const editingId = ref<string>()
 const groups = ref<GroupSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
-const systemAccountFilter = ref(allSystemAccountsValue)
+type GroupsPageState = {
+  systemAccountFilter: string
+}
+const defaultGroupsPageState = (): GroupsPageState => ({
+  systemAccountFilter: allSystemAccountsValue
+})
+const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
+const initialPageState = pageStateCache.read()
+const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const form = reactive({ name: '', providerCode: 'openai', description: '', enabled: true })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
@@ -286,6 +295,7 @@ async function loadData() {
 
 function resetFilters() {
   systemAccountFilter.value = allSystemAccountsValue
+  pageStateCache.clear()
   void loadData()
 }
 
@@ -361,6 +371,14 @@ async function removeGroup(id: string) {
     message.error('删除分组失败')
   }
 }
+
+function snapshotPageState(): GroupsPageState {
+  return {
+    systemAccountFilter: systemAccountFilter.value
+  }
+}
+
+watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
 </script>
