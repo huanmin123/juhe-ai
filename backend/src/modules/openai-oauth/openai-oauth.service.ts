@@ -80,14 +80,15 @@ export async function exchangeOpenAIAuthCode(input: {
   code: string
   state: string
   proxyUrl?: string
+  signal?: AbortSignal
 }): Promise<OpenAITokenInfo> {
   cleanupExpiredSessions()
   const session = sessions.get(input.sessionId)
   if (!session) {
-    throw new Error('OAuth session not found or expired')
+    throw new Error('OAuth 会话不存在或已过期')
   }
   if (!input.state || input.state !== session.state) {
-    throw new Error('Invalid OAuth state')
+    throw new Error('OAuth state 无效')
   }
   const tokenInfo = await requestOpenAIToken({
     grant_type: 'authorization_code',
@@ -95,15 +96,15 @@ export async function exchangeOpenAIAuthCode(input: {
     code: input.code,
     redirect_uri: session.redirectUri,
     code_verifier: session.codeVerifier
-  }, input.proxyUrl)
+  }, input.proxyUrl, input.signal)
   sessions.delete(input.sessionId)
   return tokenInfo
 }
 
-export async function refreshOpenAIOAuthToken(input: { refreshToken: string; clientId?: string; proxyUrl?: string }): Promise<OpenAITokenInfo> {
+export async function refreshOpenAIOAuthToken(input: { refreshToken: string; clientId?: string; proxyUrl?: string; signal?: AbortSignal }): Promise<OpenAITokenInfo> {
   const refreshToken = normalizeString(input.refreshToken)
   if (!refreshToken) {
-    throw new Error('refresh_token is required')
+    throw new Error('refresh_token 不能为空')
   }
   const clientId = normalizeString(input.clientId) || OPENAI_OAUTH_CLIENT_ID
   return requestOpenAIToken({
@@ -111,7 +112,7 @@ export async function refreshOpenAIOAuthToken(input: { refreshToken: string; cli
     refresh_token: refreshToken,
     client_id: clientId,
     scope: OPENAI_OAUTH_REFRESH_SCOPES
-  }, input.proxyUrl)
+  }, input.proxyUrl, input.signal)
 }
 
 export function buildOpenAIOAuthCredentials(tokenInfo: OpenAITokenInfo, fallback?: { refreshToken?: string }): Record<string, unknown> {
@@ -140,13 +141,13 @@ export function extractCodeAndState(input: { callbackUrl?: string; code?: string
 
   const callbackUrl = normalizeString(input.callbackUrl)
   if (!callbackUrl) {
-    throw new Error('callback_url or code/state is required')
+    throw new Error('callback_url 或 code/state 不能为空')
   }
   const url = new URL(callbackUrl)
   const code = normalizeString(url.searchParams.get('code'))
   const state = normalizeString(url.searchParams.get('state'))
   if (!code || !state) {
-    throw new Error('callback URL must contain code and state')
+    throw new Error('回调 URL 必须包含 code 和 state')
   }
   return { code, state }
 }
@@ -161,9 +162,9 @@ export function shouldRefreshOpenAIOAuthCredentials(credentials: Record<string, 
   return expiresAt - Date.now() < 60_000
 }
 
-async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: string): Promise<OpenAITokenInfo> {
+async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: string, signal?: AbortSignal): Promise<OpenAITokenInfo> {
   const bodyText = new URLSearchParams(form).toString()
-  const response = await performTokenRequest(bodyText, proxyUrl)
+  const response = await performTokenRequest(bodyText, proxyUrl, signal)
 
   const text = response.body
   let payload: Record<string, unknown> = {}
@@ -177,12 +178,12 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
 
   if (response.statusCode < 200 || response.statusCode >= 300) {
     const errorDescription = normalizeString(payload.error_description) || normalizeString(payload.error) || text
-    throw new Error(`OpenAI OAuth token request failed: ${response.statusCode} ${errorDescription}`)
+    throw new Error(`OpenAI OAuth Token 请求失败：HTTP ${response.statusCode} ${errorDescription}`)
   }
 
   const accessToken = normalizeString(payload.access_token)
   if (!accessToken) {
-    throw new Error('OpenAI OAuth token response missing access_token')
+    throw new Error('OpenAI OAuth Token 响应缺少 access_token')
   }
   const expiresIn = typeof payload.expires_in === 'number' ? payload.expires_in : Number(payload.expires_in ?? 0)
   const idToken = normalizeString(payload.id_token)
@@ -205,10 +206,14 @@ async function requestOpenAIToken(form: Record<string, string>, proxyUrl?: strin
   }
 }
 
-async function performTokenRequest(bodyText: string, proxyUrl?: string): Promise<{ statusCode: number; body: string }> {
+async function performTokenRequest(bodyText: string, proxyUrl?: string, signal?: AbortSignal): Promise<{ statusCode: number; body: string }> {
   const resolvedProxyUrl = normalizeString(proxyUrl) || runtimeConfig.oauthProxyUrl
   const agent = resolvedProxyUrl ? createProxyAgent(resolvedProxyUrl) : undefined
   const response = await new Promise<{ statusCode: number; body: string }>((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error('请求已取消'))
+      return
+    }
     const request = httpsRequest(OPENAI_OAUTH_TOKEN_URL, {
       method: 'POST',
       headers: {
@@ -226,8 +231,16 @@ async function performTokenRequest(bodyText: string, proxyUrl?: string): Promise
       })
     })
 
-    request.on('error', reject)
-    request.on('timeout', () => request.destroy(new Error('OpenAI OAuth token request timed out')))
+    const abort = () => request.destroy(new Error('请求已取消'))
+    signal?.addEventListener('abort', abort, { once: true })
+    const cleanupAbortSignal = () => signal?.removeEventListener('abort', abort)
+    request.on('error', (error) => {
+      cleanupAbortSignal()
+      reject(error)
+    })
+    request.on('response', cleanupAbortSignal)
+    request.on('close', cleanupAbortSignal)
+    request.on('timeout', () => request.destroy(new Error('OpenAI OAuth Token 请求超时')))
     request.end(bodyText)
   })
   return response
@@ -241,7 +254,7 @@ export function createProxyAgent(proxyUrl: string): HttpsProxyAgent<string> | So
   if (parsed.protocol === 'socks4:' || parsed.protocol === 'socks4a:' || parsed.protocol === 'socks5:' || parsed.protocol === 'socks5h:') {
     return new SocksProxyAgent(proxyUrl)
   }
-  throw new Error(`Unsupported proxy protocol: ${parsed.protocol}`)
+  throw new Error(`不支持的代理协议：${parsed.protocol}`)
 }
 
 function decodeJwtClaims(token?: string): Record<string, unknown> | undefined {

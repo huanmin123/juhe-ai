@@ -8,13 +8,13 @@ import { getRequestAuthContext, withRequestAuthContext } from './request-context
 export function requireAuth(req: Request, res: Response, next: NextFunction): void {
   const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
   if (!token) {
-    res.status(401).json({ message: 'Not authenticated' })
+    res.status(401).json({ message: '请先登录' })
     return
   }
 
   const session = findSessionByToken(token)
   if (!session) {
-    res.status(401).json({ message: 'Session expired' })
+    res.status(401).json({ message: '登录会话已过期' })
     return
   }
 
@@ -36,7 +36,7 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
 export function requireAdmin(_req: Request, res: Response, next: NextFunction): void {
   const context = getRequestAuthContext()
   if (!context || context.role !== 'admin') {
-    res.status(403).json({ message: 'Admin role required' })
+    res.status(403).json({ message: '需要管理员权限' })
     return
   }
   next()
@@ -45,7 +45,7 @@ export function requireAdmin(_req: Request, res: Response, next: NextFunction): 
 export function forceSelfAccessScope(req: Request, res: Response, next: NextFunction): void {
   const context = getRequestAuthContext()
   if (!context) {
-    res.status(401).json({ message: 'Not authenticated' })
+    res.status(401).json({ message: '请先登录' })
     return
   }
 

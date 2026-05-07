@@ -74,6 +74,7 @@
       @close="closeTestModal"
       @copy-result="copyText"
       @run="runAccountTest"
+      @stop="stopAccountTest"
     />
 
     <AccountEditModal
@@ -135,7 +136,6 @@
 import axios from 'axios'
 import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import type { AccountListSortParam } from '@/api/client'
@@ -208,6 +208,7 @@ const bindingAccount = ref<AccountSummary>()
 const trafficMigrationSourceAccount = ref<AccountSummary>()
 const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
+let accountTestAbortController: AbortController | undefined
 type AccountsPageState = {
   filters: AccountFilters
   pagination: { current: number; pageSize: number }
@@ -231,7 +232,6 @@ const filters = reactive<AccountFilters>({ ...initialPageState.filters })
 const accountPagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
-const router = useRouter()
 
 const form = reactive<AccountFormModel>(defaultForm())
 const bindGroupForm = reactive({ groupId: '' })
@@ -285,6 +285,7 @@ const testModelOptions = computed(() => {
   const models = providerModels.value.length ? providerModels.value.map((item) => item.model) : defaultTestModelOptions
   return [...new Set(models)].map((model) => ({ label: model, value: model }))
 })
+const defaultTestModel = computed(() => testModelOptions.value[0]?.value || 'gpt-5.5')
 
 const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIds.value.includes(account.id)))
 
@@ -457,14 +458,14 @@ function ensureDefaultGroupSelected(providerCode = form.providerCode) {
 
 function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
-  if (account.authorizationUsageAvailable) {
-    items.push({ key: 'authorization-usage', label: '授权用量' })
-  }
   if (canTestAccount(account)) {
     items.push({ key: 'test', label: '测试' })
   }
   if (canUseAccountActions(account)) {
-    items.push({ key: 'migrate-traffic', label: '迁移流量', danger: true })
+    if (isTemporaryAccountStatus(account)) {
+      items.push({ key: 'restore-normal', label: '恢复正常' })
+    }
+    items.push({ key: 'migrate-traffic', label: '迁移流量' })
     items.push({ key: 'toggle-status', label: account.status === 'disabled' ? '启用账户' : '停用账户', danger: account.status !== 'disabled' })
   }
   return items
@@ -868,6 +869,9 @@ async function loadTestModels() {
   testModelsLoading.value = true
   try {
     providerModels.value = await api.providers.models('openai')
+    if (providerModels.value.length && !providerModels.value.some((item) => item.model === testForm.model)) {
+      testForm.model = defaultTestModel.value
+    }
   } catch (error) {
     console.error(error)
     message.warning('测试模型列表加载失败，已使用默认模型')
@@ -883,7 +887,7 @@ async function openTestModal(account: AccountSummary) {
   }
   testingAccount.value = account
   testResult.value = undefined
-  testForm.model = testForm.model || 'gpt-5.5'
+  testForm.model = testForm.model || defaultTestModel.value
   testModalOpen.value = true
   void loadTestModels()
 }
@@ -892,43 +896,62 @@ async function runAccountTest() {
   if (!testingAccount.value || testRunning.value) return
   testResult.value = undefined
   testRunning.value = true
+  const controller = new AbortController()
+  accountTestAbortController = controller
+  const startedAt = Date.now()
+  const account = testingAccount.value
   try {
     const payload = {
       model: testForm.model,
       prompt: testForm.prompt
     }
     const result = isManagementView.value
-      ? await api.accounts.test(testingAccount.value.id, payload, accountScopeParams.value)
-      : await api.myAccounts.test(testingAccount.value.id, payload)
+      ? await api.accounts.test(account.id, payload, accountScopeParams.value, { signal: controller.signal })
+      : await api.myAccounts.test(account.id, payload, { signal: controller.signal })
     testResult.value = result
     if (result.success) {
-      message.success(`${testingAccount.value.name}: ${result.message}${result.tokenRefreshed ? '，并已刷新 token' : ''}`)
+      message.success(`${account.name}: ${result.message}${result.tokenRefreshed ? '，并已刷新 token' : ''}`)
     } else {
-      message.error(`${testingAccount.value.name}: ${result.message}`)
+      message.error(`${account.name}: ${result.message}`)
     }
     await loadData()
   } catch (error) {
+    if (axios.isCancel(error) || (error instanceof DOMException && error.name === 'AbortError')) {
+      message.info(`${account.name}: 已停止测试`)
+      return
+    }
     console.error(error)
     const fallbackMessage = error instanceof Error ? error.message : '测试失败'
     testResult.value = {
-      accountId: testingAccount.value.id,
-      accountName: testingAccount.value.name,
-      providerCode: testingAccount.value.providerCode,
-      type: testingAccount.value.type,
+      accountId: account.id,
+      accountName: account.name,
+      providerCode: account.providerCode,
+      type: account.type,
       success: false,
       message: fallbackMessage,
       model: testForm.model,
-      responseText: fallbackMessage
+      responseText: fallbackMessage,
+      durationMs: Date.now() - startedAt
     }
-    message.error(`${testingAccount.value.name}: 测试失败`)
+    message.error(`${account.name}: 测试失败`)
   } finally {
     testRunning.value = false
+    if (accountTestAbortController === controller) {
+      accountTestAbortController = undefined
+    }
   }
 }
 
 function closeTestModal() {
-  if (testRunning.value) return
+  if (testRunning.value) {
+    stopAccountTest()
+  }
   testModalOpen.value = false
+}
+
+function stopAccountTest() {
+  if (!testRunning.value) return
+  accountTestAbortController?.abort()
 }
 
 async function testAccount(account: AccountSummary) {
@@ -1045,14 +1068,6 @@ async function updateAccountState(account: AccountSummary, payload: Record<strin
 }
 
 async function handleAccountMenu(key: string, account: AccountSummary) {
-  if (key === 'authorization-usage') {
-    const query: Record<string, string> = { accountId: account.id, action: 'authorization-usage' }
-    if (isManagementView.value && account.systemAccountId) {
-      query.systemAccountId = account.systemAccountId
-    }
-    await router.push({ path: isManagementView.value ? '/usage-stats' : '/my-usage-stats', query })
-    return
-  }
   if (key === 'test') {
     await testAccount(account)
     return
@@ -1064,6 +1079,14 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
   if (key === 'toggle-status') {
     const nextStatus = account.status === 'disabled' ? 'active' : 'disabled'
     await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
+    return
+  }
+  if (key === 'restore-normal') {
+    if (!isTemporaryAccountStatus(account)) {
+      message.warning('当前账户不需要恢复')
+      return
+    }
+    await updateAccountState(account, { clearFailureState: true }, '账户已恢复正常')
     return
   }
   if (key === 'migrate-traffic') {

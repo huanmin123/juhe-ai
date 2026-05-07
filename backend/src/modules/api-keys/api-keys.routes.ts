@@ -59,7 +59,7 @@ apiKeysRouter.post('/', (req, res) => {
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = apiKeyCreateSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid API key payload'))
+    res.status(400).json(badRequest('API Key 参数无效'))
     return
   }
   try {
@@ -68,7 +68,7 @@ apiKeysRouter.post('/', (req, res) => {
     clearApiKeyQuotaCache()
     res.status(201).json(ok(apiKey, '明文密钥已保存，列表中可直接查看'))
   } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Invalid API key payload'))
+    res.status(400).json(badRequest(error instanceof Error ? error.message : 'API Key 参数无效'))
   }
 })
 
@@ -80,7 +80,7 @@ apiKeysRouter.patch('/:id', (req, res) => {
   }
   const apiKey = updateApiKey(req.params.id, req.body as Record<string, unknown>, getRequestAccessScope(scopeQuery.data.systemAccountId))
   if (!apiKey) {
-    res.status(404).json({ message: 'API key not found' })
+    res.status(404).json({ message: 'API Key 不存在' })
     return
   }
   clearGatewayRuntimeCache()
@@ -95,7 +95,7 @@ apiKeysRouter.delete('/:id', (req, res) => {
     return
   }
   if (!deleteApiKey(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))) {
-    res.status(404).json({ message: 'API key not found' })
+    res.status(404).json({ message: 'API Key 不存在' })
     return
   }
   clearGatewayRuntimeCache()

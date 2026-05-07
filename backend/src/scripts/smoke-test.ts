@@ -130,10 +130,10 @@ async function main(): Promise<void> {
 
   try {
     await checkHealth()
-    summary.push('health ok')
+    summary.push('健康检查通过')
 
     await loginAsAdmin()
-    summary.push('login ok')
+    summary.push('登录通过')
 
     const settings = await getEnvelope<SystemSettings>('/api/settings')
     assert(!Object.prototype.hasOwnProperty.call(settings, 'defaultErrorPolicyId'), '系统设置不应返回 defaultErrorPolicyId')
@@ -153,7 +153,7 @@ async function main(): Promise<void> {
     assert(typeof settings.auditLogQueueMaxBytesMb === 'number', '系统设置缺少 auditLogQueueMaxBytesMb')
     assert(typeof settings.auditLogActiveCaptureMaxBytesMb === 'number', '系统设置缺少 auditLogActiveCaptureMaxBytesMb')
     assert(typeof settings.auditLogRetentionDays === 'number', '系统设置缺少 auditLogRetentionDays')
-    summary.push('settings ok')
+    summary.push('系统设置检查通过')
 
     const accounts = await getEnvelope<AccountSummary[]>('/api/accounts')
     assert(accounts.length > 0, '账户列表为空')
@@ -166,8 +166,8 @@ async function main(): Promise<void> {
     resourceState.accountId = targetAccount.id
     resourceState.ownerSystemAccountId = targetAccount.ownerSystemAccountId
     resourceState.originalGroupId = targetAccount.boundGroupId
-    summary.push(`account ok: ${targetAccount.name}`)
-    summary.push(`account test ok: ${accountTest.message}${accountTest.proxyUrl ? ' proxy=configured' : ''}`)
+    summary.push(`账户检查通过：${targetAccount.name}`)
+    summary.push(`账户测试通过：${accountTest.message}${accountTest.proxyUrl ? '，代理已配置' : ''}`)
 
     const gatewayKey = await createTemporaryGatewayKeyForAccount(targetAccount, resourceState)
     const models = await requestJson<Record<string, unknown>>('/v1/models', {
@@ -175,8 +175,8 @@ async function main(): Promise<void> {
     }, gatewayKeyTestTimeoutMs)
     assert(models.object === 'list', '/v1/models 未返回 list')
     assert(Array.isArray(models.data), '/v1/models 未返回 data 数组')
-    summary.push(`temporary gateway key ok: ${gatewayKey.name}`)
-    summary.push(`/v1/models ok: ${(models.data as unknown[]).length} models`)
+    summary.push(`临时网关 API Key 检查通过：${gatewayKey.name}`)
+    summary.push(`/v1/models 检查通过：${(models.data as unknown[]).length} 个模型`)
 
     if (targetAccount.type === 'oauth') {
       const streamText = await requestText('/v1/responses', {
@@ -190,7 +190,7 @@ async function main(): Promise<void> {
       assert(streamText.includes('response.completed'), 'OAuth 流式 responses 未包含 response.completed')
       assert(!streamText.includes('response.failed'), 'OAuth 流式 responses 包含 response.failed')
       assert(!streamText.includes('response.incomplete'), 'OAuth 流式 responses 包含 response.incomplete')
-      summary.push('oauth stream responses ok')
+      summary.push('OAuth 流式 responses 检查通过')
     } else {
       const responsePayload = await requestJson<ResponsePayload>('/v1/responses', {
         method: 'POST',
@@ -200,10 +200,10 @@ async function main(): Promise<void> {
         },
         body: JSON.stringify(createApiKeyResponsesPayload(false))
       }, streamRequestTimeoutMs)
-      assert(responsePayload.status === 'completed', `非流式 responses 状态异常：${responsePayload.status ?? 'unknown'}`)
+      assert(responsePayload.status === 'completed', `非流式 responses 状态异常：${responsePayload.status ?? '未知'}`)
       assert(typeof responsePayload.usage?.input_tokens === 'number', '非流式 responses 未返回 input_tokens')
       assert(typeof responsePayload.usage?.output_tokens === 'number', '非流式 responses 未返回 output_tokens')
-      summary.push(`responses ok: ${responsePayload.usage.input_tokens}+${responsePayload.usage.output_tokens} tokens`)
+      summary.push(`非流式 responses 检查通过：${responsePayload.usage.input_tokens}+${responsePayload.usage.output_tokens} tokens`)
 
       const streamText = await requestText('/v1/responses', {
         method: 'POST',
@@ -215,7 +215,7 @@ async function main(): Promise<void> {
       }, streamRequestTimeoutMs)
       assert(streamText.includes('response.completed'), '流式 responses 未包含 response.completed')
       assert(!streamText.includes('response.failed'), '流式 responses 包含 response.failed')
-      summary.push('stream responses ok')
+      summary.push('流式 responses 检查通过')
     }
 
     const usageRecords = await waitForSmokeUsageRecords(resourceState)
@@ -223,15 +223,15 @@ async function main(): Promise<void> {
     const responseRecords = usageRecords.filter((record) => record.endpoint === 'POST /v1/responses' && record.success)
     assert(responseRecords.length > 0, '找不到本次 /v1/responses 接口使用记录')
     assert(responseRecords.some((record) => typeof record.inputTokens === 'number' && typeof record.outputTokens === 'number' && typeof record.costUsd === 'number'), '找不到本次 responses token/cost 使用记录')
-    summary.push('usage records ok')
+    summary.push('使用记录检查通过')
 
     const auditRuntime = await getEnvelope<Record<string, unknown>>('/api/audit-logs/runtime')
     assert(typeof auditRuntime.queueLength === 'number', '审计运行态缺少 queueLength')
     assert(typeof auditRuntime.activeCaptureCount === 'number', '审计运行态缺少 activeCaptureCount')
     assert(typeof auditRuntime.settings === 'object' && auditRuntime.settings !== null, '审计运行态缺少 settings')
-    summary.push('audit runtime ok')
+    summary.push('审计运行态检查通过')
 
-    console.log('\njuhe-ai smoke test passed')
+    console.log('\njuhe-ai 烟测通过')
     for (const item of summary) {
       console.log(`- ${item}`)
     }
@@ -343,7 +343,7 @@ async function ignoreCleanupError(action: () => Promise<unknown>): Promise<void>
   try {
     await action()
   } catch (error) {
-    console.warn(`smoke cleanup warning: ${error instanceof Error ? error.message : String(error)}`)
+    console.warn(`烟测清理警告：${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
@@ -358,7 +358,7 @@ async function testNamedAccount(accounts: AccountSummary[], name: string): Promi
   assertAccountCanBeTested(account, `目标账户不可用于烟测：${name}`)
 
   const test = await testAccount(account)
-  assert(test.success, `账户测试失败：${test.message} status=${test.statusCode ?? 'unknown'}`)
+  assert(test.success, `账户测试失败：${test.message}，状态码=${test.statusCode ?? '未知'}`)
   return { account, test }
 }
 
@@ -368,12 +368,12 @@ async function selectFirstUsableOpenAIAccount(accounts: AccountSummary[]): Promi
 
   const failures: string[] = []
   for (const account of candidates) {
-    console.log(`smoke: testing account ${account.name}`)
+    console.log(`烟测：正在测试账户 ${account.name}`)
     const test = await testAccount(account)
     if (test.success) {
       return { account, test }
     }
-    failures.push(`${account.name}: ${test.message}${test.statusCode ? ` status=${test.statusCode}` : ''}`)
+    failures.push(`${account.name}: ${test.message}${test.statusCode ? `，状态码=${test.statusCode}` : ''}`)
   }
 
   throw new Error(`找不到可用于烟测的 OpenAI 账户；已测试 ${candidates.length} 个启用账户均失败：${failures.join('；')}`)
@@ -536,7 +536,7 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 main().catch((error) => {
-  console.error('\njuhe-ai smoke test failed')
+  console.error('\njuhe-ai 烟测失败')
   console.error(error instanceof Error ? error.message : error)
   process.exitCode = 1
 })

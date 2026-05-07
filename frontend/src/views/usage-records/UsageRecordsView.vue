@@ -148,7 +148,7 @@ type UsageRecordsPageState = {
   systemAccountFilter: string
 }
 
-const pageSize = 100
+const pageSize = 20
 const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
   accountNameFilter: '',
   pagination: { current: 1, pageSize },
@@ -157,7 +157,7 @@ const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
   statusCodeFilter: '',
   systemAccountFilter: allSystemAccountsValue
 })
-const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState)
+const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 2 })
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)

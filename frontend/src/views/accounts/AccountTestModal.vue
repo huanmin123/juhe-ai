@@ -4,8 +4,8 @@
     title="测试账号连接"
     width="620px"
     :footer="null"
-    :closable="!running"
-    :keyboard="!running"
+    :closable="true"
+    :keyboard="true"
     :mask-closable="!running"
     @cancel="close"
     @update:open="handleOpenUpdate"
@@ -59,8 +59,9 @@
         </div>
         <a-space>
           <a-button :disabled="!result" @click="$emit('copy-result', resultJson)">复制完整结果</a-button>
-          <a-button @click="close">关闭</a-button>
-          <a-button type="primary" :loading="running" @click="$emit('run')">{{ result ? '重试' : '开始测试' }}</a-button>
+          <a-button danger v-if="running" @click="$emit('stop')">停止测试</a-button>
+          <a-button @click="close">{{ running ? '停止并关闭' : '关闭' }}</a-button>
+          <a-button v-if="!running" type="primary" @click="$emit('run')">{{ result ? '重试' : '开始测试' }}</a-button>
         </a-space>
       </div>
     </div>
@@ -75,6 +76,7 @@ import {
   accountStatusColor,
   accountStatusText,
   accountTypeText,
+  formatAccountTestDuration,
   formatErrorPolicyAction,
   formatTestTerminalResult,
   statusText
@@ -100,6 +102,7 @@ const emit = defineEmits<{
   (event: 'close'): void
   (event: 'copy-result', value: string): void
   (event: 'run'): void
+  (event: 'stop'): void
   (event: 'update:model', value: string): void
   (event: 'update:open', value: boolean): void
 }>()
@@ -144,17 +147,20 @@ const outputLines = computed<TestOutputLine[]>(() => {
     lines.push({ text: `账号状态：${status}`, tone: props.result.accountStatusChanged ? 'warning' : 'muted' })
   }
   lines.push({ text: '', tone: 'divider' })
-  lines.push({ text: props.result.success ? '✓ 测试完成！' : '✕ 测试失败！', tone: props.result.success ? 'success' : 'error' })
+  const completionText = props.result.success ? '✓ 测试完成！' : '✕ 测试失败！'
+  lines.push({ text: `${completionText}  总耗时：${formatAccountTestDuration(props.result.durationMs)}`, tone: props.result.success ? 'success' : 'error' })
   return lines
 })
 
 function close() {
-  if (props.running) return
   emit('close')
 }
 
 function handleOpenUpdate(value: boolean) {
-  if (!value && props.running) return
+  if (!value) {
+    close()
+    return
+  }
   emit('update:open', value)
 }
 </script>

@@ -92,8 +92,8 @@ export function applyAccountErrorHandling(
   }
 
   const reason = statusCode !== undefined
-    ? 'Unhandled upstream status ' + statusCode
-    : 'Unhandled upstream exception: ' + (input.errorMessage ?? 'request failed')
+    ? '未配置处理策略的上游状态码 ' + statusCode
+    : '未配置处理策略的上游异常：' + (input.errorMessage ?? '请求失败')
   const updated = markDefaultTemporaryUnschedulable(account, settings, reason)
   return {
     action: 'default_cooldown',
@@ -194,8 +194,8 @@ export function parseErrorPayload(text: string, headers: Headers): Record<string
 
 function accountErrorPolicyReason(statusCode: number, decision: AccountErrorPolicyDecision): string {
   return decision.ruleName
-    ? 'Error policy matched: ' + decision.ruleName + ' (HTTP ' + statusCode + ')'
-    : 'Error policy matched HTTP ' + statusCode
+    ? '命中错误处理策略：' + decision.ruleName + '（HTTP ' + statusCode + '）'
+    : '命中错误处理策略 HTTP ' + statusCode
 }
 
 function accountErrorRules(credentials: Record<string, unknown>): Array<Record<string, unknown>> {

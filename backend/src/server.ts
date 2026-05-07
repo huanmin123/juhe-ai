@@ -73,7 +73,7 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
     : Number.isInteger(error.status)
       ? Number(error.status)
       : 400
-  const message = statusCode === 413 ? 'Request body is too large' : 'Invalid gateway request body'
+  const message = statusCode === 413 ? '请求体过大' : '网关请求体无效'
   const traceId = getTraceId() ?? 'unknown'
   recordDroppedAuditCapture({
     traceId,
@@ -93,7 +93,7 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
     receivedBytes: error.received,
     bodyLength: error.length,
     bodyLimit: error.limit
-  }, 'Gateway raw body rejected')
+  }, '网关原始请求体被拒绝')
   res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 400).json({
     error: {
       message,
@@ -169,7 +169,7 @@ if (existsSync(frontendIndexPath)) {
 }
 
 app.use((_req, res) => {
-  res.status(404).json({ message: 'Not found' })
+  res.status(404).json({ message: '资源不存在' })
 })
 
 app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
@@ -180,14 +180,14 @@ app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     method: req.method,
     path: req.path,
     originalUrl: sanitizeUrlForLog(req.originalUrl)
-  }, 'Unhandled HTTP request error')
+  }, '未处理的 HTTP 请求错误')
 
   if (res.headersSent) {
     res.end()
     return
   }
 
-  res.status(500).json({ message: 'Internal server error' })
+  res.status(500).json({ message: '服务器内部错误' })
 })
 
 const server = app.listen(port, host, () => {
@@ -196,7 +196,7 @@ const server = app.listen(port, host, () => {
     host,
     port,
     logDirectory: runtimeConfig.log.fileEnabled ? runtimeConfig.log.directory : undefined
-  }, `juhe-ai backend listening on http://${host}:${port}`)
+  }, `juhe-ai 后端已监听 http://${host}:${port}`)
   startBackgroundWorkerSupervisor()
 })
 
@@ -207,6 +207,6 @@ server.on('error', (error: NodeJS.ErrnoException) => {
     host,
     port,
     code: error.code
-  }, 'Backend server failed to listen')
+  }, '后端服务监听失败')
   process.exit(1)
 })

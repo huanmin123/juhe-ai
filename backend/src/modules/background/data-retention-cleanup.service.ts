@@ -85,11 +85,11 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       retention,
       batchSize,
       maxBatches
-    }, 'Data retention cleanup completed')
+    }, '数据保留清理完成')
 
     return result
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'data_retention_cleanup_failed' }), 'Data retention cleanup failed')
+    logger.error(errorLogFields(error, { event: 'data_retention_cleanup_failed' }), '数据保留清理失败')
     throw error
   } finally {
     cleanupRunning = false

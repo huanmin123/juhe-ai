@@ -117,29 +117,29 @@ accountsRouter.post('/', (req, res) => {
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = accountCreateSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid account payload'))
+    res.status(400).json(badRequest('账户参数无效'))
     return
   }
 
   const providerCode = parsed.data.providerCode?.trim() || 'openai'
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
-    res.status(400).json(badRequest(`Unsupported provider: ${providerCode}`))
+    res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
     return
   }
   if (!provider.enabled) {
-    res.status(400).json(badRequest(`Provider is disabled: ${providerCode}`))
+    res.status(400).json(badRequest(`供应商已停用：${providerCode}`))
     return
   }
   if (!provider.accountTypes.includes(parsed.data.type)) {
-    res.status(400).json(badRequest(`Provider ${providerCode} does not support account type ${parsed.data.type}`))
+    res.status(400).json(badRequest(`供应商 ${providerCode} 不支持账户类型 ${parsed.data.type}`))
     return
   }
   const groupId = typeof parsed.data.groupId === 'string' && parsed.data.groupId ? parsed.data.groupId : undefined
   if (groupId) {
     const group = listGroups(requestAccess).find((item) => item.id === groupId)
     if (!group || group.providerCode !== providerCode) {
-      res.status(400).json(badRequest('Invalid account group'))
+      res.status(400).json(badRequest('账户分组无效'))
       return
     }
   }
@@ -160,7 +160,7 @@ accountsRouter.post('/', (req, res) => {
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Invalid account payload'))
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '账户参数无效'))
   }
 })
 
@@ -231,18 +231,18 @@ accountsRouter.patch('/:id', (req, res) => {
   const body = req.body as Record<string, unknown>
   const existingAccount = findAccountForTest(req.params.id, requestAccess)
   if (!existingAccount) {
-    res.status(404).json({ message: 'Account not found' })
+    res.status(404).json({ message: '账户不存在' })
     return
   }
   const hasGroupId = Object.prototype.hasOwnProperty.call(body, 'groupId')
   if (hasGroupId && (typeof body.groupId !== 'string' || !body.groupId)) {
-    res.status(400).json(badRequest('Account group is required'))
+    res.status(400).json(badRequest('账户分组不能为空'))
     return
   }
   if (hasGroupId) {
     const group = listGroups(requestAccess).find((item) => item.id === body.groupId)
     if (!group || group.providerCode !== existingAccount.providerCode) {
-      res.status(400).json(badRequest('Invalid account group'))
+      res.status(400).json(badRequest('账户分组无效'))
       return
     }
   }
@@ -261,17 +261,17 @@ accountsRouter.patch('/:id', (req, res) => {
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Update account failed'))
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '更新账户失败'))
     return
   }
   if (!account) {
-    res.status(404).json({ message: 'Account not found' })
+    res.status(404).json({ message: '账户不存在' })
     return
   }
   if (hasGroupId) {
     const nextAccount = setAccountGroup(account.id, body.groupId as string, requestAccess)
     if (!nextAccount) {
-      res.status(400).json(badRequest('Invalid account group'))
+      res.status(400).json(badRequest('账户分组无效'))
       return
     }
   }
@@ -288,21 +288,38 @@ accountsRouter.post('/:id/test', async (req, res) => {
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = accountTestSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid account test payload'))
+    res.status(400).json(badRequest('账户测试参数无效'))
     return
   }
   const account = findAccountForTest(req.params.id, requestAccess)
   if (!account) {
-    res.status(404).json({ message: 'Account not found' })
+    res.status(404).json({ message: '账户不存在' })
     return
   }
   if (account.providerCode !== 'openai') {
-    res.status(400).json({ message: 'Only OpenAI accounts can be tested in phase 1' })
+    res.status(400).json({ message: '第一阶段仅支持测试 OpenAI 账户' })
     return
   }
 
-  const result = await testOpenAIAccount(account, parsed.data ?? {})
-  res.json(ok(result))
+  const abortController = new AbortController()
+  req.once('aborted', () => abortController.abort())
+  res.once('close', () => {
+    if (!res.writableEnded) {
+      abortController.abort()
+    }
+  })
+  try {
+    const result = await testOpenAIAccount(account, { ...(parsed.data ?? {}), signal: abortController.signal })
+    if (abortController.signal.aborted || res.writableEnded) {
+      return
+    }
+    res.json(ok(result))
+  } catch (error) {
+    if (abortController.signal.aborted || res.writableEnded) {
+      return
+    }
+    throw error
+  }
 })
 
 accountsRouter.delete('/:id', (req, res) => {
@@ -313,7 +330,7 @@ accountsRouter.delete('/:id', (req, res) => {
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   if (!deleteAccount(req.params.id, requestAccess)) {
-    res.status(404).json({ message: 'Account not found' })
+    res.status(404).json({ message: '账户不存在' })
     return
   }
   clearGatewayRuntimeCache()

@@ -34,13 +34,13 @@ systemAccountsRouter.get('/', requireAdmin, (_req, res) => {
 systemAccountsRouter.post('/', requireAdmin, (req, res) => {
   const parsed = createSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid system account payload'))
+    res.status(400).json(badRequest('系统账户参数无效'))
     return
   }
   try {
     res.status(201).json(ok(createSystemAccount(parsed.data)))
   } catch (error) {
-    res.status(409).json({ message: error instanceof Error ? error.message : 'Create system account failed' })
+    res.status(409).json({ message: error instanceof Error ? error.message : '创建系统账户失败' })
   }
 })
 
@@ -51,13 +51,13 @@ systemAccountsRouter.patch('/:id', requireAdmin, (req, res) => {
   }
   const parsed = updateSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid system account payload'))
+    res.status(400).json(badRequest('系统账户参数无效'))
     return
   }
   try {
     const account = updateSystemAccount(req.params.id, parsed.data)
     if (!account) {
-      res.status(404).json({ message: 'System account not found' })
+      res.status(404).json({ message: '系统账户不存在' })
       return
     }
     if (parsed.data.status === 'disabled' || parsed.data.password) {
@@ -69,6 +69,6 @@ systemAccountsRouter.patch('/:id', requireAdmin, (req, res) => {
     }
     res.json(ok(account))
   } catch (error) {
-    res.status(409).json({ message: error instanceof Error ? error.message : 'Update system account failed' })
+    res.status(409).json({ message: error instanceof Error ? error.message : '更新系统账户失败' })
   }
 })

@@ -30,6 +30,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 使用 `PRAGMA journal_mode = WAL`
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免主进程和 background worker 短事务重叠时立即返回 `database is locked`
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
+- 客户请求链路中的高频 SQLite 读写优先通过独立本地 DB service 进程异步完成，降低 Web/API/网关主进程被同步 `DatabaseSync` 调用短暂阻塞的风险；DB service 不改变 SQLite 单写者模型。
 - 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 原始审计日志使用独立表保存完整链路原文；网关请求链路只能终态入队，后台批量写库，不能同步写审计表
 - 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；搜索能力使用 SQLite 索引表 `runtime_logs` 和 FTS5 表 `runtime_log_search`，不在查询时扫描日志文件。
@@ -106,6 +107,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 所有定时和批处理任务都必须在独立 background worker 进程内调度和执行，不能在 Web/API 主进程里用 `setInterval`、cron 或调度框架直接执行任务函数。
 - 调度框架只负责 worker 进程内的注册、不可重入、错误隔离和触发时机；worker 不能通过 IPC 回到主进程执行统计、清理、刷新或批量落库。
 - 主进程可以把请求链路产生的待处理数据投递给 worker，但 IPC 或等价通道必须有上限，满载时按任务安全等级丢弃或降级，不能阻塞正常请求。
+- DB service 只负责数据库请求隔离，不负责后台定时调度；后台 worker 仍负责统计、审计、运行日志索引、数据保留、代理检测和 OAuth 后台刷新。Web 主进程、background worker 和 DB service 都必须使用短事务和 `busy_timeout` 控制 SQLite 写锁等待。
 - 统计 worker 每 1 分钟按 `system_account_id` 和 `(created_at, id)` 游标增量读取 `usage_records` 并 upsert 到聚合表。
 - 用量统计菜单的多日窗口只读取 `usage_stats_daily` 的日累计行并按窗口相加：近 1 天、近 3 天、近一周、近半月和近一月分别对应最近 1 / 3 / 7 / 15 / 30 个自然日；总用量读取 `usage_stats_totals`。前端不能把 `n` 天作为查询条件去实时回扫 `usage_records`。
 - 统计概览属于监控窗口，不使用 0 点重置的今日口径；默认展示近一天，并支持近一天、近三天、近一周和近一月筛选。概览摘要、趋势、模型分布和错误 Top 10 均从小时级缓存表按窗口相加，不读取 `usage_stats_totals`，也不临时回扫 `usage_records`。

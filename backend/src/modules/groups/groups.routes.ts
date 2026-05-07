@@ -29,17 +29,17 @@ groupsRouter.post('/', (req, res) => {
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = groupSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid group payload'))
+    res.status(400).json(badRequest('分组参数无效'))
     return
   }
   const providerCode = parsed.data.providerCode?.trim() || 'openai'
   const provider = listProviders().find((item) => item.code === providerCode)
   if (!provider) {
-    res.status(400).json(badRequest(`Unsupported provider: ${providerCode}`))
+    res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
     return
   }
   if (!provider.enabled) {
-    res.status(400).json(badRequest(`Provider is disabled: ${providerCode}`))
+    res.status(400).json(badRequest(`供应商已停用：${providerCode}`))
     return
   }
   const group = createGroup({ ...parsed.data, providerCode }, requestAccess)
@@ -60,11 +60,11 @@ groupsRouter.patch('/:id', (req, res) => {
   if (providerCode) {
     const provider = listProviders().find((item) => item.code === providerCode)
     if (!provider) {
-      res.status(400).json(badRequest(`Unsupported provider: ${providerCode}`))
+      res.status(400).json(badRequest(`不支持的供应商：${providerCode}`))
       return
     }
     if (!provider.enabled) {
-      res.status(400).json(badRequest(`Provider is disabled: ${providerCode}`))
+      res.status(400).json(badRequest(`供应商已停用：${providerCode}`))
       return
     }
   }
@@ -76,11 +76,11 @@ groupsRouter.patch('/:id', (req, res) => {
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Update group failed'))
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '更新分组失败'))
     return
   }
   if (!group) {
-    res.status(404).json({ message: 'Group not found' })
+    res.status(404).json({ message: '分组不存在' })
     return
   }
   clearGatewayRuntimeCache()
@@ -96,12 +96,12 @@ groupsRouter.delete('/:id', (req, res) => {
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   try {
     if (!deleteGroup(req.params.id, requestAccess)) {
-      res.status(404).json({ message: 'Group not found' })
+      res.status(404).json({ message: '分组不存在' })
       return
     }
     clearGatewayRuntimeCache()
     res.status(204).send()
   } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Delete group failed'))
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '删除分组失败'))
   }
 })

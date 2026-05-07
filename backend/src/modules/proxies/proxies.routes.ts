@@ -31,7 +31,7 @@ proxiesRouter.get('/', requireAdmin, (_req, res) => {
 proxiesRouter.post('/', requireAdmin, (req, res) => {
   const parsed = proxySchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid proxy payload'))
+    res.status(400).json(badRequest('代理参数无效'))
     return
   }
   const proxy = createProxy(parsed.data)
@@ -42,7 +42,7 @@ proxiesRouter.post('/', requireAdmin, (req, res) => {
 proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
   const proxy = updateProxy(req.params.id, req.body as Record<string, unknown>)
   if (!proxy) {
-    res.status(404).json({ message: 'Proxy not found' })
+    res.status(404).json({ message: '代理不存在' })
     return
   }
   clearGatewayRuntimeCache()
@@ -53,7 +53,7 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
   try {
     const report = await testProxyById(req.params.id)
     if (!report) {
-      res.status(404).json({ message: 'Proxy not found' })
+      res.status(404).json({ message: '代理不存在' })
       return
     }
     res.json(ok(report))
@@ -65,7 +65,7 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
 proxiesRouter.delete('/:id', requireAdmin, (req, res) => {
   try {
     if (!deleteProxy(req.params.id)) {
-      res.status(404).json({ message: 'Proxy not found' })
+      res.status(404).json({ message: '代理不存在' })
       return
     }
     clearGatewayRuntimeCache()
@@ -75,6 +75,6 @@ proxiesRouter.delete('/:id', requireAdmin, (req, res) => {
       res.status(409).json({ message: error.message })
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'Delete proxy failed'))
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '删除代理失败'))
   }
 })

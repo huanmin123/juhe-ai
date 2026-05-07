@@ -17,7 +17,7 @@ export function encryptJson(value: unknown): string {
 export function decryptJson<T = unknown>(value: string): T {
   const [version, ivText, tagText, encryptedText] = value.split(':')
   if (version !== 'v1' || !ivText || !tagText || !encryptedText) {
-    throw new Error('Unsupported encrypted payload format')
+    throw new Error('加密数据格式不受支持')
   }
   const decipher = createDecipheriv('aes-256-gcm', key, Buffer.from(ivText, 'base64url'))
   decipher.setAuthTag(Buffer.from(tagText, 'base64url'))

@@ -43,7 +43,15 @@ function queryAccountRowsForAccess(
   }
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return queryRows(`
-        SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id
+        SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+          account_quality.quality_score,
+          account_quality.quality_state,
+          account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms,
+          account_quality.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
+          account_quality.recent_request_count AS quality_recent_request_count,
+          account_quality.success_rate AS quality_recent_success_rate,
+          account_quality.last_probe_at AS quality_last_probe_at,
+          account_quality.updated_at AS quality_updated_at
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
@@ -60,11 +68,21 @@ function queryAccountRowsForAccess(
           ON authorization_usage.system_account_id = account_rows.system_account_id
           AND authorization_usage.scope_type = 'account_authorization'
           AND authorization_usage.scope_id = account_rows.authorization_id
+        LEFT JOIN account_quality_scores account_quality
+          ON account_quality.account_id = account_rows.id
       `)
   }
   if (!viewerSystemAccountId) {
     return queryRows(`
-        SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id
+        SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+          account_quality.quality_score,
+          account_quality.quality_state,
+          account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms,
+          account_quality.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
+          account_quality.recent_request_count AS quality_recent_request_count,
+          account_quality.success_rate AS quality_recent_success_rate,
+          account_quality.last_probe_at AS quality_last_probe_at,
+          account_quality.updated_at AS quality_updated_at
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
@@ -81,10 +99,20 @@ function queryAccountRowsForAccess(
           ON authorization_usage.system_account_id = account_rows.system_account_id
           AND authorization_usage.scope_type = 'account_authorization'
           AND authorization_usage.scope_id = account_rows.authorization_id
+        LEFT JOIN account_quality_scores account_quality
+          ON account_quality.account_id = account_rows.id
       `)
   }
   return queryRows(`
-      SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id
+      SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+        account_quality.quality_score,
+        account_quality.quality_state,
+        account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms,
+        account_quality.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
+        account_quality.recent_request_count AS quality_recent_request_count,
+        account_quality.success_rate AS quality_recent_success_rate,
+        account_quality.last_probe_at AS quality_last_probe_at,
+        account_quality.updated_at AS quality_updated_at
       FROM (
         SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM accounts
@@ -111,6 +139,8 @@ function queryAccountRowsForAccess(
         ON authorization_usage.system_account_id = account_rows.system_account_id
         AND authorization_usage.scope_type = 'account_authorization'
         AND authorization_usage.scope_id = account_rows.authorization_id
+      LEFT JOIN account_quality_scores account_quality
+        ON account_quality.account_id = account_rows.id
     `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId])
 }
 

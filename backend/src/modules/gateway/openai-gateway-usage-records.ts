@@ -79,7 +79,7 @@ export function recordFailedUpstreamAttempt(
     : {}
   const errorMessage = input.errorMessage
     ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
-    ?? (typeof input.statusCode === 'number' ? `Upstream returned HTTP ${input.statusCode}` : 'Upstream request failed')
+    ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
 
   getRequestLogger().warn({
     event: 'gateway_upstream_attempt_failed',
@@ -93,7 +93,7 @@ export function recordFailedUpstreamAttempt(
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
     endpoint: usageContext.endpoint
-  }, 'Gateway upstream attempt failed')
+  }, '网关上游尝试失败')
 
   enqueueUsageRecord({
     traceId: usageContext.traceId,
@@ -141,7 +141,7 @@ export function recordGatewayFailure(
     apiKeyId: usageContext.apiKeyId,
     groupId: usageContext.groupId,
     endpoint: usageContext.endpoint
-  }, 'Gateway request failed')
+  }, '网关请求失败')
 
   enqueueUsageRecord({
     traceId: usageContext.traceId,

@@ -22,7 +22,7 @@ const gatewayModelsPath = '/v1/models'
 
 export async function testOpenAIAccount(
   account: AccountSummary,
-  input: { model?: string; prompt?: string; includeUnavailable?: boolean } = {}
+  input: { model?: string; prompt?: string; includeUnavailable?: boolean; signal?: AbortSignal } = {}
 ): Promise<AccountTestResult> {
   const model = stringValue(input.model) || defaultTestModel
   const prompt = stringValue(input.prompt) || defaultTestPrompt
@@ -33,8 +33,8 @@ export async function testOpenAIAccount(
   const startedAt = Date.now()
 
   try {
-    const resolved = resolveAccountTestCandidate(account, shouldIncludeUnavailableAccount(account, input.includeUnavailable))
-    const request = createGatewayTestRequest(requestBody, requestBodyText, account.type === 'oauth')
+    const resolved = resolveAccountTestCandidate(account)
+    const request = createGatewayTestRequest(requestBody, requestBodyText, account.type === 'oauth', input.signal)
     const response = new MemoryGatewayResponse()
     const traceId = `acctest_${Date.now()}_${randomUUID()}`
     const context: RequestContext = {
@@ -55,10 +55,11 @@ export async function testOpenAIAccount(
         groupId: resolved.groupId
       },
       candidateAccounts: [resolved.account],
-      disableSessionAffinity: true
+      disableSessionAffinity: true,
+      exposeUpstreamDiagnostics: true
     })))
 
-    const finalAccount = findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { includeUnavailable: true }) ?? resolved.account
+    const finalAccount = findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
     const responseText = response.bodyText()
     const upstreamMessage = parseUpstreamMessage(responseText)
     const streamFailureMessage = parseOpenAIStreamFailureMessage(responseText)
@@ -72,7 +73,7 @@ export async function testOpenAIAccount(
       type: account.type,
       success,
       statusCode: response.statusCode,
-      message: success ? 'OpenAI Responses 测试通过' : proxyFailureMessage || streamFailureMessage || upstreamMessage || `API returned ${response.statusCode}`,
+      message: success ? 'OpenAI Responses 测试通过' : proxyFailureMessage || streamFailureMessage || upstreamMessage || `API 返回 HTTP ${response.statusCode}`,
       model,
       requestUrl,
       requestBody,
@@ -113,11 +114,7 @@ function accountTestProxyMarker(account: AccountSummary, resolved: OpenAIAccount
   return account.proxyProfileId || resolved.proxyUrl || resolved.proxyProfileUnavailable ? '[configured]' : undefined
 }
 
-function shouldIncludeUnavailableAccount(account: AccountSummary, explicit?: boolean): boolean {
-  return explicit === true || account.status === 'rate_limited' || account.status === 'temporary_unavailable'
-}
-
-function resolveAccountTestCandidate(account: AccountSummary, includeUnavailable: boolean): {
+function resolveAccountTestCandidate(account: AccountSummary): {
   systemAccountId: string
   groupId: string
   account: OpenAIAccountSecret
@@ -127,9 +124,9 @@ function resolveAccountTestCandidate(account: AccountSummary, includeUnavailable
   if (!groupId) {
     throw new Error('账户未绑定可用分组，无法按客户真实链路测试')
   }
-  const candidate = findOpenAIAccountForGroup(groupId, account.id, systemAccountId, { includeUnavailable })
+  const candidate = findOpenAIAccountForGroup(groupId, account.id, systemAccountId, { ignoreAvailability: true })
   if (!candidate) {
-    throw new Error(includeUnavailable ? '账户不在当前分组或凭据不可用，无法按网关链路复测' : '账户当前不可调度或不在当前分组，无法按客户真实链路测试')
+    throw new Error('账户不在当前分组或凭据不可用，无法执行网关测试')
   }
   return { systemAccountId, groupId, account: candidate }
 }
@@ -138,7 +135,7 @@ function authorizedCallerSystemAccountId(account: AccountSummary): string | unde
   return account.accessType === 'authorized' ? getRequestAuthContext()?.systemAccountId : undefined
 }
 
-function createGatewayTestRequest(body: Record<string, unknown>, rawBodyText: string, isOAuth: boolean): Request {
+function createGatewayTestRequest(body: Record<string, unknown>, rawBodyText: string, isOAuth: boolean, signal?: AbortSignal): Request {
   const headers: IncomingHttpHeaders = {
     accept: isOAuth ? 'text/event-stream' : 'application/json, text/event-stream',
     'content-type': 'application/json',
@@ -151,7 +148,8 @@ function createGatewayTestRequest(body: Record<string, unknown>, rawBodyText: st
     headers,
     body,
     rawBody: Buffer.from(rawBodyText),
-    ip: '127.0.0.1'
+    ip: '127.0.0.1',
+    signal
   }).asRequest()
 }
 
@@ -164,8 +162,14 @@ class MemoryGatewayRequest extends EventEmitter {
     body: Record<string, unknown>
     rawBody: Buffer
     ip: string
+    signal?: AbortSignal
   }) {
     super()
+    if (this.input.signal?.aborted) {
+      queueMicrotask(() => this.emit('aborted'))
+    } else {
+      this.input.signal?.addEventListener('abort', () => this.emit('aborted'), { once: true })
+    }
   }
 
   get method(): string {
@@ -198,6 +202,10 @@ class MemoryGatewayRequest extends EventEmitter {
 
   get socket(): { remoteAddress: string } {
     return { remoteAddress: this.input.ip }
+  }
+
+  get aborted(): boolean {
+    return this.input.signal?.aborted ?? false
   }
 
   header(name: string): string | undefined {

@@ -98,6 +98,7 @@ export function applySchema(database: DatabaseSync): void {
       passthrough_enabled INTEGER NOT NULL DEFAULT 1,
       error_policy_id TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
+      super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       schedulable INTEGER NOT NULL DEFAULT 1,
       notes TEXT,
       account_expires_at TEXT,
@@ -244,6 +245,30 @@ export function applySchema(database: DatabaseSync): void {
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, group_id),
       FOREIGN KEY (group_id) REFERENCES groups(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS account_quality_scores (
+      account_id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      quality_score INTEGER NOT NULL DEFAULT 1000000,
+      quality_state TEXT NOT NULL DEFAULT 'unknown',
+      recent_request_count INTEGER NOT NULL DEFAULT 0,
+      recent_success_count INTEGER NOT NULL DEFAULT 0,
+      recent_error_count INTEGER NOT NULL DEFAULT 0,
+      recent_first_token_sample_count INTEGER NOT NULL DEFAULT 0,
+      recent_avg_first_token_ms INTEGER,
+      ewma_first_token_ms INTEGER,
+      success_rate REAL,
+      window_started_at TEXT NOT NULL,
+      window_ended_at TEXT NOT NULL,
+      last_sample_at TEXT,
+      last_probe_at TEXT,
+      last_success_at TEXT,
+      last_error_at TEXT,
+      last_error_message TEXT,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS api_keys (

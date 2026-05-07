@@ -19,8 +19,8 @@ function main(): void {
   }
 
   const durationMs = Date.now() - startedAt
-  console.log(`Usage stats rebuilt: ${totalProcessed} records scanned in ${durationMs}ms`)
-  console.log(`Database: ${runtimeConfig.databasePath}`)
+  console.log(`用量统计已重建：扫描 ${totalProcessed} 条记录，耗时 ${durationMs}ms`)
+  console.log(`数据库：${runtimeConfig.databasePath}`)
 }
 
 function resetUsageStatsCache(database: ReturnType<typeof getDatabase>): void {

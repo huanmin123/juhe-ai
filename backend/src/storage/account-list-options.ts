@@ -1,4 +1,4 @@
-export type AccountListSortField = 'priority' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
+export type AccountListSortField = 'priority' | 'superPriority' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
 export type AccountListSortDirection = 'asc' | 'desc'
 
 export interface AccountListSort {
@@ -31,6 +31,8 @@ export interface NormalizedAccountListOptions {
 
 const accountListSortColumns: Record<AccountListSortField, string> = {
   priority: 'account_rows.priority',
+  superPriority: 'account_rows.super_priority_enabled',
+  qualityScore: 'account_quality.quality_score',
   name: 'account_rows.name COLLATE NOCASE',
   type: 'account_rows.type COLLATE NOCASE',
   providerCode: 'account_rows.provider_code COLLATE NOCASE',
@@ -75,6 +77,9 @@ export function normalizeAccountListOptions(options?: AccountListOptions): Norma
 export function buildAccountListOrderClause(options: Pick<NormalizedAccountListOptions, 'sorts'>): string {
   const orderParts = options.sorts.map((sort) => {
     const direction = sort.order === 'desc' ? 'DESC' : 'ASC'
+    if (sort.field === 'qualityScore') {
+      return `CASE WHEN account_quality.quality_score IS NULL THEN 1 ELSE 0 END ASC, account_quality.quality_score ${direction}`
+    }
     return `${accountListSortColumns[sort.field]} ${direction}`
   })
   return `ORDER BY ${orderParts.join(', ')}`

@@ -22,6 +22,8 @@ export interface AccountFormModel {
   notes: string
 }
 
+export type AccountOAuthAuthorizeForm = Pick<AccountFormModel, 'oauthMode' | 'callbackUrl' | 'refreshToken'>
+
 export interface AccountFilters {
   keyword: string
   type: 'all' | AccountType

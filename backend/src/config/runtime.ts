@@ -32,7 +32,7 @@ export interface RuntimeConfig {
 }
 
 export type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal' | 'silent'
-export type ProcessRole = 'server' | 'worker'
+export type ProcessRole = 'server' | 'worker' | 'db-service'
 
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
@@ -98,7 +98,9 @@ function logLevelConfig(name: string, fallback: LogLevel): LogLevel {
 
 function processRoleConfig(name: string, fallback: ProcessRole): ProcessRole {
   const value = process.env[name]?.trim().toLowerCase() ?? localEnv[name]?.trim().toLowerCase()
-  return value === 'worker' ? 'worker' : fallback
+  if (value === 'worker') return 'worker'
+  if (value === 'db-service') return 'db-service'
+  return fallback
 }
 
 function numberConfig(name: string, fallback: number, min: number, max: number): number {

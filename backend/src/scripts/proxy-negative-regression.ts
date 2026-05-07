@@ -205,7 +205,7 @@ async function main(): Promise<void> {
     await patchEnvelope<ProxyProfileSummary>(baseUrl, `/api/proxies/${proxy.id}`, adminCookie, { enabled: true })
     await deleteNoContent(baseUrl, `/api/proxies/${proxy.id}`, adminCookie, 409)
 
-    console.log('proxy negative regression ok: disabled proxy blocks account test, gateway request fails, no direct upstream hit, in-use proxy cannot be deleted')
+    console.log('代理负向回归通过：停用代理阻止账户测试，网关请求失败，没有直连上游，使用中的代理不能删除')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -364,7 +364,7 @@ function listen(server: http.Server): Promise<void> {
 function serverAddress(server: http.Server): { port: number } {
   const address = server.address()
   if (!address || typeof address === 'string') {
-    throw new Error('server address unavailable')
+    throw new Error('服务地址不可用')
   }
   return { port: address.port }
 }
@@ -387,7 +387,7 @@ function assert(condition: unknown, message: string): asserts condition {
 }
 
 main().catch((error) => {
-  console.error('\nproxy negative regression failed')
+  console.error('\n代理负向回归失败')
   console.error(error instanceof Error ? error.message : error)
   process.exitCode = 1
 })

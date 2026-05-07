@@ -48,7 +48,7 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
       overflowCount,
       droppedUsageRecordCount,
       pendingCount: pendingUsageRecords.length
-    }, 'Usage record queue overflow')
+    }, '使用记录队列已满')
   }
   scheduleUsageRecordFlush(pendingUsageRecords.length >= usageRecordBatchSize ? 0 : usageRecordFlushIntervalMs)
 }
@@ -80,7 +80,7 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
           event: 'usage_record_queue_flush_failed',
           batchSize: batch.length,
           pendingCount: pendingUsageRecords.length
-        }), 'Usage record queue flush failed')
+        }), '使用记录队列写入失败')
         shouldRetry = options.retryOnFailure !== false
         break
       }

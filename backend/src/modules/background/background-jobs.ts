@@ -18,6 +18,7 @@ import {
   refreshGroupAccountStatsCache
 } from '../../storage/usage-stats.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
+import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import {
   isOpenAIOAuthUsageSnapshotDue,
   refreshOpenAIOAuthUsageSnapshot
@@ -46,6 +47,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: 60 * 1000, task: runResourceAuthorizationExpirySweep })
   scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000, task: runSystemMetricsSample })
   scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: settingsNumber('proxyLatencyRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runProxyLatencyRefresh })
+  scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runOpenAIOAuthAccessTokenRefresh })
   scheduler.schedule({ name: 'openai-oauth-usage-refresh', intervalMs: settingsNumber('oauthUsageSnapshotRefreshIntervalSeconds', 300, 60, 86400) * 1000, task: runOpenAIOAuthUsageRefresh })
   scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000, task: runCooldownAccountRetest })
   scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * 60 * 1000, task: runRuntimeLogIndexMaintenance })
@@ -64,7 +66,7 @@ async function runUsageStatsAggregation(): Promise<void> {
       if (processed < batchSize) break
     }
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), 'Usage stats aggregation failed')
+    logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
   } finally {
     usageStatsAggregationRunning = false
   }
@@ -74,7 +76,7 @@ async function runGroupAccountStatsRefresh(): Promise<void> {
   try {
     refreshGroupAccountStatsCache()
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_group_account_stats_refresh_failed' }), 'Group account stats refresh failed')
+    logger.error(errorLogFields(error, { event: 'background_group_account_stats_refresh_failed' }), '分组账户统计刷新失败')
   }
 }
 
@@ -85,7 +87,7 @@ async function runResourceAuthorizationExpirySweep(): Promise<void> {
       clearGatewayRuntimeCache()
     }
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_resource_authorization_expiry_sweep_failed' }), 'Resource authorization expiry sweep failed')
+    logger.error(errorLogFields(error, { event: 'background_resource_authorization_expiry_sweep_failed' }), '资源授权过期扫描失败')
   }
 }
 
@@ -113,7 +115,7 @@ async function runSystemMetricsSample(): Promise<void> {
       statsLagSeconds: latestUsageStatsLagSeconds()
     })
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_system_metrics_sample_failed' }), 'System metrics sample failed')
+    logger.error(errorLogFields(error, { event: 'background_system_metrics_sample_failed' }), '系统指标采样失败')
   }
 }
 
@@ -124,11 +126,25 @@ async function runOpenAIOAuthUsageRefresh(): Promise<void> {
   }
 }
 
+async function runOpenAIOAuthAccessTokenRefresh(): Promise<void> {
+  try {
+    const result = await refreshDueOpenAIOAuthAccessTokens()
+    if (result.refreshed > 0 || result.failed > 0 || result.cooldowned > 0) {
+      logger.info({
+        event: 'background_openai_oauth_access_token_refresh_completed',
+        ...result
+      }, 'OpenAI OAuth Access Token 刷新完成')
+    }
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_openai_oauth_access_token_refresh_failed' }), 'OpenAI OAuth Access Token 刷新失败')
+  }
+}
+
 async function runProxyLatencyRefresh(): Promise<void> {
   try {
     await refreshProxyLatencyBatch(settingsNumber('proxyLatencyRefreshBatchSize', 20, 1, 100))
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_proxy_latency_refresh_failed' }), 'Proxy latency refresh failed')
+    logger.error(errorLogFields(error, { event: 'background_proxy_latency_refresh_failed' }), '代理延迟刷新失败')
   }
 }
 
@@ -141,7 +157,7 @@ async function runCooldownAccountRetest(): Promise<void> {
       logger.warn(errorLogFields(error, {
         event: 'background_cooldown_account_retest_failed',
         accountId: account.id
-      }), 'Cooldown account retest failed')
+      }), '冷却账户复测失败')
     }
   }
 }
@@ -150,7 +166,7 @@ async function runRuntimeLogIndexMaintenance(): Promise<void> {
   try {
     flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_runtime_log_index_maintenance_failed' }), 'Runtime log index maintenance failed')
+    logger.error(errorLogFields(error, { event: 'background_runtime_log_index_maintenance_failed' }), '运行日志索引维护失败')
   }
 }
 

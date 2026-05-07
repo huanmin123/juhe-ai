@@ -55,6 +55,10 @@ interface ListParams {
   systemAccountId?: string
 }
 
+interface RequestControlOptions {
+  signal?: AbortSignal
+}
+
 interface UsageOverviewParams extends ListParams {
   window?: UsageOverviewWindowKey
 }
@@ -203,7 +207,7 @@ export const api = {
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
     bindGroup: (id: string, payload: { groupId: string }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
-    test: (id: string, payload?: { model?: string; prompt?: string }, params?: ListParams) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, timeout: 130000 })),
+    test: (id: string, payload?: { model?: string; prompt?: string }, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, timeout: 130000, signal: options?.signal })),
     delete: (id: string, params?: ListParams) => http.delete(`/accounts/${id}`, { params })
   },
   myAccounts: {
@@ -212,7 +216,7 @@ export const api = {
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
     bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
-    test: (id: string, payload?: { model?: string; prompt?: string }) => unwrap<AccountTestResult>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { timeout: 130000 })),
+    test: (id: string, payload?: { model?: string; prompt?: string }, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { timeout: 130000, signal: options?.signal })),
     delete: (id: string) => http.delete(`/my-accounts/${id}`)
   },
   groups: {

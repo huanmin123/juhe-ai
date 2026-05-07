@@ -139,7 +139,7 @@ export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
           batchSize: batch.length,
           pendingCount: pendingAuditLogs.length,
           pendingBytes
-        }), 'Audit log queue flush failed')
+        }), '审计日志队列写入失败')
         shouldRetry = options.retryOnFailure !== false
         break
       }
@@ -205,7 +205,7 @@ function recordDrop(item: QueuedAuditLog, reason: 'overflow' | 'oversize'): void
     droppedFailureCount,
     droppedOverflowCount,
     droppedOversizeCount
-  }, 'Audit log dropped')
+  }, '审计日志已丢弃')
 }
 
 function scheduleAuditLogFlush(delayMs: number): void {

@@ -11,7 +11,8 @@ const ensuredColumns: Array<{ tableName: string; columnName: string; columnType:
   { tableName: 'api_keys', columnName: 'description', columnType: 'TEXT' },
   { tableName: 'api_keys', columnName: 'quota_limits_json', columnType: 'TEXT' },
   { tableName: 'group_accounts', columnName: 'account_authorization_id', columnType: 'TEXT' },
-  { tableName: 'api_keys', columnName: 'group_authorization_id', columnType: 'TEXT' }
+  { tableName: 'api_keys', columnName: 'group_authorization_id', columnType: 'TEXT' },
+  { tableName: 'accounts', columnName: 'super_priority_enabled', columnType: 'INTEGER NOT NULL DEFAULT 0' }
 ]
 
 const schemaIndexStatements = [
@@ -23,6 +24,8 @@ const schemaIndexStatements = [
   'CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);',
   'CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);',
   'CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);',
+  'CREATE INDEX IF NOT EXISTS idx_accounts_super_priority ON accounts(super_priority_enabled, status, priority);',
+  'CREATE INDEX IF NOT EXISTS idx_account_quality_scores_sort ON account_quality_scores(provider_code, quality_score, quality_state);',
   'CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);',
   'CREATE INDEX IF NOT EXISTS idx_system_teams_status ON system_teams(status, updated_at);',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique ON system_teams(name);',

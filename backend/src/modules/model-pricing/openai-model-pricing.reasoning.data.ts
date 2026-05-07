@@ -1,42 +1,8 @@
-// Generated from https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json at 2026-05-01T17:12:56Z.
+// Curated from official OpenAI model, pricing, and deprecation docs on 2026-05-08.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
-// OpenAI o-series reasoning model prices.
+// Current o-series reasoning model prices.
 
 export const openAIReasoningModelPricingData = [
-  {
-    model: "o1-2024-12-17",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.000015,
-    output_cost_per_token: 0.00006,
-    cache_read_input_token_cost: 0.0000075,
-    supports_prompt_caching: true
-  },
-  {
-    model: "o1-pro",
-    litellm_provider: "openai",
-    mode: "responses",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.00015,
-    output_cost_per_token: 0.0006,
-    supports_prompt_caching: true
-  },
-  {
-    model: "o1-pro-2025-03-19",
-    litellm_provider: "openai",
-    mode: "responses",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.00015,
-    output_cost_per_token: 0.0006,
-    supports_prompt_caching: true
-  },
   {
     model: "o3",
     litellm_provider: "openai",
@@ -54,79 +20,7 @@ export const openAIReasoningModelPricingData = [
     supports_service_tier: true
   },
   {
-    model: "o3-2025-04-16",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.000002,
-    output_cost_per_token: 0.000008,
-    cache_read_input_token_cost: 5e-7,
-    supports_prompt_caching: true,
-    supports_service_tier: true
-  },
-  {
-    model: "o3-deep-research",
-    litellm_provider: "openai",
-    mode: "responses",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.00001,
-    output_cost_per_token: 0.00004,
-    cache_read_input_token_cost: 0.0000025,
-    supports_prompt_caching: true
-  },
-  {
-    model: "o3-deep-research-2025-06-26",
-    litellm_provider: "openai",
-    mode: "responses",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.00001,
-    output_cost_per_token: 0.00004,
-    cache_read_input_token_cost: 0.0000025,
-    supports_prompt_caching: true
-  },
-  {
-    model: "o3-mini",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.0000011,
-    output_cost_per_token: 0.0000044,
-    cache_read_input_token_cost: 5.5e-7,
-    supports_prompt_caching: true
-  },
-  {
-    model: "o3-mini-2025-01-31",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.0000011,
-    output_cost_per_token: 0.0000044,
-    cache_read_input_token_cost: 5.5e-7,
-    supports_prompt_caching: true
-  },
-  {
     model: "o3-pro",
-    litellm_provider: "openai",
-    mode: "responses",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.00002,
-    output_cost_per_token: 0.00008,
-    supports_prompt_caching: true
-  },
-  {
-    model: "o3-pro-2025-06-10",
     litellm_provider: "openai",
     mode: "responses",
     max_tokens: 100000,
@@ -151,42 +45,5 @@ export const openAIReasoningModelPricingData = [
     cache_read_input_token_cost_priority: 5e-7,
     supports_prompt_caching: true,
     supports_service_tier: true
-  },
-  {
-    model: "o4-mini-2025-04-16",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.0000011,
-    output_cost_per_token: 0.0000044,
-    cache_read_input_token_cost: 2.75e-7,
-    supports_prompt_caching: true,
-    supports_service_tier: true
-  },
-  {
-    model: "o4-mini-deep-research",
-    litellm_provider: "openai",
-    mode: "responses",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.000002,
-    output_cost_per_token: 0.000008,
-    cache_read_input_token_cost: 5e-7,
-    supports_prompt_caching: true
-  },
-  {
-    model: "o4-mini-deep-research-2025-06-26",
-    litellm_provider: "openai",
-    mode: "responses",
-    max_tokens: 100000,
-    max_input_tokens: 200000,
-    max_output_tokens: 100000,
-    input_cost_per_token: 0.000002,
-    output_cost_per_token: 0.000008,
-    cache_read_input_token_cost: 5e-7,
-    supports_prompt_caching: true
   }
 ] as const

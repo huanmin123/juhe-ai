@@ -25,6 +25,7 @@ export interface AccountRow {
   passthrough_enabled: number
   error_policy_id: string | null
   priority: number
+  super_priority_enabled: number
   schedulable: number
   account_expires_at: string | null
   last_used_at: string | null
@@ -132,6 +133,14 @@ export type AccountListRow = AccountRow & {
   bound_group_id?: string | null
   bound_group_name?: string | null
   bound_group_account_authorization_id?: string | null
+  quality_score?: number | null
+  quality_state?: string | null
+  quality_ewma_first_token_ms?: number | null
+  quality_recent_avg_first_token_ms?: number | null
+  quality_recent_request_count?: number | null
+  quality_recent_success_rate?: number | null
+  quality_last_probe_at?: string | null
+  quality_updated_at?: string | null
 }
 
 export interface GroupRow {

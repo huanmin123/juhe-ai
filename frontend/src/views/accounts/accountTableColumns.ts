@@ -16,10 +16,10 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
   baseColumns.push(
     sortableColumn({ title: '并发数', key: 'concurrency', width: 100, align: 'center' }, 'concurrency', sortOrder),
     sortableColumn({ title: '状态', key: 'status', width: 190 }, 'status', sortOrder),
-    { title: '代理', key: 'proxy', width: 180 },
-    { title: '用量(日)', key: 'usage', width: 380 },
-    { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
     sortableColumn({ title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 }, 'priority', sortOrder),
+    { title: '用量(日)', key: 'usage', width: 380 },
+    { title: '代理', key: 'proxy', width: 180 },
+    { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
     sortableColumn({ title: '账户到期时间', key: 'accountExpiresAt', width: 180 }, 'accountExpiresAt', sortOrder),
     sortableColumn({ title: '最近使用时间', key: 'lastUsedAt', width: 180 }, 'lastUsedAt', sortOrder),
     sortableColumn({ title: '说明', dataIndex: 'notes', key: 'notes', width: 200 }, 'notes', sortOrder),

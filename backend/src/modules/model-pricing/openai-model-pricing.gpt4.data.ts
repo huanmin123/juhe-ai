@@ -1,139 +1,8 @@
-// Generated from https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json at 2026-05-01T17:12:56Z.
+// Curated from official OpenAI model, pricing, and deprecation docs on 2026-05-08.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
-// GPT-3.5, GPT-4, GPT-4.1, and GPT-4o family model prices.
+// Current GPT-4.1 and GPT-4o family model prices.
 
 export const openAIGPT4ModelPricingData = [
-  {
-    model: "gpt-3.5-turbo",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 16385,
-    max_output_tokens: 4096,
-    input_cost_per_token: 5e-7,
-    output_cost_per_token: 0.0000015,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-3.5-turbo-0125",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 16385,
-    max_output_tokens: 4096,
-    input_cost_per_token: 5e-7,
-    output_cost_per_token: 0.0000015,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-3.5-turbo-1106",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 16385,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.000001,
-    output_cost_per_token: 0.000002,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-3.5-turbo-16k",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 16385,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.000003,
-    output_cost_per_token: 0.000004,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 8192,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.00003,
-    output_cost_per_token: 0.00006,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4-0125-preview",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.00001,
-    output_cost_per_token: 0.00003,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4-0314",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 8192,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.00003,
-    output_cost_per_token: 0.00006
-  },
-  {
-    model: "gpt-4-0613",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 8192,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.00003,
-    output_cost_per_token: 0.00006,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4-1106-preview",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.00001,
-    output_cost_per_token: 0.00003,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4-turbo",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.00001,
-    output_cost_per_token: 0.00003,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4-turbo-2024-04-09",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.00001,
-    output_cost_per_token: 0.00003,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4-turbo-preview",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.00001,
-    output_cost_per_token: 0.00003,
-    supports_prompt_caching: true
-  },
   {
     model: "gpt-4.1",
     litellm_provider: "openai",
@@ -147,19 +16,6 @@ export const openAIGPT4ModelPricingData = [
     output_cost_per_token_priority: 0.000014,
     cache_read_input_token_cost: 5e-7,
     cache_read_input_token_cost_priority: 8.75e-7,
-    supports_prompt_caching: true,
-    supports_service_tier: true
-  },
-  {
-    model: "gpt-4.1-2025-04-14",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 32768,
-    max_input_tokens: 1047576,
-    max_output_tokens: 32768,
-    input_cost_per_token: 0.000002,
-    output_cost_per_token: 0.000008,
-    cache_read_input_token_cost: 5e-7,
     supports_prompt_caching: true,
     supports_service_tier: true
   },
@@ -180,19 +36,6 @@ export const openAIGPT4ModelPricingData = [
     supports_service_tier: true
   },
   {
-    model: "gpt-4.1-mini-2025-04-14",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 32768,
-    max_input_tokens: 1047576,
-    max_output_tokens: 32768,
-    input_cost_per_token: 4e-7,
-    output_cost_per_token: 0.0000016,
-    cache_read_input_token_cost: 1e-7,
-    supports_prompt_caching: true,
-    supports_service_tier: true
-  },
-  {
     model: "gpt-4.1-nano",
     litellm_provider: "openai",
     mode: "chat",
@@ -205,19 +48,6 @@ export const openAIGPT4ModelPricingData = [
     output_cost_per_token_priority: 8e-7,
     cache_read_input_token_cost: 2.5e-8,
     cache_read_input_token_cost_priority: 5e-8,
-    supports_prompt_caching: true,
-    supports_service_tier: true
-  },
-  {
-    model: "gpt-4.1-nano-2025-04-14",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 32768,
-    max_input_tokens: 1047576,
-    max_output_tokens: 32768,
-    input_cost_per_token: 1e-7,
-    output_cost_per_token: 4e-7,
-    cache_read_input_token_cost: 2.5e-8,
     supports_prompt_caching: true,
     supports_service_tier: true
   },
@@ -238,75 +68,6 @@ export const openAIGPT4ModelPricingData = [
     supports_service_tier: true
   },
   {
-    model: "gpt-4o-2024-05-13",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.000005,
-    input_cost_per_token_priority: 0.00000875,
-    output_cost_per_token: 0.000015,
-    output_cost_per_token_priority: 0.00002625,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4o-2024-08-06",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001,
-    cache_read_input_token_cost: 0.00000125,
-    supports_prompt_caching: true,
-    supports_service_tier: true
-  },
-  {
-    model: "gpt-4o-2024-11-20",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001,
-    cache_read_input_token_cost: 0.00000125,
-    supports_prompt_caching: true,
-    supports_service_tier: true
-  },
-  {
-    model: "gpt-4o-audio-preview",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001
-  },
-  {
-    model: "gpt-4o-audio-preview-2024-12-17",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001
-  },
-  {
-    model: "gpt-4o-audio-preview-2025-06-03",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001
-  },
-  {
     model: "gpt-4o-mini",
     litellm_provider: "openai",
     mode: "chat",
@@ -323,95 +84,25 @@ export const openAIGPT4ModelPricingData = [
     supports_service_tier: true
   },
   {
-    model: "gpt-4o-mini-2024-07-18",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 1.5e-7,
-    output_cost_per_token: 6e-7,
-    cache_read_input_token_cost: 7.5e-8,
-    supports_prompt_caching: true,
-    supports_service_tier: true
-  },
-  {
-    model: "gpt-4o-mini-audio-preview",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 1.5e-7,
-    output_cost_per_token: 6e-7
-  },
-  {
-    model: "gpt-4o-mini-audio-preview-2024-12-17",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 1.5e-7,
-    output_cost_per_token: 6e-7
-  },
-  {
-    model: "gpt-4o-mini-realtime-preview",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 6e-7,
-    output_cost_per_token: 0.0000024,
-    cache_read_input_token_cost: 3e-7
-  },
-  {
-    model: "gpt-4o-mini-realtime-preview-2024-12-17",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 6e-7,
-    output_cost_per_token: 0.0000024,
-    cache_read_input_token_cost: 3e-7
-  },
-  {
-    model: "gpt-4o-mini-search-preview",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 1.5e-7,
-    output_cost_per_token: 6e-7,
-    cache_read_input_token_cost: 7.5e-8,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4o-mini-search-preview-2025-03-11",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 1.5e-7,
-    output_cost_per_token: 6e-7,
-    cache_read_input_token_cost: 7.5e-8,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4o-mini-transcribe",
+    model: "gpt-4o-transcribe",
     litellm_provider: "openai",
     mode: "audio_transcription",
     max_input_tokens: 16000,
     max_output_tokens: 2000,
-    input_cost_per_token: 0.00000125,
-    output_cost_per_token: 0.000005
+    input_cost_per_token: 0.0000025,
+    output_cost_per_token: 0.00001
   },
   {
-    model: "gpt-4o-mini-transcribe-2025-03-20",
+    model: "gpt-4o-transcribe-diarize",
+    litellm_provider: "openai",
+    mode: "audio_transcription",
+    max_input_tokens: 16000,
+    max_output_tokens: 2000,
+    input_cost_per_token: 0.0000025,
+    output_cost_per_token: 0.00001
+  },
+  {
+    model: "gpt-4o-mini-transcribe",
     litellm_provider: "openai",
     mode: "audio_transcription",
     max_input_tokens: 16000,
@@ -436,91 +127,9 @@ export const openAIGPT4ModelPricingData = [
     output_cost_per_token: 0.00001
   },
   {
-    model: "gpt-4o-mini-tts-2025-03-20",
-    litellm_provider: "openai",
-    mode: "audio_speech",
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001
-  },
-  {
     model: "gpt-4o-mini-tts-2025-12-15",
     litellm_provider: "openai",
     mode: "audio_speech",
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001
-  },
-  {
-    model: "gpt-4o-realtime-preview",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.000005,
-    output_cost_per_token: 0.00002,
-    cache_read_input_token_cost: 0.0000025
-  },
-  {
-    model: "gpt-4o-realtime-preview-2024-12-17",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.000005,
-    output_cost_per_token: 0.00002,
-    cache_read_input_token_cost: 0.0000025
-  },
-  {
-    model: "gpt-4o-realtime-preview-2025-06-03",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 4096,
-    max_input_tokens: 128000,
-    max_output_tokens: 4096,
-    input_cost_per_token: 0.000005,
-    output_cost_per_token: 0.00002,
-    cache_read_input_token_cost: 0.0000025
-  },
-  {
-    model: "gpt-4o-search-preview",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001,
-    cache_read_input_token_cost: 0.00000125,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4o-search-preview-2025-03-11",
-    litellm_provider: "openai",
-    mode: "chat",
-    max_tokens: 16384,
-    max_input_tokens: 128000,
-    max_output_tokens: 16384,
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001,
-    cache_read_input_token_cost: 0.00000125,
-    supports_prompt_caching: true
-  },
-  {
-    model: "gpt-4o-transcribe",
-    litellm_provider: "openai",
-    mode: "audio_transcription",
-    max_input_tokens: 16000,
-    max_output_tokens: 2000,
-    input_cost_per_token: 0.0000025,
-    output_cost_per_token: 0.00001
-  },
-  {
-    model: "gpt-4o-transcribe-diarize",
-    litellm_provider: "openai",
-    mode: "audio_transcription",
-    max_input_tokens: 16000,
-    max_output_tokens: 2000,
     input_cost_per_token: 0.0000025,
     output_cost_per_token: 0.00001
   }

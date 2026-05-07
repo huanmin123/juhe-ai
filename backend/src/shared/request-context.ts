@@ -111,16 +111,16 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
   }
 
   if (isHealthPath(req.path) && res.statusCode < 400) {
-    context.logger.debug(fields, 'HTTP request completed')
+    context.logger.debug(fields, 'HTTP 请求完成')
     return
   }
 
   if (res.statusCode >= 500) {
-    context.logger.error(fields, 'HTTP request completed')
+    context.logger.error(fields, 'HTTP 请求完成')
   } else if (res.statusCode >= 400) {
-    context.logger.warn(fields, 'HTTP request completed')
+    context.logger.warn(fields, 'HTTP 请求完成')
   } else {
-    context.logger.info(fields, 'HTTP request completed')
+    context.logger.info(fields, 'HTTP 请求完成')
   }
 }
 
@@ -138,7 +138,7 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
     apiKeyId: context.apiKeyId,
     groupId: context.groupId,
     userAgent: req.header('user-agent')
-  }, 'HTTP request closed before completion')
+  }, 'HTTP 请求在完成前关闭')
 }
 
 function normalizeTraceId(req: Request): string | undefined {

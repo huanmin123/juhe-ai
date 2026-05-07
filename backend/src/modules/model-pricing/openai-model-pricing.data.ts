@@ -1,4 +1,4 @@
-// Generated from https://raw.githubusercontent.com/Wei-Shaw/model-price-repo/main/model_prices_and_context_window.json at 2026-05-01T17:12:56Z.
+// Curated from official OpenAI model, pricing, and deprecation docs on 2026-05-08.
 // Values follow LiteLLM/model-price-repo field names: token prices are USD per token.
 
 import { openAIGPT4ModelPricingData } from './openai-model-pricing.gpt4.data.js'

@@ -18,6 +18,11 @@ export interface OpenAIAccountSecret {
   type: AccountType
   status: AccountStatus
   concurrencyLimit: number
+  priority: number
+  superPriorityEnabled: boolean
+  qualityScore?: number
+  qualityState?: string
+  qualityEwmaFirstTokenMs?: number
   baseUrl: string
   apiKey: string
   refreshToken?: string
@@ -56,7 +61,7 @@ export function findOpenAIAccountForGroup(
   groupId: string,
   accountId: string,
   systemAccountId = currentSystemAccountId(),
-  options: { includeUnavailable?: boolean } = {}
+  options: { includeUnavailable?: boolean; ignoreAvailability?: boolean } = {}
 ): OpenAIAccountSecret | undefined {
   const now = nowIso()
   const groupAccess = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
@@ -64,6 +69,7 @@ export function findOpenAIAccountForGroup(
     return undefined
   }
   disableExpiredAccountsForSelection(groupAccess.groupOwnerSystemAccountId)
+  const forceAvailability = options.ignoreAvailability === true
   const groupAccount = getDatabase()
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.account_authorization_id
@@ -78,7 +84,9 @@ export function findOpenAIAccountForGroup(
     return undefined
   }
 
-  const availabilityClause = options.includeUnavailable
+  const availabilityClause = forceAvailability
+    ? ''
+    : options.includeUnavailable
     ? `
           AND schedulable = 1
           AND status IN ('active', 'rate_limited', 'temporary_unavailable')
@@ -88,10 +96,13 @@ export function findOpenAIAccountForGroup(
           AND status = 'active'
           AND (cooldown_until IS NULL OR cooldown_until <= ?)
     `
-  const params = options.includeUnavailable ? [accountId, now] : [accountId, now, now]
+  const params = forceAvailability || options.includeUnavailable ? [accountId, now] : [accountId, now, now]
   const row = getDatabase()
     .prepare(`
-      SELECT id, system_account_id, name, type, status, concurrency_limit, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message
+      SELECT id, system_account_id, name, type, status, concurrency_limit, priority, super_priority_enabled, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message,
+        NULL AS quality_score,
+        NULL AS quality_state,
+        NULL AS quality_ewma_first_token_ms
       FROM accounts
       WHERE id = ?
         AND provider_code = 'openai'
@@ -99,12 +110,12 @@ export function findOpenAIAccountForGroup(
         AND (account_expires_at IS NULL OR account_expires_at > ?)
         ${availabilityClause}
     `)
-    .get(...params) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; concurrency_limit: number; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
+    .get(...params) as unknown as OpenAIAccountRow | undefined
   if (!row) {
     return undefined
   }
   return openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount.account_authorization_id ?? undefined, {
-    enforceSchedulableAuthorization: !options.includeUnavailable
+    enforceSchedulableAuthorization: !forceAvailability && !options.includeUnavailable
   })
 }
 
@@ -137,7 +148,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
       FROM group_accounts
       INNER JOIN accounts ON accounts.id = group_accounts.account_id
       WHERE group_accounts.group_id = ? AND group_accounts.enabled = 1
-      ORDER BY accounts.priority ASC, group_accounts.weight DESC, group_accounts.created_at ASC
+      ORDER BY accounts.super_priority_enabled DESC, accounts.priority ASC, group_accounts.weight DESC, group_accounts.created_at ASC
     `)
     .all(groupId) as unknown as GroupAccountRow[]
 
@@ -145,17 +156,23 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
   for (const groupAccount of groupAccountRows) {
     const row = database
       .prepare(`
-        SELECT id, system_account_id, name, type, status, concurrency_limit, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message
+        SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled,
+          accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message,
+          account_quality.quality_score,
+          account_quality.quality_state,
+          account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms
         FROM accounts
-        WHERE id = ?
-          AND provider_code = 'openai'
+        LEFT JOIN account_quality_scores account_quality
+          ON account_quality.account_id = accounts.id
+        WHERE accounts.id = ?
+          AND accounts.provider_code = 'openai'
           AND type IN ('api_key', 'oauth')
           AND schedulable = 1
           AND (account_expires_at IS NULL OR account_expires_at > ?)
           AND status = 'active'
           AND (cooldown_until IS NULL OR cooldown_until <= ?)
       `)
-      .get(groupAccount.account_id, now, now) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; concurrency_limit: number; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
+      .get(groupAccount.account_id, now, now) as unknown as OpenAIAccountRow | undefined
     if (!row) {
       continue
     }
@@ -184,11 +201,31 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
     }
   }
 
-  return accounts
+  return orderOpenAIAccountsForDispatch(accounts)
+}
+
+interface OpenAIAccountRow {
+  id: string
+  system_account_id: string
+  name: string
+  type: AccountType
+  status: AccountStatus
+  concurrency_limit: number
+  priority: number
+  super_priority_enabled: number
+  credentials_encrypted: string
+  proxy_profile_id: string | null
+  passthrough_enabled: number
+  error_policy_id: string | null
+  cooldown_until: string | null
+  last_error_message: string | null
+  quality_score?: number | null
+  quality_state?: string | null
+  quality_ewma_first_token_ms?: number | null
 }
 
 function openAIAccountSecretFromRow(
-  row: { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; concurrency_limit: number; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null },
+  row: OpenAIAccountRow,
   groupAccess: GroupUsageAccessMetadata,
   systemAccountId: string,
   boundAccountAuthorizationId?: string,
@@ -227,6 +264,11 @@ function openAIAccountSecretFromRow(
     type: row.type,
     status: row.status,
     concurrencyLimit: Number(row.concurrency_limit ?? 1),
+    priority: Number(row.priority ?? 0),
+    superPriorityEnabled: row.status === 'active' && row.super_priority_enabled === 1,
+    qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
+    qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
+    qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
     baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
     apiKey,
     refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
@@ -241,6 +283,47 @@ function openAIAccountSecretFromRow(
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
     credentials
   }
+}
+
+function compareOpenAIAccountsForDispatch(left: OpenAIAccountSecret, right: OpenAIAccountSecret): number {
+  const leftSuper = left.superPriorityEnabled ? 1 : 0
+  const rightSuper = right.superPriorityEnabled ? 1 : 0
+  if (leftSuper !== rightSuper) return rightSuper - leftSuper
+  if (left.priority !== right.priority) return left.priority - right.priority
+  const leftQuality = left.qualityScore
+  const rightQuality = right.qualityScore
+  const leftHasQuality = typeof leftQuality === 'number'
+  const rightHasQuality = typeof rightQuality === 'number'
+  if (leftHasQuality !== rightHasQuality) return leftHasQuality ? -1 : 1
+  if (leftHasQuality && rightHasQuality && leftQuality !== rightQuality) {
+    return leftQuality - rightQuality
+  }
+  return left.name.localeCompare(right.name, 'zh-CN')
+}
+
+function orderOpenAIAccountsForDispatch(accounts: OpenAIAccountSecret[]): OpenAIAccountSecret[] {
+  const buckets = new Map<string, OpenAIAccountSecret[]>()
+  for (const account of accounts) {
+    const bucketKey = `${account.superPriorityEnabled ? 1 : 0}:${account.priority}`
+    const bucket = buckets.get(bucketKey)
+    if (bucket) {
+      bucket.push(account)
+    } else {
+      buckets.set(bucketKey, [account])
+    }
+  }
+  return [...accounts].sort((left, right) => {
+    const leftBucket = buckets.get(`${left.superPriorityEnabled ? 1 : 0}:${left.priority}`) ?? []
+    const rightBucket = buckets.get(`${right.superPriorityEnabled ? 1 : 0}:${right.priority}`) ?? []
+    const leftSuper = left.superPriorityEnabled ? 1 : 0
+    const rightSuper = right.superPriorityEnabled ? 1 : 0
+    if (leftSuper !== rightSuper) return rightSuper - leftSuper
+    if (left.priority !== right.priority) return left.priority - right.priority
+    if (leftBucket.length >= 2 && rightBucket.length >= 2) {
+      return compareOpenAIAccountsForDispatch(left, right)
+    }
+    return left.name.localeCompare(right.name, 'zh-CN')
+  })
 }
 
 function resolveOpenAIAccountProxyUrl(proxyProfileId: string | null): { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } {
@@ -312,6 +395,7 @@ function disableExpiredAccountsForSelection(systemAccountId: string): void {
       UPDATE accounts
       SET status = 'disabled',
           schedulable = 0,
+          super_priority_enabled = 0,
           cooldown_until = NULL,
           last_error_message = ?,
           updated_at = ?

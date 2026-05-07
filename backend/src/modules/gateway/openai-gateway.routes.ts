@@ -31,7 +31,6 @@ import {
   extractClientIp,
   headersToObject,
   parseOpenAIUsageFromJsonBuffer,
-  parseOpenAIUsageFromSseText,
   requestEndpoint,
   requestModel,
   extractBearerToken,
@@ -43,8 +42,10 @@ import {
   copyResponseHeaders,
   isStreamResponse,
   isRetryableUpstreamStreamPreloadError,
+  isUpstreamRequestAbortedError,
   preloadStreamResponseFirstChunk,
   requestUpstream,
+  UpstreamRequestAbortedError,
   upstreamRequestTimeoutMs,
   upstreamSocketTimeoutMs,
   type GatewayUpstreamResponse
@@ -91,6 +92,7 @@ export interface OpenAIGatewayHandleOptions {
   identity?: OpenAIGatewayRequestIdentity
   candidateAccounts?: UpstreamAccount[]
   disableSessionAffinity?: boolean
+  exposeUpstreamDiagnostics?: boolean
 }
 
 openAIGatewayRouter.all('/*', async (req, res) => {
@@ -103,16 +105,21 @@ export async function handleOpenAIGatewayRequest(
   options: OpenAIGatewayHandleOptions = {}
 ): Promise<void> {
   const startedAt = Date.now()
+  const abortController = new AbortController()
   const traceId = getTraceId() ?? randomUUID()
   const clientIp = extractClientIp(req)
   const endpoint = requestEndpoint(req)
   const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
   const gatewaySettings = readCachedGatewaySettings()
   const auditCapture = createAuditCapture({ req, traceId, clientIp, startedAtMs: startedAt })
-  req.once('aborted', () => auditCapture.markClientAborted())
+  req.once('aborted', () => {
+    auditCapture.markClientAborted()
+    abortController.abort()
+  })
   res.once('close', () => {
     if (!res.writableEnded) {
       auditCapture.markClientAborted()
+      abortController.abort()
     }
   })
 
@@ -122,7 +129,7 @@ export async function handleOpenAIGatewayRequest(
     : (() => {
       apiKeyRecord = resolveGatewayApiKey(req, res)
       if (!apiKeyRecord) {
-        const authErrorMessage = extractBearerToken(req.header('authorization')) ? 'Invalid API key' : 'Missing bearer token'
+        const authErrorMessage = extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少 Bearer Token'
         const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error')
         auditCapture.finalize({
           outcome: 'gateway_failed',
@@ -163,7 +170,7 @@ export async function handleOpenAIGatewayRequest(
   const groupAccess = resolveCachedGroupUsageAccessMetadata(groupId, systemAccountId)
   if (!groupAccess) {
     const statusCode = 403
-    const responsePayload = gatewayErrorPayload('API key group authorization is unavailable', 'forbidden')
+    const responsePayload = gatewayErrorPayload('API Key 绑定的分组授权不可用', 'forbidden')
     recordGatewayFailure(req, {
       traceId,
       clientIp,
@@ -187,7 +194,7 @@ export async function handleOpenAIGatewayRequest(
       responsePartType: 'gateway_error',
       errorPhase: 'authorization',
       errorCode: 'forbidden',
-      errorMessage: 'API key group authorization is unavailable'
+      errorMessage: 'API Key 绑定的分组授权不可用'
     })
     return
   }
@@ -304,7 +311,7 @@ export async function handleOpenAIGatewayRequest(
       return
     }
     const statusCode = 503
-    const responsePayload = gatewayErrorPayload('No available upstream account', 'service_unavailable')
+    const responsePayload = gatewayErrorPayload('没有可用的上游账户', 'service_unavailable')
     recordGatewayFailure(req, {
       traceId,
       clientIp,
@@ -329,7 +336,7 @@ export async function handleOpenAIGatewayRequest(
       responsePartType: 'gateway_error',
       errorPhase: 'dispatch',
       errorCode: 'service_unavailable',
-      errorMessage: 'No available upstream account'
+      errorMessage: '没有可用的上游账户'
     })
     return
   }
@@ -344,7 +351,7 @@ export async function handleOpenAIGatewayRequest(
       ...groupUsageFields,
       endpoint,
       requestSnapshot
-    }, auditCapture, options.disableSessionAffinity ? undefined : sessionAffinityKey)
+    }, auditCapture, options.disableSessionAffinity ? undefined : sessionAffinityKey, abortController.signal)
     const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency } = upstreamResult
 
     try {
@@ -370,7 +377,7 @@ export async function handleOpenAIGatewayRequest(
             responseHeaders: upstreamResponse.headers,
             success: false,
             errorPhase: 'upstream_response',
-            errorMessage: 'Upstream response body is empty'
+            errorMessage: '上游响应体为空'
           })
           auditCapture.finalize({
             outcome: 'stream_failed',
@@ -379,24 +386,39 @@ export async function handleOpenAIGatewayRequest(
             responseHeaders: responseHeadersToObject(res),
             responsePartType: 'gateway_error',
             errorPhase: 'upstream_response',
-            errorMessage: 'Upstream response body is empty',
+            errorMessage: '上游响应体为空',
             accountId: account.id
           })
           return
         }
-        const streamResult = await pipeUpstreamStream(
-          upstreamResponse.body,
-          res,
-          gatewaySettings,
-          startedAt,
-          (message) => handleStreamFailure(account, message, gatewaySettings)
-        )
+        let streamResult: Awaited<ReturnType<typeof pipeUpstreamStream>>
+        try {
+          streamResult = await pipeUpstreamStream(
+            upstreamResponse.body,
+            res,
+            gatewaySettings,
+            startedAt,
+            (message) => handleStreamFailure(account, message, gatewaySettings),
+            abortController.signal
+          )
+        } catch (error) {
+          if (isUpstreamRequestAbortedError(error) || abortController.signal.aborted) {
+            auditCapture.completeAttempt(auditAttemptId, {
+              statusCode: upstreamResponse.status,
+              responseHeaders: upstreamResponse.headers,
+              success: false,
+              errorPhase: 'client',
+              errorMessage: '请求已取消'
+            })
+          }
+          throw error
+        }
         firstTokenMs = streamResult.firstTokenMs
-        responseBodyText = Buffer.concat(streamResult.chunks).toString('utf8')
+        responseBodyText = streamResult.responseBodyText
         auditCapture.completeAttempt(auditAttemptId, {
           statusCode: upstreamResponse.status,
           responseHeaders: upstreamResponse.headers,
-          responseBody: Buffer.concat(streamResult.upstreamChunks),
+          responseBody: streamResult.auditUpstreamBody,
           success: streamResult.completed && upstreamResponse.ok,
           errorPhase: streamResult.completed ? undefined : 'stream',
           errorMessage: streamResult.completed ? undefined : streamResult.message
@@ -434,7 +456,7 @@ export async function handleOpenAIGatewayRequest(
             success: false,
             statusCode: upstreamResponse.status,
             responseHeaders: responseHeadersToObject(res),
-            responseBody: Buffer.concat(streamResult.chunks),
+            responseBody: streamResult.auditResponseBody,
             responsePartType: 'gateway_response',
             errorPhase: 'stream',
             errorMessage: streamResult.message,
@@ -443,9 +465,26 @@ export async function handleOpenAIGatewayRequest(
           })
           return
         }
-        usage = parseOpenAIUsageFromSseText(responseBodyText)
+        usage = streamResult.usage
       } else {
-        const responseBody = Buffer.from(await upstreamResponse.arrayBuffer())
+        if (abortController.signal.aborted) {
+          throw new UpstreamRequestAbortedError('请求已取消')
+        }
+        let responseBody: Buffer
+        try {
+          responseBody = Buffer.from(await upstreamResponse.arrayBuffer())
+        } catch (error) {
+          if (isUpstreamRequestAbortedError(error) || abortController.signal.aborted) {
+            auditCapture.completeAttempt(auditAttemptId, {
+              statusCode: upstreamResponse.status,
+              responseHeaders: upstreamResponse.headers,
+              success: false,
+              errorPhase: 'client',
+              errorMessage: '请求已取消'
+            })
+          }
+          throw error
+        }
         responseBodyText = responseBody.toString('utf8')
         firstTokenMs = Date.now() - startedAt
         usage = parseOpenAIUsageFromJsonBuffer(responseBody)
@@ -527,10 +566,27 @@ export async function handleOpenAIGatewayRequest(
       releaseConcurrency()
     }
   } catch (error) {
+    if (isUpstreamRequestAbortedError(error) || abortController.signal.aborted) {
+      auditCapture.finalize({
+        outcome: 'client_aborted',
+        success: false,
+        statusCode: res.statusCode,
+        responseHeaders: responseHeadersToObject(res),
+        errorPhase: 'client',
+        errorMessage: '请求已取消'
+      })
+      if (!res.writableEnded && !res.destroyed) {
+        res.end()
+      }
+      return
+    }
     const lastAttempt = error instanceof UpstreamAttemptError ? error.lastAttempt : undefined
-    const message = error instanceof Error ? error.message : 'No available upstream account'
-    const statusCode = 503
-    const responsePayload = gatewayErrorPayload('No available upstream account', 'service_unavailable')
+    const message = error instanceof Error ? error.message : '没有可用的上游账户'
+    const diagnosticError = options.exposeUpstreamDiagnostics
+      ? buildDiagnosticUpstreamError(lastAttempt, message)
+      : undefined
+    const statusCode = diagnosticError?.statusCode ?? 503
+    const responsePayload = diagnosticError?.payload ?? gatewayErrorPayload('没有可用的上游账户', 'service_unavailable')
     if (!lastAttempt) {
       recordGatewayFailure(req, {
         traceId,
@@ -558,9 +614,77 @@ export async function handleOpenAIGatewayRequest(
       responsePartType: 'gateway_error',
       errorPhase: 'dispatch',
       errorCode: 'service_unavailable',
-      errorMessage: message
+      errorMessage: diagnosticError?.errorMessage ?? message
     })
   }
+}
+
+function buildDiagnosticUpstreamError(
+  lastAttempt: UpstreamAttempt | undefined,
+  fallbackMessage: string
+): { statusCode: number; payload: GatewayDiagnosticErrorPayload; errorMessage: string } | undefined {
+  if (!lastAttempt) return undefined
+
+  const statusCode = isHttpStatusCode(lastAttempt.status) ? lastAttempt.status : 503
+  const bodyText = lastAttempt.responseBodyText?.trim()
+  const responseHeaders = headersFromObject(lastAttempt.responseHeaders)
+  const parsedError = bodyText ? parseErrorPayload(bodyText, responseHeaders) : {}
+  const errorMessage = stringValue(parsedError.message) || lastAttempt.message || fallbackMessage
+  const errorType = stringValue(parsedError.type) || stringValue(parsedError.code) || 'upstream_error'
+  const parsedPayload = bodyText ? parseJsonObject(bodyText) : undefined
+  const payload = hasErrorObject(parsedPayload)
+    ? parsedPayload as GatewayDiagnosticErrorPayload
+    : gatewayErrorPayload(errorMessage, errorType) as GatewayDiagnosticErrorPayload
+
+  payload.upstream = {
+    statusCode: lastAttempt.status,
+    accountId: lastAttempt.accountId,
+    accountName: lastAttempt.accountName,
+    upstreamUrl: lastAttempt.upstreamUrl
+  }
+
+  return { statusCode, payload, errorMessage }
+}
+
+type GatewayDiagnosticErrorPayload = ReturnType<typeof gatewayErrorPayload> & {
+  upstream?: {
+    statusCode?: number
+    accountId: string
+    accountName: string
+    upstreamUrl: string
+  }
+}
+
+function headersFromObject(headers?: Record<string, string>): Headers {
+  const output = new Headers()
+  if (!headers) return output
+  for (const [name, value] of Object.entries(headers)) {
+    output.set(name, value)
+  }
+  return output
+}
+
+function parseJsonObject(text: string): Record<string, unknown> | undefined {
+  try {
+    const value = JSON.parse(text) as unknown
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function hasErrorObject(value: Record<string, unknown> | undefined): boolean {
+  return typeof value?.error === 'object' && value.error !== null && !Array.isArray(value.error)
+}
+
+function isHttpStatusCode(value: unknown): value is number {
+  return typeof value === 'number' && value >= 400 && value <= 599
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
 }
 
 function sendQuotaExceededResponse(
@@ -604,7 +728,8 @@ async function fetchFirstAvailableUpstream(
   settings: GatewaySettings,
   usageContext: GatewayUsageContext,
   auditCapture: AuditCaptureContext,
-  sessionAffinityKey?: string
+  sessionAffinityKey?: string,
+  signal?: AbortSignal
 ): Promise<{ account: UpstreamAccount; response: GatewayUpstreamResponse; upstreamUrl: string; auditAttemptId: string; releaseConcurrency: () => void }> {
   const retryAttempts = Math.max(0, settings.temporaryUnschedulableRetryAttempts)
   const isStreamRequest = isOpenAIStreamRequest(req)
@@ -612,6 +737,7 @@ async function fetchFirstAvailableUpstream(
   let auditAttemptIndex = 0
 
   for (const originalAccount of accounts) {
+    throwIfRequestAborted(signal)
     if (originalAccount.proxyProfileUnavailable) {
       const attemptStartedAt = Date.now()
       const message = originalAccount.proxyProfileErrorMessage ?? '账户绑定的代理不可用'
@@ -624,7 +750,7 @@ async function fetchFirstAvailableUpstream(
       applyAccountErrorHandlingWithCacheInvalidation(originalAccount, { success: false, errorMessage: message, settings })
       continue
     }
-    const account = await prepareUpstreamAccount(originalAccount)
+    const account = await prepareUpstreamAccount(originalAccount, signal)
     const upstreamUrls = buildUpstreamUrlsForAccount(account, req)
     if (upstreamUrls.length === 0) {
       continue
@@ -663,18 +789,29 @@ async function fetchFirstAvailableUpstream(
               body,
               proxyUrl: account.proxyUrl,
               timeoutMs: upstreamSocketTimeoutMs(req, settings),
-              requestTimeoutMs: upstreamRequestTimeoutMs(req, settings)
+              requestTimeoutMs: upstreamRequestTimeoutMs(req, settings),
+              signal
             })
             lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
             if (response.ok) {
               if (isStreamRequest && settings.streamCircuitBreakerEnabled && isStreamResponse(response)) {
                 try {
-                  const preloadedResponse = await preloadStreamResponseFirstChunk(response, settings)
+                  const preloadedResponse = await preloadStreamResponseFirstChunk(response, settings, signal)
                   rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
                   keepConcurrencySlot = true
                   return { account, response: preloadedResponse, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
                 } catch (error) {
-                  const message = error instanceof Error ? error.message : 'Upstream stream request interrupted before first chunk'
+                  if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
+                    auditCapture.completeAttempt(auditAttemptId, {
+                      statusCode: response.status,
+                      responseHeaders: response.headers,
+                      success: false,
+                      errorPhase: 'client',
+                      errorMessage: '请求已取消'
+                    })
+                    throw error
+                  }
+                  const message = error instanceof Error ? error.message : '上游流式请求在首个分片前中断'
                   lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status, message }
                   const preloadFailureBody = streamPreloadErrorBody(error)
                   auditCapture.completeAttempt(auditAttemptId, {
@@ -742,7 +879,15 @@ async function fetchFirstAvailableUpstream(
             skipAccount = true
             break
           } catch (error) {
-            const message = error instanceof Error ? error.message : 'request failed'
+            if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
+              auditCapture.completeAttempt(auditAttemptId, {
+                success: false,
+                errorPhase: 'client',
+                errorMessage: '请求已取消'
+              })
+              throw error
+            }
+            const message = error instanceof Error ? error.message : '请求失败'
             lastAttempt = {
               accountId: account.id,
               accountName: account.name,
@@ -782,8 +927,8 @@ async function fetchFirstAvailableUpstream(
 
   throw new UpstreamAttemptError(
     lastAttempt
-      ? 'All upstream accounts failed; last attempt ' + lastAttempt.accountName + ' ' + lastAttempt.upstreamUrl + ' returned ' + (lastAttempt.message ?? lastAttempt.status)
-      : 'All upstream accounts failed',
+      ? '所有上游账户均失败；最后一次尝试 ' + lastAttempt.accountName + ' ' + lastAttempt.upstreamUrl + ' 返回 ' + (lastAttempt.message ?? lastAttempt.status)
+      : '所有上游账户均失败',
     lastAttempt
   )
 }
@@ -794,6 +939,12 @@ async function waitBeforeTemporaryUnschedulableRetry(settings: GatewaySettings):
     return
   }
   await new Promise((resolve) => setTimeout(resolve, intervalMs))
+}
+
+function throwIfRequestAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new UpstreamRequestAbortedError('请求已取消')
+  }
 }
 
 function applyAccountErrorHandlingWithCacheInvalidation(
@@ -838,15 +989,17 @@ function streamPreloadErrorBody(error: unknown): Buffer | undefined {
   return undefined
 }
 
-async function prepareUpstreamAccount(account: UpstreamAccount): Promise<UpstreamAccount> {
+async function prepareUpstreamAccount(account: UpstreamAccount, signal?: AbortSignal): Promise<UpstreamAccount> {
   if (account.type !== 'oauth' || !shouldRefreshOpenAIOAuthCredentials(account.credentials) || !account.refreshToken) {
     return account
   }
+  throwIfRequestAborted(signal)
 
   const tokenInfo = await refreshOpenAIOAuthToken({
     refreshToken: account.refreshToken,
     clientId: account.clientId,
-    proxyUrl: account.proxyUrl
+    proxyUrl: account.proxyUrl,
+    signal
   })
   const credentials = {
     ...account.credentials,

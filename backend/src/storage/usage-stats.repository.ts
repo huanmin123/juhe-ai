@@ -77,7 +77,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
   } catch (error) {
     database.exec('ROLLBACK')
     updateStatsJobState(database, {
-      lastErrorMessage: error instanceof Error ? error.message : 'Usage stats aggregation failed',
+      lastErrorMessage: error instanceof Error ? error.message : '用量统计聚合失败',
       lagSeconds: latestUsageStatsLagSeconds()
     })
     throw error

@@ -78,7 +78,7 @@ logger.info({
   pid: process.pid,
   processRole: runtimeConfig.processRole,
   databasePath: runtimeConfig.databasePath
-}, 'Background worker started')
+}, '后台 worker 已启动')
 
 function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
   const auditRuntime = getAuditLogQueueRuntime()

@@ -130,6 +130,7 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
 function findOpenAIModelPricing(model: string): RawModelPricing | undefined {
   const normalized = normalizeModel(model)
   if (!normalized) return undefined
+  if (isDeprecatedOpenAIModel(normalized)) return undefined
 
   const byExactName = openAIModels.find((item) => normalizeModel(item.model) === normalized)
   if (byExactName) return byExactName
@@ -142,6 +143,41 @@ function findOpenAIModelPricing(model: string): RawModelPricing | undefined {
   return undefined
 }
 
+function isDeprecatedOpenAIModel(model: string): boolean {
+  return deprecatedOpenAIModels.has(model)
+    || model.startsWith('gpt-3.5')
+    || model.startsWith('gpt-4-')
+    || model.startsWith('gpt-4-turbo')
+    || model.startsWith('gpt-4o-realtime-preview')
+    || model.startsWith('gpt-4o-mini-realtime-preview')
+    || model.startsWith('gpt-4o-audio-preview')
+    || model.startsWith('gpt-4o-mini-audio-preview')
+    || model.startsWith('gpt-4o-search-preview')
+    || model.startsWith('gpt-4o-mini-search-preview')
+    || model.startsWith('gpt-5.1-')
+    || model.startsWith('gpt-5.2-')
+}
+
+const deprecatedOpenAIModels = new Set([
+  'gpt-3.5-turbo',
+  'gpt-4',
+  'gpt-4-turbo',
+  'gpt-4-turbo-preview',
+  'gpt-4o-2024-05-13',
+  'gpt-5-chat-latest',
+  'gpt-5-codex',
+  'gpt-5.1-chat-latest',
+  'gpt-5.1-codex',
+  'gpt-5.1-codex-max',
+  'gpt-5.1-codex-mini',
+  'gpt-5.2-codex',
+  'gpt-image-1',
+  'o1-2024-12-17',
+  'o1-pro-2025-03-19',
+  'o3-mini-2025-01-31',
+  'o4-mini-2025-04-16'
+])
+
 function buildModelCandidates(model: string): string[] {
   const candidates = new Set<string>()
   const withoutDate = model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
@@ -151,23 +187,15 @@ function buildModelCandidates(model: string): string[] {
   if (model.startsWith('gpt-5.4-mini-')) candidates.add('gpt-5.4-mini')
   if (model.startsWith('gpt-5.4-nano-')) candidates.add('gpt-5.4-nano')
   if (model.startsWith('gpt-5.4-')) candidates.add('gpt-5.4')
-  if (model.startsWith('gpt-5.3-codex-spark')) candidates.add('gpt-5.3-codex-spark')
-  if (model.startsWith('gpt-5.3-codex')) candidates.add('gpt-5.3-codex')
+  if (model === 'gpt-5.3-codex') candidates.add('gpt-5.3-codex')
   if (model.startsWith('gpt-5.3-')) candidates.add('gpt-5.3-chat-latest')
-  if (model.startsWith('gpt-5.2-codex')) candidates.add('gpt-5.2-codex')
-  if (model.startsWith('gpt-5.2-')) candidates.add('gpt-5.2')
-  if (model.startsWith('gpt-5.1-codex-mini')) candidates.add('gpt-5.1-codex-mini')
-  if (model.startsWith('gpt-5.1-codex-max')) candidates.add('gpt-5.1-codex-max')
-  if (model.startsWith('gpt-5.1-codex')) candidates.add('gpt-5.1-codex')
-  if (model.startsWith('gpt-5.1-')) candidates.add('gpt-5.1')
-  if (model.startsWith('gpt-5-mini-')) candidates.add('gpt-5-mini')
-  if (model.startsWith('gpt-5-nano-')) candidates.add('gpt-5-nano')
-  if (model.startsWith('gpt-5-')) candidates.add('gpt-5')
-  if (model.startsWith('gpt-4.1-mini-')) candidates.add('gpt-4.1-mini')
+  if (model.startsWith('gpt-image-2-')) candidates.add('gpt-image-2')
+  if (model.startsWith('gpt-realtime-mini-')) candidates.add('gpt-realtime-mini')
   if (model.startsWith('gpt-4.1-nano-')) candidates.add('gpt-4.1-nano')
+  if (model.startsWith('gpt-4.1-mini-')) candidates.add('gpt-4.1-mini')
   if (model.startsWith('gpt-4.1-')) candidates.add('gpt-4.1')
-  if (model.startsWith('gpt-4o-mini-')) candidates.add('gpt-4o-mini')
-  if (model.startsWith('gpt-4o-')) candidates.add('gpt-4o')
+  if (model.startsWith('gpt-4o-mini-transcribe-')) candidates.add('gpt-4o-mini-transcribe')
+  if (model.startsWith('gpt-4o-mini-tts-')) candidates.add('gpt-4o-mini-tts')
 
   return Array.from(candidates)
 }

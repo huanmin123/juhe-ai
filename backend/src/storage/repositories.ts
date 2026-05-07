@@ -182,6 +182,13 @@ export {
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
 } from './openai-account-selector.repository.js'
+export {
+  listAccountQualityProbeCandidates,
+  recordAccountQualityProbe,
+  refreshAccountQualityFromUsage,
+  type AccountQualityRefreshCandidate,
+  type AccountQualityRealtimeRefreshResult
+} from './account-quality.repository.js'
 
 interface AccountUsageAggregateRow {
   account_id: string
@@ -333,9 +340,9 @@ export function resolveAccountSystemAccountId(accountId: string): string | undef
   return accountSystemAccountId(accountId)
 }
 
-function groupOwnerAndProvider(groupId: string): { systemAccountId: string; providerCode: ProviderCode } | undefined {
-  const row = getDatabase().prepare('SELECT system_account_id, provider_code FROM groups WHERE id = ?').get(groupId) as unknown as { system_account_id?: string; provider_code?: ProviderCode } | undefined
-  return row?.system_account_id && row.provider_code ? { systemAccountId: row.system_account_id, providerCode: row.provider_code } : undefined
+function groupOwnerAndProvider(groupId: string): { systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined {
+  const row = getDatabase().prepare('SELECT system_account_id, provider_code, name FROM groups WHERE id = ?').get(groupId) as unknown as { system_account_id?: string; provider_code?: ProviderCode; name?: string } | undefined
+  return row?.system_account_id && row.provider_code ? { systemAccountId: row.system_account_id, providerCode: row.provider_code, name: row.name } : undefined
 }
 
 function apiKeySystemAccountId(apiKeyId: string): string | undefined {
@@ -367,6 +374,7 @@ function disableExpiredAccounts(access?: AccessScope): void {
       UPDATE accounts
       SET status = 'disabled',
           schedulable = 0,
+          super_priority_enabled = 0,
           cooldown_until = NULL,
           last_error_message = ?,
           updated_at = ?
@@ -422,6 +430,17 @@ function isCoolingAccountStatus(status: AccountStatus): boolean {
 
 function boolInt(value: unknown, fallback: boolean): number {
   return typeof value === 'boolean' ? (value ? 1 : 0) : fallback ? 1 : 0
+}
+
+function normalizeSuperPriorityInput(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') return value
+  if (value === 1 || value === '1') return true
+  if (value === 0 || value === '0') return false
+  return fallback
+}
+
+function effectiveSuperPriorityEnabled(status: AccountStatus, value: unknown): boolean {
+  return status === 'active' && normalizeSuperPriorityInput(value, false)
 }
 
 function usageScope(rowKey: string, systemAccountId: string, scopeId: string): UsageSummaryScopeRequest {
@@ -585,6 +604,15 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       concurrencyLimit: isAuthorizedView ? 0 : row.concurrency_limit,
       currentConcurrency: isAuthorizedView ? 0 : (currentConcurrencyByAccount.get(row.id) ?? 0),
       priority: isAuthorizedView ? 0 : row.priority,
+      superPriorityEnabled: !isAuthorizedView && row.status === 'active' && row.super_priority_enabled === 1,
+      qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
+      qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
+      qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
+      qualityRecentAvgFirstTokenMs: typeof row.quality_recent_avg_first_token_ms === 'number' ? row.quality_recent_avg_first_token_ms : undefined,
+      qualityRecentRequestCount: typeof row.quality_recent_request_count === 'number' ? row.quality_recent_request_count : undefined,
+      qualityRecentSuccessRate: typeof row.quality_recent_success_rate === 'number' ? row.quality_recent_success_rate : undefined,
+      qualityLastProbeAt: row.quality_last_probe_at ?? undefined,
+      qualityUpdatedAt: row.quality_updated_at ?? undefined,
       proxyProfileId: isAuthorizedView ? undefined : row.proxy_profile_id ?? undefined,
       passthroughEnabled: isAuthorizedView ? false : row.passthrough_enabled === 1,
       errorPolicyId: isAuthorizedView ? undefined : row.error_policy_id ?? undefined,
@@ -680,8 +708,6 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       FROM accounts
       WHERE provider_code = 'openai'
         AND type IN ('api_key', 'oauth')
-        AND schedulable = 1
-        AND status IN ('rate_limited', 'temporary_unavailable')
         AND cooldown_until IS NOT NULL
         AND cooldown_until <= ?
         AND (account_expires_at IS NULL OR account_expires_at > ?)
@@ -708,6 +734,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       concurrencyLimit: row.concurrency_limit,
       currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
       priority: row.priority,
+      superPriorityEnabled: row.status === 'active' && row.super_priority_enabled === 1,
       proxyProfileId: row.proxy_profile_id ?? undefined,
       passthroughEnabled: row.passthrough_enabled === 1,
       errorPolicyId: row.error_policy_id ?? undefined,
@@ -756,11 +783,11 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     : undefined
   const groupId = explicitGroupId ?? defaultGroupIdForSystemAccount(providerCode, systemAccountId)
   if (!groupId) {
-    throw new Error('Account group is required')
+    throw new Error('账户分组不能为空')
   }
   const group = explicitGroupId === groupId ? explicitGroup : groupOwnerAndProvider(groupId)
   if (!group || group.systemAccountId !== systemAccountId || group.providerCode !== providerCode) {
-    throw new Error('Invalid account group')
+    throw new Error('账户分组无效')
   }
   const proxyProfileId = globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
   const account: AccountSummary = {
@@ -776,6 +803,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? DEFAULT_ACCOUNT_CONCURRENCY_LIMIT),
     currentConcurrency: 0,
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? 0),
+    superPriorityEnabled: effectiveSuperPriorityEnabled(nextStatus, input.superPriorityEnabled ?? input.super_priority_enabled),
     proxyProfileId,
     passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
@@ -785,7 +813,10 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     lastErrorMessage: expiredByPackage ? '账户套餐已过期，已自动停用' : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     lastUsedAt: undefined,
     todayUsage: emptyAccountUsageSummary(),
-    usage: emptyAccountUsageSummary()
+    usage: emptyAccountUsageSummary(),
+    boundGroupId: groupId,
+    boundGroupName: group.name ?? groupId,
+    groupBindStatus: 'bound'
   }
 
   const database = getDatabase()
@@ -796,8 +827,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
-          priority, schedulable, notes, account_expires_at, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          priority, super_priority_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -814,6 +845,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.passthroughEnabled ? 1 : 0,
         account.errorPolicyId ?? null,
         account.priority,
+        account.superPriorityEnabled ? 1 : 0,
         account.schedulable ? 1 : 0,
         optionalString(input.notes) ?? null,
         account.accountExpiresAt ?? null,
@@ -877,7 +909,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
   const requestedStatus = hasStatusInput ? normalizeAccountStatus(input.status, current.status) : current.status
   if (hasStatusInput && requestedStatus === 'active' && isCoolingAccountStatus(current.status)) {
-    throw new Error('临时不可调用或限流中的账户不能手动启用，请等待后台复测或先执行实际测试')
+    throw new Error('临时不可调用或限流中的账户不能通过启用账户恢复，请使用恢复正常或先执行实际测试')
   }
   const nextStatus = expiredByPackage ? 'disabled' : requestedStatus
   let nextCooldownUntil = current.cooldownUntil
@@ -897,6 +929,16 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     nextCooldownUntil = undefined
     nextLastErrorMessage = '账户套餐已过期，已自动停用'
   }
+  const hasSuperPriorityInput = Object.prototype.hasOwnProperty.call(input, 'superPriorityEnabled')
+    || Object.prototype.hasOwnProperty.call(input, 'super_priority_enabled')
+  const requestedSuperPriority = normalizeSuperPriorityInput(
+    Object.prototype.hasOwnProperty.call(input, 'superPriorityEnabled') ? input.superPriorityEnabled : input.super_priority_enabled,
+    current.superPriorityEnabled
+  )
+  if (hasSuperPriorityInput && requestedSuperPriority && nextStatus !== 'active') {
+    throw new Error('只有正常状态的账户可以设置超级优先')
+  }
+  const nextSuperPriorityEnabled = nextStatus === 'active' ? requestedSuperPriority : false
 
   const next: AccountSummary = {
     ...current,
@@ -906,12 +948,19 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     status: nextStatus,
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? current.concurrencyLimit),
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? current.priority),
+    superPriorityEnabled: nextSuperPriorityEnabled,
     proxyProfileId: Object.prototype.hasOwnProperty.call(input, 'proxyProfileId') || Object.prototype.hasOwnProperty.call(input, 'proxy_profile_id')
       ? globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
       : current.proxyProfileId,
     passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
-    schedulable: expiredByPackage ? false : hasStatusInput ? nextStatus === 'active' : typeof input.schedulable === 'boolean' ? input.schedulable : current.schedulable,
+    schedulable: expiredByPackage
+      ? false
+      : hasStatusInput
+        ? !['disabled', 'error'].includes(nextStatus)
+        : typeof input.schedulable === 'boolean'
+          ? input.schedulable
+          : current.schedulable,
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
     lastErrorMessage: nextLastErrorMessage,
@@ -925,7 +974,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       UPDATE accounts
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
-            error_policy_id = ?, priority = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
+            error_policy_id = ?, priority = ?, super_priority_enabled = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
       .run(
@@ -940,6 +989,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.passthroughEnabled ? 1 : 0,
         next.errorPolicyId ?? null,
         next.priority,
+        next.superPriorityEnabled ? 1 : 0,
         next.schedulable ? 1 : 0,
         next.accountExpiresAt ?? null,
         next.cooldownUntil ?? null,
@@ -994,6 +1044,7 @@ export function clearAccountFailureState(
         UPDATE accounts
         SET status = 'disabled',
             schedulable = 0,
+            super_priority_enabled = 0,
             cooldown_until = NULL,
             last_error_message = ?,
             stream_failure_count = 0,
@@ -1012,6 +1063,7 @@ export function clearAccountFailureState(
     .prepare(`
       UPDATE accounts
       SET status = 'active',
+          schedulable = 1,
           cooldown_until = NULL,
           last_error_message = NULL,
           stream_failure_count = 0,
@@ -1040,6 +1092,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
         UPDATE accounts
         SET status = 'disabled',
             schedulable = 0,
+            super_priority_enabled = 0,
             cooldown_until = NULL,
             last_error_message = ?,
             stream_failure_count = 0,
@@ -1060,6 +1113,8 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
     .prepare(`
       UPDATE accounts
       SET status = ?,
+          schedulable = 1,
+          super_priority_enabled = 0,
           cooldown_until = ?,
           last_error_message = ?,
           stream_failure_count = 0,
@@ -1122,6 +1177,7 @@ export function migrateAccountTraffic(input: {
           UPDATE accounts
           SET status = 'disabled',
               schedulable = 0,
+              super_priority_enabled = 0,
               cooldown_until = NULL,
               last_error_message = ?,
               stream_failure_count = 0,
@@ -1134,6 +1190,7 @@ export function migrateAccountTraffic(input: {
         .prepare(`
           UPDATE accounts
           SET status = 'temporary_unavailable',
+              super_priority_enabled = 0,
               cooldown_until = ?,
               last_error_message = ?,
               stream_failure_count = 0,
@@ -1173,6 +1230,7 @@ export function markAccountDisabledByFailure(id: string, reason: string): Accoun
       UPDATE accounts
       SET status = 'error',
           schedulable = 0,
+          super_priority_enabled = 0,
           cooldown_until = NULL,
           last_error_message = ?,
           stream_failure_count = 0,
@@ -1352,7 +1410,7 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
 export function deleteGroup(id: string, access?: AccessScope): boolean {
   const current = listGroups(access).find((group) => group.id === id)
   if (current?.isDefault) {
-    throw new Error('Default group cannot be deleted')
+    throw new Error('默认分组不能删除')
   }
   const owner = groupOwnerAndProvider(id)
   if (!owner || !canManageResourceOwner(owner.systemAccountId, access)) {
@@ -1499,7 +1557,7 @@ export function createSystemTeam(input: Record<string, unknown>, access?: Access
     .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(id, name, optionalString(input.description) ?? null, input.status === 'disabled' ? 'disabled' : 'active', currentSystemAccountId(access), now, now)
   const created = listSystemTeams(access).find((team) => team.id === id)
-  if (!created) throw new Error('Create system team failed')
+  if (!created) throw new Error('创建团队失败')
   return created
 }
 
@@ -1685,7 +1743,7 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
   const created = ids.length ? listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === ids[0]) : undefined
   if (created) return created
   const fallback = listResourceAuthorizations({ resourceType, resourceId, teamId: granteeType === 'team' ? granteeId : undefined, status: 'all' }, access)[0]
-  if (!fallback) throw new Error('Create resource authorization failed')
+  if (!fallback) throw new Error('创建资源授权失败')
   return fallback
 }
 
@@ -1925,7 +1983,7 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
   }
   refreshResourceAuthorizationEffectiveSource(authorizationId, input.actor, input.now, input.database)
   const row = input.database.prepare('SELECT * FROM resource_authorizations WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
-  if (!row) throw new Error('Create resource authorization failed')
+  if (!row) throw new Error('创建资源授权失败')
   return row
 }
 
@@ -2080,7 +2138,7 @@ function upsertTeamResourceGrant(input: { resourceType: ResourceAuthorizationRes
       .run(id, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.teamId, input.remark ?? null, input.expiresAt ?? null, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
   }
   const row = input.database.prepare('SELECT * FROM team_resource_authorization_grants WHERE id = ?').get(id) as unknown as TeamResourceAuthorizationGrantRow | undefined
-  if (!row) throw new Error('Create team authorization grant failed')
+  if (!row) throw new Error('创建团队授权失败')
   return row
 }
 

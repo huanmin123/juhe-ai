@@ -133,7 +133,11 @@ class MultiDestinationLogStream extends Writable {
 const fileLogStream = runtimeConfig.log.fileEnabled
   ? new RotatingFileLogStream({
     directory: runtimeConfig.log.directory,
-    fileName: runtimeConfig.processRole === 'worker' ? 'juhe-ai.worker.log' : 'juhe-ai.log',
+    fileName: runtimeConfig.processRole === 'worker'
+      ? 'juhe-ai.worker.log'
+      : runtimeConfig.processRole === 'db-service'
+        ? 'juhe-ai.db-service.log'
+        : 'juhe-ai.log',
     maxFileBytes: runtimeConfig.log.maxFileBytes,
     retentionDays: runtimeConfig.log.retentionDays,
     maxFiles: runtimeConfig.log.maxFiles
@@ -204,11 +208,11 @@ export function startLogMaintenance(): void {
 
 export function installProcessLogHandlers(): void {
   process.on('unhandledRejection', (reason) => {
-    logger.error(errorLogFields(reason, { event: 'process_unhandled_rejection' }), 'Unhandled promise rejection')
+    logger.error(errorLogFields(reason, { event: 'process_unhandled_rejection' }), '未处理的 Promise 拒绝')
   })
 
   process.on('uncaughtException', (error) => {
-    logger.fatal({ event: 'process_uncaught_exception', err: error }, 'Uncaught exception')
+    logger.fatal({ event: 'process_uncaught_exception', err: error }, '未捕获异常')
     setImmediate(() => process.exit(1))
   })
 }

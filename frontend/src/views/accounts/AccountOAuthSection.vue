@@ -18,59 +18,14 @@
     </template>
 
     <template v-else-if="isOpenAI">
-      <a-form-item class="oauth-mode-item" label="授权方式">
-        <a-segmented v-model:value="form.oauthMode" :options="oauthModeOptions" block />
-      </a-form-item>
-
-      <template v-if="form.oauthMode === 'manual'">
-        <div class="oauth-flow-panel">
-          <div class="oauth-step-grid">
-            <div class="oauth-step-card">
-              <span>1</span>
-              <div>
-                <strong>生成链接</strong>
-                <small>获取本次授权地址</small>
-              </div>
-            </div>
-            <div class="oauth-step-card">
-              <span>2</span>
-              <div>
-                <strong>浏览器授权</strong>
-                <small>登录 OpenAI 并允许跳转</small>
-              </div>
-            </div>
-            <div class="oauth-step-card">
-              <span>3</span>
-              <div>
-                <strong>粘贴回调 URL</strong>
-                <small>保留 code 与 state 参数</small>
-              </div>
-            </div>
-          </div>
-          <a-alert class="form-alert" type="info" show-icon message="浏览器最终跳转到本地回调地址；如果页面显示连接失败，复制地址栏完整 URL 粘贴回来即可。" />
-        </div>
-        <div class="oauth-actions">
-          <a-button type="primary" :loading="authLoading" @click="$emit('generate-auth-url')">生成授权链接</a-button>
-          <a-button :disabled="!authResult?.authUrl" @click="$emit('open-auth-url')">打开授权链接</a-button>
-          <a-button :disabled="!authResult?.authUrl" @click="$emit('copy-auth-url', authResult?.authUrl || '')">复制授权链接</a-button>
-        </div>
-        <a-form-item v-if="authResult" class="oauth-url-field" label="授权链接">
-          <a-textarea :value="authResult.authUrl" :rows="3" readonly />
-        </a-form-item>
-        <a-form-item class="oauth-callback-field" label="回调 URL" required>
-          <a-textarea v-model:value="form.callbackUrl" :rows="3" placeholder="粘贴浏览器地址栏里的 http://localhost:1455/auth/callback?code=...&state=..." />
-          <div class="form-help">需要粘贴完整地址，不能只粘贴 code 或 state。</div>
-        </a-form-item>
-      </template>
-
-      <template v-else>
-        <div class="oauth-token-panel">
-          <a-alert class="form-alert" type="info" show-icon message="已有 Refresh Token 时可跳过浏览器授权，后端会换取 Access Token 后创建账户。" />
-          <a-form-item class="oauth-token-field" label="Refresh Token" required>
-            <a-textarea v-model:value="form.refreshToken" :rows="4" placeholder="粘贴 OpenAI 的 Refresh Token" />
-          </a-form-item>
-        </div>
-      </template>
+      <AccountOAuthAuthorizePanel
+        :auth-loading="authLoading"
+        :auth-result="authResult"
+        :form="form"
+        @copy-auth-url="$emit('copy-auth-url', $event)"
+        @generate-auth-url="$emit('generate-auth-url')"
+        @open-auth-url="$emit('open-auth-url')"
+      />
     </template>
 
     <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，第一期先支持 OpenAI OAuth。" />
@@ -79,12 +34,8 @@
 
 <script setup lang="ts">
 import type { OpenAIAuthURLResult } from '@/types/domain'
+import AccountOAuthAuthorizePanel from './AccountOAuthAuthorizePanel.vue'
 import type { AccountFormModel } from './accountFormTypes'
-
-const oauthModeOptions = [
-  { label: '手动授权', value: 'manual' },
-  { label: '粘贴 Refresh Token', value: 'refresh_token' }
-]
 
 defineProps<{
   authLoading: boolean

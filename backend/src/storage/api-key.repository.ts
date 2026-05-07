@@ -171,18 +171,18 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : typeof input.group_id === 'string' && input.group_id ? input.group_id : undefined
   const groupId = explicitGroupId ?? defaultOpenAIGroupIdForSystemAccount(systemAccountId)
   if (!groupId) {
-    throw new Error('Invalid API key group')
+    throw new Error('API Key 分组无效')
   }
   const group = groupOwnerAndProvider(groupId)
   if (group && !scopedOwnerId && canManageApiKeyOwner(group.systemAccountId, access)) {
     systemAccountId = group.systemAccountId
   }
   if (!group || !canUseGroup(groupId, systemAccountId)) {
-    throw new Error('Invalid API key group')
+    throw new Error('API Key 分组无效')
   }
   const groupAuthorization = group.systemAccountId !== systemAccountId ? activeGroupAuthorization(groupId, systemAccountId) : undefined
   if (group.systemAccountId !== systemAccountId && !groupAuthorization) {
-    throw new Error('Invalid API key group')
+    throw new Error('API Key 分组无效')
   }
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const record: ApiKeySummary & { key: string } = {

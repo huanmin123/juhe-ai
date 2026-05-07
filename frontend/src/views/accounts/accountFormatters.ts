@@ -69,7 +69,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     lines.push(cooldownText)
   } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
     lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
-    lines.push('等待后台复测；也可手动测试，成功后恢复正常')
+    lines.push('等待后台复测；也可手动测试或在更多菜单恢复正常')
   }
   if (account.lastErrorMessage) {
     lines.push(`原因：${account.lastErrorMessage}`)
@@ -194,6 +194,12 @@ export function formatTestTerminalResult(result: AccountTestResult): string {
   const rawText = result.responseText?.trim()
   if (!rawText || rawText === result.message.trim()) return ''
   return rawText
+}
+
+export function formatAccountTestDuration(value?: number): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '-'
+  if (value < 1000) return `${Math.max(0, Math.round(value))} ms`
+  return `${(value / 1000).toFixed(2)} s`
 }
 
 function oauthUsageBar(key: string, label: string, window?: { utilization: number; resetsAt?: string; remainingSeconds: number }): OAuthUsageBar | undefined {

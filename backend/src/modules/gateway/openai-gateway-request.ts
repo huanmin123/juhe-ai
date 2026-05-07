@@ -18,8 +18,8 @@ export function resolveGatewayApiKey(req: Request, res: Response): GatewayApiKey
       event: 'gateway_auth_failed',
       reason: 'missing_bearer_token',
       endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
-    }, 'Gateway authentication failed')
-    sendGatewayJsonError(res, 401, gatewayErrorPayload('Missing bearer token', 'invalid_request_error'))
+    }, '网关认证失败')
+    sendGatewayJsonError(res, 401, gatewayErrorPayload('缺少 Bearer Token', 'invalid_request_error'))
     return undefined
   }
 
@@ -29,8 +29,8 @@ export function resolveGatewayApiKey(req: Request, res: Response): GatewayApiKey
       event: 'gateway_auth_failed',
       reason: 'invalid_api_key',
       endpoint: `${req.method.toUpperCase()} ${sanitizeUrlForLog(req.originalUrl)}`
-    }, 'Gateway authentication failed')
-    sendGatewayJsonError(res, 401, gatewayErrorPayload('Invalid API key', 'invalid_request_error'))
+    }, '网关认证失败')
+    sendGatewayJsonError(res, 401, gatewayErrorPayload('API Key 无效', 'invalid_request_error'))
     return undefined
   }
 

@@ -52,7 +52,7 @@ function startWorkerProcess(): void {
     pid: child.pid,
     modulePath: entry.modulePath,
     execArgv: entry.execArgv
-  }, 'Background worker spawned')
+  }, '后台 worker 已创建')
 
   child.once('exit', (code, signal) => {
     workerProcess = undefined
@@ -62,7 +62,7 @@ function startWorkerProcess(): void {
       code,
       signal,
       stopping
-    }, 'Background worker exited')
+    }, '后台 worker 已退出')
     if (!stopping) {
       scheduleWorkerRestart()
     }
@@ -71,7 +71,7 @@ function startWorkerProcess(): void {
   child.once('error', (error) => {
     logger.error(errorLogFields(error, {
       event: 'background_worker_spawn_failed'
-    }), 'Background worker failed')
+    }), '后台 worker 启动失败')
   })
 }
 

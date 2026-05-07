@@ -25,6 +25,7 @@ interface UpstreamRequestOptions {
   proxyUrl?: string
   timeoutMs?: number
   requestTimeoutMs?: number
+  signal?: AbortSignal
 }
 
 interface UpstreamHeaderAccount {
@@ -37,6 +38,7 @@ interface UpstreamHeaderAccount {
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
 export class UpstreamRequestTimeoutError extends Error {}
+export class UpstreamRequestAbortedError extends Error {}
 export class UpstreamStreamPreloadFailedError extends Error {
   constructor(
     message: string,
@@ -105,13 +107,28 @@ class PreloadedGatewayUpstreamResponse implements GatewayUpstreamResponse {
 
 export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
   return new Promise((resolve, reject) => {
+    let settled = false
+    const settleResolve = (response: GatewayUpstreamResponse) => {
+      if (settled) return
+      settled = true
+      resolve(response)
+    }
+    const settleReject = (error: unknown) => {
+      if (settled) return
+      settled = true
+      reject(error)
+    }
+    if (options.signal?.aborted) {
+      settleReject(new UpstreamRequestAbortedError('请求已取消'))
+      return
+    }
     const url = new URL(upstreamUrl)
     const transport = url.protocol === 'http:' ? http : https
     let agent: http.Agent | undefined
     try {
       agent = options.proxyUrl ? createProxyAgent(options.proxyUrl) as http.Agent : undefined
     } catch (error) {
-      reject(error)
+      settleReject(error)
       return
     }
     const requestOptions: http.RequestOptions = {
@@ -128,18 +145,28 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
     }
     const request = transport.request(url, requestOptions, (message) => {
       clearRequestTimeout()
-      resolve(new NodeGatewayUpstreamResponse(message))
+      bindAbortSignalToIncomingMessage(message, options.signal)
+      settleResolve(new NodeGatewayUpstreamResponse(message))
     })
-    const abort = () => request.destroy(new Error('Upstream request timed out'))
+    const abort = () => request.destroy(new Error('上游请求超时'))
+    const abortBySignal = () => request.destroy(new UpstreamRequestAbortedError('请求已取消'))
 
     if (options.requestTimeoutMs !== undefined) {
       const seconds = Math.ceil(options.requestTimeoutMs / 1000)
-      requestTimeout = setTimeout(() => request.destroy(new UpstreamRequestTimeoutError(`Upstream stream request timeout after ${seconds}s`)), options.requestTimeoutMs)
+      requestTimeout = setTimeout(() => request.destroy(new UpstreamRequestTimeoutError(`上游流式请求 ${seconds}s 后仍未返回首个响应`)), options.requestTimeoutMs)
     }
     request.setTimeout(options.timeoutMs ?? 120000, abort)
+    options.signal?.addEventListener('abort', abortBySignal, { once: true })
+    const cleanupAbortSignal = () => options.signal?.removeEventListener('abort', abortBySignal)
     request.on('error', (error) => {
       clearRequestTimeout()
-      reject(error)
+      cleanupAbortSignal()
+      settleReject(error)
+    })
+    request.on('response', cleanupAbortSignal)
+    request.on('close', () => {
+      clearRequestTimeout()
+      cleanupAbortSignal()
     })
     if (options.body) {
       request.write(options.body)
@@ -150,10 +177,11 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
 
 export async function preloadStreamResponseFirstChunk(
   response: GatewayUpstreamResponse,
-  settings: GatewaySettings
+  settings: GatewaySettings,
+  signal?: AbortSignal
 ): Promise<GatewayUpstreamResponse> {
   if (!response.body) {
-    throw new Error('Upstream stream response has no body')
+    throw new Error('上游流式响应没有响应体')
   }
   const iterator = response.body[Symbol.asyncIterator]()
   const chunks: Buffer[] = []
@@ -162,10 +190,11 @@ export async function preloadStreamResponseFirstChunk(
       const result = await readStreamChunkWithTimeout(
         iterator,
         settings.streamRequestTimeoutSeconds,
-        () => new UpstreamRequestTimeoutError(`Upstream stream request timeout after ${settings.streamRequestTimeoutSeconds}s`)
+        () => new UpstreamRequestTimeoutError(`上游流式请求 ${settings.streamRequestTimeoutSeconds}s 后仍未返回首个响应`),
+        signal
       )
       if (result.done) {
-        throw new UpstreamStreamPreloadFailedError('Upstream stream ended before first output or terminal event', chunks)
+        throw new UpstreamStreamPreloadFailedError('上游流在首个输出或终止事件前结束', chunks)
       }
 
       const buffer = Buffer.from(result.value)
@@ -179,7 +208,7 @@ export async function preloadStreamResponseFirstChunk(
         if (!isOpenAIStreamServerOverloadedErrorCode(inspection.errorCode)) {
           return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
         }
-        const message = inspection.errorMessage ?? 'Upstream stream failed before first output'
+        const message = inspection.errorMessage ?? '上游流在首个输出前失败'
         throw new UpstreamStreamPreloadFailedError(message, chunks, inspection.errorCode)
       }
       if (inspection.terminalReceived) {
@@ -197,15 +226,29 @@ export function isRetryableUpstreamStreamPreloadError(error: unknown): boolean {
     || (error instanceof UpstreamStreamPreloadFailedError && isOpenAIStreamServerOverloadedErrorCode(error.errorCode))
 }
 
+export function isUpstreamRequestAbortedError(error: unknown): boolean {
+  return error instanceof UpstreamRequestAbortedError
+    || (error instanceof Error && error.message === '请求已取消')
+}
+
 export async function readStreamChunkWithIdleTimeout(
   iterator: AsyncIterator<Uint8Array>,
-  timeoutSeconds: number
+  timeoutSeconds: number,
+  signal?: AbortSignal
 ): Promise<IteratorResult<Uint8Array>> {
   return readStreamChunkWithTimeout(
     iterator,
     timeoutSeconds,
-    () => new Error(`Upstream stream idle timeout after ${timeoutSeconds}s`)
+    () => new Error(`上游流 ${timeoutSeconds}s 无数据，已超时`),
+    signal
   )
+}
+
+export async function readStreamChunkWithAbort(
+  iterator: AsyncIterator<Uint8Array>,
+  signal?: AbortSignal
+): Promise<IteratorResult<Uint8Array>> {
+  return readStreamChunkWithTimeout(iterator, undefined, () => new Error(''), signal)
 }
 
 export function upstreamSocketTimeoutMs(req: Request, settings: GatewaySettings): number {
@@ -380,22 +423,48 @@ async function collectIncomingBody(message: IncomingMessage): Promise<Buffer> {
 
 async function readStreamChunkWithTimeout(
   iterator: AsyncIterator<Uint8Array>,
-  timeoutSeconds: number,
-  createError: () => Error
+  timeoutSeconds: number | undefined,
+  createError: () => Error,
+  signal?: AbortSignal
 ): Promise<IteratorResult<Uint8Array>> {
   let timeout: NodeJS.Timeout | undefined
+  let abortListener: (() => void) | undefined
   try {
-    return await Promise.race([
-      iterator.next(),
-      new Promise<IteratorResult<Uint8Array>>((_, reject) => {
+    const races: Array<Promise<IteratorResult<Uint8Array>>> = [iterator.next()]
+    if (timeoutSeconds !== undefined) {
+      races.push(new Promise<IteratorResult<Uint8Array>>((_, reject) => {
         timeout = setTimeout(() => reject(createError()), timeoutSeconds * 1000)
-      })
-    ])
+      }))
+    }
+    if (signal) {
+      if (signal.aborted) {
+        throw new UpstreamRequestAbortedError('请求已取消')
+      }
+      races.push(new Promise<IteratorResult<Uint8Array>>((_, reject) => {
+        abortListener = () => reject(new UpstreamRequestAbortedError('请求已取消'))
+        signal.addEventListener('abort', abortListener, { once: true })
+      }))
+    }
+    return await Promise.race(races)
   } finally {
     if (timeout) {
       clearTimeout(timeout)
     }
+    if (signal && abortListener) {
+      signal.removeEventListener('abort', abortListener)
+    }
   }
+}
+
+function bindAbortSignalToIncomingMessage(message: IncomingMessage, signal?: AbortSignal): void {
+  if (!signal) return
+  const abort = () => message.destroy(new UpstreamRequestAbortedError('请求已取消'))
+  if (signal.aborted) {
+    abort()
+    return
+  }
+  signal.addEventListener('abort', abort, { once: true })
+  message.once('close', () => signal.removeEventListener('abort', abort))
 }
 
 async function closeAsyncIterator(iterator: AsyncIterator<Uint8Array>): Promise<void> {

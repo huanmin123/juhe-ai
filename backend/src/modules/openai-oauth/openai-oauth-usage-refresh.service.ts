@@ -53,12 +53,12 @@ export async function refreshOpenAIOAuthUsageSnapshot(
           status: 'rate_limited',
           attemptedAt,
           nextRefreshAfter: resetAt,
-          errorMessage: 'OpenAI OAuth usage limit reached'
+          errorMessage: 'OpenAI OAuth 用量额度已达到上限'
         })
         return { status: 'rate_limited', statusCode: response.statusCode, persisted, nextRefreshAfter: resetAt }
       }
       const nextRefreshAfter = nextBackoffAt()
-      const errorMessage = `OpenAI OAuth usage refresh rate limited; HTTP ${response.statusCode}`
+      const errorMessage = `OpenAI OAuth 用量刷新触发限流；HTTP ${response.statusCode}`
       updateAccountUsageSnapshotRefreshState({
         accountId: account.id,
         kind: 'openai_codex',
@@ -71,8 +71,8 @@ export async function refreshOpenAIOAuthUsageSnapshot(
     }
     if (!response.success || !persisted) {
       const errorMessage = response.success
-        ? `Codex usage headers missing; HTTP ${response.statusCode ?? 'unknown'}`
-        : response.message || `OpenAI OAuth usage refresh failed; HTTP ${response.statusCode ?? 'unknown'}`
+        ? `Codex 用量响应头缺失；HTTP ${response.statusCode ?? '未知'}`
+        : response.message || `OpenAI OAuth 用量刷新失败；HTTP ${response.statusCode ?? '未知'}`
       const nextRefreshAfter = nextBackoffAt()
       updateAccountUsageSnapshotRefreshState({
         accountId: account.id,
@@ -93,7 +93,7 @@ export async function refreshOpenAIOAuthUsageSnapshot(
     })
     return { status: 'fresh', statusCode: response.statusCode, persisted }
   } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'OpenAI OAuth usage refresh failed'
+    const errorMessage = error instanceof Error ? error.message : 'OpenAI OAuth 用量刷新失败'
     const nextRefreshAfter = nextBackoffAt()
     updateAccountUsageSnapshotRefreshState({
       accountId: account.id,

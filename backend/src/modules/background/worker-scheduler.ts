@@ -46,7 +46,7 @@ export class WorkerScheduler {
       logger.warn({
         event: 'background_job_skipped_running',
         jobName: name
-      }, 'Background job skipped because previous run is still running')
+      }, '后台任务已跳过，上一次运行仍未结束')
       return
     }
 
@@ -57,7 +57,7 @@ export class WorkerScheduler {
       logger.error(errorLogFields(error, {
         event: 'background_job_failed',
         jobName: name
-      }), 'Background job failed')
+      }), '后台任务执行失败')
     } finally {
       state.running = false
     }

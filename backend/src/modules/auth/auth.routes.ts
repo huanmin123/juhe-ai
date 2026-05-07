@@ -31,7 +31,7 @@ authRouter.get('/captcha', (_req, res) => {
 authRouter.post('/login', (req, res) => {
   const parsed = loginSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid login payload'))
+    res.status(400).json(badRequest('登录参数无效'))
     return
   }
 
@@ -90,7 +90,7 @@ authRouter.post('/logout', (req, res) => {
 authRouter.get('/me', requireSessionContext, (_req, res) => {
   const context = getRequestAuthContext()
   if (!context) {
-    res.status(401).json({ message: 'Not authenticated' })
+    res.status(401).json({ message: '请先登录' })
     return
   }
   res.json(ok({
@@ -105,12 +105,12 @@ authRouter.get('/me', requireSessionContext, (_req, res) => {
 authRouter.post('/change-password', requireSessionContext, (req, res) => {
   const context = getRequestAuthContext()
   if (!context) {
-    res.status(401).json({ message: 'Not authenticated' })
+    res.status(401).json({ message: '请先登录' })
     return
   }
   const parsed = passwordSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('Invalid password payload'))
+    res.status(400).json(badRequest('密码参数无效'))
     return
   }
 
@@ -119,7 +119,7 @@ authRouter.post('/change-password', requireSessionContext, (req, res) => {
     mustChangePassword: false
   })
   if (!account) {
-    res.status(404).json({ message: 'System account not found' })
+    res.status(404).json({ message: '系统账户不存在' })
     return
   }
   res.json(ok(account))
@@ -148,13 +148,13 @@ export function clearSessionCookie(res: { cookie: (name: string, value: string, 
 function requireSessionContext(req: Request, res: Response, next: NextFunction): void {
   const token = parseCookie(req.headers.cookie ?? '')[sessionCookieName]
   if (!token) {
-    res.status(401).json({ message: 'Not authenticated' })
+    res.status(401).json({ message: '请先登录' })
     return
   }
 
   const session = findSessionByToken(token)
   if (!session) {
-    res.status(401).json({ message: 'Session expired' })
+    res.status(401).json({ message: '登录会话已过期' })
     return
   }
 

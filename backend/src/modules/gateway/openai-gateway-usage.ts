@@ -175,40 +175,93 @@ export function parseOpenAIUsageFromSseText(text: string): ParsedUsage {
 }
 
 export function inspectOpenAIStreamText(text: string): OpenAIStreamInspection {
-  const inspection: OpenAIStreamInspection = {
+  const inspector = new OpenAIStreamInspector()
+  inspector.pushText(text)
+  return inspector.finish()
+}
+
+export class OpenAIStreamInspector {
+  private inspection: OpenAIStreamInspection = {
     terminalReceived: false,
     failedReceived: false,
     outputReceived: false,
     usage: emptyUsage()
   }
-  let eventName = ''
-  let dataLines: string[] = []
+  private eventName = ''
+  private dataLines: string[] = []
+  private pendingLine = ''
 
-  const flushEvent = () => {
-    if (dataLines.length === 0) {
-      eventName = ''
+  pushChunk(chunk: Buffer | Uint8Array | string): OpenAIStreamInspection {
+    const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
+    return this.pushText(text)
+  }
+
+  pushText(text: string): OpenAIStreamInspection {
+    this.pendingLine += text
+    while (true) {
+      const newlineIndex = this.pendingLine.indexOf('\n')
+      if (newlineIndex < 0) break
+      const rawLine = this.pendingLine.slice(0, newlineIndex)
+      this.pendingLine = this.pendingLine.slice(newlineIndex + 1)
+      this.processLine(rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine)
+    }
+    return this.snapshot()
+  }
+
+  finish(): OpenAIStreamInspection {
+    if (this.pendingLine.length > 0) {
+      const line = this.pendingLine.endsWith('\r') ? this.pendingLine.slice(0, -1) : this.pendingLine
+      this.pendingLine = ''
+      this.processLine(line)
+    }
+    this.flushEvent()
+    return this.snapshot()
+  }
+
+  snapshot(): OpenAIStreamInspection {
+    return {
+      ...this.inspection,
+      usage: { ...this.inspection.usage }
+    }
+  }
+
+  private processLine(line: string): void {
+    if (line === '') {
+      this.flushEvent()
       return
     }
-    const currentEventName = eventName
-    const data = dataLines.join('\n').trim()
-    eventName = ''
-    dataLines = []
+    if (line.startsWith('event:')) {
+      this.eventName = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      this.dataLines.push(line.slice(5).trimStart())
+    }
+  }
+
+  private flushEvent(): void {
+    if (this.dataLines.length === 0) {
+      this.eventName = ''
+      return
+    }
+    const currentEventName = this.eventName
+    const data = this.dataLines.join('\n').trim()
+    this.eventName = ''
+    this.dataLines = []
     if (!data) return
     if (data === '[DONE]') {
-      inspection.terminalReceived = true
+      this.inspection.terminalReceived = true
       return
     }
     try {
       const event = JSON.parse(data) as Record<string, unknown>
       const eventType = typeof event.type === 'string' ? event.type : currentEventName
       if (openAIStreamEventHasOutput(event, eventType)) {
-        inspection.outputReceived = true
+        this.inspection.outputReceived = true
       }
       if (eventType === 'response.completed' || eventType === 'response.done') {
-        inspection.terminalReceived = true
+        this.inspection.terminalReceived = true
       } else if (eventType === 'response.failed') {
-        inspection.terminalReceived = true
-        inspection.failedReceived = true
+        this.inspection.terminalReceived = true
+        this.inspection.failedReceived = true
         const error = typeof event.response === 'object' && event.response !== null
           && typeof (event.response as Record<string, unknown>).error === 'object'
           && (event.response as Record<string, unknown>).error !== null
@@ -216,33 +269,18 @@ export function inspectOpenAIStreamText(text: string): OpenAIStreamInspection {
           : typeof event.error === 'object' && event.error !== null
             ? event.error as Record<string, unknown>
             : undefined
-        inspection.errorCode = typeof error?.code === 'string' ? error.code : inspection.errorCode
-        inspection.errorMessage = typeof error?.message === 'string' ? error.message : inspection.errorMessage
+        this.inspection.errorCode = typeof error?.code === 'string' ? error.code : this.inspection.errorCode
+        this.inspection.errorMessage = typeof error?.message === 'string' ? error.message : this.inspection.errorMessage
       }
       if (eventType === 'response.completed' || eventType === 'response.done' || eventType === 'response.failed') {
         const nextUsage = extractUsage(typeof event.response === 'object' && event.response !== null ? (event.response as Record<string, unknown>).usage : event.usage)
         if (nextUsage.inputTokens !== undefined || nextUsage.outputTokens !== undefined || nextUsage.cacheReadTokens !== undefined) {
-          inspection.usage = nextUsage
+          this.inspection.usage = nextUsage
         }
       }
     } catch {
     }
   }
-
-  for (const line of text.split(/\r?\n/)) {
-    if (line === '') {
-      flushEvent()
-      continue
-    }
-    if (line.startsWith('event:')) {
-      eventName = line.slice(6).trim()
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart())
-    }
-  }
-  flushEvent()
-
-  return inspection
 }
 
 export function isOpenAIStreamServerOverloadedErrorCode(code?: string): boolean {

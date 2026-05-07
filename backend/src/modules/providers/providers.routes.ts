@@ -13,7 +13,7 @@ providersRouter.get('/', (_req, res) => {
 providersRouter.get('/:code/models', (req, res) => {
   const provider = listProviders().find((item) => item.code === req.params.code)
   if (!provider) {
-    res.status(404).json({ message: 'Provider not found' })
+    res.status(404).json({ message: '供应商不存在' })
     return
   }
 
