@@ -90,6 +90,7 @@
       :group-options="groupOptions"
       :has-account-type="hasAccountType"
       :is-api-key-form="isApiKeyForm"
+      :is-management-view="isManagementView"
       :is-o-auth-form="isOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
       :ok-button-props="modalOkButtonProps"

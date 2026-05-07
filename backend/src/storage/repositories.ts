@@ -1620,6 +1620,12 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
     clauses.push('(ra.resource_owner_system_account_id = ? OR ra.grantee_system_account_id = ?)')
     params.push(currentSystemAccountId(access), currentSystemAccountId(access))
   }
+  const direction = authorizationDirectionFilter(filters.direction)
+  const directionSystemAccountId = scopeSystemAccountId ?? (!canAccessAll(access) ? currentSystemAccountId(access) : undefined)
+  if (direction && directionSystemAccountId) {
+    clauses.push(direction === 'outbound' ? 'ra.resource_owner_system_account_id = ?' : 'ra.grantee_system_account_id = ?')
+    params.push(directionSystemAccountId)
+  }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY CASE ra.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, ra.updated_at DESC, ra.created_at DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
   return resourceAuthorizationSummaries(rows).map((summary) => withResourceAuthorizationPermissions(
@@ -1826,6 +1832,10 @@ function normalizeResourceType(value: unknown): ResourceAuthorizationResourceTyp
 
 function normalizeSourceType(value: unknown): ResourceAuthorizationSourceType | undefined {
   return value === 'manual' || value === 'team' ? value : undefined
+}
+
+function authorizationDirectionFilter(value: unknown): 'outbound' | 'inbound' | undefined {
+  return value === 'outbound' || value === 'inbound' ? value : undefined
 }
 
 function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourceType, resourceId: string): string | undefined {

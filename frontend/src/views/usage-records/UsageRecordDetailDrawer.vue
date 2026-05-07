@@ -7,6 +7,18 @@
     @close="$emit('close')"
     @update:open="handleOpenUpdate"
   >
+    <template v-if="record" #extra>
+      <a-space>
+        <a-button size="small" @click="copyTraceId">
+          <template #icon><copy-outlined /></template>
+          Trace ID
+        </a-button>
+        <a-button size="small" @click="copyDiagnosticSummary">
+          <template #icon><copy-outlined /></template>
+          排障摘要
+        </a-button>
+      </a-space>
+    </template>
     <a-empty v-if="!record" description="请选择一条使用记录" />
     <div v-else class="usage-record-detail">
       <section class="detail-section">
@@ -90,12 +102,18 @@
       </section>
 
       <section class="detail-section">
-        <h4>请求快照</h4>
+        <div class="detail-section-head">
+          <h4>请求快照</h4>
+          <a-button size="small" type="link" @click="copySnapshot('request')">复制</a-button>
+        </div>
         <pre class="snapshot-block">{{ formatSnapshot(record.requestSnapshot) }}</pre>
       </section>
 
       <section class="detail-section">
-        <h4>响应快照</h4>
+        <div class="detail-section-head">
+          <h4>响应快照</h4>
+          <a-button size="small" type="link" @click="copySnapshot('response')">复制</a-button>
+        </div>
         <pre class="snapshot-block">{{ formatSnapshot(record.responseSnapshot) }}</pre>
       </section>
     </div>
@@ -103,6 +121,9 @@
 </template>
 
 <script setup lang="ts">
+import { CopyOutlined } from '@ant-design/icons-vue'
+
+import { message } from '@/lib/antd'
 import type { UsageRecordSummary } from '@/types/domain'
 import {
   accountDisplayText,
@@ -117,7 +138,7 @@ import {
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
 
-defineProps<{
+const props = defineProps<{
   isManagementView: boolean
   open: boolean
   record?: UsageRecordSummary
@@ -135,6 +156,61 @@ function handleOpenUpdate(value: boolean) {
 function formatSnapshot(value?: Record<string, unknown>): string {
   if (!value || !Object.keys(value).length) return '暂无快照'
   return JSON.stringify(value, null, 2)
+}
+
+async function copyText(value: string, successText = '已复制'): Promise<void> {
+  if (!value) return
+  if (!navigator.clipboard?.writeText) {
+    message.error('当前浏览器不支持自动复制，请手动选择内容复制')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(value)
+    message.success(successText)
+  } catch (error) {
+    console.error(error)
+    message.error('复制失败，请手动选择内容复制')
+  }
+}
+
+async function copyTraceId(): Promise<void> {
+  if (!props.record?.traceId) return
+  await copyText(props.record.traceId, 'Trace ID 已复制')
+}
+
+async function copyDiagnosticSummary(): Promise<void> {
+  const record = props.record
+  if (!record) return
+  await copyText(buildDiagnosticSummary(record), '排障摘要已复制')
+}
+
+async function copySnapshot(type: 'request' | 'response'): Promise<void> {
+  const record = props.record
+  if (!record) return
+  const value = type === 'request' ? record.requestSnapshot : record.responseSnapshot
+  await copyText(formatSnapshot(value), type === 'request' ? '请求快照已复制' : '响应快照已复制')
+}
+
+function buildDiagnosticSummary(record: UsageRecordSummary): string {
+  return [
+    `Trace ID: ${record.traceId}`,
+    `系统账户: ${props.isManagementView ? usageRecordSystemAccountText(record) : '-'}`,
+    `AI 账户: ${accountDisplayText(record)}`,
+    `接口: ${formatEndpoint(record.endpoint)}`,
+    `模型: ${record.model || '-'}`,
+    `状态: ${statusCodeText(record)} / ${record.success ? '成功' : '失败'}`,
+    `请求类型: ${record.stream ? '流式' : '非流式'}`,
+    `API Key: ${displayName(record.apiKeyName, record.apiKeyId)}`,
+    `分组: ${displayName(record.groupName, record.groupId)}`,
+    `Tokens: ${formatRecordTokens(record)}`,
+    `成本: ${formatCost(record.costUsd)}`,
+    `首 token: ${formatDuration(record.firstTokenMs)}`,
+    `总耗时: ${formatDuration(record.durationMs)}`,
+    `客户端 IP: ${record.clientIp || '-'}`,
+    `时间: ${formatDateTime(record.createdAt)}`,
+    `错误码: ${record.errorCode || '-'}`,
+    `错误信息: ${record.errorMessage || '-'}`
+  ].join('\n')
 }
 </script>
 
@@ -154,6 +230,18 @@ function formatSnapshot(value?: Record<string, unknown>): string {
   color: #0f172a;
   font-size: 15px;
   font-weight: 700;
+}
+
+.detail-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.detail-section-head :deep(.ant-btn) {
+  padding-right: 0;
+  padding-left: 0;
 }
 
 .detail-grid {

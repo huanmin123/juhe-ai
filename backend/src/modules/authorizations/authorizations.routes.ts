@@ -26,6 +26,7 @@ const authorizationsQuerySchema = z.object({
   granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
   status: z.enum(['active', 'paused', 'expired', 'revoked', 'all']).optional(),
+  direction: z.enum(['all', 'outbound', 'inbound']).optional(),
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional()
 })
 
@@ -82,8 +83,11 @@ authorizationsRouter.get('/', (req, res) => {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, ...filters } = parsed.data
-  res.json(ok(listResourceAuthorizations(filters, getRequestAccessScope(systemAccountId))))
+  const { systemAccountId, direction, ...filters } = parsed.data
+  const routeFilters = req.baseUrl.endsWith('/my-authorizations') && direction && direction !== 'all'
+    ? { ...filters, direction }
+    : filters
+  res.json(ok(listResourceAuthorizations(routeFilters, getRequestAccessScope(systemAccountId))))
 })
 
 authorizationsRouter.post('/', (req, res) => {

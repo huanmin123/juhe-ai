@@ -78,7 +78,6 @@ import AuthorizationUsageDetailModal from './AuthorizationUsageDetailModal.vue'
 import type { AuthorizationCreateFormModel, AuthorizationExpireFormModel } from './authorizationFormTypes'
 import { createQuotaLimitForm, quotaLimitsPayload } from '../shared/requestQuotaForm'
 import {
-  authorizationDirection,
   buildTeamUsageSummaries,
   extractApiErrorMessage,
   formatServerDateTimeInput,
@@ -248,14 +247,13 @@ async function loadData() {
       resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
       teamId: isManagementView.value ? filters.teamId : undefined,
       granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
+      direction: isManagementView.value ? undefined : filters.direction,
       status: 'all' as const
     }
     const authorizationList = isManagementView.value
       ? await api.authorizations.list(systemAccountId ? { ...params, systemAccountId } : params)
       : await api.myAuthorizations.list(params)
-    authorizations.value = isManagementView.value
-      ? authorizationList
-      : authorizationList.filter((item) => filters.direction === 'all' || authorizationDirection(item, currentSystemAccountId.value) === filters.direction)
+    authorizations.value = authorizationList
   } catch (error) {
     console.error(error)
     message.error('加载授权列表失败')

@@ -37,7 +37,13 @@
         @open-auth-url="$emit('open-auth-url')"
       />
 
-      <AccountStrategySection v-if="hasAccountType" :form="form" :proxy-options="proxyOptions" :status-options="statusOptions" />
+      <AccountStrategySection
+        v-if="hasAccountType"
+        :form="form"
+        :is-management-view="isManagementView"
+        :proxy-options="proxyOptions"
+        :status-options="statusOptions"
+      />
 
       <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="errorPolicyRules" />
     </a-form>
@@ -82,6 +88,7 @@ defineProps<{
   groupOptions: SelectOption[]
   hasAccountType: boolean
   isApiKeyForm: boolean
+  isManagementView: boolean
   isOAuthForm: boolean
   isOpenAIOAuthForm: boolean
   okButtonProps: Record<string, unknown>

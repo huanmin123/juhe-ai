@@ -147,6 +147,7 @@ export interface AuthorizationListParams extends ListParams {
   granteeSystemAccountId?: string
   teamId?: string
   status?: 'active' | 'paused' | 'expired' | 'revoked' | 'all'
+  direction?: 'all' | 'outbound' | 'inbound'
 }
 
 export type AuthorizationScopeParams = ListParams

@@ -20,6 +20,7 @@
     <div class="form-help strategy-help">优先级数字越小越优先；当前账号失败后会切换到下一个可用账号。</div>
     <a-form-item class="strategy-proxy-field" label="代理">
       <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
+      <div v-if="!isManagementView" class="form-help">代理配置由管理员统一维护；这里可以选择已启用的全局代理。</div>
     </a-form-item>
   </section>
 </template>
@@ -29,6 +30,7 @@ import type { AccountFormModel } from './accountFormTypes'
 
 defineProps<{
   form: AccountFormModel
+  isManagementView: boolean
   proxyOptions: Array<{ label: string; value: string }>
   statusOptions: Array<{ label: string; value: string }>
 }>()
