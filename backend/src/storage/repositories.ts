@@ -121,6 +121,7 @@ export {
 export {
   createUsageRecord,
   createUsageRecordsBatch,
+  getUsageRecordDetail,
   listUsageRecords,
   type UsageRecordInput,
   type UsageRecordListResult,

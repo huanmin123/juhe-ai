@@ -61,6 +61,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `audit_log_payloads`：保存客户端请求、上游请求、上游响应和最终网关响应的完整原文，建议加密存储。
 - `runtime_logs`：保存最近 3 天普通运行日志的可检索字段和原始 JSON 行，用于管理员“日志搜索”页面。
 - `runtime_log_search`：FTS5 `trigram` 虚表，保存普通运行日志关键字段和原始 JSON，用于关键字检索。
+- `account_quality_scores`：按 `account_id` 保存账号质量缓存，包括质量分、质量状态、近 10 分钟真实网关首 token 聚合、成功率、最近真实样本时间和最近主动探测时间。该表只作为调度辅助缓存，事实源仍是 `usage_records` 和后台主动探测结果；超过 24 小时没有真实样本或主动探测的质量分不参与调度。
 
 建议索引：
 
@@ -69,6 +70,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `usage_records(system_account_id, created_at, id)`：统计 worker 增量扫描。
 - `usage_records(account_owner_system_account_id, account_id, created_at, id)`：账户所有者查看真实账户统一用量。
 - `usage_records(group_owner_system_account_id, group_id, created_at, id)`：分组所有者查看真实分组统一用量。
+- `usage_records(group_id, created_at, api_key_id)`：账号质量 worker 判断分组近 24 小时是否有真实网关请求，账号测试和后台探测不计入客户活跃。
 - `usage_records(account_owner_system_account_id, account_authorization_id, created_at, id)`：授权管理按账户授权关系聚合用量。
 - `usage_records(group_owner_system_account_id, group_authorization_id, created_at, id)`：授权管理按分组授权关系聚合用量。
 - `system_teams(name)`：保证团队名称唯一。
@@ -81,6 +83,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 有效资源查询需要在 service 层按 `resource_type + resource_id + caller_system_account_id` 去重；团队来源只能合并到用户授权来源摘要，不能展开成多条 AI 账户或分组。
 - `usage_records(system_account_id, first_token_ms, created_at, id)`、`usage_records(system_account_id, duration_ms, created_at, id)`、`usage_records(system_account_id, cost_usd, created_at, id)`：使用记录页按首 token、总耗时、成本排序时只取有限窗口，避免大数据量下前端全量排序或数据库临时排序。
 - `usage_records(first_token_ms, created_at, id)`、`usage_records(duration_ms, created_at, id)`、`usage_records(cost_usd, created_at, id)`：管理员查看全部系统账户时的全局排序索引。
+- `accounts(super_priority_enabled, status, priority)`：账号调度和列表排序读取超级优先与优先级。
+- `account_quality_scores(provider_code, quality_score, quality_state)`：账号质量缓存排序和后台挑选候选。
 - `usage_stats_totals(system_account_id, scope_type, scope_id)`：列表读取累计值。
 - `usage_stats_daily(system_account_id, scope_type, scope_id, stat_date)`：今日和天级趋势读取。
 - `usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour)`：小时趋势读取。
@@ -112,6 +116,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 用量统计菜单的多日窗口只读取 `usage_stats_daily` 的日累计行并按窗口相加：近 1 天、近 3 天、近一周、近半月和近一月分别对应最近 1 / 3 / 7 / 15 / 30 个自然日；总用量读取 `usage_stats_totals`。前端不能把 `n` 天作为查询条件去实时回扫 `usage_records`。
 - 统计概览属于监控窗口，不使用 0 点重置的今日口径；默认展示近一天，并支持近一天、近三天、近一周和近一月筛选。概览摘要、趋势、模型分布和错误 Top 10 均从小时级缓存表按窗口相加，不读取 `usage_stats_totals`，也不临时回扫 `usage_records`。
 - 分组账户统计 worker 定时重建 `group_account_stats`，分组列表不得在查询时临时 `COUNT/SUM group_accounts + accounts`。
+- 账号质量刷新 worker 默认每 10 分钟执行一次：先 flush 使用记录队列，再按近 10 分钟真实网关 `usage_records.first_token_ms` 刷新 `account_quality_scores`；对于近 24 小时有真实网关请求、同分组、同超级优先状态、同 `priority` 且候选数 `>= 2` 的 OpenAI 可调度账号，复用“测试账号连接”主动探测，prompt 固定 `hi`，每账号 3 次取最大首 token 写入缓存。超过 24 小时未更新的质量分不参与网关调度。
 - 代理延迟刷新 worker 默认每 1 分钟按批量大小检测启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新。
 - 授权账户调用需要同时写入调用方统计、真实账户统计和授权消耗统计：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；账户所有者的账户总用量按 `account_owner_system_account_id + account_id` 聚合；授权管理按 `account_owner_system_account_id + account_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 授权分组调用需要同时写入调用方统计、真实分组统计和授权消耗统计：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权管理按 `group_owner_system_account_id + group_authorization_id` 聚合，并过滤资源归属人自用消耗。
@@ -436,6 +441,13 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `auditLogQueueMaxBytesMb = 256`：待写队列近似最大原文体积，单位 MB。
 - `auditLogActiveCaptureMaxBytesMb = 64`：单个请求活跃捕获上限，单位 MB，超过后丢弃整条审计记录。
 - `auditLogRetentionDays = 7`：原始审计日志默认保留 7 天，系统设置最多允许 7 天。
+- `accountQualityRefreshIntervalSeconds = 600`：账号质量缓存默认每 10 分钟刷新一次。
+- `accountQualityWindowMinutes = 10`：真实网关请求首 token 统计窗口默认 10 分钟。
+- `accountQualityProbeBatchSize = 10`：每轮主动质量探测最多挑选 10 个账号。
+- `accountQualityProbeRepeats = 3`：每个账号主动探测 3 次并取最大首 token。
+- `accountQualityProbeStaleMinutes = 10`：质量缓存超过 10 分钟或缺少探测结果时可进入探测候选。
+- `accountQualityActiveProbeIdleHours = 24`：分组 24 小时无真实网关请求时暂停主动探测。
+- `accountQualityIgnoreStaleScoreHours = 24`：质量分超过 24 小时没有真实样本或主动探测时不参与调度。
 
 预上线阶段如本地库仍存在不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes` 等旧设置，直接通过备份后清洗或重建库处理；源码不保留启动清理分支。
 

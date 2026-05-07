@@ -104,6 +104,7 @@ export interface ProviderModelPricing {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   outputUsdPerImage?: number
   maxInputTokens?: number
@@ -298,6 +299,7 @@ export interface AccountTestResult {
   proxyUrl?: string
   tokenRefreshed?: boolean
   durationMs?: number
+  firstTokenMs?: number
   accountStatusChanged?: boolean
   accountStatus?: AccountStatus
   errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable' | 'default_cooldown'

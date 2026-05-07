@@ -67,6 +67,15 @@ export interface AccountSummary {
   concurrencyLimit: number
   currentConcurrency: number
   priority: number
+  superPriorityEnabled: boolean
+  qualityScore?: number
+  qualityState?: string
+  qualityEwmaFirstTokenMs?: number
+  qualityRecentAvgFirstTokenMs?: number
+  qualityRecentRequestCount?: number
+  qualityRecentSuccessRate?: number
+  qualityLastProbeAt?: string
+  qualityUpdatedAt?: string
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
@@ -120,6 +129,7 @@ export interface AccountTestResult {
   proxyUrl?: string
   tokenRefreshed?: boolean
   durationMs?: number
+  firstTokenMs?: number
   accountStatusChanged?: boolean
   accountStatus?: AccountStatus
   errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable' | 'default_cooldown'

@@ -8,8 +8,11 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   expireDueResourceAuthorizations,
   getSettings,
+  listAccountQualityProbeCandidates,
   listAccountsDueForCooldownRetest,
-  listAccounts
+  listAccounts,
+  recordAccountQualityProbe,
+  refreshAccountQualityFromUsage
 } from '../../storage/repositories.js'
 import {
   aggregateUsageStatsBatch,
@@ -47,6 +50,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: 60 * 1000, task: runResourceAuthorizationExpirySweep })
   scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000, task: runSystemMetricsSample })
   scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: settingsNumber('proxyLatencyRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runProxyLatencyRefresh })
+  scheduler.schedule({ name: 'account-quality-refresh', intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 600, 60, 3600) * 1000, task: runAccountQualityRefresh })
   scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runOpenAIOAuthAccessTokenRefresh })
   scheduler.schedule({ name: 'openai-oauth-usage-refresh', intervalMs: settingsNumber('oauthUsageSnapshotRefreshIntervalSeconds', 300, 60, 86400) * 1000, task: runOpenAIOAuthUsageRefresh })
   scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000, task: runCooldownAccountRetest })
@@ -148,6 +152,62 @@ async function runProxyLatencyRefresh(): Promise<void> {
   }
 }
 
+async function runAccountQualityRefresh(): Promise<void> {
+  try {
+    flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+    const windowMinutes = settingsNumber('accountQualityWindowMinutes', 10, 1, 60)
+    const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)
+    const candidates = listAccountQualityProbeCandidates({
+      limit: settingsNumber('accountQualityProbeBatchSize', 10, 1, 100),
+      staleAfterMinutes: settingsNumber('accountQualityProbeStaleMinutes', 10, 1, 120),
+      minTieGroupSize: 2,
+      activeAfter: new Date(Date.now() - settingsNumber('accountQualityActiveProbeIdleHours', 24, 1, 720) * 60 * 60 * 1000).toISOString()
+    })
+    const repeats = settingsNumber('accountQualityProbeRepeats', 3, 1, 5)
+    const model = settingsString('accountQualityProbeModel', 'gpt-5.5')
+    let probeSuccess = 0
+    let probeFailed = 0
+    for (const candidate of candidates) {
+      const account = listAccounts({ systemAccountId: candidate.probeSystemAccountId, role: 'user' })
+        .find((item) => item.id === candidate.accountId)
+      if (!account) {
+        continue
+      }
+      const result = await probeAccountQuality({
+        ...account,
+        systemAccountId: candidate.probeSystemAccountId
+      }, { repeats, model, groupId: candidate.groupId })
+      recordAccountQualityProbe({
+        accountId: account.id,
+        systemAccountId: candidate.accountOwnerSystemAccountId,
+        providerCode: account.providerCode,
+        firstTokenMs: result.firstTokenMs,
+        success: result.success,
+        errorMessage: result.errorMessage,
+        source: 'probe'
+      })
+      if (result.success) {
+        probeSuccess += 1
+      } else {
+        probeFailed += 1
+      }
+    }
+    if (candidates.length > 0) {
+      clearGatewayRuntimeCache()
+      logger.info({
+        event: 'background_account_quality_refresh_completed',
+        realtimeRefreshed: realtimeResult.refreshed,
+        realtimeRemoved: realtimeResult.removed,
+        probeCandidates: candidates.length,
+        probeSuccess,
+        probeFailed
+      }, '账户质量缓存刷新完成')
+    }
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_account_quality_refresh_failed' }), '账户质量缓存刷新失败')
+  }
+}
+
 async function runCooldownAccountRetest(): Promise<void> {
   const candidates = listAccountsDueForCooldownRetest(settingsNumber('cooldownAccountRetestBatchSize', 10, 1, 100))
   for (const account of candidates) {
@@ -160,6 +220,32 @@ async function runCooldownAccountRetest(): Promise<void> {
       }), '冷却账户复测失败')
     }
   }
+}
+
+async function probeAccountQuality(account: AccountSummary, input: { repeats: number; model: string; groupId: string }): Promise<{ success: boolean; firstTokenMs?: number; errorMessage?: string }> {
+  const firstTokenSamples: number[] = []
+  let lastErrorMessage: string | undefined
+  for (let index = 0; index < input.repeats; index += 1) {
+    try {
+      const result = await testOpenAIAccount(account, {
+        model: input.model,
+        prompt: 'hi',
+        includeUnavailable: true,
+        groupId: input.groupId
+      })
+      if (result.success && typeof result.firstTokenMs === 'number' && Number.isFinite(result.firstTokenMs)) {
+        firstTokenSamples.push(result.firstTokenMs)
+      } else {
+        lastErrorMessage = result.message
+      }
+    } catch (error) {
+      lastErrorMessage = error instanceof Error ? error.message : '账户质量探测失败'
+    }
+  }
+  if (firstTokenSamples.length === 0) {
+    return { success: false, errorMessage: lastErrorMessage ?? '账户质量探测未获得首 token' }
+  }
+  return { success: true, firstTokenMs: Math.max(...firstTokenSamples), errorMessage: lastErrorMessage }
 }
 
 async function runRuntimeLogIndexMaintenance(): Promise<void> {

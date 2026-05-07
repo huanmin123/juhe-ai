@@ -2,6 +2,7 @@ import { createAppCache } from '../../shared/cache.js'
 import { getDatabase } from '../../storage/database.js'
 import type { GatewayApiKeyRow } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
+import { requestDbService } from '../db-service/db-service-ipc.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCosts } from './request-quota-checker.js'
 
 export const API_KEY_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
@@ -50,6 +51,13 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
   }
   apiKeyQuotaCache.set(cacheKey, decision)
   return decision
+}
+
+export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Promise<ApiKeyQuotaDecision> {
+  return await requestDbService({
+    type: 'check_api_key_quota',
+    apiKey
+  })
 }
 
 export function clearApiKeyQuotaCache(): void {

@@ -30,6 +30,8 @@ export interface UsageRecordSummary {
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
+  inputImageTokens?: number
+  outputImageTokens?: number
   costUsd?: number
   errorCode?: string
   errorMessage?: string
@@ -85,6 +87,8 @@ export interface UsageRecordInput {
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
+  inputImageTokens?: number
+  outputImageTokens?: number
   costUsd?: number
   errorCode?: string
   errorMessage?: string
@@ -138,7 +142,30 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   const rows = database
     .prepare(`
       SELECT
-        ur.*,
+        ur.id,
+        ur.system_account_id,
+        ur.trace_id,
+        ur.client_ip,
+        ur.api_key_id,
+        ur.group_id,
+        ur.account_id,
+        ur.endpoint,
+        ur.provider_code,
+        ur.model,
+        ur.stream,
+        ur.status_code,
+        ur.success,
+        ur.first_token_ms,
+        ur.duration_ms,
+        ur.input_tokens,
+        ur.output_tokens,
+        ur.cache_read_tokens,
+        ur.input_image_tokens,
+        ur.output_image_tokens,
+        ur.cost_usd,
+        ur.error_code,
+        ur.error_message,
+        ur.created_at,
         ak.name AS api_key_name,
         g.name AS group_name,
         a.name AS account_name
@@ -159,6 +186,31 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   }
 }
 
+export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRecordSummary | undefined {
+  const recordId = id.trim()
+  if (!recordId) return undefined
+  const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
+  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
+  const row = getDatabase()
+    .prepare(`
+      SELECT
+        ur.*,
+        ak.name AS api_key_name,
+        g.name AS group_name,
+        a.name AS account_name
+      FROM usage_records ur
+      LEFT JOIN api_keys ak ON ak.id = ur.api_key_id
+      LEFT JOIN groups g ON g.id = ur.group_id
+      LEFT JOIN accounts a ON a.id = ur.account_id
+      WHERE ur.id = ?
+      ${scope.clause}
+      LIMIT 1
+    `)
+    .get(recordId, ...scope.params) as Record<string, unknown> | undefined
+  return row ? usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames, true) : undefined
+}
+
 export function createUsageRecord(input: UsageRecordInput): void {
   createUsageRecordsBatch([input])
 }
@@ -172,11 +224,11 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   const insertStatement = database.prepare(`
     INSERT INTO usage_records (
       id, system_account_id, trace_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
-      status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cost_usd, error_code, error_message,
+      status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
       request_snapshot_json, response_snapshot_json,
       account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type, account_authorization_id, group_authorization_id,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const updateAccountStatement = database.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
@@ -210,6 +262,8 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
         input.inputTokens ?? null,
         input.outputTokens ?? null,
         input.cacheReadTokens ?? null,
+        input.inputImageTokens ?? null,
+        input.outputImageTokens ?? null,
         input.costUsd ?? null,
         input.errorCode ?? null,
         input.errorMessage ?? null,
@@ -258,12 +312,15 @@ function apiKeyExists(database: ReturnType<typeof getDatabase>, apiKeyId: string
 function usageRecordSummaryFromRow(
   row: Record<string, unknown>,
   shouldIncludeSystemAccountFields: boolean,
-  accountNames: Map<string, string>
+  accountNames: Map<string, string>,
+  includeSnapshots = false
 ): UsageRecordSummary {
-  const requestSnapshot = parseOptionalJsonObject(row.request_snapshot_json)
+  const requestSnapshot = includeSnapshots ? parseOptionalJsonObject(row.request_snapshot_json) : undefined
   const inputTokens = typeof row.input_tokens === 'number' ? row.input_tokens : undefined
   const outputTokens = typeof row.output_tokens === 'number' ? row.output_tokens : undefined
   const cacheReadTokens = typeof row.cache_read_tokens === 'number' ? row.cache_read_tokens : undefined
+  const inputImageTokens = typeof row.input_image_tokens === 'number' ? row.input_image_tokens : undefined
+  const outputImageTokens = typeof row.output_image_tokens === 'number' ? row.output_image_tokens : undefined
   const model = optionalString(row.model)
   const stream = row.stream === 1
   const statusCode = typeof row.status_code === 'number' ? row.status_code : undefined
@@ -291,11 +348,13 @@ function usageRecordSummaryFromRow(
     inputTokens,
     outputTokens,
     cacheReadTokens,
+    inputImageTokens,
+    outputImageTokens,
     costUsd: typeof row.cost_usd === 'number' ? row.cost_usd : undefined,
     errorCode: optionalString(row.error_code),
     errorMessage: optionalString(row.error_message),
     requestSnapshot,
-    responseSnapshot: parseOptionalJsonObject(row.response_snapshot_json),
+    responseSnapshot: includeSnapshots ? parseOptionalJsonObject(row.response_snapshot_json) : undefined,
     createdAt: String(row.created_at)
   }
 }

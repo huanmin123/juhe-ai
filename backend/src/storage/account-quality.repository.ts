@@ -5,7 +5,8 @@ export type AccountQualityState = 'fresh' | 'stale' | 'probing' | 'failed' | 'un
 
 export interface AccountQualityRefreshCandidate {
   accountId: string
-  systemAccountId: string
+  accountOwnerSystemAccountId: string
+  probeSystemAccountId: string
   groupId: string
   providerCode: string
   type: AccountType
@@ -62,7 +63,8 @@ interface AccountQualityRow {
 
 interface CandidateRow {
   account_id: string
-  system_account_id: string
+  account_owner_system_account_id: string
+  probe_system_account_id: string
   group_id: string
   provider_code: string
   type: AccountType
@@ -107,6 +109,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
           SELECT latest_error.error_message
           FROM usage_records latest_error
           WHERE latest_error.account_id = usage_records.account_id
+            AND latest_error.api_key_id IS NOT NULL
             AND latest_error.success = 0
             AND latest_error.created_at >= ?
           ORDER BY latest_error.created_at DESC, latest_error.id DESC
@@ -115,6 +118,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       FROM usage_records
       INNER JOIN accounts ON accounts.id = usage_records.account_id
       WHERE usage_records.account_id IS NOT NULL
+        AND usage_records.api_key_id IS NOT NULL
         AND usage_records.created_at >= ?
       GROUP BY usage_records.account_id, accounts.system_account_id, accounts.provider_code
     `)
@@ -205,10 +209,40 @@ export function listAccountQualityProbeCandidates(input: {
   limit: number
   staleAfterMinutes: number
   minTieGroupSize?: number
+  activeAfter?: string
 }): AccountQualityRefreshCandidate[] {
   const limit = Math.max(1, Math.min(Math.trunc(input.limit), 200))
   const minTieGroupSize = Math.max(2, Math.trunc(input.minTieGroupSize ?? 2))
   const staleBefore = new Date(Date.now() - Math.max(1, input.staleAfterMinutes) * 60_000).toISOString()
+  const activeAfter = typeof input.activeAfter === 'string' && input.activeAfter.trim() ? input.activeAfter.trim() : undefined
+  const activeGroupClause = activeAfter
+    ? `
+          AND EXISTS (
+            SELECT 1
+            FROM usage_records recent_usage
+            WHERE recent_usage.group_id = group_accounts.group_id
+              AND recent_usage.api_key_id IS NOT NULL
+              AND recent_usage.created_at >= ?
+            LIMIT 1
+          )
+    `
+    : ''
+  const activeAuthorizationClause = `
+          AND (
+            group_accounts.account_authorization_id IS NULL
+            OR EXISTS (
+              SELECT 1
+              FROM resource_authorizations active_authorization
+              WHERE active_authorization.id = group_accounts.account_authorization_id
+                AND active_authorization.resource_type = 'account'
+                AND active_authorization.resource_id = accounts.id
+                AND active_authorization.grantee_system_account_id = group_accounts.system_account_id
+                AND active_authorization.status = 'active'
+                AND (active_authorization.expires_at IS NULL OR active_authorization.expires_at > ?)
+              LIMIT 1
+            )
+          )
+    `
   const now = nowIso()
   const rows = getDatabase()
     .prepare(`
@@ -228,12 +262,15 @@ export function listAccountQualityProbeCandidates(input: {
           AND accounts.schedulable = 1
           AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
           AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
+          ${activeGroupClause}
+          ${activeAuthorizationClause}
         GROUP BY group_accounts.system_account_id, group_accounts.group_id, accounts.priority, CASE WHEN accounts.status = 'active' AND accounts.super_priority_enabled = 1 THEN 1 ELSE 0 END
         HAVING COUNT(*) >= ?
       )
       SELECT
         accounts.id AS account_id,
-        accounts.system_account_id,
+        accounts.system_account_id AS account_owner_system_account_id,
+        group_accounts.system_account_id AS probe_system_account_id,
         group_accounts.group_id,
         accounts.provider_code,
         accounts.type,
@@ -262,6 +299,7 @@ export function listAccountQualityProbeCandidates(input: {
         AND accounts.schedulable = 1
         AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
         AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
+        ${activeAuthorizationClause}
         AND (
           quality.account_id IS NULL
           OR quality.quality_state IN ('unknown', 'stale', 'failed')
@@ -275,7 +313,18 @@ export function listAccountQualityProbeCandidates(input: {
         group_accounts.created_at ASC
       LIMIT ?
     `)
-    .all(now, now, minTieGroupSize, now, now, staleBefore, limit) as unknown as CandidateRow[]
+    .all(...[
+      now,
+      now,
+      ...(activeAfter ? [activeAfter] : []),
+      now,
+      minTieGroupSize,
+      now,
+      now,
+      now,
+      staleBefore,
+      limit
+    ]) as unknown as CandidateRow[]
 
   const seen = new Set<string>()
   const candidates: AccountQualityRefreshCandidate[] = []
@@ -286,7 +335,8 @@ export function listAccountQualityProbeCandidates(input: {
     seen.add(row.account_id)
     candidates.push({
       accountId: row.account_id,
-      systemAccountId: row.system_account_id,
+      accountOwnerSystemAccountId: row.account_owner_system_account_id,
+      probeSystemAccountId: row.probe_system_account_id,
       groupId: row.group_id,
       providerCode: row.provider_code,
       type: row.type,
@@ -364,10 +414,14 @@ function markAccountQualityStale(accountId: string, windowStartedAt: string, win
   if (!previous) {
     return
   }
+  const lastProbeTime = previous.last_probe_at ? Date.parse(previous.last_probe_at) : NaN
+  const windowStartTime = Date.parse(windowStartedAt)
+  const hasRecentProbe = Number.isFinite(lastProbeTime) && Number.isFinite(windowStartTime) && lastProbeTime >= windowStartTime
+  const qualityState: AccountQualityState = hasRecentProbe && previous.quality_state === 'fresh' ? 'fresh' : 'stale'
   const qualityScore = computeQualityScore({
     ewmaFirstTokenMs: previous.ewma_first_token_ms,
     successRate: previous.success_rate,
-    qualityState: 'stale',
+    qualityState,
     updatedAt
   })
   upsertAccountQuality({
@@ -375,7 +429,7 @@ function markAccountQualityStale(accountId: string, windowStartedAt: string, win
     systemAccountId: previous.system_account_id,
     providerCode: previous.provider_code,
     qualityScore,
-    qualityState: 'stale',
+    qualityState,
     recentRequestCount: 0,
     recentSuccessCount: 0,
     recentErrorCount: 0,

@@ -38,9 +38,7 @@
                 <span>{{ record.memberUsage.length }} 个成员</span>
               </div>
               <UsageStatCell v-else-if="isWindowColumn(column.key)" :usage="record.usageByWindow[column.key]" compact />
-              <a-button v-else-if="column.key === 'actions'" type="link" size="small" @click="toggleTeam(record.teamId)">
-                {{ isExpanded(record.teamId) ? '收起明细' : '成员明细' }}
-              </a-button>
+              <RowActions v-else-if="column.key === 'actions'" :actions="teamActions(record)" @action-click="toggleTeam(record.teamId)" />
             </template>
           </a-table>
         </a-tab-pane>
@@ -52,6 +50,8 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import type {
   AccountAuthorizationUsageOverview,
   AuthorizationTeamUsageDetail,
@@ -59,7 +59,7 @@ import type {
 } from '@/types/domain'
 import UsageStatCell from './UsageStatCell.vue'
 import { currentUsageWindows, detailWindowKeys, formatPrincipalName, formatUsageBrief, isUsageWindowColumn } from './usageStatsFormatters'
-const usageColumnWidth = 78
+const usageColumnWidth = 86
 const userTableScrollX = 180 + usageColumnWidth * detailWindowKeys.length
 const teamTableScrollX = 180 + usageColumnWidth * detailWindowKeys.length + 110
 
@@ -114,6 +114,17 @@ function toggleTeam(teamId: string) {
   expandedTeamKeys.value = expandedTeamKeys.value.includes(teamId)
     ? expandedTeamKeys.value.filter((id) => id !== teamId)
     : [...expandedTeamKeys.value, teamId]
+}
+
+function teamActions(row: TeamUsageRow): RowActionItem[] {
+  return [
+    {
+      key: 'members',
+      label: isExpanded(row.teamId) ? '收起明细' : '成员明细',
+      icon: isExpanded(row.teamId) ? 'disable' : 'members',
+      tone: 'info'
+    }
+  ]
 }
 
 function isExpanded(teamId: string) {

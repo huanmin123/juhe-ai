@@ -148,7 +148,8 @@ const outputLines = computed<TestOutputLine[]>(() => {
   }
   lines.push({ text: '', tone: 'divider' })
   const completionText = props.result.success ? '✓ 测试完成！' : '✕ 测试失败！'
-  lines.push({ text: `${completionText}  总耗时：${formatAccountTestDuration(props.result.durationMs)}`, tone: props.result.success ? 'success' : 'error' })
+  const firstTokenText = props.result.firstTokenMs !== undefined ? `，首 token：${formatAccountTestDuration(props.result.firstTokenMs)}` : ''
+  lines.push({ text: `${completionText}  总耗时：${formatAccountTestDuration(props.result.durationMs)}${firstTokenText}`, tone: props.result.success ? 'success' : 'error' })
   return lines
 })
 

@@ -3,6 +3,7 @@ import { buildSystemAccountScopeClause, currentSystemAccountId } from './access-
 import { decryptJson } from './crypto.js'
 import { getDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile } from './proxy.repository.js'
+import { getSettings } from './settings.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
 
 export interface OpenAIAccountSecret {
@@ -137,6 +138,7 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
 export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret[] {
   const database = getDatabase()
   const now = nowIso()
+  const qualityFreshAfter = qualityFreshAfterIso()
   const groupAccess = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
   if (!groupAccess) {
     return []
@@ -164,6 +166,10 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
         FROM accounts
         LEFT JOIN account_quality_scores account_quality
           ON account_quality.account_id = accounts.id
+          AND (
+            account_quality.last_sample_at >= ?
+            OR account_quality.last_probe_at >= ?
+          )
         WHERE accounts.id = ?
           AND accounts.provider_code = 'openai'
           AND type IN ('api_key', 'oauth')
@@ -172,7 +178,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
           AND status = 'active'
           AND (cooldown_until IS NULL OR cooldown_until <= ?)
       `)
-      .get(groupAccount.account_id, now, now) as unknown as OpenAIAccountRow | undefined
+      .get(qualityFreshAfter, qualityFreshAfter, groupAccount.account_id, now, now) as unknown as OpenAIAccountRow | undefined
     if (!row) {
       continue
     }
@@ -285,11 +291,7 @@ function openAIAccountSecretFromRow(
   }
 }
 
-function compareOpenAIAccountsForDispatch(left: OpenAIAccountSecret, right: OpenAIAccountSecret): number {
-  const leftSuper = left.superPriorityEnabled ? 1 : 0
-  const rightSuper = right.superPriorityEnabled ? 1 : 0
-  if (leftSuper !== rightSuper) return rightSuper - leftSuper
-  if (left.priority !== right.priority) return left.priority - right.priority
+function compareOpenAIAccountsByQuality(left: OpenAIAccountSecret, right: OpenAIAccountSecret): number {
   const leftQuality = left.qualityScore
   const rightQuality = right.qualityScore
   const leftHasQuality = typeof leftQuality === 'number'
@@ -320,10 +322,22 @@ function orderOpenAIAccountsForDispatch(accounts: OpenAIAccountSecret[]): OpenAI
     if (leftSuper !== rightSuper) return rightSuper - leftSuper
     if (left.priority !== right.priority) return left.priority - right.priority
     if (leftBucket.length >= 2 && rightBucket.length >= 2) {
-      return compareOpenAIAccountsForDispatch(left, right)
+      return compareOpenAIAccountsByQuality(left, right)
     }
     return left.name.localeCompare(right.name, 'zh-CN')
   })
+}
+
+function qualityFreshAfterIso(): string {
+  const settings = getSettings()
+  const rawValue = settings.accountQualityIgnoreStaleScoreHours
+  const hours = typeof rawValue === 'number'
+    ? rawValue
+    : typeof rawValue === 'string'
+      ? Number(rawValue)
+      : 24
+  const boundedHours = Number.isFinite(hours) ? Math.min(Math.max(Math.trunc(hours), 1), 720) : 24
+  return new Date(Date.now() - boundedHours * 60 * 60 * 1000).toISOString()
 }
 
 function resolveOpenAIAccountProxyUrl(proxyProfileId: string | null): { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } {

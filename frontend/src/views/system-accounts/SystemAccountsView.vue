@@ -24,10 +24,7 @@
           <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space :size="8">
-            <a-button type="link" size="small" @click="openEdit(record)">编辑</a-button>
-            <a-button type="link" size="small" @click="openResetPassword(record)">重置密码</a-button>
-          </a-space>
+          <RowActions :actions="systemAccountActions" @action-click="handleSystemAccountAction($event, record)" />
         </template>
       </template>
       <template #card="{ record }">
@@ -54,9 +51,8 @@
               <strong>{{ record.description || '-' }}</strong>
             </div>
           </div>
-          <div class="mobile-list-card-actions two-actions">
-            <a-button type="primary" @click="openEdit(record)">编辑</a-button>
-            <a-button @click="openResetPassword(record)">重置密码</a-button>
+          <div class="mobile-list-card-actions">
+            <RowActions variant="button" :actions="systemAccountActions" @action-click="handleSystemAccountAction($event, record)" />
           </div>
         </article>
       </template>
@@ -107,6 +103,8 @@ import { onMounted, reactive, ref } from 'vue'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
 
 const loading = ref(false)
@@ -146,7 +144,12 @@ const columns = [
   { title: '改密提醒', key: 'mustChangePassword', width: 110 },
   { title: '最后登录', key: 'lastLoginAt', width: 180 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', width: 160, fixed: 'right' }
+  { title: '操作', key: 'actions', width: 100, fixed: 'right' }
+]
+
+const systemAccountActions: RowActionItem[] = [
+  { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
+  { key: 'reset-password', label: '重置密码', icon: 'password', tone: 'warning' }
 ]
 
 function openCreate() {
@@ -173,6 +176,16 @@ function openResetPassword(record: SystemAccountSummary) {
   resettingId.value = record.id
   resetPassword.value = ''
   passwordModalOpen.value = true
+}
+
+function handleSystemAccountAction(key: string, record: SystemAccountSummary) {
+  if (key === 'edit') {
+    openEdit(record)
+    return
+  }
+  if (key === 'reset-password') {
+    openResetPassword(record)
+  }
 }
 
 async function handleSave() {

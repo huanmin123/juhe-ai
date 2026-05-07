@@ -71,7 +71,7 @@
           <UsageStatCell :usage="record.usageByWindow[column.key]" />
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-button v-if="record.authorizationUsageAvailable" type="link" size="small" @click="openAuthorizationUsage(record)">授权用量</a-button>
+          <RowActions v-if="record.authorizationUsageAvailable" :actions="authorizationUsageActions" @action-click="handleUsageAction($event, record)" />
           <span v-else class="muted-cell">-</span>
         </template>
       </template>
@@ -86,7 +86,7 @@
                 <a-tag v-if="record.accessType === 'authorized'" color="blue">来自授权</a-tag>
               </div>
             </div>
-            <a-button v-if="record.authorizationUsageAvailable" size="small" @click="openAuthorizationUsage(record)">授权用量</a-button>
+            <RowActions v-if="record.authorizationUsageAvailable" :actions="authorizationUsageActions" @action-click="handleUsageAction($event, record)" />
           </div>
           <div class="usage-mobile-grid">
             <div v-for="window in compactWindows" :key="window.key" class="usage-mobile-metric">
@@ -115,7 +115,9 @@ import { useRoute, useRouter } from 'vue-router'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type {
@@ -198,11 +200,15 @@ const columns = computed(() => {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 170 })
   }
   for (const window of compactWindows.value) {
-    baseColumns.push({ title: window.label, key: window.key, width: 180 })
+    baseColumns.push({ title: window.label, key: window.key, width: 160 })
   }
-  baseColumns.push({ title: '操作', key: 'actions', width: 120, fixed: 'right' })
+  baseColumns.push({ title: '操作', key: 'actions', width: 90, fixed: 'right' })
   return baseColumns
 })
+
+const authorizationUsageActions: RowActionItem[] = [
+  { key: 'authorization-usage', label: '授权用量', icon: 'detail', tone: 'info' }
+]
 
 const tableScrollX = computed(() => isManagementView.value ? 1670 : 1500)
 const tableScrollY = computed(() => 'calc(100dvh - 286px)')
@@ -333,6 +339,12 @@ async function openAuthorizationUsage(row: AccountUsageStatsRow, keepRouteQuery 
   await reloadAuthorizationUsage()
   if (keepRouteQuery) {
     await router.replace({ path: route.path, query: { ...route.query, accountId: row.id, action: 'authorization-usage' } })
+  }
+}
+
+function handleUsageAction(key: string, row: AccountUsageStatsRow) {
+  if (key === 'authorization-usage') {
+    void openAuthorizationUsage(row)
   }
 }
 

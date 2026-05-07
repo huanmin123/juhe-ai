@@ -43,13 +43,7 @@
           <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space class="row-actions" :size="8">
-            <a-button type="link" size="small" @click="openTestReport(record)">测试</a-button>
-            <a-button type="link" size="small" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm title="确认删除这个代理？" @confirm="removeProxy(record.id)">
-              <a-button type="link" size="small" danger>删除</a-button>
-            </a-popconfirm>
-          </a-space>
+          <RowActions :actions="proxyActions" @action-click="handleProxyAction($event, record)" />
         </template>
       </template>
       <template #card="{ record }">
@@ -98,11 +92,7 @@
             </div>
           </div>
           <div class="mobile-list-card-actions">
-            <a-button @click="openTestReport(record)">测试</a-button>
-            <a-button type="primary" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm title="确认删除这个代理？" @confirm="removeProxy(record.id)">
-              <a-button danger>删除</a-button>
-            </a-popconfirm>
+            <RowActions variant="button" :actions="proxyActions" @action-click="handleProxyAction($event, record)" />
           </div>
         </article>
       </template>
@@ -237,6 +227,8 @@ import { onMounted, reactive, ref } from 'vue'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import { formatDateTime } from '@/shared/formatters'
 import type { ProxyProfileSummary, ProxyTestItemStatus, ProxyTestReport } from '@/types/domain'
 
@@ -263,7 +255,20 @@ const columns = [
   { title: '出口 IP', key: 'outboundIp', width: 140 },
   { title: '地区', key: 'outboundRegion', width: 100 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', width: 150, fixed: 'right', customRender: () => '' }
+  { title: '操作', key: 'actions', width: 110, fixed: 'right', customRender: () => '' }
+]
+
+const proxyActions: RowActionItem[] = [
+  { key: 'test', label: '测试', icon: 'test', tone: 'info' },
+  { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
+  {
+    key: 'delete',
+    label: '删除',
+    icon: 'delete',
+    tone: 'danger',
+    confirmTitle: '确认删除这个代理？',
+    confirmOkText: '删除'
+  }
 ]
 
 const reportColumns = [
@@ -349,6 +354,20 @@ function openTestReport(proxy: ProxyProfileSummary) {
   selectedTestProxy.value = proxy
   testReport.value = undefined
   testReportOpen.value = true
+}
+
+function handleProxyAction(key: string, proxy: ProxyProfileSummary) {
+  if (key === 'test') {
+    openTestReport(proxy)
+    return
+  }
+  if (key === 'edit') {
+    openEdit(proxy)
+    return
+  }
+  if (key === 'delete') {
+    void removeProxy(proxy.id)
+  }
 }
 
 async function saveProxy() {

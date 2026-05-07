@@ -8,6 +8,7 @@ import {
   type RuntimeLogListOptions
 } from '../../storage/runtime-logs.repository.js'
 import { getBackgroundWorkerState, requestBackgroundWorkerSnapshot } from '../background/background-ipc.js'
+import { getDbServiceState, requestDbService } from '../db-service/db-service-ipc.js'
 import { grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 
 export const runtimeLogsRouter = Router()
@@ -30,7 +31,12 @@ runtimeLogsRouter.get('/', async (req, res) => {
 })
 
 runtimeLogsRouter.get('/facets', async (_req, res) => {
-  const workerSnapshot = await requestBackgroundWorkerSnapshot()
+  const [workerSnapshot, dbServiceSnapshot] = await Promise.all([
+    requestBackgroundWorkerSnapshot(),
+    requestDbService({ type: 'status' }, { timeoutMs: 1000, fallbackToLocal: false }).catch(() => undefined)
+  ])
+  const dbServiceState = getDbServiceState()
+  const workerState = getBackgroundWorkerState()
   res.json(ok({
     ...getRuntimeLogFacets(),
     runtime: workerSnapshot?.runtimeLogIndexQueue ?? {
@@ -39,9 +45,19 @@ runtimeLogsRouter.get('/facets', async (_req, res) => {
       retentionDays: 3
     },
     worker: {
-      pid: workerSnapshot?.pid ?? getBackgroundWorkerState().pid,
-      ready: workerSnapshot?.ready ?? getBackgroundWorkerState().ready,
-      pendingMessageCount: getBackgroundWorkerState().pendingMessageCount
+      pid: workerSnapshot?.pid ?? workerState.pid,
+      ready: workerSnapshot?.ready ?? workerState.ready,
+      pendingMessageCount: workerState.pendingMessageCount
+    },
+    dbService: {
+      pid: dbServiceSnapshot?.pid ?? dbServiceState.pid,
+      ready: dbServiceSnapshot?.ready ?? dbServiceState.ready,
+      pendingRequestCount: dbServiceState.pendingRequestCount,
+      timedOutRequestCount: dbServiceState.timedOutRequestCount,
+      failedRequestCount: dbServiceState.failedRequestCount,
+      handledRequestCount: dbServiceSnapshot?.handledRequestCount,
+      lastRequestAt: dbServiceSnapshot?.lastRequestAt,
+      lastError: dbServiceSnapshot?.lastError
     }
   }))
 })

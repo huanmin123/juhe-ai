@@ -76,6 +76,9 @@
             <span>输入 {{ formatTokens(record.inputTokens) }}</span>
             <span>输出 {{ formatTokens(record.outputTokens) }}</span>
             <span>缓存 {{ formatTokens(record.cacheReadTokens) }}</span>
+            <span v-if="(record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0) > 0">
+              图片 {{ formatTokens((record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0)) }}
+            </span>
           </div>
         </template>
         <template v-else-if="column.key === 'cost'">
@@ -91,7 +94,7 @@
           <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-button type="link" size="small" @click="openDetail(record)">详情</a-button>
+          <RowActions :actions="detailActions" @action-click="handleRecordAction($event, record)" />
         </template>
       </template>
       <template #card="{ record }">
@@ -103,6 +106,7 @@
   <UsageRecordDetailDrawer
     v-model:open="detailOpen"
     :is-management-view="isManagementView"
+    :loading="detailLoading"
     :record="selectedRecord"
     @close="closeDetail"
   />
@@ -116,6 +120,8 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
@@ -164,6 +170,8 @@ const loading = ref(false)
 const mobileLoadingMore = ref(false)
 const records = ref<UsageRecordSummary[]>([])
 const detailOpen = ref(false)
+const detailLoading = ref(false)
+let detailRequestVersion = 0
 const selectedRecord = ref<UsageRecordSummary>()
 const accountNameFilter = ref(initialPageState.accountNameFilter)
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
@@ -200,6 +208,9 @@ const tablePagination = computed(() => ({
   showSizeChanger: false,
   showTotal: (total: number) => `共 ${total} 条使用记录`
 }))
+const detailActions: RowActionItem[] = [
+  { key: 'detail', label: '详情', icon: 'detail', tone: 'info' }
+]
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -227,13 +238,39 @@ const columns = computed(() => {
   return baseColumns
 })
 
-function openDetail(record: UsageRecordSummary): void {
+async function openDetail(record: UsageRecordSummary): Promise<void> {
+  const requestVersion = ++detailRequestVersion
   selectedRecord.value = record
   detailOpen.value = true
+  detailLoading.value = true
+  try {
+    const detail = await fetchRecordDetail(record.id)
+    if (requestVersion === detailRequestVersion) {
+      selectedRecord.value = detail
+    }
+  } catch (error) {
+    console.error(error)
+    if (requestVersion === detailRequestVersion) {
+      message.error('加载使用记录详情失败')
+    }
+  } finally {
+    if (requestVersion === detailRequestVersion) {
+      detailLoading.value = false
+    }
+  }
+}
+
+function handleRecordAction(key: string, record: UsageRecordSummary): void {
+  if (key === 'detail') {
+    void openDetail(record)
+  }
 }
 
 function closeDetail(): void {
+  detailRequestVersion += 1
   detailOpen.value = false
+  detailLoading.value = false
+  selectedRecord.value = undefined
 }
 
 function resetFilters(): void {
@@ -350,6 +387,12 @@ async function fetchRecords() {
       : api.myUsageRecords.list(params),
     isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
   ])
+}
+
+async function fetchRecordDetail(id: string): Promise<UsageRecordSummary> {
+  return isManagementView.value
+    ? api.usageRecords.detail(id, { systemAccountId: scopedSystemAccountId(systemAccountFilter.value) })
+    : api.myUsageRecords.detail(id)
 }
 
 function normalizedStatusCode(value: string): number | undefined {

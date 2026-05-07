@@ -21,6 +21,7 @@ export interface ProviderModelPricing {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   outputUsdPerImage?: number
   maxInputTokens?: number

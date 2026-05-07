@@ -20,7 +20,8 @@
       </a-space>
     </template>
     <a-empty v-if="!record" description="请选择一条使用记录" />
-    <div v-else class="usage-record-detail">
+    <a-spin v-else :spinning="loading" tip="正在加载快照详情">
+      <div class="usage-record-detail">
       <section class="detail-section">
         <h4>请求概览</h4>
         <div class="detail-grid">
@@ -104,7 +105,7 @@
       <section class="detail-section">
         <div class="detail-section-head">
           <h4>请求快照</h4>
-          <a-button size="small" type="link" @click="copySnapshot('request')">复制</a-button>
+          <a-button size="small" type="link" :disabled="loading" @click="copySnapshot('request')">复制</a-button>
         </div>
         <pre class="snapshot-block">{{ formatSnapshot(record.requestSnapshot) }}</pre>
       </section>
@@ -112,11 +113,12 @@
       <section class="detail-section">
         <div class="detail-section-head">
           <h4>响应快照</h4>
-          <a-button size="small" type="link" @click="copySnapshot('response')">复制</a-button>
+          <a-button size="small" type="link" :disabled="loading" @click="copySnapshot('response')">复制</a-button>
         </div>
         <pre class="snapshot-block">{{ formatSnapshot(record.responseSnapshot) }}</pre>
       </section>
-    </div>
+      </div>
+    </a-spin>
   </a-drawer>
 </template>
 
@@ -140,6 +142,7 @@ import {
 
 const props = defineProps<{
   isManagementView: boolean
+  loading?: boolean
   open: boolean
   record?: UsageRecordSummary
 }>()

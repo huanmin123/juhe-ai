@@ -2,6 +2,7 @@ import { createAppCache } from '../../shared/cache.js'
 import { getDatabase } from '../../storage/database.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
+import { requestDbService } from '../db-service/db-service-ipc.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCosts } from './request-quota-checker.js'
 
 export const AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE = '额度已用完，请联系管理员提升额度'
@@ -54,6 +55,40 @@ export function checkGatewayAuthorizationQuota(input: {
   if (!checks.length) {
     return { allowed: true }
   }
+  return authorizationQuotaDecisionFromChecks(checks)
+}
+
+export async function checkGatewayAuthorizationQuotaAsync(input: {
+  groupAccess: GroupUsageAccessMetadata
+  account?: OpenAIAccountSecret
+}): Promise<AuthorizationQuotaDecision> {
+  return await requestDbService({
+    type: 'check_authorization_quota',
+    groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+    accountAuthorizationId: input.account?.accountAuthorizationId
+  })
+}
+
+export function checkGatewayAuthorizationQuotaByIds(input: {
+  groupAuthorizationId?: string
+  accountAuthorizationId?: string
+  now?: Date
+}): AuthorizationQuotaDecision {
+  const now = input.now ?? new Date()
+  const checks: AuthorizationQuotaCheck[] = []
+  if (input.groupAuthorizationId) {
+    checks.push(...authorizationQuotaChecks(input.groupAuthorizationId, 'group_authorization', now))
+  }
+  if (input.accountAuthorizationId) {
+    checks.push(...authorizationQuotaChecks(input.accountAuthorizationId, 'account_authorization', now))
+  }
+  if (!checks.length) {
+    return { allowed: true }
+  }
+  return authorizationQuotaDecisionFromChecks(checks)
+}
+
+function authorizationQuotaDecisionFromChecks(checks: AuthorizationQuotaCheck[]): AuthorizationQuotaDecision {
   const cacheKey = checks.map((check) => check.cacheKey).join('|')
   const cached = authorizationQuotaCache.get(cacheKey)
   if (cached) {

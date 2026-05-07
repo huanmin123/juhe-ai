@@ -1,10 +1,6 @@
 <template>
   <div class="usage-cell">
-    <div class="usage-summary-tags">
-      <a-tag class="usage-summary-tag">{{ `${account.todayUsage.requestCount}req` }}</a-tag>
-      <a-tag class="usage-summary-tag">{{ formatUsageAmount(account.todayUsage.totalTokens) }}</a-tag>
-      <a-tag class="usage-summary-tag">{{ formatCost(account.todayUsage.totalCost) }}</a-tag>
-    </div>
+    <UsageSummaryTags :usage="account.todayUsage" />
     <div v-if="bars.length" class="oauth-usage-bars">
       <div v-for="bar in bars" :key="bar.key" class="oauth-usage-row">
         <span class="oauth-usage-label">{{ bar.label }}</span>
@@ -19,8 +15,9 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import type { AccountSummary } from '@/types/domain'
-import { formatCost, formatUsageAmount, oauthUsageBars } from './accountFormatters'
+import { oauthUsageBars } from './accountFormatters'
 
 const props = defineProps<{
   account: AccountSummary
@@ -31,7 +28,6 @@ const bars = computed(() => oauthUsageBars(props.account))
 
 <style scoped>
 .usage-cell {
-  --usage-meter-width: 150px;
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -40,29 +36,12 @@ const bars = computed(() => oauthUsageBars(props.account))
   white-space: normal;
 }
 
-.usage-summary-tags {
-  display: inline-grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
-  width: var(--usage-meter-width);
-}
-
-.usage-summary-tag {
-  min-width: 0;
-  margin-inline-end: 0;
-  padding-inline: 5px;
-  color: #0f172a;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  text-align: center;
-  white-space: nowrap;
-}
-
 .oauth-usage-bars {
   display: flex;
   flex-direction: column;
   gap: 3px;
-  width: var(--usage-meter-width);
+  width: min(220px, 100%);
+  min-width: 150px;
 }
 
 .oauth-usage-row {

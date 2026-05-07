@@ -38,11 +38,7 @@
           <StatusTag :color="record.status === 'active' ? 'green' : 'default'" :label="record.status === 'active' ? '启用' : '停用'" />
         </template>
         <template v-else-if="column.key === 'usage'">
-          <div class="api-key-usage-cell">
-            <a-tag class="api-key-usage-tag">{{ `${record.usage.requestCount}req` }}</a-tag>
-            <a-tag class="api-key-usage-tag">{{ formatUsageAmount(record.usage.totalTokens) }}</a-tag>
-            <a-tag class="api-key-usage-tag">{{ formatCost(record.usage.totalCost) }}</a-tag>
-          </div>
+          <UsageSummaryTags :usage="record.usage" />
         </template>
         <template v-else-if="column.key === 'key'">
           <div class="key-preview-cell">
@@ -65,12 +61,7 @@
           <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space class="row-actions" :size="8">
-            <a-button type="link" size="small" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm title="确认删除这个 API Key？相关使用记录、审计日志和统计缓存会一起删除。" @confirm="removeApiKey(record.id)">
-              <a-button type="link" size="small" danger>删除</a-button>
-            </a-popconfirm>
-          </a-space>
+          <RowActions :actions="apiKeyActions" @action-click="handleApiKeyAction($event, record)" />
         </template>
       </template>
       <template #card="{ record }">
@@ -108,11 +99,8 @@
               <strong>{{ record.description || '-' }}</strong>
             </div>
           </div>
-          <div class="mobile-list-card-actions two-actions">
-            <a-button type="primary" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm title="确认删除这个 API Key？相关使用记录、审计日志和统计缓存会一起删除。" @confirm="removeApiKey(record.id)">
-              <a-button danger>删除</a-button>
-            </a-popconfirm>
+          <div class="mobile-list-card-actions">
+            <RowActions variant="button" :actions="apiKeyActions" @action-click="handleApiKeyAction($event, record)" />
           </div>
         </article>
       </template>
@@ -188,8 +176,11 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RowActions from '@/components/RowActions.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import type { RowActionItem } from '@/components/rowActions'
+import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
@@ -252,14 +243,26 @@ const columns = computed(() => {
   baseColumns.push(
     { title: '绑定分组', key: 'group', width: 220 },
     { title: '状态', key: 'status', width: 100 },
-    { title: '累计用量', key: 'usage', width: 190 },
+    { title: '累计用量', key: 'usage', width: 180 },
     { title: '美元额度', key: 'quotaLimits', width: 220 },
     { title: '过期时间', dataIndex: 'expiresAt', key: 'expiresAt', width: 180 },
     { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-    { title: '操作', key: 'actions', width: 110, fixed: 'right' }
+    { title: '操作', key: 'actions', width: 90, fixed: 'right' }
   )
   return baseColumns
 })
+
+const apiKeyActions: RowActionItem[] = [
+  { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
+  {
+    key: 'delete',
+    label: '删除',
+    icon: 'delete',
+    tone: 'danger',
+    confirmTitle: '确认删除这个 API Key？相关使用记录、审计日志和统计缓存会一起删除。',
+    confirmOkText: '删除'
+  }
+]
 
 const statusOptions = [
   { label: '启用', value: 'active' },
@@ -458,6 +461,16 @@ function openEdit(apiKey: ApiKeySummary) {
   editingId.value = apiKey.id
   Object.assign(form, { name: apiKey.name, groupId: apiKey.groupId, status: apiKey.status, expiresAt: undefined, description: apiKey.description ?? '', quotaLimits: createQuotaLimitForm(apiKey.quotaLimits) })
   modalOpen.value = true
+}
+
+function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
+  if (key === 'edit') {
+    openEdit(apiKey)
+    return
+  }
+  if (key === 'delete') {
+    void removeApiKey(apiKey.id)
+  }
 }
 
 async function saveApiKey() {
@@ -690,24 +703,6 @@ onMounted(loadData)
 .key-copy-button:hover:not(:disabled) {
   color: #1677ff;
   background: #eff6ff;
-}
-
-.api-key-usage-cell {
-  display: inline-grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 4px;
-  width: 160px;
-}
-
-.api-key-usage-tag {
-  min-width: 0;
-  margin-inline-end: 0;
-  padding-inline: 5px;
-  color: #0f172a;
-  font-family: Consolas, 'Courier New', monospace;
-  font-size: 12px;
-  text-align: center;
-  white-space: nowrap;
 }
 
 </style>

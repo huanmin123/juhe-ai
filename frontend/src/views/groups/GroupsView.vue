@@ -52,21 +52,14 @@
           <a-tag color="blue">{{ groupStats(record).currentConcurrency }}</a-tag>
         </template>
         <template v-else-if="column.key === 'usage'">
-          <div class="usage-cell">
-            <span class="usage-summary">{{ formatUsageSummary(groupStats(record).todayUsage) }}</span>
-          </div>
+          <UsageSummaryTags :usage="groupStats(record).todayUsage" />
         </template>
         <template v-else-if="column.key === 'status'">
           <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space class="row-actions" :size="8">
-            <a-button v-if="canEditGroup(record)" type="link" size="small" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm v-if="canDeleteGroup(record)" title="确认删除这个分组？" @confirm="removeGroup(record.id)">
-              <a-button type="link" size="small" danger>删除</a-button>
-            </a-popconfirm>
-            <a-tag v-if="isAuthorizedGroup(record)" color="cyan">仅可使用</a-tag>
-          </a-space>
+          <RowActions v-if="groupActions(record).length" :actions="groupActions(record)" @action-click="handleGroupAction($event, record)" />
+          <a-tag v-else-if="isAuthorizedGroup(record)" color="cyan">仅可使用</a-tag>
         </template>
       </template>
       <template #card="{ record }">
@@ -103,11 +96,8 @@
               <strong>{{ formatUsageSummary(groupStats(record).todayUsage) }}</strong>
             </div>
           </div>
-          <div class="mobile-list-card-actions">
-            <a-button v-if="canEditGroup(record)" type="primary" @click="openEdit(record)">编辑</a-button>
-            <a-popconfirm v-if="canDeleteGroup(record)" title="确认删除这个分组？" @confirm="removeGroup(record.id)">
-              <a-button danger>删除</a-button>
-            </a-popconfirm>
+          <div v-if="groupActions(record).length" class="mobile-list-card-actions">
+            <RowActions variant="button" :actions="groupActions(record)" @action-click="handleGroupAction($event, record)" />
           </div>
         </article>
       </template>
@@ -142,8 +132,11 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RowActions from '@/components/RowActions.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import type { RowActionItem } from '@/components/rowActions'
+import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
@@ -189,10 +182,10 @@ const columns = computed(() => {
   baseColumns.push(
     { title: '账户数', key: 'accountCount', width: 130 },
     { title: '当前并发', key: 'concurrency', width: 100 },
-    { title: '用量(日)', key: 'usage', width: 280 },
+    { title: '用量(日)', key: 'usage', width: 180 },
     { title: '状态', key: 'status', width: 100 },
     { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-    { title: '操作', key: 'actions', width: 150, fixed: 'right' }
+    { title: '操作', key: 'actions', width: 100, fixed: 'right' }
   )
   return baseColumns
 })
@@ -255,6 +248,34 @@ function canEditGroup(group: GroupSummary): boolean {
 
 function canDeleteGroup(group: GroupSummary): boolean {
   return !group.isDefault && group.permissions?.canDelete !== false
+}
+
+function groupActions(group: GroupSummary): RowActionItem[] {
+  const actions: RowActionItem[] = []
+  if (canEditGroup(group)) {
+    actions.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
+  }
+  if (canDeleteGroup(group)) {
+    actions.push({
+      key: 'delete',
+      label: '删除',
+      icon: 'delete',
+      tone: 'danger',
+      confirmTitle: '确认删除这个分组？',
+      confirmOkText: '删除'
+    })
+  }
+  return actions
+}
+
+function handleGroupAction(key: string, group: GroupSummary) {
+  if (key === 'edit') {
+    openEdit(group)
+    return
+  }
+  if (key === 'delete') {
+    void removeGroup(group.id)
+  }
 }
 
 function formatUsageSummary(usage: GroupSummary['accountStats']['usage']) {
@@ -417,19 +438,6 @@ onMounted(loadData)
 
 .group-name-cell,
 .account-count-cell,
-.usage-cell {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  line-height: 1.4;
-}
-
-.usage-summary {
-  color: #0f172a;
-  font-family: Consolas, 'Courier New', monospace;
-  font-weight: 400;
-}
-
 .account-count-row {
   display: flex;
   align-items: center;

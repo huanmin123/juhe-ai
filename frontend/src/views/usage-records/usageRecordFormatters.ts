@@ -18,7 +18,9 @@ export function formatTokens(value?: number): string {
 }
 
 export function formatRecordTokens(record: UsageRecordSummary): string {
-  return `${formatTokens(record.inputTokens)} / ${formatTokens(record.outputTokens)} / ${formatTokens(record.cacheReadTokens)}`
+  const base = `${formatTokens(record.inputTokens)} / ${formatTokens(record.outputTokens)} / ${formatTokens(record.cacheReadTokens)}`
+  const imageTokens = (record.inputImageTokens ?? 0) + (record.outputImageTokens ?? 0)
+  return imageTokens > 0 ? `${base} / 图片 ${formatTokens(imageTokens)}` : base
 }
 
 export function formatEndpoint(value?: string): string {

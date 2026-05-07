@@ -10,6 +10,7 @@ export interface ProviderModelPricing {
   cachedInputUsdPer1M?: number
   cacheWriteUsdPer1M?: number
   cacheWrite1hUsdPer1M?: number
+  imageInputUsdPer1M?: number
   imageOutputUsdPer1M?: number
   outputUsdPerImage?: number
   maxInputTokens?: number
@@ -28,6 +29,7 @@ interface RawModelPricing {
   cache_creation_input_token_cost?: number
   cache_creation_input_token_cost_above_1hr?: number
   cache_read_input_token_cost?: number
+  input_cost_per_image_token?: number
   output_cost_per_image?: number
   output_cost_per_image_token?: number
   max_input_tokens?: number
@@ -43,6 +45,8 @@ interface CostInput {
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
+  inputImageTokens?: number
+  outputImageTokens?: number
 }
 
 interface CostBreakdownInput extends CostInput {
@@ -55,6 +59,10 @@ export interface ProviderCostBreakdown {
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cacheReadCostUsd?: number
+  inputImageCostUsd?: number
+  outputImageCostUsd?: number
+  inputImageUsdPer1M?: number
+  outputImageUsdPer1M?: number
   accountChargeUsd?: number
   multiplier: 1
 }
@@ -85,15 +93,21 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
   const inputPrice = normalizePrice(pricing.input_cost_per_token)
   const outputPrice = normalizePrice(pricing.output_cost_per_token)
   const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost) ?? inputPrice
-  if (inputPrice === undefined && outputPrice === undefined && cachedInputPrice === undefined) return undefined
+  const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token) ?? inputPrice
+  const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token) ?? outputPrice
+  if (inputPrice === undefined && outputPrice === undefined && cachedInputPrice === undefined && inputImagePrice === undefined && outputImagePrice === undefined) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
-  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens, 0)
-  const outputTokens = Math.max(input.outputTokens ?? 0, 0)
+  const inputImageTokens = Math.max(input.inputImageTokens ?? 0, 0)
+  const outputImageTokens = Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
+  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens, 0)
+  const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens, 0)
 
   const cost = uncachedInputTokens * (inputPrice ?? 0)
     + cacheReadTokens * (cachedInputPrice ?? 0)
+    + inputImageTokens * (inputImagePrice ?? 0)
     + outputTokens * (outputPrice ?? 0)
+    + outputImageTokens * (outputImagePrice ?? 0)
 
   return Number(cost.toFixed(10))
 }
@@ -107,14 +121,20 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
   const inputPrice = normalizePrice(pricing.input_cost_per_token)
   const outputPrice = normalizePrice(pricing.output_cost_per_token)
   const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost) ?? inputPrice
-  if (inputPrice === undefined && outputPrice === undefined && cachedInputPrice === undefined) return undefined
+  const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token) ?? inputPrice
+  const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token) ?? outputPrice
+  if (inputPrice === undefined && outputPrice === undefined && cachedInputPrice === undefined && inputImagePrice === undefined && outputImagePrice === undefined) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
-  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens, 0)
-  const outputTokens = Math.max(input.outputTokens ?? 0, 0)
+  const inputImageTokens = Math.max(input.inputImageTokens ?? 0, 0)
+  const outputImageTokens = Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
+  const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens, 0)
+  const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens, 0)
   const inputCostUsd = inputPrice === undefined ? undefined : roundCost(uncachedInputTokens * inputPrice)
   const outputCostUsd = outputPrice === undefined ? undefined : roundCost(outputTokens * outputPrice)
   const cacheReadCostUsd = cachedInputPrice === undefined ? undefined : roundCost(cacheReadTokens * cachedInputPrice)
+  const inputImageCostUsd = inputImageTokens > 0 && inputImagePrice !== undefined ? roundCost(inputImageTokens * inputImagePrice) : undefined
+  const outputImageCostUsd = outputImageTokens > 0 && outputImagePrice !== undefined ? roundCost(outputImageTokens * outputImagePrice) : undefined
 
   return {
     inputCostUsd,
@@ -122,7 +142,11 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
     inputUsdPer1M: perMillion(inputPrice),
     outputUsdPer1M: perMillion(outputPrice),
     cacheReadCostUsd,
-    accountChargeUsd: normalizePrice(input.costUsd) ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd),
+    inputImageCostUsd,
+    outputImageCostUsd,
+    inputImageUsdPer1M: perMillion(inputImagePrice),
+    outputImageUsdPer1M: perMillion(outputImagePrice),
+    accountChargeUsd: normalizePrice(input.costUsd) ?? sumCostParts(inputCostUsd, outputCostUsd, cacheReadCostUsd, inputImageCostUsd, outputImageCostUsd),
     multiplier: 1
   }
 }
@@ -141,6 +165,13 @@ function findOpenAIModelPricing(model: string): RawModelPricing | undefined {
   }
 
   return undefined
+}
+
+function defaultImageOutputTokens(input: CostInput, pricing: RawModelPricing): number {
+  if (input.outputImageTokens !== undefined || pricing.mode !== 'image_generation' || pricing.output_cost_per_image_token === undefined) {
+    return 0
+  }
+  return Math.max(input.outputTokens ?? 0, 0)
 }
 
 function isDeprecatedOpenAIModel(model: string): boolean {
@@ -171,6 +202,7 @@ const deprecatedOpenAIModels = new Set([
   'gpt-5.1-codex-max',
   'gpt-5.1-codex-mini',
   'gpt-5.2-codex',
+  'gpt-5.3-codex-spark',
   'gpt-image-1',
   'o1-2024-12-17',
   'o1-pro-2025-03-19',
@@ -211,6 +243,7 @@ function toProviderModelPricing(item: RawModelPricing): ProviderModelPricing {
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),
     cacheWriteUsdPer1M: perMillion(item.cache_creation_input_token_cost),
     cacheWrite1hUsdPer1M: perMillion(item.cache_creation_input_token_cost_above_1hr),
+    imageInputUsdPer1M: perMillion(item.input_cost_per_image_token),
     imageOutputUsdPer1M: perMillion(item.output_cost_per_image_token),
     outputUsdPerImage: normalizePrice(item.output_cost_per_image),
     maxInputTokens: item.max_input_tokens,

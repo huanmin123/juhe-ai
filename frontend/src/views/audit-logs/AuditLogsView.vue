@@ -102,7 +102,7 @@
                     {{ formatBytes(record.sizeBytes) }}
                   </template>
                   <template v-else-if="column.key === 'actions'">
-                    <a-button type="link" size="small" :loading="payloadLoadingId === record.id" @click="loadPayload(record.id)">查看原文</a-button>
+                    <RowActions :actions="payloadActions(record.id)" @action-click="loadPayload(record.id)" />
                   </template>
                 </template>
               </a-table>
@@ -135,6 +135,8 @@ import { message } from '@/lib/antd'
 import { api } from '@/api/client'
 import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import AuditLogList from './AuditLogList.vue'
 import {
@@ -322,6 +324,18 @@ async function loadPayload(payloadId: string): Promise<void> {
   } finally {
     payloadLoadingId.value = ''
   }
+}
+
+function payloadActions(payloadId: string): RowActionItem[] {
+  return [
+    {
+      key: 'payload',
+      label: '查看原文',
+      icon: 'detail',
+      tone: 'info',
+      disabled: payloadLoadingId.value === payloadId
+    }
+  ]
 }
 
 function snapshotPageState(): AuditLogsPageState {

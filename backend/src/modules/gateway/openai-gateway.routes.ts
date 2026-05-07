@@ -7,14 +7,15 @@ import {
   recordAccountStreamFailure,
   updateAccount,
   type GatewayApiKeyRow,
+  type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
 import {
   clearGatewayRuntimeCache,
-  listCachedOpenAIAccountsForGroup,
-  readCachedGatewaySettings,
-  resolveCachedGroupUsageAccessMetadata
+  listCachedOpenAIAccountsForGroupAsync,
+  readCachedGatewaySettingsAsync,
+  resolveCachedGroupUsageAccessMetadataAsync
 } from './gateway-runtime-cache.service.js'
 import { estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
 import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
@@ -62,11 +63,11 @@ import {
   isOpenAIStreamContentType,
   sendGatewayJsonError
 } from './openai-gateway-responses.js'
-import { isOpenAIStreamRequest, resolveGatewayApiKey } from './openai-gateway-request.js'
+import { isOpenAIStreamRequest, resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
-import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuota } from './api-key-quota.service.js'
-import { AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE, checkGatewayAuthorizationQuota } from './authorization-quota.service.js'
+import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from './api-key-quota.service.js'
+import { AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE, checkGatewayAuthorizationQuotaAsync } from './authorization-quota.service.js'
 import {
   forgetOpenAIAccountForSession,
   orderOpenAIAccountsBySessionAffinity,
@@ -110,7 +111,7 @@ export async function handleOpenAIGatewayRequest(
   const clientIp = extractClientIp(req)
   const endpoint = requestEndpoint(req)
   const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
-  const gatewaySettings = readCachedGatewaySettings()
+  let gatewaySettings: GatewaySettings | undefined
   const auditCapture = createAuditCapture({ req, traceId, clientIp, startedAtMs: startedAt })
   req.once('aborted', () => {
     auditCapture.markClientAborted()
@@ -124,11 +125,15 @@ export async function handleOpenAIGatewayRequest(
   })
 
   let apiKeyRecord: GatewayApiKeyRow | undefined
+  let runtimeGroupAccess: GroupUsageAccessMetadata | undefined
+  let runtimeAccounts: UpstreamAccount[] | undefined
   const identity = options.identity
-    ? options.identity
-    : (() => {
-      apiKeyRecord = resolveGatewayApiKey(req, res)
-      if (!apiKeyRecord) {
+    ? (() => {
+      return options.identity
+    })()
+    : await (async () => {
+      const runtime = await resolveGatewayRuntimeAsync(req, res)
+      if (!runtime?.apiKey) {
         const authErrorMessage = extractBearerToken(req.header('authorization')) ? 'API Key 无效' : '缺少 Bearer Token'
         const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error')
         auditCapture.finalize({
@@ -144,15 +149,20 @@ export async function handleOpenAIGatewayRequest(
         })
         return undefined
       }
+      gatewaySettings = runtime.settings
+      apiKeyRecord = runtime.apiKey
+      runtimeGroupAccess = runtime.groupAccess
+      runtimeAccounts = runtime.accounts
       return {
-        systemAccountId: apiKeyRecord.system_account_id,
-        apiKeyId: apiKeyRecord.id,
-        groupId: apiKeyRecord.group_id
+        systemAccountId: runtime.apiKey.system_account_id,
+        apiKeyId: runtime.apiKey.id,
+        groupId: runtime.apiKey.group_id
       }
     })()
   if (!identity) {
     return
   }
+  const activeGatewaySettings = gatewaySettings ?? await readCachedGatewaySettingsAsync()
   const { systemAccountId, apiKeyId, groupId } = identity
 
   auditCapture.bindContext({
@@ -167,7 +177,7 @@ export async function handleOpenAIGatewayRequest(
     groupId
   })
 
-  const groupAccess = resolveCachedGroupUsageAccessMetadata(groupId, systemAccountId)
+  const groupAccess = runtimeGroupAccess ?? await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
   if (!groupAccess) {
     const statusCode = 403
     const responsePayload = gatewayErrorPayload('API Key 绑定的分组授权不可用', 'forbidden')
@@ -200,7 +210,7 @@ export async function handleOpenAIGatewayRequest(
   }
 
   const groupUsageFields = groupUsageMetadata(groupAccess)
-  const quotaDecision = apiKeyRecord ? checkGatewayApiKeyQuota(apiKeyRecord) : { allowed: true }
+  const quotaDecision = apiKeyRecord ? await checkGatewayApiKeyQuotaAsync(apiKeyRecord) : { allowed: true }
   if (!quotaDecision.allowed) {
     const statusCode = 429
     const responsePayload = gatewayErrorPayload(quotaDecision.message ?? API_KEY_QUOTA_EXCEEDED_MESSAGE, 'rate_limit_exceeded')
@@ -233,7 +243,7 @@ export async function handleOpenAIGatewayRequest(
     return
   }
 
-  const groupAuthorizationQuotaDecision = checkGatewayAuthorizationQuota({ groupAccess })
+  const groupAuthorizationQuotaDecision = await checkGatewayAuthorizationQuotaAsync({ groupAccess })
   if (!groupAuthorizationQuotaDecision.allowed) {
     sendQuotaExceededResponse(req, res, auditCapture, {
       traceId,
@@ -284,18 +294,19 @@ export async function handleOpenAIGatewayRequest(
     groupId
   })
   const candidateAccounts = orderOpenAIAccountsBySessionAffinity(
-    options.candidateAccounts ?? listCachedOpenAIAccountsForGroup(groupId, systemAccountId),
+    options.candidateAccounts ?? runtimeAccounts ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId),
     options.disableSessionAffinity ? undefined : sessionAffinityKey
   )
   let authorizationQuotaDeniedAccountCount = 0
-  const accounts = candidateAccounts.filter((account) => {
-    const decision = checkGatewayAuthorizationQuota({ groupAccess, account })
+  const accounts: UpstreamAccount[] = []
+  for (const account of candidateAccounts) {
+    const decision = await checkGatewayAuthorizationQuotaAsync({ groupAccess, account })
     if (!decision.allowed) {
       authorizationQuotaDeniedAccountCount += 1
-      return false
+      continue
     }
-    return true
-  })
+    accounts.push(account)
+  }
   if (accounts.length === 0) {
     if (authorizationQuotaDeniedAccountCount > 0) {
       sendQuotaExceededResponse(req, res, auditCapture, {
@@ -342,7 +353,7 @@ export async function handleOpenAIGatewayRequest(
   }
 
   try {
-    const upstreamResult = await fetchFirstAvailableUpstream(req, accounts, gatewaySettings, {
+    const upstreamResult = await fetchFirstAvailableUpstream(req, accounts, activeGatewaySettings, {
       traceId,
       clientIp,
       systemAccountId,
@@ -396,9 +407,9 @@ export async function handleOpenAIGatewayRequest(
           streamResult = await pipeUpstreamStream(
             upstreamResponse.body,
             res,
-            gatewaySettings,
+            activeGatewaySettings,
             startedAt,
-            (message) => handleStreamFailure(account, message, gatewaySettings),
+            (message) => handleStreamFailure(account, message, activeGatewaySettings),
             abortController.signal
           )
         } catch (error) {
@@ -506,7 +517,7 @@ export async function handleOpenAIGatewayRequest(
       if (upstreamResponse.ok) {
         applyAccountErrorHandlingWithCacheInvalidation(account, {
           success: true,
-          settings: gatewaySettings,
+          settings: activeGatewaySettings,
           preserveManualTrafficMigration: true
         })
       }
@@ -530,12 +541,16 @@ export async function handleOpenAIGatewayRequest(
         inputTokens: usage.inputTokens,
         outputTokens: usage.outputTokens,
         cacheReadTokens: usage.cacheReadTokens,
+        inputImageTokens: usage.inputImageTokens,
+        outputImageTokens: usage.outputImageTokens,
         costUsd: estimateProviderCostUsd({
           providerCode: 'openai',
           model: requestModel(req),
           inputTokens: usage.inputTokens,
           outputTokens: usage.outputTokens,
-          cacheReadTokens: usage.cacheReadTokens
+          cacheReadTokens: usage.cacheReadTokens,
+          inputImageTokens: usage.inputImageTokens,
+          outputImageTokens: usage.outputImageTokens
         }),
         errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
         errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined,

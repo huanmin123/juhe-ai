@@ -43,6 +43,8 @@ export interface ParsedUsage {
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
+  inputImageTokens?: number
+  outputImageTokens?: number
 }
 
 export interface OpenAIStreamInspection {
@@ -272,11 +274,9 @@ export class OpenAIStreamInspector {
         this.inspection.errorCode = typeof error?.code === 'string' ? error.code : this.inspection.errorCode
         this.inspection.errorMessage = typeof error?.message === 'string' ? error.message : this.inspection.errorMessage
       }
-      if (eventType === 'response.completed' || eventType === 'response.done' || eventType === 'response.failed') {
-        const nextUsage = extractUsage(typeof event.response === 'object' && event.response !== null ? (event.response as Record<string, unknown>).usage : event.usage)
-        if (nextUsage.inputTokens !== undefined || nextUsage.outputTokens !== undefined || nextUsage.cacheReadTokens !== undefined) {
-          this.inspection.usage = nextUsage
-        }
+      const nextUsage = extractEventUsage(event)
+      if (hasAnyUsageValue(nextUsage)) {
+        this.inspection.usage = mergeUsage(this.inspection.usage, nextUsage)
       }
     } catch {
     }
@@ -342,13 +342,44 @@ function normalizeClientIp(value?: string): string | undefined {
 function extractUsage(value: unknown): ParsedUsage {
   if (typeof value !== 'object' || value === null) return emptyUsage()
   const usage = value as Record<string, unknown>
-  const details = typeof usage.input_tokens_details === 'object' && usage.input_tokens_details !== null
-    ? usage.input_tokens_details as Record<string, unknown>
-    : {}
-  const inputTokens = numberValue(usage.input_tokens)
-  const outputTokens = numberValue(usage.output_tokens)
-  const cacheReadTokens = numberValue(details.cached_tokens)
-  return { inputTokens, outputTokens, cacheReadTokens }
+  const responsesInputDetails = objectValue(usage.input_tokens_details)
+  const chatInputDetails = objectValue(usage.prompt_tokens_details)
+  const inputTokens = numberValue(usage.input_tokens) ?? numberValue(usage.prompt_tokens)
+  const outputTokens = numberValue(usage.output_tokens) ?? numberValue(usage.completion_tokens)
+  const cacheReadTokens = numberValue(responsesInputDetails?.cached_tokens)
+    ?? numberValue(chatInputDetails?.cached_tokens)
+  const outputDetails = objectValue(usage.output_tokens_details) ?? objectValue(usage.completion_tokens_details)
+  const inputImageTokens = numberValue(responsesInputDetails?.image_tokens)
+    ?? numberValue(chatInputDetails?.image_tokens)
+  const outputImageTokens = numberValue(outputDetails?.image_tokens)
+  return { inputTokens, outputTokens, cacheReadTokens, inputImageTokens, outputImageTokens }
+}
+
+function extractEventUsage(event: Record<string, unknown>): ParsedUsage {
+  const response = objectValue(event.response)
+  return extractUsage(response?.usage ?? event.usage)
+}
+
+function mergeUsage(current: ParsedUsage, next: ParsedUsage): ParsedUsage {
+  return {
+    inputTokens: next.inputTokens ?? current.inputTokens,
+    outputTokens: next.outputTokens ?? current.outputTokens,
+    cacheReadTokens: next.cacheReadTokens ?? current.cacheReadTokens,
+    inputImageTokens: next.inputImageTokens ?? current.inputImageTokens,
+    outputImageTokens: next.outputImageTokens ?? current.outputImageTokens
+  }
+}
+
+function hasAnyUsageValue(value: ParsedUsage): boolean {
+  return value.inputTokens !== undefined
+    || value.outputTokens !== undefined
+    || value.cacheReadTokens !== undefined
+    || value.inputImageTokens !== undefined
+    || value.outputImageTokens !== undefined
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null ? value as Record<string, unknown> : undefined
 }
 
 function numberValue(value: unknown): number | undefined {

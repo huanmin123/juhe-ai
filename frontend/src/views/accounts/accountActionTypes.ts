@@ -1,5 +1,3 @@
-export interface AccountMenuItem {
-  key: string
-  label: string
-  danger?: boolean
-}
+import type { RowActionItem } from '@/components/rowActions'
+
+export type AccountMenuItem = RowActionItem

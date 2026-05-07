@@ -25,6 +25,22 @@
             <span>缓存读取成本</span>
             <span class="cost-detail-value">{{ formatCost(record.costBreakdown.cacheReadCostUsd) }}</span>
           </div>
+          <div v-if="record.costBreakdown.inputImageCostUsd !== undefined" class="cost-detail-row">
+            <span>图片输入成本</span>
+            <span class="cost-detail-value">{{ formatCost(record.costBreakdown.inputImageCostUsd) }}</span>
+          </div>
+          <div v-if="record.costBreakdown.outputImageCostUsd !== undefined" class="cost-detail-row">
+            <span>图片输出成本</span>
+            <span class="cost-detail-value">{{ formatCost(record.costBreakdown.outputImageCostUsd) }}</span>
+          </div>
+          <div v-if="record.costBreakdown.inputImageUsdPer1M !== undefined" class="cost-detail-row">
+            <span>图片输入单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.inputImageUsdPer1M) }}</span>
+          </div>
+          <div v-if="record.costBreakdown.outputImageUsdPer1M !== undefined" class="cost-detail-row">
+            <span>图片输出单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.outputImageUsdPer1M) }}</span>
+          </div>
           <div class="cost-detail-row">
             <span>账户计费</span>
             <span class="cost-detail-value">{{ formatCost(record.costBreakdown.accountChargeUsd) }}</span>

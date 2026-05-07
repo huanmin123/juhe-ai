@@ -1,5 +1,7 @@
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
+import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
 import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
+import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.service.js'
 
 export interface DbServiceRuntimeSnapshot {
   pid: number
@@ -44,6 +46,15 @@ export type DbServiceOperation =
     systemAccountId?: string
   }
   | {
+    type: 'check_api_key_quota'
+    apiKey: GatewayApiKeyRow
+  }
+  | {
+    type: 'check_authorization_quota'
+    groupAuthorizationId?: string
+    accountAuthorizationId?: string
+  }
+  | {
     type: 'clear_gateway_runtime_cache'
   }
   | {
@@ -56,6 +67,8 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'resolve_group_usage_access' } ? GroupUsageAccessMetadata | undefined :
   T extends { type: 'list_openai_accounts_for_group' } ? OpenAIAccountSecret[] :
   T extends { type: 'read_gateway_runtime' } ? DbServiceGatewayRuntime :
+  T extends { type: 'check_api_key_quota' } ? ApiKeyQuotaDecision :
+  T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'status' } ? DbServiceRuntimeSnapshot :
   unknown

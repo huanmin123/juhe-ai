@@ -6,10 +6,10 @@ import {
 } from '../../storage/repositories.js'
 import {
   clearGatewayRuntimeCacheLocal,
-  listCachedOpenAIAccountsForGroup,
   readCachedGatewaySettings,
-  resolveCachedGroupUsageAccessMetadata
 } from '../gateway/gateway-runtime-cache.service.js'
+import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/api-key-quota.service.js'
+import { checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import type {
   DbServiceGatewayRuntime,
   DbServiceOperation,
@@ -60,14 +60,23 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
     case 'read_gateway_settings':
       return readCachedGatewaySettings()
     case 'resolve_group_usage_access':
-      return resolveCachedGroupUsageAccessMetadata(operation.groupId, operation.systemAccountId)
+      return resolveGroupUsageAccessMetadata(operation.groupId, operation.systemAccountId)
     case 'list_openai_accounts_for_group':
-      return listCachedOpenAIAccountsForGroup(operation.groupId, operation.systemAccountId)
+      return listOpenAIAccountsForGroup(operation.groupId, operation.systemAccountId)
     case 'read_gateway_runtime':
       return readGatewayRuntime(operation)
+    case 'check_api_key_quota':
+      return checkGatewayApiKeyQuota(operation.apiKey)
+    case 'check_authorization_quota':
+      return checkGatewayAuthorizationQuotaByIds({
+        groupAuthorizationId: operation.groupAuthorizationId,
+        accountAuthorizationId: operation.accountAuthorizationId
+      })
     case 'clear_gateway_runtime_cache':
       clearGatewayRuntimeCacheLocal()
       clearGatewayApiKeyValidationCache()
+      clearApiKeyQuotaCache()
+      clearAuthorizationQuotaCache()
       return { cleared: true }
     case 'status':
       return buildDbServiceRuntimeSnapshot()

@@ -40,6 +40,9 @@ export function orderOpenAIAccountsBySessionAffinity(
   accounts: OpenAIAccountSecret[],
   sessionAffinityKey?: string
 ): OpenAIAccountSecret[] {
+  if (accounts.some((account) => account.superPriorityEnabled)) {
+    return accounts
+  }
   if (!sessionAffinityKey || accounts.length < 2) {
     return accounts
   }

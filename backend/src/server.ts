@@ -8,6 +8,7 @@ import { accountsRouter } from './modules/accounts/accounts.routes.js'
 import { forceSelfAccessScope, requireAdmin, requireAuth } from './modules/auth/auth.middleware.js'
 import { authRouter } from './modules/auth/auth.routes.js'
 import { startBackgroundWorkerSupervisor } from './modules/background/background-worker-supervisor.js'
+import { startDbServiceSupervisor } from './modules/db-service/db-service-supervisor.js'
 import { apiKeysRouter } from './modules/api-keys/api-keys.routes.js'
 import { auditLogsRouter } from './modules/audit-logs/audit-logs.routes.js'
 import { authorizationOptionsRouter } from './modules/authorization-options/authorization-options.routes.js'
@@ -197,6 +198,7 @@ const server = app.listen(port, host, () => {
     port,
     logDirectory: runtimeConfig.log.fileEnabled ? runtimeConfig.log.directory : undefined
   }, `juhe-ai 后端已监听 http://${host}:${port}`)
+  startDbServiceSupervisor()
   startBackgroundWorkerSupervisor()
 })
 

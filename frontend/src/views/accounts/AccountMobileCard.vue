@@ -61,22 +61,10 @@
 
     <div class="account-mobile-card-actions">
       <template v-if="isAuthorizedAccount(account)">
-        <a-button @click="$emit('test')">测试</a-button>
-        <a-button type="primary" @click="$emit('bind-group')">{{ groupName ? '调整分组' : '绑定分组' }}</a-button>
+        <RowActions variant="button" :actions="authorizedActions" @action-click="handleActionClick" />
       </template>
       <template v-else>
-        <a-button v-if="canEdit" type="primary" @click="$emit('edit')">编辑</a-button>
-        <a-popconfirm v-if="canDelete" title="确认删除这个账户？" @confirm="$emit('delete')">
-          <a-button danger>删除</a-button>
-        </a-popconfirm>
-        <a-dropdown v-if="menuItems.length">
-          <a-button>更多</a-button>
-          <template #overlay>
-            <a-menu @click="$emit('menu-click', $event)">
-              <a-menu-item v-for="item in menuItems" :key="item.key" :danger="item.danger">{{ item.label }}</a-menu-item>
-            </a-menu>
-          </template>
-        </a-dropdown>
+        <RowActions variant="button" :actions="actions" :more-actions="menuItems" @action-click="handleActionClick" />
       </template>
     </div>
   </article>
@@ -86,6 +74,8 @@
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountStatusTag from './AccountStatusTag.vue'
 import type { AccountMenuItem } from './accountActionTypes'
@@ -112,7 +102,7 @@ const props = defineProps<{
   selected: boolean
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   (event: 'delete'): void
   (event: 'edit'): void
   (event: 'bind-group'): void
@@ -133,6 +123,47 @@ const proxyTooltip = computed(() => {
   return '代理配置不存在或当前不可见'
 })
 const proxyToneClass = computed(() => (props.account.proxyProfileUnavailable || props.proxy?.enabled === false ? 'proxy-error' : ''))
+const actions = computed<RowActionItem[]>(() => {
+  const list: RowActionItem[] = []
+  if (props.canEdit) {
+    list.push({ key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' })
+  }
+  if (props.canDelete) {
+    list.push({
+      key: 'delete',
+      label: '删除',
+      icon: 'delete',
+      tone: 'danger',
+      confirmTitle: '确认删除这个账户？',
+      confirmOkText: '删除'
+    })
+  }
+  return list
+})
+const authorizedActions = computed<RowActionItem[]>(() => [
+  { key: 'test', label: '测试', icon: 'test', tone: 'info' },
+  { key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' }
+])
+
+function handleActionClick(key: string) {
+  if (key === 'bind-group') {
+    emit('bind-group')
+    return
+  }
+  if (key === 'delete') {
+    emit('delete')
+    return
+  }
+  if (key === 'edit') {
+    emit('edit')
+    return
+  }
+  if (key === 'test') {
+    emit('test')
+    return
+  }
+  emit('menu-click', { key })
+}
 </script>
 
 <style scoped>

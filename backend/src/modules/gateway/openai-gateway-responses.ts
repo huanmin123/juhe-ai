@@ -21,10 +21,6 @@ export function isOpenAIStreamContentType(contentType: string): boolean {
 }
 
 export function writeGatewayStreamFailureEvent(res: Response, message: string): Buffer | undefined {
-  if (res.writableEnded || res.destroyed) {
-    return undefined
-  }
-
   const payload = {
     type: 'response.failed',
     response: {
@@ -35,13 +31,7 @@ export function writeGatewayStreamFailureEvent(res: Response, message: string): 
       }
     }
   }
-  const buffer = Buffer.from(`event: response.failed\ndata: ${JSON.stringify(payload)}\n\n`, 'utf8')
-  try {
-    res.write(buffer)
-    return buffer
-  } catch {
-    return undefined
-  }
+  return Buffer.from(`event: response.failed\ndata: ${JSON.stringify(payload)}\n\n`, 'utf8')
 }
 
 function gatewayStreamFailureCode(message: string): string {

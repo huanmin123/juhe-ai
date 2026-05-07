@@ -27,7 +27,7 @@
           <span class="mono-cell">{{ record.baseUrl }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-button type="link" size="small" @click="openModelModal(record)">查看模型</a-button>
+          <RowActions :actions="providerActions" @action-click="handleProviderAction($event, record)" />
         </template>
       </template>
       <template #card="{ record }">
@@ -56,8 +56,8 @@
               <strong class="mono-cell">{{ record.baseUrl }}</strong>
             </div>
           </div>
-          <div class="mobile-list-card-actions single-action">
-            <a-button type="primary" @click="openModelModal(record)">查看模型</a-button>
+          <div class="mobile-list-card-actions">
+            <RowActions variant="button" :actions="providerActions" @action-click="handleProviderAction($event, record)" />
           </div>
         </article>
       </template>
@@ -111,7 +111,10 @@
             </div>
           </template>
           <template v-else-if="column.key === 'imageTokenPrice'">
-            <span>{{ formatPrice(record.imageOutputUsdPer1M) }}</span>
+            <div class="price-cell">
+              <span>输入 {{ formatPrice(record.imageInputUsdPer1M) }}</span>
+              <span>输出 {{ formatPrice(record.imageOutputUsdPer1M) }}</span>
+            </div>
           </template>
           <template v-else-if="column.key === 'imageUnitPrice'">
             <span>{{ formatUnitPrice(record.outputUsdPerImage) }}</span>
@@ -142,6 +145,8 @@ import { computed, onMounted, ref } from 'vue'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import type { ProviderDefinition, ProviderModelPricing } from '@/types/domain'
 
 const modelTypeOrder = ['chat', 'responses', 'image_generation', 'audio_speech', 'audio_transcription', 'other'] as const
@@ -180,7 +185,11 @@ const columns = [
   { title: '能力', key: 'capabilities', width: 360 },
   { title: '默认 Base URL', dataIndex: 'baseUrl', key: 'baseUrl', width: 240 },
   { title: '说明', dataIndex: 'description', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', fixed: 'right', width: 120 }
+  { title: '操作', key: 'actions', fixed: 'right', width: 90 }
+]
+
+const providerActions: RowActionItem[] = [
+  { key: 'models', label: '查看模型', icon: 'detail', tone: 'info' }
 ]
 
 const baseModelColumns = [
@@ -189,7 +198,7 @@ const baseModelColumns = [
   { title: '类型', key: 'mode', width: 110 },
   { title: 'Token 价格', key: 'prices', width: 230 },
   { title: '缓存写入', key: 'cacheWrite', width: 180 },
-  { title: '图片 token 价格', key: 'imageTokenPrice', width: 170 },
+  { title: '图片 token 价格', key: 'imageTokenPrice', width: 180 },
   { title: '每张价格', key: 'imageUnitPrice', width: 130 },
   { title: '上下文', key: 'context', width: 180 },
   { title: '能力', key: 'features', width: 180 }
@@ -210,7 +219,7 @@ const modelColumns = computed(() => {
   if (rows.some((item) => hasAnyNumber(item.cacheWriteUsdPer1M, item.cacheWrite1hUsdPer1M))) {
     visibleKeys.add('cacheWrite')
   }
-  if (rows.some((item) => typeof item.imageOutputUsdPer1M === 'number')) {
+  if (rows.some((item) => hasAnyNumber(item.imageInputUsdPer1M, item.imageOutputUsdPer1M))) {
     visibleKeys.add('imageTokenPrice')
   }
   if (rows.some((item) => typeof item.outputUsdPerImage === 'number')) {
@@ -285,6 +294,12 @@ async function openModelModal(provider: ProviderDefinition) {
     message.error('加载模型价格失败')
   } finally {
     modelLoading.value = false
+  }
+}
+
+function handleProviderAction(key: string, provider: ProviderDefinition) {
+  if (key === 'models') {
+    void openModelModal(provider)
   }
 }
 

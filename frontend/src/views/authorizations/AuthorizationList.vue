@@ -34,9 +34,7 @@
         </div>
       </template>
       <template v-else-if="column.key === 'usageTotal'">
-        <div class="usage-total-cell">
-          <span>{{ usageSummaryText(record.usage) }}</span>
-        </div>
+        <UsageSummaryTags :usage="record.usage" />
       </template>
       <template v-else-if="column.key === 'limits'">
         <span>{{ quotaLimitSummaryText(record.limits) }}</span>
@@ -80,7 +78,7 @@
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>用量(日)</span>
-            <strong>{{ usageSummaryText(record.usage) }}</strong>
+            <strong><UsageSummaryTags :usage="record.usage" /></strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>额度限制</span>
@@ -101,12 +99,13 @@
 import { computed } from 'vue'
 
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import type { ResourceAuthorizationSummary } from '@/types/domain'
 import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
 import { authorizationColumns } from './authorizationTableColumns'
-import { authorizationDirectionColor, authorizationDirectionText, formatDateTime, quotaLimitSummaryText, usageSummaryText } from './authorizationFormatters'
+import { authorizationDirectionColor, authorizationDirectionText, formatDateTime, quotaLimitSummaryText } from './authorizationFormatters'
 
 const props = defineProps<{
   authorizations: ResourceAuthorizationSummary[]
@@ -129,8 +128,7 @@ const columns = computed(() => props.isManagementView
 
 <style scoped>
 .resource-cell,
-.grantee-cell,
-.usage-total-cell {
+.grantee-cell {
   display: inline-flex;
   align-items: center;
   gap: 8px;

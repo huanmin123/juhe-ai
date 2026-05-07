@@ -12,7 +12,9 @@ const ensuredColumns: Array<{ tableName: string; columnName: string; columnType:
   { tableName: 'api_keys', columnName: 'quota_limits_json', columnType: 'TEXT' },
   { tableName: 'group_accounts', columnName: 'account_authorization_id', columnType: 'TEXT' },
   { tableName: 'api_keys', columnName: 'group_authorization_id', columnType: 'TEXT' },
-  { tableName: 'accounts', columnName: 'super_priority_enabled', columnType: 'INTEGER NOT NULL DEFAULT 0' }
+  { tableName: 'accounts', columnName: 'super_priority_enabled', columnType: 'INTEGER NOT NULL DEFAULT 0' },
+  { tableName: 'usage_records', columnName: 'input_image_tokens', columnType: 'INTEGER' },
+  { tableName: 'usage_records', columnName: 'output_image_tokens', columnType: 'INTEGER' }
 ]
 
 const schemaIndexStatements = [
@@ -25,7 +27,6 @@ const schemaIndexStatements = [
   'CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);',
   'CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);',
   'CREATE INDEX IF NOT EXISTS idx_accounts_super_priority ON accounts(super_priority_enabled, status, priority);',
-  'CREATE INDEX IF NOT EXISTS idx_account_quality_scores_sort ON account_quality_scores(provider_code, quality_score, quality_state);',
   'CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);',
   'CREATE INDEX IF NOT EXISTS idx_system_teams_status ON system_teams(status, updated_at);',
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique ON system_teams(name);',
@@ -54,6 +55,7 @@ const schemaIndexStatements = [
   'CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_sort ON usage_records(system_account_id, created_at, id);',
   'CREATE INDEX IF NOT EXISTS idx_usage_records_account_owner ON usage_records(account_owner_system_account_id, account_id, created_at);',
   'CREATE INDEX IF NOT EXISTS idx_usage_records_group_owner ON usage_records(group_owner_system_account_id, group_id, created_at);',
+  'CREATE INDEX IF NOT EXISTS idx_usage_records_group_real_usage ON usage_records(group_id, created_at, api_key_id);',
   'CREATE INDEX IF NOT EXISTS idx_usage_records_account_authorization ON usage_records(account_authorization_id, created_at);',
   'CREATE INDEX IF NOT EXISTS idx_usage_records_group_authorization ON usage_records(group_authorization_id, created_at);',
   'CREATE INDEX IF NOT EXISTS idx_usage_records_first_token_sort ON usage_records(first_token_ms, created_at, id);',
@@ -80,6 +82,7 @@ const schemaIndexStatements = [
   'CREATE INDEX IF NOT EXISTS idx_runtime_logs_event_time ON runtime_logs(event, time DESC, id DESC);',
   'CREATE INDEX IF NOT EXISTS idx_runtime_logs_created_at ON runtime_logs(created_at);',
   'CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);',
+  'CREATE INDEX IF NOT EXISTS idx_account_quality_scores_sort ON account_quality_scores(provider_code, quality_score, quality_state);',
   'CREATE INDEX IF NOT EXISTS idx_usage_records_stats_cursor ON usage_records(created_at, id);',
   'CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_scope_date ON usage_stats_daily(system_account_id, scope_type, scope_id, stat_date);',
   'CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_date ON usage_stats_daily(stat_date);',

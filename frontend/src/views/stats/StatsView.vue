@@ -112,7 +112,7 @@ const summaryCards = computed(() => {
   return [
     { key: 'requests', label: `${windowLabel}有效请求`, value: formatInteger(summary?.requestCount), extra: `消耗错误率 ${formatPercent((summary?.errorRate ?? 0) * 100)} / 错误 ${formatInteger(summary?.errorCount)}` },
     { key: 'duration', label: `${windowLabel}平均响应`, value: formatDuration(summary?.averageDurationMs), extra: `首 Token ${formatDuration(summary?.averageFirstTokenMs)}` },
-    { key: 'tokens', label: `${windowLabel} Token`, value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出+缓存 ${formatCompactInteger((summary?.outputTokens ?? 0) + (summary?.cacheReadTokens ?? 0))}` },
+    { key: 'tokens', label: `${windowLabel} Token`, value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存 ${formatCompactInteger(summary?.cacheReadTokens)}` },
     { key: 'cost', label: `${windowLabel}成本`, value: formatCost(summary?.totalCost), extra: `统计滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
   ]
 })

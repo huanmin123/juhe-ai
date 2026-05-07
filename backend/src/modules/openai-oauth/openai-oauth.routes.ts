@@ -1,10 +1,11 @@
 import { Router } from 'express'
+import type { Response } from 'express'
 import { z } from 'zod'
 
 import { errorLogFields } from '../../shared/logger.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { getRequestLogger } from '../../shared/request-context.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, createAccount, findAccountForTest, listGroups, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, listGroups, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -204,7 +205,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     }
   })
   try {
-    const updated = await refreshOpenAIOAuthAccountAccessToken({ ...account, credentials: account.credentials })
+    const updated = await refreshOpenAIOAuthAccountAccessToken(account, { access: requestAccess, signal: abortController.signal })
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
@@ -248,7 +249,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
       state,
       proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
     })
-    const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo)
+    const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
     res.json(ok(updated))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'OpenAI OAuth 重新授权失败')
@@ -279,7 +280,7 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
       clientId: stringCredential(account.credentials, 'client_id'),
       proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
     })
-    const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo, { refreshToken: parsed.data.refreshToken })
+    const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
     res.json(ok(updated))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'OpenAI OAuth Refresh Token 重新授权失败')
@@ -313,25 +314,27 @@ function findEditableOpenAIOAuthAccount(accountId: string, access?: AccessScope)
 function updateOpenAIOAuthAccountCredentials(
   account: NonNullable<ReturnType<typeof findEditableOpenAIOAuthAccount>>,
   tokenInfo: Awaited<ReturnType<typeof refreshOpenAIOAuthToken>>,
-  fallback?: { refreshToken?: string }
+  fallback?: { refreshToken?: string },
+  access?: AccessScope
 ) {
   const credentials = {
     ...account.credentials,
     ...buildOpenAIOAuthCredentials(tokenInfo, fallback)
   }
   const updated = updateAccount(account.id, {
-    credentials,
-    status: 'active',
-    clearFailureState: true
-  })
+    credentials
+  }, access)
   if (!updated) {
     throw new Error('OpenAI OAuth 账户不存在或无法更新')
   }
   clearGatewayRuntimeCache()
+  if (updated.status !== 'disabled') {
+    return clearAccountFailureState(account.id, {}, access) ?? updated
+  }
   return updated
 }
 
-function handleOAuthAccountUpdateError(error: unknown, res: Parameters<Parameters<typeof openAIOAuthRouter.post>[1]>[1], fallbackMessage: string): void {
+function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMessage: string): void {
   if (error instanceof DuplicateAccountCredentialError) {
     res.status(409).json({ message: error.message })
     return

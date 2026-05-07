@@ -1,32 +1,21 @@
 <template>
-  <div :class="compact ? 'authorization-actions' : 'mobile-list-card-actions two-actions'">
-    <a-button :size="compact ? 'small' : undefined" @click="$emit('usage-detail')">明细</a-button>
-    <a-dropdown v-if="canManageAuthorization">
-      <a-button :size="compact ? 'small' : undefined">更多</a-button>
-      <template #overlay>
-        <a-menu @click="$emit('menu-click', $event)">
-          <a-menu-item key="edit-expire">修改配置</a-menu-item>
-          <a-menu-item v-if="authorization.status === 'active'" key="pause">暂停授权</a-menu-item>
-          <a-menu-item v-if="authorization.status === 'paused'" key="resume">恢复授权</a-menu-item>
-          <a-menu-item v-if="authorization.status === 'active' && hasManualSource(authorization)" key="revoke-manual">回收</a-menu-item>
-          <a-sub-menu v-if="activeTeamSources(authorization).length" key="revoke-team" title="回收">
-            <a-menu-item v-for="teamSource in activeTeamSources(authorization)" :key="`team:${teamSource.sourceTeamId}`">
-              {{ teamSource.sourceTeamName || teamSource.sourceTeamId }}
-            </a-menu-item>
-          </a-sub-menu>
-        </a-menu>
-      </template>
-    </a-dropdown>
-  </div>
+  <RowActions
+    :actions="actions"
+    :more-actions="moreActions"
+    :variant="compact ? 'icon' : 'button'"
+    @action-click="handleActionClick"
+  />
 </template>
 
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import type { ResourceAuthorizationSummary } from '@/types/domain'
 import { activeTeamSources, hasManualSource } from './authorizationFormatters'
 
-defineEmits<{
+const emit = defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }): void
   (event: 'usage-detail'): void
 }>()
@@ -38,12 +27,46 @@ const props = defineProps<{
 }>()
 
 const canManageAuthorization = computed(() => props.isManagementView || props.authorization.permissions?.canEdit === true)
-</script>
+const actions = computed<RowActionItem[]>(() => [
+  { key: 'usage-detail', label: '明细', icon: 'detail', tone: 'info' }
+])
+const moreActions = computed<RowActionItem[]>(() => {
+  if (!canManageAuthorization.value) return []
+  const items: RowActionItem[] = [
+    { key: 'edit-expire', label: '修改配置', icon: 'settings', tone: 'primary' }
+  ]
+  if (props.authorization.status === 'active') {
+    items.push({ key: 'pause', label: '暂停授权', icon: 'pause', tone: 'warning' })
+  }
+  if (props.authorization.status === 'paused') {
+    items.push({ key: 'resume', label: '恢复授权', icon: 'resume', tone: 'success' })
+  }
+  if (props.authorization.status === 'active' && hasManualSource(props.authorization)) {
+    items.push({ key: 'revoke-manual', label: '回收', icon: 'revoke', tone: 'danger' })
+  }
+  const teamSources = activeTeamSources(props.authorization)
+  if (teamSources.length) {
+    items.push({
+      key: 'revoke-team',
+      label: '回收团队授权',
+      icon: 'revoke',
+      tone: 'danger',
+      children: teamSources.map((teamSource) => ({
+        key: `team:${teamSource.sourceTeamId}`,
+        label: teamSource.sourceTeamName || teamSource.sourceTeamId || '未知团队',
+        icon: 'revoke',
+        tone: 'danger'
+      }))
+    })
+  }
+  return items
+})
 
-<style scoped>
-.authorization-actions {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
+function handleActionClick(key: string) {
+  if (key === 'usage-detail') {
+    emit('usage-detail')
+    return
+  }
+  emit('menu-click', { key })
 }
-</style>
+</script>

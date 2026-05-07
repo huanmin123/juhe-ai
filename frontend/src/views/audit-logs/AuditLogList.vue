@@ -61,7 +61,7 @@
         <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
       </template>
       <template v-else-if="column.key === 'actions'">
-        <a-button type="link" size="small" @click="$emit('detail', record)">详情</a-button>
+        <RowActions :actions="detailActions" @action-click="handleActionClick($event, record)" />
       </template>
     </template>
     <template #card="{ record }">
@@ -103,6 +103,8 @@
 
 <script setup lang="ts">
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import type { AuditLogSummary } from '@/types/domain'
 import {
   displayName,
@@ -123,7 +125,7 @@ defineProps<{
   records: AuditLogSummary[]
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   (event: 'change', paginationInfo: unknown): void
   (event: 'detail', record: AuditLogSummary): void
   (event: 'mobile-load-more'): void
@@ -131,6 +133,15 @@ defineEmits<{
 }>()
 
 const columns = auditLogColumns
+const detailActions: RowActionItem[] = [
+  { key: 'detail', label: '详情', icon: 'detail', tone: 'info' }
+]
+
+function handleActionClick(key: string, record: AuditLogSummary) {
+  if (key === 'detail') {
+    emit('detail', record)
+  }
+}
 </script>
 
 <style scoped>

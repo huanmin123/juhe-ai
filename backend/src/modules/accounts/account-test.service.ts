@@ -13,6 +13,7 @@ import {
 } from '../../storage/repositories.js'
 import { getRequestAuthContext, withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
+import { OpenAIStreamInspector } from '../gateway/openai-gateway-usage.js'
 
 const defaultTestModel = 'gpt-5.5'
 const defaultTestPrompt = 'hi'
@@ -22,7 +23,7 @@ const gatewayModelsPath = '/v1/models'
 
 export async function testOpenAIAccount(
   account: AccountSummary,
-  input: { model?: string; prompt?: string; includeUnavailable?: boolean; signal?: AbortSignal } = {}
+  input: { model?: string; prompt?: string; includeUnavailable?: boolean; signal?: AbortSignal; groupId?: string } = {}
 ): Promise<AccountTestResult> {
   const model = stringValue(input.model) || defaultTestModel
   const prompt = stringValue(input.prompt) || defaultTestPrompt
@@ -33,9 +34,9 @@ export async function testOpenAIAccount(
   const startedAt = Date.now()
 
   try {
-    const resolved = resolveAccountTestCandidate(account)
+    const resolved = resolveAccountTestCandidate(account, { groupId: stringValue(input.groupId) })
     const request = createGatewayTestRequest(requestBody, requestBodyText, account.type === 'oauth', input.signal)
-    const response = new MemoryGatewayResponse()
+    const response = new MemoryGatewayResponse(startedAt)
     const traceId = `acctest_${Date.now()}_${randomUUID()}`
     const context: RequestContext = {
       traceId,
@@ -85,6 +86,7 @@ export async function testOpenAIAccount(
       proxyUrl: accountTestProxyMarker(account, finalAccount),
       tokenRefreshed: didRefreshToken(account, finalAccount),
       durationMs: Date.now() - startedAt,
+      firstTokenMs: response.firstTokenMs(),
       accountStatusChanged: finalAccount.status !== account.status,
       accountStatus: finalAccount.status
     }
@@ -114,13 +116,13 @@ function accountTestProxyMarker(account: AccountSummary, resolved: OpenAIAccount
   return account.proxyProfileId || resolved.proxyUrl || resolved.proxyProfileUnavailable ? '[configured]' : undefined
 }
 
-function resolveAccountTestCandidate(account: AccountSummary): {
+function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?: string } = {}): {
   systemAccountId: string
   groupId: string
   account: OpenAIAccountSecret
 } {
   const systemAccountId = account.systemAccountId ?? authorizedCallerSystemAccountId(account) ?? account.ownerSystemAccountId ?? resolveAccountSystemAccountId(account.id) ?? 'sys_admin'
-  const groupId = account.boundGroupId
+  const groupId = input.groupId || account.boundGroupId
   if (!groupId) {
     throw new Error('账户未绑定可用分组，无法按客户真实链路测试')
   }
@@ -225,6 +227,12 @@ class MemoryGatewayResponse extends EventEmitter {
   destroyed = false
   private readonly headers = new Map<string, string | string[]>()
   private readonly chunks: Buffer[] = []
+  private readonly streamInspector = new OpenAIStreamInspector()
+  private firstOutputMs: number | undefined
+
+  constructor(private readonly startedAt: number) {
+    super()
+  }
 
   status(code: number): this {
     this.statusCode = code
@@ -263,7 +271,12 @@ class MemoryGatewayResponse extends EventEmitter {
   }
 
   write(value: Buffer | string | Uint8Array): boolean {
-    this.chunks.push(Buffer.isBuffer(value) ? value : Buffer.from(value))
+    const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value)
+    this.chunks.push(buffer)
+    const inspection = this.streamInspector.pushChunk(buffer)
+    if (this.firstOutputMs === undefined && inspection.outputReceived) {
+      this.firstOutputMs = Date.now() - this.startedAt
+    }
     return true
   }
 
@@ -290,6 +303,10 @@ class MemoryGatewayResponse extends EventEmitter {
       output[name] = hiddenHeaders.has(name) ? '[redacted]' : value
     }
     return output
+  }
+
+  firstTokenMs(): number | undefined {
+    return this.firstOutputMs
   }
 
   asResponse(): Response {

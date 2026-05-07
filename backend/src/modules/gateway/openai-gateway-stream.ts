@@ -80,7 +80,7 @@ export async function pipeUpstreamStream(
     const message = inspection.errorMessage ?? rawMessage
     handleStreamFailure(message)
     if (!inspection.failedReceived) {
-      const failureEvent = writeGatewayStreamFailureEvent(res, message)
+      const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message)
       if (failureEvent) {
         responseCapture.push(failureEvent)
         diagnosticCapture.push(failureEvent)
@@ -96,7 +96,7 @@ export async function pipeUpstreamStream(
   if (!inspection.terminalReceived) {
     const message = '上游流在 OpenAI 终止事件前结束'
     handleStreamFailure(message)
-    const failureEvent = writeGatewayStreamFailureEvent(res, message)
+    const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message)
     if (failureEvent) {
       responseCapture.push(failureEvent)
       diagnosticCapture.push(failureEvent)
@@ -149,6 +149,19 @@ async function writeResponseChunk(res: Response, buffer: Buffer): Promise<void> 
       throw new Error('客户端连接已断开')
     })
   ])
+}
+
+async function writeGatewayStreamFailureEventWithBackpressure(res: Response, message: string): Promise<Buffer | undefined> {
+  const buffer = writeGatewayStreamFailureEvent(res, message)
+  if (!buffer) {
+    return undefined
+  }
+  try {
+    await writeResponseChunk(res, buffer)
+    return buffer
+  } catch {
+    return undefined
+  }
 }
 
 function endResponse(res: Response): void {

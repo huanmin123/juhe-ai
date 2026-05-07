@@ -129,6 +129,20 @@
       :target-options="trafficMigrationTargetOptions"
       @save="saveTrafficMigration"
     />
+
+    <AccountReauthorizeModal
+      v-model:open="reauthorizeModalOpen"
+      :account="reauthorizingAccount"
+      :auth-loading="reauthorizeAuthLoading"
+      :auth-result="reauthorizeAuthResult"
+      :form="reauthorizeForm"
+      :saving="reauthorizeSaving"
+      @cancel="closeReauthorizeModal"
+      @copy-auth-url="copyText"
+      @generate-auth-url="generateReauthorizeOAuthUrl"
+      @open-auth-url="openReauthorizeAuthUrl"
+      @save="saveReauthorize"
+    />
   </a-card>
 </template>
 
@@ -149,6 +163,7 @@ import AccountBindGroupModal from './AccountBindGroupModal.vue'
 import AccountEditModal from './AccountEditModal.vue'
 import AccountFilterToolbar from './AccountFilterToolbar.vue'
 import AccountList from './AccountList.vue'
+import AccountReauthorizeModal from './AccountReauthorizeModal.vue'
 import AccountTestModal from './AccountTestModal.vue'
 import AccountTrafficMigrationModal from './AccountTrafficMigrationModal.vue'
 import {
@@ -199,13 +214,19 @@ const testModelsLoading = ref(false)
 const modalOpen = ref(false)
 const bindGroupModalOpen = ref(false)
 const trafficMigrationModalOpen = ref(false)
+const reauthorizeModalOpen = ref(false)
 const bindGroupSaving = ref(false)
 const trafficMigrationSaving = ref(false)
+const tokenRefreshLoading = ref(false)
+const reauthorizeAuthLoading = ref(false)
+const reauthorizeSaving = ref(false)
 const authResult = ref<OpenAIAuthURLResult>()
+const reauthorizeAuthResult = ref<OpenAIAuthURLResult>()
 const editingId = ref<string>()
 const testingAccount = ref<AccountSummary>()
 const bindingAccount = ref<AccountSummary>()
 const trafficMigrationSourceAccount = ref<AccountSummary>()
+const reauthorizingAccount = ref<AccountSummary>()
 const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
 let accountTestAbortController: AbortController | undefined
@@ -238,6 +259,11 @@ const bindGroupForm = reactive({ groupId: '' })
 const trafficMigrationForm = reactive({
   targetAccountId: '',
   sourceStatus: 'temporary_unavailable' as AccountTrafficMigrationSourceStatus
+})
+const reauthorizeForm = reactive({
+  oauthMode: 'manual' as 'manual' | 'refresh_token',
+  callbackUrl: '',
+  refreshToken: ''
 })
 const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
 
@@ -433,6 +459,10 @@ function canUseAsTrafficMigrationTarget(source: AccountSummary, target: AccountS
   return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
 }
 
+function canManageOpenAIOAuth(account: AccountSummary): boolean {
+  return canUseAccountActions(account) && account.providerCode === 'openai' && account.type === 'oauth'
+}
+
 async function handleAccountSortChange(sorts: ResponsiveDataListSort[]) {
   accountSorts.value = normalizeAccountTableSorts(sorts)
   resetAccountPagination()
@@ -462,13 +492,41 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     items.push({ key: 'test', label: '测试' })
   }
   if (canUseAccountActions(account)) {
+    if (canManageOpenAIOAuth(account)) {
+      items.push({ key: 'refresh-oauth-token', label: '刷新令牌' })
+      items.push({ key: 'reauthorize-oauth', label: '重新授权' })
+    }
     if (isTemporaryAccountStatus(account)) {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
+    if (account.status === 'active') {
+      items.push({
+        key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
+        label: account.superPriorityEnabled ? '取消超级优先' : '设为超级优先'
+      })
+    }
     items.push({ key: 'migrate-traffic', label: '迁移流量' })
-    items.push({ key: 'toggle-status', label: account.status === 'disabled' ? '启用账户' : '停用账户', danger: account.status !== 'disabled' })
+    items.push({
+      key: 'toggle-status',
+      label: account.status === 'disabled' ? '启用账户' : '停用账户',
+      danger: account.status !== 'disabled',
+      icon: account.status === 'disabled' ? 'enable' : 'pause',
+      tone: account.status === 'disabled' ? 'success' : 'warning'
+    })
   }
-  return items
+  return items.map(normalizeAccountMenuItem)
+}
+
+function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
+  if (item.icon || item.tone) return item
+  if (item.key === 'test') return { ...item, icon: 'test', tone: 'info' }
+  if (item.key === 'refresh-oauth-token') return { ...item, icon: 'refresh', tone: 'info' }
+  if (item.key === 'reauthorize-oauth') return { ...item, icon: 'reset', tone: 'warning' }
+  if (item.key === 'restore-normal') return { ...item, icon: 'restore', tone: 'success' }
+  if (item.key === 'super-priority-on') return { ...item, icon: 'superPriority', tone: 'warning' }
+  if (item.key === 'super-priority-off') return { ...item, icon: 'superPriority', tone: 'default' }
+  if (item.key === 'migrate-traffic') return { ...item, icon: 'migrate', tone: 'purple' }
+  return item
 }
 
 async function copyText(value: string) {
@@ -648,6 +706,23 @@ function openTrafficMigration(account: AccountSummary) {
   }
 }
 
+function openReauthorizeModal(account: AccountSummary) {
+  if (!canManageOpenAIOAuth(account)) {
+    message.warning('只有自有 OpenAI OAuth 账户可以重新授权')
+    return
+  }
+  reauthorizingAccount.value = account
+  reauthorizeForm.oauthMode = 'manual'
+  reauthorizeForm.callbackUrl = ''
+  reauthorizeForm.refreshToken = ''
+  reauthorizeAuthResult.value = undefined
+  reauthorizeModalOpen.value = true
+}
+
+function closeReauthorizeModal() {
+  reauthorizeAuthResult.value = undefined
+}
+
 function defaultBindGroupForAccount(account: AccountSummary): GroupSummary | undefined {
   const candidates = groups.value.filter((group) => canManageGroupAccounts(group) && group.providerCode === account.providerCode)
   return candidates.find((group) => group.isDefault) ?? candidates[0]
@@ -823,9 +898,27 @@ async function generateOAuthUrl() {
   }
 }
 
+async function generateReauthorizeOAuthUrl() {
+  reauthorizeAuthLoading.value = true
+  try {
+    reauthorizeAuthResult.value = isManagementView.value ? await api.openaiOAuth.authUrl({}) : await api.myOpenaiOAuth.authUrl({})
+    message.success('授权链接已生成')
+  } catch (error) {
+    console.error(error)
+    message.error('生成授权链接失败')
+  } finally {
+    reauthorizeAuthLoading.value = false
+  }
+}
+
 function openAuthUrl() {
   if (!authResult.value?.authUrl) return
   window.open(authResult.value.authUrl, '_blank', 'noopener,noreferrer')
+}
+
+function openReauthorizeAuthUrl() {
+  if (!reauthorizeAuthResult.value?.authUrl) return
+  window.open(reauthorizeAuthResult.value.authUrl, '_blank', 'noopener,noreferrer')
 }
 
 async function createOAuthAccountFromUnifiedForm() {
@@ -861,6 +954,79 @@ async function createOAuthAccountFromUnifiedForm() {
     await api.openaiOAuth.createFromRefreshToken(payload, accountScopeParams.value)
   } else {
     await api.myOpenaiOAuth.createFromRefreshToken(payload)
+  }
+}
+
+async function refreshOAuthToken(account: AccountSummary) {
+  if (!canManageOpenAIOAuth(account)) {
+    message.warning('只有自有 OpenAI OAuth 账户可以刷新令牌')
+    return
+  }
+  tokenRefreshLoading.value = true
+  const hide = message.loading(`${account.name}: 正在刷新令牌...`, 0)
+  try {
+    if (isManagementView.value) {
+      await api.openaiOAuth.refreshToken(account.id, accountScopeParams.value)
+    } else {
+      await api.myOpenaiOAuth.refreshToken(account.id)
+    }
+    message.success(`${account.name}: 令牌刷新成功`)
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, `${account.name}: 令牌刷新失败`))
+  } finally {
+    hide()
+    tokenRefreshLoading.value = false
+  }
+}
+
+async function saveReauthorize() {
+  const account = reauthorizingAccount.value
+  if (!account || reauthorizeSaving.value) return
+  if (reauthorizeForm.oauthMode === 'manual' && !reauthorizeAuthResult.value?.sessionId) {
+    message.warning('请先生成授权链接')
+    return
+  }
+  if (reauthorizeForm.oauthMode === 'manual' && !reauthorizeForm.callbackUrl.trim()) {
+    message.warning('请粘贴回调 URL')
+    return
+  }
+  if (reauthorizeForm.oauthMode === 'refresh_token' && !reauthorizeForm.refreshToken.trim()) {
+    message.warning('请填写 Refresh Token')
+    return
+  }
+
+  reauthorizeSaving.value = true
+  try {
+    if (reauthorizeForm.oauthMode === 'manual') {
+      const payload = {
+        sessionId: reauthorizeAuthResult.value?.sessionId,
+        callbackUrl: reauthorizeForm.callbackUrl
+      }
+      if (isManagementView.value) {
+        await api.openaiOAuth.reauthorizeFromCode(account.id, payload, accountScopeParams.value)
+      } else {
+        await api.myOpenaiOAuth.reauthorizeFromCode(account.id, payload)
+      }
+    } else {
+      const payload = { refreshToken: reauthorizeForm.refreshToken }
+      if (isManagementView.value) {
+        await api.openaiOAuth.reauthorizeFromRefreshToken(account.id, payload, accountScopeParams.value)
+      } else {
+        await api.myOpenaiOAuth.reauthorizeFromRefreshToken(account.id, payload)
+      }
+    }
+    message.success(`${account.name}: 重新授权成功`)
+    reauthorizeModalOpen.value = false
+    reauthorizingAccount.value = undefined
+    reauthorizeAuthResult.value = undefined
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, `${account.name}: 重新授权失败`))
+  } finally {
+    reauthorizeSaving.value = false
   }
 }
 
@@ -1076,6 +1242,15 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
     message.warning('授权账户仅可使用，不能执行管理操作')
     return
   }
+  if (key === 'refresh-oauth-token') {
+    if (tokenRefreshLoading.value) return
+    await refreshOAuthToken(account)
+    return
+  }
+  if (key === 'reauthorize-oauth') {
+    openReauthorizeModal(account)
+    return
+  }
   if (key === 'toggle-status') {
     const nextStatus = account.status === 'disabled' ? 'active' : 'disabled'
     await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
@@ -1087,6 +1262,15 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
       return
     }
     await updateAccountState(account, { clearFailureState: true }, '账户已恢复正常')
+    return
+  }
+  if (key === 'super-priority-on' || key === 'super-priority-off') {
+    const enabled = key === 'super-priority-on'
+    if (enabled && account.status !== 'active') {
+      message.warning('只有正常状态的账户可以设置超级优先')
+      return
+    }
+    await updateAccountState(account, { superPriorityEnabled: enabled }, enabled ? '已设为超级优先' : '已取消超级优先')
     return
   }
   if (key === 'migrate-traffic') {

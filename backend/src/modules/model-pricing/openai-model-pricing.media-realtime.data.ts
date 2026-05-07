@@ -43,6 +43,7 @@ export const openAIMediaRealtimeModelPricingData = [
     input_cost_per_token: 0.000005,
     output_cost_per_token: 0.00001,
     cache_read_input_token_cost: 0.00000125,
+    input_cost_per_image_token: 0.000008,
     output_cost_per_image_token: 0.00003
   },
   {
@@ -52,6 +53,7 @@ export const openAIMediaRealtimeModelPricingData = [
     input_cost_per_token: 0.000005,
     output_cost_per_token: 0.00001,
     cache_read_input_token_cost: 0.00000125,
+    input_cost_per_image_token: 0.000008,
     output_cost_per_image_token: 0.00003
   },
   {
@@ -61,6 +63,7 @@ export const openAIMediaRealtimeModelPricingData = [
     input_cost_per_token: 0.000005,
     output_cost_per_token: 0.00001,
     cache_read_input_token_cost: 0.00000125,
+    input_cost_per_image_token: 0.000008,
     output_cost_per_image_token: 0.000032
   },
   {
@@ -69,6 +72,7 @@ export const openAIMediaRealtimeModelPricingData = [
     mode: "image_generation",
     input_cost_per_token: 0.000002,
     cache_read_input_token_cost: 2e-7,
+    input_cost_per_image_token: 0.0000025,
     output_cost_per_image_token: 0.000008
   },
   {

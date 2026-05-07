@@ -8,6 +8,10 @@ export interface UsageRecordCostBreakdown {
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cacheReadCostUsd?: number
+  inputImageCostUsd?: number
+  outputImageCostUsd?: number
+  inputImageUsdPer1M?: number
+  outputImageUsdPer1M?: number
   accountChargeUsd?: number
   multiplier: 1
 }
@@ -35,6 +39,8 @@ export interface UsageRecordSummary {
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
+  inputImageTokens?: number
+  outputImageTokens?: number
   costUsd?: number
   costBreakdown?: UsageRecordCostBreakdown
   errorCode?: string

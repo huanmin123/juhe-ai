@@ -36,7 +36,7 @@
         <span :class="record.errorMessage ? 'error-message-cell' : 'message-cell'">{{ messageText(record) }}</span>
       </template>
       <template v-else-if="column.key === 'actions'">
-        <a-button type="link" size="small" @click="$emit('detail', record)">{{ actionLabel }}</a-button>
+        <RowActions :actions="detailActions" @action-click="handleActionClick($event, record)" />
       </template>
     </template>
     <template #card="{ record }">
@@ -71,7 +71,11 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import { formatDateTime } from '@/shared/formatters'
 import type { RuntimeLogGrepItem, RuntimeLogSummary } from '@/types/domain'
 import { levelColor, levelText } from './runtimeLogFormatters'
@@ -101,7 +105,7 @@ const props = withDefaults(defineProps<{
   refreshing: false
 })
 
-defineEmits<{
+const emit = defineEmits<{
   (event: 'change', paginationInfo: unknown): void
   (event: 'detail', record: RuntimeLogListRecord): void
   (event: 'mobile-load-more'): void
@@ -110,6 +114,15 @@ defineEmits<{
 }>()
 
 const columns = runtimeLogColumns
+const detailActions = computed<RowActionItem[]>(() => [
+  { key: 'detail', label: props.actionLabel, icon: 'detail', tone: 'info' }
+])
+
+function handleActionClick(key: string, record: RuntimeLogListRecord) {
+  if (key === 'detail') {
+    emit('detail', record)
+  }
+}
 
 function messageText(record: RuntimeLogListRecord): string {
   if (props.messageMode === 'grep' && 'line' in record) {

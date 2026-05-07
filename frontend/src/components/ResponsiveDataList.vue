@@ -11,6 +11,7 @@
       :loading="loading"
       :pagination="tablePagination"
       :scroll="tableScroll"
+      :table-layout="tableLayout"
       :row-selection="rowSelection"
       @change="handleTableChange"
     >
@@ -81,6 +82,7 @@ const props = withDefaults(defineProps<{
   cardClass?: string
   size?: 'small' | 'middle' | 'large'
   lockBodyScroll?: boolean
+  adaptiveColumnWidth?: boolean
 }>(), {
   rowKey: 'id',
   loading: false,
@@ -95,7 +97,8 @@ const props = withDefaults(defineProps<{
   mobileHasMore: false,
   loadingMore: false,
   refreshing: false,
-  pullRefreshEnabled: false
+  pullRefreshEnabled: false,
+  adaptiveColumnWidth: true
 })
 
 const emit = defineEmits<{
@@ -164,9 +167,11 @@ const hasTablePagination = computed(() => {
 
 const tableScroll = computed(() => {
   const scroll: Record<string, number | string> = { y: tableScrollY.value }
-  if (props.scrollX) scroll.x = props.scrollX
+  if (props.scrollX) scroll.x = props.adaptiveColumnWidth ? 'max-content' : props.scrollX
   return scroll
 })
+
+const tableLayout = computed(() => props.adaptiveColumnWidth ? 'auto' : undefined)
 
 const tableScrollY = computed(() => {
   if (listHeight.value > 0) {
@@ -220,7 +225,7 @@ function adjustTableScrollY(value: number | string, offset: number): number | st
 }
 
 function normalizeTableColumns(columns: Array<Record<string, any>>): Array<Record<string, any>> {
-  const flexColumnIndex = hasFixedColumn(columns) ? -1 : findFlexColumnIndex(columns)
+  const flexColumnIndex = findFlexColumnIndex(columns)
   return columns.map((column, index) => normalizeTableColumn(column, index === flexColumnIndex))
 }
 
@@ -241,23 +246,19 @@ function normalizeTableColumn(column: Record<string, any>, isFlexColumn: boolean
       class: 'responsive-data-list-actions-column'
     })
   }
-  if (isFlexColumn) {
+  if (props.adaptiveColumnWidth && !column.fixed) {
     const minWidth = resolveColumnMinWidth(column)
     const { width: _width, ...restColumn } = column
     return withCellProps({
       ...restColumn,
       minWidth,
-      className: mergeClassName(column.className, 'responsive-data-list-flex-column')
+      className: mergeClassName(column.className, 'responsive-data-list-auto-column', isFlexColumn ? 'responsive-data-list-flex-column' : undefined)
     }, {
-      class: 'responsive-data-list-flex-column',
+      class: mergeClassName('responsive-data-list-auto-column', isFlexColumn ? 'responsive-data-list-flex-column' : undefined),
       style: { minWidth: `${minWidth}px` }
     })
   }
   return column
-}
-
-function hasFixedColumn(columns: Array<Record<string, any>>): boolean {
-  return columns.some((column) => Boolean(column.fixed) || (Array.isArray(column.children) && hasFixedColumn(column.children)))
 }
 
 function findFlexColumnIndex(columns: Array<Record<string, any>>): number {

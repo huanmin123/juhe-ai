@@ -1,12 +1,14 @@
 import type { AccountSummary } from '../../domain/types.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
+  clearAccountFailureState,
   getSettings,
   listAccounts,
   markAccountCooldown,
   resolveProxyUrlForProfile,
   updateAccount
 } from '../../storage/repositories.js'
+import type { AccessScope } from '../../storage/access-scope.js'
 import {
   buildOpenAIOAuthCredentials,
   refreshOpenAIOAuthToken
@@ -30,7 +32,10 @@ export interface OpenAIOAuthAccessTokenRefreshResult {
 
 const retryBackoffByAccountId = new Map<string, number>()
 
-export async function refreshOpenAIOAuthAccountAccessToken(account: AccountSummary): Promise<AccountSummary> {
+export async function refreshOpenAIOAuthAccountAccessToken(
+  account: AccountSummary,
+  options: { access?: AccessScope; signal?: AbortSignal } = {}
+): Promise<AccountSummary> {
   if (account.providerCode !== 'openai' || account.type !== 'oauth') {
     throw new Error('仅支持刷新 OpenAI OAuth 账户')
   }
@@ -43,19 +48,21 @@ export async function refreshOpenAIOAuthAccountAccessToken(account: AccountSumma
   const tokenInfo = await refreshOpenAIOAuthToken({
     refreshToken,
     clientId: stringCredential(credentials, 'client_id'),
-    proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
+    proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined,
+    signal: options.signal
   })
   const nextCredentials = {
     ...credentials,
     ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
   }
   const updated = updateAccount(account.id, {
-    credentials: nextCredentials,
-    status: 'active',
-    clearFailureState: true
-  })
+    credentials: nextCredentials
+  }, options.access)
   if (!updated) {
     throw new Error('OpenAI OAuth 账户不存在或无法更新')
+  }
+  if (updated.status !== 'disabled') {
+    return clearAccountFailureState(account.id, {}, options.access) ?? updated
   }
   return updated
 }

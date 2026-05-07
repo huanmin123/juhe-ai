@@ -313,6 +313,8 @@ export function applySchema(database: DatabaseSync): void {
       input_tokens INTEGER,
       output_tokens INTEGER,
       cache_read_tokens INTEGER,
+      input_image_tokens INTEGER,
+      output_image_tokens INTEGER,
       cost_usd REAL,
       error_code TEXT,
       error_message TEXT,

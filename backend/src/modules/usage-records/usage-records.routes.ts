@@ -1,7 +1,7 @@
 import { Router } from 'express'
 
-import { ok } from '../../shared/http.js'
-import { listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField } from '../../storage/repositories.js'
+import { ok, sendNotFound } from '../../shared/http.js'
+import { getUsageRecordDetail, listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { buildProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
 
@@ -11,21 +11,36 @@ usageRecordsRouter.get('/', (req, res) => {
   const result = listUsageRecords(getRequestAccessScope(req.query.systemAccountId), parseListOptions(req.query))
   res.json(ok({
     ...result,
-    items: result.items.map((record) => ({
-      ...record,
-      costBreakdown: buildProviderCostBreakdown({
-        providerCode: record.providerCode ?? 'openai',
-        model: record.model,
-        inputTokens: record.inputTokens,
-        outputTokens: record.outputTokens,
-        cacheReadTokens: record.cacheReadTokens,
-        costUsd: record.costUsd
-      })
-    }))
+    items: result.items.map(withCostBreakdown)
   }))
 })
 
+usageRecordsRouter.get('/:id', (req, res) => {
+  const record = getUsageRecordDetail(req.params.id, getRequestAccessScope(req.query.systemAccountId))
+  if (!record) {
+    sendNotFound(res, '使用记录不存在')
+    return
+  }
+  res.json(ok(withCostBreakdown(record)))
+})
+
 const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt', 'firstTokenMs', 'durationMs', 'costUsd'])
+
+function withCostBreakdown(record: UsageRecordSummary) {
+  return {
+    ...record,
+    costBreakdown: buildProviderCostBreakdown({
+      providerCode: record.providerCode ?? 'openai',
+      model: record.model,
+      inputTokens: record.inputTokens,
+      outputTokens: record.outputTokens,
+      cacheReadTokens: record.cacheReadTokens,
+      inputImageTokens: record.inputImageTokens,
+      outputImageTokens: record.outputImageTokens,
+      costUsd: record.costUsd
+    })
+  }
+}
 
 function parseListOptions(query: Record<string, unknown>): UsageRecordListOptions {
   const rawPage = numberQueryValue(query.page)

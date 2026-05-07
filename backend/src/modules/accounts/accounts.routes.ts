@@ -19,6 +19,7 @@ const accountCreateSchema = z.object({
   status: z.enum(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
+  superPriorityEnabled: z.boolean().optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   schedulable: z.boolean().optional(),
@@ -44,6 +45,8 @@ const accountTrafficMigrationSchema = z.object({
 
 const accountListSortFields = new Set<AccountListSortField>([
   'priority',
+  'superPriority',
+  'qualityScore',
   'name',
   'type',
   'providerCode',

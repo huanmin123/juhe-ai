@@ -29,11 +29,7 @@
           {{ formatDateTime(record.createdAt) }}
         </template>
         <template v-else-if="column.key === 'actions'">
-          <a-space v-if="isManagementView" :size="8">
-            <a-button type="link" size="small" @click="openEditTeam(record)">编辑</a-button>
-            <a-button type="link" size="small" @click="openMemberModal(record)">成员管理</a-button>
-          </a-space>
-          <a-button v-else type="link" size="small" @click="openMemberModal(record)">成员查看</a-button>
+          <RowActions :actions="teamActions" @action-click="handleTeamAction($event, record)" />
         </template>
       </template>
 
@@ -59,12 +55,8 @@
               <strong>{{ record.description || '-' }}</strong>
             </div>
           </div>
-          <div class="mobile-list-card-actions two-actions">
-            <template v-if="isManagementView">
-              <a-button type="primary" @click="openEditTeam(record)">编辑</a-button>
-              <a-button @click="openMemberModal(record)">成员管理</a-button>
-            </template>
-            <a-button v-else type="primary" @click="openMemberModal(record)">成员查看</a-button>
+          <div class="mobile-list-card-actions">
+            <RowActions variant="button" :actions="teamActions" @action-click="handleTeamAction($event, record)" />
           </div>
         </article>
       </template>
@@ -116,9 +108,7 @@
               {{ formatDateTime(record.joinedAt || record.createdAt) }}
             </template>
             <template v-else-if="column.key === 'actions'">
-              <a-popconfirm title="确认移除该成员？" @confirm="removeMember(record.id)">
-                <a-button type="link" size="small" danger>移除</a-button>
-              </a-popconfirm>
+              <RowActions :actions="memberActions" @action-click="handleMemberAction($event, record)" />
             </template>
           </template>
         </a-table>
@@ -135,7 +125,9 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { SystemAccountSummary, SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
@@ -167,7 +159,7 @@ const columns = [
   { title: '成员数', key: 'memberCount', width: 90 },
   { title: '创建时间', key: 'createdAt', width: 170 },
   { title: '说明', key: 'description', width: 200 },
-  { title: '操作', key: 'actions', width: 150, fixed: 'right' }
+  { title: '操作', key: 'actions', width: 100, fixed: 'right' }
 ]
 
 const memberColumns = computed(() => {
@@ -185,6 +177,24 @@ const selectedTeam = computed(() => teams.value.find((team) => team.id === selec
 const activeTeamMembers = computed(() => selectedTeam.value ? activeMembers(selectedTeam.value) : [])
 const usedMemberIds = computed(() => activeTeamMembers.value.map((item) => item.systemAccountId))
 const emptyTeamDescription = computed(() => isManagementView.value ? '还没有团队，先创建一个团队并添加成员。' : '你还没有加入任何团队。')
+const teamActions = computed<RowActionItem[]>(() => isManagementView.value
+  ? [
+      { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
+      { key: 'members', label: '成员管理', icon: 'members', tone: 'purple' }
+    ]
+  : [
+      { key: 'members', label: '成员查看', icon: 'members', tone: 'info' }
+    ])
+const memberActions: RowActionItem[] = [
+  {
+    key: 'remove',
+    label: '移除',
+    icon: 'delete',
+    tone: 'danger',
+    confirmTitle: '确认移除该成员？',
+    confirmOkText: '移除'
+  }
+]
 
 function activeMembers(team: SystemTeamSummary): SystemTeamMemberSummary[] {
   return (team.members ?? []).filter((member) => member.status === 'active')
@@ -273,6 +283,22 @@ function openMemberModal(team: SystemTeamSummary) {
   selectedTeamId.value = team.id
   memberForm.systemAccountIds = []
   memberModalOpen.value = true
+}
+
+function handleTeamAction(key: string, team: SystemTeamSummary) {
+  if (key === 'edit') {
+    openEditTeam(team)
+    return
+  }
+  if (key === 'members') {
+    openMemberModal(team)
+  }
+}
+
+function handleMemberAction(key: string, member: SystemTeamMemberSummary) {
+  if (key === 'remove') {
+    void removeMember(member.id)
+  }
 }
 
 async function addMembers() {
