@@ -209,6 +209,8 @@ export interface AccountSummary {
   currentConcurrency: number
   priority: number
   proxyProfileId?: string
+  proxyProfileUnavailable?: boolean
+  proxyProfileErrorMessage?: string
   passthroughEnabled: boolean
   errorPolicyId?: string
   schedulable: boolean
@@ -262,6 +264,9 @@ export interface AccountUsageStatsRow {
 export interface AccountUsageStatsOverview {
   windows: UsageStatsWindowDefinition[]
   rows: AccountUsageStatsRow[]
+  total: number
+  page: number
+  pageSize: number
   statsLagSeconds: number
 }
 
@@ -355,6 +360,7 @@ export interface ResourceAuthorizationSummary {
   authorizationSources?: ResourceAuthorizationSourceSummary[]
   usage: AccountUsageSummary
   usageBySystemAccount?: ResourceAuthorizationUsageDetail[]
+  permissions?: Pick<ResourcePermissions, 'canEdit' | 'canAuthorize'>
   createdBy: string
   createdAt: string
   revokedBy?: string

@@ -6,8 +6,9 @@
     :refresh-loading="loading"
     @reset="$emit('reset')"
     @refresh="$emit('refresh')"
-  >
+    >
     <template #inline-filters>
+      <a-segmented v-if="!isManagementView" v-model:value="filters.direction" class="direction-filter responsive-list-inline-filter" :options="directionOptions" @change="$emit('refresh')" />
       <a-select v-model:value="filters.resourceType" class="filter-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
       <a-select
         v-model:value="filters.resourceId"
@@ -21,6 +22,7 @@
         @change="$emit('refresh')"
       />
       <SystemPrincipalSelect
+        v-if="isManagementView"
         v-model:value="filters.teamId"
         :teams="teams"
         :active-only="false"
@@ -31,6 +33,7 @@
         @change="$emit('refresh')"
       />
       <SystemPrincipalSelect
+        v-if="isManagementView"
         v-model:value="filters.granteeSystemAccountId"
         :accounts="users"
         :active-only="false"
@@ -48,6 +51,10 @@
       <a-button type="primary" @click="$emit('create')">新增授权</a-button>
     </template>
     <template #filters>
+      <label v-if="!isManagementView" class="mobile-filter-field">
+        <span>授权方向</span>
+        <a-segmented v-model:value="filters.direction" :options="directionOptions" @change="$emit('refresh')" />
+      </label>
       <label class="mobile-filter-field">
         <span>资源类型</span>
         <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
@@ -65,11 +72,11 @@
           @change="$emit('refresh')"
         />
       </label>
-      <label class="mobile-filter-field">
+      <label v-if="isManagementView" class="mobile-filter-field">
         <span>授权来源</span>
         <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选授权来源" @change="$emit('refresh')" />
       </label>
-      <label class="mobile-filter-field">
+      <label v-if="isManagementView" class="mobile-filter-field">
         <span>被授权用户</span>
         <SystemPrincipalSelect v-model:value="filters.granteeSystemAccountId" :accounts="users" :active-only="false" allow-clear placeholder="筛选被授权用户" @change="$emit('refresh')" />
       </label>
@@ -83,15 +90,18 @@ import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
-import type { AuthorizationFilterResourceType } from './authorizationTableColumns'
+import type { AuthorizationDirectionFilter, AuthorizationFilterResourceType } from './authorizationTableColumns'
 
 defineProps<{
   filters: {
+    direction: AuthorizationDirectionFilter
     resourceType: AuthorizationFilterResourceType
     resourceId?: string
     teamId?: string
     granteeSystemAccountId?: string
   }
+  isManagementView: boolean
+  directionOptions: Array<{ label: string; value: AuthorizationDirectionFilter }>
   resourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }>
   resourceOptions: Array<{ label: string; value: string }>
   teams: SystemTeamSummary[]
@@ -112,6 +122,10 @@ defineEmits<{
 <style scoped>
 .filter-select {
   min-width: 140px;
+}
+
+.direction-filter {
+  min-width: 240px;
 }
 
 .filter-resource,

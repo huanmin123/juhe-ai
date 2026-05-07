@@ -2,6 +2,7 @@
   <a-modal v-model:open="open" :title="title" width="920px" :confirm-loading="confirmLoading" :ok-button-props="okButtonProps" @ok="$emit('ok')" @cancel="$emit('cancel')">
     <a-form layout="vertical" class="account-form">
       <a-alert v-if="editing" class="form-alert" type="info" show-icon message="编辑账户时不修改供应商和账户类型；Access/API Key 与 Refresh Token 只在这里展示和修改。" />
+      <a-alert v-else-if="targetSystemAccountLabel" class="form-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
 
       <AccountFormSelector
         :account-type="form.type"
@@ -89,6 +90,7 @@ defineProps<{
   selectedProvider?: ProviderDefinition
   statusOptions: SelectOption<string>[]
   title: string
+  targetSystemAccountLabel?: string
 }>()
 
 defineEmits<{

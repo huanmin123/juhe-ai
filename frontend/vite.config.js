@@ -57,7 +57,7 @@ export default defineConfig(function (_a) {
         server: {
             port: 5173,
             proxy: {
-                '/api': backendTarget,
+                '^/api(/|$)': backendTarget,
                 '/v1': backendTarget
             }
         }

@@ -51,6 +51,9 @@
         <strong class="mono-cell">{{ record.clientIp ?? '-' }}</strong>
       </div>
     </div>
+    <div class="mobile-list-card-actions">
+      <a-button type="primary" @click="$emit('detail')">详情</a-button>
+    </div>
   </article>
 </template>
 
@@ -72,5 +75,9 @@ import {
 defineProps<{
   isManagementView: boolean
   record: UsageRecordSummary
+}>()
+
+defineEmits<{
+  (event: 'detail'): void
 }>()
 </script>

@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { badRequest, ok } from '../../shared/http.js'
 import { DefaultGroupReadonlyError, createGroup, deleteGroup, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 
 export const groupsRouter = Router()
@@ -20,6 +21,12 @@ groupsRouter.get('/', (req, res) => {
 })
 
 groupsRouter.post('/', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = groupSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('Invalid group payload'))
@@ -35,12 +42,18 @@ groupsRouter.post('/', (req, res) => {
     res.status(400).json(badRequest(`Provider is disabled: ${providerCode}`))
     return
   }
-  const group = createGroup({ ...parsed.data, providerCode })
+  const group = createGroup({ ...parsed.data, providerCode }, requestAccess)
   clearGatewayRuntimeCache()
   res.status(201).json(ok(group))
 })
 
 groupsRouter.patch('/:id', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const providerCode = typeof (req.body as Record<string, unknown>).providerCode === 'string'
     ? String((req.body as Record<string, unknown>).providerCode).trim()
     : undefined
@@ -57,7 +70,7 @@ groupsRouter.patch('/:id', (req, res) => {
   }
   let group: ReturnType<typeof updateGroup>
   try {
-    group = updateGroup(req.params.id, req.body as Record<string, unknown>)
+    group = updateGroup(req.params.id, req.body as Record<string, unknown>, requestAccess)
   } catch (error) {
     if (error instanceof DefaultGroupReadonlyError) {
       res.status(400).json(badRequest(error.message))
@@ -75,8 +88,14 @@ groupsRouter.patch('/:id', (req, res) => {
 })
 
 groupsRouter.delete('/:id', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   try {
-    if (!deleteGroup(req.params.id)) {
+    if (!deleteGroup(req.params.id, requestAccess)) {
       res.status(404).json({ message: 'Group not found' })
       return
     }

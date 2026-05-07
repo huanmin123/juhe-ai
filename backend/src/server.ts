@@ -5,7 +5,7 @@ import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { accountsRouter } from './modules/accounts/accounts.routes.js'
-import { requireAdmin, requireAuth } from './modules/auth/auth.middleware.js'
+import { forceSelfAccessScope, requireAdmin, requireAuth } from './modules/auth/auth.middleware.js'
 import { authRouter } from './modules/auth/auth.routes.js'
 import { startBackgroundWorkerSupervisor } from './modules/background/background-worker-supervisor.js'
 import { apiKeysRouter } from './modules/api-keys/api-keys.routes.js'
@@ -130,22 +130,30 @@ app.get('/api/settings/public', (_req, res) => {
 })
 
 app.use('/api', requireAuth)
+app.use('/api/my-accounts', forceSelfAccessScope, accountsRouter)
+app.use('/api/my-groups', forceSelfAccessScope, groupsRouter)
+app.use('/api/my-api-keys', forceSelfAccessScope, apiKeysRouter)
+app.use('/api/my-authorization-options', forceSelfAccessScope, authorizationOptionsRouter)
+app.use('/api/my-authorizations', forceSelfAccessScope, authorizationsRouter)
+app.use('/api/my-openai-oauth', forceSelfAccessScope, openAIOAuthRouter)
+app.use('/api/my-usage-records', forceSelfAccessScope, usageRecordsRouter)
+app.use('/api/my-stats', forceSelfAccessScope, statsRouter)
 app.use('/api/providers', requireAdmin, providersRouter)
 app.use('/api/error-policies', errorPoliciesRouter)
-app.use('/api/accounts', accountsRouter)
-app.use('/api/groups', groupsRouter)
-app.use('/api/api-keys', apiKeysRouter)
-app.use('/api/authorization-options', authorizationOptionsRouter)
-app.use('/api/authorizations', authorizationsRouter)
-app.use('/api/openai-oauth', openAIOAuthRouter)
+app.use('/api/accounts', requireAdmin, accountsRouter)
+app.use('/api/groups', requireAdmin, groupsRouter)
+app.use('/api/api-keys', requireAdmin, apiKeysRouter)
+app.use('/api/authorization-options', requireAdmin, authorizationOptionsRouter)
+app.use('/api/authorizations', requireAdmin, authorizationsRouter)
+app.use('/api/openai-oauth', requireAdmin, openAIOAuthRouter)
 app.use('/api/proxies', proxiesRouter)
-app.use('/api/usage-records', usageRecordsRouter)
+app.use('/api/usage-records', requireAdmin, usageRecordsRouter)
 app.use('/api/audit-logs', requireAdmin, auditLogsRouter)
 app.use('/api/runtime-logs', requireAdmin, runtimeLogsRouter)
-app.use('/api/stats', statsRouter)
+app.use('/api/stats', requireAdmin, statsRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/system-accounts', systemAccountsRouter)
-app.use('/api/my-teams', myTeamsRouter)
+app.use('/api/my-teams', forceSelfAccessScope, myTeamsRouter)
 app.use('/api/system-teams', systemTeamsRouter)
 
 if (existsSync(frontendIndexPath)) {

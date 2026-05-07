@@ -27,6 +27,13 @@
         <strong>{{ groupName || '未归属' }}</strong>
       </div>
       <div class="account-mobile-meta-item">
+        <span>代理</span>
+        <a-tooltip v-if="proxyText" :title="proxyTooltip">
+          <strong :class="proxyToneClass">{{ proxyText }}</strong>
+        </a-tooltip>
+        <strong v-else>不使用</strong>
+      </div>
+      <div class="account-mobile-meta-item">
         <span>并发</span>
         <strong>{{ account.currentConcurrency }}/{{ account.concurrencyLimit }}</strong>
       </div>
@@ -77,8 +84,9 @@
 
 <script setup lang="ts">
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
+import { computed } from 'vue'
 
-import type { AccountSummary } from '@/types/domain'
+import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountStatusTag from './AccountStatusTag.vue'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
@@ -91,7 +99,7 @@ import {
   isOwnerDisabledAuthorizedAccount
 } from './accountFormatters'
 
-defineProps<{
+const props = defineProps<{
   account: AccountSummary
   authorizedTooltip: string
   canDelete: boolean
@@ -100,6 +108,7 @@ defineProps<{
   isManagementView: boolean
   menuItems: AccountMenuItem[]
   providerName: string
+  proxy?: ProxyProfileOptionSummary
   selected: boolean
 }>()
 
@@ -111,6 +120,19 @@ defineEmits<{
   (event: 'test'): void
   (event: 'toggle-selection'): void
 }>()
+
+const proxyText = computed(() => {
+  if (!props.account.proxyProfileId) return ''
+  return props.proxy?.name ?? '代理已配置'
+})
+const proxyTooltip = computed(() => {
+  if (props.account.proxyProfileErrorMessage) return props.account.proxyProfileErrorMessage
+  if (props.account.proxyProfileUnavailable) return '代理不可用，请到代理管理确认配置'
+  if (props.proxy?.enabled === false) return '代理已停用，请启用代理或更换账户代理'
+  if (props.proxy) return `${props.proxy.name}（${props.proxy.type}）`
+  return '代理配置不存在或当前不可见'
+})
+const proxyToneClass = computed(() => (props.account.proxyProfileUnavailable || props.proxy?.enabled === false ? 'proxy-error' : ''))
 </script>
 
 <style scoped>
@@ -220,5 +242,9 @@ defineEmits<{
 
 .expired-cell {
   color: #cf1322;
+}
+
+.proxy-error {
+  color: #dc2626 !important;
 }
 </style>

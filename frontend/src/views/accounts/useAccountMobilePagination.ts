@@ -1,10 +1,18 @@
+import type { UnwrapNestedRefs } from 'vue'
 import { computed, reactive, ref } from 'vue'
 
-export function useAccountMobilePagination(pageSize: number, totalCount: () => number, loadData: () => Promise<void>) {
+type AccountPaginationState = UnwrapNestedRefs<{ current: number; pageSize: number; total: number }>
+
+export function useAccountMobilePagination(
+  pageSize: number,
+  totalCount: () => number,
+  loadData: (options?: { append?: boolean; quiet?: boolean }) => Promise<void>,
+  externalPagination?: AccountPaginationState
+) {
   const mobileLoadingMore = ref(false)
   const mobileRefreshing = ref(false)
   const mobileVisibleCount = ref(pageSize)
-  const accountPagination = reactive({ current: 1, pageSize })
+  const accountPagination = externalPagination ?? reactive({ current: 1, pageSize, total: 0 })
 
   const mobileHasMore = computed(() => mobileVisibleCount.value < totalCount())
   const tablePagination = computed(() => ({
@@ -28,13 +36,24 @@ export function useAccountMobilePagination(pageSize: number, totalCount: () => n
     accountPagination.pageSize = nextPagination.pageSize ?? accountPagination.pageSize
   }
 
-  function loadMoreMobile() {
+  async function loadMoreMobile() {
     if (mobileLoadingMore.value || !mobileHasMore.value) return
     mobileLoadingMore.value = true
-    window.setTimeout(() => {
+    try {
+      accountPagination.current += 1
+      if (externalPagination) {
+        await loadData({ append: true, quiet: true })
+      } else {
+        window.setTimeout(() => {
+          mobileVisibleCount.value = Math.min(mobileVisibleCount.value + pageSize, totalCount())
+          mobileLoadingMore.value = false
+        }, 260)
+        return
+      }
       mobileVisibleCount.value = Math.min(mobileVisibleCount.value + pageSize, totalCount())
+    } finally {
       mobileLoadingMore.value = false
-    }, 260)
+    }
   }
 
   async function refreshMobile() {

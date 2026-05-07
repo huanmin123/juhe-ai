@@ -2,8 +2,9 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccounts, listGroups, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, type AccountListOptions, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccountsPage, listGroups, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { testOpenAIAccount } from './account-test.service.js'
@@ -55,7 +56,7 @@ const accountListSortFields = new Set<AccountListSortField>([
 ])
 
 accountsRouter.get('/', (req, res) => {
-  res.json(ok(listAccounts(getRequestAccessScope(req.query.systemAccountId), parseAccountListOptions(req.query))))
+  res.json(ok(listAccountsPage(getRequestAccessScope(req.query.systemAccountId), parseAccountListOptions(req.query))))
 })
 
 function parseAccountListOptions(query: Record<string, unknown>): AccountListOptions {
@@ -66,7 +67,16 @@ function parseAccountListOptions(query: Record<string, unknown>): AccountListOpt
     .filter(Boolean)
     .map(parseAccountListSort)
     .filter((sort): sort is NonNullable<ReturnType<typeof parseAccountListSort>> => Boolean(sort))
-  return { sorts }
+  return {
+    sorts,
+    page: integerQueryValue(query.page),
+    pageSize: integerQueryValue(query.pageSize),
+    limit: integerQueryValue(query.limit),
+    keyword: optionalQueryText(query.keyword),
+    type: optionalQueryText(query.type),
+    status: optionalQueryText(query.status),
+    schedulable: schedulableQueryValue(query.schedulable)
+  }
 }
 
 function parseAccountListSort(value: string): { field: AccountListSortField; order: AccountListSortDirection } | undefined {
@@ -82,7 +92,29 @@ function stringValues(value: unknown): string[] {
   return []
 }
 
+function integerQueryValue(value: unknown): number | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  const number = typeof text === 'string' ? Number(text) : typeof text === 'number' ? text : undefined
+  return Number.isInteger(number) ? number : undefined
+}
+
+function optionalQueryText(value: unknown): string | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  return typeof text === 'string' && text.trim() ? text.trim() : undefined
+}
+
+function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | undefined {
+  const text = optionalQueryText(value)
+  return text === 'all' || text === 'enabled' || text === 'disabled' || text === 'cooling' ? text : undefined
+}
+
 accountsRouter.post('/', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = accountCreateSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('Invalid account payload'))
@@ -105,7 +137,7 @@ accountsRouter.post('/', (req, res) => {
   }
   const groupId = typeof parsed.data.groupId === 'string' && parsed.data.groupId ? parsed.data.groupId : undefined
   if (groupId) {
-    const group = listGroups(getRequestAccessScope(req.query.systemAccountId)).find((item) => item.id === groupId)
+    const group = listGroups(requestAccess).find((item) => item.id === groupId)
     if (!group || group.providerCode !== providerCode) {
       res.status(400).json(badRequest('Invalid account group'))
       return
@@ -116,7 +148,7 @@ accountsRouter.post('/', (req, res) => {
     const account = createAccount({
       ...parsed.data,
       providerCode
-    })
+    }, requestAccess)
     clearGatewayRuntimeCache()
     res.status(201).json(ok(account))
   } catch (error) {
@@ -124,18 +156,28 @@ accountsRouter.post('/', (req, res) => {
       res.status(409).json({ message: error.message })
       return
     }
+    if (error instanceof ProxyProfileUnavailableError) {
+      res.status(400).json(badRequest(error.message))
+      return
+    }
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Invalid account payload'))
   }
 })
 
 accountsRouter.post('/:id/group', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = accountGroupSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('请选择要绑定的分组'))
     return
   }
 
-  const account = setAccountGroup(req.params.id, parsed.data.groupId)
+  const account = setAccountGroup(req.params.id, parsed.data.groupId, requestAccess)
   if (!account) {
     res.status(400).json(badRequest('账户不存在、授权已失效或分组不可用'))
     return
@@ -145,6 +187,12 @@ accountsRouter.post('/:id/group', (req, res) => {
 })
 
 accountsRouter.post('/:id/traffic-migration', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = accountTrafficMigrationSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('迁移流量参数无效'))
@@ -156,7 +204,7 @@ accountsRouter.post('/:id/traffic-migration', (req, res) => {
       sourceAccountId: req.params.id,
       targetAccountId: parsed.data.targetAccountId,
       sourceStatus: parsed.data.sourceStatus ?? 'temporary_unavailable'
-    })
+    }, requestAccess)
     if (!migration) {
       res.status(404).json({ message: '账户不存在或无权迁移' })
       return
@@ -174,8 +222,14 @@ accountsRouter.post('/:id/traffic-migration', (req, res) => {
 })
 
 accountsRouter.patch('/:id', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const body = req.body as Record<string, unknown>
-  const existingAccount = findAccountForTest(req.params.id, getRequestAccessScope(req.query.systemAccountId))
+  const existingAccount = findAccountForTest(req.params.id, requestAccess)
   if (!existingAccount) {
     res.status(404).json({ message: 'Account not found' })
     return
@@ -186,21 +240,25 @@ accountsRouter.patch('/:id', (req, res) => {
     return
   }
   if (hasGroupId) {
-    const group = listGroups(getRequestAccessScope(req.query.systemAccountId)).find((item) => item.id === body.groupId)
+    const group = listGroups(requestAccess).find((item) => item.id === body.groupId)
     if (!group || group.providerCode !== existingAccount.providerCode) {
       res.status(400).json(badRequest('Invalid account group'))
       return
     }
   }
   if (body.clearFailureState === true) {
-    clearAccountFailureState(req.params.id)
+    clearAccountFailureState(req.params.id, {}, requestAccess)
   }
   let account: ReturnType<typeof updateAccount>
   try {
-    account = updateAccount(req.params.id, body)
+    account = updateAccount(req.params.id, body, requestAccess)
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
       res.status(409).json({ message: error.message })
+      return
+    }
+    if (error instanceof ProxyProfileUnavailableError) {
+      res.status(400).json(badRequest(error.message))
       return
     }
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'Update account failed'))
@@ -211,7 +269,7 @@ accountsRouter.patch('/:id', (req, res) => {
     return
   }
   if (hasGroupId) {
-    const nextAccount = setAccountGroup(account.id, body.groupId as string)
+    const nextAccount = setAccountGroup(account.id, body.groupId as string, requestAccess)
     if (!nextAccount) {
       res.status(400).json(badRequest('Invalid account group'))
       return
@@ -222,12 +280,18 @@ accountsRouter.patch('/:id', (req, res) => {
 })
 
 accountsRouter.post('/:id/test', async (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = accountTestSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('Invalid account test payload'))
     return
   }
-  const account = findAccountForTest(req.params.id, getRequestAccessScope(req.query.systemAccountId))
+  const account = findAccountForTest(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'Account not found' })
     return
@@ -242,7 +306,13 @@ accountsRouter.post('/:id/test', async (req, res) => {
 })
 
 accountsRouter.delete('/:id', (req, res) => {
-  if (!deleteAccount(req.params.id)) {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  if (!deleteAccount(req.params.id, requestAccess)) {
     res.status(404).json({ message: 'Account not found' })
     return
   }

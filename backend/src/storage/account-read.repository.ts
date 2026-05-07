@@ -1,18 +1,48 @@
 import type { AccountUsageSummary } from '../domain/types.js'
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
-import { buildAccountListOrderClause, type AccountListOptions } from './account-list-options.js'
+import { buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, nowIso } from './database.js'
 import type { AccountListRow } from './repository-row-types.js'
 import { loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
-export function listAccountRowsForAccess(access: AccessScope | undefined, options: Required<AccountListOptions>): AccountListRow[] {
+export interface AccountRowsPage {
+  rows: AccountListRow[]
+  total: number
+}
+
+type AccountFilterValue = string | number
+
+export function listAccountRowsForAccess(access: AccessScope | undefined, options: NormalizedAccountListOptions): AccountListRow[] {
+  return queryAccountRowsForAccess(access, options).rows
+}
+
+export function listAccountRowsPageForAccess(access: AccessScope | undefined, options: NormalizedAccountListOptions): AccountRowsPage {
+  return queryAccountRowsForAccess(access, options, {
+    limit: options.pageSize,
+    offset: (options.page - 1) * options.pageSize
+  })
+}
+
+function queryAccountRowsForAccess(
+  access: AccessScope | undefined,
+  options: NormalizedAccountListOptions,
+  pagination?: { limit: number; offset: number }
+): AccountRowsPage {
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const orderClause = buildAccountListOrderClause(options)
+  const filters = buildAccountListFilters(options)
+  const pageClause = pagination ? 'LIMIT ? OFFSET ?' : ''
+  const pageParams = pagination ? [pagination.limit, pagination.offset] : []
+  const queryRows = (baseSql: string, params: AccountFilterValue[] = []): AccountRowsPage => {
+    const filteredSql = `${baseSql} ${filters.clause}`
+    const totalRow = getDatabase().prepare(`SELECT COUNT(*) AS total FROM (${filteredSql}) counted_rows`).get(...params, ...filters.params) as { total?: number } | undefined
+    const rows = getDatabase().prepare(`${filteredSql} ${orderClause} ${pageClause}`).all(...params, ...filters.params, ...pageParams) as unknown as AccountListRow[]
+    return { rows, total: Number(totalRow?.total ?? 0) }
+  }
   if (!ownerSystemAccountId && canAccessAll(access)) {
-    return getDatabase()
-      .prepare(`
+    return queryRows(`
         SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
@@ -30,13 +60,10 @@ export function listAccountRowsForAccess(access: AccessScope | undefined, option
           ON authorization_usage.system_account_id = account_rows.system_account_id
           AND authorization_usage.scope_type = 'account_authorization'
           AND authorization_usage.scope_id = account_rows.authorization_id
-        ${orderClause}
       `)
-      .all() as unknown as AccountListRow[]
   }
   if (!viewerSystemAccountId) {
-    return getDatabase()
-      .prepare(`
+    return queryRows(`
         SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
@@ -54,12 +81,9 @@ export function listAccountRowsForAccess(access: AccessScope | undefined, option
           ON authorization_usage.system_account_id = account_rows.system_account_id
           AND authorization_usage.scope_type = 'account_authorization'
           AND authorization_usage.scope_id = account_rows.authorization_id
-        ${orderClause}
       `)
-      .all() as unknown as AccountListRow[]
   }
-  return getDatabase()
-    .prepare(`
+  return queryRows(`
       SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id
       FROM (
         SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
@@ -87,9 +111,7 @@ export function listAccountRowsForAccess(access: AccessScope | undefined, option
         ON authorization_usage.system_account_id = account_rows.system_account_id
         AND authorization_usage.scope_type = 'account_authorization'
         AND authorization_usage.scope_id = account_rows.authorization_id
-      ${orderClause}
-    `)
-    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId) as unknown as AccountListRow[]
+    `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId])
 }
 
 export function accountCredentialsForList(row: AccountListRow): Record<string, unknown> {
@@ -116,4 +138,42 @@ function accountBindingSubquery(): string {
     INNER JOIN groups ON groups.id = group_accounts.group_id
     WHERE group_accounts.enabled = 1
   )`
+}
+
+function buildAccountListFilters(options: NormalizedAccountListOptions): { clause: string; params: AccountFilterValue[] } {
+  const clauses: string[] = []
+  const params: AccountFilterValue[] = []
+  const keyword = options.keyword?.trim()
+  if (keyword) {
+    clauses.push(`(
+      account_rows.name LIKE ?
+      OR COALESCE(account_rows.notes, '') LIKE ?
+      OR account_rows.provider_code LIKE ?
+      OR account_rows.type LIKE ?
+      OR account_rows.id LIKE ?
+      OR COALESCE(group_bindings.group_name, '') LIKE ?
+    )`)
+    params.push(...Array.from({ length: 6 }, () => `%${keyword}%`))
+  }
+  if (options.type && options.type !== 'all') {
+    clauses.push('account_rows.type = ?')
+    params.push(options.type)
+  }
+  if (options.status && options.status !== 'all') {
+    clauses.push('account_rows.status = ?')
+    params.push(options.status)
+  }
+  if (options.schedulable === 'enabled') {
+    clauses.push("account_rows.status = 'active' AND account_rows.schedulable = 1 AND (account_rows.cooldown_until IS NULL OR account_rows.cooldown_until <= ?)")
+    params.push(nowIso())
+  } else if (options.schedulable === 'disabled') {
+    clauses.push("(account_rows.status = 'disabled' OR account_rows.schedulable <> 1)")
+  } else if (options.schedulable === 'cooling') {
+    clauses.push("(account_rows.status IN ('rate_limited', 'temporary_unavailable') OR (account_rows.cooldown_until IS NOT NULL AND account_rows.cooldown_until > ?))")
+    params.push(nowIso())
+  }
+  return {
+    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+    params
+  }
 }

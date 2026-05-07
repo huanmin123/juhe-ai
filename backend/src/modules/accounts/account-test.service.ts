@@ -1,52 +1,70 @@
+import { EventEmitter } from 'node:events'
+import { randomUUID } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
-import { request as httpRequest } from 'node:http'
-import { request as httpsRequest } from 'node:https'
+import type { Request, Response } from 'express'
 
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
-import { resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
-import { withRequestAuthContext } from '../auth/request-context.js'
-import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
-import { persistOpenAICodexUsageHeaders } from '../gateway/openai-codex-usage.service.js'
+import { logger } from '../../shared/logger.js'
+import { withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
-  buildOpenAIOAuthCredentials,
-  createProxyAgent,
-  refreshOpenAIOAuthToken,
-  shouldRefreshOpenAIOAuthCredentials
-} from '../openai-oauth/openai-oauth.service.js'
+  findOpenAIAccountForGroup,
+  resolveAccountSystemAccountId,
+  type OpenAIAccountSecret
+} from '../../storage/repositories.js'
+import { getRequestAuthContext, withRequestAuthContext } from '../auth/request-context.js'
+import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
 
 const defaultTestModel = 'gpt-5.5'
 const defaultTestPrompt = 'hi'
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
-const chatGPTCodexResponsesUrl = 'https://chatgpt.com/backend-api/codex/responses'
+const gatewayTestPath = '/v1/responses'
+const gatewayModelsPath = '/v1/models'
 
-export async function testOpenAIAccount(account: AccountSummary, input: { model?: string; prompt?: string } = {}): Promise<AccountTestResult> {
-  const prepared = await prepareAccountForTest(account)
-  const modelsUrl = `${prepared.baseUrl.replace(/\/+$/, '')}/models`
+export async function testOpenAIAccount(
+  account: AccountSummary,
+  input: { model?: string; prompt?: string; includeUnavailable?: boolean } = {}
+): Promise<AccountTestResult> {
   const model = stringValue(input.model) || defaultTestModel
   const prompt = stringValue(input.prompt) || defaultTestPrompt
-  const isOAuth = account.type === 'oauth'
-  const requestUrl = isOAuth ? chatGPTCodexResponsesUrl : `${prepared.baseUrl.replace(/\/+$/, '')}/responses`
-  const requestBody = createOpenAITestPayload(model, prompt, isOAuth)
+  const requestBody = createOpenAITestPayload(model, prompt, account.type === 'oauth')
   const requestBodyText = JSON.stringify(requestBody)
-  const headers = buildTestHeaders(prepared, isOAuth, requestBodyText)
+  const requestUrl = gatewayTestPath
+  const modelsUrl = gatewayModelsPath
   const startedAt = Date.now()
 
   try {
-    const response = await requestOpenAITest(requestUrl, headers, requestBodyText, prepared.proxyUrl)
-    const upstreamMessage = parseUpstreamMessage(response.bodyText)
-    const streamFailureMessage = parseOpenAIStreamFailureMessage(response.bodyText)
-    const outputText = extractOpenAIResponseOutputText(response.bodyText)
-    const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
-    if (isOAuth) {
-      persistOpenAICodexUsageHeaders(account.id, response.headers, 'account_test')
+    const resolved = resolveAccountTestCandidate(account, shouldIncludeUnavailableAccount(account, input.includeUnavailable))
+    const request = createGatewayTestRequest(requestBody, requestBodyText, account.type === 'oauth')
+    const response = new MemoryGatewayResponse()
+    const traceId = `acctest_${Date.now()}_${randomUUID()}`
+    const context: RequestContext = {
+      traceId,
+      startedAt,
+      method: request.method,
+      path: request.path,
+      originalUrl: request.originalUrl,
+      clientIp: request.ip,
+      systemAccountId: resolved.systemAccountId,
+      groupId: resolved.groupId,
+      logger: resolvedLogger()
     }
-    const policyResult = applyAccountErrorHandling(account, {
-      success,
-      statusCode: response.statusCode,
-      headers: response.headers,
-      bodyText: response.bodyText,
-      errorMessage: streamFailureMessage || upstreamMessage
-    })
+
+    await withRequestContext(context, () => withRequestAuthContext(undefined, () => handleOpenAIGatewayRequest(request, response.asResponse(), {
+      identity: {
+        systemAccountId: resolved.systemAccountId,
+        groupId: resolved.groupId
+      },
+      candidateAccounts: [resolved.account],
+      disableSessionAffinity: true
+    })))
+
+    const finalAccount = findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { includeUnavailable: true }) ?? resolved.account
+    const responseText = response.bodyText()
+    const upstreamMessage = parseUpstreamMessage(responseText)
+    const streamFailureMessage = parseOpenAIStreamFailureMessage(responseText)
+    const outputText = extractOpenAIResponseOutputText(responseText)
+    const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
+    const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
     return {
       accountId: account.id,
       accountName: account.name,
@@ -54,29 +72,23 @@ export async function testOpenAIAccount(account: AccountSummary, input: { model?
       type: account.type,
       success,
       statusCode: response.statusCode,
-      message: success ? 'OpenAI Responses 测试通过' : streamFailureMessage || upstreamMessage || `API returned ${response.statusCode}`,
+      message: success ? 'OpenAI Responses 测试通过' : proxyFailureMessage || streamFailureMessage || upstreamMessage || `API returned ${response.statusCode}`,
       model,
       requestUrl,
       requestBody,
-      responseHeaders: response.headers,
-      responseBody: parseJsonBody(response.bodyText),
-      responseText: response.bodyText,
+      responseHeaders: response.headersObject(),
+      responseBody: parseJsonBody(responseText),
+      responseText,
       outputText,
       modelsUrl,
-      proxyUrl: prepared.proxyUrl ? '[configured]' : undefined,
-      tokenRefreshed: prepared.tokenRefreshed,
+      proxyUrl: accountTestProxyMarker(account, finalAccount),
+      tokenRefreshed: didRefreshToken(account, finalAccount),
       durationMs: Date.now() - startedAt,
-      accountStatusChanged: policyResult.changed,
-      accountStatus: policyResult.accountStatus,
-      errorPolicyAction: policyResult.action,
-      errorPolicyReason: policyResult.reason
+      accountStatusChanged: finalAccount.status !== account.status,
+      accountStatus: finalAccount.status
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'OpenAI Responses 测试失败'
-    const policyResult = applyAccountErrorHandling(account, {
-      success: false,
-      errorMessage: message
-    })
     return {
       accountId: account.id,
       accountName: account.name,
@@ -89,38 +101,192 @@ export async function testOpenAIAccount(account: AccountSummary, input: { model?
       requestBody,
       responseText: message,
       modelsUrl,
-      proxyUrl: prepared.proxyUrl ? '[configured]' : undefined,
-      tokenRefreshed: prepared.tokenRefreshed,
+      proxyUrl: account.proxyProfileId ? '[configured]' : undefined,
       durationMs: Date.now() - startedAt,
-      accountStatusChanged: policyResult.changed,
-      accountStatus: policyResult.accountStatus,
-      errorPolicyAction: policyResult.action,
-      errorPolicyReason: policyResult.reason
+      accountStatusChanged: false,
+      accountStatus: account.status
     }
   }
 }
 
-function buildTestHeaders(
-  prepared: { apiKey: string; chatgptAccountId?: string },
-  isOAuth: boolean,
-  bodyText: string
-): Record<string, string> {
-  const headers = {
-    authorization: `Bearer ${prepared.apiKey}`,
+function accountTestProxyMarker(account: AccountSummary, resolved: OpenAIAccountSecret): string | undefined {
+  return account.proxyProfileId || resolved.proxyUrl || resolved.proxyProfileUnavailable ? '[configured]' : undefined
+}
+
+function shouldIncludeUnavailableAccount(account: AccountSummary, explicit?: boolean): boolean {
+  return explicit === true || account.status === 'rate_limited' || account.status === 'temporary_unavailable'
+}
+
+function resolveAccountTestCandidate(account: AccountSummary, includeUnavailable: boolean): {
+  systemAccountId: string
+  groupId: string
+  account: OpenAIAccountSecret
+} {
+  const systemAccountId = account.systemAccountId ?? authorizedCallerSystemAccountId(account) ?? account.ownerSystemAccountId ?? resolveAccountSystemAccountId(account.id) ?? 'sys_admin'
+  const groupId = account.boundGroupId
+  if (!groupId) {
+    throw new Error('账户未绑定可用分组，无法按客户真实链路测试')
+  }
+  const candidate = findOpenAIAccountForGroup(groupId, account.id, systemAccountId, { includeUnavailable })
+  if (!candidate) {
+    throw new Error(includeUnavailable ? '账户不在当前分组或凭据不可用，无法按网关链路复测' : '账户当前不可调度或不在当前分组，无法按客户真实链路测试')
+  }
+  return { systemAccountId, groupId, account: candidate }
+}
+
+function authorizedCallerSystemAccountId(account: AccountSummary): string | undefined {
+  return account.accessType === 'authorized' ? getRequestAuthContext()?.systemAccountId : undefined
+}
+
+function createGatewayTestRequest(body: Record<string, unknown>, rawBodyText: string, isOAuth: boolean): Request {
+  const headers: IncomingHttpHeaders = {
     accept: isOAuth ? 'text/event-stream' : 'application/json, text/event-stream',
     'content-type': 'application/json',
-    'content-length': String(Buffer.byteLength(bodyText)),
-    'user-agent': isOAuth ? 'codex_cli_rs/0.125.0' : 'juhe-ai-account-test/0.1'
-  } as Record<string, string>
-  if (isOAuth) {
-    headers.originator = 'codex_cli_rs'
-    headers.version = '0.125.0'
-    headers['openai-beta'] = 'responses=experimental'
-    if (prepared.chatgptAccountId) {
-      headers['chatgpt-account-id'] = prepared.chatgptAccountId
-    }
+    'content-length': String(Buffer.byteLength(rawBodyText))
   }
-  return headers
+  return new MemoryGatewayRequest({
+    method: 'POST',
+    originalUrl: gatewayTestPath,
+    path: gatewayTestPath,
+    headers,
+    body,
+    rawBody: Buffer.from(rawBodyText),
+    ip: '127.0.0.1'
+  }).asRequest()
+}
+
+class MemoryGatewayRequest extends EventEmitter {
+  constructor(private readonly input: {
+    method: string
+    originalUrl: string
+    path: string
+    headers: IncomingHttpHeaders
+    body: Record<string, unknown>
+    rawBody: Buffer
+    ip: string
+  }) {
+    super()
+  }
+
+  get method(): string {
+    return this.input.method
+  }
+
+  get originalUrl(): string {
+    return this.input.originalUrl
+  }
+
+  get path(): string {
+    return this.input.path
+  }
+
+  get headers(): IncomingHttpHeaders {
+    return this.input.headers
+  }
+
+  get body(): Record<string, unknown> {
+    return this.input.body
+  }
+
+  get rawBody(): Buffer {
+    return this.input.rawBody
+  }
+
+  get ip(): string {
+    return this.input.ip
+  }
+
+  get socket(): { remoteAddress: string } {
+    return { remoteAddress: this.input.ip }
+  }
+
+  header(name: string): string | undefined {
+    const value = this.input.headers[name.toLowerCase()]
+    if (Array.isArray(value)) return value.join(', ')
+    return typeof value === 'string' ? value : undefined
+  }
+
+  asRequest(): Request {
+    return this as unknown as Request
+  }
+}
+
+class MemoryGatewayResponse extends EventEmitter {
+  statusCode = 200
+  writableEnded = false
+  destroyed = false
+  private readonly headers = new Map<string, string | string[]>()
+  private readonly chunks: Buffer[] = []
+
+  status(code: number): this {
+    this.statusCode = code
+    return this
+  }
+
+  setHeader(name: string, value: number | string | readonly string[]): this {
+    this.headers.set(name.toLowerCase(), Array.isArray(value) ? value.map(String) : String(value))
+    return this
+  }
+
+  hasHeader(name: string): boolean {
+    return this.headers.has(name.toLowerCase())
+  }
+
+  getHeaders(): Record<string, string | string[]> {
+    return Object.fromEntries(this.headers.entries())
+  }
+
+  json(value: unknown): this {
+    if (!this.hasHeader('content-type')) {
+      this.setHeader('content-type', 'application/json; charset=utf-8')
+    }
+    return this.send(Buffer.from(JSON.stringify(value), 'utf8'))
+  }
+
+  send(value?: Buffer | string | object): this {
+    if (Buffer.isBuffer(value)) {
+      this.chunks.push(value)
+    } else if (typeof value === 'string') {
+      this.chunks.push(Buffer.from(value, 'utf8'))
+    } else if (value !== undefined) {
+      this.chunks.push(Buffer.from(JSON.stringify(value), 'utf8'))
+    }
+    return this.end()
+  }
+
+  write(value: Buffer | string | Uint8Array): boolean {
+    this.chunks.push(Buffer.isBuffer(value) ? value : Buffer.from(value))
+    return true
+  }
+
+  end(value?: Buffer | string | Uint8Array): this {
+    if (value !== undefined) {
+      this.write(value)
+    }
+    if (!this.writableEnded) {
+      this.writableEnded = true
+      this.emit('finish')
+      this.emit('close')
+    }
+    return this
+  }
+
+  bodyText(): string {
+    return Buffer.concat(this.chunks).toString('utf8')
+  }
+
+  headersObject(): Record<string, string | string[]> {
+    const hiddenHeaders = new Set(['authorization', 'cookie', 'set-cookie', 'proxy-authorization'])
+    const output: Record<string, string | string[]> = {}
+    for (const [name, value] of this.headers) {
+      output[name] = hiddenHeaders.has(name) ? '[redacted]' : value
+    }
+    return output
+  }
+
+  asResponse(): Response {
+    return this as unknown as Response
+  }
 }
 
 function createOpenAITestPayload(model: string, prompt: string, isOAuth: boolean): Record<string, unknown> {
@@ -146,121 +312,11 @@ function createOpenAITestPayload(model: string, prompt: string, isOAuth: boolean
   return payload
 }
 
-function requestOpenAITest(
-  requestUrl: string,
-  headers: Record<string, string>,
-  bodyText: string,
-  proxyUrl?: string
-): Promise<{ statusCode: number; headers: Record<string, string | string[]>; bodyText: string }> {
-  return new Promise((resolve, reject) => {
-    const url = new URL(requestUrl)
-    const requestFn = url.protocol === 'http:' ? httpRequest : httpsRequest
-    const request = requestFn(url, {
-      method: 'POST',
-      headers,
-      agent: proxyUrl ? createProxyAgent(proxyUrl) : undefined,
-      timeout: 120000
-    }, (response) => {
-      const chunks: Buffer[] = []
-      response.on('data', (chunk: Buffer) => {
-        chunks.push(chunk)
-      })
-      response.on('end', () => {
-        resolve({
-          statusCode: response.statusCode ?? 0,
-          headers: normalizeHeaders(response.headers),
-          bodyText: Buffer.concat(chunks).toString('utf8')
-        })
-      })
-    })
-    request.on('error', reject)
-    request.on('timeout', () => request.destroy(new Error('OpenAI Responses test timed out')))
-    request.end(bodyText)
-  })
-}
-
-async function prepareAccountForTest(account: AccountSummary): Promise<{
-  apiKey: string
-  baseUrl: string
-  chatgptAccountId?: string
-  proxyUrl?: string
-  tokenRefreshed: boolean
-}> {
-  if (account.type === 'oauth') {
-    const refreshToken = stringValue(account.credentials.refresh_token)
-    const clientId = stringValue(account.credentials.client_id)
-    const proxyUrl = resolveProxyUrlForProfile(account.proxyProfileId)
-    if (shouldRefreshOpenAIOAuthCredentials(account.credentials)) {
-      if (!refreshToken) {
-        throw new Error('OAuth 账户缺少 refresh_token，无法刷新 access_token')
-      }
-      const tokenInfo = await refreshOpenAIOAuthToken({ refreshToken, clientId, proxyUrl })
-      const credentials = {
-        ...account.credentials,
-        ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
-      }
-      updateAccountAsOwner(account, { credentials })
-      return {
-        apiKey: stringValue(credentials.access_token),
-        baseUrl: stringValue(credentials.base_url) || 'https://api.openai.com/v1',
-        chatgptAccountId: stringValue(credentials.chatgpt_account_id) || stringValue(credentials.account_id),
-        proxyUrl,
-        tokenRefreshed: true
-      }
-    }
-    const accessToken = stringValue(account.credentials.access_token)
-    if (!accessToken) {
-      throw new Error('OAuth 账户缺少 access_token')
-    }
-    return {
-      apiKey: accessToken,
-      baseUrl: stringValue(account.credentials.base_url) || 'https://api.openai.com/v1',
-      chatgptAccountId: stringValue(account.credentials.chatgpt_account_id) || stringValue(account.credentials.account_id),
-      proxyUrl,
-      tokenRefreshed: false
-    }
-  }
-
-  const apiKey = stringValue(account.credentials.api_key)
-  if (!apiKey) {
-    throw new Error('API Key 账户缺少 api_key')
-  }
-  return {
-    apiKey,
-    baseUrl: stringValue(account.credentials.base_url) || 'https://api.openai.com/v1',
-    proxyUrl: resolveProxyUrlForProfile(account.proxyProfileId),
-    tokenRefreshed: false
-  }
-}
-
-function updateAccountAsOwner(account: AccountSummary, payload: Record<string, unknown>): void {
-  if (!account.ownerSystemAccountId) {
-    updateAccount(account.id, payload)
-    return
-  }
-  withRequestAuthContext({
-    systemAccountId: account.ownerSystemAccountId,
-    role: 'user',
-    username: 'account-owner',
-    displayName: account.ownerSystemAccountName || '账户所有者',
-    mustChangePassword: false,
-    sessionId: 'account-test'
-  }, () => updateAccount(account.id, payload))
-}
-
-function normalizeHeaders(headers: IncomingHttpHeaders): Record<string, string | string[]> {
-  const output: Record<string, string | string[]> = {}
-  const hiddenHeaders = new Set(['authorization', 'cookie', 'set-cookie', 'proxy-authorization'])
-  for (const [name, value] of Object.entries(headers)) {
-    if (hiddenHeaders.has(name.toLowerCase())) {
-      output[name] = '[redacted]'
-      continue
-    }
-    if (typeof value === 'string' || Array.isArray(value)) {
-      output[name] = value
-    }
-  }
-  return output
+function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret): boolean | undefined {
+  if (original.type !== 'oauth') return false
+  const before = stringValue(original.credentials.access_token)
+  const after = stringValue(resolved.credentials.access_token)
+  return Boolean(after && before !== after)
 }
 
 function parseJsonBody(bodyText: string): unknown {
@@ -341,18 +397,33 @@ function parseOpenAIStreamFailureMessage(bodyText: string): string | undefined {
 
 function parseSseEvents(bodyText: string): Array<Record<string, unknown>> {
   const events: Array<Record<string, unknown>> = []
-  for (const line of bodyText.split(/\r?\n/)) {
-    const trimmed = line.trim()
-    if (!trimmed.startsWith('data:')) continue
-    const jsonText = trimmed.replace(/^data:\s*/, '')
-    if (!jsonText || jsonText === '[DONE]') continue
+  let eventName = ''
+  let dataLines: string[] = []
+  const flush = () => {
+    const data = dataLines.join('\n').trim()
+    const type = eventName
+    eventName = ''
+    dataLines = []
+    if (!data || data === '[DONE]') return
     try {
-      const payload = JSON.parse(jsonText) as Record<string, unknown>
+      const payload = JSON.parse(data) as Record<string, unknown>
+      if (type && typeof payload.type !== 'string') payload.type = type
       events.push(payload)
     } catch {
-      continue
     }
   }
+  for (const line of bodyText.split(/\r?\n/)) {
+    if (!line) {
+      flush()
+      continue
+    }
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart())
+    }
+  }
+  flush()
   return events
 }
 
@@ -386,4 +457,8 @@ function parseErrorMessage(value: unknown): string | undefined {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+function resolvedLogger(): RequestContext['logger'] {
+  return logger.child({ source: 'account_test' })
 }

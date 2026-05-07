@@ -2,7 +2,7 @@ import type { AccountStatus, AccountType } from '../domain/types.js'
 import { buildSystemAccountScopeClause, currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, nowIso } from './database.js'
-import { resolveProxyUrlForProfile } from './proxy.repository.js'
+import { ProxyProfileUnavailableError, resolveProxyUrlForProfile } from './proxy.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
 
 export interface OpenAIAccountSecret {
@@ -22,6 +22,8 @@ export interface OpenAIAccountSecret {
   refreshToken?: string
   clientId?: string
   proxyUrl?: string
+  proxyProfileUnavailable?: boolean
+  proxyProfileErrorMessage?: string
   passthroughEnabled: boolean
   errorPolicyId?: string
   cooldownUntil?: string
@@ -47,6 +49,62 @@ type ResourceAuthorizationRow = {
 
 export function selectOpenAIAccountForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret | undefined {
   return listOpenAIAccountsForGroup(groupId, systemAccountId)[0]
+}
+
+export function findOpenAIAccountForGroup(
+  groupId: string,
+  accountId: string,
+  systemAccountId = currentSystemAccountId(),
+  options: { includeUnavailable?: boolean } = {}
+): OpenAIAccountSecret | undefined {
+  const now = nowIso()
+  const groupAccess = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
+  if (!groupAccess) {
+    return undefined
+  }
+  disableExpiredAccountsForSelection(groupAccess.groupOwnerSystemAccountId)
+  const groupAccount = getDatabase()
+    .prepare(`
+      SELECT group_accounts.account_id, group_accounts.account_authorization_id
+      FROM group_accounts
+      WHERE group_accounts.group_id = ?
+        AND group_accounts.account_id = ?
+        AND group_accounts.enabled = 1
+      LIMIT 1
+    `)
+    .get(groupId, accountId) as unknown as GroupAccountRow | undefined
+  if (!groupAccount) {
+    return undefined
+  }
+
+  const availabilityClause = options.includeUnavailable
+    ? `
+          AND schedulable = 1
+          AND status IN ('active', 'rate_limited', 'temporary_unavailable')
+    `
+    : `
+          AND schedulable = 1
+          AND status = 'active'
+          AND (cooldown_until IS NULL OR cooldown_until <= ?)
+    `
+  const params = options.includeUnavailable ? [accountId, now] : [accountId, now, now]
+  const row = getDatabase()
+    .prepare(`
+      SELECT id, system_account_id, name, type, status, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message
+      FROM accounts
+      WHERE id = ?
+        AND provider_code = 'openai'
+        AND type IN ('api_key', 'oauth')
+        AND (account_expires_at IS NULL OR account_expires_at > ?)
+        ${availabilityClause}
+    `)
+    .get(...params) as unknown as { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null } | undefined
+  if (!row) {
+    return undefined
+  }
+  return openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount.account_authorization_id ?? undefined, {
+    enforceSchedulableAuthorization: !options.includeUnavailable
+  })
 }
 
 export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
@@ -119,33 +177,79 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
     })) {
       continue
     }
-    accounts.push({
-      id: row.id,
-      systemAccountId: row.system_account_id,
-      accountOwnerSystemAccountId: row.system_account_id,
-      groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
-      accountAccessType: accountAccess.accountAccessType,
-      groupAccessType: groupAccess.groupAccessType,
-      accountAuthorizationId: accountAccess.accountAuthorizationId,
-      groupAuthorizationId: groupAccess.groupAuthorizationId,
-      name: row.name,
-      type: row.type,
-      status: row.status,
-      baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
-      apiKey,
-      refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
-      clientId: typeof credentials.client_id === 'string' ? credentials.client_id : undefined,
-      proxyUrl: resolveProxyUrlForProfile(row.proxy_profile_id),
-      passthroughEnabled: row.passthrough_enabled === 1,
-      errorPolicyId: row.error_policy_id ?? undefined,
-      cooldownUntil: row.cooldown_until ?? undefined,
-      lastErrorMessage: row.last_error_message ?? undefined,
-      expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
-      credentials
-    })
+    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount.account_authorization_id ?? undefined)
+    if (account) {
+      accounts.push(account)
+    }
   }
 
   return accounts
+}
+
+function openAIAccountSecretFromRow(
+  row: { id: string; system_account_id: string; name: string; type: AccountType; status: AccountStatus; credentials_encrypted: string; proxy_profile_id: string | null; passthrough_enabled: number; error_policy_id: string | null; cooldown_until: string | null; last_error_message: string | null },
+  groupAccess: GroupUsageAccessMetadata,
+  systemAccountId: string,
+  boundAccountAuthorizationId?: string,
+  options: { enforceSchedulableAuthorization?: boolean } = {}
+): OpenAIAccountSecret | undefined {
+  const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
+  const apiKey = row.type === 'oauth'
+    ? typeof credentials.access_token === 'string' ? credentials.access_token : ''
+    : typeof credentials.api_key === 'string' ? credentials.api_key : ''
+  if (!apiKey) {
+    return undefined
+  }
+  const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, boundAccountAuthorizationId)
+  if (!accountAccess) {
+    return undefined
+  }
+  if (options.enforceSchedulableAuthorization !== false && !canScheduleAuthorizedAccount({
+    accountId: row.id,
+    accountAccessType: accountAccess.accountAccessType,
+    authorizationId: accountAccess.accountAuthorizationId,
+    systemAccountId
+  })) {
+    return undefined
+  }
+  const proxyProfile = resolveOpenAIAccountProxyUrl(row.proxy_profile_id)
+  return {
+    id: row.id,
+    systemAccountId: row.system_account_id,
+    accountOwnerSystemAccountId: row.system_account_id,
+    groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
+    accountAccessType: accountAccess.accountAccessType,
+    groupAccessType: groupAccess.groupAccessType,
+    accountAuthorizationId: accountAccess.accountAuthorizationId,
+    groupAuthorizationId: groupAccess.groupAuthorizationId,
+    name: row.name,
+    type: row.type,
+    status: row.status,
+    baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
+    apiKey,
+    refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
+    clientId: typeof credentials.client_id === 'string' ? credentials.client_id : undefined,
+    proxyUrl: proxyProfile.proxyUrl,
+    proxyProfileUnavailable: proxyProfile.unavailable,
+    proxyProfileErrorMessage: proxyProfile.errorMessage,
+    passthroughEnabled: row.passthrough_enabled === 1,
+    errorPolicyId: row.error_policy_id ?? undefined,
+    cooldownUntil: row.cooldown_until ?? undefined,
+    lastErrorMessage: row.last_error_message ?? undefined,
+    expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
+    credentials
+  }
+}
+
+function resolveOpenAIAccountProxyUrl(proxyProfileId: string | null): { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } {
+  try {
+    return { proxyUrl: resolveProxyUrlForProfile(proxyProfileId) }
+  } catch (error) {
+    if (error instanceof ProxyProfileUnavailableError) {
+      return { unavailable: true, errorMessage: error.message }
+    }
+    throw error
+  }
 }
 
 function resolveOpenAIAccountAccess(

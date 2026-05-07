@@ -1,4 +1,3 @@
-import { currentSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, nowIso } from './database.js'
 
 interface GlobalSettingRow {
@@ -6,6 +5,8 @@ interface GlobalSettingRow {
   value_json: string
   updated_at: string
 }
+
+const SYSTEM_SETTINGS_ACCOUNT_ID = 'sys_admin'
 
 export function listGlobalSettings(): Record<string, unknown> {
   const rows = getDatabase().prepare('SELECT key, value_json, updated_at FROM global_settings ORDER BY key ASC').all() as unknown as Array<GlobalSettingRow>
@@ -30,14 +31,14 @@ function pickGlobalSettings(input: Record<string, unknown>): Record<string, unkn
   return Object.fromEntries(Object.entries(input).filter(([key]) => allowedKeys.has(key)))
 }
 
-export function getSettings(access?: AccessScope): Record<string, unknown> {
-  const systemAccountId = currentSystemAccountId(access)
+export function getSettings(): Record<string, unknown> {
+  const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
   const rows = getDatabase().prepare('SELECT key, value_json FROM system_settings WHERE system_account_id = ? ORDER BY key ASC').all(systemAccountId) as Array<{ key: string; value_json: string }>
   return Object.fromEntries(rows.filter((row) => !isHiddenSystemSetting(row.key)).map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
 }
 
-export function updateSettings(input: Record<string, unknown>, access?: AccessScope): Record<string, unknown> {
-  const systemAccountId = currentSystemAccountId(access)
+export function updateSettings(input: Record<string, unknown>): Record<string, unknown> {
+  const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
   const statement = getDatabase().prepare(`
     INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
     VALUES (?, ?, ?, ?)
@@ -50,7 +51,7 @@ export function updateSettings(input: Record<string, unknown>, access?: AccessSc
     }
     statement.run(systemAccountId, key, JSON.stringify(value), now)
   }
-  return getSettings(access)
+  return getSettings()
 }
 
 function isHiddenSystemSetting(key: string): boolean {

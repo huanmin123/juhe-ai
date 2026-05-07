@@ -2,6 +2,7 @@ import axios from 'axios'
 
 import type {
   AccountSummary,
+  AccountListResult,
   AccountTestResult,
   AccountTrafficMigrationResult,
   AccountTrafficMigrationSourceStatus,
@@ -17,6 +18,7 @@ import type {
   RequestQuotaLimits,
   ResourceAuthorizationSummary,
   ApiKeySummary,
+  ApiKeyListResult,
   CaptchaChallengeSummary,
   CreatedApiKey,
   CurrentUserSummary,
@@ -41,7 +43,7 @@ import type {
   SystemMetricsOverview,
   UsageOverviewWindowKey,
   UsageStatsOverview,
-  UsageRecordSummary
+  UsageRecordListResult
 } from '@/types/domain'
 
 interface ApiResponse<T> {
@@ -57,6 +59,15 @@ interface UsageOverviewParams extends ListParams {
   window?: UsageOverviewWindowKey
 }
 
+interface AccountUsageStatsParams extends ListParams {
+  page?: number
+  pageSize?: number
+  keyword?: string
+  type?: string
+  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
+  limit?: number
+}
+
 export type SortDirection = 'asc' | 'desc'
 export type AccountListSortField = 'priority' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
 
@@ -67,9 +78,31 @@ export interface AccountListSortParam {
 
 export interface AccountListParams extends ListParams {
   sorts?: AccountListSortParam[]
+  page?: number
+  pageSize?: number
+  keyword?: string
+  type?: string
+  status?: string
+  schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
+  limit?: number
+}
+
+export interface ApiKeyListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  keyword?: string
+  status?: 'active' | 'disabled' | 'all'
+  groupId?: string
+  limit?: number
 }
 
 export interface UsageRecordListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  accountKeyword?: string
+  result?: 'success' | 'failed' | 'all'
+  statusCode?: number
+  model?: string
   sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
   sortOrder?: SortDirection
   limit?: number
@@ -116,6 +149,8 @@ export interface AuthorizationListParams extends ListParams {
   status?: 'active' | 'paused' | 'expired' | 'revoked' | 'all'
 }
 
+export type AuthorizationScopeParams = ListParams
+
 const http = axios.create({
   baseURL: normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined),
   timeout: 15000,
@@ -151,6 +186,9 @@ export const api = {
   authorizationOptions: {
     granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/authorization-options/grantee-accounts'))
   },
+  myAuthorizationOptions: {
+    granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/my-authorization-options/grantee-accounts'))
+  },
   providers: {
     list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
     models: (code: string) => unwrap<ProviderModelPricing[]>(http.get(`/providers/${code}/models`))
@@ -159,19 +197,34 @@ export const api = {
     list: () => unwrap<ErrorPolicySummary[]>(http.get('/error-policies'))
   },
   accounts: {
-    list: (params?: AccountListParams) => unwrap<AccountSummary[]>(http.get('/accounts', { params: accountListParams(params) })),
-    create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/accounts', payload)),
-    update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload)),
-    bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload)),
-    migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload)),
-    test: (id: string, payload?: { model?: string; prompt?: string }) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { timeout: 130000 })),
-    delete: (id: string) => http.delete(`/accounts/${id}`)
+    list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
+    create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/accounts', payload, { params })),
+    update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
+    bindGroup: (id: string, payload: { groupId: string }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
+    migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
+    test: (id: string, payload?: { model?: string; prompt?: string }, params?: ListParams) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, timeout: 130000 })),
+    delete: (id: string, params?: ListParams) => http.delete(`/accounts/${id}`, { params })
+  },
+  myAccounts: {
+    list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListParams(params, false) })),
+    create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-accounts', payload)),
+    update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
+    bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
+    migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
+    test: (id: string, payload?: { model?: string; prompt?: string }) => unwrap<AccountTestResult>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { timeout: 130000 })),
+    delete: (id: string) => http.delete(`/my-accounts/${id}`)
   },
   groups: {
     list: (params?: ListParams) => unwrap<GroupSummary[]>(http.get('/groups', { params })),
-    create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/groups', payload)),
-    update: (id: string, payload: Record<string, unknown>) => unwrap<GroupSummary>(http.patch(`/groups/${id}`, payload)),
-    delete: (id: string) => http.delete(`/groups/${id}`)
+    create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.post('/groups', payload, { params })),
+    update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.patch(`/groups/${id}`, payload, { params })),
+    delete: (id: string, params?: ListParams) => http.delete(`/groups/${id}`, { params })
+  },
+  myGroups: {
+    list: () => unwrap<GroupSummary[]>(http.get('/my-groups')),
+    create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/my-groups', payload)),
+    update: (id: string, payload: Record<string, unknown>) => unwrap<GroupSummary>(http.patch(`/my-groups/${id}`, payload)),
+    delete: (id: string) => http.delete(`/my-groups/${id}`)
   },
   systemTeams: {
     list: (params?: ListParams) => unwrap<SystemTeamSummary[]>(http.get('/system-teams', { params })),
@@ -193,22 +246,49 @@ export const api = {
       remark?: string
       expiresAt?: string
       limits?: RequestQuotaLimits
-    }) => unwrap<ResourceAuthorizationSummary>(http.post('/authorizations', payload)),
-    update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}`, payload)),
-    updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}/expire`, payload)),
-    revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { data: payload })),
-    usage: (id: string) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`))
+    }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.post('/authorizations', payload, { params })),
+    update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}`, payload, { params })),
+    updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}/expire`, payload, { params })),
+    revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { data: payload, params })),
+    usage: (id: string, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`, { params }))
+  },
+  myAuthorizations: {
+    list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/my-authorizations', { params: stripSystemAccountParam(params) })),
+    create: (payload: {
+      resourceType: AuthorizationResourceType
+      resourceId: string
+      granteeType: 'system_account' | 'team'
+      granteeId: string
+      remark?: string
+      expiresAt?: string
+      limits?: RequestQuotaLimits
+    }) => unwrap<ResourceAuthorizationSummary>(http.post('/my-authorizations', payload)),
+    update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/my-authorizations/${id}`, payload)),
+    updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/my-authorizations/${id}/expire`, payload)),
+    revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }) => unwrap<ResourceAuthorizationSummary>(http.delete(`/my-authorizations/${id}`, { data: payload })),
+    usage: (id: string) => unwrap<ResourceAuthorizationSummary>(http.get(`/my-authorizations/${id}/usage`))
   },
   apiKeys: {
-    list: (params?: ListParams) => unwrap<ApiKeySummary[]>(http.get('/api-keys', { params })),
-    create: (payload: Record<string, unknown>) => unwrap<CreatedApiKey>(http.post('/api-keys', payload)),
-    update: (id: string, payload: Record<string, unknown>) => unwrap<ApiKeySummary>(http.patch(`/api-keys/${id}`, payload)),
-    delete: (id: string) => http.delete(`/api-keys/${id}`)
+    list: (params?: ApiKeyListParams) => unwrap<ApiKeyListResult>(http.get('/api-keys', { params })),
+    create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<CreatedApiKey>(http.post('/api-keys', payload, { params })),
+    update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<ApiKeySummary>(http.patch(`/api-keys/${id}`, payload, { params })),
+    delete: (id: string, params?: ListParams) => http.delete(`/api-keys/${id}`, { params })
+  },
+  myApiKeys: {
+    list: (params?: ApiKeyListParams) => unwrap<ApiKeyListResult>(http.get('/my-api-keys', { params: stripSystemAccountParam(params) })),
+    create: (payload: Record<string, unknown>) => unwrap<CreatedApiKey>(http.post('/my-api-keys', payload)),
+    update: (id: string, payload: Record<string, unknown>) => unwrap<ApiKeySummary>(http.patch(`/my-api-keys/${id}`, payload)),
+    delete: (id: string) => http.delete(`/my-api-keys/${id}`)
   },
   openaiOAuth: {
     authUrl: (payload: Record<string, unknown>) => unwrap<OpenAIAuthURLResult>(http.post('/openai-oauth/auth-url', payload)),
-    createFromCode: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/openai-oauth/create-from-code', payload)),
-    createFromRefreshToken: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/openai-oauth/create-from-refresh-token', payload))
+    createFromCode: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/openai-oauth/create-from-code', payload, { params })),
+    createFromRefreshToken: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/openai-oauth/create-from-refresh-token', payload, { params }))
+  },
+  myOpenaiOAuth: {
+    authUrl: (payload: Record<string, unknown>) => unwrap<OpenAIAuthURLResult>(http.post('/my-openai-oauth/auth-url', payload)),
+    createFromCode: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-openai-oauth/create-from-code', payload)),
+    createFromRefreshToken: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-openai-oauth/create-from-refresh-token', payload))
   },
   proxies: {
     list: () => unwrap<ProxyProfileSummary[]>(http.get('/proxies')),
@@ -219,7 +299,10 @@ export const api = {
     delete: (id: string) => http.delete(`/proxies/${id}`)
   },
   usageRecords: {
-    list: (params?: UsageRecordListParams) => unwrap<UsageRecordSummary[]>(http.get('/usage-records', { params }))
+    list: (params?: UsageRecordListParams) => unwrap<UsageRecordListResult>(http.get('/usage-records', { params }))
+  },
+  myUsageRecords: {
+    list: (params?: UsageRecordListParams) => unwrap<UsageRecordListResult>(http.get('/my-usage-records', { params: stripSystemAccountParam(params) }))
   },
   auditLogs: {
     list: (params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get('/audit-logs', { params, ...noTimeout })),
@@ -234,9 +317,14 @@ export const api = {
   },
   stats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
-    accountUsage: (params?: ListParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
+    accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
     accountAuthorizationUsage: (id: string, params?: ListParams) => unwrap<AccountAuthorizationUsageOverview>(http.get(`/stats/accounts/${id}/authorization-usage`, { params })),
     systemMetrics: (params?: Pick<UsageOverviewParams, 'window'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params }))
+  },
+  myStats: {
+    usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),
+    accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/my-stats/account-usage', { params: stripSystemAccountParam(params) })),
+    accountAuthorizationUsage: (id: string) => unwrap<AccountAuthorizationUsageOverview>(http.get(`/my-stats/accounts/${id}/authorization-usage`))
   },
   settings: {
     public: () => unwrap<GlobalSettings>(http.get('/settings/public')),
@@ -247,10 +335,24 @@ export const api = {
   }
 }
 
-function accountListParams(params?: AccountListParams): Record<string, unknown> | undefined {
+function stripSystemAccountParam<T extends object>(params?: T): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output = { ...params } as Record<string, unknown>
+  delete output.systemAccountId
+  return Object.keys(output).length ? output : undefined
+}
+
+function accountListParams(params?: AccountListParams, includeSystemAccount = true): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
-  if (params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.page) output.page = params.page
+  if (params.pageSize) output.pageSize = params.pageSize
+  if (params.limit) output.limit = params.limit
+  if (params.keyword) output.keyword = params.keyword
+  if (params.type && params.type !== 'all') output.type = params.type
+  if (params.status && params.status !== 'all') output.status = params.status
+  if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
   if (params.sorts?.length) {
     output.sorts = params.sorts.map((sort) => `${sort.field}:${sort.order}`).join(',')
   }

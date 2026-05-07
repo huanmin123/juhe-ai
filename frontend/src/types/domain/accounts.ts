@@ -68,6 +68,8 @@ export interface AccountSummary {
   currentConcurrency: number
   priority: number
   proxyProfileId?: string
+  proxyProfileUnavailable?: boolean
+  proxyProfileErrorMessage?: string
   passthroughEnabled: boolean
   errorPolicyId?: string
   schedulable: boolean
@@ -90,6 +92,13 @@ export interface AccountSummary {
   authorizationUsageAvailable?: boolean
   authorizationCount?: number
   authorizationTeamCount?: number
+}
+
+export interface AccountListResult {
+  items: AccountSummary[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 export interface AccountTestResult {

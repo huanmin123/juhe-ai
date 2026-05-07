@@ -136,7 +136,7 @@ async function runCooldownAccountRetest(): Promise<void> {
   const candidates = listAccountsDueForCooldownRetest(settingsNumber('cooldownAccountRetestBatchSize', 10, 1, 100))
   for (const account of candidates) {
     try {
-      await testOpenAIAccount(account, { model: settingsString('cooldownAccountRetestModel', 'gpt-5.5'), prompt: 'hi' })
+      await testOpenAIAccount(account, { model: settingsString('cooldownAccountRetestModel', 'gpt-5.5'), prompt: 'hi', includeUnavailable: true })
     } catch (error) {
       logger.warn(errorLogFields(error, {
         event: 'background_cooldown_account_retest_failed',

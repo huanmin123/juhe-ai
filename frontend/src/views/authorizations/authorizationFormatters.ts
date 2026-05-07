@@ -103,6 +103,21 @@ export function granteeSourceTagColor(item: ResourceAuthorizationSummary): strin
   return activeTeamSources(item).length > 0 ? 'gold' : 'cyan'
 }
 
+export function authorizationDirection(item: ResourceAuthorizationSummary, currentSystemAccountId?: string): 'outbound' | 'inbound' {
+  if (currentSystemAccountId && item.resourceOwnerSystemAccountId !== currentSystemAccountId) {
+    return 'inbound'
+  }
+  return 'outbound'
+}
+
+export function authorizationDirectionText(item: ResourceAuthorizationSummary, currentSystemAccountId?: string): string {
+  return authorizationDirection(item, currentSystemAccountId) === 'inbound' ? '授权给我' : '我授权出去'
+}
+
+export function authorizationDirectionColor(item: ResourceAuthorizationSummary, currentSystemAccountId?: string): string {
+  return authorizationDirection(item, currentSystemAccountId) === 'inbound' ? 'blue' : 'purple'
+}
+
 export function hasManualSource(item: ResourceAuthorizationSummary): boolean {
   return item.authorizationSources?.some((source) => source.sourceType === 'manual' && source.status === 'active') ?? false
 }

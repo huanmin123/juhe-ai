@@ -27,9 +27,8 @@ export function usageStatsEntries(row: UsageStatsRecordRow): UsageStatsEntry[] {
 }
 
 export function shouldAggregateUsageStatsRecord(row: UsageStatsRecordRow): boolean {
-  if (row.success === 1) return true
-  if (row.first_token_ms !== null && isSuccessStatusCode(row.status_code)) return true
-  return usageRecordHasPositiveUsage(row)
+  void row
+  return true
 }
 
 export function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): UsageStatsAccumulator {
@@ -49,15 +48,4 @@ export function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): Usage
     lastUsedAt: row.created_at,
     lastErrorAt: success ? undefined : row.created_at
   }
-}
-
-function usageRecordHasPositiveUsage(row: UsageStatsRecordRow): boolean {
-  return Number(row.input_tokens ?? 0) > 0
-    || Number(row.output_tokens ?? 0) > 0
-    || Number(row.cache_read_tokens ?? 0) > 0
-    || Number(row.cost_usd ?? 0) > 0
-}
-
-function isSuccessStatusCode(statusCode: number | null): boolean {
-  return statusCode !== null && statusCode >= 200 && statusCode < 300
 }

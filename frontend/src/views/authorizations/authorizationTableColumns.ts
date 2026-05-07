@@ -1,7 +1,9 @@
 export type AuthorizationFilterResourceType = 'all' | 'account' | 'group'
+export type AuthorizationDirectionFilter = 'all' | 'outbound' | 'inbound'
 
 export const authorizationColumns = [
   { title: 'AI账户名称', key: 'resource', width: 260 },
+  { title: '方向', key: 'direction', width: 120 },
   { title: '归属人', key: 'owner', width: 180 },
   { title: '被授权用户', key: 'grantee', width: 180 },
   { title: '用量(日)', key: 'usageTotal', width: 260 },
@@ -28,6 +30,12 @@ export const authorizationResourceTypeOptions: Array<{ label: string; value: Aut
   { label: '全部资源', value: 'all' },
   { label: 'AI账户', value: 'account' },
   { label: '分组', value: 'group' }
+]
+
+export const authorizationDirectionOptions: Array<{ label: string; value: AuthorizationDirectionFilter }> = [
+  { label: '全部', value: 'all' },
+  { label: '我授权出去', value: 'outbound' },
+  { label: '授权给我', value: 'inbound' }
 ]
 
 export const createAuthorizationResourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }> = [

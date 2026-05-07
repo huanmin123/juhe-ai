@@ -1,8 +1,10 @@
 <template>
   <a-card class="page-card api-keys-page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="isManagementView" :show-filters="isManagementView" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
+    <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="搜索 API Key..." filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
       <template #inline-filters>
-        <SystemPrincipalSelect v-if="isManagementView" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="loadData" />
+        <a-select v-model:value="statusFilter" class="toolbar-select responsive-list-inline-filter" :options="listStatusOptions" @change="applyFilters" />
+        <a-select v-model:value="groupFilter" allow-clear class="toolbar-select responsive-list-inline-filter" :options="groupFilterOptions" placeholder="全部分组" @change="applyFilters" />
+        <SystemPrincipalSelect v-if="isManagementView" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
       </template>
       <template #actions>
         <a-button @click="helpOpen = true">
@@ -12,14 +14,22 @@
         <a-button type="primary" @click="openCreate">新建 API Key</a-button>
       </template>
       <template #filters>
+        <label class="mobile-filter-field">
+          <span>状态</span>
+          <a-select v-model:value="statusFilter" :options="listStatusOptions" />
+        </label>
+        <label class="mobile-filter-field">
+          <span>分组</span>
+          <a-select v-model:value="groupFilter" allow-clear :options="groupFilterOptions" placeholder="全部分组" />
+        </label>
         <label v-if="isManagementView" class="mobile-filter-field">
           <span>系统账户</span>
-          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="loadData" />
+          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="handleSystemAccountFilterChange" />
         </label>
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" row-key="id" :loading="loading" :scroll-x="isManagementView ? 1800 : 1620" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1800 : 1620" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
@@ -132,6 +142,7 @@
     </a-modal>
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑 API Key' : '新建 API Key'" width="640px" :ok-button-props="{ type: 'primary' }" @ok="saveApiKey">
+      <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
       <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建后直接复制保存即可。" type="info" show-icon />
       <a-form layout="vertical" class="modal-form">
         <a-form-item label="名称" required>
@@ -182,7 +193,7 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
@@ -193,10 +204,16 @@ const createdKeyOpen = ref(false)
 const helpOpen = ref(false)
 const editingId = ref<string>()
 const createdKey = ref('')
+const keywordFilter = ref('')
+const statusFilter = ref<'all' | 'active' | 'disabled'>('all')
+const groupFilter = ref<string | undefined>()
+const mobileLoadingMore = ref(false)
 const apiKeys = ref<ApiKeySummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const systemAccountFilter = ref(allSystemAccountsValue)
+const pageSize = 50
+const pagination = reactive({ current: 1, pageSize, total: 0 })
 const form = reactive({
   name: '',
   groupId: '',
@@ -231,12 +248,42 @@ const statusOptions = [
   { label: '启用', value: 'active' },
   { label: '停用', value: 'disabled' }
 ]
+const listStatusOptions = [
+  { label: '全部状态', value: 'all' },
+  ...statusOptions
+]
 
 const groupOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
-const filteredApiKeys = computed(() => apiKeys.value.filter((apiKey) => matchesSystemAccountFilter(apiKey, systemAccountFilter.value, isManagementView.value)))
-const activeFilterCount = computed(() => systemAccountFilter.value === allSystemAccountsValue ? 0 : 1)
+const groupFilterOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
+const filteredApiKeys = computed(() => apiKeys.value)
+const mobileApiKeys = computed(() => apiKeys.value)
+const mobileHasMore = computed(() => apiKeys.value.length < pagination.total)
+const tablePagination = computed(() => ({
+  current: pagination.current,
+  pageSize: pagination.pageSize,
+  total: pagination.total,
+  hideOnSinglePage: true,
+  showSizeChanger: false,
+  showTotal: (total: number) => `共 ${total} 个 API Key`
+}))
+const apiKeyScopeParams = computed(() => {
+  const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
+  return systemAccountId ? { systemAccountId } : undefined
+})
+const activeFilterCount = computed(() => [
+  keywordFilter.value.trim(),
+  statusFilter.value !== 'all',
+  groupFilter.value,
+  isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue
+].filter(Boolean).length)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填本页复制的密钥'].join('\n'))
+const targetSystemAccountLabel = computed(() => {
+  if (!isManagementView.value) return undefined
+  const systemAccountId = apiKeyScopeParams.value?.systemAccountId
+  if (!systemAccountId) return '请选择系统账户后再创建'
+  return systemAccounts.value.find((account) => account.id === systemAccountId)?.displayName || systemAccounts.value.find((account) => account.id === systemAccountId)?.username || systemAccountId
+})
 
 function groupName(groupId: string) {
   const group = groups.value.find((item) => item.id === groupId)
@@ -255,28 +302,100 @@ function formatKeyPreview(value?: string) {
 }
 
 async function loadData() {
-  loading.value = true
+  await fetchData()
+}
+
+async function fetchData(options: { append?: boolean; quiet?: boolean } = {}) {
+  if (!options.quiet) {
+    loading.value = true
+  }
   try {
-    const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
+    const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
     const [keyList, groupList, systemAccountList] = await Promise.all([
-      api.apiKeys.list({ systemAccountId }),
-      api.groups.list({ systemAccountId }),
+      isManagementView.value ? api.apiKeys.list(apiKeyListParams(systemAccountId)) : api.myApiKeys.list(apiKeyListParams()),
+      isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
       isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
-    apiKeys.value = keyList
+    pagination.current = keyList.page
+    pagination.pageSize = keyList.pageSize
+    pagination.total = keyList.total
+    apiKeys.value = options.append ? [...apiKeys.value, ...keyList.items] : keyList.items
     groups.value = groupList
     systemAccounts.value = systemAccountList
   } catch (error) {
     console.error(error)
     message.error('加载 API Key 失败')
   } finally {
-    loading.value = false
+    if (!options.quiet) {
+      loading.value = false
+    }
   }
 }
 
 function resetFilters() {
+  keywordFilter.value = ''
+  statusFilter.value = 'all'
+  groupFilter.value = undefined
   systemAccountFilter.value = allSystemAccountsValue
-  void loadData()
+  resetPagination()
+  void fetchData()
+}
+
+function applyFilters() {
+  resetPagination()
+  void fetchData()
+}
+
+function refreshApiKeys() {
+  resetPagination()
+  void fetchData()
+}
+
+function handleSystemAccountFilterChange() {
+  groupFilter.value = undefined
+  resetPagination()
+  void fetchData()
+}
+
+function handleTableChange(paginationInfo: unknown) {
+  if (!paginationInfo || typeof paginationInfo !== 'object') return
+  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
+  const nextCurrent = Number(next.current)
+  const nextPageSize = Number(next.pageSize)
+  pagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
+  pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
+  void fetchData()
+}
+
+async function loadMoreMobileApiKeys() {
+  if (!mobileHasMore.value || mobileLoadingMore.value) return
+  mobileLoadingMore.value = true
+  pagination.current += 1
+  try {
+    await fetchData({ append: true, quiet: true })
+  } finally {
+    mobileLoadingMore.value = false
+  }
+}
+
+async function refreshMobileApiKeys() {
+  resetPagination()
+  await fetchData()
+}
+
+function resetPagination() {
+  pagination.current = 1
+}
+
+function apiKeyListParams(systemAccountId?: string) {
+  return {
+    systemAccountId,
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    keyword: keywordFilter.value.trim() || undefined,
+    status: statusFilter.value,
+    groupId: groupFilter.value
+  }
 }
 
 function apiKeySystemAccountText(apiKey: ApiKeySummary) {
@@ -296,6 +415,10 @@ function formatCost(value?: number): string {
 }
 
 function openCreate() {
+  if (isManagementView.value && !apiKeyScopeParams.value?.systemAccountId) {
+    message.warning('请先在右侧选择目标系统账户，再创建 API Key')
+    return
+  }
   editingId.value = undefined
   Object.assign(form, { name: '', groupId: groups.value[0]?.id ?? '', status: 'active', expiresAt: undefined, description: '', quotaLimits: createQuotaLimitForm() })
   modalOpen.value = true
@@ -326,10 +449,16 @@ async function saveApiKey() {
   }
   try {
     if (editingId.value) {
-      await api.apiKeys.update(editingId.value, payload)
+      if (isManagementView.value) {
+        await api.apiKeys.update(editingId.value, payload, apiKeyScopeParams.value)
+      } else {
+        await api.myApiKeys.update(editingId.value, payload)
+      }
       message.success('API Key 已更新')
     } else {
-      const result = await api.apiKeys.create(payload)
+      const result = isManagementView.value
+        ? await api.apiKeys.create(payload, apiKeyScopeParams.value)
+        : await api.myApiKeys.create(payload)
       createdKey.value = result.key
       createdKeyOpen.value = true
       message.success('API Key 已创建')
@@ -375,7 +504,11 @@ function normalizeGatewayBaseUrl(value: string) {
 
 async function removeApiKey(id: string) {
   try {
-    await api.apiKeys.delete(id)
+    if (isManagementView.value) {
+      await api.apiKeys.delete(id, apiKeyScopeParams.value)
+    } else {
+      await api.myApiKeys.delete(id)
+    }
     message.success('API Key 已删除')
     await loadData()
   } catch (error) {

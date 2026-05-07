@@ -11,13 +11,18 @@
     @mobile-refresh="$emit('refresh')"
   >
     <template #emptyText>
-      <a-empty class="page-empty-card" description="暂无授权记录，请先新增授权。" />
+      <a-empty class="page-empty-card" :description="emptyDescription" />
     </template>
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'resource'">
         <div class="resource-cell">
           <span class="resource-name">{{ record.resourceName || record.resourceId }}</span>
         </div>
+      </template>
+      <template v-else-if="column.key === 'direction'">
+        <a-tag :color="authorizationDirectionColor(record, currentSystemAccountId)">
+          {{ authorizationDirectionText(record, currentSystemAccountId) }}
+        </a-tag>
       </template>
       <template v-else-if="column.key === 'owner'">
         {{ record.resourceOwnerSystemAccountName || record.resourceOwnerSystemAccountId }}
@@ -46,7 +51,7 @@
         <span>{{ record.remark || '-' }}</span>
       </template>
       <template v-else-if="column.key === 'actions'">
-        <AuthorizationActions :authorization="record" compact @usage-detail="$emit('usage-detail', record)" @menu-click="$emit('menu-click', $event, record)" />
+        <AuthorizationActions :authorization="record" :is-management-view="isManagementView" compact @usage-detail="$emit('usage-detail', record)" @menu-click="$emit('menu-click', $event, record)" />
       </template>
     </template>
 
@@ -55,6 +60,9 @@
         <div class="mobile-list-card-head">
           <div class="mobile-list-card-title">{{ record.resourceName || record.resourceId }}</div>
           <div class="mobile-list-card-tags">
+            <a-tag v-if="!isManagementView" :color="authorizationDirectionColor(record, currentSystemAccountId)">
+              {{ authorizationDirectionText(record, currentSystemAccountId) }}
+            </a-tag>
             <AuthorizationStatusTag :status="record.status" />
           </div>
         </div>
@@ -83,23 +91,28 @@
             <strong>{{ record.remark || '-' }}</strong>
           </div>
         </div>
-        <AuthorizationActions :authorization="record" @usage-detail="$emit('usage-detail', record)" @menu-click="$emit('menu-click', $event, record)" />
+        <AuthorizationActions :authorization="record" :is-management-view="isManagementView" @usage-detail="$emit('usage-detail', record)" @menu-click="$emit('menu-click', $event, record)" />
       </article>
     </template>
   </ResponsiveDataList>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type { ResourceAuthorizationSummary } from '@/types/domain'
 import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
 import { authorizationColumns } from './authorizationTableColumns'
-import { formatDateTime, quotaLimitSummaryText, usageSummaryText } from './authorizationFormatters'
+import { authorizationDirectionColor, authorizationDirectionText, formatDateTime, quotaLimitSummaryText, usageSummaryText } from './authorizationFormatters'
 
-defineProps<{
+const props = defineProps<{
   authorizations: ResourceAuthorizationSummary[]
+  currentSystemAccountId?: string
+  emptyDescription: string
+  isManagementView: boolean
   loading: boolean
 }>()
 
@@ -109,7 +122,9 @@ defineEmits<{
   (event: 'usage-detail', authorization: ResourceAuthorizationSummary): void
 }>()
 
-const columns = authorizationColumns
+const columns = computed(() => props.isManagementView
+  ? authorizationColumns.filter((column) => column.key !== 'direction')
+  : authorizationColumns)
 </script>
 
 <style scoped>

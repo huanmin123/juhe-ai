@@ -41,3 +41,14 @@ export function requireAdmin(_req: Request, res: Response, next: NextFunction): 
   }
   next()
 }
+
+export function forceSelfAccessScope(req: Request, res: Response, next: NextFunction): void {
+  const context = getRequestAuthContext()
+  if (!context) {
+    res.status(401).json({ message: 'Not authenticated' })
+    return
+  }
+
+  delete (req.query as Record<string, unknown>).systemAccountId
+  withRequestAuthContext({ ...context, role: 'user' }, next)
+}

@@ -26,6 +26,22 @@ interface ApiKeyRow {
   quota_limits_json: string | null
 }
 
+export interface ApiKeyListOptions {
+  page?: number
+  pageSize?: number
+  limit?: number
+  keyword?: string
+  status?: 'active' | 'disabled' | 'all'
+  groupId?: string
+}
+
+export interface ApiKeyListResult {
+  items: ApiKeySummary[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 type GroupOwnerRow = {
   systemAccountId: string
   providerCode: ProviderCode
@@ -45,9 +61,41 @@ type UsageStatsAggregationCursor = {
   cursorId: string
 }
 
-export function listApiKeys(access?: AccessScope): ApiKeySummary[] {
+type ApiKeyFilterValue = string | number
+
+const defaultApiKeyListPageSize = 50
+const maxApiKeyListPageSize = 200
+
+export function listApiKeys(access?: AccessScope, options?: ApiKeyListOptions): ApiKeySummary[] {
+  return queryApiKeys(access, options).items
+}
+
+export function listApiKeysPage(access?: AccessScope, options?: ApiKeyListOptions): ApiKeyListResult {
+  return queryApiKeys(access, options, true)
+}
+
+function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult {
+  const normalized = normalizeApiKeyListOptions(options)
   const scope = buildSystemAccountWhereClause(access)
-  const rows = getDatabase().prepare(`SELECT * FROM api_keys${scope.clause} ORDER BY updated_at DESC`).all(...scope.params) as unknown as ApiKeyRow[]
+  const filters = buildApiKeyFilters(scope, normalized)
+  const limitClause = paged ? 'LIMIT ? OFFSET ?' : ''
+  const limitParams = paged ? [normalized.pageSize, (normalized.page - 1) * normalized.pageSize] : []
+  const totalRow = getDatabase()
+    .prepare(`SELECT COUNT(*) AS total FROM api_keys ${filters.clause}`)
+    .get(...filters.params) as { total?: number } | undefined
+  const rows = getDatabase()
+    .prepare(`SELECT * FROM api_keys ${filters.clause} ORDER BY updated_at DESC ${limitClause}`)
+    .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
+  const items = apiKeySummariesFromRows(rows, access)
+  return {
+    items,
+    total: Number(totalRow?.total ?? 0),
+    page: normalized.page,
+    pageSize: normalized.pageSize
+  }
+}
+
+function apiKeySummariesFromRows(rows: ApiKeyRow[], access?: AccessScope): ApiKeySummary[] {
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
   const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
@@ -69,17 +117,66 @@ export function listApiKeys(access?: AccessScope): ApiKeySummary[] {
   }))
 }
 
-export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummary & { key: string } {
+function normalizeApiKeyListOptions(options?: ApiKeyListOptions): Required<Pick<ApiKeyListOptions, 'page' | 'pageSize'>> & Pick<ApiKeyListOptions, 'keyword' | 'status' | 'groupId'> {
+  const rawPage = options?.page
+  const rawPageSize = options?.pageSize ?? options?.limit
+  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
+    ? Math.min(maxApiKeyListPageSize, Math.max(1, rawPageSize))
+    : defaultApiKeyListPageSize
+  return {
+    page,
+    pageSize,
+    keyword: textFilter(options?.keyword),
+    status: options?.status === 'active' || options?.status === 'disabled' ? options.status : undefined,
+    groupId: textFilter(options?.groupId)
+  }
+}
+
+function buildApiKeyFilters(scope: { clause: string; params: string[] }, options: ReturnType<typeof normalizeApiKeyListOptions>): { clause: string; params: ApiKeyFilterValue[] } {
+  const clauses: string[] = []
+  const params: ApiKeyFilterValue[] = []
+  if (scope.clause) {
+    clauses.push(scope.clause.replace(/^ WHERE /, ''))
+    params.push(...scope.params)
+  }
+  if (options.keyword) {
+    clauses.push('(name LIKE ? OR COALESCE(description, \'\') LIKE ? OR key_prefix LIKE ?)')
+    params.push(`%${options.keyword}%`, `%${options.keyword}%`, `%${options.keyword}%`)
+  }
+  if (options.status) {
+    clauses.push('status = ?')
+    params.push(options.status)
+  }
+  if (options.groupId) {
+    clauses.push('group_id = ?')
+    params.push(options.groupId)
+  }
+  return {
+    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+    params
+  }
+}
+
+function textFilter(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+export function createApiKeyRecord(input: Record<string, unknown>, access?: AccessScope): ApiKeySummary & { key: string } {
   const now = nowIso()
   const key = createApiKey()
   const keyPrefix = key.slice(0, 8)
-  const systemAccountId = currentSystemAccountId()
+  const scopedOwnerId = manageableSystemAccountId(access)
+  let systemAccountId = scopedOwnerId ?? currentSystemAccountId(access)
   const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : typeof input.group_id === 'string' && input.group_id ? input.group_id : undefined
   const groupId = explicitGroupId ?? defaultOpenAIGroupIdForSystemAccount(systemAccountId)
   if (!groupId) {
     throw new Error('Invalid API key group')
   }
   const group = groupOwnerAndProvider(groupId)
+  if (group && !scopedOwnerId && canManageApiKeyOwner(group.systemAccountId, access)) {
+    systemAccountId = group.systemAccountId
+  }
   if (!group || !canUseGroup(groupId, systemAccountId)) {
     throw new Error('Invalid API key group')
   }
@@ -90,8 +187,8 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const record: ApiKeySummary & { key: string } = {
     id: newId('key'),
-    systemAccountId: includeSystemAccountFields() ? systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields() ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
+    systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
+    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
     name: String(input.name ?? '未命名 API Key'),
     description: optionalString(input.description),
     keyPrefix,
@@ -111,9 +208,9 @@ export function createApiKeyRecord(input: Record<string, unknown>): ApiKeySummar
   return record
 }
 
-export function updateApiKey(id: string, input: Record<string, unknown>): ApiKeySummary | undefined {
+export function updateApiKey(id: string, input: Record<string, unknown>, access?: AccessScope): ApiKeySummary | undefined {
   const systemAccountId = apiKeySystemAccountId(id)
-  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId)) {
+  if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) {
     return undefined
   }
   const current = listApiKeys({ systemAccountId, role: 'user' }).find((apiKey) => apiKey.id === id)
@@ -145,8 +242,8 @@ export function updateApiKey(id: string, input: Record<string, unknown>): ApiKey
   return next
 }
 
-export function deleteApiKey(id: string): boolean {
-  const scope = buildSystemAccountScopeClause()
+export function deleteApiKey(id: string, access?: AccessScope): boolean {
+  const scope = buildSystemAccountScopeClause(access)
   const database = getDatabase()
   const row = database.prepare(`SELECT id, system_account_id FROM api_keys WHERE id = ?${scope.clause}`).get(id, ...scope.params) as unknown as ApiKeyDeleteRow | undefined
   if (!row) {
@@ -231,7 +328,7 @@ function apiKeySystemAccountId(apiKeyId: string): string | undefined {
   return row?.system_account_id
 }
 
-function canManageApiKeyOwner(ownerSystemAccountId: string): boolean {
-  const scopedOwnerId = manageableSystemAccountId()
+function canManageApiKeyOwner(ownerSystemAccountId: string, access?: AccessScope): boolean {
+  const scopedOwnerId = manageableSystemAccountId(access)
   return !scopedOwnerId || scopedOwnerId === ownerSystemAccountId
 }

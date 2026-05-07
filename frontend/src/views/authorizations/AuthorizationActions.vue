@@ -1,10 +1,8 @@
 <template>
   <div :class="compact ? 'authorization-actions' : 'mobile-list-card-actions two-actions'">
     <a-button :size="compact ? 'small' : undefined" @click="$emit('usage-detail')">明细</a-button>
-    <a-dropdown>
-      <a-button :size="compact ? 'small' : undefined">
-        更多
-      </a-button>
+    <a-dropdown v-if="canManageAuthorization">
+      <a-button :size="compact ? 'small' : undefined">更多</a-button>
       <template #overlay>
         <a-menu @click="$emit('menu-click', $event)">
           <a-menu-item key="edit-expire">修改配置</a-menu-item>
@@ -23,18 +21,23 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import type { ResourceAuthorizationSummary } from '@/types/domain'
 import { activeTeamSources, hasManualSource } from './authorizationFormatters'
-
-defineProps<{
-  authorization: ResourceAuthorizationSummary
-  compact?: boolean
-}>()
 
 defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }): void
   (event: 'usage-detail'): void
 }>()
+
+const props = defineProps<{
+  authorization: ResourceAuthorizationSummary
+  compact?: boolean
+  isManagementView: boolean
+}>()
+
+const canManageAuthorization = computed(() => props.isManagementView || props.authorization.permissions?.canEdit === true)
 </script>
 
 <style scoped>

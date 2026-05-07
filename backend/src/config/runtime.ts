@@ -23,6 +23,8 @@ export interface RuntimeConfig {
   }
   smokeTest: {
     backendUrl: string
+    adminUsername: string
+    adminPassword: string
     accountName: string
     model: string
     prompt: string
@@ -56,6 +58,8 @@ export const runtimeConfig: RuntimeConfig = {
   },
   smokeTest: {
     backendUrl: stringConfig('JUHE_AI_BACKEND_URL', 'http://127.0.0.1:3000'),
+    adminUsername: stringConfig('JUHE_AI_SMOKE_ADMIN_USERNAME', 'admin'),
+    adminPassword: stringConfig('JUHE_AI_SMOKE_ADMIN_PASSWORD', 'admin'),
     accountName: stringConfig('JUHE_AI_SMOKE_ACCOUNT_NAME', ''),
     model: stringConfig('JUHE_AI_SMOKE_MODEL', 'gpt-5.4-mini'),
     prompt: stringConfig('JUHE_AI_SMOKE_PROMPT', '只输出 OK')

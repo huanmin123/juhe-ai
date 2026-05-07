@@ -53,7 +53,7 @@
           <div class="section-heading">
             <div>
               <h3>账户调度默认值</h3>
-              <p>这些配置按当前系统账户隔离保存；管理员编辑的是自己的默认值，不会覆盖其他用户。</p>
+              <p>这些配置是系统级运行策略，保存后会影响网关调度、审计日志和后台任务。</p>
             </div>
           </div>
           <div class="settings-grid">
@@ -107,6 +107,28 @@
             <div class="setting-item">
               <a-form-item label="失败统计窗口（分钟）" extra="只统计这个时间窗口内的流式失败；超过窗口后重新计数。">
                 <a-input-number v-model:value="systemForm.streamFailureThresholdWindowMinutes" :min="1" :max="1440" style="width: 100%" />
+              </a-form-item>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <div class="section-heading">
+            <div>
+              <h3>代理质量刷新</h3>
+              <p>后台定期检测代理延迟，用于账户绑定代理后的排障和状态展示；代理本身仍由代理管理页维护。</p>
+            </div>
+          </div>
+
+          <div class="settings-grid">
+            <div class="setting-item">
+              <a-form-item label="刷新间隔（秒）" extra="后台每隔多久触发一次代理延迟刷新；值越小越及时，但会增加后台检测频率。">
+                <a-input-number v-model:value="systemForm.proxyLatencyRefreshIntervalSeconds" :min="10" :max="3600" style="width: 100%" />
+              </a-form-item>
+            </div>
+            <div class="setting-item">
+              <a-form-item label="单批检测数量" extra="每轮最多检测多少个代理，代理数量较多时会分批刷新。">
+                <a-input-number v-model:value="systemForm.proxyLatencyRefreshBatchSize" :min="1" :max="100" style="width: 100%" />
               </a-form-item>
             </div>
           </div>

@@ -2,6 +2,8 @@
   <a-card class="page-card authorizations-page-card responsive-page-card">
     <AuthorizationFilterToolbar
       :filters="filters"
+      :is-management-view="isManagementView"
+      :direction-options="directionOptions"
       :resource-type-options="resourceTypeOptions"
       :resource-options="resourceOptions"
       :teams="teams"
@@ -17,6 +19,9 @@
 
     <AuthorizationList
       :authorizations="authorizations"
+      :current-system-account-id="currentSystemAccountId"
+      :empty-description="authorizationEmptyDescription"
+      :is-management-view="isManagementView"
       :loading="loading"
       @refresh="loadData"
       @usage-detail="openUsageDetail"
@@ -61,6 +66,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
+import { authState } from '@/composables/useAuth'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { AccountSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
@@ -72,6 +78,7 @@ import AuthorizationUsageDetailModal from './AuthorizationUsageDetailModal.vue'
 import type { AuthorizationCreateFormModel, AuthorizationExpireFormModel } from './authorizationFormTypes'
 import { createQuotaLimitForm, quotaLimitsPayload } from '../shared/requestQuotaForm'
 import {
+  authorizationDirection,
   buildTeamUsageSummaries,
   extractApiErrorMessage,
   formatServerDateTimeInput,
@@ -80,7 +87,9 @@ import {
   type TeamUsageSummary
 } from './authorizationFormatters'
 import {
+  type AuthorizationDirectionFilter,
   type AuthorizationFilterResourceType,
+  authorizationDirectionOptions,
   authorizationResourceTypeOptions,
   authorizationTeamUsageColumns,
   authorizationUsageDetailColumns,
@@ -107,6 +116,7 @@ const selectedAuthorizationUsageDetails = ref<AuthorizationUserUsageDetail[]>([]
 const selectedResourceAuthorizations = ref<ResourceAuthorizationSummary[]>([])
 
 const filters = reactive({
+  direction: 'all' as AuthorizationDirectionFilter,
   resourceType: 'all' as AuthorizationFilterResourceType,
   resourceId: undefined as string | undefined,
   teamId: undefined as string | undefined,
@@ -130,8 +140,10 @@ const expireForm = reactive<AuthorizationExpireFormModel>({
 
 const usageDetailColumns = authorizationUsageDetailColumns
 const teamUsageColumns = authorizationTeamUsageColumns
+const directionOptions = authorizationDirectionOptions
 const resourceTypeOptions = authorizationResourceTypeOptions
 const createResourceTypeOptions = createAuthorizationResourceTypeOptions
+const currentSystemAccountId = computed(() => authState.currentUser.value?.id)
 
 const resourceOptions = computed(() => {
   if (filters.resourceType === 'all') {
@@ -145,9 +157,9 @@ const resourceOptions = computed(() => {
 
 const createResourceOptions = computed(() => {
   if (createForm.resourceType === 'account') {
-    return accounts.value.map((account) => ({ label: account.name, value: account.id }))
+    return ownedAccounts.value.map((account) => ({ label: account.name, value: account.id }))
   }
-  return groups.value.map((group) => ({ label: group.name, value: group.id }))
+  return ownedGroups.value.map((group) => ({ label: group.name, value: group.id }))
 })
 
 const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'system_account'
@@ -155,11 +167,24 @@ const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'syste
   : teams.value.some((team) => team.status === 'active'))
 const activeFilterCount = computed(() => {
   let count = 0
+  if (!isManagementView.value && filters.direction !== 'all') count += 1
   if (filters.resourceType !== 'all') count += 1
   if (filters.resourceId) count += 1
-  if (filters.teamId) count += 1
-  if (filters.granteeSystemAccountId) count += 1
+  if (isManagementView.value && filters.teamId) count += 1
+  if (isManagementView.value && filters.granteeSystemAccountId) count += 1
   return count
+})
+const authorizationEmptyDescription = computed(() => {
+  if (isManagementView.value) {
+    return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无授权记录。'
+  }
+  if (filters.direction === 'inbound') {
+    return '暂无授权给我的记录。'
+  }
+  if (filters.direction === 'outbound') {
+    return '暂无我授权出去的记录，可新增授权给其他用户或团队。'
+  }
+  return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无授权记录，可先新增授权。'
 })
 const selectedTeamUsageSummaries = computed<TeamUsageSummary[]>(() => {
   const authorization = selectedAuthorization.value
@@ -169,21 +194,27 @@ const selectedTeamUsageSummaries = computed<TeamUsageSummary[]>(() => {
   return buildTeamUsageSummaries(authorization, selectedResourceAuthorizations.value, teams.value, filters.teamId)
 })
 const selectedTeamUsageRows = computed(() => selectedTeamUsageSummaries.value.flatMap((summary) => summary.members))
+const authorizationScopeParams = computed(() => {
+  const systemAccountId = scopedSystemAccountId()
+  return systemAccountId ? { systemAccountId } : undefined
+})
+const ownedAccounts = computed(() => accounts.value.filter((account) => account.permissions?.canAuthorize !== false))
+const ownedGroups = computed(() => groups.value.filter((group) => group.permissions?.canAuthorize !== false))
 
 watch(() => createForm.granteeType, () => {
   createForm.granteeId = ''
 })
 
 async function loadMetaData() {
-  const systemAccountId = scopedSystemAccountId()
+  const systemAccountId = isManagementView.value ? scopedSystemAccountId() : undefined
   const [accountResult, groupResult, teamResult, userResult] = await Promise.allSettled([
-    api.accounts.list({ systemAccountId }),
-    api.groups.list({ systemAccountId }),
+    isManagementView.value ? api.accounts.list({ systemAccountId, limit: 200 }) : api.myAccounts.list({ limit: 200 }),
+    isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
     isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
-    isManagementView.value ? api.systemAccounts.list() : api.authorizationOptions.granteeAccounts()
+    isManagementView.value ? api.systemAccounts.list() : api.myAuthorizationOptions.granteeAccounts()
   ])
   if (accountResult.status === 'fulfilled') {
-    accounts.value = accountResult.value
+    accounts.value = accountResult.value.items
   } else {
     console.error(accountResult.reason)
     message.error('加载可授权账户失败')
@@ -211,15 +242,20 @@ async function loadMetaData() {
 async function loadData() {
   loading.value = true
   try {
-    const systemAccountId = scopedSystemAccountId()
+    const systemAccountId = isManagementView.value ? authorizationScopeParams.value?.systemAccountId : undefined
     const params = {
       resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
       resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
-      teamId: filters.teamId,
-      granteeSystemAccountId: filters.granteeSystemAccountId,
+      teamId: isManagementView.value ? filters.teamId : undefined,
+      granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
       status: 'all' as const
     }
-    authorizations.value = await api.authorizations.list(systemAccountId ? { ...params, systemAccountId } : params)
+    const authorizationList = isManagementView.value
+      ? await api.authorizations.list(systemAccountId ? { ...params, systemAccountId } : params)
+      : await api.myAuthorizations.list(params)
+    authorizations.value = isManagementView.value
+      ? authorizationList
+      : authorizationList.filter((item) => filters.direction === 'all' || authorizationDirection(item, currentSystemAccountId.value) === filters.direction)
   } catch (error) {
     console.error(error)
     message.error('加载授权列表失败')
@@ -245,6 +281,7 @@ function handleResourceTypeChange() {
 }
 
 function resetFilters() {
+  filters.direction = 'all'
   filters.resourceType = 'all'
   filters.resourceId = undefined
   filters.teamId = undefined
@@ -269,9 +306,16 @@ async function createAuthorization() {
     message.warning('请选择启用中的团队')
     return
   }
+  const selectedResource = createForm.resourceType === 'account'
+    ? ownedAccounts.value.find((account) => account.id === createForm.resourceId)
+    : ownedGroups.value.find((group) => group.id === createForm.resourceId)
+  if (!selectedResource) {
+    message.warning('只能授权自己拥有的资源')
+    return
+  }
   try {
     const expiresAt = formatServerDateTimeInput(createForm.expiresAt) ?? undefined
-    await api.authorizations.create({
+    const payload = {
       resourceType: createForm.resourceType,
       resourceId: createForm.resourceId,
       granteeType: createForm.granteeType,
@@ -279,7 +323,12 @@ async function createAuthorization() {
       remark: createForm.remark.trim() || undefined,
       expiresAt,
       limits: quotaLimitsPayload(createForm.quotaLimits)
-    })
+    }
+    if (isManagementView.value) {
+      await api.authorizations.create(payload, authorizationScopeParams.value)
+    } else {
+      await api.myAuthorizations.create(payload)
+    }
     createModalOpen.value = false
     message.success(createForm.granteeType === 'team' ? '团队授权已创建，成员会自动展开为用户授权' : '授权已创建')
     await loadData()
@@ -291,7 +340,11 @@ async function createAuthorization() {
 
 async function revokeManualSource(item: ResourceAuthorizationSummary) {
   try {
-    await api.authorizations.revoke(item.id, { sourceType: 'manual' })
+    if (isManagementView.value) {
+      await api.authorizations.revoke(item.id, { sourceType: 'manual' }, authorizationScopeParams.value)
+    } else {
+      await api.myAuthorizations.revoke(item.id, { sourceType: 'manual' })
+    }
     message.success('个人授权来源已收回')
     await loadData()
   } catch (error) {
@@ -302,7 +355,11 @@ async function revokeManualSource(item: ResourceAuthorizationSummary) {
 
 async function revokeTeamSource(item: ResourceAuthorizationSummary, sourceTeamId: string) {
   try {
-    await api.authorizations.revoke(item.id, { sourceType: 'team', sourceTeamId })
+    if (isManagementView.value) {
+      await api.authorizations.revoke(item.id, { sourceType: 'team', sourceTeamId }, authorizationScopeParams.value)
+    } else {
+      await api.myAuthorizations.revoke(item.id, { sourceType: 'team', sourceTeamId })
+    }
     message.success('团队授权来源已收回')
     await loadData()
   } catch (error) {
@@ -339,7 +396,11 @@ function handleActionMenuClick(event: { key: string | number }, item: ResourceAu
 
 async function updateAuthorizationStatus(item: ResourceAuthorizationSummary, status: 'active' | 'paused') {
   try {
-    await api.authorizations.update(item.id, { status })
+    if (isManagementView.value) {
+      await api.authorizations.update(item.id, { status }, authorizationScopeParams.value)
+    } else {
+      await api.myAuthorizations.update(item.id, { status })
+    }
     message.success(status === 'active' ? '授权已恢复' : '授权已暂停')
     await loadData()
   } catch (error) {
@@ -362,10 +423,15 @@ async function confirmExpireChange() {
     return
   }
   try {
-    await api.authorizations.updateExpire(authorization.id, {
+    const payload = {
       expiresAt: formatServerDateTimeInput(expireForm.expiresAt),
       limits: quotaLimitsPayload(expireForm.quotaLimits)
-    })
+    }
+    if (isManagementView.value) {
+      await api.authorizations.updateExpire(authorization.id, payload, authorizationScopeParams.value)
+    } else {
+      await api.myAuthorizations.updateExpire(authorization.id, payload)
+    }
     expireModalOpen.value = false
     expireAuthorization.value = undefined
     message.success('授权配置已更新')
@@ -378,7 +444,9 @@ async function confirmExpireChange() {
 
 async function openUsageDetail(item: ResourceAuthorizationSummary) {
   try {
-    const usagePayload = await api.authorizations.usage(item.id)
+    const usagePayload = isManagementView.value
+      ? await api.authorizations.usage(item.id, authorizationScopeParams.value)
+      : await api.myAuthorizations.usage(item.id)
     const detail = normalizeAuthorizationUsageResponse(usagePayload, item)
     selectedResourceAuthorizations.value = [detail]
     selectedAuthorization.value = detail

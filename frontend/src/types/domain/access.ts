@@ -34,6 +34,13 @@ export interface ApiKeySummary {
   usage: AccountUsageSummary
 }
 
+export interface ApiKeyListResult {
+  items: ApiKeySummary[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 export interface CreatedApiKey extends ApiKeySummary {}
 
 export type ApiKeyQuotaLimit = RequestQuotaLimit

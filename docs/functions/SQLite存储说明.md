@@ -347,7 +347,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 团队来源变更只影响用户级授权来源摘要；成员移除后，如果该用户没有其他来源则授权失效，但历史用户消耗仍按该用户保留。
 - 分组授权共享的是动态分组集合，但只共享分组所有者自有账户；如果分组里包含别人授权来的账户，调度时必须过滤，不能通过分组授权继续共享给第三方。
 - `usage_records` 按每次实际上游请求 / 上游尝试写入；同一个客户端请求如果发生重试或切号，可以产生多条记录。`usage_records` 是排障和重建统计的事实源，不等同于业务消耗统计。
-- `request_count` 统计的是有效上游消耗次数：后台统计 worker 只聚合成功记录、已经拿到流式有效输出（首 token）的记录，或已经产生 token / cost 的记录。授权不可用、暂停、过期、无可用上游账号、网络连接失败、无 token / cost 的上游 HTTP 错误、首包前超时 / 中断和只收到流式错误事件等排障记录可以留在 `usage_records`，但不进入 `usage_stats_*`，也不计入授权消耗。
+- `request_count` 统计的是进入网关使用记录的请求次数：后台统计 worker 会聚合成功、失败、测试和后台检测产生的 `usage_records`。没有 token / cost 的失败记录按 0 token、0 cost 计入请求和错误次数，便于统一追踪；成本与 token 仍以实际解析到的上游用量为准。
 - 同一次上游尝试不能因为调用方同时拥有个人来源和团队来源而重复入库；资源真实总量按 `usage_records.id` 去重。
 - 统计按请求实际命中的 `group_id`、`account_id` 和当时的统一授权 ID 记录，历史不会因后续团队成员或分组账户变化而重算。
 ## 账户套餐到期
@@ -439,7 +439,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 ## 系统账户隔离补充
 
-- `accounts`、`system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`audit_logs`、`account_usage_snapshots`、`system_settings` 后续都会按 `system_account_id` 或明确的 owner/grantee 字段隔离。
+- `accounts`、`system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`audit_logs`、`account_usage_snapshots` 后续都会按 `system_account_id` 或明确的 owner/grantee 字段隔离；`system_settings` 在第一阶段按默认管理员作用域保存系统级运行策略。
 - `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_model_hourly`、`usage_error_daily`、`usage_error_hourly` 也必须按 `system_account_id` 隔离。
 - `providers`、`proxy_profiles`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly` 保持全局共享；`providers` 和 `proxy_profiles` 只允许管理员维护，主机级系统监控默认仅管理员可见。`proxy_profiles.latency_ms`、`outbound_ip`、`outbound_region`、`test_status`、`last_tested_at` 和 `last_test_message` 是代理最近检测缓存，不参与账号调度事实判断。
 - 管理员可以读取所有系统账户的数据；普通用户只读取自己的系统账户数据，以及其他用户主动授权给自己的 AI 账户和分组使用摘要。

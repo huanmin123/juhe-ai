@@ -177,11 +177,11 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `GET /v1/models` 由本地 OpenAI 模型价格目录返回，不依赖某个上游账号是否可调度，避免 OAuth-only 分组在客户端初始化阶段失败。
 - OAuth Codex 转发会补齐必要 Codex CLI 协议头，并在账号凭据包含 `chatgpt_account_id` / `account_id` 时写入 `chatgpt-account-id`；客户端传入的同名头不会透传，避免跨账号伪造。
 - 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户。
-- 后台 OAuth 额度快照刷新任务探测前，如果发现 access token 即将过期，也会先自动刷新授权。
+- 后台 OAuth 额度快照刷新任务通过本地 OpenAI 网关链路发起模型请求；如果发现 access token 即将过期，也由网关准备上游账号时按正常请求规则刷新授权。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。
 - 账户 `account_expires_at` 到期后直接停用、关闭调度，不再参与网关选号或后台 OAuth 额度探测。
 - 账户页不提供常驻“刷新授权”或“刷新用量”按钮；授权续期和额度快照都由真实请求与后台任务维护。
-- OAuth token 刷新、账户测试和后台额度探测会优先使用账户绑定的代理；没有绑定代理时默认直连。迁移旧账户时不再自动创建或绑定本机固定端口代理，避免换电脑或服务器部署后误连本机端口。
+- OAuth token 刷新、账户测试、后台冷却复测和后台额度探测会优先使用账户绑定的代理；没有绑定代理时默认直连。账户测试、后台冷却复测和后台额度探测必须复用本地 OpenAI 网关模型请求链路并写入使用记录，不能在测试/检测服务里单独直连上游。迁移旧账户时不再自动创建或绑定本机固定端口代理，避免换电脑或服务器部署后误连本机端口。
 
 ## 会话亲和调度
 
@@ -196,10 +196,10 @@ OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过�
 
 OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包括约 `5h` 窗口和 `7d` 窗口；这类额度不是 API Key 的 token / 成本用量，必须单独展示和处理。
 
-- 数据来源优先使用真实网关请求或账号测试返回的 Codex rate-limit 响应头：`x-codex-primary-used-percent`、`x-codex-primary-reset-after-seconds`、`x-codex-primary-window-minutes`、`x-codex-secondary-used-percent`、`x-codex-secondary-reset-after-seconds`、`x-codex-secondary-window-minutes`。
+- 数据来源优先使用真实网关请求或账号测试返回的 Codex rate-limit 响应头：`x-codex-primary-used-percent`、`x-codex-primary-reset-after-seconds`、`x-codex-primary-window-minutes`、`x-codex-secondary-used-percent`、`x-codex-secondary-reset-after-seconds`、`x-codex-secondary-window-minutes`。后台额度快照探测也通过同一条网关模型请求链路获取响应头，因此产生的请求、token 和成本会按正常使用记录统计。
 - 归一化规则：优先按 `window_minutes` 判断窗口，较小窗口映射为 `5h`，较大窗口映射为 `7d`；只有单侧窗口时，`<= 360` 分钟归为 `5h`，更长归为 `7d`；没有窗口长度时兼容旧语义，默认 primary 为 `7d`、secondary 为 `5h`。
 - 存储字段建议保存为账号运行态快照，并按 `system_account_id + account_id + kind` 隔离：`codex_5h_used_percent`、`codex_5h_reset_after_seconds`、`codex_5h_reset_at`、`codex_5h_window_minutes`、`codex_7d_used_percent`、`codex_7d_reset_after_seconds`、`codex_7d_reset_at`、`codex_7d_window_minutes`、`codex_usage_updated_at`、`last_attempt_at`、`last_success_at`、`next_refresh_after`、`refresh_status`、`last_error_message`。
-- 获取策略：列表只读已缓存快照，不因展示批量探测；新建 OAuth 账户会在创建流程里立即触发一次首次快照刷新，缺失、过期或接近恢复点的快照由后台定时器统一探测，可对 `https://chatgpt.com/backend-api/codex/responses` 做节流探测，使用 `stream: true`、`store: false`、Codex CLI 相关 header，并复用账号代理。
+- 获取策略：列表只读已缓存快照，不因展示批量探测；新建 OAuth 账户会在创建流程里立即触发一次首次快照刷新，缺失、过期或接近恢复点的快照由后台定时器统一探测。探测使用本地 OpenAI 网关内部请求执行 `/v1/responses`，由网关转换到 Codex Responses 上游，使用 `stream: true`、`store: false`，并复用账号代理、错误策略、成本估算和使用记录写入。
 - 后台策略：按系统账户分批处理，每个系统账户内默认并发为 1；快照未过期不探测，失败后按退避时间更新 `next_refresh_after`，保留旧快照继续展示。
 - 429 处理：收到 OAuth Codex 429 时，先解析 header 里已耗尽窗口的 reset 时间；如果 header 不足，再解析响应体 `error.resets_at` 或 `error.resets_in_seconds`；计算出的时间写入账号 `rate_limited` 冷却截止时间，后台下次刷新不早于 reset 时间。
 - UI 展示：OAuth 行在“用量情况”里显示本地请求/token/成本摘要，同时额外显示 `5h`、`7d` 两条进度条、百分比、倒计时/刷新时间、快照更新时间、后台刷新状态和下次刷新时间；API Key 行不显示这两条 OAuth 额度进度。
@@ -222,7 +222,7 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - 最近使用时间
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、迁移流量、停用/启用账户和切换客户端，不再提供分散的授权管理入口，授权统一进入 `授权管理` 菜单维护。迁移流量用于人工处理上游返回状态码正常但内容异常、自动错误策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认把原账户改为临时不可调用，也可指定为停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接。手动启用只针对真正已停用的账户；`限流中` 和 `临时不可调用` 的恢复由手动测试成功或冷却到期后的后台复测成功处理，复测失败会继续保持临时不可调用，不能通过手动启用直接清理状态。授权账户只保留使用相关操作，隐藏编辑、删除、授权管理和所有配置修改入口。测试会打开结果弹窗，可选择模型；弹窗终端区域只展示测试过程、成败和模型返回内容，状态码、耗时、请求 URL、代理、原始响应正文等排查字段统一通过完整 JSON 查看，不再额外展示测试结果表格；如果测试响应里带有 Codex rate-limit header，可作为副作用更新 OAuth 额度快照。
+操作区提供编辑、删除和“更多”菜单；更多菜单第一期包含测试、迁移流量、停用/启用账户和切换客户端，不再提供分散的授权管理入口，授权统一进入 `授权管理` 菜单维护。迁移流量用于人工处理上游返回状态码正常但内容异常、自动错误策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认把原账户改为临时不可调用，也可指定为停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接。手动启用只针对真正已停用的账户；`限流中` 和 `临时不可调用` 的恢复由手动测试成功或冷却到期后的后台复测成功处理，复测失败会继续保持临时不可调用，不能通过手动启用直接清理状态。授权账户只保留使用相关操作，隐藏编辑、删除、授权管理和所有配置修改入口。测试会打开结果弹窗，可选择模型；弹窗终端区域只展示测试过程、成败和模型返回内容，状态码、耗时、请求 URL、代理、原始响应正文等排查字段统一通过完整 JSON 查看，不再额外展示测试结果表格。测试必须复用正常客户请求的网关调度、代理、OAuth 刷新、错误策略、用量解析和成本统计链路，并固定只测试当前账号；如果测试响应里带有 Codex rate-limit header，可作为副作用更新 OAuth 额度快照。
 
 ## 统一授权管理
 
@@ -232,7 +232,7 @@ OpenAI 一期不再分别设计账户授权弹窗和分组授权弹窗，授权�
 - 授权对象支持系统账户和系统团队。
 - 新增授权时选择资源类型、自有资源、授权对象类型、系统账户或团队和备注。
 - 收回授权只把授权状态改成 `revoked`，不删除历史行；被授权用户已绑定的授权账户分组关系和授权分组 API Key 关系保留但运行时不可用，重新授权同一用户后可按同一稳定授权 ID 恢复使用。
-- 使用统计按统一授权 ID 聚合展示有效请求次数、成功次数、消耗错误次数、输入 Token、输出 Token、缓存读取 Token、总 Token、成本、最后使用时间和最近模型；授权不可用、无可用上游、无 token / cost 的普通上游 HTTP 错误、首包前失败和只收到流式错误事件只作为排障记录，不计入授权消耗。
+- 使用统计按统一授权 ID 聚合展示请求次数、成功次数、错误次数、输入 Token、输出 Token、缓存读取 Token、总 Token、成本、最后使用时间和最近模型；成功、失败、账户测试和后台检测都按同一套网关使用记录聚合，未产生 token / cost 的失败记录按 0 token、0 cost 计入请求和错误次数。
 - 团队授权展开为成员用户授权；统计仍按“资源 × 用户”展示，团队视图只是成员用户用量的筛选汇总。
 - 授权消耗统计不包含资源归属人自己的自用消耗；资源归属人的账户 / 分组用量情况仍展示全部总消耗。
 - 分组授权是动态使用权，分组所有者后续新增、移除或停用可共享账户，会直接影响被授权用户通过该分组可调度的账户集合。

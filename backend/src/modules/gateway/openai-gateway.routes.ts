@@ -5,6 +5,7 @@ import { bindRequestContextFields, getTraceId } from '../../shared/request-conte
 import {
   recordAccountStreamFailure,
   updateAccount,
+  type GatewayApiKeyRow,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
@@ -79,7 +80,27 @@ import {
 
 export const openAIGatewayRouter = Router()
 
+export interface OpenAIGatewayRequestIdentity {
+  systemAccountId: string
+  groupId: string
+  apiKeyId?: string
+}
+
+export interface OpenAIGatewayHandleOptions {
+  identity?: OpenAIGatewayRequestIdentity
+  candidateAccounts?: UpstreamAccount[]
+  disableSessionAffinity?: boolean
+}
+
 openAIGatewayRouter.all('/*', async (req, res) => {
+  await handleOpenAIGatewayRequest(req, res)
+})
+
+export async function handleOpenAIGatewayRequest(
+  req: Request,
+  res: Response,
+  options: OpenAIGatewayHandleOptions = {}
+): Promise<void> {
   const startedAt = Date.now()
   const traceId = getTraceId() ?? randomUUID()
   const clientIp = extractClientIp(req)
@@ -94,45 +115,60 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     }
   })
 
-  const apiKeyRecord = resolveGatewayApiKey(req, res)
-  if (!apiKeyRecord) {
-    const authErrorMessage = extractBearerToken(req.header('authorization')) ? 'Invalid API key' : 'Missing bearer token'
-    const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error')
-    auditCapture.finalize({
-      outcome: 'gateway_failed',
-      success: false,
-      statusCode: res.statusCode,
-      responseHeaders: responseHeadersToObject(res),
-      responseBody: JSON.stringify(authErrorPayload),
-      responsePartType: 'gateway_error',
-      errorPhase: 'auth',
-      errorCode: 'invalid_request_error',
-      errorMessage: authErrorMessage
-    })
+  let apiKeyRecord: GatewayApiKeyRow | undefined
+  const identity = options.identity
+    ? options.identity
+    : (() => {
+      apiKeyRecord = resolveGatewayApiKey(req, res)
+      if (!apiKeyRecord) {
+        const authErrorMessage = extractBearerToken(req.header('authorization')) ? 'Invalid API key' : 'Missing bearer token'
+        const authErrorPayload = gatewayErrorPayload(authErrorMessage, 'invalid_request_error')
+        auditCapture.finalize({
+          outcome: 'gateway_failed',
+          success: false,
+          statusCode: res.statusCode,
+          responseHeaders: responseHeadersToObject(res),
+          responseBody: JSON.stringify(authErrorPayload),
+          responsePartType: 'gateway_error',
+          errorPhase: 'auth',
+          errorCode: 'invalid_request_error',
+          errorMessage: authErrorMessage
+        })
+        return undefined
+      }
+      return {
+        systemAccountId: apiKeyRecord.system_account_id,
+        apiKeyId: apiKeyRecord.id,
+        groupId: apiKeyRecord.group_id
+      }
+    })()
+  if (!identity) {
     return
   }
+  const { systemAccountId, apiKeyId, groupId } = identity
+
   auditCapture.bindContext({
-    systemAccountId: apiKeyRecord.system_account_id,
-    apiKeyId: apiKeyRecord.id,
-    groupId: apiKeyRecord.group_id,
+    systemAccountId,
+    apiKeyId,
+    groupId,
     providerCode: 'openai'
   })
   bindRequestContextFields({
-    systemAccountId: apiKeyRecord.system_account_id,
-    apiKeyId: apiKeyRecord.id,
-    groupId: apiKeyRecord.group_id
+    systemAccountId,
+    apiKeyId,
+    groupId
   })
 
-  const groupAccess = resolveCachedGroupUsageAccessMetadata(apiKeyRecord.group_id, apiKeyRecord.system_account_id)
+  const groupAccess = resolveCachedGroupUsageAccessMetadata(groupId, systemAccountId)
   if (!groupAccess) {
     const statusCode = 403
     const responsePayload = gatewayErrorPayload('API key group authorization is unavailable', 'forbidden')
     recordGatewayFailure(req, {
       traceId,
       clientIp,
-      systemAccountId: apiKeyRecord.system_account_id,
-      apiKeyId: apiKeyRecord.id,
-      groupId: apiKeyRecord.group_id,
+      systemAccountId,
+      apiKeyId,
+      groupId,
       endpoint,
       requestSnapshot
     }, {
@@ -156,16 +192,16 @@ openAIGatewayRouter.all('/*', async (req, res) => {
   }
 
   const groupUsageFields = groupUsageMetadata(groupAccess)
-  const quotaDecision = checkGatewayApiKeyQuota(apiKeyRecord)
+  const quotaDecision = apiKeyRecord ? checkGatewayApiKeyQuota(apiKeyRecord) : { allowed: true }
   if (!quotaDecision.allowed) {
     const statusCode = 429
     const responsePayload = gatewayErrorPayload(quotaDecision.message ?? API_KEY_QUOTA_EXCEEDED_MESSAGE, 'rate_limit_exceeded')
     recordGatewayFailure(req, {
       traceId,
       clientIp,
-      systemAccountId: apiKeyRecord.system_account_id,
-      apiKeyId: apiKeyRecord.id,
-      groupId: apiKeyRecord.group_id,
+      systemAccountId,
+      apiKeyId,
+      groupId,
       ...groupUsageFields,
       endpoint,
       requestSnapshot
@@ -194,9 +230,9 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     sendQuotaExceededResponse(req, res, auditCapture, {
       traceId,
       clientIp,
-      systemAccountId: apiKeyRecord.system_account_id,
-      apiKeyId: apiKeyRecord.id,
-      groupId: apiKeyRecord.group_id,
+      systemAccountId,
+      apiKeyId,
+      groupId,
       ...groupUsageFields,
       endpoint,
       requestSnapshot
@@ -210,9 +246,9 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     enqueueUsageRecord({
       traceId,
       clientIp,
-      systemAccountId: apiKeyRecord.system_account_id,
-      apiKeyId: apiKeyRecord.id,
-      groupId: apiKeyRecord.group_id,
+      systemAccountId,
+      apiKeyId,
+      groupId,
       ...groupUsageFields,
       endpoint,
       providerCode: 'openai',
@@ -235,13 +271,13 @@ openAIGatewayRouter.all('/*', async (req, res) => {
   }
 
   const sessionAffinityKey = resolveOpenAIGatewaySessionAffinityKey(req, {
-    systemAccountId: apiKeyRecord.system_account_id,
-    apiKeyId: apiKeyRecord.id,
-    groupId: apiKeyRecord.group_id
+    systemAccountId,
+    apiKeyId,
+    groupId
   })
   const candidateAccounts = orderOpenAIAccountsBySessionAffinity(
-    listCachedOpenAIAccountsForGroup(apiKeyRecord.group_id, apiKeyRecord.system_account_id),
-    sessionAffinityKey
+    options.candidateAccounts ?? listCachedOpenAIAccountsForGroup(groupId, systemAccountId),
+    options.disableSessionAffinity ? undefined : sessionAffinityKey
   )
   let authorizationQuotaDeniedAccountCount = 0
   const accounts = candidateAccounts.filter((account) => {
@@ -257,9 +293,9 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       sendQuotaExceededResponse(req, res, auditCapture, {
         traceId,
         clientIp,
-        systemAccountId: apiKeyRecord.system_account_id,
-        apiKeyId: apiKeyRecord.id,
-        groupId: apiKeyRecord.group_id,
+        systemAccountId,
+        apiKeyId,
+        groupId,
         ...groupUsageFields,
         endpoint,
         requestSnapshot
@@ -271,9 +307,9 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     recordGatewayFailure(req, {
       traceId,
       clientIp,
-      systemAccountId: apiKeyRecord.system_account_id,
-      apiKeyId: apiKeyRecord.id,
-      groupId: apiKeyRecord.group_id,
+      systemAccountId,
+      apiKeyId,
+      groupId,
       ...groupUsageFields,
       endpoint,
       requestSnapshot
@@ -301,25 +337,29 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     const upstreamResult = await fetchFirstAvailableUpstream(req, accounts, gatewaySettings, {
       traceId,
       clientIp,
-      systemAccountId: apiKeyRecord.system_account_id,
-      apiKeyId: apiKeyRecord.id,
-      groupId: apiKeyRecord.group_id,
+      systemAccountId,
+      apiKeyId,
+      groupId,
       ...groupUsageFields,
       endpoint,
       requestSnapshot
-    }, auditCapture, sessionAffinityKey)
+    }, auditCapture, options.disableSessionAffinity ? undefined : sessionAffinityKey)
     const { account, response: upstreamResponse, upstreamUrl, auditAttemptId } = upstreamResult
 
     const contentType = upstreamResponse.headers.get('content-type') ?? ''
+    const shouldHandleAsStream = isOpenAIStreamContentType(contentType) || isImplicitOpenAIStreamResponse(req, account)
     res.status(upstreamResponse.status)
     copyResponseHeaders(upstreamResponse, res)
+    if (shouldHandleAsStream && !res.hasHeader('content-type')) {
+      res.setHeader('content-type', 'text/event-stream; charset=utf-8')
+    }
     persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, 'gateway')
 
     let usage = emptyUsage()
     let firstTokenMs: number | undefined
     let responseBodyText: string | undefined
     let errorPayload: Record<string, unknown> = {}
-    if (isOpenAIStreamContentType(contentType)) {
+    if (shouldHandleAsStream) {
       if (!upstreamResponse.body) {
         res.end()
         forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
@@ -364,9 +404,9 @@ openAIGatewayRouter.all('/*', async (req, res) => {
         enqueueUsageRecord({
           traceId,
           clientIp,
-          systemAccountId: apiKeyRecord.system_account_id,
-          apiKeyId: apiKeyRecord.id,
-          groupId: apiKeyRecord.group_id,
+          systemAccountId,
+          apiKeyId,
+          groupId,
           accountId: account.id,
           ...accountUsageMetadata(account),
           endpoint,
@@ -433,9 +473,9 @@ openAIGatewayRouter.all('/*', async (req, res) => {
     enqueueUsageRecord({
       traceId,
       clientIp,
-      systemAccountId: apiKeyRecord.system_account_id,
-      apiKeyId: apiKeyRecord.id,
-      groupId: apiKeyRecord.group_id,
+      systemAccountId,
+      apiKeyId,
+      groupId,
       accountId: account.id,
       ...accountUsageMetadata(account),
       endpoint,
@@ -490,9 +530,9 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       recordGatewayFailure(req, {
         traceId,
         clientIp,
-        systemAccountId: apiKeyRecord.system_account_id,
-        apiKeyId: apiKeyRecord.id,
-        groupId: apiKeyRecord.group_id,
+        systemAccountId,
+        apiKeyId,
+        groupId,
         ...groupUsageFields,
         endpoint,
         requestSnapshot
@@ -516,7 +556,7 @@ openAIGatewayRouter.all('/*', async (req, res) => {
       errorMessage: message
     })
   }
-})
+}
 
 function sendQuotaExceededResponse(
   req: Request,
@@ -567,6 +607,18 @@ async function fetchFirstAvailableUpstream(
   let auditAttemptIndex = 0
 
   for (const originalAccount of accounts) {
+    if (originalAccount.proxyProfileUnavailable) {
+      const attemptStartedAt = Date.now()
+      const message = originalAccount.proxyProfileErrorMessage ?? '账户绑定的代理不可用'
+      lastAttempt = { accountId: originalAccount.id, accountName: originalAccount.name, upstreamUrl: 'proxy:configured', message }
+      recordFailedUpstreamAttempt(req, usageContext, originalAccount, {
+        upstreamUrl: 'proxy:configured',
+        startedAt: attemptStartedAt,
+        errorMessage: message
+      })
+      applyAccountErrorHandlingWithCacheInvalidation(originalAccount, { success: false, errorMessage: message, settings })
+      continue
+    }
     const account = await prepareUpstreamAccount(originalAccount)
     const upstreamUrls = buildUpstreamUrlsForAccount(account, req)
     if (upstreamUrls.length === 0) {
@@ -793,4 +845,8 @@ async function prepareUpstreamAccount(account: UpstreamAccount): Promise<Upstrea
 function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: Headers, source: string): void {
   if (account.type !== 'oauth') return
   persistOpenAICodexUsageHeaders(account.id, headers, source)
+}
+
+function isImplicitOpenAIStreamResponse(req: Request, account: UpstreamAccount): boolean {
+  return isOpenAIStreamRequest(req) && account.type === 'oauth'
 }

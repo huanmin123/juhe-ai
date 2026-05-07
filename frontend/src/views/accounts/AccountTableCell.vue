@@ -20,6 +20,12 @@
     <span v-else class="muted-cell">未归属</span>
   </template>
   <AccountStatusTag v-else-if="columnKey === 'status'" :account="account" />
+  <template v-else-if="columnKey === 'proxy'">
+    <a-tooltip v-if="proxyText" :title="proxyTooltip">
+      <a-tag :color="proxyTagColor">{{ proxyText }}</a-tag>
+    </a-tooltip>
+    <span v-else class="muted-cell">不使用</span>
+  </template>
   <a-tag v-else-if="columnKey === 'concurrency'" color="blue">{{ account.currentConcurrency }}/{{ account.concurrencyLimit }}</a-tag>
   <AccountUsageCell v-else-if="columnKey === 'usage'" :account="account" />
   <span v-else-if="columnKey === 'priority'">{{ account.priority }}</span>
@@ -46,8 +52,9 @@
 
 <script setup lang="ts">
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
+import { computed } from 'vue'
 
-import type { AccountSummary } from '@/types/domain'
+import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountRowActions from './AccountRowActions.vue'
 import AccountStatusTag from './AccountStatusTag.vue'
 import AccountUsageCell from './AccountUsageCell.vue'
@@ -61,7 +68,15 @@ import {
   isOwnerDisabledAuthorizedAccount
 } from './accountFormatters'
 
-defineProps<{
+defineEmits<{
+  (event: 'bind-group', account: AccountSummary): void
+  (event: 'delete', account: AccountSummary): void
+  (event: 'edit', account: AccountSummary): void
+  (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
+  (event: 'test', account: AccountSummary): void
+}>()
+
+const props = defineProps<{
   account: AccountSummary
   authorizedTooltip: string
   canDelete: boolean
@@ -70,15 +85,25 @@ defineProps<{
   groupName?: string
   menuItems: AccountMenuItem[]
   providerName: string
+  proxy?: ProxyProfileOptionSummary
 }>()
 
-defineEmits<{
-  (event: 'bind-group', account: AccountSummary): void
-  (event: 'delete', account: AccountSummary): void
-  (event: 'edit', account: AccountSummary): void
-  (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void
-  (event: 'test', account: AccountSummary): void
-}>()
+const proxyText = computed(() => {
+  if (!props.account.proxyProfileId) return ''
+  return props.proxy?.name ?? '代理已配置'
+})
+const proxyTagColor = computed(() => {
+  if (props.account.proxyProfileUnavailable) return 'red'
+  if (props.proxy?.enabled === false) return 'red'
+  return props.proxy ? 'cyan' : 'orange'
+})
+const proxyTooltip = computed(() => {
+  if (props.account.proxyProfileErrorMessage) return props.account.proxyProfileErrorMessage
+  if (props.account.proxyProfileUnavailable) return '代理不可用，请到代理管理确认配置'
+  if (props.proxy?.enabled === false) return '代理已停用，请启用代理或更换账户代理'
+  if (props.proxy) return `${props.proxy.name}（${props.proxy.type}）`
+  return '代理配置不存在或当前不可见'
+})
 </script>
 
 <style scoped>

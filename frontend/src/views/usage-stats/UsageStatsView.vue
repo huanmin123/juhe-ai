@@ -11,13 +11,13 @@
       @refresh="loadData"
     >
       <template #inline-filters>
-        <a-select v-model:value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" />
+        <a-select v-model:value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" @change="applyFilters" />
         <SystemPrincipalSelect v-if="isManagementView" v-model:value="filters.systemAccountId" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
       </template>
       <template #filters>
         <label class="mobile-filter-field">
           <span>账户类型</span>
-          <a-select v-model:value="filters.type" :options="typeOptions" />
+          <a-select v-model:value="filters.type" :options="typeOptions" @change="applyFilters" />
         </label>
         <label v-if="isManagementView" class="mobile-filter-field">
           <span>系统账户</span>
@@ -30,8 +30,8 @@
       class="usage-stats-responsive-list"
       table-class="usage-stats-table"
       :columns="columns"
-      :data-source="filteredRows"
-      :mobile-data-source="mobileVisibleRows"
+      :data-source="rows"
+      :mobile-data-source="rows"
       row-key="id"
       :loading="loading"
       :scroll-x="tableScrollX"
@@ -126,7 +126,7 @@ import type {
   SystemAccountSummary,
   UsageStatsWindowKey
 } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AuthorizationUsageModal from './AuthorizationUsageModal.vue'
 import UsageStatCell from './UsageStatCell.vue'
 import { defaultUsageWindows, displayWindowKeys, formatUsageBrief, isUsageWindowColumn } from './usageStatsFormatters'
@@ -160,8 +160,7 @@ const providers = ref<ProviderDefinition[]>([])
 const filters = reactive<UsageStatsFilters>({ keyword: '', type: 'all', systemAccountId: allSystemAccountsValue })
 const routeAuthorizationUsageHandled = ref(false)
 const pageSize = 20
-const pagination = reactive({ current: 1, pageSize })
-const mobileVisibleCount = ref(pageSize)
+const pagination = reactive({ current: 1, pageSize, total: 0 })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const route = useRoute()
 const router = useRouter()
@@ -176,20 +175,6 @@ const availableProviders = computed(() => providers.value.length ? providers.val
 const windows = computed(() => overview.value?.windows ?? defaultUsageWindows())
 const compactWindows = computed(() => windows.value.filter((window) => displayWindowKeys.includes(window.key)))
 const rows = computed(() => overview.value?.rows ?? [])
-const filteredRows = computed(() => rows.value.filter((row) => {
-  const keyword = normalizeKeyword(filters.keyword)
-  const keywordMatched = !keyword || [
-    row.name,
-    row.providerCode,
-    row.type,
-    row.systemAccountName ?? '',
-    row.ownerSystemAccountName ?? '',
-    row.id
-  ].some((value) => normalizeKeyword(value).includes(keyword))
-  const typeMatched = filters.type === 'all' || row.type === filters.type
-  const systemAccountMatched = matchesSystemAccountFilter(row, filters.systemAccountId, isManagementView.value)
-  return keywordMatched && typeMatched && systemAccountMatched
-}))
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -209,31 +194,39 @@ const columns = computed(() => {
 
 const tableScrollX = computed(() => isManagementView.value ? 1670 : 1500)
 const tableScrollY = computed(() => 'calc(100dvh - 286px)')
-const mobileVisibleRows = computed(() => filteredRows.value.slice(0, mobileVisibleCount.value))
-const mobileHasMore = computed(() => mobileVisibleRows.value.length < filteredRows.value.length)
+const mobileHasMore = computed(() => rows.value.length < pagination.total)
 const tablePagination = computed(() => ({
   current: pagination.current,
   pageSize: pagination.pageSize,
-  total: filteredRows.value.length,
+  total: pagination.total,
   hideOnSinglePage: true,
   showSizeChanger: false,
   showTotal: (total: number) => `共 ${total} 个账户`
 }))
 const activeFilterCount = computed(() => [
+  filters.keyword.trim(),
   filters.type !== 'all',
   isManagementView.value && filters.systemAccountId !== allSystemAccountsValue
 ].filter(Boolean).length)
 
-async function loadData() {
-  loading.value = true
+async function loadData(options: { append?: boolean; quiet?: boolean } = {}) {
+  if (!options.quiet) {
+    loading.value = true
+  }
   try {
-    const systemAccountId = scopedSystemAccountId(filters.systemAccountId)
+    const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
     const [usageOverview, providerList, systemAccountList] = await Promise.all([
-      api.stats.accountUsage({ systemAccountId }),
+      isManagementView.value ? api.stats.accountUsage(accountUsageParams(systemAccountId)) : api.myStats.accountUsage(accountUsageParams()),
       isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
       isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
-    overview.value = usageOverview
+    overview.value = {
+      ...usageOverview,
+      rows: options.append ? [...rows.value, ...usageOverview.rows] : usageOverview.rows
+    }
+    pagination.current = usageOverview.page
+    pagination.pageSize = usageOverview.pageSize
+    pagination.total = usageOverview.total
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
     systemAccounts.value = systemAccountList
     await openAuthorizationUsageFromRoute()
@@ -241,7 +234,9 @@ async function loadData() {
     console.error(error)
     message.error('用量统计加载失败')
   } finally {
-    loading.value = false
+    if (!options.quiet) {
+      loading.value = false
+    }
   }
 }
 
@@ -252,51 +247,69 @@ async function openAuthorizationUsageFromRoute() {
   if (isManagementView.value && systemAccountId && filters.systemAccountId !== systemAccountId) {
     filters.systemAccountId = systemAccountId
   }
-  const row = rows.value.find((item) => item.id === route.query.accountId)
-  if (!row?.authorizationUsageAvailable) return
   routeAuthorizationUsageHandled.value = true
-  await openAuthorizationUsage(row, false)
+  authorizationUsageAccountId.value = route.query.accountId
+  authorizationUsageOpen.value = true
+  authorizationUsageOverview.value = undefined
+  await reloadAuthorizationUsage()
 }
 
 function applyFilters() {
   pagination.current = 1
-  mobileVisibleCount.value = pageSize
+  void loadData()
 }
 
 function resetFilters() {
   filters.keyword = ''
   filters.type = 'all'
   filters.systemAccountId = allSystemAccountsValue
-  applyFilters()
+  pagination.current = 1
   void loadData()
 }
 
 function handleSystemAccountFilterChange() {
-  applyFilters()
+  pagination.current = 1
   void loadData()
 }
 
 function handleTableChange(paginationInfo: unknown) {
-  const current = typeof paginationInfo === 'object' && paginationInfo && 'current' in paginationInfo ? Number((paginationInfo as { current?: unknown }).current) : 1
+  if (!paginationInfo || typeof paginationInfo !== 'object') return
+  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
+  const current = Number(next.current)
+  const nextPageSize = Number(next.pageSize)
   pagination.current = Number.isFinite(current) && current > 0 ? current : 1
+  pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
+  void loadData()
 }
 
-function loadMoreMobileRows() {
-  if (!mobileHasMore.value) return
+async function loadMoreMobileRows() {
+  if (!mobileHasMore.value || mobileLoadingMore.value) return
   mobileLoadingMore.value = true
-  window.setTimeout(() => {
-    mobileVisibleCount.value += pageSize
+  pagination.current += 1
+  try {
+    await loadData({ append: true, quiet: true })
+  } finally {
     mobileLoadingMore.value = false
-  }, 120)
+  }
 }
 
 async function refreshMobileRows() {
   mobileRefreshing.value = true
+  pagination.current = 1
   try {
     await loadData()
-    mobileVisibleCount.value = pageSize
   } finally {
     mobileRefreshing.value = false
+  }
+}
+
+function accountUsageParams(systemAccountId?: string) {
+  return {
+    systemAccountId,
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    keyword: filters.keyword.trim() || undefined,
+    type: filters.type === 'all' ? undefined : filters.type
   }
 }
 
@@ -314,7 +327,9 @@ async function reloadAuthorizationUsage() {
   if (!authorizationUsageAccountId.value) return
   authorizationUsageLoading.value = true
   try {
-    authorizationUsageOverview.value = await api.stats.accountAuthorizationUsage(authorizationUsageAccountId.value, { systemAccountId: scopedSystemAccountId(filters.systemAccountId) })
+    authorizationUsageOverview.value = isManagementView.value
+      ? await api.stats.accountAuthorizationUsage(authorizationUsageAccountId.value, { systemAccountId: scopedSystemAccountId(filters.systemAccountId) })
+      : await api.myStats.accountAuthorizationUsage(authorizationUsageAccountId.value)
   } catch (error) {
     console.error(error)
     message.error('授权用量加载失败')
@@ -334,10 +349,6 @@ async function handleAuthorizationUsageClosed() {
 
 function isWindowColumn(value: unknown): value is UsageStatsWindowKey {
   return isUsageWindowColumn(value)
-}
-
-function normalizeKeyword(value: unknown): string {
-  return String(value ?? '').trim().toLowerCase()
 }
 
 function accountTypeText(type: AccountType) {

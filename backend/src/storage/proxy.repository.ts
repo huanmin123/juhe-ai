@@ -51,6 +51,13 @@ export class ProxyInUseError extends Error {
   }
 }
 
+export class ProxyProfileUnavailableError extends Error {
+  constructor(readonly proxyProfileId: string) {
+    super('代理不存在或已停用，请选择一个已启用的代理')
+    this.name = 'ProxyProfileUnavailableError'
+  }
+}
+
 export function listProxies(): ProxyProfileSummary[] {
   const rows = getDatabase().prepare('SELECT * FROM proxy_profiles ORDER BY updated_at DESC').all() as unknown as ProxyRow[]
   return rows.map(proxySummaryFromRow)
@@ -256,12 +263,25 @@ export function resolveProxyUrlForProfileForSystemAccount(proxyProfileId: string
   return proxyUrlForProfile(proxyProfileId)
 }
 
+export function resolveEnabledProxyProfileId(proxyProfileId?: string | null): string | undefined {
+  if (!proxyProfileId) return undefined
+  const row = getDatabase()
+    .prepare('SELECT id, enabled FROM proxy_profiles WHERE id = ?')
+    .get(proxyProfileId) as unknown as Pick<ProxyRow, 'id' | 'enabled'> | undefined
+  if (!row || row.enabled !== 1) {
+    throw new ProxyProfileUnavailableError(proxyProfileId)
+  }
+  return row.id
+}
+
 function proxyUrlForProfile(proxyProfileId?: string | null): string | undefined {
   if (!proxyProfileId) return undefined
   const row = getDatabase()
-    .prepare('SELECT type, host, port, username, password_encrypted FROM proxy_profiles WHERE id = ? AND enabled = 1')
+    .prepare('SELECT type, host, port, username, password_encrypted, enabled FROM proxy_profiles WHERE id = ?')
     .get(proxyProfileId) as unknown as ProxyRow | undefined
-  if (!row) return undefined
+  if (!row || row.enabled !== 1) {
+    throw new ProxyProfileUnavailableError(proxyProfileId)
+  }
   return proxyUrlFromRow(row)
 }
 

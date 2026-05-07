@@ -9,27 +9,33 @@
       :is-management-view="isManagementView"
       :refresh-loading="loading"
       :result-options="resultOptions"
-      :status-code-options="statusCodeOptions"
       :system-accounts="systemAccounts"
       @reset="resetFilters"
-      @refresh="loadData"
-      @system-account-change="loadData"
+      @refresh="refreshRecords"
+      @search="applyFilters"
+      @system-account-change="applyFilters"
     />
 
     <ResponsiveDataList
       table-class="page-table usage-table"
       :columns="columns"
       :data-source="filteredRecords"
+      :mobile-data-source="mobileRecords"
       row-key="id"
       :loading="loading"
+      :loading-more="mobileLoadingMore"
+      :mobile-has-more="mobileHasMore"
+      :pagination="tablePagination"
       :scroll-x="isManagementView ? 2050 : 1870"
+      mobile-pagination
       pull-refresh-enabled
       :refreshing="loading"
       @change="handleTableChange"
-      @mobile-refresh="loadData"
+      @mobile-load-more="loadMoreMobileRecords"
+      @mobile-refresh="refreshMobileRecords"
     >
       <template #emptyText>
-        <a-empty class="page-empty-card" description="中转网关接入后开始产生使用记录。" />
+        <a-empty class="page-empty-card" description="当前条件下没有使用记录。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'apiKey'">
@@ -84,26 +90,37 @@
         <template v-else-if="column.key === 'createdAt'">
           <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
         </template>
+        <template v-else-if="column.key === 'actions'">
+          <a-button type="link" size="small" @click="openDetail(record)">详情</a-button>
+        </template>
       </template>
       <template #card="{ record }">
-        <UsageRecordMobileCard :is-management-view="isManagementView" :record="record" />
+        <UsageRecordMobileCard :is-management-view="isManagementView" :record="record" @detail="openDetail(record)" />
       </template>
     </ResponsiveDataList>
   </a-card>
+
+  <UsageRecordDetailDrawer
+    v-model:open="detailOpen"
+    :is-management-view="isManagementView"
+    :record="selectedRecord"
+    @close="closeDetail"
+  />
 
 </template>
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
+import UsageRecordDetailDrawer from './UsageRecordDetailDrawer.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
 import UsageRecordResultCell from './UsageRecordResultCell.vue'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
@@ -120,7 +137,10 @@ import {
 } from './usageRecordFormatters'
 
 const loading = ref(false)
+const mobileLoadingMore = ref(false)
 const records = ref<UsageRecordSummary[]>([])
+const detailOpen = ref(false)
+const selectedRecord = ref<UsageRecordSummary>()
 const accountNameFilter = ref('')
 const resultFilter = ref<'all' | 'success' | 'failed'>('all')
 const statusCodeFilter = ref<string>('')
@@ -131,6 +151,8 @@ type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
 type TableSortOrder = 'ascend' | 'descend' | null
 
 const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>({ field: 'createdAt', order: 'descend' })
+const pageSize = 100
+const pagination = reactive({ current: 1, pageSize, total: 0 })
 
 const resultOptions = [
   { label: '全部结果', value: 'all' },
@@ -138,40 +160,26 @@ const resultOptions = [
   { label: '失败', value: 'failed' }
 ] satisfies Array<{ label: string; value: 'all' | 'success' | 'failed' }>
 
-const statusCodeOptions = computed(() => {
-  const uniqueCodes = Array.from(
-    new Set(
-      records.value
-        .map((record) => record.statusCode)
-        .filter((value): value is number => typeof value === 'number')
-    )
-  ).sort((left, right) => left - right)
-
-  return uniqueCodes.map((code) => ({ label: String(code), value: String(code) }))
-})
-
 const activeFilterCount = computed(() => {
   let count = 0
+  if (accountNameFilter.value.trim()) count += 1
   if (resultFilter.value !== 'all') count += 1
   if (statusCodeFilter.value) count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
   return count
 })
 
-const filteredRecords = computed(() => {
-  const nameTerm = accountNameFilter.value.trim().toLowerCase()
-  return records.value.filter((record) => {
-    if (!matchesSystemAccountFilter(record, systemAccountFilter.value, isManagementView.value)) return false
-    if (nameTerm) {
-      const accountText = `${record.accountName ?? ''} ${record.accountId ?? ''}`.toLowerCase()
-      if (!accountText.includes(nameTerm)) return false
-    }
-    if (resultFilter.value === 'success' && !record.success) return false
-    if (resultFilter.value === 'failed' && record.success) return false
-    if (statusCodeFilter.value && String(record.statusCode ?? '') !== statusCodeFilter.value) return false
-    return true
-  })
-})
+const filteredRecords = computed(() => records.value)
+const mobileRecords = computed(() => records.value)
+const mobileHasMore = computed(() => records.value.length < pagination.total)
+const tablePagination = computed(() => ({
+  current: pagination.current,
+  pageSize: pagination.pageSize,
+  total: pagination.total,
+  hideOnSinglePage: true,
+  showSizeChanger: false,
+  showTotal: (total: number) => `共 ${total} 条使用记录`
+}))
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -193,20 +201,32 @@ const columns = computed(() => {
     { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 180, sorter: true, sortOrder: columnSortOrder('createdAt') },
     { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
     { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
-    { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 }
+    { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 },
+    { title: '操作', key: 'actions', width: 90, fixed: 'right' }
   )
   return baseColumns
 })
+
+function openDetail(record: UsageRecordSummary): void {
+  selectedRecord.value = record
+  detailOpen.value = true
+}
+
+function closeDetail(): void {
+  detailOpen.value = false
+}
 
 function resetFilters(): void {
   accountNameFilter.value = ''
   resultFilter.value = 'all'
   statusCodeFilter.value = ''
   systemAccountFilter.value = allSystemAccountsValue
+  pagination.current = 1
   void loadData()
 }
 
-async function handleTableChange(_pagination: unknown, _filters: unknown, sorter: unknown): Promise<void> {
+async function handleTableChange(paginationInfo: unknown, _filters: unknown, sorter: unknown): Promise<void> {
+  updatePaginationFromTable(paginationInfo)
   const normalized = normalizeTableSorter(sorter)
   sortState.value = normalized ?? { field: 'createdAt', order: 'descend' }
   await loadData()
@@ -231,23 +251,88 @@ function sortFieldFromColumn(value: unknown): UsageRecordSortField | undefined {
   return undefined
 }
 
-async function loadData() {
-  loading.value = true
+function updatePaginationFromTable(paginationInfo: unknown): void {
+  if (!paginationInfo || typeof paginationInfo !== 'object') return
+  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
+  const nextCurrent = Number(next.current)
+  const nextPageSize = Number(next.pageSize)
+  pagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
+  pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
+}
+
+function applyFilters(): void {
+  pagination.current = 1
+  void loadData()
+}
+
+function refreshRecords(): void {
+  pagination.current = 1
+  void loadData()
+}
+
+async function loadMoreMobileRecords(): Promise<void> {
+  if (!mobileHasMore.value || mobileLoadingMore.value) return
+  mobileLoadingMore.value = true
+  pagination.current += 1
   try {
-    const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
-    const sortOrder = sortState.value.order === 'ascend' ? 'asc' : 'desc'
-    const [recordList, systemAccountList] = await Promise.all([
-      api.usageRecords.list({ systemAccountId, sortBy: sortState.value.field, sortOrder }),
-      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
-    ])
-    records.value = recordList
+    await loadData({ append: true, quiet: true })
+  } finally {
+    mobileLoadingMore.value = false
+  }
+}
+
+async function refreshMobileRecords(): Promise<void> {
+  pagination.current = 1
+  await loadData()
+}
+
+async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Promise<void> {
+  if (!options.quiet) {
+    loading.value = true
+  }
+  try {
+    const [recordList, systemAccountList] = await fetchRecords()
+    pagination.current = recordList.page
+    pagination.pageSize = recordList.pageSize
+    pagination.total = recordList.total
+    records.value = options.append ? [...records.value, ...recordList.items] : recordList.items
     systemAccounts.value = systemAccountList
   } catch (error) {
     console.error(error)
     message.error('加载使用记录失败')
   } finally {
-    loading.value = false
+    if (!options.quiet) {
+      loading.value = false
+    }
   }
+}
+
+async function fetchRecords() {
+  const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
+  const sortOrder = sortState.value.order === 'ascend' ? 'asc' : 'desc'
+  const params: UsageRecordListParams = {
+    page: pagination.current,
+    pageSize: pagination.pageSize,
+    accountKeyword: accountNameFilter.value.trim() || undefined,
+    result: resultFilter.value,
+    statusCode: normalizedStatusCode(statusCodeFilter.value),
+    systemAccountId,
+    sortBy: sortState.value.field,
+    sortOrder
+  }
+  return Promise.all([
+    isManagementView.value
+      ? api.usageRecords.list(params)
+      : api.myUsageRecords.list(params),
+    isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+  ])
+}
+
+function normalizedStatusCode(value: string): number | undefined {
+  const text = value.trim()
+  if (!text) return undefined
+  const statusCode = Number(text)
+  return Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? statusCode : undefined
 }
 
 onMounted(loadData)

@@ -114,6 +114,7 @@
     </ResponsiveDataList>
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑分组' : '新建分组'" width="640px" :ok-button-props="{ type: 'primary' }" @ok="saveGroup">
+      <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
       <a-form layout="vertical">
         <a-form-item label="分组名称" required>
           <a-input v-model:value="form.name" />
@@ -189,6 +190,10 @@ const columns = computed(() => {
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const filteredGroups = computed(() => groups.value.filter((group) => matchesSystemAccountFilter(group, systemAccountFilter.value, isManagementView.value)))
+const groupScopeParams = computed(() => {
+  const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
+  return systemAccountId ? { systemAccountId } : undefined
+})
 const providerOptions = computed(() => availableProviders.value.map((provider) => ({
   label: provider.name,
   value: provider.code,
@@ -196,6 +201,12 @@ const providerOptions = computed(() => availableProviders.value.map((provider) =
 })))
 const providerLocked = computed(() => Boolean(editingId.value && groups.value.find((group) => group.id === editingId.value)?.accountStats.total))
 const activeFilterCount = computed(() => systemAccountFilter.value === allSystemAccountsValue ? 0 : 1)
+const targetSystemAccountLabel = computed(() => {
+  if (!isManagementView.value) return undefined
+  const systemAccountId = groupScopeParams.value?.systemAccountId
+  if (!systemAccountId) return '请选择系统账户后再创建'
+  return systemAccounts.value.find((account) => account.id === systemAccountId)?.displayName || systemAccounts.value.find((account) => account.id === systemAccountId)?.username || systemAccountId
+})
 
 function groupStats(group: GroupSummary) {
   return group.accountStats
@@ -256,9 +267,9 @@ function defaultProviderCode() {
 async function loadData() {
   loading.value = true
   try {
-    const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
+    const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
     const [groupList, providerList, systemAccountList] = await Promise.all([
-      api.groups.list({ systemAccountId }),
+      isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
       isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
       isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
@@ -279,6 +290,10 @@ function resetFilters() {
 }
 
 function openCreate() {
+  if (isManagementView.value && !groupScopeParams.value?.systemAccountId) {
+    message.warning('请先在右侧选择目标系统账户，再创建分组')
+    return
+  }
   editingId.value = undefined
   Object.assign(form, { name: '', providerCode: defaultProviderCode(), description: '', enabled: true })
   modalOpen.value = true
@@ -301,10 +316,18 @@ async function saveGroup() {
   }
   try {
     if (editingId.value) {
-      await api.groups.update(editingId.value, { ...form })
+      if (isManagementView.value) {
+        await api.groups.update(editingId.value, { ...form }, groupScopeParams.value)
+      } else {
+        await api.myGroups.update(editingId.value, { ...form })
+      }
       message.success('分组已更新')
     } else {
-      await api.groups.create({ ...form })
+      if (isManagementView.value) {
+        await api.groups.create({ ...form }, groupScopeParams.value)
+      } else {
+        await api.myGroups.create({ ...form })
+      }
       message.success('分组已创建')
     }
     modalOpen.value = false
@@ -326,7 +349,11 @@ async function removeGroup(id: string) {
     return
   }
   try {
-    await api.groups.delete(id)
+    if (isManagementView.value) {
+      await api.groups.delete(id, groupScopeParams.value)
+    } else {
+      await api.myGroups.delete(id)
+    }
     message.success('分组已删除')
     await loadData()
   } catch (error) {

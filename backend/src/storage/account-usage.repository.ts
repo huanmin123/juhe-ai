@@ -16,6 +16,9 @@ import { addUsageSummaries, emptyUsageByWindow, USAGE_STATS_WINDOWS } from './us
 export function getAccountUsageStatsOverview(input: {
   access?: AccessScope
   accounts: AccountSummary[]
+  total?: number
+  page?: number
+  pageSize?: number
   loadUsageByWindow: (scopes: UsageScopeRequest[]) => Map<string, UsageByWindow>
 }): AccountUsageStatsOverview {
   const scopes = input.accounts.map((account) => ({
@@ -45,6 +48,9 @@ export function getAccountUsageStatsOverview(input: {
       authorizationCount: account.authorizationCount ?? 0,
       authorizationTeamCount: account.authorizationTeamCount ?? 0
     })),
+    total: input.total ?? input.accounts.length,
+    page: input.page ?? 1,
+    pageSize: input.pageSize ?? input.accounts.length,
     statsLagSeconds: latestUsageStatsLagSeconds()
   }
 }

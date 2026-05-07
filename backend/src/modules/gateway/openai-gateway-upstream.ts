@@ -107,10 +107,17 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
   return new Promise((resolve, reject) => {
     const url = new URL(upstreamUrl)
     const transport = url.protocol === 'http:' ? http : https
+    let agent: http.Agent | undefined
+    try {
+      agent = options.proxyUrl ? createProxyAgent(options.proxyUrl) as http.Agent : undefined
+    } catch (error) {
+      reject(error)
+      return
+    }
     const requestOptions: http.RequestOptions = {
       method: options.method,
       headers: headersToNodeHeaders(options.headers),
-      agent: options.proxyUrl ? createProxyAgent(options.proxyUrl) as http.Agent : undefined
+      agent
     }
     let requestTimeout: NodeJS.Timeout | undefined
     const clearRequestTimeout = () => {

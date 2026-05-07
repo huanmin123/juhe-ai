@@ -45,12 +45,13 @@
       :mobile-has-more="mobileHasMoreAccounts"
       :pagination="accountTablePagination"
       :provider-name="providerName"
+      :proxy="proxyById"
       :refreshing="mobileRefreshing"
       :row-selection="rowSelection"
       :table-scroll-x="tableScrollX"
       :table-scroll-y="tableScrollY"
       @bind-group="openBindGroup"
-      @change="handleAccountTableChange"
+      @change="handleAccountTableChangeAndLoad"
       @delete="removeAccount"
       @edit="openEdit"
       @menu-click="handleAccountMenuClick"
@@ -97,6 +98,7 @@
       :selected-provider="selectedProvider"
       :status-options="statusEditOptions"
       :title="modalTitle"
+      :target-system-account-label="targetSystemAccountLabel"
       @cancel="handleModalCancel"
       @copy-auth-url="copyText"
       @generate-auth-url="generateOAuthUrl"
@@ -183,7 +185,7 @@ import {
   accountColumnSortOrder as resolveAccountColumnSortOrder,
   normalizeAccountTableSorts
 } from './accountTableColumns'
-import { countActiveAccountFilters, filterAccounts } from './accountListFilters'
+import { countActiveAccountFilters } from './accountListFilters'
 import { useAccountMobilePagination } from './useAccountMobilePagination'
 
 const loading = ref(false)
@@ -212,6 +214,7 @@ const proxies = ref<ProxyProfileOptionSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const filters = reactive<AccountFilters>({ keyword: '', type: 'all', status: 'all', schedulable: 'all', systemAccountId: allSystemAccountsValue })
+const accountPagination = reactive({ current: 1, pageSize: ACCOUNT_PAGE_SIZE, total: 0 })
 const testForm = reactive({ model: 'gpt-5.5', prompt: 'hi' })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const router = useRouter()
@@ -238,28 +241,31 @@ const columns = computed(() => buildAccountTableColumns(isManagementView.value, 
 const tableScrollX = computed(() => accountTableScrollX(isManagementView.value))
 const tableScrollY = computed(accountTableScrollY)
 
-const filteredAccounts = computed(() => filterAccounts({
-  accounts: accounts.value,
-  filters,
-  groupNameForAccount,
-  isManagementView: isManagementView.value
-}))
+const filteredAccounts = computed(() => accounts.value)
 
 const {
   mobileHasMore: mobileHasMoreAccounts,
   mobileLoadingMore,
   mobileRefreshing,
-  mobileVisibleCount,
   tablePagination: accountTablePagination,
-  clampPagination: clampAccountListPagination,
   handleTableChange: handleAccountTableChange,
   loadMoreMobile: loadMoreMobileAccounts,
   refreshMobile: refreshMobileAccounts,
   resetPagination: resetAccountListPagination
-} = useAccountMobilePagination(ACCOUNT_PAGE_SIZE, () => filteredAccounts.value.length, loadData)
-const mobileVisibleAccounts = computed(() => filteredAccounts.value.slice(0, mobileVisibleCount.value))
+} = useAccountMobilePagination(ACCOUNT_PAGE_SIZE, () => accountPagination.total, loadData, accountPagination)
+const mobileVisibleAccounts = computed(() => filteredAccounts.value)
 
 const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, isManagementView.value, allSystemAccountsValue))
+const accountScopeParams = computed(() => {
+  const systemAccountId = scopedSystemAccountId(filters.systemAccountId)
+  return systemAccountId ? { systemAccountId } : undefined
+})
+const targetSystemAccountLabel = computed(() => {
+  if (!isManagementView.value) return undefined
+  const systemAccountId = accountScopeParams.value?.systemAccountId
+  if (!systemAccountId) return '请选择系统账户后再创建'
+  return systemAccounts.value.find((account) => account.id === systemAccountId)?.displayName || systemAccounts.value.find((account) => account.id === systemAccountId)?.username || systemAccountId
+})
 
 const testModelOptions = computed(() => {
   const models = providerModels.value.length ? providerModels.value.map((item) => item.model) : defaultTestModelOptions
@@ -288,7 +294,12 @@ function toggleAccountSelection(account: AccountSummary) {
     : [...selectedAccountIds.value, account.id]
 }
 
-const proxyOptions = computed(() => proxies.value.map((proxy) => ({ label: `${proxy.name} (${proxy.type})`, value: proxy.id })))
+const proxyOptions = computed(() => proxies.value.map((proxy) => ({
+  label: `${proxy.name}（${proxy.type}${proxy.enabled === false ? '，已停用' : ''}）`,
+  value: proxy.id,
+  disabled: proxy.enabled === false
+})))
+const proxyById = (proxyProfileId?: string) => proxies.value.find((proxy) => proxy.id === proxyProfileId)
 const providerGroups = computed(() => groups.value.filter((group) => canManageGroupAccounts(group) && (!form.providerCode || group.providerCode === form.providerCode)))
 const groupOptions = computed(() => providerGroups.value.map((group) => ({ label: group.name, value: group.id })))
 const bindGroupOptions = computed(() => {
@@ -409,7 +420,7 @@ function canUseAsTrafficMigrationTarget(source: AccountSummary, target: AccountS
 
 async function handleAccountSortChange(sorts: ResponsiveDataListSort[]) {
   accountSorts.value = normalizeAccountTableSorts(sorts)
-  resetAccountListPagination()
+  resetAccountPagination()
   await loadData()
 }
 
@@ -451,24 +462,28 @@ async function copyText(value: string) {
   message.success('已复制')
 }
 
-async function loadData() {
-  loading.value = true
+async function loadData(options: { append?: boolean; quiet?: boolean } = {}) {
+  if (!options.quiet) {
+    loading.value = true
+  }
   try {
-    const systemAccountId = scopedSystemAccountId(filters.systemAccountId)
+    const systemAccountId = isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
     const [accountList, providerList, proxyList, groupList, systemAccountList] = await Promise.all([
-      api.accounts.list({ systemAccountId, sorts: accountSorts.value }),
+      isManagementView.value ? api.accounts.list(accountListParams(systemAccountId)) : api.myAccounts.list(accountListParams()),
       isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
       api.proxies.options(),
-      api.groups.list({ systemAccountId }),
+      isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
       isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
     ])
-    accounts.value = accountList
+    accountPagination.current = accountList.page
+    accountPagination.pageSize = accountList.pageSize
+    accountPagination.total = accountList.total
+    accounts.value = options.append ? [...accounts.value, ...accountList.items] : accountList.items
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
     proxies.value = proxyList
     groups.value = groupList
     systemAccounts.value = systemAccountList
-    selectedAccountIds.value = selectedAccountIds.value.filter((id) => accountList.some((account) => account.id === id && canEditAccount(account)))
-    clampAccountListPagination()
+    selectedAccountIds.value = selectedAccountIds.value.filter((id) => accounts.value.some((account) => account.id === id && canEditAccount(account)))
     if (modalOpen.value && !editingId.value) {
       ensureDefaultGroupSelected()
     }
@@ -476,12 +491,38 @@ async function loadData() {
     console.error(error)
     message.error('加载账户失败')
   } finally {
-    loading.value = false
+    if (!options.quiet) {
+      loading.value = false
+    }
   }
 }
 
 function applyFilters() {
   filters.keyword = filters.keyword.trim()
+  resetAccountPagination()
+  void loadData()
+}
+
+async function handleAccountTableChangeAndLoad(paginationInfo: unknown): Promise<void> {
+  handleAccountTableChange(paginationInfo)
+  await loadData()
+}
+
+function accountListParams(systemAccountId?: string) {
+  return {
+    systemAccountId,
+    sorts: accountSorts.value,
+    page: accountPagination.current,
+    pageSize: accountPagination.pageSize,
+    keyword: filters.keyword.trim() || undefined,
+    type: filters.type,
+    status: filters.status,
+    schedulable: filters.schedulable
+  }
+}
+
+function resetAccountPagination() {
+  accountPagination.current = 1
   resetAccountListPagination()
 }
 
@@ -493,7 +534,7 @@ function resetFilters() {
     schedulable: 'all',
     systemAccountId: allSystemAccountsValue
   })
-  resetAccountListPagination()
+  resetAccountPagination()
   void loadData()
 }
 
@@ -506,7 +547,7 @@ function extractApiErrorMessage(error: unknown, fallback: string): string {
 
 function handleSystemAccountFilterChange() {
   selectedAccountIds.value = []
-  resetAccountListPagination()
+  resetAccountPagination()
   void loadData()
 }
 
@@ -515,6 +556,10 @@ function clearSelection() {
 }
 
 function openCreate() {
+  if (isManagementView.value && !accountScopeParams.value?.systemAccountId) {
+    message.warning('请先在右侧选择目标系统账户，再创建 AI 账户')
+    return
+  }
   editingId.value = undefined
   resetForm('', '')
   modalOpen.value = true
@@ -602,7 +647,11 @@ async function saveBindGroup() {
   }
   bindGroupSaving.value = true
   try {
-    await api.accounts.bindGroup(bindingAccount.value.id, { groupId: bindGroupForm.groupId })
+    if (isManagementView.value) {
+      await api.accounts.bindGroup(bindingAccount.value.id, { groupId: bindGroupForm.groupId }, accountScopeParams.value)
+    } else {
+      await api.myAccounts.bindGroup(bindingAccount.value.id, { groupId: bindGroupForm.groupId })
+    }
     message.success('授权账户已绑定分组')
     bindGroupModalOpen.value = false
     bindingAccount.value = undefined
@@ -624,10 +673,13 @@ async function saveTrafficMigration() {
   }
   trafficMigrationSaving.value = true
   try {
-    const result = await api.accounts.migrateTraffic(source.id, {
+    const payload = {
       targetAccountId: trafficMigrationForm.targetAccountId,
       sourceStatus: trafficMigrationForm.sourceStatus
-    })
+    }
+    const result = isManagementView.value
+      ? await api.accounts.migrateTraffic(source.id, payload, accountScopeParams.value)
+      : await api.myAccounts.migrateTraffic(source.id, payload)
     const statusText = result.sourceStatus === 'disabled' ? '停用账户' : '临时不可调用'
     message.success(`后续请求将切到 ${result.targetAccount.name}，当前连接不中断；原账户已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
     trafficMigrationModalOpen.value = false
@@ -717,13 +769,21 @@ async function saveAccount() {
   saving.value = true
   try {
     if (editingId.value) {
-      await api.accounts.update(editingId.value, payload)
+      if (isManagementView.value) {
+        await api.accounts.update(editingId.value, payload, accountScopeParams.value)
+      } else {
+        await api.myAccounts.update(editingId.value, payload)
+      }
       message.success('账户已更新')
     } else if (form.type === 'oauth') {
       await createOAuthAccountFromUnifiedForm()
       message.success('OAuth 账户已创建')
     } else {
-      await api.accounts.create(payload)
+      if (isManagementView.value) {
+        await api.accounts.create(payload, accountScopeParams.value)
+      } else {
+        await api.myAccounts.create(payload)
+      }
       message.success('账户已创建')
     }
     modalOpen.value = false
@@ -739,7 +799,7 @@ async function saveAccount() {
 async function generateOAuthUrl() {
   authLoading.value = true
   try {
-    authResult.value = await api.openaiOAuth.authUrl({})
+    authResult.value = isManagementView.value ? await api.openaiOAuth.authUrl({}) : await api.myOpenaiOAuth.authUrl({})
     message.success('授权链接已生成')
   } catch (error) {
     console.error(error)
@@ -766,18 +826,28 @@ async function createOAuthAccountFromUnifiedForm() {
   }
 
   if (form.oauthMode === 'manual') {
-    await api.openaiOAuth.createFromCode({
+    const payload = {
       ...commonPayload,
       sessionId: authResult.value?.sessionId,
       callbackUrl: form.callbackUrl
-    })
+    }
+    if (isManagementView.value) {
+      await api.openaiOAuth.createFromCode(payload, accountScopeParams.value)
+    } else {
+      await api.myOpenaiOAuth.createFromCode(payload)
+    }
     return
   }
 
-  await api.openaiOAuth.createFromRefreshToken({
+  const payload = {
     ...commonPayload,
     refreshToken: form.refreshToken
-  })
+  }
+  if (isManagementView.value) {
+    await api.openaiOAuth.createFromRefreshToken(payload, accountScopeParams.value)
+  } else {
+    await api.myOpenaiOAuth.createFromRefreshToken(payload)
+  }
 }
 
 async function loadTestModels() {
@@ -810,10 +880,13 @@ async function runAccountTest() {
   testResult.value = undefined
   testRunning.value = true
   try {
-    const result = await api.accounts.test(testingAccount.value.id, {
+    const payload = {
       model: testForm.model,
       prompt: testForm.prompt
-    })
+    }
+    const result = isManagementView.value
+      ? await api.accounts.test(testingAccount.value.id, payload, accountScopeParams.value)
+      : await api.myAccounts.test(testingAccount.value.id, payload)
     testResult.value = result
     if (result.success) {
       message.success(`${testingAccount.value.name}: ${result.message}${result.tokenRefreshed ? '，并已刷新 token' : ''}`)
@@ -852,7 +925,10 @@ async function testAccount(account: AccountSummary) {
 async function testAccountSilently(account: AccountSummary) {
   if (!canTestAccount(account)) return undefined
   try {
-    return await api.accounts.test(account.id, { model: testForm.model, prompt: testForm.prompt })
+    const payload = { model: testForm.model, prompt: testForm.prompt }
+    return isManagementView.value
+      ? await api.accounts.test(account.id, payload, accountScopeParams.value)
+      : await api.myAccounts.test(account.id, payload)
   } catch (error) {
     console.error(error)
     return undefined
@@ -871,7 +947,9 @@ async function batchUpdateAccounts(
   }
   const hide = message.loading(`${loadingLabel}（${selected.length} 个）...`, 0)
   try {
-    const results = await Promise.allSettled(selected.map((account) => api.accounts.update(account.id, payloadBuilder(account))))
+    const results = await Promise.allSettled(selected.map((account) => isManagementView.value
+      ? api.accounts.update(account.id, payloadBuilder(account), accountScopeParams.value)
+      : api.myAccounts.update(account.id, payloadBuilder(account))))
     const failedCount = results.filter((result) => result.status === 'rejected').length
     if (failedCount === 0) {
       message.success(successLabel)
@@ -940,7 +1018,11 @@ async function updateAccountState(account: AccountSummary, payload: Record<strin
     return
   }
   try {
-    await api.accounts.update(account.id, payload)
+    if (isManagementView.value) {
+      await api.accounts.update(account.id, payload, accountScopeParams.value)
+    } else {
+      await api.myAccounts.update(account.id, payload)
+    }
     message.success(successText)
     await loadData()
   } catch (error) {
@@ -983,7 +1065,11 @@ function handleAccountMenuClick(event: { key: string | number }, account: Accoun
 
 async function removeAccount(id: string) {
   try {
-    await api.accounts.delete(id)
+    if (isManagementView.value) {
+      await api.accounts.delete(id, accountScopeParams.value)
+    } else {
+      await api.myAccounts.delete(id)
+    }
     message.success('账户已删除')
     await loadData()
   } catch (error) {

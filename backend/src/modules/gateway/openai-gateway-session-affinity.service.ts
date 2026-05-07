@@ -19,7 +19,7 @@ const sessionAffinityCache = createAppCache<string, SessionBinding>({
 
 export function resolveOpenAIGatewaySessionAffinityKey(req: Request, input: {
   systemAccountId: string
-  apiKeyId: string
+  apiKeyId?: string
   groupId: string
 }): string | undefined {
   const session = extractSessionIdentity(req)
@@ -29,7 +29,7 @@ export function resolveOpenAIGatewaySessionAffinityKey(req: Request, input: {
   return createHash('sha256')
     .update(JSON.stringify({
       systemAccountId: input.systemAccountId,
-      apiKeyId: input.apiKeyId,
+      apiKeyId: input.apiKeyId ?? 'internal',
       groupId: input.groupId,
       session
     }))

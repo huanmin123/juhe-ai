@@ -30,7 +30,7 @@ export interface GatewayUsageContext {
   traceId: string
   clientIp?: string
   systemAccountId: string
-  apiKeyId: string
+  apiKeyId?: string
   groupId: string
   endpoint: string
   requestSnapshot: UsageRequestSnapshot

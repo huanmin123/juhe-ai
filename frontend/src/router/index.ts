@@ -82,6 +82,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '统计概览',
       description: '按监控窗口查看有效请求、Token 使用趋势、模型分布、消耗错误和系统性能。',
+      viewScope: 'admin',
       roles: ['admin']
     }
   },
@@ -91,6 +92,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '供应商',
       description: '管理当前支持的供应商能力与模型定价，第一期仅启用 OpenAI。',
+      viewScope: 'admin',
       roles: ['admin']
     }
   },
@@ -150,6 +152,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '代理管理',
       description: '管理可绑定到账户的代理配置，支持刷新、测试和后续转发。',
+      viewScope: 'admin',
       roles: ['admin']
     }
   },
@@ -179,6 +182,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '审计日志',
       description: '按 traceId 追溯原始请求、上游尝试、响应头和完整 payload，失败请求全量记录，成功请求按采样保存。',
+      viewScope: 'admin',
       roles: ['admin']
     }
   },
@@ -188,6 +192,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '日志搜索',
       description: '索引查询检索最近 3 天运行日志，grep 模式按关键字扫描日志文件，结果默认展示最新记录。',
+      viewScope: 'admin',
       roles: ['admin']
     }
   },
@@ -197,6 +202,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '系统账户管理',
       description: '管理后台登录账号、角色、状态和初始密码。',
+      viewScope: 'admin',
       roles: ['admin']
     }
   },
@@ -206,6 +212,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '系统设置',
       description: '配置本地网关与账户调度的默认策略，不覆盖账号里的显式配置。',
+      viewScope: 'admin',
       roles: ['admin']
     }
   }

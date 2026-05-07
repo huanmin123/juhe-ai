@@ -12,7 +12,9 @@
     "package:release:linux": "bash ./scripts/package-release.sh",
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
-    "test:smoke": "pnpm --filter juhe-ai-backend test:smoke"
+    "test:smoke": "pnpm --filter juhe-ai-backend test:smoke",
+    "test:scope": "pnpm --filter juhe-ai-backend test:scope",
+    "test:proxy-negative": "pnpm --filter juhe-ai-backend test:proxy-negative"
   },
   "engines": {
     "node": ">=22.5.0",

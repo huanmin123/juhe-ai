@@ -6,8 +6,27 @@ export interface AccountListSort {
   order: AccountListSortDirection
 }
 
+export type AccountListSchedulableFilter = 'all' | 'enabled' | 'disabled' | 'cooling'
+
 export interface AccountListOptions {
   sorts?: AccountListSort[]
+  page?: number
+  pageSize?: number
+  limit?: number
+  keyword?: string
+  type?: string
+  status?: string
+  schedulable?: AccountListSchedulableFilter
+}
+
+export interface NormalizedAccountListOptions {
+  sorts: AccountListSort[]
+  page: number
+  pageSize: number
+  keyword?: string
+  type?: string
+  status?: string
+  schedulable: AccountListSchedulableFilter
 }
 
 const accountListSortColumns: Record<AccountListSortField, string> = {
@@ -24,8 +43,10 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
 }
 
 const defaultAccountListSorts: AccountListSort[] = [{ field: 'priority', order: 'asc' }]
+const defaultAccountListPageSize = 50
+const maxAccountListPageSize = 200
 
-export function normalizeAccountListOptions(options?: AccountListOptions): Required<AccountListOptions> {
+export function normalizeAccountListOptions(options?: AccountListOptions): NormalizedAccountListOptions {
   const seenFields = new Set<AccountListSortField>()
   const sorts = (options?.sorts ?? [])
     .filter((sort): sort is AccountListSort => isAccountListSortField(sort.field) && isAccountListSortDirection(sort.order))
@@ -34,17 +55,37 @@ export function normalizeAccountListOptions(options?: AccountListOptions): Requi
       seenFields.add(sort.field)
       return true
     })
+  const rawPage = options?.page
+  const rawPageSize = options?.pageSize ?? options?.limit
+  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
+    ? Math.min(maxAccountListPageSize, Math.max(1, rawPageSize))
+    : defaultAccountListPageSize
   return {
-    sorts: sorts.length ? sorts : defaultAccountListSorts
+    sorts: sorts.length ? sorts : defaultAccountListSorts,
+    page,
+    pageSize,
+    keyword: normalizeTextFilter(options?.keyword),
+    type: normalizeTextFilter(options?.type),
+    status: normalizeTextFilter(options?.status),
+    schedulable: isSchedulableFilter(options?.schedulable) ? options.schedulable : 'all'
   }
 }
 
-export function buildAccountListOrderClause(options: Required<AccountListOptions>): string {
+export function buildAccountListOrderClause(options: Pick<NormalizedAccountListOptions, 'sorts'>): string {
   const orderParts = options.sorts.map((sort) => {
     const direction = sort.order === 'desc' ? 'DESC' : 'ASC'
     return `${accountListSortColumns[sort.field]} ${direction}`
   })
   return `ORDER BY ${orderParts.join(', ')}`
+}
+
+function normalizeTextFilter(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function isSchedulableFilter(value: unknown): value is AccountListSchedulableFilter {
+  return value === 'all' || value === 'enabled' || value === 'disabled' || value === 'cooling'
 }
 
 function isAccountListSortField(value: unknown): value is AccountListSortField {

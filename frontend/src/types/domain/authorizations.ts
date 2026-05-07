@@ -91,6 +91,10 @@ export interface ResourceAuthorizationSummary {
   usage: AccountUsageSummary
   usageBySystemAccount?: AuthorizationUserUsageDetail[]
   usageByWindow?: UsageByWindow
+  permissions?: {
+    canEdit: boolean
+    canAuthorize: boolean
+  }
 }
 
 export interface AccountUsageStatsRow {
@@ -113,6 +117,9 @@ export interface AccountUsageStatsRow {
 export interface AccountUsageStatsOverview {
   windows: UsageStatsWindowDefinition[]
   rows: AccountUsageStatsRow[]
+  total: number
+  page: number
+  pageSize: number
   statsLagSeconds: number
 }
 

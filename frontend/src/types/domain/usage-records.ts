@@ -43,3 +43,10 @@ export interface UsageRecordSummary {
   responseSnapshot?: UsageRecordLogSnapshot
   createdAt: string
 }
+
+export interface UsageRecordListResult {
+  items: UsageRecordSummary[]
+  total: number
+  page: number
+  pageSize: number
+}

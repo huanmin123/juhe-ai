@@ -4,7 +4,9 @@ import { z } from 'zod'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import {
   getAccountAuthorizationUsageOverview,
-  getAccountUsageStatsOverview
+  getAccountUsageStatsOverviewPage,
+  type AccountListOptions,
+  type AccountListSchedulableFilter
 } from '../../storage/repositories.js'
 import {
   getSystemMetricsOverview,
@@ -34,8 +36,35 @@ statsRouter.get('/usage-overview', (req, res) => {
 })
 
 statsRouter.get('/account-usage', (req, res) => {
-  res.json(ok(getAccountUsageStatsOverview(getRequestAccessScope(req.query.systemAccountId))))
+  res.json(ok(getAccountUsageStatsOverviewPage(getRequestAccessScope(req.query.systemAccountId), parseAccountUsageOptions(req.query))))
 })
+
+function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOptions {
+  return {
+    page: integerQueryValue(query.page),
+    pageSize: integerQueryValue(query.pageSize),
+    limit: integerQueryValue(query.limit),
+    keyword: optionalQueryText(query.keyword),
+    type: optionalQueryText(query.type),
+    schedulable: schedulableQueryValue(query.schedulable)
+  }
+}
+
+function integerQueryValue(value: unknown): number | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  const number = typeof text === 'string' ? Number(text) : typeof text === 'number' ? text : undefined
+  return Number.isInteger(number) ? number : undefined
+}
+
+function optionalQueryText(value: unknown): string | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  return typeof text === 'string' && text.trim() ? text.trim() : undefined
+}
+
+function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | undefined {
+  const text = optionalQueryText(value)
+  return text === 'all' || text === 'enabled' || text === 'disabled' || text === 'cooling' ? text : undefined
+}
 
 statsRouter.get('/accounts/:id/authorization-usage', (req, res) => {
   const parsed = accountIdParamsSchema.safeParse(req.params)

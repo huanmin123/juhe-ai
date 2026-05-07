@@ -34,6 +34,7 @@
         :group-name="groupName(record.id)"
         :menu-items="menuItems(record)"
         :provider-name="providerName(record.providerCode)"
+        :proxy="proxy(record.proxyProfileId)"
         @bind-group="$emit('bind-group', $event)"
         @delete="$emit('delete', $event.id)"
         @edit="$emit('edit', $event)"
@@ -51,6 +52,7 @@
         :is-management-view="isManagementView"
         :menu-items="menuItems(record)"
         :provider-name="providerName(record.providerCode)"
+        :proxy="proxy(record.proxyProfileId)"
         :selected="isSelected(record.id)"
         @delete="$emit('delete', record.id)"
         @edit="$emit('edit', record)"
@@ -66,7 +68,7 @@
 <script setup lang="ts">
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
-import type { AccountSummary } from '@/types/domain'
+import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountMobileCard from './AccountMobileCard.vue'
 import AccountTableCell from './AccountTableCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
@@ -88,6 +90,7 @@ defineProps<{
   mobileHasMore: boolean
   pagination: Record<string, unknown>
   providerName: (providerCode?: string) => string
+  proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
   refreshing: boolean
   rowSelection: Record<string, unknown>
   tableScrollX: number

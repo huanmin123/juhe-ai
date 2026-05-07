@@ -1,4 +1,4 @@
-import { buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, currentSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { getDatabase, newId, nowIso } from './database.js'
 import { loadSystemAccountNameMap } from './repository-lookups.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
@@ -42,9 +42,22 @@ export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' |
 export type UsageRecordSortDirection = 'asc' | 'desc'
 
 export interface UsageRecordListOptions {
+  page?: number
+  pageSize?: number
   sortBy?: UsageRecordSortField
   sortOrder?: UsageRecordSortDirection
   limit?: number
+  accountKeyword?: string
+  result?: 'success' | 'failed' | 'all'
+  statusCode?: number
+  model?: string
+}
+
+export interface UsageRecordListResult {
+  items: UsageRecordSummary[]
+  total: number
+  page: number
+  pageSize: number
 }
 
 export interface UsageRecordInput {
@@ -102,16 +115,27 @@ const usageRecordSortColumns: Record<UsageRecordSortField, string> = {
   costUsd: 'ur.cost_usd'
 }
 
-const usageRecordDefaultLimit = 200
-const usageRecordMaxLimit = 500
+type UsageRecordFilterValue = string | number
 
-export function listUsageRecords(access?: AccessScope, options?: UsageRecordListOptions): UsageRecordSummary[] {
-  const scope = buildSystemAccountWhereClause(access, 'ur.system_account_id')
+const usageRecordDefaultPageSize = 50
+const usageRecordMaxPageSize = 200
+
+export function listUsageRecords(access?: AccessScope, options?: UsageRecordListOptions): UsageRecordListResult {
+  const filters = buildUsageRecordFilters(access, options)
   const listOptions = normalizeUsageRecordListOptions(options)
   const orderClause = buildUsageRecordOrderClause(listOptions)
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
-  const rows = getDatabase()
+  const database = getDatabase()
+  const totalRow = database
+    .prepare(`
+      SELECT COUNT(*) AS total
+      FROM usage_records ur
+      LEFT JOIN accounts a ON a.id = ur.account_id
+      ${filters.clause}
+    `)
+    .get(...filters.params) as Record<string, unknown> | undefined
+  const rows = database
     .prepare(`
       SELECT
         ur.*,
@@ -122,12 +146,17 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
       LEFT JOIN api_keys ak ON ak.id = ur.api_key_id
       LEFT JOIN groups g ON g.id = ur.group_id
       LEFT JOIN accounts a ON a.id = ur.account_id
-      ${scope.clause}
+      ${filters.clause}
       ${orderClause}
-      LIMIT ?
+      LIMIT ? OFFSET ?
     `)
-    .all(...scope.params, listOptions.limit) as Array<Record<string, unknown>>
-  return rows.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
+    .all(...filters.params, listOptions.pageSize, (listOptions.page - 1) * listOptions.pageSize) as Array<Record<string, unknown>>
+  return {
+    items: rows.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames)),
+    total: Number(totalRow?.total ?? 0),
+    page: listOptions.page,
+    pageSize: listOptions.pageSize
+  }
 }
 
 export function createUsageRecord(input: UsageRecordInput): void {
@@ -271,24 +300,63 @@ function usageRecordSummaryFromRow(
   }
 }
 
-function normalizeUsageRecordListOptions(options?: UsageRecordListOptions): Required<UsageRecordListOptions> {
+function normalizeUsageRecordListOptions(options?: UsageRecordListOptions): Required<Pick<UsageRecordListOptions, 'page' | 'pageSize' | 'sortBy' | 'sortOrder'>> {
   const sortBy = options?.sortBy && Object.prototype.hasOwnProperty.call(usageRecordSortColumns, options.sortBy)
     ? options.sortBy
     : 'createdAt'
   const sortOrder = options?.sortOrder === 'asc' ? 'asc' : 'desc'
-  const rawLimit = options?.limit
-  const limit = typeof rawLimit === 'number' && Number.isInteger(rawLimit)
-    ? Math.min(usageRecordMaxLimit, Math.max(1, rawLimit))
-    : usageRecordDefaultLimit
-  return { sortBy, sortOrder, limit }
+  const rawPage = options?.page
+  const rawPageSize = options?.pageSize ?? options?.limit
+  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
+    ? Math.min(usageRecordMaxPageSize, Math.max(1, rawPageSize))
+    : usageRecordDefaultPageSize
+  return { page, pageSize, sortBy, sortOrder }
 }
 
-function buildUsageRecordOrderClause(options: Required<UsageRecordListOptions>): string {
+function buildUsageRecordOrderClause(options: Required<Pick<UsageRecordListOptions, 'page' | 'pageSize' | 'sortBy' | 'sortOrder'>>): string {
   const direction = options.sortOrder === 'asc' ? 'ASC' : 'DESC'
   if (options.sortBy === 'createdAt') {
     return `ORDER BY ur.created_at ${direction}, ur.id ${direction}`
   }
   return `ORDER BY ${usageRecordSortColumns[options.sortBy]} ${direction}, ur.created_at ${direction}, ur.id ${direction}`
+}
+
+function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordListOptions): { clause: string; params: UsageRecordFilterValue[] } {
+  const clauses: string[] = []
+  const params: UsageRecordFilterValue[] = []
+  const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
+  if (scope.clause) {
+    clauses.push(scope.clause.replace(/^ AND /, ''))
+    params.push(...scope.params)
+  }
+  const accountKeyword = options?.accountKeyword?.trim()
+  if (accountKeyword) {
+    clauses.push('(a.name LIKE ? OR ur.account_id LIKE ?)')
+    params.push(`%${accountKeyword}%`, `%${accountKeyword}%`)
+  }
+  if (options?.result === 'success') {
+    clauses.push('ur.success = 1')
+  } else if (options?.result === 'failed') {
+    clauses.push('ur.success = 0')
+  }
+  if (isHttpStatusCode(options?.statusCode)) {
+    clauses.push('ur.status_code = ?')
+    params.push(options.statusCode)
+  }
+  const model = options?.model?.trim()
+  if (model) {
+    clauses.push('ur.model LIKE ?')
+    params.push(`%${model}%`)
+  }
+  return {
+    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+    params
+  }
+}
+
+function isHttpStatusCode(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599
 }
 
 function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | undefined {

@@ -3,10 +3,10 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { AccountAuthorizationUsageOverview, AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
-import { accountCredentialsForList, listAccountRowsForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
+import { accountCredentialsForList, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { getAccountAuthorizationUsageOverview as buildAccountAuthorizationUsageOverview, getAccountUsageStatsOverview as buildAccountUsageStatsOverview } from './account-usage.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
-import { createApiKeyRecord, deleteApiKey, listApiKeys, updateApiKey } from './api-key.repository.js'
+import { createApiKeyRecord, deleteApiKey, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
@@ -18,6 +18,7 @@ import { listGroupRowsForAccess, loadGroupAuthorizationUsageSummaries } from './
 import { loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
+import { resolveEnabledProxyProfileId } from './proxy.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap, loadSystemAccountsByIds, loadSystemTeamNameMap } from './repository-lookups.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
@@ -41,7 +42,7 @@ import {
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 const manualTrafficMigrationReason = '手动迁移流量'
 
-export type { AccountListOptions, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
+export type { AccountListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
 
 export class DuplicateAccountCredentialError extends Error {
   constructor() {
@@ -62,6 +63,7 @@ export {
   createApiKeyRecord,
   deleteApiKey,
   listApiKeys,
+  listApiKeysPage,
   updateApiKey
 } from './api-key.repository.js'
 export { listErrorPolicies } from './error-policy.repository.js'
@@ -89,6 +91,8 @@ export {
   listProxyOptions,
   listProxies,
   ProxyInUseError,
+  ProxyProfileUnavailableError,
+  resolveEnabledProxyProfileId,
   resolveProxyUrlForProfile,
   resolveProxyUrlForProfileForSystemAccount,
   updateProxyTestState,
@@ -118,12 +122,17 @@ export {
   createUsageRecordsBatch,
   listUsageRecords,
   type UsageRecordInput,
+  type UsageRecordListResult,
   type UsageRecordListOptions,
   type UsageRecordLogSnapshot,
   type UsageRecordSortDirection,
   type UsageRecordSortField,
   type UsageRecordSummary
 } from './usage-records.repository.js'
+export type {
+  ApiKeyListOptions,
+  ApiKeyListResult
+} from './api-key.repository.js'
 export {
   cleanupAuditLogsBefore,
   createAuditLogsBatch,
@@ -165,6 +174,7 @@ export {
   type UsageStatsRetentionCleanupResult
 } from './data-retention.repository.js'
 export {
+  findOpenAIAccountForGroup,
   listOpenAIAccountsForGroup,
   resolveGroupUsageAccessMetadata,
   selectOpenAIAccountForGroup,
@@ -215,9 +225,9 @@ function canUseAccount(accountId: string, systemAccountId: string): boolean {
   return Boolean(activeResourceAuthorization('account', accountId, systemAccountId))
 }
 
-function accountRowForManage(accountId: string): AccountRow | undefined {
+function accountRowForManage(accountId: string, access?: AccessScope): AccountRow | undefined {
   const row = getDatabase().prepare('SELECT * FROM accounts WHERE id = ?').get(accountId) as unknown as AccountRow | undefined
-  if (!row || !canManageResourceOwner(row.system_account_id)) {
+  if (!row || !canManageResourceOwner(row.system_account_id, access)) {
     return undefined
   }
   return row
@@ -333,9 +343,7 @@ function apiKeySystemAccountId(apiKeyId: string): string | undefined {
 }
 
 function globalProxyProfileId(proxyProfileId: string | undefined): string | undefined {
-  if (!proxyProfileId) return undefined
-  const row = getDatabase().prepare('SELECT id FROM proxy_profiles WHERE id = ?').get(proxyProfileId) as unknown as { id?: string } | undefined
-  return row?.id
+  return resolveEnabledProxyProfileId(proxyProfileId)
 }
 
 function isAccountExpired(accountExpiresAt: string | null | undefined, now = Date.now()): boolean {
@@ -449,6 +457,10 @@ function canManageResourceOwner(ownerSystemAccountId: string, access?: AccessSco
   return canAccessAll(access)
 }
 
+function writeSystemAccountId(access?: AccessScope): string {
+  return manageableSystemAccountId(access) ?? currentSystemAccountId(access)
+}
+
 function validAccountIdsForGroup(providerCode: string, accountIds: string[], systemAccountId = currentSystemAccountId()): string[] {
   const uniqueIds = [...new Set(accountIds)]
   const accountsById = new Map(listAccounts({ systemAccountId, role: 'user' }).map((account) => [account.id, account]))
@@ -498,11 +510,35 @@ function refreshGroupAccountStatsAfterWrite(): void {
   refreshGroupAccountStatsCache()
 }
 
+export interface AccountListResult {
+  items: AccountSummary[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 export function listAccounts(access?: AccessScope, options?: AccountListOptions): AccountSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
   const rows = listAccountRowsForAccess(access, listOptions)
+  return accountSummariesFromRows(rows, access, viewerSystemAccountId)
+}
+
+export function listAccountsPage(access?: AccessScope, options?: AccountListOptions): AccountListResult {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  disableExpiredAccounts(access)
+  const listOptions = normalizeAccountListOptions(options)
+  const page = listAccountRowsPageForAccess(access, listOptions)
+  return {
+    items: accountSummariesFromRows(page.rows, access, viewerSystemAccountId),
+    total: page.total,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize
+  }
+}
+
+function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountSummary[] {
   const accountIds = rows.map((row) => row.id)
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const usageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes)
@@ -582,6 +618,18 @@ export function getAccountUsageStatsOverview(access?: AccessScope): AccountUsage
   })
 }
 
+export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?: AccountListOptions): AccountUsageStatsOverview {
+  const accountPage = listAccountsPage(access, options)
+  return buildAccountUsageStatsOverview({
+    access,
+    accounts: accountPage.items,
+    total: accountPage.total,
+    page: accountPage.page,
+    pageSize: accountPage.pageSize,
+    loadUsageByWindow: loadUsageByWindowForScopeRequests
+  })
+}
+
 export function getAccountAuthorizationUsageOverview(accountId: string, access?: AccessScope): AccountAuthorizationUsageOverview | undefined {
   const accountRow = getDatabase().prepare('SELECT id, system_account_id, provider_code, name, type, status FROM accounts WHERE id = ?').get(accountId) as unknown as Pick<AccountRow, 'id' | 'system_account_id' | 'provider_code' | 'name' | 'type' | 'status'> | undefined
   if (!accountRow || !canManageResourceOwner(accountRow.system_account_id, access)) {
@@ -640,45 +688,51 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
     `)
     .all(nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
   const accountNames = loadSystemAccountNameMap()
-  return rows.map((row) => ({
-    id: row.id,
-    systemAccountId: row.system_account_id,
-    systemAccountName: accountNames.get(row.system_account_id),
-    ownerSystemAccountId: row.system_account_id,
-    ownerSystemAccountName: accountNames.get(row.system_account_id),
-    providerCode: row.provider_code,
-    name: row.name,
-    notes: row.notes ?? undefined,
-    type: row.type,
-    credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
-    status: row.status,
-    concurrencyLimit: row.concurrency_limit,
-    currentConcurrency: 0,
-    priority: row.priority,
-    proxyProfileId: row.proxy_profile_id ?? undefined,
-    passthroughEnabled: row.passthrough_enabled === 1,
-    errorPolicyId: row.error_policy_id ?? undefined,
-    schedulable: row.schedulable === 1,
-    accountExpiresAt: row.account_expires_at ?? undefined,
-    cooldownUntil: row.cooldown_until ?? undefined,
-    lastErrorMessage: row.last_error_message ?? undefined,
-    lastUsedAt: row.last_used_at ?? undefined,
-    todayUsage: emptyAccountUsageSummary(),
-    usage: emptyAccountUsageSummary(),
-    oauthUsage: undefined,
-    accessType: 'owner',
-    permissions: ownerPermissions()
-  }))
+  return rows.map((row) => {
+    const groupBinding = accountGroupBinding(row.id, row.system_account_id)
+    return {
+      id: row.id,
+      systemAccountId: row.system_account_id,
+      systemAccountName: accountNames.get(row.system_account_id),
+      ownerSystemAccountId: row.system_account_id,
+      ownerSystemAccountName: accountNames.get(row.system_account_id),
+      providerCode: row.provider_code,
+      name: row.name,
+      notes: row.notes ?? undefined,
+      type: row.type,
+      credentials: decryptJson<Record<string, unknown>>(row.credentials_encrypted),
+      status: row.status,
+      concurrencyLimit: row.concurrency_limit,
+      currentConcurrency: 0,
+      priority: row.priority,
+      proxyProfileId: row.proxy_profile_id ?? undefined,
+      passthroughEnabled: row.passthrough_enabled === 1,
+      errorPolicyId: row.error_policy_id ?? undefined,
+      schedulable: row.schedulable === 1,
+      accountExpiresAt: row.account_expires_at ?? undefined,
+      cooldownUntil: row.cooldown_until ?? undefined,
+      lastErrorMessage: row.last_error_message ?? undefined,
+      lastUsedAt: row.last_used_at ?? undefined,
+      todayUsage: emptyAccountUsageSummary(),
+      usage: emptyAccountUsageSummary(),
+      oauthUsage: undefined,
+      accessType: 'owner' as const,
+      boundGroupId: groupBinding?.groupId,
+      boundGroupName: groupBinding?.groupName,
+      groupBindStatus: groupBinding?.groupBindStatus,
+      permissions: ownerPermissions()
+    }
+  })
 }
 
-export function createAccount(input: Record<string, unknown>): AccountSummary {
+export function createAccount(input: Record<string, unknown>, access?: AccessScope): AccountSummary {
   const now = nowIso()
   const id = newId('acc')
   const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai')
   const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : typeof input.group_id === 'string' && input.group_id ? input.group_id : undefined
   const explicitGroup = explicitGroupId ? groupOwnerAndProvider(explicitGroupId) : undefined
-  const requestedSystemAccountId = currentSystemAccountId()
-  const systemAccountId = explicitGroup && canManageResourceOwner(explicitGroup.systemAccountId) ? explicitGroup.systemAccountId : requestedSystemAccountId
+  const requestedSystemAccountId = writeSystemAccountId(access)
+  const systemAccountId = explicitGroup && canManageResourceOwner(explicitGroup.systemAccountId, access) ? explicitGroup.systemAccountId : requestedSystemAccountId
   const provider = listProviders().find((item) => item.code === providerCode)
   const credentials = typeof input.credentials === 'object' && input.credentials !== null ? input.credentials as Record<string, unknown> : {}
   const credentialMap = credentials as Record<string, unknown>
@@ -708,8 +762,8 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
   const proxyProfileId = globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
   const account: AccountSummary = {
     id,
-    systemAccountId: includeSystemAccountFields() ? systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields() ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
+    systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
+    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
     providerCode,
     name: String(input.name ?? `未命名 ${provider?.name ?? providerCode.toUpperCase()} 账户`),
     notes: optionalString(input.notes),
@@ -783,13 +837,13 @@ export function createAccount(input: Record<string, unknown>): AccountSummary {
   return account
 }
 
-export function updateAccount(id: string, input: Record<string, unknown>): AccountSummary | undefined {
-  const current = listAccounts().find((account) => account.id === id)
+export function updateAccount(id: string, input: Record<string, unknown>, access?: AccessScope): AccountSummary | undefined {
+  const current = listAccounts(access).find((account) => account.id === id)
   if (!current) {
     return undefined
   }
-  const systemAccountId = accountSystemAccountId(id) ?? currentSystemAccountId()
-  if (!canManageResourceOwner(systemAccountId)) {
+  const systemAccountId = accountSystemAccountId(id) ?? currentSystemAccountId(access)
+  if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
   const credentials = typeof input.credentials === 'object' && input.credentials !== null
@@ -904,8 +958,8 @@ export function updateAccount(id: string, input: Record<string, unknown>): Accou
   return next
 }
 
-export function deleteAccount(id: string): boolean {
-  const scope = buildSystemAccountScopeClause()
+export function deleteAccount(id: string, access?: AccessScope): boolean {
+  const scope = buildSystemAccountScopeClause(access)
   const result = getDatabase().prepare(`DELETE FROM accounts WHERE id = ?${scope.clause}`).run(id, ...scope.params)
   if (Number(result.changes ?? 0) > 0) {
     refreshGroupAccountStatsAfterWrite()
@@ -915,14 +969,15 @@ export function deleteAccount(id: string): boolean {
 
 export function clearAccountFailureState(
   id: string,
-  options: { preserveManualTrafficMigration?: boolean } = {}
+  options: { preserveManualTrafficMigration?: boolean } = {},
+  access?: AccessScope
 ): AccountSummary | undefined {
-  const current = listAccounts().find((account) => account.id === id)
+  const current = listAccounts(access).find((account) => account.id === id)
   if (!current) {
     return undefined
   }
   const ownerSystemAccountId = accountSystemAccountId(id)
-  if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId)) {
+  if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId, access)) {
     return undefined
   }
   if (options.preserveManualTrafficMigration && isManualTrafficMigrationState(current)) {
@@ -947,7 +1002,7 @@ export function clearAccountFailureState(
     if (Number(result.changes ?? 0) > 0) {
       refreshGroupAccountStatsAfterWrite()
     }
-    return listAccounts().find((account) => account.id === id)
+    return listAccounts(access).find((account) => account.id === id)
   }
 
   const result = getDatabase()
@@ -966,7 +1021,7 @@ export function clearAccountFailureState(
     refreshGroupAccountStatsAfterWrite()
   }
 
-  return listAccounts().find((account) => account.id === id)
+  return listAccounts(access).find((account) => account.id === id)
 }
 
 export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
@@ -1021,16 +1076,16 @@ export function migrateAccountTraffic(input: {
   sourceAccountId: string
   targetAccountId: string
   sourceStatus: AccountTrafficMigrationSourceStatus
-}): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string } | undefined {
+}, access?: AccessScope): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string } | undefined {
   if (input.sourceAccountId === input.targetAccountId) {
     throw new Error('目标账户不能和当前账户相同')
   }
 
-  const sourceRow = accountRowForManage(input.sourceAccountId)
+  const sourceRow = accountRowForManage(input.sourceAccountId, access)
   if (!sourceRow) {
     return undefined
   }
-  const targetRow = accountRowForManage(input.targetAccountId)
+  const targetRow = accountRowForManage(input.targetAccountId, access)
   if (!targetRow) {
     return undefined
   }
@@ -1095,9 +1150,9 @@ export function migrateAccountTraffic(input: {
   }
   refreshGroupAccountStatsAfterWrite()
 
-  const access = { systemAccountId: sourceRow.system_account_id, role: 'user' as const }
-  const sourceAccount = listAccounts(access).find((account) => account.id === input.sourceAccountId)
-  const targetAccount = listAccounts(access).find((account) => account.id === input.targetAccountId)
+  const ownerAccess = { systemAccountId: sourceRow.system_account_id, role: 'user' as const }
+  const sourceAccount = listAccounts(ownerAccess).find((account) => account.id === input.sourceAccountId)
+  const targetAccount = listAccounts(ownerAccess).find((account) => account.id === input.targetAccountId)
   if (!sourceAccount || !targetAccount) {
     return undefined
   }
@@ -1234,14 +1289,14 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
   })
 }
 
-export function createGroup(input: Record<string, unknown>): GroupSummary {
+export function createGroup(input: Record<string, unknown>, access?: AccessScope): GroupSummary {
   const now = nowIso()
-  const systemAccountId = currentSystemAccountId()
+  const systemAccountId = writeSystemAccountId(access)
   const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai')
   const group: GroupSummary = {
     id: newId('grp'),
-    systemAccountId: includeSystemAccountFields() ? systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields() ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
+    systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
+    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
     name: String(input.name ?? '未命名分组'),
     providerCode,
     description: optionalString(input.description),
@@ -1256,16 +1311,16 @@ export function createGroup(input: Record<string, unknown>): GroupSummary {
   return group
 }
 
-export function updateGroup(id: string, input: Record<string, unknown>): GroupSummary | undefined {
-  const current = listGroups().find((group) => group.id === id)
+export function updateGroup(id: string, input: Record<string, unknown>, access?: AccessScope): GroupSummary | undefined {
+  const current = listGroups(access).find((group) => group.id === id)
   if (!current) {
     return undefined
   }
   if (current.isDefault) {
     throw new DefaultGroupReadonlyError()
   }
-  const systemAccountId = groupOwnerAndProvider(id)?.systemAccountId ?? currentSystemAccountId()
-  if (!canManageResourceOwner(systemAccountId)) {
+  const systemAccountId = groupOwnerAndProvider(id)?.systemAccountId ?? currentSystemAccountId(access)
+  if (!canManageResourceOwner(systemAccountId, access)) {
     return undefined
   }
   const hasDescriptionInput = Object.prototype.hasOwnProperty.call(input, 'description')
@@ -1283,16 +1338,16 @@ export function updateGroup(id: string, input: Record<string, unknown>): GroupSu
   database
     .prepare('UPDATE groups SET name = ?, provider_code = ?, description = ?, enabled = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
     .run(next.name, next.providerCode, next.description ?? null, next.enabled ? 1 : 0, nowIso(), id, systemAccountId)
-  return listGroups().find((group) => group.id === id)
+  return listGroups(access).find((group) => group.id === id)
 }
 
-export function deleteGroup(id: string): boolean {
-  const current = listGroups().find((group) => group.id === id)
+export function deleteGroup(id: string, access?: AccessScope): boolean {
+  const current = listGroups(access).find((group) => group.id === id)
   if (current?.isDefault) {
     throw new Error('Default group cannot be deleted')
   }
   const owner = groupOwnerAndProvider(id)
-  if (!owner || !canManageResourceOwner(owner.systemAccountId)) {
+  if (!owner || !canManageResourceOwner(owner.systemAccountId, access)) {
     return false
   }
   const result = getDatabase().prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
@@ -1302,13 +1357,13 @@ export function deleteGroup(id: string): boolean {
   return result.changes > 0
 }
 
-export function setAccountGroup(accountId: string, groupId: string | null): AccountSummary | undefined {
+export function setAccountGroup(accountId: string, groupId: string | null, access?: AccessScope): AccountSummary | undefined {
   const database = getDatabase()
   if (!groupId) {
     return undefined
   }
   const group = groupOwnerAndProvider(groupId)
-  if (!group || !canManageResourceOwner(group.systemAccountId)) {
+  if (!group || !canManageResourceOwner(group.systemAccountId, access)) {
     return undefined
   }
   const current = listAccounts({ systemAccountId: group.systemAccountId, role: 'user' }).find((account) => account.id === accountId)
@@ -1526,6 +1581,7 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
   expireDueResourceAuthorizations()
   const clauses: string[] = []
   const params: Array<string | number | null> = []
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const resourceType = normalizeResourceType(filters.resourceType ?? filters.resource_type)
   if (resourceType) { clauses.push('ra.resource_type = ?'); params.push(resourceType) }
   const resourceId = optionalString(filters.resourceId ?? filters.resource_id)
@@ -1551,12 +1607,26 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
     clauses.push("EXISTS (SELECT 1 FROM resource_authorization_sources ras WHERE ras.authorization_id = ra.id AND ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active')")
     params.push(teamId)
   }
-  const ownerSystemAccountId = scopedSystemAccountId(access)
-  if (ownerSystemAccountId) { clauses.push('ra.resource_owner_system_account_id = ?'); params.push(ownerSystemAccountId) }
-  else if (!canAccessAll(access)) { clauses.push('ra.resource_owner_system_account_id = ?'); params.push(currentSystemAccountId(access)) }
+  const ownerSystemAccountId = optionalString(filters.resourceOwnerSystemAccountId ?? filters.resource_owner_system_account_id)
+  if (ownerSystemAccountId) {
+    clauses.push('ra.resource_owner_system_account_id = ?')
+    params.push(ownerSystemAccountId)
+  }
+  const scopeSystemAccountId = scopedSystemAccountId(access)
+  if (scopeSystemAccountId) {
+    clauses.push('(ra.resource_owner_system_account_id = ? OR ra.grantee_system_account_id = ?)')
+    params.push(scopeSystemAccountId, scopeSystemAccountId)
+  } else if (!canAccessAll(access)) {
+    clauses.push('(ra.resource_owner_system_account_id = ? OR ra.grantee_system_account_id = ?)')
+    params.push(currentSystemAccountId(access), currentSystemAccountId(access))
+  }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY CASE ra.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, ra.updated_at DESC, ra.created_at DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
-  return resourceAuthorizationSummaries(rows).map((summary) => sanitizeResourceAuthorizationSummaryForAccess(summary, access))
+  return resourceAuthorizationSummaries(rows).map((summary) => withResourceAuthorizationPermissions(
+    sanitizeResourceAuthorizationSummaryForAccess(summary, access),
+    viewerSystemAccountId,
+    access
+  ))
 }
 
 export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
@@ -2120,7 +2190,7 @@ function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[]): Resou
 }
 
 function sanitizeResourceAuthorizationSummaryForAccess(summary: ResourceAuthorizationSummary, access?: AccessScope): ResourceAuthorizationSummary {
-  if (canAccessAll(access) || canManageResourceOwner(summary.resourceOwnerSystemAccountId, access)) {
+  if (canManageResourceOwner(summary.resourceOwnerSystemAccountId, access)) {
     return summary
   }
   const sources = sanitizeAuthorizationSourcesForViewer(summary.authorizationSources ?? summary.sources, true) ?? []
@@ -2132,6 +2202,17 @@ function sanitizeResourceAuthorizationSummaryForAccess(summary: ResourceAuthoriz
     authorizationSources: sources,
     createdBy: '',
     revokedBy: undefined
+  }
+}
+
+function withResourceAuthorizationPermissions(summary: ResourceAuthorizationSummary, _viewerSystemAccountId: string | undefined, access?: AccessScope): ResourceAuthorizationSummary {
+  const canManage = canManageResourceOwner(summary.resourceOwnerSystemAccountId, access)
+  return {
+    ...summary,
+    permissions: {
+      canEdit: canManage,
+      canAuthorize: canManage
+    }
   }
 }
 
