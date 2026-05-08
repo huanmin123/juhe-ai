@@ -14,7 +14,8 @@
     "lint": "pnpm -r lint",
     "test:smoke": "pnpm --filter juhe-ai-backend test:smoke",
     "test:scope": "pnpm --filter juhe-ai-backend test:scope",
-    "test:proxy-negative": "pnpm --filter juhe-ai-backend test:proxy-negative"
+    "test:proxy-negative": "pnpm --filter juhe-ai-backend test:proxy-negative",
+    "test:large-response": "pnpm --filter juhe-ai-backend test:large-response"
   },
   "engines": {
     "node": ">=22.5.0",

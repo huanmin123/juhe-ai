@@ -91,17 +91,15 @@ async function runSystemMetricsSample(): Promise<void> {
   const now = Date.now()
   const lagMs = Math.max(0, now - lastMetricsExpectedAt)
   lastMetricsExpectedAt = now + settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000
-  const memoryTotalBytes = totalmem()
-  const memoryFreeBytes = freemem()
-  const memoryUsedPercent = memoryTotalBytes > 0 ? ((memoryTotalBytes - memoryFreeBytes) / memoryTotalBytes) * 100 : undefined
+  const memoryMetrics = await currentMemoryMetrics()
   const memoryUsage = process.memoryUsage()
   const networkMetrics = await currentNetworkMetrics()
   try {
     insertSystemMetricsSample({
       cpuPercent: currentCpuPercent(),
-      memoryUsedPercent,
-      memoryTotalBytes,
-      memoryFreeBytes,
+      memoryUsedPercent: memoryMetrics.memoryUsedPercent,
+      memoryTotalBytes: memoryMetrics.memoryTotalBytes,
+      memoryFreeBytes: memoryMetrics.memoryFreeBytes,
       processRssBytes: memoryUsage.rss,
       processHeapUsedBytes: memoryUsage.heapUsed,
       processHeapTotalBytes: memoryUsage.heapTotal,
@@ -113,6 +111,85 @@ async function runSystemMetricsSample(): Promise<void> {
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_system_metrics_sample_failed' }), '系统指标采样失败')
   }
+}
+
+interface MemoryMetricsSample {
+  memoryTotalBytes: number
+  memoryFreeBytes: number
+  memoryUsedPercent?: number
+}
+
+async function currentMemoryMetrics(): Promise<MemoryMetricsSample> {
+  const memoryTotalBytes = totalmem()
+  if (platform() === 'darwin') {
+    const darwinMetrics = await readDarwinMemoryMetrics(memoryTotalBytes)
+    if (darwinMetrics) return darwinMetrics
+  }
+
+  const memoryFreeBytes = freemem()
+  return {
+    memoryTotalBytes,
+    memoryFreeBytes,
+    memoryUsedPercent: percentUsed(memoryTotalBytes, memoryFreeBytes)
+  }
+}
+
+async function readDarwinMemoryMetrics(memoryTotalBytes: number): Promise<MemoryMetricsSample | undefined> {
+  try {
+    const stdout = await execFileText('vm_stat', [], 3000)
+    return parseDarwinVmStat(stdout, memoryTotalBytes)
+  } catch {
+    return undefined
+  }
+}
+
+function parseDarwinVmStat(output: string, memoryTotalBytes: number): MemoryMetricsSample | undefined {
+  const pageSize = Number(output.match(/page size of\s+(\d+)\s+bytes/i)?.[1])
+  if (!Number.isFinite(pageSize) || pageSize <= 0 || memoryTotalBytes <= 0) return undefined
+
+  const pages = new Map<string, number>()
+  for (const line of output.split('\n')) {
+    const match = line.match(/^\s*"?([^":]+)"?:\s+([0-9.]+)\.?\s*$/)
+    if (!match) continue
+    const value = Number(match[2].replace(/\./g, ''))
+    if (Number.isFinite(value)) {
+      pages.set(match[1].trim().toLowerCase(), value)
+    }
+  }
+
+  const anonymousPages = pages.get('anonymous pages')
+  const wiredPages = pages.get('pages wired down')
+  const compressorPages = pages.get('pages occupied by compressor')
+  if (anonymousPages !== undefined && wiredPages !== undefined && compressorPages !== undefined) {
+    const usedBytes = clampBytes((anonymousPages + wiredPages + compressorPages) * pageSize, memoryTotalBytes)
+    const memoryFreeBytes = memoryTotalBytes - usedBytes
+    return {
+      memoryTotalBytes,
+      memoryFreeBytes,
+      memoryUsedPercent: percentUsed(memoryTotalBytes, memoryFreeBytes)
+    }
+  }
+
+  const freePages = pages.get('pages free')
+  const inactivePages = pages.get('pages inactive')
+  const speculativePages = pages.get('pages speculative')
+  if (freePages === undefined || inactivePages === undefined || speculativePages === undefined) return undefined
+
+  const memoryFreeBytes = clampBytes((freePages + inactivePages + speculativePages) * pageSize, memoryTotalBytes)
+  return {
+    memoryTotalBytes,
+    memoryFreeBytes,
+    memoryUsedPercent: percentUsed(memoryTotalBytes, memoryFreeBytes)
+  }
+}
+
+function percentUsed(memoryTotalBytes: number, memoryFreeBytes: number): number | undefined {
+  return memoryTotalBytes > 0 ? ((memoryTotalBytes - memoryFreeBytes) / memoryTotalBytes) * 100 : undefined
+}
+
+function clampBytes(value: number, max: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.min(Math.max(Math.round(value), 0), max)
 }
 
 async function runOpenAIOAuthAccessTokenRefresh(): Promise<void> {

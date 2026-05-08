@@ -8,6 +8,7 @@
     "test:smoke": "tsx src/scripts/smoke-test.ts",
     "test:scope": "tsx src/scripts/scope-boundary-regression.ts",
     "test:proxy-negative": "tsx src/scripts/proxy-negative-regression.ts",
+    "test:large-response": "node --expose-gc --import tsx src/scripts/non-stream-large-response-regression.ts",
     "test:usage-pricing": "tsx src/scripts/usage-pricing-regression.ts",
     "test:openai-oauth-codex-adapter": "tsx src/scripts/openai-oauth-codex-adapter-regression.ts",
     "test:openai-api-key-passthrough": "tsx src/scripts/openai-api-key-passthrough-regression.ts",

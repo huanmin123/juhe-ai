@@ -10,7 +10,7 @@
       :system-accounts="systemAccounts"
       :type-options="typeOptions"
       @create="openCreate"
-      @refresh="loadData"
+      @refresh="refreshData"
       @reset="resetFilters"
       @search="applyFilters"
       @system-account-change="handleSystemAccountFilterChange"
@@ -229,6 +229,8 @@ const trafficMigrationSourceAccount = ref<AccountSummary>()
 const reauthorizingAccount = ref<AccountSummary>()
 const testResult = ref<AccountTestResult>()
 const selectedAccountIds = ref<string[]>([])
+const accountOptionsLoaded = ref(false)
+const accountOptionsScopeKey = ref('')
 let accountTestAbortController: AbortController | undefined
 type AccountsPageState = {
   filters: AccountFilters
@@ -535,27 +537,20 @@ async function copyText(value: string) {
   message.success('已复制')
 }
 
-async function loadData(options: { append?: boolean; quiet?: boolean } = {}) {
+async function loadData(options: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}) {
   if (!options.quiet) {
     loading.value = true
   }
   try {
     const systemAccountId = isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-    const [accountList, providerList, proxyList, groupList, systemAccountList] = await Promise.all([
+    const [accountList] = await Promise.all([
       isManagementView.value ? api.accounts.list(accountListParams(systemAccountId)) : api.myAccounts.list(accountListParams()),
-      isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-      api.proxies.options(),
-      isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
-      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      loadAccountOptions(systemAccountId, options.forceOptions === true)
     ])
     accountPagination.current = accountList.page
     accountPagination.pageSize = accountList.pageSize
     accountPagination.total = accountList.total
     accounts.value = options.append ? [...accounts.value, ...accountList.items] : accountList.items
-    providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
-    proxies.value = proxyList
-    groups.value = groupList
-    systemAccounts.value = systemAccountList
     selectedAccountIds.value = selectedAccountIds.value.filter((id) => accounts.value.some((account) => account.id === id && canEditAccount(account)))
     if (modalOpen.value && !editingId.value) {
       ensureDefaultGroupSelected()
@@ -568,6 +563,30 @@ async function loadData(options: { append?: boolean; quiet?: boolean } = {}) {
       loading.value = false
     }
   }
+}
+
+async function loadAccountOptions(systemAccountId: string | undefined, force = false): Promise<void> {
+  const scopeKey = isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self'
+  if (!force && accountOptionsLoaded.value && accountOptionsScopeKey.value === scopeKey) {
+    return
+  }
+
+  const [providerList, proxyList, groupList, systemAccountList] = await Promise.all([
+    isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
+    api.proxies.options(),
+    isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
+    isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+  ])
+  providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
+  proxies.value = proxyList
+  groups.value = groupList
+  systemAccounts.value = systemAccountList
+  accountOptionsLoaded.value = true
+  accountOptionsScopeKey.value = scopeKey
+}
+
+function refreshData() {
+  void loadData({ forceOptions: true })
 }
 
 function applyFilters() {
@@ -620,7 +639,7 @@ function extractApiErrorMessage(error: unknown, fallback: string): string {
 function handleSystemAccountFilterChange() {
   selectedAccountIds.value = []
   resetAccountPagination()
-  void loadData()
+  void loadData({ forceOptions: true })
 }
 
 function clearSelection() {

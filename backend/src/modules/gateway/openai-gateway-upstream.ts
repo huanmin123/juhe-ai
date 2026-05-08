@@ -21,7 +21,6 @@ export interface GatewayUpstreamResponse {
   readonly ok: boolean
   readonly headers: Headers
   readonly body: AsyncIterable<Uint8Array> | null
-  arrayBuffer(): Promise<ArrayBuffer>
 }
 
 interface UpstreamRequestOptions {
@@ -79,12 +78,6 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
     return this.message as AsyncIterable<Uint8Array>
   }
 
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    const buffer = await collectIncomingBody(this.message)
-    const arrayBuffer = new ArrayBuffer(buffer.byteLength)
-    new Uint8Array(arrayBuffer).set(buffer)
-    return arrayBuffer
-  }
 }
 
 class PreloadedGatewayUpstreamResponse implements GatewayUpstreamResponse {
@@ -110,10 +103,6 @@ class PreloadedGatewayUpstreamResponse implements GatewayUpstreamResponse {
     return iteratePreloadedStream(this.iterator, this.preloadedChunks)
   }
 
-  async arrayBuffer(): Promise<ArrayBuffer> {
-    const body = this.body
-    return body ? collectAsyncIterableBody(body) : new ArrayBuffer(0)
-  }
 }
 
 export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOptions): Promise<GatewayUpstreamResponse> {
@@ -432,17 +421,6 @@ async function* iteratePreloadedStream(iterator: AsyncIterator<Uint8Array>, prel
   }
 }
 
-async function collectAsyncIterableBody(body: AsyncIterable<Uint8Array>): Promise<ArrayBuffer> {
-  const chunks: Buffer[] = []
-  for await (const chunk of body) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-  }
-  const buffer = Buffer.concat(chunks)
-  const arrayBuffer = new ArrayBuffer(buffer.byteLength)
-  new Uint8Array(arrayBuffer).set(buffer)
-  return arrayBuffer
-}
-
 function headersToNodeHeaders(headers: Headers): http.OutgoingHttpHeaders {
   const output: http.OutgoingHttpHeaders = {}
   headers.forEach((value, name) => {
@@ -462,14 +440,6 @@ function headersFromIncoming(headers: IncomingHttpHeaders): Headers {
     }
   }
   return output
-}
-
-async function collectIncomingBody(message: IncomingMessage): Promise<Buffer> {
-  const chunks: Buffer[] = []
-  for await (const chunk of message) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk))
-  }
-  return Buffer.concat(chunks)
 }
 
 async function readStreamChunkWithTimeout(

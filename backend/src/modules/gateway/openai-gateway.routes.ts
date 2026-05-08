@@ -32,6 +32,7 @@ import {
   extractClientIp,
   headersToObject,
   parseOpenAIUsageFromJsonBuffer,
+  parseOpenAIUsageFromJsonTextFragment,
   requestEndpoint,
   requestModel,
   extractBearerToken,
@@ -67,6 +68,7 @@ import {
 } from './openai-gateway-responses.js'
 import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
+import { pipeNonStreamUpstreamResponse, readUpstreamBodyLimited } from './openai-gateway-body.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from './api-key-quota.service.js'
 import { AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE, checkGatewayAuthorizationQuotaAsync, checkGatewayAuthorizationQuotaBatchAsync } from './authorization-quota.service.js'
@@ -397,6 +399,7 @@ export async function handleOpenAIGatewayRequest(
       let usage = emptyUsage()
       let firstTokenMs: number | undefined
       let responseBodyText: string | undefined
+      let responseUsageText: string | undefined
       let errorPayload: Record<string, unknown> = {}
       if (shouldHandleAsStream) {
         if (!upstreamResponse.body) {
@@ -542,9 +545,51 @@ export async function handleOpenAIGatewayRequest(
         if (abortController.signal.aborted) {
           throw new UpstreamRequestAbortedError('请求已取消', true)
         }
-        let responseBody: Buffer
+        let responseBody: Buffer | undefined
         try {
-          responseBody = Buffer.from(await upstreamResponse.arrayBuffer())
+          if (!upstreamResponse.body) {
+            responseBody = Buffer.alloc(0)
+            responseBodyText = ''
+            firstTokenMs = Date.now() - startedAt
+            res.end()
+          } else if (upstreamResponse.ok) {
+            const pipeResult = await pipeNonStreamUpstreamResponse(upstreamResponse.body, res, {
+              startedAt,
+              signal: abortController.signal
+            })
+            responseBody = pipeResult.capturedBody
+            responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
+            responseUsageText = pipeResult.usageTailText
+            firstTokenMs = pipeResult.firstByteMs
+            if (pipeResult.captureTruncated) {
+              logger.warn({
+                event: 'gateway_non_stream_response_capture_truncated',
+                accountId: account.id,
+                statusCode: upstreamResponse.status,
+                transferredBytes: pipeResult.transferredBytes,
+                endpoint
+              }, '网关非流式响应过大，已边转发并跳过完整响应捕获')
+            }
+          } else {
+            const readResult = await readUpstreamBodyLimited(upstreamResponse.body, {
+              startedAt,
+              signal: abortController.signal
+            })
+            responseBody = readResult.body
+            responseBodyText = readResult.diagnosticBodyText
+            responseUsageText = responseBodyText
+            firstTokenMs = readResult.firstByteMs ?? Date.now() - startedAt
+            if (readResult.truncated) {
+              logger.warn({
+                event: 'gateway_upstream_error_body_truncated',
+                accountId: account.id,
+                statusCode: upstreamResponse.status,
+                readBytes: readResult.readBytes,
+                endpoint
+              }, '上游错误响应体超过网关捕获上限，已截断用于诊断')
+            }
+            res.send(readResult.body)
+          }
         } catch (error) {
           if (isUpstreamRequestAbortedError(error) || abortController.signal.aborted) {
             recordClientAbortedUpstreamAttempt(req, {
@@ -578,11 +623,13 @@ export async function handleOpenAIGatewayRequest(
           }
           throw error
         }
-        responseBodyText = responseBody.toString('utf8')
-        firstTokenMs = Date.now() - startedAt
-        usage = parseOpenAIUsageFromJsonBuffer(responseBody)
+        if (responseBody) {
+          usage = parseOpenAIUsageFromJsonBuffer(responseBody)
+        } else if (upstreamResponse.ok) {
+          usage = parseOpenAIUsageFromJsonTextFragment(responseUsageText)
+        }
         if (!upstreamResponse.ok) {
-          errorPayload = parseErrorPayload(responseBodyText, upstreamResponse.headers)
+          errorPayload = parseErrorPayload(responseBodyText ?? '', upstreamResponse.headers)
         }
         auditCapture.completeAttempt(auditAttemptId, {
           statusCode: upstreamResponse.status,
@@ -593,7 +640,6 @@ export async function handleOpenAIGatewayRequest(
           errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
           errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined
         })
-        res.send(responseBody)
       }
 
       if (upstreamResponse.ok) {
@@ -1063,8 +1109,21 @@ async function fetchFirstAvailableUpstream(
               return { account, response, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
             }
 
-            const responseBody = Buffer.from(await response.arrayBuffer())
-            const responseBodyText = responseBody.toString('utf8')
+            const responseBodyRead = await readUpstreamBodyLimited(response.body, {
+              startedAt: attemptStartedAt,
+              signal
+            })
+            const responseBody = responseBodyRead.body
+            const responseBodyText = responseBodyRead.diagnosticBodyText
+            if (responseBodyRead.truncated) {
+              logger.warn({
+                event: 'gateway_upstream_retry_error_body_truncated',
+                accountId: account.id,
+                statusCode: response.status,
+                readBytes: responseBodyRead.readBytes,
+                upstreamUrl
+              }, '上游失败响应体超过网关捕获上限，已截断用于重试诊断')
+            }
             lastAttempt = {
               ...lastAttempt,
               responseHeaders: headersToObject(response.headers),

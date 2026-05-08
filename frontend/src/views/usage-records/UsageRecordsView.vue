@@ -178,6 +178,7 @@ const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFi
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccountsLoaded = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>(initialPageState.sortState)
 const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
@@ -347,17 +348,19 @@ async function refreshMobileRecords(): Promise<void> {
   await loadData()
 }
 
-async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Promise<void> {
+async function loadData(options: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}): Promise<void> {
   if (!options.quiet) {
     loading.value = true
   }
   try {
-    const [recordList, systemAccountList] = await fetchRecords()
+    const [recordList] = await Promise.all([
+      fetchRecords(),
+      loadSystemAccountOptions(options.forceOptions === true)
+    ])
     pagination.current = recordList.page
     pagination.pageSize = recordList.pageSize
     pagination.total = recordList.total
     records.value = options.append ? [...records.value, ...recordList.items] : recordList.items
-    systemAccounts.value = systemAccountList
   } catch (error) {
     console.error(error)
     message.error('加载使用记录失败')
@@ -381,12 +384,22 @@ async function fetchRecords() {
     sortBy: sortState.value.field,
     sortOrder
   }
-  return Promise.all([
-    isManagementView.value
-      ? api.usageRecords.list(params)
-      : api.myUsageRecords.list(params),
-    isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
-  ])
+  return isManagementView.value
+    ? api.usageRecords.list(params)
+    : api.myUsageRecords.list(params)
+}
+
+async function loadSystemAccountOptions(force = false): Promise<void> {
+  if (!isManagementView.value) {
+    systemAccounts.value = []
+    systemAccountsLoaded.value = true
+    return
+  }
+  if (!force && systemAccountsLoaded.value) {
+    return
+  }
+  systemAccounts.value = await api.systemAccounts.list()
+  systemAccountsLoaded.value = true
 }
 
 async function fetchRecordDetail(id: string): Promise<UsageRecordSummary> {

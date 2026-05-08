@@ -1,4 +1,3 @@
-import { once } from 'node:events'
 import type { Response } from 'express'
 
 import { logger } from '../../shared/logger.js'
@@ -6,6 +5,7 @@ import type { GatewaySettings } from './account-error-policy.service.js'
 import { emptyUsage, OpenAIStreamInspector, type ParsedUsage } from './openai-gateway-usage.js'
 import { isUpstreamRequestAbortedError, readStreamChunkWithAbort, readStreamChunkWithIdleTimeout } from './openai-gateway-upstream.js'
 import { writeGatewayStreamFailureEvent } from './openai-gateway-responses.js'
+import { closeAsyncIterator, endResponse, LimitedBufferCapture, writeResponseChunk } from './openai-gateway-body.js'
 
 export interface StreamPipeResult {
   completed: boolean
@@ -143,25 +143,10 @@ function streamResult(
     message,
     firstTokenMs,
     usage,
-    responseBodyText: diagnosticCapture.toText(),
+    responseBodyText: diagnosticCapture.toDiagnosticText(),
     auditResponseBody: responseCapture.completeBuffer(),
     auditUpstreamBody: upstreamCapture.completeBuffer()
   }
-}
-
-async function writeResponseChunk(res: Response, buffer: Buffer): Promise<void> {
-  if (res.writableEnded || res.destroyed) {
-    throw new Error('客户端连接已断开')
-  }
-  if (res.write(buffer)) {
-    return
-  }
-  await Promise.race([
-    once(res, 'drain'),
-    once(res, 'close').then(() => {
-      throw new Error('客户端连接已断开')
-    })
-  ])
 }
 
 async function writeGatewayStreamFailureEventWithBackpressure(res: Response, message: string): Promise<Buffer | undefined> {
@@ -174,63 +159,5 @@ async function writeGatewayStreamFailureEventWithBackpressure(res: Response, mes
     return buffer
   } catch {
     return undefined
-  }
-}
-
-function endResponse(res: Response): void {
-  if (!res.writableEnded && !res.destroyed) {
-    res.end()
-  }
-}
-
-async function closeAsyncIterator(iterator: AsyncIterator<Uint8Array>): Promise<void> {
-  if (!iterator.return) {
-    return
-  }
-  try {
-    await iterator.return()
-  } catch {
-  }
-}
-
-class LimitedBufferCapture {
-  private chunks: Buffer[] = []
-  private size = 0
-  private truncated = false
-
-  constructor(private readonly limitBytes: number) {}
-
-  push(buffer: Buffer): void {
-    if (buffer.length === 0 || this.limitBytes <= 0) {
-      return
-    }
-    const remaining = this.limitBytes - this.size
-    if (remaining <= 0) {
-      this.truncated = true
-      return
-    }
-    if (buffer.length > remaining) {
-      this.chunks.push(buffer.subarray(0, remaining))
-      this.size += remaining
-      this.truncated = true
-      return
-    }
-    this.chunks.push(buffer)
-    this.size += buffer.length
-  }
-
-  completeBuffer(): Buffer | undefined {
-    if (this.truncated || this.chunks.length === 0) {
-      return undefined
-    }
-    return Buffer.concat(this.chunks, this.size)
-  }
-
-  toText(): string | undefined {
-    if (this.chunks.length === 0) {
-      return undefined
-    }
-    const text = Buffer.concat(this.chunks, this.size).toString('utf8')
-    return this.truncated ? `${text}\n[truncated]` : text
   }
 }

@@ -46,7 +46,7 @@ type RawBodyRequest = Request & { rawBody?: Buffer }
 type BodyParserError = Error & { status?: number; statusCode?: number; type?: string; received?: number; length?: number; limit?: number }
 
 function captureGatewayRawBody(req: RawBodyRequest, _res: Response, next: NextFunction): void {
-  const rawBody = Buffer.isBuffer(req.body) ? Buffer.from(req.body) : Buffer.alloc(0)
+  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
   req.rawBody = rawBody
 
   const contentType = req.headers['content-type'] ?? ''
