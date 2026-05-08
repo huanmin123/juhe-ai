@@ -12,6 +12,16 @@
     <a-form-item label="Base URL" required>
       <a-input v-model:value="form.baseUrl" :placeholder="baseUrlPlaceholder" />
     </a-form-item>
+    <a-form-item label="OpenAI 组织">
+      <a-input v-model:value="form.openaiOrganization" placeholder="可选，例如 org_xxx" />
+      <div class="form-help">只在上游账号需要指定组织时填写；客户端传入的同名头不会透传。</div>
+    </a-form-item>
+    <a-form-item label="OpenAI 项目">
+      <a-input v-model:value="form.openaiProject" placeholder="可选，例如 proj_xxx" />
+    </a-form-item>
+    <a-form-item label="OpenAI Beta">
+      <a-input v-model:value="form.openaiBeta" placeholder="可选，例如 assistants=v2" />
+    </a-form-item>
   </section>
 </template>
 
@@ -47,6 +57,13 @@ defineProps<{
   margin: 4px 0 0;
   color: #64748b;
   font-size: 12px;
+}
+
+.form-help {
+  margin-top: 6px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .credential-section {

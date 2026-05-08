@@ -4,6 +4,9 @@ import type { AccountUsageSummary } from './usage-stats'
 export interface AccountCredentials {
   api_key?: string
   base_url?: string
+  openai_organization?: string
+  openai_project?: string
+  openai_beta?: string
   access_token?: string
   refresh_token?: string
   client_id?: string

@@ -6,6 +6,10 @@ import type { Request } from 'express'
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import {
+  buildOpenAIOAuthCodexRequestParts,
+  type OpenAIOAuthCodexIdentity
+} from './openai-oauth-codex-adapter.js'
+import {
   OpenAIStreamInspector,
   inspectOpenAIStreamText,
   isOpenAIStreamServerOverloadedErrorCode
@@ -30,6 +34,7 @@ interface UpstreamRequestOptions {
 }
 
 interface UpstreamHeaderAccount {
+  id?: string
   apiKey: string
   passthroughEnabled: boolean
   type?: string
@@ -304,11 +309,25 @@ export function buildUpstreamRequestBody(req: Request, passthroughEnabled: boole
   return JSON.stringify(req.body)
 }
 
+export function buildUpstreamRequestParts(
+  req: Request,
+  account: UpstreamHeaderAccount,
+  identity: OpenAIOAuthCodexIdentity
+): { headers: Headers; body?: Buffer | string } {
+  if (account.type === 'oauth') {
+    return buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  }
+  return {
+    headers: buildUpstreamHeaders(req.headers, account),
+    body: buildUpstreamRequestBody(req, account.passthroughEnabled)
+  }
+}
+
 export function buildUpstreamHeaders(inputHeaders: Record<string, string | string[] | undefined>, account: UpstreamHeaderAccount): Headers {
   const headers = new Headers()
   for (const [name, value] of Object.entries(inputHeaders)) {
     const lowerName = name.toLowerCase()
-    if (skippedUpstreamRequestHeaders.has(lowerName)) {
+    if (shouldSkipUpstreamRequestHeader(lowerName)) {
       continue
     }
     if (Array.isArray(value)) {
@@ -320,6 +339,8 @@ export function buildUpstreamHeaders(inputHeaders: Record<string, string | strin
   headers.set('authorization', `Bearer ${account.apiKey}`)
   if (account.type === 'oauth') {
     applyOpenAICodexHeaders(headers, account)
+  } else {
+    applyOpenAIPlatformCredentialHeaders(headers, account)
   }
   if (!account.passthroughEnabled) {
     headers.set('content-type', headers.get('content-type') ?? 'application/json')
@@ -357,6 +378,36 @@ function parseConnectionHeaderTokens(value: string | null): Set<string> | undefi
     .map((token) => token.trim().toLowerCase())
     .filter(Boolean)
   return tokens.length > 0 ? new Set(tokens) : undefined
+}
+
+function shouldSkipUpstreamRequestHeader(name: string): boolean {
+  const lowerName = name.toLowerCase()
+  if (skippedUpstreamRequestHeaders.has(lowerName)) {
+    return true
+  }
+  return skippedUpstreamRequestHeaderPrefixes.some((prefix) => lowerName.startsWith(prefix))
+}
+
+function applyOpenAIPlatformCredentialHeaders(headers: Headers, account: UpstreamHeaderAccount): void {
+  setCredentialHeader(headers, account.credentials, 'OpenAI-Organization', [
+    'openai_organization',
+    'openaiOrganization',
+    'openai_org',
+    'organization',
+    'organization_id',
+    'org_id'
+  ])
+  setCredentialHeader(headers, account.credentials, 'OpenAI-Project', [
+    'openai_project',
+    'openaiProject',
+    'project',
+    'project_id'
+  ])
+  setCredentialHeader(headers, account.credentials, 'OpenAI-Beta', [
+    'openai_beta',
+    'openaiBeta',
+    'beta'
+  ])
 }
 
 function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccount): void {
@@ -504,6 +555,28 @@ function stringCredential(credentials: Record<string, unknown> | undefined, key:
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
+function firstStringCredential(credentials: Record<string, unknown> | undefined, keys: readonly string[]): string | undefined {
+  for (const key of keys) {
+    const value = stringCredential(credentials, key)
+    if (value) {
+      return value
+    }
+  }
+  return undefined
+}
+
+function setCredentialHeader(
+  headers: Headers,
+  credentials: Record<string, unknown> | undefined,
+  headerName: string,
+  credentialKeys: readonly string[]
+): void {
+  const value = firstStringCredential(credentials, credentialKeys)
+  if (value) {
+    headers.set(headerName, value)
+  }
+}
+
 const skippedUpstreamRequestHeaders = new Set([
   'host',
   'authorization',
@@ -525,6 +598,14 @@ const skippedUpstreamRequestHeaders = new Set([
   'x-goog-api-key',
   'api-key',
   'chatgpt-account-id',
+  'openai-organization',
+  'openai-project',
+  'x-request-id',
+  'traceparent',
+  'tracestate',
+  'baggage',
+  'x-amzn-trace-id',
+  'x-cloud-trace-context',
   'x-forwarded-for',
   'x-forwarded-host',
   'x-forwarded-port',
@@ -535,6 +616,13 @@ const skippedUpstreamRequestHeaders = new Set([
   'via',
   'cf-connecting-ip'
 ])
+
+const skippedUpstreamRequestHeaderPrefixes = [
+  'x-forwarded-',
+  'x-openai-',
+  'x-stainless-',
+  'x-vercel-'
+]
 
 const openAICodexVersion = '0.125.0'
 const openAICodexUserAgent = `codex_cli_rs/${openAICodexVersion}`

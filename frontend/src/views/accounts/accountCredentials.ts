@@ -24,10 +24,13 @@ export function currentAccountCredentials(accounts: AccountSummary[], editingId?
 }
 
 function buildApiKeyCredentials(form: AccountFormModel): Record<string, unknown> {
-  return {
+  return compactAccountCredentials({
     api_key: form.apiKey,
-    base_url: form.baseUrl
-  }
+    base_url: form.baseUrl,
+    openai_organization: form.openaiOrganization,
+    openai_project: form.openaiProject,
+    openai_beta: form.openaiBeta
+  })
 }
 
 function buildOAuthCredentials(form: AccountFormModel, currentCredentials: Record<string, unknown>): Record<string, unknown> {

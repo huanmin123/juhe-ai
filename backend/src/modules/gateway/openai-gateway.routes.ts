@@ -39,8 +39,7 @@ import {
   type UpstreamAttempt
 } from './openai-gateway-usage.js'
 import {
-  buildUpstreamHeaders,
-  buildUpstreamRequestBody,
+  buildUpstreamRequestParts,
   copyResponseHeaders,
   isStreamResponse,
   isRetryableUpstreamStreamPreloadError,
@@ -52,6 +51,7 @@ import {
   upstreamSocketTimeoutMs,
   type GatewayUpstreamResponse
 } from './openai-gateway-upstream.js'
+import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import {
   accountUsageMetadata,
   groupUsageMetadata,
@@ -660,6 +660,23 @@ export async function handleOpenAIGatewayRequest(
       }
       return
     }
+    if (error instanceof OpenAIOAuthCodexAdapterError) {
+      const statusCode = error.statusCode
+      const responsePayload = gatewayErrorPayload(error.message, error.type)
+      sendGatewayJsonError(res, statusCode, responsePayload)
+      auditCapture.finalize({
+        outcome: 'gateway_failed',
+        success: false,
+        statusCode,
+        responseHeaders: responseHeadersToObject(res),
+        responseBody: JSON.stringify(responsePayload),
+        responsePartType: 'gateway_error',
+        errorPhase: 'request_validation',
+        errorCode: error.code,
+        errorMessage: error.message
+      })
+      return
+    }
     const lastAttempt = error instanceof UpstreamAttemptError ? error.lastAttempt : undefined
     const message = error instanceof Error ? error.message : '没有可用的上游账户'
     const diagnosticError = options.exposeUpstreamDiagnostics
@@ -922,6 +939,40 @@ async function fetchFirstAvailableUpstream(
     if (upstreamUrls.length === 0) {
       continue
     }
+    let requestParts: ReturnType<typeof buildUpstreamRequestParts>
+    try {
+      requestParts = buildUpstreamRequestParts(req, account, {
+        systemAccountId: usageContext.systemAccountId,
+        apiKeyId: usageContext.apiKeyId,
+        groupId: usageContext.groupId
+      })
+    } catch (error) {
+      if (error instanceof OpenAIOAuthCodexAdapterError) {
+        lastAttempt = {
+          accountId: account.id,
+          accountName: account.name,
+          upstreamUrl: 'openai-oauth-codex:local-validation',
+          status: error.statusCode,
+          message: error.message,
+          responseBodyText: JSON.stringify({
+            error: {
+              message: error.message,
+              type: error.type,
+              code: error.code
+            }
+          })
+        }
+        recordFailedUpstreamAttempt(req, usageContext, account, {
+          upstreamUrl: 'openai-oauth-codex:local-validation',
+          startedAt: Date.now(),
+          statusCode: error.statusCode,
+          bodyText: lastAttempt.responseBodyText,
+          errorMessage: error.message
+        })
+        throw error
+      }
+      throw error
+    }
     const concurrencySlot = tryAcquireAccountConcurrency(account.id, account.concurrencyLimit)
     if (!concurrencySlot.acquired) {
       lastAttempt = {
@@ -932,8 +983,7 @@ async function fetchFirstAvailableUpstream(
       }
       continue
     }
-    const headers = buildUpstreamHeaders(req.headers, account)
-    const body = buildUpstreamRequestBody(req, account.passthroughEnabled)
+    const { headers, body } = requestParts
     let skipAccount = false
     let keepConcurrencySlot = false
     try {

@@ -14,6 +14,7 @@
 - [OpenAI 一期计划](第一期OpenAI账号接入.md)
 - [中转透传机制调研与定位修正](中转透传机制调研与定位修正.md)
 - [OpenAI OAuth 透传细节统计与比较](OpenAI%20OAuth透传细节统计与比较.md)
+- [OpenAI API Key 透传细节统计与比较](OpenAI%20API%20Key透传细节统计与比较.md)
 - [流式中断与客户端重试调研](流式中断与客户端重试调研.md)
 - [SQLite 存储说明](SQLite存储说明.md)
 
