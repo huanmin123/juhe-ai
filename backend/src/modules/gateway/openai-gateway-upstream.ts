@@ -10,11 +10,6 @@ import {
   isOpenAIOAuthCodexCompactRequest,
   type OpenAIOAuthCodexIdentity
 } from './openai-oauth-codex-adapter.js'
-import {
-  OpenAIStreamInspector,
-  inspectOpenAIStreamText,
-  isOpenAIStreamServerOverloadedErrorCode
-} from './openai-gateway-usage.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
@@ -49,15 +44,6 @@ export class UpstreamRequestAbortedError extends Error {
     super(message)
   }
 }
-export class UpstreamStreamPreloadFailedError extends Error {
-  constructor(
-    message: string,
-    readonly chunks: Buffer[],
-    readonly errorCode?: string
-  ) {
-    super(message)
-  }
-}
 
 class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
   constructor(private readonly message: IncomingMessage) {}
@@ -76,31 +62,6 @@ class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
 
   get body(): AsyncIterable<Uint8Array> | null {
     return this.message as AsyncIterable<Uint8Array>
-  }
-
-}
-
-class PreloadedGatewayUpstreamResponse implements GatewayUpstreamResponse {
-  constructor(
-    private readonly source: GatewayUpstreamResponse,
-    private readonly iterator: AsyncIterator<Uint8Array>,
-    private readonly preloadedChunks: Buffer[]
-  ) {}
-
-  get status(): number {
-    return this.source.status
-  }
-
-  get ok(): boolean {
-    return this.source.ok
-  }
-
-  get headers(): Headers {
-    return this.source.headers
-  }
-
-  get body(): AsyncIterable<Uint8Array> | null {
-    return iteratePreloadedStream(this.iterator, this.preloadedChunks)
   }
 
 }
@@ -177,66 +138,6 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
   })
 }
 
-export async function preloadStreamResponseFirstChunk(
-  response: GatewayUpstreamResponse,
-  settings: GatewaySettings,
-  signal?: AbortSignal
-): Promise<GatewayUpstreamResponse> {
-  if (!response.body) {
-    throw new Error('上游流式响应没有响应体')
-  }
-  const iterator = response.body[Symbol.asyncIterator]()
-  const chunks: Buffer[] = []
-  const inspector = new OpenAIStreamInspector()
-  let capturedBytes = 0
-  try {
-    while (true) {
-      const result = await readStreamChunkWithTimeout(
-        iterator,
-        settings.streamRequestTimeoutSeconds,
-        () => new UpstreamRequestTimeoutError(`上游流式请求 ${settings.streamRequestTimeoutSeconds}s 后仍未返回首个响应`),
-        signal
-      )
-      if (result.done) {
-        throw new UpstreamStreamPreloadFailedError('上游流在首个输出或终止事件前结束', chunks)
-      }
-
-      const buffer = Buffer.from(result.value)
-      chunks.push(buffer)
-      capturedBytes += buffer.length
-      if (capturedBytes > streamPreloadCaptureBytes) {
-        return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
-      }
-
-      const inspection = inspector.pushChunk(buffer)
-      if (inspection.skipped) {
-        return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
-      }
-      if (inspection.outputReceived) {
-        return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
-      }
-      if (inspection.failedReceived) {
-        if (!isOpenAIStreamServerOverloadedErrorCode(inspection.errorCode)) {
-          return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
-        }
-        const message = inspection.errorMessage ?? '上游流在首个输出前失败'
-        throw new UpstreamStreamPreloadFailedError(message, chunks, inspection.errorCode)
-      }
-      if (inspection.terminalReceived) {
-        return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
-      }
-    }
-  } catch (error) {
-    await closeAsyncIterator(iterator)
-    throw error
-  }
-}
-
-export function isRetryableUpstreamStreamPreloadError(error: unknown): boolean {
-  return error instanceof UpstreamRequestTimeoutError
-    || (error instanceof UpstreamStreamPreloadFailedError && isOpenAIStreamServerOverloadedErrorCode(error.errorCode))
-}
-
 export function isUpstreamRequestAbortedError(error: unknown): boolean {
   return error instanceof UpstreamRequestAbortedError
     || (error instanceof Error && error.message === '请求已取消')
@@ -282,11 +183,6 @@ export function isEffectiveOpenAIStreamRequest(req: Request, account?: { type?: 
     return !isOpenAIOAuthCodexCompactRequest(req)
   }
   return req.body?.stream === true
-}
-
-export function isStreamResponse(response: GatewayUpstreamResponse): boolean {
-  const contentType = response.headers.get('content-type') ?? ''
-  return contentType.includes('text/event-stream') || contentType.includes('application/octet-stream')
 }
 
 export function buildUpstreamRequestBody(req: Request, passthroughEnabled: boolean): Buffer | string | undefined {
@@ -408,19 +304,6 @@ function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccoun
   }
 }
 
-async function* iteratePreloadedStream(iterator: AsyncIterator<Uint8Array>, preloadedChunks: Buffer[]): AsyncIterable<Uint8Array> {
-  for (const chunk of preloadedChunks) {
-    yield chunk
-  }
-  while (true) {
-    const result = await iterator.next()
-    if (result.done) {
-      break
-    }
-    yield result.value
-  }
-}
-
 function headersToNodeHeaders(headers: Headers): http.OutgoingHttpHeaders {
   const output: http.OutgoingHttpHeaders = {}
   headers.forEach((value, name) => {
@@ -442,7 +325,7 @@ function headersFromIncoming(headers: IncomingHttpHeaders): Headers {
   return output
 }
 
-async function readStreamChunkWithTimeout(
+export async function readStreamChunkWithTimeout(
   iterator: AsyncIterator<Uint8Array>,
   timeoutSeconds: number | undefined,
   createError: () => Error,
@@ -477,8 +360,6 @@ async function readStreamChunkWithTimeout(
   }
 }
 
-const streamPreloadCaptureBytes = 256 * 1024
-
 function bindAbortSignalToIncomingMessage(message: IncomingMessage, signal?: AbortSignal): void {
   if (!signal) return
   const abort = () => message.destroy(new UpstreamRequestAbortedError('请求已取消', true))
@@ -488,16 +369,6 @@ function bindAbortSignalToIncomingMessage(message: IncomingMessage, signal?: Abo
   }
   signal.addEventListener('abort', abort, { once: true })
   message.once('close', () => signal.removeEventListener('abort', abort))
-}
-
-async function closeAsyncIterator(iterator: AsyncIterator<Uint8Array>): Promise<void> {
-  if (!iterator.return) {
-    return
-  }
-  try {
-    await iterator.return()
-  } catch {
-  }
 }
 
 function isEmptyPlainObject(value: unknown): boolean {

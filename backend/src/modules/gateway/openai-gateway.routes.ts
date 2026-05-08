@@ -43,10 +43,7 @@ import {
   buildUpstreamRequestParts,
   copyResponseHeaders,
   isEffectiveOpenAIStreamRequest,
-  isStreamResponse,
-  isRetryableUpstreamStreamPreloadError,
   isUpstreamRequestAbortedError,
-  preloadStreamResponseFirstChunk,
   requestUpstream,
   UpstreamRequestAbortedError,
   upstreamRequestTimeoutMs,
@@ -64,7 +61,8 @@ import {
 import {
   gatewayErrorPayload,
   isOpenAIStreamContentType,
-  sendGatewayJsonError
+  sendGatewayJsonError,
+  writeGatewayStreamFailureEvent
 } from './openai-gateway-responses.js'
 import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
@@ -203,7 +201,7 @@ export async function handleOpenAIGatewayRequest(
       startedAt,
       responsePayload
     })
-    sendGatewayJsonError(res, statusCode, responsePayload)
+    sendGatewayErrorResponse(res, statusCode, responsePayload)
     auditCapture.finalize({
       outcome: 'gateway_failed',
       success: false,
@@ -237,7 +235,7 @@ export async function handleOpenAIGatewayRequest(
       startedAt,
       responsePayload
     })
-    sendGatewayJsonError(res, statusCode, responsePayload)
+    sendGatewayErrorResponse(res, statusCode, responsePayload)
     auditCapture.finalize({
       outcome: 'gateway_failed',
       success: false,
@@ -358,7 +356,7 @@ export async function handleOpenAIGatewayRequest(
       startedAt,
       responsePayload
     })
-    sendGatewayJsonError(res, statusCode, responsePayload)
+    sendGatewayErrorResponse(res, statusCode, responsePayload)
     auditCapture.finalize({
       outcome: 'gateway_failed',
       success: false,
@@ -394,6 +392,9 @@ export async function handleOpenAIGatewayRequest(
       if (shouldHandleAsStream && !res.hasHeader('content-type')) {
         res.setHeader('content-type', 'text/event-stream; charset=utf-8')
       }
+      if (shouldHandleAsStream) {
+        flushResponseHeadersIfSupported(res)
+      }
       persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, 'gateway')
 
       let usage = emptyUsage()
@@ -403,7 +404,8 @@ export async function handleOpenAIGatewayRequest(
       let errorPayload: Record<string, unknown> = {}
       if (shouldHandleAsStream) {
         if (!upstreamResponse.body) {
-          res.end()
+          const responsePayload = gatewayErrorPayload('上游响应体为空', 'upstream_response_error')
+          sendGatewayErrorResponse(res, upstreamResponse.status, responsePayload)
           forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
           auditCapture.completeAttempt(auditAttemptId, {
             statusCode: upstreamResponse.status,
@@ -440,7 +442,8 @@ export async function handleOpenAIGatewayRequest(
             success: false,
             statusCode: upstreamResponse.status,
             responseHeaders: responseHeadersToObject(res),
-            responsePartType: 'gateway_error',
+            responseBody: JSON.stringify(responsePayload),
+            responsePartType: 'gateway_response',
             errorPhase: 'upstream_response',
             errorMessage: '上游响应体为空',
             accountId: account.id
@@ -709,7 +712,7 @@ export async function handleOpenAIGatewayRequest(
     if (error instanceof OpenAIOAuthCodexAdapterError) {
       const statusCode = error.statusCode
       const responsePayload = gatewayErrorPayload(error.message, error.type)
-      sendGatewayJsonError(res, statusCode, responsePayload)
+      sendGatewayErrorResponse(res, statusCode, responsePayload)
       auditCapture.finalize({
         outcome: 'gateway_failed',
         success: false,
@@ -747,7 +750,7 @@ export async function handleOpenAIGatewayRequest(
         errorMessage: message
       })
     }
-    sendGatewayJsonError(res, statusCode, responsePayload)
+    sendGatewayErrorResponse(res, statusCode, responsePayload)
     auditCapture.finalize({
       outcome: 'upstream_failed',
       success: false,
@@ -932,7 +935,7 @@ function sendQuotaExceededResponse(
     startedAt,
     responsePayload
   })
-  sendGatewayJsonError(res, statusCode, responsePayload)
+  sendGatewayErrorResponse(res, statusCode, responsePayload)
   auditCapture.finalize({
     outcome: 'gateway_failed',
     success: false,
@@ -944,6 +947,31 @@ function sendQuotaExceededResponse(
     errorCode: 'rate_limit_exceeded',
     errorMessage: responsePayload.error.message
   })
+}
+
+function sendGatewayErrorResponse(res: Response, statusCode: number, payload: ReturnType<typeof gatewayErrorPayload>): void {
+  if (res.writableEnded || res.destroyed) {
+    return
+  }
+  if (!res.headersSent) {
+    sendGatewayJsonError(res, statusCode, payload)
+    return
+  }
+  const contentType = String(res.getHeader('content-type') ?? '')
+  if (isOpenAIStreamContentType(contentType)) {
+    const failureEvent = writeGatewayStreamFailureEvent(res, payload.error.message)
+    if (failureEvent) {
+      res.write(failureEvent)
+    }
+  }
+  res.end()
+}
+
+function flushResponseHeadersIfSupported(res: Response): void {
+  const flushHeaders = (res as { flushHeaders?: unknown }).flushHeaders
+  if (typeof flushHeaders === 'function') {
+    flushHeaders.call(res)
+  }
 }
 
 class UpstreamAttemptError extends Error {
@@ -984,7 +1012,6 @@ async function fetchFirstAvailableUpstream(
     if (upstreamUrls.length === 0) {
       continue
     }
-    const isStreamRequest = isEffectiveOpenAIStreamRequest(req, account)
     let requestParts: ReturnType<typeof buildUpstreamRequestParts>
     try {
       requestParts = buildUpstreamRequestParts(req, account, {
@@ -1057,52 +1084,6 @@ async function fetchFirstAvailableUpstream(
             })
             lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
             if (response.ok) {
-              if (isStreamRequest && settings.streamCircuitBreakerEnabled && isStreamResponse(response)) {
-                try {
-                  const preloadedResponse = await preloadStreamResponseFirstChunk(response, settings, signal)
-                  rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
-                  keepConcurrencySlot = true
-                  return { account, response: preloadedResponse, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
-                } catch (error) {
-                  if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
-                    auditCapture.completeAttempt(auditAttemptId, {
-                      statusCode: response.status,
-                      responseHeaders: response.headers,
-                      success: false,
-                      errorPhase: 'client',
-                      errorMessage: '请求已取消'
-                    })
-                    throw error
-                  }
-                  const message = error instanceof Error ? error.message : '上游流式请求在首个分片前中断'
-                  lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status, message }
-                  const preloadFailureBody = streamPreloadErrorBody(error)
-                  auditCapture.completeAttempt(auditAttemptId, {
-                    statusCode: response.status,
-                    responseHeaders: response.headers,
-                    responseBody: preloadFailureBody,
-                    success: false,
-                    errorPhase: 'stream_preload',
-                    errorMessage: message
-                  })
-                  forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-                  recordFailedUpstreamAttempt(req, usageContext, account, {
-                    upstreamUrl,
-                    startedAt: attemptStartedAt,
-                    statusCode: response.status,
-                    headers: response.headers,
-                    bodyText: preloadFailureBody?.toString('utf8'),
-                    errorMessage: message
-                  })
-                  if (isRetryableUpstreamStreamPreloadError(error) && attemptIndex < retryAttempts) {
-                    await waitBeforeTemporaryUnschedulableRetry(settings)
-                    continue
-                  }
-                  applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
-                  skipAccount = true
-                  break
-                }
-              }
               rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
               keepConcurrencySlot = true
               return { account, response, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
@@ -1281,16 +1262,6 @@ function handleStreamFailure(account: UpstreamAccount, reason: string, settings:
       reason
     }
   })
-}
-
-function streamPreloadErrorBody(error: unknown): Buffer | undefined {
-  if (typeof error === 'object' && error !== null && 'chunks' in error) {
-    const chunks = (error as { chunks?: unknown }).chunks
-    if (Array.isArray(chunks) && chunks.every(Buffer.isBuffer)) {
-      return Buffer.concat(chunks)
-    }
-  }
-  return undefined
 }
 
 async function prepareUpstreamAccount(account: UpstreamAccount, signal?: AbortSignal): Promise<UpstreamAccount> {

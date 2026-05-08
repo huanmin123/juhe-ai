@@ -418,7 +418,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：进入临时不可调用前的默认短暂重试间隔。
 - `temporaryUnschedulableRetryAttempts = 3`：进入临时不可调用前的默认短暂重试次数。
 - `streamCircuitBreakerEnabled = true`：流熔断默认开启。
-- `streamRequestTimeoutSeconds = 180`：流式请求首个有效输出前的请求熔断时间；首输出前超时或收到 `response.failed(server_is_overloaded/slow_down)` 时，先复用短重试参数原地重试，耗尽后才临时不可调用并切换账号。
+- `streamRequestTimeoutSeconds = 180`：流式请求首个有效输出前的总熔断时间；上游持续发送 `response.created`、SSE 注释或其他非输出事件也不能无限延长等待，超时后网关补发 `response.failed` 并结束本次 SSE。
 - `streamIdleTimeoutSeconds = 60`、`streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
