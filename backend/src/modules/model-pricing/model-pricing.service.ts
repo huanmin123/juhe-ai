@@ -1,10 +1,14 @@
 import { openAIModelPricingData } from './openai-model-pricing.data.js'
 
+export type ProviderModelApiProtocol = 'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'
+
 export interface ProviderModelPricing {
   providerCode: string
   model: string
   mode?: string
   releaseDate?: string
+  shutdownDate?: string
+  supportedApiProtocols: ProviderModelApiProtocol[]
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number
@@ -24,6 +28,7 @@ export interface ProviderModelPricing {
 interface RawModelPricing {
   model: string
   mode?: string
+  release_date?: string
   input_cost_per_token?: number
   output_cost_per_token?: number
   cache_creation_input_token_cost?: number
@@ -35,6 +40,8 @@ interface RawModelPricing {
   max_input_tokens?: number
   max_output_tokens?: number
   max_tokens?: number
+  shutdown_date?: string
+  supported_api_protocols?: ProviderModelApiProtocol[]
   supports_prompt_caching?: boolean
   supports_service_tier?: boolean
 }
@@ -71,9 +78,10 @@ const openAIModels = openAIModelPricingData as readonly RawModelPricing[]
 
 export function listProviderModelPricing(providerCode: string): ProviderModelPricing[] {
   if (!isOpenAIProvider(providerCode)) return []
-  const pricing = openAIModels.map((item) => toProviderModelPricing(item))
-  const familyReleaseDates = buildFamilyReleaseDateMap(pricing)
-  return pricing.sort((left, right) => compareProviderModels(left, right, familyReleaseDates))
+  const pricing = openAIModels
+    .filter((item) => !hasModelShutdown(item))
+    .map((item) => toProviderModelPricing(item))
+  return pricing.sort(compareProviderModels)
 }
 
 export function getProviderModelPricing(providerCode: string, model?: string): ProviderModelPricing | undefined {
@@ -154,14 +162,14 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
 function findOpenAIModelPricing(model: string): RawModelPricing | undefined {
   const normalized = normalizeModel(model)
   if (!normalized) return undefined
-  if (isDeprecatedOpenAIModel(normalized)) return undefined
+  if (isUnavailableOpenAIModel(normalized)) return undefined
 
   const byExactName = openAIModels.find((item) => normalizeModel(item.model) === normalized)
-  if (byExactName) return byExactName
+  if (byExactName && !hasModelShutdown(byExactName)) return byExactName
 
   for (const candidate of buildModelCandidates(normalized)) {
     const matched = openAIModels.find((item) => normalizeModel(item.model) === candidate)
-    if (matched) return matched
+    if (matched && !hasModelShutdown(matched)) return matched
   }
 
   return undefined
@@ -174,40 +182,34 @@ function defaultImageOutputTokens(input: CostInput, pricing: RawModelPricing): n
   return Math.max(input.outputTokens ?? 0, 0)
 }
 
-function isDeprecatedOpenAIModel(model: string): boolean {
-  return deprecatedOpenAIModels.has(model)
-    || model.startsWith('gpt-3.5')
-    || model.startsWith('gpt-4-')
-    || model.startsWith('gpt-4-turbo')
+function isUnavailableOpenAIModel(model: string): boolean {
+  return unavailableOpenAIModels.has(model)
+    || model.startsWith('gpt-4.5-preview')
+    || model.startsWith('gpt-4-turbo-preview')
     || model.startsWith('gpt-4o-realtime-preview')
     || model.startsWith('gpt-4o-mini-realtime-preview')
     || model.startsWith('gpt-4o-audio-preview')
     || model.startsWith('gpt-4o-mini-audio-preview')
     || model.startsWith('gpt-4o-search-preview')
     || model.startsWith('gpt-4o-mini-search-preview')
-    || model.startsWith('gpt-5.1-')
-    || model.startsWith('gpt-5.2-')
+    || model.startsWith('o1-preview')
 }
 
-const deprecatedOpenAIModels = new Set([
-  'gpt-3.5-turbo',
-  'gpt-4',
-  'gpt-4-turbo',
-  'gpt-4-turbo-preview',
-  'gpt-4o-2024-05-13',
-  'gpt-5-chat-latest',
-  'gpt-5-codex',
-  'gpt-5.1-chat-latest',
-  'gpt-5.1-codex',
-  'gpt-5.1-codex-max',
-  'gpt-5.1-codex-mini',
-  'gpt-5.2-codex',
+const unavailableOpenAIModels = new Set([
+  'chatgpt-4o-latest',
+  'codex-mini-latest',
   'gpt-5.3-codex-spark',
-  'gpt-image-1',
   'o1-2024-12-17',
   'o1-pro-2025-03-19',
+  'o1-mini',
   'o3-mini-2025-01-31',
-  'o4-mini-2025-04-16'
+  'o4-mini-2025-04-16',
+  'gpt-4-0125-preview',
+  'gpt-4-1106-vision-preview',
+  'gpt-4-0314',
+  'gpt-4-32k',
+  'gpt-4-32k-0314',
+  'gpt-4-32k-0613'
 ])
 
 function buildModelCandidates(model: string): string[] {
@@ -220,7 +222,6 @@ function buildModelCandidates(model: string): string[] {
   if (model.startsWith('gpt-5.4-nano-')) candidates.add('gpt-5.4-nano')
   if (model.startsWith('gpt-5.4-')) candidates.add('gpt-5.4')
   if (model === 'gpt-5.3-codex') candidates.add('gpt-5.3-codex')
-  if (model.startsWith('gpt-5.3-')) candidates.add('gpt-5.3-chat-latest')
   if (model.startsWith('gpt-image-2-')) candidates.add('gpt-image-2')
   if (model.startsWith('gpt-realtime-mini-')) candidates.add('gpt-realtime-mini')
   if (model.startsWith('gpt-4.1-nano-')) candidates.add('gpt-4.1-nano')
@@ -237,7 +238,9 @@ function toProviderModelPricing(item: RawModelPricing): ProviderModelPricing {
     providerCode: 'openai',
     model: item.model,
     mode: item.mode,
-    releaseDate: extractModelReleaseDate(item.model),
+    releaseDate: getOpenAIModelReleaseDate(item),
+    shutdownDate: item.shutdown_date,
+    supportedApiProtocols: inferOpenAIModelApiProtocols(item),
     inputUsdPer1M: perMillion(item.input_cost_per_token),
     outputUsdPer1M: perMillion(item.output_cost_per_token),
     cachedInputUsdPer1M: perMillion(item.cache_read_input_token_cost),
@@ -253,6 +256,134 @@ function toProviderModelPricing(item: RawModelPricing): ProviderModelPricing {
     supportsServiceTier: item.supports_service_tier === true,
     source: 'openai-pricing-snapshot'
   }
+}
+
+function getOpenAIModelReleaseDate(item: RawModelPricing): string | undefined {
+  return item.release_date
+    ?? extractModelReleaseDate(item.model)
+    ?? inferOpenAIModelReleaseDate(item.model)
+}
+
+const openAIModelReleaseDates = new Map<string, string>([
+  ['gpt-5.5', '2026-04-23'],
+  ['gpt-5.5-pro', '2026-04-23'],
+  ['gpt-image-2', '2026-04-21'],
+  ['gpt-5.4-mini', '2026-03-17'],
+  ['gpt-5.4-nano', '2026-03-17'],
+  ['gpt-5.4', '2026-03-05'],
+  ['gpt-5.4-pro', '2026-03-05'],
+  ['gpt-5.3-chat-latest', '2026-02-01'],
+  ['gpt-5.3-codex', '2026-02-01'],
+  ['gpt-audio-1.5', '2026-02-01'],
+  ['gpt-image-1.5', '2026-02-01'],
+  ['gpt-realtime-1.5', '2026-02-01'],
+  ['gpt-5.2-codex', '2026-01-01'],
+  ['gpt-5.2', '2025-12-11'],
+  ['gpt-5.2-chat-latest', '2025-12-11'],
+  ['gpt-5.2-pro', '2025-12-11'],
+  ['gpt-5.1', '2025-11-13'],
+  ['gpt-5.1-chat-latest', '2025-11-13'],
+  ['gpt-5.1-codex', '2025-11-13'],
+  ['gpt-5.1-codex-max', '2025-11-13'],
+  ['gpt-5.1-codex-mini', '2025-11-13'],
+  ['gpt-5-pro', '2025-10-06'],
+  ['gpt-audio-mini', '2025-10-06'],
+  ['gpt-image-1-mini', '2025-10-06'],
+  ['gpt-realtime-mini', '2025-10-06'],
+  ['gpt-5-codex', '2025-09-01'],
+  ['gpt-audio', '2025-09-01'],
+  ['gpt-realtime', '2025-09-01'],
+  ['gpt-5', '2025-08-07'],
+  ['gpt-5-chat-latest', '2025-08-07'],
+  ['gpt-5-mini', '2025-08-07'],
+  ['gpt-5-nano', '2025-08-07'],
+  ['o3-pro', '2025-06-01'],
+  ['gpt-image-1', '2025-04-23'],
+  ['o3', '2025-04-16'],
+  ['o4-mini', '2025-04-16'],
+  ['gpt-4.1', '2025-04-14'],
+  ['gpt-4.1-mini', '2025-04-14'],
+  ['gpt-4.1-nano', '2025-04-14'],
+  ['gpt-4o-mini-tts', '2025-03-20'],
+  ['gpt-4o-mini-transcribe', '2025-03-20'],
+  ['gpt-4o-transcribe', '2025-03-01'],
+  ['gpt-4o-transcribe-diarize', '2025-03-01'],
+  ['o1-pro', '2025-03-19'],
+  ['o3-mini', '2025-01-31'],
+  ['o1', '2024-12-17'],
+  ['gpt-4o-mini', '2024-07-18'],
+  ['gpt-4o', '2024-05-13'],
+  ['gpt-4-turbo', '2024-04-09'],
+  ['gpt-3.5-turbo', '2024-01-25'],
+  ['gpt-3.5-turbo-0125', '2024-01-25'],
+  ['babbage-002', '2024-01-04'],
+  ['davinci-002', '2024-01-04'],
+  ['gpt-4-1106-preview', '2023-11-06'],
+  ['gpt-3.5-turbo-1106', '2023-11-06'],
+  ['gpt-3.5-turbo-instruct', '2023-07-06'],
+  ['gpt-4', '2023-06-13'],
+  ['gpt-4-0613', '2023-06-13']
+])
+
+function inferOpenAIModelReleaseDate(model: string): string | undefined {
+  const normalized = normalizeModel(model)
+  const exactDate = openAIModelReleaseDates.get(normalized)
+  if (exactDate) return exactDate
+
+  return undefined
+}
+
+function inferOpenAIModelApiProtocols(item: RawModelPricing): ProviderModelApiProtocol[] {
+  if (item.supported_api_protocols?.length) {
+    return item.supported_api_protocols
+  }
+
+  const model = normalizeModel(item.model)
+  const mode = (item.mode ?? '').trim()
+
+  if (mode === 'image_generation' || model.startsWith('gpt-image') || model.startsWith('dall-e')) {
+    return ['images']
+  }
+
+  if (model.includes('realtime')) {
+    return ['realtime']
+  }
+
+  if (
+    mode === 'audio_speech'
+    || mode === 'audio_transcription'
+    || model.includes('transcribe')
+    || model.includes('tts')
+    || model.includes('whisper')
+  ) {
+    return ['audio']
+  }
+
+  if (model.includes('audio')) {
+    return ['chat_completions']
+  }
+
+  if (mode === 'completion') {
+    return ['completions']
+  }
+
+  if (model.includes('codex') || model.includes('-pro')) {
+    return ['responses']
+  }
+
+  if (mode === 'responses') {
+    return ['responses']
+  }
+
+  if (mode === 'chat' || model.startsWith('gpt-') || model.startsWith('o')) {
+    return ['chat_completions', 'responses']
+  }
+
+  return []
+}
+
+function hasModelShutdown(item: RawModelPricing): boolean {
+  return typeof item.shutdown_date === 'string' && item.shutdown_date <= currentUtcDate()
 }
 
 function isOpenAIProvider(providerCode: string): boolean {
@@ -285,37 +416,11 @@ function extractModelReleaseDate(model: string): string | undefined {
   return match?.[1]
 }
 
-function extractModelFamily(model: string): string {
-  return model.replace(/-\d{4}-\d{2}-\d{2}$/, '')
+function currentUtcDate(): string {
+  return new Date().toISOString().slice(0, 10)
 }
 
-function buildFamilyReleaseDateMap(models: readonly ProviderModelPricing[]): Map<string, string> {
-  const familyReleaseDates = new Map<string, string>()
-  for (const item of models) {
-    if (!item.releaseDate) continue
-    const family = extractModelFamily(item.model)
-    const current = familyReleaseDates.get(family)
-    if (!current || item.releaseDate > current) {
-      familyReleaseDates.set(family, item.releaseDate)
-    }
-  }
-  return familyReleaseDates
-}
-
-function compareProviderModels(
-  left: ProviderModelPricing,
-  right: ProviderModelPricing,
-  familyReleaseDates: Map<string, string>
-): number {
-  const leftFamilyDate = familyReleaseDates.get(extractModelFamily(left.model))
-  const rightFamilyDate = familyReleaseDates.get(extractModelFamily(right.model))
-
-  if (leftFamilyDate && rightFamilyDate && leftFamilyDate !== rightFamilyDate) {
-    return rightFamilyDate.localeCompare(leftFamilyDate)
-  }
-  if (leftFamilyDate && !rightFamilyDate) return -1
-  if (!leftFamilyDate && rightFamilyDate) return 1
-
+function compareProviderModels(left: ProviderModelPricing, right: ProviderModelPricing): number {
   if (left.releaseDate && right.releaseDate && left.releaseDate !== right.releaseDate) {
     return right.releaseDate.localeCompare(left.releaseDate)
   }

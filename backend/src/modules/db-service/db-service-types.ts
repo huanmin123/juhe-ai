@@ -1,6 +1,6 @@
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
-import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
+import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.service.js'
 
 export interface DbServiceRuntimeSnapshot {
@@ -55,6 +55,49 @@ export type DbServiceOperation =
     accountAuthorizationId?: string
   }
   | {
+    type: 'check_authorization_quota_batch'
+    groupAuthorizationId?: string
+    accounts: Array<{
+      accountId: string
+      accountAuthorizationId?: string
+    }>
+  }
+  | {
+    type: 'update_openai_oauth_credentials'
+    accountId: string
+    credentials: Record<string, unknown>
+  }
+  | {
+    type: 'persist_openai_codex_usage_headers'
+    accountId: string
+    headers: Record<string, string>
+    source: string
+  }
+  | {
+    type: 'apply_account_error_handling'
+    account: OpenAIAccountSecret
+    input: {
+      success: boolean
+      statusCode?: number
+      headers?: Record<string, string | string[]>
+      bodyText?: string
+      errorMessage?: string
+      settings?: GatewaySettings
+      preserveManualTrafficMigration?: boolean
+    }
+  }
+  | {
+    type: 'record_account_stream_failure'
+    input: {
+      accountId: string
+      thresholdCount: number
+      thresholdWindowMinutes: number
+      action: 'cooldown' | 'disable' | 'none'
+      cooldownMinutes: number
+      reason: string
+    }
+  }
+  | {
     type: 'clear_gateway_runtime_cache'
   }
   | {
@@ -69,6 +112,11 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'read_gateway_runtime' } ? DbServiceGatewayRuntime :
   T extends { type: 'check_api_key_quota' } ? ApiKeyQuotaDecision :
   T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :
+  T extends { type: 'check_authorization_quota_batch' } ? AuthorizationQuotaDecision[] :
+  T extends { type: 'update_openai_oauth_credentials' } ? { updated: boolean } :
+  T extends { type: 'persist_openai_codex_usage_headers' } ? { persisted: boolean } :
+  T extends { type: 'apply_account_error_handling' } ? AccountErrorHandlingResult :
+  T extends { type: 'record_account_stream_failure' } ? { count: number; triggered: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'status' } ? DbServiceRuntimeSnapshot :
   unknown

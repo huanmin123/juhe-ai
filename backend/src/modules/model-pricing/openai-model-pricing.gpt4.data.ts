@@ -48,6 +48,7 @@ export const openAIGPT4ModelPricingData = [
     output_cost_per_token_priority: 8e-7,
     cache_read_input_token_cost: 2.5e-8,
     cache_read_input_token_cost_priority: 5e-8,
+    shutdown_date: "2026-10-23",
     supports_prompt_caching: true,
     supports_service_tier: true
   },
@@ -82,6 +83,138 @@ export const openAIGPT4ModelPricingData = [
     cache_read_input_token_cost_priority: 1.25e-7,
     supports_prompt_caching: true,
     supports_service_tier: true
+  },
+  {
+    model: "gpt-4o-2024-05-13",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 4096,
+    max_input_tokens: 128000,
+    max_output_tokens: 4096,
+    input_cost_per_token: 0.000005,
+    output_cost_per_token: 0.000015,
+    shutdown_date: "2026-10-23"
+  },
+  {
+    model: "gpt-4-turbo",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 4096,
+    max_input_tokens: 128000,
+    max_output_tokens: 4096,
+    input_cost_per_token: 0.00001,
+    output_cost_per_token: 0.00003,
+    shutdown_date: "2026-10-23"
+  },
+  {
+    model: "gpt-4-turbo-2024-04-09",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 4096,
+    max_input_tokens: 128000,
+    max_output_tokens: 4096,
+    input_cost_per_token: 0.00001,
+    output_cost_per_token: 0.00003,
+    shutdown_date: "2026-10-23"
+  },
+  {
+    model: "gpt-4-1106-preview",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 4096,
+    max_input_tokens: 128000,
+    max_output_tokens: 4096,
+    input_cost_per_token: 0.00001,
+    output_cost_per_token: 0.00003,
+    shutdown_date: "2026-10-23"
+  },
+  {
+    model: "gpt-4",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 8192,
+    max_input_tokens: 8192,
+    max_output_tokens: 4096,
+    input_cost_per_token: 0.00003,
+    output_cost_per_token: 0.00006,
+    shutdown_date: "2026-10-23"
+  },
+  {
+    model: "gpt-4-0613",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 8192,
+    max_input_tokens: 8192,
+    max_output_tokens: 4096,
+    input_cost_per_token: 0.00003,
+    output_cost_per_token: 0.00006,
+    shutdown_date: "2026-10-23"
+  },
+  {
+    model: "gpt-3.5-turbo",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 4096,
+    max_input_tokens: 16385,
+    max_output_tokens: 4096,
+    input_cost_per_token: 5e-7,
+    output_cost_per_token: 0.0000015,
+    shutdown_date: "2026-10-23"
+  },
+  {
+    model: "gpt-3.5-turbo-0125",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 4096,
+    max_input_tokens: 16385,
+    max_output_tokens: 4096,
+    input_cost_per_token: 5e-7,
+    output_cost_per_token: 0.0000015,
+    shutdown_date: "2026-10-23"
+  },
+  {
+    model: "gpt-3.5-turbo-1106",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 4096,
+    max_input_tokens: 16385,
+    max_output_tokens: 4096,
+    input_cost_per_token: 0.000001,
+    output_cost_per_token: 0.000002,
+    shutdown_date: "2026-09-28"
+  },
+  {
+    model: "gpt-3.5-turbo-instruct",
+    litellm_provider: "openai",
+    mode: "completion",
+    max_tokens: 4096,
+    max_input_tokens: 4096,
+    max_output_tokens: 4096,
+    input_cost_per_token: 0.0000015,
+    output_cost_per_token: 0.000002,
+    shutdown_date: "2026-09-28"
+  },
+  {
+    model: "babbage-002",
+    litellm_provider: "openai",
+    mode: "completion",
+    max_tokens: 16384,
+    max_input_tokens: 16384,
+    max_output_tokens: 4096,
+    input_cost_per_token: 4e-7,
+    output_cost_per_token: 4e-7,
+    shutdown_date: "2026-09-28"
+  },
+  {
+    model: "davinci-002",
+    litellm_provider: "openai",
+    mode: "completion",
+    max_tokens: 16384,
+    max_input_tokens: 16384,
+    max_output_tokens: 4096,
+    input_cost_per_token: 0.000002,
+    output_cost_per_token: 0.000002,
+    shutdown_date: "2026-09-28"
   },
   {
     model: "gpt-4o-transcribe",

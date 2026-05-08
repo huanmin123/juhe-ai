@@ -1,7 +1,9 @@
 import {
   clearGatewayApiKeyValidationCache,
   listOpenAIAccountsForGroup,
+  recordAccountStreamFailure,
   resolveGroupUsageAccessMetadata,
+  updateAccount,
   validateGatewayApiKey
 } from '../../storage/repositories.js'
 import {
@@ -10,6 +12,8 @@ import {
 } from '../gateway/gateway-runtime-cache.service.js'
 import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/api-key-quota.service.js'
 import { checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
+import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
+import { persistOpenAICodexUsageHeaders } from '../gateway/openai-codex-usage.service.js'
 import type {
   DbServiceGatewayRuntime,
   DbServiceOperation,
@@ -72,6 +76,36 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         groupAuthorizationId: operation.groupAuthorizationId,
         accountAuthorizationId: operation.accountAuthorizationId
       })
+    case 'check_authorization_quota_batch':
+      return operation.accounts.map((account) => checkGatewayAuthorizationQuotaByIds({
+        groupAuthorizationId: operation.groupAuthorizationId,
+        accountAuthorizationId: account.accountAuthorizationId
+      }))
+    case 'update_openai_oauth_credentials': {
+      const updated = updateAccount(operation.accountId, { credentials: operation.credentials })
+      if (updated) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { updated: Boolean(updated) }
+    }
+    case 'persist_openai_codex_usage_headers':
+      return {
+        persisted: persistOpenAICodexUsageHeaders(operation.accountId, operation.headers, operation.source)
+      }
+    case 'apply_account_error_handling': {
+      const result = applyAccountErrorHandling(operation.account, operation.input)
+      if (result.changed) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return result
+    }
+    case 'record_account_stream_failure': {
+      const result = recordAccountStreamFailure(operation.input)
+      if (result.triggered) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { count: result.count, triggered: result.triggered }
+    }
     case 'clear_gateway_runtime_cache':
       clearGatewayRuntimeCacheLocal()
       clearGatewayApiKeyValidationCache()

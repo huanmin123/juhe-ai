@@ -205,7 +205,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     }
   })
   try {
-    const updated = await refreshOpenAIOAuthAccountAccessToken(account, { access: requestAccess, signal: abortController.signal })
+    const updated = await refreshOpenAIOAuthAccountAccessToken(account, { access: requestAccess, signal: abortController.signal, force: true })
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }

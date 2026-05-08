@@ -9,6 +9,7 @@ import {
 } from '../../storage/runtime-logs.repository.js'
 import { getBackgroundWorkerState, requestBackgroundWorkerSnapshot } from '../background/background-ipc.js'
 import { getDbServiceState, requestDbService } from '../db-service/db-service-ipc.js'
+import { getGatewayAccountSideEffectState } from '../gateway/gateway-account-side-effects.service.js'
 import { grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 
 export const runtimeLogsRouter = Router()
@@ -37,6 +38,7 @@ runtimeLogsRouter.get('/facets', async (_req, res) => {
   ])
   const dbServiceState = getDbServiceState()
   const workerState = getBackgroundWorkerState()
+  const gatewayAccountSideEffects = getGatewayAccountSideEffectState()
   res.json(ok({
     ...getRuntimeLogFacets(),
     runtime: workerSnapshot?.runtimeLogIndexQueue ?? {
@@ -55,9 +57,25 @@ runtimeLogsRouter.get('/facets', async (_req, res) => {
       pendingRequestCount: dbServiceState.pendingRequestCount,
       timedOutRequestCount: dbServiceState.timedOutRequestCount,
       failedRequestCount: dbServiceState.failedRequestCount,
+      fallbackCircuitOpenUntil: dbServiceState.fallbackCircuitOpenUntil,
+      localFallbackActiveCount: dbServiceState.localFallbackActiveCount,
+      localFallbackQueuedCount: dbServiceState.localFallbackQueuedCount,
+      localFallbackRequestCount: dbServiceState.localFallbackRequestCount,
+      localFallbackBypassedGuardCount: dbServiceState.localFallbackBypassedGuardCount,
       handledRequestCount: dbServiceSnapshot?.handledRequestCount,
       lastRequestAt: dbServiceSnapshot?.lastRequestAt,
       lastError: dbServiceSnapshot?.lastError
+    },
+    gatewayAccountSideEffects: {
+      queueLength: gatewayAccountSideEffects.queueLength,
+      processing: gatewayAccountSideEffects.processing,
+      enqueuedCount: gatewayAccountSideEffects.enqueuedCount,
+      completedCount: gatewayAccountSideEffects.completedCount,
+      failedAttemptCount: gatewayAccountSideEffects.failedAttemptCount,
+      droppedCount: gatewayAccountSideEffects.droppedCount,
+      expiredCount: gatewayAccountSideEffects.expiredCount,
+      localSuppressedAccountCount: gatewayAccountSideEffects.localSuppressedAccountCount,
+      nextAttemptAt: gatewayAccountSideEffects.nextAttemptAt
     }
   }))
 })

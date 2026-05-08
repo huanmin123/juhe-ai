@@ -69,6 +69,25 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
   })
 }
 
+export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
+  groupAccess: GroupUsageAccessMetadata
+  accounts: OpenAIAccountSecret[]
+}): Promise<Map<string, AuthorizationQuotaDecision>> {
+  const decisions = await requestDbService({
+    type: 'check_authorization_quota_batch',
+    groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+    accounts: input.accounts.map((account) => ({
+      accountId: account.id,
+      accountAuthorizationId: account.accountAuthorizationId
+    }))
+  })
+  const output = new Map<string, AuthorizationQuotaDecision>()
+  input.accounts.forEach((account, index) => {
+    output.set(account.id, decisions[index] ?? { allowed: true })
+  })
+  return output
+}
+
 export function checkGatewayAuthorizationQuotaByIds(input: {
   groupAuthorizationId?: string
   accountAuthorizationId?: string

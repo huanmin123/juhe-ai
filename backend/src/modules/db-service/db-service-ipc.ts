@@ -24,11 +24,25 @@ interface DbServiceState {
   pendingRequestCount: number
   timedOutRequestCount: number
   failedRequestCount: number
+  fallbackCircuitOpenUntil?: string
+  localFallbackActiveCount: number
+  localFallbackQueuedCount: number
+  localFallbackRequestCount: number
+  localFallbackBypassedGuardCount: number
+}
+
+interface LocalFallbackWaiter {
+  resolve: (guarded: boolean) => void
+  timeout: NodeJS.Timeout
 }
 
 const requestTimeoutMs = 1500
 const invalidateTimeoutMs = 500
 const maxPendingRequests = 1000
+const fallbackCircuitOpenMs = 3000
+const maxLocalFallbackActiveRequests = 4
+const maxLocalFallbackQueuedRequests = 256
+const localFallbackGuardWaitMs = 5000
 
 let dbServiceProcess: ChildProcess | undefined
 let dbServiceReady = false
@@ -37,6 +51,11 @@ let pendingRequests = new Map<string, PendingRequest>()
 let timedOutRequestCount = 0
 let failedRequestCount = 0
 let lastSnapshot: DbServiceRuntimeSnapshot | undefined
+let fallbackCircuitOpenUntilMs = 0
+let localFallbackActiveCount = 0
+let localFallbackRequestCount = 0
+let localFallbackBypassedGuardCount = 0
+const localFallbackQueue: LocalFallbackWaiter[] = []
 
 export function attachDbServiceProcess(child: ChildProcess): void {
   dbServiceProcess = child
@@ -63,7 +82,12 @@ export async function requestDbService<T extends DbServiceOperation>(
     return await runLocalDbServiceOperation(operation)
   }
 
+  if (fallbackCircuitOpenUntilMs > Date.now()) {
+    return await fallbackDbServiceOperation(operation, options.fallbackToLocal !== false, 'DB service 降级熔断窗口内')
+  }
+
   if (!dbServiceProcess || !dbServiceReady || pendingRequests.size >= maxPendingRequests) {
+    openFallbackCircuit()
     return await fallbackDbServiceOperation(operation, options.fallbackToLocal !== false, 'DB service 未就绪或请求队列已满')
   }
 
@@ -96,6 +120,7 @@ export async function requestDbService<T extends DbServiceOperation>(
     })
   } catch (error) {
     failedRequestCount += 1
+    openFallbackCircuit()
     return await fallbackDbServiceOperation(operation, options.fallbackToLocal !== false, error)
   }
 }
@@ -118,7 +143,12 @@ export function getDbServiceState(): DbServiceState {
     lastSnapshot,
     pendingRequestCount: pendingRequests.size,
     timedOutRequestCount,
-    failedRequestCount
+    failedRequestCount,
+    fallbackCircuitOpenUntil: fallbackCircuitOpenUntilMs > Date.now() ? new Date(fallbackCircuitOpenUntilMs).toISOString() : undefined,
+    localFallbackActiveCount,
+    localFallbackQueuedCount: localFallbackQueue.length,
+    localFallbackRequestCount,
+    localFallbackBypassedGuardCount
   }
 }
 
@@ -131,6 +161,7 @@ function handleDbServiceMessage(message: unknown): void {
   switch (record.type) {
     case 'db_service_ready':
       dbServiceReady = true
+      fallbackCircuitOpenUntilMs = 0
       dbServicePid = typeof record.pid === 'number' ? record.pid : dbServicePid
       break
     case 'db_service_response':
@@ -181,10 +212,63 @@ async function fallbackDbServiceOperation<T extends DbServiceOperation>(
   if (operation.type !== 'status') {
     logger.warn(errorLogFields(reason, {
       event: 'db_service_fallback_to_local',
-      operationType: operation.type
+      operationType: operation.type,
+      activeFallbackCount: localFallbackActiveCount,
+      queuedFallbackCount: localFallbackQueue.length
     }), 'DB service 不可用，临时降级到主进程本地读取')
   }
-  return await runLocalDbServiceOperation(operation)
+  return await runGuardedLocalDbServiceOperation(operation)
+}
+
+async function runGuardedLocalDbServiceOperation<T extends DbServiceOperation>(operation: T): Promise<DbServiceOperationResult<T>> {
+  const guarded = await acquireLocalFallbackSlot()
+  try {
+    localFallbackRequestCount += 1
+    return await runLocalDbServiceOperation(operation)
+  } finally {
+    if (guarded) {
+      releaseLocalFallbackSlot()
+    }
+  }
+}
+
+function acquireLocalFallbackSlot(): Promise<boolean> {
+  if (localFallbackActiveCount < maxLocalFallbackActiveRequests) {
+    localFallbackActiveCount += 1
+    return Promise.resolve(true)
+  }
+  if (localFallbackQueue.length >= maxLocalFallbackQueuedRequests) {
+    localFallbackBypassedGuardCount += 1
+    return Promise.resolve(false)
+  }
+  return new Promise((resolve) => {
+    const waiter: LocalFallbackWaiter = {
+      resolve,
+      timeout: setTimeout(() => {
+        const index = localFallbackQueue.indexOf(waiter)
+        if (index >= 0) {
+          localFallbackQueue.splice(index, 1)
+        }
+        localFallbackBypassedGuardCount += 1
+        resolve(false)
+      }, localFallbackGuardWaitMs)
+    }
+    localFallbackQueue.push(waiter)
+  })
+}
+
+function releaseLocalFallbackSlot(): void {
+  const waiter = localFallbackQueue.shift()
+  if (waiter) {
+    clearTimeout(waiter.timeout)
+    waiter.resolve(true)
+    return
+  }
+  localFallbackActiveCount = Math.max(0, localFallbackActiveCount - 1)
+}
+
+function openFallbackCircuit(): void {
+  fallbackCircuitOpenUntilMs = Math.max(fallbackCircuitOpenUntilMs, Date.now() + fallbackCircuitOpenMs)
 }
 
 function isRuntimeSnapshot(value: unknown): value is DbServiceRuntimeSnapshot {

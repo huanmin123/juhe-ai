@@ -76,6 +76,17 @@ export const openAIMediaRealtimeModelPricingData = [
     output_cost_per_image_token: 0.000008
   },
   {
+    model: "gpt-image-1",
+    litellm_provider: "openai",
+    mode: "image_generation",
+    input_cost_per_token: 0.000005,
+    output_cost_per_token: 0.00001,
+    cache_read_input_token_cost: 0.00000125,
+    input_cost_per_image_token: 0.00001,
+    output_cost_per_image_token: 0.00004,
+    shutdown_date: "2026-10-23"
+  },
+  {
     model: "gpt-realtime",
     litellm_provider: "openai",
     mode: "chat",

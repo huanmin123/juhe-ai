@@ -229,7 +229,10 @@ export function listAccountQualityProbeCandidates(input: {
     : ''
   const activeAuthorizationClause = `
           AND (
-            group_accounts.account_authorization_id IS NULL
+            (
+              group_accounts.account_authorization_id IS NULL
+              AND accounts.system_account_id = group_accounts.system_account_id
+            )
             OR EXISTS (
               SELECT 1
               FROM resource_authorizations active_authorization

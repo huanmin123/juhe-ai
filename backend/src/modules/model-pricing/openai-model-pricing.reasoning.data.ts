@@ -4,6 +4,31 @@
 
 export const openAIReasoningModelPricingData = [
   {
+    model: "o1",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 100000,
+    max_input_tokens: 200000,
+    max_output_tokens: 100000,
+    input_cost_per_token: 0.000015,
+    output_cost_per_token: 0.00006,
+    cache_read_input_token_cost: 0.0000075,
+    shutdown_date: "2026-10-23",
+    supports_prompt_caching: true
+  },
+  {
+    model: "o1-pro",
+    litellm_provider: "openai",
+    mode: "responses",
+    max_tokens: 100000,
+    max_input_tokens: 200000,
+    max_output_tokens: 100000,
+    input_cost_per_token: 0.00015,
+    output_cost_per_token: 0.0006,
+    shutdown_date: "2026-10-23",
+    supports_prompt_caching: true
+  },
+  {
     model: "o3",
     litellm_provider: "openai",
     mode: "chat",
@@ -31,6 +56,19 @@ export const openAIReasoningModelPricingData = [
     supports_prompt_caching: true
   },
   {
+    model: "o3-mini",
+    litellm_provider: "openai",
+    mode: "chat",
+    max_tokens: 100000,
+    max_input_tokens: 200000,
+    max_output_tokens: 100000,
+    input_cost_per_token: 0.0000011,
+    output_cost_per_token: 0.0000044,
+    cache_read_input_token_cost: 5.5e-7,
+    shutdown_date: "2026-10-23",
+    supports_prompt_caching: true
+  },
+  {
     model: "o4-mini",
     litellm_provider: "openai",
     mode: "chat",
@@ -43,6 +81,7 @@ export const openAIReasoningModelPricingData = [
     output_cost_per_token_priority: 0.000008,
     cache_read_input_token_cost: 2.75e-7,
     cache_read_input_token_cost_priority: 5e-7,
+    shutdown_date: "2026-10-23",
     supports_prompt_caching: true,
     supports_service_tier: true
   }

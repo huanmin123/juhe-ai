@@ -6,6 +6,7 @@ import type { Request } from 'express'
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import {
+  OpenAIStreamInspector,
   inspectOpenAIStreamText,
   isOpenAIStreamServerOverloadedErrorCode
 } from './openai-gateway-usage.js'
@@ -38,7 +39,11 @@ interface UpstreamHeaderAccount {
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
 export class UpstreamRequestTimeoutError extends Error {}
-export class UpstreamRequestAbortedError extends Error {}
+export class UpstreamRequestAbortedError extends Error {
+  constructor(message: string, readonly upstreamRequestStarted = false) {
+    super(message)
+  }
+}
 export class UpstreamStreamPreloadFailedError extends Error {
   constructor(
     message: string,
@@ -137,6 +142,7 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
       agent
     }
     let requestTimeout: NodeJS.Timeout | undefined
+    let upstreamRequestStarted = false
     const clearRequestTimeout = () => {
       if (requestTimeout) {
         clearTimeout(requestTimeout)
@@ -149,7 +155,7 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
       settleResolve(new NodeGatewayUpstreamResponse(message))
     })
     const abort = () => request.destroy(new Error('上游请求超时'))
-    const abortBySignal = () => request.destroy(new UpstreamRequestAbortedError('请求已取消'))
+    const abortBySignal = () => request.destroy(new UpstreamRequestAbortedError('请求已取消', upstreamRequestStarted))
 
     if (options.requestTimeoutMs !== undefined) {
       const seconds = Math.ceil(options.requestTimeoutMs / 1000)
@@ -171,6 +177,7 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
     if (options.body) {
       request.write(options.body)
     }
+    upstreamRequestStarted = true
     request.end()
   })
 }
@@ -185,6 +192,8 @@ export async function preloadStreamResponseFirstChunk(
   }
   const iterator = response.body[Symbol.asyncIterator]()
   const chunks: Buffer[] = []
+  const inspector = new OpenAIStreamInspector()
+  let capturedBytes = 0
   try {
     while (true) {
       const result = await readStreamChunkWithTimeout(
@@ -199,8 +208,12 @@ export async function preloadStreamResponseFirstChunk(
 
       const buffer = Buffer.from(result.value)
       chunks.push(buffer)
+      capturedBytes += buffer.length
+      if (capturedBytes > streamPreloadCaptureBytes) {
+        return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
+      }
 
-      const inspection = inspectOpenAIStreamText(Buffer.concat(chunks).toString('utf8'))
+      const inspection = inspector.pushChunk(buffer)
       if (inspection.outputReceived) {
         return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
       }
@@ -438,10 +451,10 @@ async function readStreamChunkWithTimeout(
     }
     if (signal) {
       if (signal.aborted) {
-        throw new UpstreamRequestAbortedError('请求已取消')
+        throw new UpstreamRequestAbortedError('请求已取消', true)
       }
       races.push(new Promise<IteratorResult<Uint8Array>>((_, reject) => {
-        abortListener = () => reject(new UpstreamRequestAbortedError('请求已取消'))
+        abortListener = () => reject(new UpstreamRequestAbortedError('请求已取消', true))
         signal.addEventListener('abort', abortListener, { once: true })
       }))
     }
@@ -456,9 +469,11 @@ async function readStreamChunkWithTimeout(
   }
 }
 
+const streamPreloadCaptureBytes = 256 * 1024
+
 function bindAbortSignalToIncomingMessage(message: IncomingMessage, signal?: AbortSignal): void {
   if (!signal) return
-  const abort = () => message.destroy(new UpstreamRequestAbortedError('请求已取消'))
+  const abort = () => message.destroy(new UpstreamRequestAbortedError('请求已取消', true))
   if (signal.aborted) {
     abort()
     return

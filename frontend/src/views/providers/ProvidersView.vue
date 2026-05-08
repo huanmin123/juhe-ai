@@ -65,14 +65,14 @@
 
     <a-modal v-model:open="modelModalOpen" :title="modelModalTitle" width="1180px" :footer="null" @cancel="resetModelModal">
       <div class="model-toolbar">
-        <a-input-search v-model:value="modelKeyword" allow-clear placeholder="搜索模型名称或类型" class="model-search" />
+        <a-input-search v-model:value="modelKeyword" allow-clear placeholder="搜索模型名称、用途或接口协议" class="model-search" />
         <a-space wrap>
-          <a-tag color="blue">{{ filteredModels.length }} / {{ providerModels.length }} 个模型</a-tag>
+          <a-tag color="blue">{{ filteredModels.length }} / {{ currentCategoryModels.length }} 个模型</a-tag>
           <a-tag color="purple">价格单位：USD / 1M tokens</a-tag>
         </a-space>
       </div>
-      <a-tabs v-model:activeKey="selectedModelType" class="model-tabs" size="small">
-        <a-tab-pane v-for="tab in modelTypeTabs" :key="tab.key" :tab="tab.label" />
+      <a-tabs v-model:activeKey="selectedModelCategory" class="model-tabs" size="small">
+        <a-tab-pane v-for="tab in modelCategoryTabs" :key="tab.key" :tab="tab.label" />
       </a-tabs>
       <a-table
         class="model-table"
@@ -89,13 +89,22 @@
         </template>
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'model'">
-            <span class="mono-cell">{{ record.model }}</span>
+            <a-space size="small">
+              <span class="mono-cell">{{ record.model }}</span>
+              <a-tag v-if="record.shutdownDate" color="orange">将停用 {{ record.shutdownDate }}</a-tag>
+            </a-space>
           </template>
           <template v-else-if="column.key === 'releaseDate'">
             <span>{{ record.releaseDate || '-' }}</span>
           </template>
-          <template v-else-if="column.key === 'mode'">
-            <a-tag>{{ formatModelMode(record.mode) }}</a-tag>
+          <template v-else-if="column.key === 'category'">
+            <a-tag>{{ formatModelCategory(record) }}</a-tag>
+          </template>
+          <template v-else-if="column.key === 'protocols'">
+            <a-space wrap size="small">
+              <a-tag v-for="protocol in record.supportedApiProtocols" :key="protocol" :color="getApiProtocolTagColor(protocol)">{{ formatApiProtocol(protocol) }}</a-tag>
+              <span v-if="!record.supportedApiProtocols?.length" class="muted-text">-</span>
+            </a-space>
           </template>
           <template v-else-if="column.key === 'prices'">
             <div class="price-cell">
@@ -125,13 +134,6 @@
               <span>输出 {{ formatTokens(record.maxOutputTokens) }}</span>
             </div>
           </template>
-          <template v-else-if="column.key === 'features'">
-            <a-space wrap>
-              <a-tag v-if="record.supportsPromptCaching" color="green">缓存</a-tag>
-              <a-tag v-if="record.supportsServiceTier" color="gold">service tier</a-tag>
-              <span v-if="!record.supportsPromptCaching && !record.supportsServiceTier" class="muted-text">-</span>
-            </a-space>
-          </template>
         </template>
       </a-table>
     </a-modal>
@@ -149,25 +151,32 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { ProviderDefinition, ProviderModelPricing } from '@/types/domain'
 
-const modelTypeOrder = ['chat', 'responses', 'image_generation', 'audio_speech', 'audio_transcription', 'other'] as const
-type ModelTypeKey = typeof modelTypeOrder[number]
+const modelCategoryOrder = ['text', 'image', 'audio', 'other'] as const
+type ModelCategoryKey = typeof modelCategoryOrder[number]
 
 const loading = ref(false)
 const modelLoading = ref(false)
 const providers = ref<ProviderDefinition[]>([])
 const providerModels = ref<ProviderModelPricing[]>([])
 const modelKeyword = ref('')
-const selectedModelType = ref<ModelTypeKey>('chat')
+const selectedModelCategory = ref<ModelCategoryKey>('text')
 const modelModalOpen = ref(false)
 const activeProvider = ref<ProviderDefinition | null>(null)
 
-const modelTypeLabels: Record<ModelTypeKey, string> = {
-  chat: '对话',
-  responses: 'Responses',
-  image_generation: '图像',
-  audio_speech: '语音合成',
-  audio_transcription: '语音转写',
+const modelCategoryLabels: Record<ModelCategoryKey, string> = {
+  text: '对话 / 编码',
+  image: '图像',
+  audio: '音频',
   other: '其他'
+}
+
+const apiProtocolLabels: Record<string, string> = {
+  chat_completions: 'Chat Completions',
+  responses: 'Responses',
+  completions: 'Completions',
+  images: 'Images API',
+  audio: 'Audio API',
+  realtime: 'Realtime API'
 }
 
 const hiddenProviderCapabilities = new Set(['passthrough'])
@@ -194,24 +203,24 @@ const providerActions: RowActionItem[] = [
 
 const baseModelColumns = [
   { title: '模型', key: 'model', width: 260 },
-  { title: '版本日期', key: 'releaseDate', width: 120 },
-  { title: '类型', key: 'mode', width: 110 },
+  { title: '发布时间', key: 'releaseDate', width: 120 },
+  { title: '用途', key: 'category', width: 120 },
+  { title: '接口协议', key: 'protocols', width: 230 },
   { title: 'Token 价格', key: 'prices', width: 230 },
   { title: '缓存写入', key: 'cacheWrite', width: 180 },
   { title: '图片 token 价格', key: 'imageTokenPrice', width: 180 },
   { title: '每张价格', key: 'imageUnitPrice', width: 130 },
-  { title: '上下文', key: 'context', width: 180 },
-  { title: '能力', key: 'features', width: 180 }
+  { title: '上下文', key: 'context', width: 180 }
 ]
 
-const currentTabModels = computed(() => {
-  const selectedType = selectedModelType.value
-  return providerModels.value.filter((item) => getModelTypeKey(item.mode) === selectedType)
+const currentCategoryModels = computed(() => {
+  const category = selectedModelCategory.value
+  return providerModels.value.filter((item) => getModelCategory(item) === category)
 })
 
 const modelColumns = computed(() => {
-  const rows = currentTabModels.value
-  const visibleKeys = new Set(['model', 'releaseDate', 'mode', 'features'])
+  const rows = currentCategoryModels.value
+  const visibleKeys = new Set(['model', 'releaseDate', 'category', 'protocols'])
 
   if (rows.some((item) => hasAnyNumber(item.inputUsdPer1M, item.outputUsdPer1M, item.cachedInputUsdPer1M))) {
     visibleKeys.add('prices')
@@ -234,31 +243,32 @@ const modelColumns = computed(() => {
 
 const modelModalTitle = computed(() => activeProvider.value ? `${activeProvider.value.name} 模型价格` : '模型价格')
 
-const modelTypeTabs = computed(() => {
-  const counts = new Map<ModelTypeKey, number>()
-  for (const key of modelTypeOrder) {
+const modelCategoryTabs = computed(() => {
+  const counts = new Map<ModelCategoryKey, number>()
+  for (const key of modelCategoryOrder) {
     counts.set(key, 0)
   }
 
   for (const item of providerModels.value) {
-    const key = getModelTypeKey(item.mode)
+    const key = getModelCategory(item)
     counts.set(key, (counts.get(key) ?? 0) + 1)
   }
 
-  return modelTypeOrder
+  return modelCategoryOrder
     .filter((key) => (counts.get(key) ?? 0) > 0)
     .map((key) => ({
       key,
-      label: `${modelTypeLabels[key]} (${counts.get(key) ?? 0})`
+      label: `${modelCategoryLabels[key]} (${counts.get(key) ?? 0})`
     }))
 })
 
 const filteredModels = computed(() => {
   const keyword = modelKeyword.value.trim().toLowerCase()
-  return currentTabModels.value.filter((item) => {
+  return currentCategoryModels.value.filter((item) => {
     const keywordMatches = !keyword
       || item.model.toLowerCase().includes(keyword)
-      || formatModelMode(item.mode).toLowerCase().includes(keyword)
+      || formatModelCategory(item).toLowerCase().includes(keyword)
+      || (item.supportedApiProtocols ?? []).some((protocol) => formatApiProtocol(protocol).toLowerCase().includes(keyword))
     return keywordMatches
   })
 })
@@ -283,11 +293,11 @@ async function openModelModal(provider: ProviderDefinition) {
   activeProvider.value = provider
   modelModalOpen.value = true
   modelKeyword.value = ''
-  selectedModelType.value = 'chat'
+  selectedModelCategory.value = 'text'
   modelLoading.value = true
   try {
     providerModels.value = await api.providers.models(provider.code)
-    selectedModelType.value = findFirstModelType(providerModels.value)
+    selectedModelCategory.value = findFirstModelCategory(providerModels.value)
   } catch (error) {
     console.error(error)
     providerModels.value = []
@@ -306,34 +316,76 @@ function handleProviderAction(key: string, provider: ProviderDefinition) {
 function resetModelModal() {
   activeProvider.value = null
   modelKeyword.value = ''
-  selectedModelType.value = 'chat'
+  selectedModelCategory.value = 'text'
   providerModels.value = []
 }
 
-function findFirstModelType(models: ProviderModelPricing[]): ModelTypeKey {
-  for (const key of modelTypeOrder) {
-    if (models.some((item) => getModelTypeKey(item.mode) === key)) {
+function findFirstModelCategory(models: ProviderModelPricing[]): ModelCategoryKey {
+  for (const key of modelCategoryOrder) {
+    if (models.some((item) => getModelCategory(item) === key)) {
       return key
     }
   }
+  return 'text'
+}
+
+function getModelCategory(item: ProviderModelPricing): ModelCategoryKey {
+  const model = item.model.toLowerCase()
+  const mode = (item.mode ?? '').trim()
+
+  if (mode === 'image_generation' || model.startsWith('gpt-image') || model.startsWith('dall-e')) {
+    return 'image'
+  }
+
+  if (
+    mode === 'audio_speech'
+    || mode === 'audio_transcription'
+    || model.includes('audio')
+    || model.includes('realtime')
+    || model.includes('transcribe')
+    || model.includes('tts')
+    || model.includes('whisper')
+  ) {
+    return 'audio'
+  }
+
+  if (
+    mode === 'chat'
+    || mode === 'responses'
+    || mode === 'completion'
+    || model.includes('codex')
+    || model.startsWith('gpt-')
+    || model.startsWith('o')
+  ) {
+    return 'text'
+  }
+
   return 'other'
 }
 
-function getModelTypeKey(mode?: string): ModelTypeKey {
-  switch ((mode ?? '').trim()) {
-    case 'chat':
-    case 'responses':
-    case 'image_generation':
-    case 'audio_speech':
-    case 'audio_transcription':
-      return mode as ModelTypeKey
-    default:
-      return 'other'
-  }
+function formatModelCategory(item: ProviderModelPricing) {
+  return modelCategoryLabels[getModelCategory(item)]
 }
 
-function formatModelMode(mode?: string) {
-  return modelTypeLabels[getModelTypeKey(mode)]
+function formatApiProtocol(protocol?: string) {
+  return apiProtocolLabels[protocol ?? ''] ?? protocol ?? '-'
+}
+
+function getApiProtocolTagColor(protocol?: string) {
+  switch (protocol) {
+    case 'chat_completions':
+      return 'blue'
+    case 'responses':
+      return 'purple'
+    case 'images':
+      return 'cyan'
+    case 'audio':
+      return 'green'
+    case 'realtime':
+      return 'orange'
+    default:
+      return 'default'
+  }
 }
 
 function visibleProviderCapabilities(capabilities: string[]) {

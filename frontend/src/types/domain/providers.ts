@@ -16,6 +16,8 @@ export interface ProviderModelPricing {
   model: string
   mode?: string
   releaseDate?: string
+  shutdownDate?: string
+  supportedApiProtocols?: Array<'chat_completions' | 'responses' | 'completions' | 'images' | 'audio' | 'realtime'>
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cachedInputUsdPer1M?: number

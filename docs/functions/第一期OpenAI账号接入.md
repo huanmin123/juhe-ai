@@ -177,6 +177,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - `GET /v1/models` 由本地 OpenAI 模型价格目录返回，不依赖某个上游账号是否可调度，避免 OAuth-only 分组在客户端初始化阶段失败。
 - OAuth Codex 转发会补齐必要 Codex CLI 协议头，并在账号凭据包含 `chatgpt_account_id` / `account_id` 时写入 `chatgpt-account-id`；客户端传入的同名头不会透传，避免跨账号伪造。
 - 网关发现 OAuth token 即将过期时，会优先用 `refresh_token` 自动刷新并写回账户，作为请求前懒刷新兜底。
+- OAuth Access Token 刷新按账户串行执行；刷新前会在锁内重读账户，避免使用缓存里的旧 `refresh_token`。如果 OpenAI 返回 `refresh_token_reused` / `invalid_grant` 且重读后发现账户凭据已经被其他请求或后台任务更新，会采用最新凭据恢复，不把竞争误判为账户失效。
 - 后台 worker 另有 `openai-oauth-access-token-refresh` 专职任务，默认每 60 秒扫描启用、可调度、有 `refresh_token` 且 Access Token 距离过期小于 5 分钟的账户，提前刷新并写回账户；预刷新失败但旧 token 仍有效时按退避等待，旧 token 已过期或缺失时把账户临时冷却。
 - 后台 OAuth 额度快照刷新任务通过本地 OpenAI 网关链路发起模型请求；如果发现 access token 即将过期，也仍会由网关准备上游账号时按正常请求规则刷新授权。
 - OAuth token 响应里的 `expires_in` 只用于计算 `credentials.expires_at`，表示 access token 过期时间；账户购买/套餐到期时间使用单独的 `account_expires_at`。

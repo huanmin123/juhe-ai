@@ -3,9 +3,8 @@ import { Router, type Request, type Response } from 'express'
 
 import { tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import { bindRequestContextFields, getTraceId } from '../../shared/request-context.js'
+import { errorLogFields, logger } from '../../shared/logger.js'
 import {
-  recordAccountStreamFailure,
-  updateAccount,
   type GatewayApiKeyRow,
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
@@ -18,13 +17,14 @@ import {
   resolveCachedGroupUsageAccessMetadataAsync
 } from './gateway-runtime-cache.service.js'
 import { estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
-import { buildOpenAIOAuthCredentials, refreshOpenAIOAuthToken, shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
+import { shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
+import { refreshOpenAIOAuthAccountAccessToken } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import {
-  applyAccountErrorHandling,
   parseErrorPayload,
   type GatewaySettings
 } from './account-error-policy.service.js'
-import { persistOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
+import { parseOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
+import { requestDbService } from '../db-service/db-service-ipc.js'
 import {
   buildUsageRequestSnapshot,
   buildUsageResponseSnapshot,
@@ -35,6 +35,7 @@ import {
   requestEndpoint,
   requestModel,
   extractBearerToken,
+  type ParsedUsage,
   type UpstreamAttempt
 } from './openai-gateway-usage.js'
 import {
@@ -67,7 +68,7 @@ import { isOpenAIStreamRequest, resolveGatewayRuntimeAsync } from './openai-gate
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from './api-key-quota.service.js'
-import { AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE, checkGatewayAuthorizationQuotaAsync } from './authorization-quota.service.js'
+import { AUTHORIZATION_QUOTA_EXCEEDED_MESSAGE, checkGatewayAuthorizationQuotaAsync, checkGatewayAuthorizationQuotaBatchAsync } from './authorization-quota.service.js'
 import {
   forgetOpenAIAccountForSession,
   orderOpenAIAccountsBySessionAffinity,
@@ -80,6 +81,11 @@ import {
   isOpenAIModelsRequest,
   type UpstreamAccount
 } from './openai-gateway-route-helpers.js'
+import {
+  enqueueGatewayAccountErrorHandlingSideEffect,
+  enqueueGatewayStreamFailureSideEffect,
+  filterLocallySuppressedGatewayAccounts
+} from './gateway-account-side-effects.service.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -293,14 +299,26 @@ export async function handleOpenAIGatewayRequest(
     apiKeyId,
     groupId
   })
-  const candidateAccounts = orderOpenAIAccountsBySessionAffinity(
+  const orderedCandidateAccounts = orderOpenAIAccountsBySessionAffinity(
     options.candidateAccounts ?? runtimeAccounts ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId),
     options.disableSessionAffinity ? undefined : sessionAffinityKey
   )
+  const localSuppressionFilter = filterLocallySuppressedGatewayAccounts(orderedCandidateAccounts)
+  if (localSuppressionFilter.suppressedCount > 0) {
+    logger.warn({
+      event: 'gateway_local_account_suppression_applied',
+      suppressedCount: localSuppressionFilter.suppressedCount,
+      bypassedAllSuppressed: localSuppressionFilter.bypassedAllSuppressed,
+      groupId,
+      systemAccountId
+    }, '网关本地短期屏蔽账号已应用到候选列表')
+  }
+  const candidateAccounts = localSuppressionFilter.accounts
   let authorizationQuotaDeniedAccountCount = 0
   const accounts: UpstreamAccount[] = []
+  const accountQuotaDecisions = await checkGatewayAuthorizationQuotaBatchAsync({ groupAccess, accounts: candidateAccounts })
   for (const account of candidateAccounts) {
-    const decision = await checkGatewayAuthorizationQuotaAsync({ groupAccess, account })
+    const decision = accountQuotaDecisions.get(account.id) ?? { allowed: true }
     if (!decision.allowed) {
       authorizationQuotaDeniedAccountCount += 1
       continue
@@ -390,6 +408,29 @@ export async function handleOpenAIGatewayRequest(
             errorPhase: 'upstream_response',
             errorMessage: '上游响应体为空'
           })
+          recordCompletedUpstreamAttempt(req, {
+            traceId,
+            clientIp,
+            systemAccountId,
+            apiKeyId,
+            groupId,
+            account,
+            endpoint,
+            statusCode: upstreamResponse.status,
+            success: false,
+            stream: isOpenAIStreamRequest(req),
+            firstTokenMs,
+            startedAt,
+            usage: emptyUsage(),
+            requestSnapshot,
+            responseSnapshot: buildUsageResponseSnapshot({
+              upstreamUrl,
+              statusCode: upstreamResponse.status,
+              headers: upstreamResponse.headers,
+              errorMessage: '上游响应体为空'
+            }),
+            errorMessage: '上游响应体为空'
+          })
           auditCapture.finalize({
             outcome: 'stream_failed',
             success: false,
@@ -414,6 +455,27 @@ export async function handleOpenAIGatewayRequest(
           )
         } catch (error) {
           if (isUpstreamRequestAbortedError(error) || abortController.signal.aborted) {
+            recordClientAbortedUpstreamAttempt(req, {
+              traceId,
+              clientIp,
+              systemAccountId,
+              apiKeyId,
+              groupId,
+              account,
+              endpoint,
+              statusCode: upstreamResponse.status,
+              stream: isOpenAIStreamRequest(req),
+              firstTokenMs,
+              startedAt,
+              requestSnapshot,
+              responseSnapshot: buildUsageResponseSnapshot({
+                upstreamUrl,
+                statusCode: upstreamResponse.status,
+                headers: upstreamResponse.headers,
+                bodyText: responseBodyText,
+                errorMessage: '请求已取消'
+              })
+            })
             auditCapture.completeAttempt(auditAttemptId, {
               statusCode: upstreamResponse.status,
               responseHeaders: upstreamResponse.headers,
@@ -436,23 +498,20 @@ export async function handleOpenAIGatewayRequest(
         })
         if (!streamResult.completed) {
           forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-          enqueueUsageRecord({
+          recordCompletedUpstreamAttempt(req, {
             traceId,
             clientIp,
             systemAccountId,
             apiKeyId,
             groupId,
-            accountId: account.id,
-            ...accountUsageMetadata(account),
+            account,
             endpoint,
-            providerCode: 'openai',
-            model: requestModel(req),
-            stream: isOpenAIStreamRequest(req),
             statusCode: upstreamResponse.status,
             success: false,
+            stream: isOpenAIStreamRequest(req),
             firstTokenMs: streamResult.firstTokenMs,
-            durationMs: Date.now() - startedAt,
-            errorMessage: streamResult.message,
+            startedAt,
+            usage: streamResult.usage,
             requestSnapshot,
             responseSnapshot: buildUsageResponseSnapshot({
               upstreamUrl,
@@ -460,7 +519,8 @@ export async function handleOpenAIGatewayRequest(
               headers: upstreamResponse.headers,
               bodyText: responseBodyText,
               errorMessage: streamResult.message
-            })
+            }),
+            errorMessage: streamResult.message
           })
           auditCapture.finalize({
             outcome: 'stream_failed',
@@ -479,13 +539,34 @@ export async function handleOpenAIGatewayRequest(
         usage = streamResult.usage
       } else {
         if (abortController.signal.aborted) {
-          throw new UpstreamRequestAbortedError('请求已取消')
+          throw new UpstreamRequestAbortedError('请求已取消', true)
         }
         let responseBody: Buffer
         try {
           responseBody = Buffer.from(await upstreamResponse.arrayBuffer())
         } catch (error) {
           if (isUpstreamRequestAbortedError(error) || abortController.signal.aborted) {
+            recordClientAbortedUpstreamAttempt(req, {
+              traceId,
+              clientIp,
+              systemAccountId,
+              apiKeyId,
+              groupId,
+              account,
+              endpoint,
+              statusCode: upstreamResponse.status,
+              stream: isOpenAIStreamRequest(req),
+              firstTokenMs,
+              startedAt,
+              requestSnapshot,
+              responseSnapshot: buildUsageResponseSnapshot({
+                upstreamUrl,
+                statusCode: upstreamResponse.status,
+                headers: upstreamResponse.headers,
+                bodyText: responseBodyText,
+                errorMessage: '请求已取消'
+              })
+            })
             auditCapture.completeAttempt(auditAttemptId, {
               statusCode: upstreamResponse.status,
               responseHeaders: upstreamResponse.headers,
@@ -522,36 +603,20 @@ export async function handleOpenAIGatewayRequest(
         })
       }
 
-      enqueueUsageRecord({
+      recordCompletedUpstreamAttempt(req, {
         traceId,
         clientIp,
         systemAccountId,
         apiKeyId,
         groupId,
-        accountId: account.id,
-        ...accountUsageMetadata(account),
+        account,
         endpoint,
-        providerCode: 'openai',
-        model: requestModel(req),
         stream: isOpenAIStreamRequest(req),
         statusCode: upstreamResponse.status,
         success: upstreamResponse.ok,
         firstTokenMs,
-        durationMs: Date.now() - startedAt,
-        inputTokens: usage.inputTokens,
-        outputTokens: usage.outputTokens,
-        cacheReadTokens: usage.cacheReadTokens,
-        inputImageTokens: usage.inputImageTokens,
-        outputImageTokens: usage.outputImageTokens,
-        costUsd: estimateProviderCostUsd({
-          providerCode: 'openai',
-          model: requestModel(req),
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          cacheReadTokens: usage.cacheReadTokens,
-          inputImageTokens: usage.inputImageTokens,
-          outputImageTokens: usage.outputImageTokens
-        }),
+        startedAt,
+        usage,
         errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
         errorMessage: typeof errorPayload.message === 'string' ? errorPayload.message : undefined,
         requestSnapshot: upstreamResponse.ok ? undefined : requestSnapshot,
@@ -632,6 +697,93 @@ export async function handleOpenAIGatewayRequest(
       errorMessage: diagnosticError?.errorMessage ?? message
     })
   }
+}
+
+function recordCompletedUpstreamAttempt(
+  req: Request,
+  input: {
+    traceId: string
+    clientIp?: string
+    systemAccountId: string
+    apiKeyId?: string
+    groupId: string
+    account: UpstreamAccount
+    endpoint: string
+    statusCode?: number
+    success: boolean
+    stream: boolean
+    firstTokenMs?: number
+    startedAt: number
+    usage: ParsedUsage
+    errorCode?: string
+    errorMessage?: string
+    requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
+    responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
+  }
+): void {
+  const model = requestModel(req)
+  enqueueUsageRecord({
+    traceId: input.traceId,
+    clientIp: input.clientIp,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    accountId: input.account.id,
+    ...accountUsageMetadata(input.account),
+    endpoint: input.endpoint,
+    providerCode: 'openai',
+    model,
+    stream: input.stream,
+    statusCode: input.statusCode,
+    success: input.success,
+    firstTokenMs: input.firstTokenMs,
+    durationMs: Date.now() - input.startedAt,
+    inputTokens: input.usage.inputTokens,
+    outputTokens: input.usage.outputTokens,
+    cacheReadTokens: input.usage.cacheReadTokens,
+    inputImageTokens: input.usage.inputImageTokens,
+    outputImageTokens: input.usage.outputImageTokens,
+    costUsd: estimateProviderCostUsd({
+      providerCode: 'openai',
+      model,
+      inputTokens: input.usage.inputTokens,
+      outputTokens: input.usage.outputTokens,
+      cacheReadTokens: input.usage.cacheReadTokens,
+      inputImageTokens: input.usage.inputImageTokens,
+      outputImageTokens: input.usage.outputImageTokens
+    }),
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    requestSnapshot: input.requestSnapshot,
+    responseSnapshot: input.responseSnapshot
+  })
+}
+
+function recordClientAbortedUpstreamAttempt(
+  req: Request,
+  input: {
+    traceId: string
+    clientIp?: string
+    systemAccountId: string
+    apiKeyId?: string
+    groupId: string
+    account: UpstreamAccount
+    endpoint: string
+    statusCode?: number
+    stream: boolean
+    firstTokenMs?: number
+    startedAt: number
+    requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
+    responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
+  }
+): void {
+  recordCompletedUpstreamAttempt(req, {
+    ...input,
+    success: false,
+    usage: emptyUsage(),
+    errorCode: 'client_aborted',
+    errorMessage: '请求已取消'
+  })
 }
 
 function buildDiagnosticUpstreamError(
@@ -895,6 +1047,22 @@ async function fetchFirstAvailableUpstream(
             break
           } catch (error) {
             if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
+              if (shouldRecordAbortedUpstreamAttempt(error)) {
+                const statusCode = lastAttempt?.accountId === account.id && lastAttempt.upstreamUrl === upstreamUrl ? lastAttempt.status : undefined
+                recordFailedUpstreamAttempt(req, usageContext, account, {
+                  upstreamUrl,
+                  startedAt: attemptStartedAt,
+                  statusCode,
+                  errorMessage: '请求已取消'
+                })
+                lastAttempt = {
+                  accountId: account.id,
+                  accountName: account.name,
+                  upstreamUrl,
+                  status: statusCode,
+                  message: '请求已取消'
+                }
+              }
               auditCapture.completeAttempt(auditAttemptId, {
                 success: false,
                 errorPhase: 'client',
@@ -962,15 +1130,31 @@ function throwIfRequestAborted(signal?: AbortSignal): void {
   }
 }
 
+function shouldRecordAbortedUpstreamAttempt(error: unknown): boolean {
+  return error instanceof UpstreamRequestAbortedError && error.upstreamRequestStarted
+}
+
 function applyAccountErrorHandlingWithCacheInvalidation(
   account: UpstreamAccount,
-  input: Parameters<typeof applyAccountErrorHandling>[1]
-): ReturnType<typeof applyAccountErrorHandling> {
-  const result = applyAccountErrorHandling(account, input)
-  if (result.changed) {
-    clearGatewayRuntimeCache()
+  input: {
+    success: boolean
+    statusCode?: number
+    headers?: Headers | Record<string, string | string[]>
+    bodyText?: string
+    errorMessage?: string
+    settings?: GatewaySettings
+    preserveManualTrafficMigration?: boolean
   }
-  return result
+): void {
+  const normalizedInput = {
+    ...input,
+    headers: input.headers instanceof Headers ? headersToObject(input.headers) : input.headers
+  }
+  enqueueGatewayAccountErrorHandlingSideEffect({
+    type: 'apply_account_error_handling',
+    account,
+    input: normalizedInput
+  })
 }
 
 function handleStreamFailure(account: UpstreamAccount, reason: string, settings: GatewaySettings): void {
@@ -978,20 +1162,17 @@ function handleStreamFailure(account: UpstreamAccount, reason: string, settings:
     return
   }
 
-  const result = recordAccountStreamFailure({
-    accountId: account.id,
-    thresholdCount: settings.streamFailureThresholdCount,
-    thresholdWindowMinutes: settings.streamFailureThresholdWindowMinutes,
-    action: 'cooldown',
-    cooldownMinutes: settings.defaultTemporaryUnschedulableMinutes,
-    reason
+  enqueueGatewayStreamFailureSideEffect({
+    type: 'record_account_stream_failure',
+    input: {
+      accountId: account.id,
+      thresholdCount: settings.streamFailureThresholdCount,
+      thresholdWindowMinutes: settings.streamFailureThresholdWindowMinutes,
+      action: 'cooldown',
+      cooldownMinutes: settings.defaultTemporaryUnschedulableMinutes,
+      reason
+    }
   })
-
-  if (result.triggered) {
-
-    clearGatewayRuntimeCache()
-
-  }
 }
 
 function streamPreloadErrorBody(error: unknown): Buffer | undefined {
@@ -1010,18 +1191,8 @@ async function prepareUpstreamAccount(account: UpstreamAccount, signal?: AbortSi
   }
   throwIfRequestAborted(signal)
 
-  const tokenInfo = await refreshOpenAIOAuthToken({
-    refreshToken: account.refreshToken,
-    clientId: account.clientId,
-    proxyUrl: account.proxyUrl,
-    signal
-  })
-  const credentials = {
-    ...account.credentials,
-    ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken: account.refreshToken })
-  }
-  updateAccount(account.id, { credentials, status: 'active' })
-  clearGatewayRuntimeCache()
+  const updated = await refreshOpenAIOAuthAccountAccessToken(account, { signal, force: false, persistMode: 'db-service' })
+  const credentials = updated.credentials
   const accessToken = typeof credentials.access_token === 'string' ? credentials.access_token : account.apiKey
   return {
     ...account,
@@ -1036,7 +1207,19 @@ async function prepareUpstreamAccount(account: UpstreamAccount, signal?: AbortSi
 
 function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: Headers, source: string): void {
   if (account.type !== 'oauth') return
-  persistOpenAICodexUsageHeaders(account.id, headers, source)
+  if (!parseOpenAICodexUsageHeaders(headers)) return
+  void requestDbService({
+    type: 'persist_openai_codex_usage_headers',
+    accountId: account.id,
+    headers: headersToObject(headers),
+    source
+  }, { fallbackToLocal: false }).catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_codex_usage_snapshot_side_effect_failed',
+      accountId: account.id,
+      source
+    }), 'OpenAI Codex 用量快照副作用写入失败')
+  })
 }
 
 function isImplicitOpenAIStreamResponse(req: Request, account: UpstreamAccount): boolean {
