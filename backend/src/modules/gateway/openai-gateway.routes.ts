@@ -41,6 +41,7 @@ import {
 import {
   buildUpstreamRequestParts,
   copyResponseHeaders,
+  isEffectiveOpenAIStreamRequest,
   isStreamResponse,
   isRetryableUpstreamStreamPreloadError,
   isUpstreamRequestAbortedError,
@@ -64,7 +65,7 @@ import {
   isOpenAIStreamContentType,
   sendGatewayJsonError
 } from './openai-gateway-responses.js'
-import { isOpenAIStreamRequest, resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
+import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from './api-key-quota.service.js'
@@ -418,7 +419,7 @@ export async function handleOpenAIGatewayRequest(
             endpoint,
             statusCode: upstreamResponse.status,
             success: false,
-            stream: isOpenAIStreamRequest(req),
+            stream: isEffectiveOpenAIStreamRequest(req, account),
             firstTokenMs,
             startedAt,
             usage: emptyUsage(),
@@ -464,7 +465,7 @@ export async function handleOpenAIGatewayRequest(
               account,
               endpoint,
               statusCode: upstreamResponse.status,
-              stream: isOpenAIStreamRequest(req),
+              stream: isEffectiveOpenAIStreamRequest(req, account),
               firstTokenMs,
               startedAt,
               requestSnapshot,
@@ -508,7 +509,7 @@ export async function handleOpenAIGatewayRequest(
             endpoint,
             statusCode: upstreamResponse.status,
             success: false,
-            stream: isOpenAIStreamRequest(req),
+            stream: isEffectiveOpenAIStreamRequest(req, account),
             firstTokenMs: streamResult.firstTokenMs,
             startedAt,
             usage: streamResult.usage,
@@ -555,7 +556,7 @@ export async function handleOpenAIGatewayRequest(
               account,
               endpoint,
               statusCode: upstreamResponse.status,
-              stream: isOpenAIStreamRequest(req),
+              stream: isEffectiveOpenAIStreamRequest(req, account),
               firstTokenMs,
               startedAt,
               requestSnapshot,
@@ -611,7 +612,7 @@ export async function handleOpenAIGatewayRequest(
         groupId,
         account,
         endpoint,
-        stream: isOpenAIStreamRequest(req),
+        stream: isEffectiveOpenAIStreamRequest(req, account),
         statusCode: upstreamResponse.status,
         success: upstreamResponse.ok,
         firstTokenMs,
@@ -916,7 +917,6 @@ async function fetchFirstAvailableUpstream(
   signal?: AbortSignal
 ): Promise<{ account: UpstreamAccount; response: GatewayUpstreamResponse; upstreamUrl: string; auditAttemptId: string; releaseConcurrency: () => void }> {
   const retryAttempts = Math.max(0, settings.temporaryUnschedulableRetryAttempts)
-  const isStreamRequest = isOpenAIStreamRequest(req)
   let lastAttempt: UpstreamAttempt | undefined
   let auditAttemptIndex = 0
 
@@ -939,6 +939,7 @@ async function fetchFirstAvailableUpstream(
     if (upstreamUrls.length === 0) {
       continue
     }
+    const isStreamRequest = isEffectiveOpenAIStreamRequest(req, account)
     let requestParts: ReturnType<typeof buildUpstreamRequestParts>
     try {
       requestParts = buildUpstreamRequestParts(req, account, {
@@ -1005,8 +1006,8 @@ async function fetchFirstAvailableUpstream(
               headers,
               body,
               proxyUrl: account.proxyUrl,
-              timeoutMs: upstreamSocketTimeoutMs(req, settings),
-              requestTimeoutMs: upstreamRequestTimeoutMs(req, settings),
+              timeoutMs: upstreamSocketTimeoutMs(req, settings, account),
+              requestTimeoutMs: upstreamRequestTimeoutMs(req, settings, account),
               signal
             })
             lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
@@ -1273,5 +1274,5 @@ function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: He
 }
 
 function isImplicitOpenAIStreamResponse(req: Request, account: UpstreamAccount): boolean {
-  return isOpenAIStreamRequest(req) && account.type === 'oauth'
+  return isEffectiveOpenAIStreamRequest(req, account)
 }

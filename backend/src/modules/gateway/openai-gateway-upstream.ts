@@ -7,6 +7,7 @@ import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import {
   buildOpenAIOAuthCodexRequestParts,
+  isOpenAIOAuthCodexCompactRequest,
   type OpenAIOAuthCodexIdentity
 } from './openai-oauth-codex-adapter.js'
 import {
@@ -272,19 +273,26 @@ export async function readStreamChunkWithAbort(
   return readStreamChunkWithTimeout(iterator, undefined, () => new Error(''), signal)
 }
 
-export function upstreamSocketTimeoutMs(req: Request, settings: GatewaySettings): number {
-  const isStreamRequest = req.body?.stream === true
+export function upstreamSocketTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number {
+  const isStreamRequest = isEffectiveOpenAIStreamRequest(req, account)
   if (!isStreamRequest || !settings.streamCircuitBreakerEnabled) {
     return 120000
   }
   return Math.max(settings.streamRequestTimeoutSeconds, settings.streamIdleTimeoutSeconds + 15, 30) * 1000
 }
 
-export function upstreamRequestTimeoutMs(req: Request, settings: GatewaySettings): number | undefined {
-  if (req.body?.stream !== true || !settings.streamCircuitBreakerEnabled) {
+export function upstreamRequestTimeoutMs(req: Request, settings: GatewaySettings, account?: { type?: string }): number | undefined {
+  if (!isEffectiveOpenAIStreamRequest(req, account) || !settings.streamCircuitBreakerEnabled) {
     return undefined
   }
   return Math.max(1, settings.streamRequestTimeoutSeconds) * 1000
+}
+
+export function isEffectiveOpenAIStreamRequest(req: Request, account?: { type?: string }): boolean {
+  if (account?.type === 'oauth') {
+    return !isOpenAIOAuthCodexCompactRequest(req)
+  }
+  return req.body?.stream === true
 }
 
 export function isStreamResponse(response: GatewayUpstreamResponse): boolean {
@@ -339,8 +347,6 @@ export function buildUpstreamHeaders(inputHeaders: Record<string, string | strin
   headers.set('authorization', `Bearer ${account.apiKey}`)
   if (account.type === 'oauth') {
     applyOpenAICodexHeaders(headers, account)
-  } else {
-    applyOpenAIPlatformCredentialHeaders(headers, account)
   }
   if (!account.passthroughEnabled) {
     headers.set('content-type', headers.get('content-type') ?? 'application/json')
@@ -386,28 +392,6 @@ function shouldSkipUpstreamRequestHeader(name: string): boolean {
     return true
   }
   return skippedUpstreamRequestHeaderPrefixes.some((prefix) => lowerName.startsWith(prefix))
-}
-
-function applyOpenAIPlatformCredentialHeaders(headers: Headers, account: UpstreamHeaderAccount): void {
-  setCredentialHeader(headers, account.credentials, 'OpenAI-Organization', [
-    'openai_organization',
-    'openaiOrganization',
-    'openai_org',
-    'organization',
-    'organization_id',
-    'org_id'
-  ])
-  setCredentialHeader(headers, account.credentials, 'OpenAI-Project', [
-    'openai_project',
-    'openaiProject',
-    'project',
-    'project_id'
-  ])
-  setCredentialHeader(headers, account.credentials, 'OpenAI-Beta', [
-    'openai_beta',
-    'openaiBeta',
-    'beta'
-  ])
 }
 
 function applyOpenAICodexHeaders(headers: Headers, account: UpstreamHeaderAccount): void {
@@ -553,28 +537,6 @@ function isEmptyPlainObject(value: unknown): boolean {
 function stringCredential(credentials: Record<string, unknown> | undefined, key: string): string | undefined {
   const value = credentials?.[key]
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
-}
-
-function firstStringCredential(credentials: Record<string, unknown> | undefined, keys: readonly string[]): string | undefined {
-  for (const key of keys) {
-    const value = stringCredential(credentials, key)
-    if (value) {
-      return value
-    }
-  }
-  return undefined
-}
-
-function setCredentialHeader(
-  headers: Headers,
-  credentials: Record<string, unknown> | undefined,
-  headerName: string,
-  credentialKeys: readonly string[]
-): void {
-  const value = firstStringCredential(credentials, credentialKeys)
-  if (value) {
-    headers.set(headerName, value)
-  }
 }
 
 const skippedUpstreamRequestHeaders = new Set([

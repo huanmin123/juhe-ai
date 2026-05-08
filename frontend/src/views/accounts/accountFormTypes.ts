@@ -10,9 +10,6 @@ export interface AccountFormModel {
   groupId?: string
   apiKey: string
   baseUrl: string
-  openaiOrganization: string
-  openaiProject: string
-  openaiBeta: string
   accessToken: string
   refreshToken: string
   oauthMode: 'manual' | 'refresh_token'

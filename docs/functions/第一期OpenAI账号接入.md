@@ -62,9 +62,6 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - 账户名称
 - `api_key`
 - `base_url`
-- `openai_organization`：可选，用于写入上游 `OpenAI-Organization`
-- `openai_project`：可选，用于写入上游 `OpenAI-Project`
-- `openai_beta`：可选，用于固定写入或覆盖上游 `OpenAI-Beta`
 - 代理
 - 并发上限
 - 账户到期时间（可选，套餐/账号购买到期时间）
@@ -77,11 +74,11 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - API Key 按凭据指纹做数据库全局唯一约束，不能被其他系统账户重复添加
 - 列表不展示 API Key，编辑弹窗可查看和修改
 - `base_url` 默认使用 OpenAI 官方地址
-- `openai_organization`、`openai_project` 和 `openai_beta` 为空时不写入；如果配置，则由账号侧写入上游请求，优先级高于客户端同名头
+- 不提供 `OpenAI-Organization`、`OpenAI-Project` 和 `OpenAI-Beta` 的账号表单配置；组织 / 项目属于 OpenAI 账号上下文，服务端不凭空生成，Beta 由客户端按公开 API 需求显式传入
 - `account_expires_at` 表示本地套餐/账号购买到期时间；未填写则不过期，到期后账户自动改为停用并退出调度
 - 可手动启用 / 停用
 
-透传策略：OpenAI 账户默认按供应商网关策略透传，用户侧不提供开关；服务端只保留本地鉴权、账号调度、上游认证替换、安全头剔除、流式转发和错误兜底等必要中转职责。API Key 账号请求体优先原样使用客户端 `rawBody`；Header 会过滤本地认证、代理链路、SDK / tracing 噪声和客户端传入的 `OpenAI-Organization` / `OpenAI-Project`，再按账号凭据写入真正的 OpenAI 组织、项目和 Beta 配置。
+透传策略：OpenAI 账户默认按供应商网关策略透传，用户侧不提供开关；服务端只保留本地鉴权、账号调度、上游认证替换、安全头剔除、流式转发和错误兜底等必要中转职责。API Key 账号请求体优先原样使用客户端 `rawBody`；Header 会过滤本地认证、代理链路、SDK / tracing 噪声和客户端传入的 `OpenAI-Organization` / `OpenAI-Project`，不从账号凭据生成这些上游账号上下文头。`OpenAI-Beta` 保留客户端显式传入值，服务端不做账号级覆盖。
 
 ## 账户归属分组
 

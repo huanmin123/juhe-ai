@@ -15,8 +15,8 @@ const apiKeyAccount = {
 function main(): void {
   testRawBodyPassthrough()
   testApiKeyHeaderFiltering()
-  testOpenAIAccountScopedHeaders()
-  testOpenAIBetaPreservedAndOverridable()
+  testOpenAIAccountHeadersAreNotClientOrCredentialControlled()
+  testOpenAIBetaPreservedFromClient()
   testJsonBodyFallbackWhenPassthroughDisabled()
   console.log('OpenAI API Key passthrough regression passed')
 }
@@ -103,37 +103,30 @@ function testApiKeyHeaderFiltering(): void {
   }
 }
 
-function testOpenAIAccountScopedHeaders(): void {
+function testOpenAIAccountHeadersAreNotClientOrCredentialControlled(): void {
   const headers = buildUpstreamHeaders({
     'openai-organization': 'client-org',
-    'openai-project': 'client-project'
+    'openai-project': 'client-project',
+    'openai-beta': 'responses=experimental'
   }, {
     ...apiKeyAccount,
     credentials: {
       openai_organization: 'acct-org',
-      openai_project: 'acct-project'
+      openai_project: 'acct-project',
+      openai_beta: 'acct-beta'
     }
   })
 
-  assert.equal(headers.get('openai-organization'), 'acct-org')
-  assert.equal(headers.get('openai-project'), 'acct-project')
+  assert.equal(headers.get('openai-organization'), null)
+  assert.equal(headers.get('openai-project'), null)
+  assert.equal(headers.get('openai-beta'), 'responses=experimental')
 }
 
-function testOpenAIBetaPreservedAndOverridable(): void {
+function testOpenAIBetaPreservedFromClient(): void {
   const clientHeaders = buildUpstreamHeaders({
     'openai-beta': 'assistants=v2'
   }, apiKeyAccount)
   assert.equal(clientHeaders.get('openai-beta'), 'assistants=v2')
-
-  const accountHeaders = buildUpstreamHeaders({
-    'openai-beta': 'assistants=v2'
-  }, {
-    ...apiKeyAccount,
-    credentials: {
-      openai_beta: 'responses=experimental'
-    }
-  })
-  assert.equal(accountHeaders.get('openai-beta'), 'responses=experimental')
 }
 
 function testJsonBodyFallbackWhenPassthroughDisabled(): void {

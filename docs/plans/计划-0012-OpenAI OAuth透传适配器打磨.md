@@ -21,10 +21,10 @@
 ### 本次包含
 
 - [x] 新增 OpenAI OAuth / Codex 内部适配器边界，不改变客户端 `/v1` 入口和前端配置项。
-- [x] OAuth / Codex 请求体归一化：JSON 对象校验、`instructions` 校验与兜底、`store=false`、非 compact `stream=true`、compact 删除 `store/stream`、移除 Codex backend 不支持或高风险字段。
+- [x] OAuth / Codex 请求体归一化：JSON 对象校验、`model` 校验、非 compact `input` 校验、`instructions` 校验与兜底、`store=false`、非 compact `stream=true`、compact 删除 `store/stream`、移除 Codex backend 不支持或高风险字段。
 - [x] OAuth / Codex Header 收敛：从黑名单复制改为白名单 + 默认值，强制精确 `content-type: application/json`，按 endpoint 设置 `accept`。
 - [x] 上游会话标识隔离：对 `session_id`、`conversation_id` 和 `prompt_cache_key` 混入本地系统账户、API Key、分组与账号维度后重写。
-- [x] 对非 JSON 或 `instructions` 类型异常的 OAuth 请求本地返回 400，不再把异常 body 送到 Codex backend。
+- [x] 对非 JSON、缺少 `model`、非 compact 缺少 `input`、`input` 类型异常或 `instructions` 类型异常的 OAuth 请求本地返回 400，不再把异常 body 送到 Codex backend。
 - [x] 补充面向适配器的回归脚本，覆盖请求体、Header、会话隔离和 compact 行为。
 
 ### 本次不包含
@@ -49,7 +49,7 @@
 - 数据变化：不新增数据库字段，不改变账号、分组、API Key 或使用记录 schema。
 - 接口变化：客户端仍访问 `/v1/responses` 和 `/v1/responses/compact`；OAuth 账号仍只允许这两个 endpoint。
 - 后端变化：网关构造上游请求时按账号类型分支；API Key 账号保留原有透传策略，OAuth 账号走专用 body/header/session normalizer。
-- 错误变化：OAuth 账号遇到非 JSON body、非对象 body、`instructions` 非字符串时，网关返回 OpenAI 兼容 400 错误。
+- 错误变化：OAuth 账号遇到非 JSON body、非对象 body、缺少 `model`、非 compact 缺少 `input`、`input` 类型异常或 `instructions` 非字符串时，网关返回 OpenAI 兼容 400 错误。
 - 观测变化：审计日志记录的是归一化后的上游请求，有助于排查实际送往 Codex backend 的协议形态。
 
 ## 执行拆解
@@ -72,7 +72,9 @@
 | 功能主流程 | OAuth `/v1/responses/compact` 请求体归一化 | 构造 compact 请求 | 上游 body 删除 `store`、`stream` 和不支持字段 | 已通过 | 回归脚本覆盖 |
 | 功能主流程 | Header 收敛 | 构造包含 cookie、x-forwarded、OpenAI SDK UA 的请求头 | OAuth 上游只保留白名单，强制 `content-type: application/json`，默认 Codex 头齐全 | 已通过 | 回归脚本覆盖 |
 | 异常与边界 | 非 JSON body | OAuth 账号处理无效 JSON | 本地 400，不请求上游 | 已通过 | 回归脚本覆盖构造层 |
+| 异常与边界 | `model` / `input` 缺失或类型错误 | `/responses` 缺少必需字段，或 `input` 不是字符串/数组 | 本地 400，不请求上游；compact 先只强制 `model` | 已通过 | 2026-05-08 复查补充 |
 | 异常与边界 | `instructions` 类型错误 | `instructions` 为对象或数组 | 本地 400，不请求上游 | 已通过 | 回归脚本覆盖 |
+| 回归场景 | OAuth 有效流式语义 | 客户端传 `stream=false` 但走 OAuth `/responses` | 网关按有效流式请求处理首包超时、流预读和记录；compact 保持非流式 | 已通过 | 2026-05-08 复查补充 |
 | 回归场景 | API Key 账号透传 | 使用 API Key 账号构造相同请求 | 保持原有 raw body / header 策略，不走 OAuth Codex adapter | 已通过 | 回归脚本覆盖 |
 | 未覆盖说明 | 真实 OpenAI OAuth 上游请求 | 需要真实可用 OAuth 账户与明确测试窗口 | 不在无凭据环境强行请求上游 | 不适用 | 本地只做协议构造验证 |
 
@@ -82,6 +84,7 @@
 | --- | --- | --- | --- |
 | 2026-05-08 | 进行中 | Codex | 已完成对 `sub2api_source`、`new-api`、`CLIProxyAPI` 与本项目现状的差异复核，确认先落 P0/P1：adapter、body normalize、header allowlist、session isolation、本地 400。 |
 | 2026-05-08 | 已完成 | Codex | 已落地 `openai-oauth-codex-adapter`、接入网关上游请求构造、补充回归脚本，并通过 adapter 回归与后端类型检查。 |
+| 2026-05-08 | 已完成 | Codex | 复查后补严 OAuth 本地校验：缺少 `model`、非 compact 缺少 `input` 或 `input` 类型错误直接 400；同时把 OAuth `/responses` 的有效流式语义同步到网关超时、预读和使用记录。 |
 
 ## 决策记录
 
@@ -99,12 +102,14 @@
 - [x] OAuth `/responses/compact` 上游 body 删除 `store/stream` 和不支持字段。
 - [x] OAuth 上游 Header 强制精确 `content-type: application/json`，默认 Codex 关键头齐全，危险头不透传。
 - [x] `session_id`、`conversation_id`、`prompt_cache_key` 被本地隔离，两个 API Key 使用相同原始 session 时不会得到相同上游标识。
-- [x] 非 JSON body 和 `instructions` 类型错误本地返回 400。
+- [x] 非 JSON body、缺少 `model`、非 compact 缺少 `input`、`input` 类型错误和 `instructions` 类型错误本地返回 400。
+- [x] OAuth 非 compact 上游强制流式后，网关本地超时、流预读、隐式 SSE 处理和使用记录按有效流式语义执行。
 - [x] 回归脚本和后端类型检查完成，未验证项有明确说明。
 
 ## 验证记录
 
 - OAuth Codex adapter 回归：已执行通过，命令：`pnpm --filter juhe-ai-backend test:openai-oauth-codex-adapter`
+- 2026-05-08 复查补充：同一命令覆盖缺少 `model` / `input` 本地 400 与 OAuth 有效流式语义。
 - 后端类型检查：已执行通过，命令：`pnpm --filter juhe-ai-backend typecheck`
 - 真实上游请求：不适用，当前计划不主动消耗真实 OAuth 账号额度。
 

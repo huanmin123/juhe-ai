@@ -676,9 +676,6 @@ function openEdit(account: AccountSummary) {
     groupId: groupIdForAccount(account.id),
     apiKey: asString(account.credentials.api_key),
     baseUrl: asString(account.credentials.base_url) || 'https://api.openai.com/v1',
-    openaiOrganization: asString(account.credentials.openai_organization ?? account.credentials.openaiOrganization ?? account.credentials.organization),
-    openaiProject: asString(account.credentials.openai_project ?? account.credentials.openaiProject ?? account.credentials.project),
-    openaiBeta: asString(account.credentials.openai_beta ?? account.credentials.openaiBeta),
     accessToken: asString(account.credentials.access_token),
     refreshToken: asString(account.credentials.refresh_token),
     notes: account.notes ?? ''

@@ -76,6 +76,7 @@ function normalizeOpenAIOAuthCodexBody(
   }
 
   const body = parseOpenAIOAuthCodexJsonObjectBody(req)
+  validateOpenAIOAuthCodexBody(body, compact)
   const session = resolveOpenAIOAuthCodexSession(inputHeaders, body, account, identity)
   applyOpenAIOAuthCodexSessionToBody(body, session, compact)
   normalizeOpenAIOAuthCodexInstructions(body)
@@ -120,6 +121,23 @@ function ensurePlainJsonObject(value: unknown): Record<string, unknown> {
     return { ...value as Record<string, unknown> }
   }
   throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体必须是 JSON 对象')
+}
+
+function validateOpenAIOAuthCodexBody(body: Record<string, unknown>, compact: boolean): void {
+  if (typeof body.model !== 'string' || !body.model.trim()) {
+    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体中的 model 必须是非空字符串')
+  }
+
+  if (compact) {
+    return
+  }
+
+  if (!Object.prototype.hasOwnProperty.call(body, 'input')) {
+    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体必须包含 input 字段')
+  }
+  if (typeof body.input !== 'string' && !Array.isArray(body.input)) {
+    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体中的 input 必须是字符串或数组')
+  }
 }
 
 function normalizeOpenAIOAuthCodexInstructions(body: Record<string, unknown>): void {

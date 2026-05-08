@@ -6,7 +6,11 @@ import {
   isolateOpenAIOAuthCodexSessionId,
   OpenAIOAuthCodexAdapterError
 } from '../modules/gateway/openai-oauth-codex-adapter.js'
-import { buildUpstreamRequestBody, buildUpstreamHeaders } from '../modules/gateway/openai-gateway-upstream.js'
+import {
+  buildUpstreamRequestBody,
+  buildUpstreamHeaders,
+  isEffectiveOpenAIStreamRequest
+} from '../modules/gateway/openai-gateway-upstream.js'
 
 type TestRequest = Request & { rawBody?: Buffer }
 
@@ -32,6 +36,8 @@ function main(): void {
   testHeaderAllowlistAndDefaults()
   testSessionIsolation()
   testInvalidBodyRejection()
+  testRequiredBodyFieldRejection()
+  testOAuthEffectiveStreamSemantics()
   testApiKeyPassthroughUnchanged()
   console.log('OpenAI OAuth Codex adapter regression passed')
 }
@@ -204,6 +210,65 @@ function testInvalidBodyRejection(): void {
     const req = createRequest('/v1/responses', undefined, { 'content-type': 'application/json' }, '{not-json')
     buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   }, OpenAIOAuthCodexAdapterError)
+}
+
+function testRequiredBodyFieldRejection(): void {
+  assert.throws(() => {
+    const req = createRequest('/v1/responses', {})
+    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  }, OpenAIOAuthCodexAdapterError)
+
+  assert.throws(() => {
+    const req = createRequest('/v1/responses', {
+      model: '   ',
+      input: []
+    })
+    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  }, OpenAIOAuthCodexAdapterError)
+
+  assert.throws(() => {
+    const req = createRequest('/v1/responses', {
+      model: 'gpt-5.3-codex'
+    })
+    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  }, OpenAIOAuthCodexAdapterError)
+
+  assert.throws(() => {
+    const req = createRequest('/v1/responses', {
+      model: 'gpt-5.3-codex',
+      input: { text: 'invalid' }
+    })
+    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  }, OpenAIOAuthCodexAdapterError)
+
+  assert.doesNotThrow(() => {
+    const req = createRequest('/v1/responses/compact', {
+      model: 'gpt-5.3-codex'
+    })
+    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  })
+}
+
+function testOAuthEffectiveStreamSemantics(): void {
+  const req = createRequest('/v1/responses', {
+    model: 'gpt-5.3-codex',
+    input: [],
+    stream: false
+  })
+  assert.equal(isEffectiveOpenAIStreamRequest(req, account), true)
+
+  const compactReq = createRequest('/v1/responses/compact', {
+    model: 'gpt-5.3-codex',
+    stream: true
+  })
+  assert.equal(isEffectiveOpenAIStreamRequest(compactReq, account), false)
+
+  const apiKeyReq = createRequest('/v1/responses', {
+    model: 'gpt-5.3-codex',
+    input: [],
+    stream: false
+  })
+  assert.equal(isEffectiveOpenAIStreamRequest(apiKeyReq, { type: 'api_key' }), false)
 }
 
 function testApiKeyPassthroughUnchanged(): void {
