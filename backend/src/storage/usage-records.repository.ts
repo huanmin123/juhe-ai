@@ -62,6 +62,13 @@ export interface UsageRecordListResult {
   pageSize: number
 }
 
+export interface RecentOpenAIRequestShape {
+  endpoint: string
+  model?: string
+  stream: boolean
+  createdAt: string
+}
+
 export interface UsageRecordInput {
   id?: string
   systemAccountId?: string
@@ -209,6 +216,54 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
     `)
     .get(recordId, ...scope.params) as Record<string, unknown> | undefined
   return row ? usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames, true) : undefined
+}
+
+export function findRecentOpenAIRequestShapeForAccount(accountId: string, groupId?: string): RecentOpenAIRequestShape | undefined {
+  const normalizedAccountId = accountId.trim()
+  const normalizedGroupId = groupId?.trim()
+  if (!normalizedAccountId) return undefined
+  const accountShape = findRecentOpenAIRequestShape({ accountId: normalizedAccountId, groupId: normalizedGroupId })
+  return accountShape ?? (normalizedGroupId ? findRecentOpenAIRequestShape({ groupId: normalizedGroupId }) : undefined)
+}
+
+function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: string }): RecentOpenAIRequestShape | undefined {
+  const clauses: string[] = []
+  const params: string[] = []
+  if (input.accountId) {
+    clauses.push('account_id = ?')
+    params.push(input.accountId)
+  }
+  if (input.groupId) {
+    clauses.push('group_id = ?')
+    params.push(input.groupId)
+  }
+  if (clauses.length === 0) return undefined
+  const row = getDatabase()
+    .prepare(`
+      SELECT endpoint, model, stream, created_at
+      FROM usage_records
+      WHERE ${clauses.join(' AND ')}
+        AND api_key_id IS NOT NULL
+        AND provider_code = 'openai'
+        AND endpoint IS NOT NULL
+        AND TRIM(endpoint) <> ''
+        AND (
+          LOWER(endpoint) LIKE '%/v1/responses%'
+          OR LOWER(endpoint) LIKE '%/v1/chat/completions%'
+        )
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `)
+    .get(...params) as unknown as { endpoint?: string | null; model?: string | null; stream?: number | null; created_at?: string | null } | undefined
+  const endpoint = optionalString(row?.endpoint)
+  const createdAt = optionalString(row?.created_at)
+  if (!endpoint || !createdAt) return undefined
+  return {
+    endpoint,
+    model: optionalString(row?.model),
+    stream: row?.stream === 1,
+    createdAt
+  }
 }
 
 export function createUsageRecord(input: UsageRecordInput): void {

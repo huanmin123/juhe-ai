@@ -227,13 +227,36 @@ assert.match(accountTestSource, /handleOpenAIGatewayRequest/)
 assert.match(accountTestSource, /candidateAccounts:\s*\[resolved\.account\]/)
 assert.match(accountTestSource, /disableSessionAffinity:\s*true/)
 
-const oauthUsageRefreshSource = readSource('modules/openai-oauth/openai-oauth-usage-refresh.service.ts')
-assert.match(oauthUsageRefreshSource, /testOpenAIAccount/)
-
 const backgroundJobsSource = readSource('modules/background/background-jobs.ts')
 assert.match(backgroundJobsSource, /testOpenAIAccount/)
-assert.match(backgroundJobsSource, /refreshOpenAIOAuthUsageSnapshot/)
+assert.match(backgroundJobsSource, /findRecentOpenAIRequestShapeForAccount/)
+assert.doesNotMatch(backgroundJobsSource, /prompt:\s*'hi'/)
+assert.doesNotMatch(backgroundJobsSource, /openai-oauth-usage-refresh/)
+assert.doesNotMatch(backgroundJobsSource, /refreshOpenAIOAuthUsageSnapshot/)
+assert.doesNotMatch(backgroundJobsSource, /accountQualityActiveProbeEnabled/)
+assert.doesNotMatch(backgroundJobsSource, /listAccountQualityProbeCandidates/)
+assert.doesNotMatch(backgroundJobsSource, /recordAccountQualityProbe/)
+assert.match(backgroundJobsSource, /cooldownAccountRetestEnabled/)
 assert.match(backgroundJobsSource, /flushUsageRecordQueue\(\{\s*drain:\s*true/)
+assert.match(backgroundJobsSource, /settingsBoolean\('cooldownAccountRetestEnabled', true\)/)
+
+const oauthRoutesSource = readSource('modules/openai-oauth/openai-oauth.routes.ts')
+assert.doesNotMatch(oauthRoutesSource, /refreshOpenAIOAuthUsageSnapshot/)
+
+const gatewayRoutesSourceForOAuthUsage = readSource('modules/gateway/openai-gateway.routes.ts')
+assert.match(gatewayRoutesSourceForOAuthUsage, /persistOpenAICodexHeadersIfNeeded\(account,\s*upstreamResponse\.headers,\s*'gateway'\)/)
+assert.match(gatewayRoutesSourceForOAuthUsage, /persistOpenAICodexHeadersIfNeeded\(account,\s*response\.headers,\s*'gateway_error'\)/)
+
+const repositoriesSource = readSource('storage/repositories.ts')
+assert.match(repositoriesSource, /status IN \('rate_limited', 'temporary_unavailable'\)/)
+
+const accountQualityRepositorySource = readSource('storage/account-quality.repository.ts')
+assert.doesNotMatch(accountQualityRepositorySource, /recordAccountQualityProbe/)
+assert.doesNotMatch(accountQualityRepositorySource, /AccountQualityScoreInput/)
+assert.doesNotMatch(accountQualityRepositorySource, /last_probe_at/)
+
+const schemaSource = readSource('storage/schema.ts')
+assert.doesNotMatch(schemaSource, /last_probe_at/)
 
 console.log('usage-pricing-regression passed')
 

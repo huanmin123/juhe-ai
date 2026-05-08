@@ -74,7 +74,6 @@ export interface AccountSummary {
   qualityRecentAvgFirstTokenMs?: number
   qualityRecentRequestCount?: number
   qualityRecentSuccessRate?: number
-  qualityLastProbeAt?: string
   qualityUpdatedAt?: string
   proxyProfileId?: string
   proxyProfileUnavailable?: boolean

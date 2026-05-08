@@ -61,7 +61,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `audit_log_payloads`：保存客户端请求、上游请求、上游响应和最终网关响应的完整原文，建议加密存储。
 - `runtime_logs`：保存最近 3 天普通运行日志的可检索字段和原始 JSON 行，用于管理员“日志搜索”页面。
 - `runtime_log_search`：FTS5 `trigram` 虚表，保存普通运行日志关键字段和原始 JSON，用于关键字检索。
-- `account_quality_scores`：按 `account_id` 保存账号质量缓存，包括质量分、质量状态、近 10 分钟真实网关首 token 聚合、成功率、最近真实样本时间和最近主动探测时间。该表只作为调度辅助缓存，事实源仍是 `usage_records` 和后台主动探测结果；超过 24 小时没有真实样本或主动探测的质量分不参与调度。
+- `account_quality_scores`：按 `account_id` 保存账号质量缓存，包括质量分、质量状态、近 10 分钟真实网关首 token 聚合、成功率和最近真实样本时间。该表只作为调度辅助缓存，事实源仅为 `usage_records`；账号质量主动探测能力已删除，不保留重新开启的旧设置。超过 24 小时没有真实样本的质量分不参与调度。
 
 建议索引：
 
@@ -116,7 +116,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 用量统计菜单的多日窗口只读取 `usage_stats_daily` 的日累计行并按窗口相加：近 1 天、近 3 天、近一周、近半月和近一月分别对应最近 1 / 3 / 7 / 15 / 30 个自然日；总用量读取 `usage_stats_totals`。前端不能把 `n` 天作为查询条件去实时回扫 `usage_records`。
 - 统计概览属于监控窗口，不使用 0 点重置的今日口径；默认展示近一天，并支持近一天、近三天、近一周和近一月筛选。概览摘要、趋势、模型分布和错误 Top 10 均从小时级缓存表按窗口相加，不读取 `usage_stats_totals`，也不临时回扫 `usage_records`。
 - 分组账户统计 worker 定时重建 `group_account_stats`，分组列表不得在查询时临时 `COUNT/SUM group_accounts + accounts`。
-- 账号质量刷新 worker 默认每 10 分钟执行一次：先 flush 使用记录队列，再按近 10 分钟真实网关 `usage_records.first_token_ms` 刷新 `account_quality_scores`；对于近 24 小时有真实网关请求、同分组、同超级优先状态、同 `priority` 且候选数 `>= 2` 的 OpenAI 可调度账号，复用“测试账号连接”主动探测，prompt 固定 `hi`，每账号 3 次取最大首 token 写入缓存。超过 24 小时未更新的质量分不参与网关调度。
+- 账号质量刷新 worker 默认每 10 分钟执行一次：先 flush 使用记录队列，再按近 10 分钟真实网关 `usage_records.first_token_ms` 刷新 `account_quality_scores`。主动探测能力已删除，worker 只处理真实请求样本，源码和预上线本地库都不再保留 `last_probe_at`。超过 24 小时未更新的质量分不参与网关调度。
+- 冷却账号恢复性复测只处理冷却到期的 `rate_limited`、`temporary_unavailable` 账号；复测前优先从最近真实 `usage_records` 学习 `endpoint/model/stream` 元信息，但不读取 `request_snapshot_json`，也不重放用户 prompt、工具参数或文件内容。没有可用形态样本时才回退到最小 Responses 探活。
 - 代理延迟刷新 worker 默认每 1 分钟按批量大小检测启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新。
 - 授权账户调用需要同时写入调用方统计、真实账户统计和授权消耗统计：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；账户所有者的账户总用量按 `account_owner_system_account_id + account_id` 聚合；授权管理按 `account_owner_system_account_id + account_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 授权分组调用需要同时写入调用方统计、真实分组统计和授权消耗统计：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权管理按 `group_owner_system_account_id + group_authorization_id` 聚合，并过滤资源归属人自用消耗。
@@ -364,26 +365,26 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 字段为空表示不设置本地套餐到期。
 - 创建或编辑账户时如果填入过去时间，账户立即保存为 `disabled` 且 `schedulable = 0`。
 - 列表、调度和相关恢复入口会先处理已过期账户，过期后写入“账户套餐已过期，已自动停用”。
-- 网关选号和后台 OAuth 额度快照刷新只处理未到期账户。
+- 网关选号只处理未到期账户；OAuth 额度快照由真实网关请求被动更新，已到期账户不会进入真实调度。
 
-## OpenAI OAuth 额度快照刷新
+## OpenAI OAuth 额度快照
 
 OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本地 token / 成本统计。快照按 `system_account_id + account_id + kind` 存储，列表只读缓存。
 
-刷新策略：
+更新策略：
 
-- OAuth 账户创建成功后，后端立即触发一次首次额度快照刷新；刷新失败不回滚账户，只记录失败状态并交给后台重试。
 - 真实网关请求返回 Codex rate-limit 响应头时，直接被动更新 `account_usage_snapshots`。
 - 账户测试如果拿到相同响应头，也可以作为副作用更新快照，但 UI 不把测试描述成“刷新用量”。
-- 独立 background worker 进程中的 `oauth_usage_snapshot_refresh` worker 统一扫描缺失、过期或接近恢复点的 OpenAI OAuth 账户并刷新快照。
-- AI 账户管理页更多菜单不提供“刷新用量”按钮，快照缺失时显示“等待后台刷新”。
+- OAuth 账户创建成功后不主动发模型请求获取额度；首次真实请求或账户测试返回相关响应头后才出现快照。
+- 独立 background worker 不再注册 OAuth 用量快照主动刷新任务。
+- AI 账户管理页更多菜单不提供“刷新用量”按钮，快照缺失时显示“暂无快照”或“等待真实请求更新”。
 
 建议字段：
 
 - `system_account_id`
 - `account_id`
 - `kind`：第一阶段固定为 `openai_codex`
-- `source`：`gateway_response`、`account_test`、`background_probe`
+- `source`：`gateway`、`gateway_error`、`account_test`
 - `snapshot_json`
 - `refresh_status`：`fresh`、`pending`、`failed`、`rate_limited`
 - `last_attempt_at`
@@ -392,15 +393,11 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `last_error_message`
 - `created_at` / `updated_at`
 
-后台刷新规则：
+后台规则：
 
-- 每个系统账户内默认并发为 1，全局并发保持较小，并加随机抖动。
-- 刷新调度和上游探测只允许在独立 background worker 进程内执行。
-- 只处理 `provider_code = openai`、`type = oauth`、未停用、未到 `account_expires_at` 且仍可调度的账户。
-- 快照未过期时不探测；账号处于限流冷却时，`next_refresh_after` 不早于 reset 时间。
-- 探测前如果 access token 即将过期，先用 `refresh_token` 自动刷新授权。
-- 探测失败保留旧快照，只更新刷新状态、错误摘要和退避后的 `next_refresh_after`。
-- 收到 OAuth 429 时，优先用 header 计算 reset 时间，header 不足时再解析响应体 `resets_at` / `resets_in_seconds`，并把账号标记为 `rate_limited` 到该时间。
+- 后台 worker 只保留 OAuth Access Token 预刷新，不再为了额度快照发起模型请求。
+- 快照状态中的 `last_attempt_at`、`next_refresh_after` 和 `last_error_message` 只作为兼容旧库和排障字段保留，新链路不再主动维护刷新退避。
+- 收到 OAuth Codex 429 时，网关仍可从真实响应 header 或响应体里解析 reset 时间，并由账号错误处理链路写入限流或临时不可调用状态。
 
 ## 错误兜底策略
 
@@ -428,10 +425,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `usageStatsHourlyRetentionDays = 30`、`usageStatsDailyRetentionDays = 30`：统计汇总缓存默认保留 30 天。
 - `systemMetricsRetentionDays = 7`、`systemMetricsHourlyRetentionDays = 30`：系统监控原始采样默认保留 7 天，小时汇总默认保留 30 天。
 - `dataRetentionCleanupBatchSize = 10000`、`dataRetentionCleanupMaxBatchesPerRun = 10`：统一表数据清理任务的批量上限。
-- `oauthUsageSnapshotRefreshIntervalSeconds = 300`：OAuth 额度快照后台扫描间隔。
-- `oauthUsageSnapshotTtlSeconds = 900`：OAuth 额度快照默认过期时间。
-- `oauthUsageSnapshotRetryBackoffSeconds = 300`：OAuth 额度快照刷新失败后的默认退避。
-- `oauthUsageSnapshotPerAccountConcurrency = 1`：每个系统账户内 OAuth 快照刷新默认并发。
+- OAuth 额度快照不再有后台主动刷新默认项；快照只由真实网关响应头和账户测试副作用被动更新。
 - `statsLagWarningSeconds = 300`：统计任务滞后超过该值时在运维概览里提示。
 - `auditLogEnabled = true`：默认启用原始审计日志。
 - `auditLogSuccessSampleRate = 0.1`：完全成功请求默认保存 10%。
@@ -443,11 +437,9 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `auditLogRetentionDays = 7`：原始审计日志默认保留 7 天，系统设置最多允许 7 天。
 - `accountQualityRefreshIntervalSeconds = 600`：账号质量缓存默认每 10 分钟刷新一次。
 - `accountQualityWindowMinutes = 10`：真实网关请求首 token 统计窗口默认 10 分钟。
-- `accountQualityProbeBatchSize = 10`：每轮主动质量探测最多挑选 10 个账号。
-- `accountQualityProbeRepeats = 3`：每个账号主动探测 3 次并取最大首 token。
-- `accountQualityProbeStaleMinutes = 10`：质量缓存超过 10 分钟或缺少探测结果时可进入探测候选。
-- `accountQualityActiveProbeIdleHours = 24`：分组 24 小时无真实网关请求时暂停主动探测。
-- `accountQualityIgnoreStaleScoreHours = 24`：质量分超过 24 小时没有真实样本或主动探测时不参与调度。
+- 账号质量主动探测相关默认设置已删除，不允许通过系统配置恢复。
+- `cooldownAccountRetestEnabled = true`：冷却账号后台复测默认开启，但只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
+- `cooldownAccountRetestBatchSize = 10`：默认每轮最多恢复性复测 10 个冷却到期账号。
 
 预上线阶段如本地库仍存在不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes` 等旧设置，直接通过备份后清洗或重建库处理；源码不保留启动清理分支。
 

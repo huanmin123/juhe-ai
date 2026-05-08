@@ -8,6 +8,7 @@ import { logger } from '../../shared/logger.js'
 import { withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
   findOpenAIAccountForGroup,
+  type RecentOpenAIRequestShape,
   resolveAccountSystemAccountId,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
@@ -16,26 +17,33 @@ import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
 import { OpenAIStreamInspector } from '../gateway/openai-gateway-usage.js'
 
 const defaultTestModel = 'gpt-5.5'
-const defaultTestPrompt = 'hi'
+const defaultTestPrompt = 'Return OK.'
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
+const gatewayChatCompletionsPath = '/v1/chat/completions'
 const gatewayModelsPath = '/v1/models'
 
 export async function testOpenAIAccount(
   account: AccountSummary,
-  input: { model?: string; prompt?: string; includeUnavailable?: boolean; signal?: AbortSignal; groupId?: string } = {}
+  input: { model?: string; prompt?: string; includeUnavailable?: boolean; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape } = {}
 ): Promise<AccountTestResult> {
   const model = stringValue(input.model) || defaultTestModel
   const prompt = stringValue(input.prompt) || defaultTestPrompt
-  const requestBody = createOpenAITestPayload(model, prompt, account.type === 'oauth')
+  const testRequest = createOpenAITestRequest({
+    fallbackModel: model,
+    prompt,
+    isOAuth: account.type === 'oauth',
+    requestShape: input.requestShape
+  })
+  const requestBody = testRequest.body
   const requestBodyText = JSON.stringify(requestBody)
-  const requestUrl = gatewayTestPath
+  const requestUrl = testRequest.path
   const modelsUrl = gatewayModelsPath
   const startedAt = Date.now()
 
   try {
     const resolved = resolveAccountTestCandidate(account, { groupId: stringValue(input.groupId) })
-    const request = createGatewayTestRequest(requestBody, requestBodyText, account.type === 'oauth', input.signal)
+    const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal)
     const response = new MemoryGatewayResponse(startedAt)
     const traceId = `acctest_${Date.now()}_${randomUUID()}`
     const context: RequestContext = {
@@ -75,7 +83,7 @@ export async function testOpenAIAccount(
       success,
       statusCode: response.statusCode,
       message: success ? 'OpenAI Responses 测试通过' : proxyFailureMessage || streamFailureMessage || upstreamMessage || `API 返回 HTTP ${response.statusCode}`,
-      model,
+      model: testRequest.model,
       requestUrl,
       requestBody,
       responseHeaders: response.headersObject(),
@@ -99,7 +107,7 @@ export async function testOpenAIAccount(
       type: account.type,
       success: false,
       message,
-      model,
+      model: testRequest.model,
       requestUrl,
       requestBody,
       responseText: message,
@@ -137,16 +145,17 @@ function authorizedCallerSystemAccountId(account: AccountSummary): string | unde
   return account.accessType === 'authorized' ? getRequestAuthContext()?.systemAccountId : undefined
 }
 
-function createGatewayTestRequest(body: Record<string, unknown>, rawBodyText: string, isOAuth: boolean, signal?: AbortSignal): Request {
+function createGatewayTestRequest(path: string, body: Record<string, unknown>, rawBodyText: string, isOAuth: boolean, signal?: AbortSignal): Request {
+  const stream = body.stream === true
   const headers: IncomingHttpHeaders = {
-    accept: isOAuth ? 'text/event-stream' : 'application/json, text/event-stream',
+    accept: stream ? isOAuth ? 'text/event-stream' : 'application/json, text/event-stream' : 'application/json',
     'content-type': 'application/json',
     'content-length': String(Buffer.byteLength(rawBodyText))
   }
   return new MemoryGatewayRequest({
     method: 'POST',
-    originalUrl: gatewayTestPath,
-    path: gatewayTestPath,
+    originalUrl: path,
+    path,
     headers,
     body,
     rawBody: Buffer.from(rawBodyText),
@@ -314,7 +323,32 @@ class MemoryGatewayResponse extends EventEmitter {
   }
 }
 
-function createOpenAITestPayload(model: string, prompt: string, isOAuth: boolean): Record<string, unknown> {
+function createOpenAITestRequest(input: {
+  fallbackModel: string
+  prompt: string
+  isOAuth: boolean
+  requestShape?: RecentOpenAIRequestShape
+}): { path: string; body: Record<string, unknown>; model: string } {
+  const path = testPathFromRecentShape(input.requestShape)
+  const model = stringValue(input.requestShape?.model) || input.fallbackModel
+  return {
+    path,
+    body: path === gatewayChatCompletionsPath
+      ? createOpenAIChatCompletionsTestPayload(model, input.prompt, input.requestShape?.stream ?? true)
+      : createOpenAIResponsesTestPayload(model, input.prompt, input.isOAuth, input.requestShape?.stream ?? true),
+    model
+  }
+}
+
+function testPathFromRecentShape(shape?: RecentOpenAIRequestShape): string {
+  const endpoint = stringValue(shape?.endpoint).toLowerCase()
+  if (endpoint.includes('/v1/chat/completions')) {
+    return gatewayChatCompletionsPath
+  }
+  return gatewayTestPath
+}
+
+function createOpenAIResponsesTestPayload(model: string, prompt: string, isOAuth: boolean, stream: boolean): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     model,
     input: [
@@ -329,12 +363,27 @@ function createOpenAITestPayload(model: string, prompt: string, isOAuth: boolean
       }
     ],
     instructions: defaultOpenAITestInstructions,
-    stream: true
+    max_output_tokens: 1,
+    stream
   }
   if (isOAuth) {
     payload.store = false
   }
   return payload
+}
+
+function createOpenAIChatCompletionsTestPayload(model: string, prompt: string, stream: boolean): Record<string, unknown> {
+  return {
+    model,
+    messages: [
+      {
+        role: 'user',
+        content: prompt
+      }
+    ],
+    max_tokens: 1,
+    stream
+  }
 }
 
 function didRefreshToken(original: AccountSummary, resolved: OpenAIAccountSecret): boolean | undefined {

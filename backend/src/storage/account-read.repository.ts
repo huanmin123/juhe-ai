@@ -50,7 +50,6 @@ function queryAccountRowsForAccess(
           account_quality.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
           account_quality.recent_request_count AS quality_recent_request_count,
           account_quality.success_rate AS quality_recent_success_rate,
-          account_quality.last_probe_at AS quality_last_probe_at,
           account_quality.updated_at AS quality_updated_at
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
@@ -81,7 +80,6 @@ function queryAccountRowsForAccess(
           account_quality.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
           account_quality.recent_request_count AS quality_recent_request_count,
           account_quality.success_rate AS quality_recent_success_rate,
-          account_quality.last_probe_at AS quality_last_probe_at,
           account_quality.updated_at AS quality_updated_at
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
@@ -111,7 +109,6 @@ function queryAccountRowsForAccess(
         account_quality.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
         account_quality.recent_request_count AS quality_recent_request_count,
         account_quality.success_rate AS quality_recent_success_rate,
-        account_quality.last_probe_at AS quality_last_probe_at,
         account_quality.updated_at AS quality_updated_at
       FROM (
         SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status

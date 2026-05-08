@@ -2,9 +2,7 @@ import { Router } from 'express'
 import type { Response } from 'express'
 import { z } from 'zod'
 
-import { errorLogFields } from '../../shared/logger.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { getRequestLogger } from '../../shared/request-context.js'
 import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, findAccountForTest, listGroups, resolveProxyUrlForProfile, updateAccount } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -18,7 +16,6 @@ import {
   refreshOpenAIOAuthToken
 } from './openai-oauth.service.js'
 import { refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
-import { refreshOpenAIOAuthUsageSnapshot } from './openai-oauth-usage-refresh.service.js'
 
 export const openAIOAuthRouter = Router()
 
@@ -115,8 +112,7 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
       groupId: parsed.data.groupId,
       notes: parsed.data.notes
     }, requestAccess)
-    const accountWithInitialUsage = await refreshCreatedOAuthUsage(account)
-    res.status(201).json(ok(accountWithInitialUsage))
+    res.status(201).json(ok(account))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
       res.status(409).json({ message: error.message })
@@ -169,8 +165,7 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
       groupId: parsed.data.groupId,
       notes: parsed.data.notes
     }, requestAccess)
-    const accountWithInitialUsage = await refreshCreatedOAuthUsage(account)
-    res.status(201).json(ok(accountWithInitialUsage))
+    res.status(201).json(ok(account))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
       res.status(409).json({ message: error.message })
@@ -286,18 +281,6 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
     handleOAuthAccountUpdateError(error, res, 'OpenAI OAuth Refresh Token 重新授权失败')
   }
 })
-
-async function refreshCreatedOAuthUsage(account: ReturnType<typeof createAccount>) {
-  try {
-    await refreshOpenAIOAuthUsageSnapshot(account, { source: 'account_create', requestTimeoutMs: 30000 })
-  } catch (error) {
-    getRequestLogger().warn(errorLogFields(error, {
-      event: 'openai_oauth_initial_usage_snapshot_refresh_failed',
-      accountId: account.id
-    }), 'OpenAI OAuth 初始用量快照刷新失败')
-  }
-  return account
-}
 
 function isOpenAIGroup(groupId: string, access?: AccessScope): boolean {
   return listGroups(access).some((group) => group.id === groupId && group.providerCode === 'openai')

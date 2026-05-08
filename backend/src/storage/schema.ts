@@ -263,7 +263,6 @@ export function applySchema(database: DatabaseSync): void {
       window_started_at TEXT NOT NULL,
       window_ended_at TEXT NOT NULL,
       last_sample_at TEXT,
-      last_probe_at TEXT,
       last_success_at TEXT,
       last_error_at TEXT,
       last_error_message TEXT,

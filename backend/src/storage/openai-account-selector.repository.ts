@@ -166,10 +166,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
         FROM accounts
         LEFT JOIN account_quality_scores account_quality
           ON account_quality.account_id = accounts.id
-          AND (
-            account_quality.last_sample_at >= ?
-            OR account_quality.last_probe_at >= ?
-          )
+          AND account_quality.last_sample_at >= ?
         WHERE accounts.id = ?
           AND accounts.provider_code = 'openai'
           AND type IN ('api_key', 'oauth')
@@ -178,7 +175,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
           AND status = 'active'
           AND (cooldown_until IS NULL OR cooldown_until <= ?)
       `)
-      .get(qualityFreshAfter, qualityFreshAfter, groupAccount.account_id, now, now) as unknown as OpenAIAccountRow | undefined
+      .get(qualityFreshAfter, groupAccount.account_id, now, now) as unknown as OpenAIAccountRow | undefined
     if (!row) {
       continue
     }
@@ -329,15 +326,7 @@ function orderOpenAIAccountsForDispatch(accounts: OpenAIAccountSecret[]): OpenAI
 }
 
 function qualityFreshAfterIso(): string {
-  const settings = getSettings()
-  const rawValue = settings.accountQualityIgnoreStaleScoreHours
-  const hours = typeof rawValue === 'number'
-    ? rawValue
-    : typeof rawValue === 'string'
-      ? Number(rawValue)
-      : 24
-  const boundedHours = Number.isFinite(hours) ? Math.min(Math.max(Math.trunc(hours), 1), 720) : 24
-  return new Date(Date.now() - boundedHours * 60 * 60 * 1000).toISOString()
+  return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
 }
 
 function resolveOpenAIAccountProxyUrl(proxyProfileId: string | null): { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } {

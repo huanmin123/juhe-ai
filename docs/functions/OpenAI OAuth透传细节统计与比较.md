@@ -10,7 +10,7 @@
 
 OpenAI OAuth 账号不能当成“API Key 的另一种凭据”来裸透传。它打的是 `https://chatgpt.com/backend-api/codex` 这类 ChatGPT / Codex backend，而公开 OpenAI API 的官方 base URL 是 `https://api.openai.com/v1`。因此 OAuth 链路应按内部 `openai_oauth_codex` adapter 处理：限制 endpoint、白名单 Header、归一化 body、隔离上游 session/cache 标识，并尽量减少后台主动请求。
 
-本次复查后，`juhe-ai` 已经吸收了 `new-api`、`sub2api_source`、`CLIProxyAPI` 中最关键的做法：OAuth 专用 adapter、Header allowlist、`store=false`、非 compact `stream=true`、compact 清理字段、系统角色转 developer、web search tool 名归一化、上游 session/cache 隔离，以及本地 400 校验。剩余更值得继续打磨的是：后台探活降噪、Codex 客户端形态检测、`previous_response_id` 续链语义、以及请求形态审计统计。
+本次复查后，`juhe-ai` 已经吸收了 `new-api`、`sub2api_source`、`CLIProxyAPI` 中最关键的做法：OAuth 专用 adapter、Header allowlist、`store=false`、非 compact `stream=true`、compact 清理字段、系统角色转 developer、web search tool 名归一化、上游 session/cache 隔离，以及本地 400 校验。进一步复查后，OAuth 用量快照已经改为只从真实网关请求响应头被动更新；后台主动 usage refresh、建号后主动 usage refresh 已删除，账号质量主动探测也已直接删掉，不保留 dormant 开关；冷却复测只保留恢复性路径。Codex 客户端形态识别本轮明确不做，避免误伤用户体验。
 
 ## 官方边界
 
@@ -125,15 +125,14 @@ compact 会额外删除：
 | API Key body | 多数中转会解析再重组 | 我们 API Key 链路保留 raw body 字节级透传 | API Key 这点我们更好，应保留 |
 | OAuth Header | 成熟项目普遍更克制 | 当前 allowlist 已接近 | 不追求“所有头都透”，追求协议形态稳定 |
 | 会话隔离 | `sub2api_source` 思路更完整 | 当前已 hash 隔离上游 session/cache | 继续加强审计和统计，而不是暴露开关给用户 |
-| 后台主动请求 | `sub2api_source` 有更多预算/模式设计 | 当前还偏基础 | 后续优先打磨 usage refresh、质量探测、冷却复测 |
+| 后台主动请求 | `sub2api_source` 有更多预算/模式设计 | 当前默认更克制 | OAuth usage refresh 已移除；质量探测代码已删除；冷却复测仅保留冷却到期后的恢复性确认 |
 | 用户配置复杂度 | 企业网关配置多 | 我们保持轻量，没有给 API Key 表单加组织/项目/Beta | 用户不知道的字段不放表单，复杂逻辑在后端策略内收口 |
 
 ## 当前剩余风险排序
 
 | 优先级 | 剩余风险 | 当前表现 | 建议 |
 | --- | --- | --- | --- |
-| P1 | 后台主动请求噪声 | OAuth 用量快照刷新、账号质量探测、冷却复测会产生真实上游请求 | 单独计划主动请求预算、抖动、退避、每日上限，优先被动读取真实业务响应头 |
-| P1 | Codex 客户端形态未强约束 | 普通 Responses 客户端仍可能经过 normalizer 使用 OAuth 账号 | 增加内部 `codex_native` / `responses_api_compat` / `rejected` 请求形态识别，不做用户可见伪装开关 |
+| P1 | 主动请求恢复边界 | OAuth usage refresh 已移除；质量探测代码已删除；冷却复测仍会产生恢复性请求 | 继续把主动请求收敛到单一恢复用途：只保留冷却到期后的复测；如未来想恢复其它主动请求，必须重新立项，不复用旧实现 |
 | P1 | `previous_response_id` 续链语义 | 当前不改写，避免破坏语义，但没有连接态缓存设计 | 后续研究 WebSocket/HTTP 上下文缓存；无法解析时要求客户端传完整上下文 |
 | P2 | 非流式客户端体验 | OAuth 非 compact 强制上游 `stream=true`，非流式客户端可能收到 SSE | 如需兼容非流式客户端，增加 SSE 聚合成 JSON 的本地转换 |
 | P2 | Codex 默认版本漂移 | 默认 `codex_cli_rs/0.125.0` 会随真实客户端变化 | 默认值集中配置并定期复查；优先保留真实 Codex 客户端低风险头 |
@@ -145,7 +144,7 @@ compact 会额外删除：
 - 不建议在 API Key 账号表单增加 OpenAI 组织、项目、Beta 字段；组织/项目不能由系统生产，用户不知道时也不该被迫填写。
 - 不建议把 `X-Forwarded-For`、`X-Real-IP`、`Via` 等代理链路头透给上游；这不会改变 TCP 出口，只会暴露中转链路。
 - 不建议盲目复制完整真实客户端 UA、系统信息或版本细节；兼容默认头和伪装身份是两回事。
-- 不建议为了拿额度频繁主动请求 OAuth 账号；额度和用量应尽量从真实业务响应头被动更新。
+- 不建议为了拿额度主动请求 OAuth 账号；本项目已移除后台和建号后的 OAuth usage refresh，额度快照只从真实业务响应头被动更新。
 
 ## 本次已落地事项
 
@@ -155,6 +154,8 @@ compact 会额外删除：
 - 非 compact 固定 `store=false`、`stream=true`；compact 删除 `store/stream` 等不需要字段。
 - 上游 `session_id`、`conversation_id`、`prompt_cache_key` 已做多租户隔离。
 - API Key 账号仍保留 raw body 真透传，并且不暴露 OpenAI 组织/项目/Beta 表单字段。
+- OAuth 用量快照已改为纯被动更新：真实网关响应头写入 `account_usage_snapshots`，后台和建号流程不再主动发模型请求拿额度。
+- Codex 请求形态识别本轮不做；OAuth adapter 继续以兼容体验为先，只保留协议必要校验。
 
 ## 验证建议
 
@@ -165,11 +166,12 @@ compact 会额外删除：
 | 回归脚本 | OAuth compact 带 `store`、`stream`、tools | 上游 compact body 删除这些字段 |
 | 回归脚本 | 两个本地 API Key 使用同一 `prompt_cache_key` | 上游 session/cache 标识不同 |
 | 回归脚本 | API Key 账号请求 | 保持 raw body 和公开 API Header 语义，不走 OAuth adapter |
-| 后续集成 | OAuth 后台 usage refresh 连续失败或 429 | 进入退避，不高频重复主动请求 |
+| 回归脚本 | OAuth 后台 usage refresh | 后台任务和 OAuth 建号接口不再引用主动 usage refresh 服务 |
+| 回归脚本 | OAuth 被动用量快照 | 真实网关响应和上游错误响应仍调用 `persistOpenAICodexHeadersIfNeeded` 写快照 |
 | 后续审计 | 请求形态统计 | 能按 `openai_oauth_codex` / `openai_api_key_platform` 聚合查看过滤和归一化行为 |
 
 ## 结论
 
 当前最重要的透传原则已经明确：API Key 追求公开 OpenAI API 的 raw body 真透传；OAuth 追求 Codex backend 的协议适配和多租户隔离。两条线不能混用。
 
-从主流中转吸收下来的“好经验”不是某个神秘 Header，而是四个稳定动作：专用 adapter、Header allowlist、body normalize、session isolation。`juhe-ai` 现在已经把这四项落到 OAuth 链路里。下一轮真正值得继续磨的是主动请求降噪和审计统计，让“账户异常”不再靠感觉猜，而是能按请求来源、请求形态、错误码和后台任务来源拆开看。
+从主流中转吸收下来的“好经验”不是某个神秘 Header，而是四个稳定动作：专用 adapter、Header allowlist、body normalize、session isolation。`juhe-ai` 现在已经把这四项落到 OAuth 链路里，并进一步把 OAuth 用量快照改成纯被动来源。下一轮真正值得继续磨的是审计统计和 `previous_response_id` 续链语义，让“账户异常”不再靠感觉猜，而是能按请求来源、错误码和后台任务来源拆开看。

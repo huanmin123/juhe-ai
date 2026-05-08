@@ -2,16 +2,13 @@ import { existsSync, readFileSync, statSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { cpus, freemem, platform, totalmem } from 'node:os'
 
-import type { AccountSummary } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   expireDueResourceAuthorizations,
   getSettings,
-  listAccountQualityProbeCandidates,
+  findRecentOpenAIRequestShapeForAccount,
   listAccountsDueForCooldownRetest,
-  listAccounts,
-  recordAccountQualityProbe,
   refreshAccountQualityFromUsage
 } from '../../storage/repositories.js'
 import {
@@ -22,10 +19,6 @@ import {
 } from '../../storage/usage-stats.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
-import {
-  isOpenAIOAuthUsageSnapshotDue,
-  refreshOpenAIOAuthUsageSnapshot
-} from '../openai-oauth/openai-oauth-usage-refresh.service.js'
 import { refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { flushUsageRecordQueue } from '../gateway/usage-record-queue.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
@@ -52,7 +45,6 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: settingsNumber('proxyLatencyRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runProxyLatencyRefresh })
   scheduler.schedule({ name: 'account-quality-refresh', intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 600, 60, 3600) * 1000, task: runAccountQualityRefresh })
   scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runOpenAIOAuthAccessTokenRefresh })
-  scheduler.schedule({ name: 'openai-oauth-usage-refresh', intervalMs: settingsNumber('oauthUsageSnapshotRefreshIntervalSeconds', 300, 60, 86400) * 1000, task: runOpenAIOAuthUsageRefresh })
   scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000, task: runCooldownAccountRetest })
   scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * 60 * 1000, task: runRuntimeLogIndexMaintenance })
   scheduler.schedule({ name: 'data-retention-cleanup', intervalMs: dailyIntervalMs, task: runDataRetentionCleanup })
@@ -123,13 +115,6 @@ async function runSystemMetricsSample(): Promise<void> {
   }
 }
 
-async function runOpenAIOAuthUsageRefresh(): Promise<void> {
-  const candidates = openAIOAuthUsageRefreshCandidates()
-  for (const account of candidates) {
-    await refreshOpenAIOAuthUsageSnapshot(account)
-  }
-}
-
 async function runOpenAIOAuthAccessTokenRefresh(): Promise<void> {
   try {
     const result = await refreshDueOpenAIOAuthAccessTokens()
@@ -157,50 +142,12 @@ async function runAccountQualityRefresh(): Promise<void> {
     flushUsageRecordQueue({ drain: true, retryOnFailure: false })
     const windowMinutes = settingsNumber('accountQualityWindowMinutes', 10, 1, 60)
     const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)
-    const candidates = listAccountQualityProbeCandidates({
-      limit: settingsNumber('accountQualityProbeBatchSize', 10, 1, 100),
-      staleAfterMinutes: settingsNumber('accountQualityProbeStaleMinutes', 10, 1, 120),
-      minTieGroupSize: 2,
-      activeAfter: new Date(Date.now() - settingsNumber('accountQualityActiveProbeIdleHours', 24, 1, 720) * 60 * 60 * 1000).toISOString()
-    })
-    const repeats = settingsNumber('accountQualityProbeRepeats', 3, 1, 5)
-    const model = settingsString('accountQualityProbeModel', 'gpt-5.5')
-    let probeSuccess = 0
-    let probeFailed = 0
-    for (const candidate of candidates) {
-      const account = listAccounts({ systemAccountId: candidate.probeSystemAccountId, role: 'user' })
-        .find((item) => item.id === candidate.accountId)
-      if (!account) {
-        continue
-      }
-      const result = await probeAccountQuality({
-        ...account,
-        systemAccountId: candidate.probeSystemAccountId
-      }, { repeats, model, groupId: candidate.groupId })
-      recordAccountQualityProbe({
-        accountId: account.id,
-        systemAccountId: candidate.accountOwnerSystemAccountId,
-        providerCode: account.providerCode,
-        firstTokenMs: result.firstTokenMs,
-        success: result.success,
-        errorMessage: result.errorMessage,
-        source: 'probe'
-      })
-      if (result.success) {
-        probeSuccess += 1
-      } else {
-        probeFailed += 1
-      }
-    }
-    if (candidates.length > 0) {
+    if (realtimeResult.refreshed > 0 || realtimeResult.removed > 0) {
       clearGatewayRuntimeCache()
       logger.info({
         event: 'background_account_quality_refresh_completed',
         realtimeRefreshed: realtimeResult.refreshed,
-        realtimeRemoved: realtimeResult.removed,
-        probeCandidates: candidates.length,
-        probeSuccess,
-        probeFailed
+        realtimeRemoved: realtimeResult.removed
       }, '账户质量缓存刷新完成')
     }
   } catch (error) {
@@ -209,10 +156,18 @@ async function runAccountQualityRefresh(): Promise<void> {
 }
 
 async function runCooldownAccountRetest(): Promise<void> {
-  const candidates = listAccountsDueForCooldownRetest(settingsNumber('cooldownAccountRetestBatchSize', 10, 1, 100))
+  const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 10, 0, 100)
+  if (!settingsBoolean('cooldownAccountRetestEnabled', true) || batchSize <= 0) {
+    return
+  }
+  const candidates = listAccountsDueForCooldownRetest(batchSize)
   for (const account of candidates) {
     try {
-      await testOpenAIAccount(account, { model: settingsString('cooldownAccountRetestModel', 'gpt-5.5'), prompt: 'hi', includeUnavailable: true })
+      await testOpenAIAccount(account, {
+        model: settingsString('cooldownAccountRetestModel', 'gpt-5.5'),
+        includeUnavailable: true,
+        requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId)
+      })
     } catch (error) {
       logger.warn(errorLogFields(error, {
         event: 'background_cooldown_account_retest_failed',
@@ -220,32 +175,6 @@ async function runCooldownAccountRetest(): Promise<void> {
       }), '冷却账户复测失败')
     }
   }
-}
-
-async function probeAccountQuality(account: AccountSummary, input: { repeats: number; model: string; groupId: string }): Promise<{ success: boolean; firstTokenMs?: number; errorMessage?: string }> {
-  const firstTokenSamples: number[] = []
-  let lastErrorMessage: string | undefined
-  for (let index = 0; index < input.repeats; index += 1) {
-    try {
-      const result = await testOpenAIAccount(account, {
-        model: input.model,
-        prompt: 'hi',
-        includeUnavailable: true,
-        groupId: input.groupId
-      })
-      if (result.success && typeof result.firstTokenMs === 'number' && Number.isFinite(result.firstTokenMs)) {
-        firstTokenSamples.push(result.firstTokenMs)
-      } else {
-        lastErrorMessage = result.message
-      }
-    } catch (error) {
-      lastErrorMessage = error instanceof Error ? error.message : '账户质量探测失败'
-    }
-  }
-  if (firstTokenSamples.length === 0) {
-    return { success: false, errorMessage: lastErrorMessage ?? '账户质量探测未获得首 token' }
-  }
-  return { success: true, firstTokenMs: Math.max(...firstTokenSamples), errorMessage: lastErrorMessage }
 }
 
 async function runRuntimeLogIndexMaintenance(): Promise<void> {
@@ -260,30 +189,27 @@ async function runDataRetentionCleanup(): Promise<void> {
   cleanupExpiredRetainedData()
 }
 
-function openAIOAuthUsageRefreshCandidates(): AccountSummary[] {
-  const now = Date.now()
-  const ttlMs = settingsNumber('oauthUsageSnapshotTtlSeconds', 900, 60, 86400) * 1000
-  const limit = settingsNumber('oauthUsageSnapshotPerAccountConcurrency', 1, 1, 20) * Math.max(1, listSystemAccountCount())
-  return listAccounts()
-    .filter((account) => account.providerCode === 'openai' && account.type === 'oauth')
-    .filter((account) => account.status !== 'disabled' && account.schedulable)
-    .filter((account) => isOpenAIOAuthUsageSnapshotDue(account, now, ttlMs))
-    .slice(0, limit)
-}
-
 function settingsNumber(key: string, fallback: number, min: number, max: number): number {
   const value = getSettings()[key]
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
 }
 
+function settingsBoolean(key: string, fallback: boolean): boolean {
+  const value = getSettings()[key]
+  if (typeof value === 'boolean') return value
+  if (typeof value === 'number') return value !== 0
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+    if (['0', 'false', 'no', 'off'].includes(normalized)) return false
+  }
+  return fallback
+}
+
 function settingsString(key: string, fallback: string): string {
   const value = getSettings()[key]
   return typeof value === 'string' && value.trim() ? value.trim() : fallback
-}
-
-function listSystemAccountCount(): number {
-  return Math.max(1, new Set(listAccounts().map((account) => account.systemAccountId ?? 'sys_admin')).size)
 }
 
 function databaseFileBytes(): number | undefined {

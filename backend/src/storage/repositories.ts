@@ -121,8 +121,10 @@ export {
 export {
   createUsageRecord,
   createUsageRecordsBatch,
+  findRecentOpenAIRequestShapeForAccount,
   getUsageRecordDetail,
   listUsageRecords,
+  type RecentOpenAIRequestShape,
   type UsageRecordInput,
   type UsageRecordListResult,
   type UsageRecordListOptions,
@@ -184,10 +186,7 @@ export {
   type OpenAIAccountSecret
 } from './openai-account-selector.repository.js'
 export {
-  listAccountQualityProbeCandidates,
-  recordAccountQualityProbe,
   refreshAccountQualityFromUsage,
-  type AccountQualityRefreshCandidate,
   type AccountQualityRealtimeRefreshResult
 } from './account-quality.repository.js'
 
@@ -612,7 +611,6 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       qualityRecentAvgFirstTokenMs: typeof row.quality_recent_avg_first_token_ms === 'number' ? row.quality_recent_avg_first_token_ms : undefined,
       qualityRecentRequestCount: typeof row.quality_recent_request_count === 'number' ? row.quality_recent_request_count : undefined,
       qualityRecentSuccessRate: typeof row.quality_recent_success_rate === 'number' ? row.quality_recent_success_rate : undefined,
-      qualityLastProbeAt: row.quality_last_probe_at ?? undefined,
       qualityUpdatedAt: row.quality_updated_at ?? undefined,
       proxyProfileId: isAuthorizedView ? undefined : row.proxy_profile_id ?? undefined,
       passthroughEnabled: isAuthorizedView ? false : row.passthrough_enabled === 1,
@@ -709,6 +707,8 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       FROM accounts
       WHERE provider_code = 'openai'
         AND type IN ('api_key', 'oauth')
+        AND status IN ('rate_limited', 'temporary_unavailable')
+        AND schedulable = 1
         AND cooldown_until IS NOT NULL
         AND cooldown_until <= ?
         AND (account_expires_at IS NULL OR account_expires_at > ?)
