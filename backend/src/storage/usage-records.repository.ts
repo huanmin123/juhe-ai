@@ -138,11 +138,12 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
   const database = getDatabase()
+  const countAccountJoin = filters.needsAccountJoin ? 'LEFT JOIN accounts a ON a.id = ur.account_id' : ''
   const totalRow = database
     .prepare(`
       SELECT COUNT(*) AS total
       FROM usage_records ur
-      LEFT JOIN accounts a ON a.id = ur.account_id
+      ${countAccountJoin}
       ${filters.clause}
     `)
     .get(...filters.params) as Record<string, unknown> | undefined
@@ -436,9 +437,10 @@ function buildUsageRecordOrderClause(options: Required<Pick<UsageRecordListOptio
   return `ORDER BY ${usageRecordSortColumns[options.sortBy]} ${direction}, ur.created_at ${direction}, ur.id ${direction}`
 }
 
-function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordListOptions): { clause: string; params: UsageRecordFilterValue[] } {
+function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordListOptions): { clause: string; params: UsageRecordFilterValue[]; needsAccountJoin: boolean } {
   const clauses: string[] = []
   const params: UsageRecordFilterValue[] = []
+  let needsAccountJoin = false
   const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
   if (scope.clause) {
     clauses.push(scope.clause.replace(/^ AND /, ''))
@@ -446,6 +448,7 @@ function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordList
   }
   const accountKeyword = options?.accountKeyword?.trim()
   if (accountKeyword) {
+    needsAccountJoin = true
     clauses.push('(a.name LIKE ? OR ur.account_id LIKE ?)')
     params.push(`%${accountKeyword}%`, `%${accountKeyword}%`)
   }
@@ -465,7 +468,8 @@ function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordList
   }
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
-    params
+    params,
+    needsAccountJoin
   }
 }
 

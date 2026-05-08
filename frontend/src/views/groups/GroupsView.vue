@@ -1,8 +1,8 @@
 <template>
   <a-card class="page-card groups-page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="isManagementView" :show-filters="isManagementView" filter-title="筛选分组" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="loadData">
+    <ResponsiveListToolbar :show-search="false" :show-reset="isManagementView" :show-filters="isManagementView" filter-title="筛选分组" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshGroups">
       <template #inline-filters>
-        <SystemPrincipalSelect v-if="isManagementView" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="loadData" />
+        <SystemPrincipalSelect v-if="isManagementView" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
       </template>
       <template #actions>
         <a-button type="primary" @click="openCreate">新建分组</a-button>
@@ -10,12 +10,12 @@
       <template #filters>
         <label v-if="isManagementView" class="mobile-filter-field">
           <span>系统账户</span>
-          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="loadData" />
+          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="handleSystemAccountFilterChange" />
         </label>
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll-x="isManagementView ? 1480 : 1300" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll-x="isManagementView ? 1480 : 1300" pull-refresh-enabled :refreshing="loading" @mobile-refresh="refreshGroups">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页选择账户的归属分组。" />
       </template>
@@ -159,6 +159,8 @@ const editingId = ref<string>()
 const groups = ref<GroupSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
+const groupOptionsLoaded = ref(false)
+const groupOptionsScopeKey = ref('')
 type GroupsPageState = {
   systemAccountFilter: string
 }
@@ -294,18 +296,15 @@ function defaultProviderCode() {
   return availableProviders.value.find((provider) => provider.enabled)?.code ?? 'openai'
 }
 
-async function loadData() {
+async function loadData(options: { forceOptions?: boolean } = {}) {
   loading.value = true
   try {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-    const [groupList, providerList, systemAccountList] = await Promise.all([
+    const [groupList] = await Promise.all([
       isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
-      isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      loadGroupOptions(options.forceOptions === true)
     ])
     groups.value = groupList
-    providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
-    systemAccounts.value = systemAccountList
   } catch (error) {
     console.error(error)
     message.error('加载分组失败')
@@ -314,10 +313,34 @@ async function loadData() {
   }
 }
 
+async function loadGroupOptions(force = false): Promise<void> {
+  const scopeKey = isManagementView.value ? 'management' : 'self'
+  if (!force && groupOptionsLoaded.value && groupOptionsScopeKey.value === scopeKey) {
+    return
+  }
+
+  const [providerList, systemAccountList] = await Promise.all([
+    isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
+    isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+  ])
+  providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
+  systemAccounts.value = systemAccountList
+  groupOptionsLoaded.value = true
+  groupOptionsScopeKey.value = scopeKey
+}
+
+function refreshGroups() {
+  void loadData({ forceOptions: true })
+}
+
+function handleSystemAccountFilterChange() {
+  void loadData()
+}
+
 function resetFilters() {
   systemAccountFilter.value = allSystemAccountsValue
   pageStateCache.clear()
-  void loadData()
+  void loadData({ forceOptions: true })
 }
 
 function openCreate() {

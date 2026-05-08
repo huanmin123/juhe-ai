@@ -645,8 +645,7 @@ export async function handleOpenAIGatewayRequest(
       if (upstreamResponse.ok) {
         applyAccountErrorHandlingWithCacheInvalidation(account, {
           success: true,
-          settings: activeGatewaySettings,
-          preserveManualTrafficMigration: true
+          settings: activeGatewaySettings
         })
       }
 
@@ -1253,7 +1252,6 @@ function applyAccountErrorHandlingWithCacheInvalidation(
     bodyText?: string
     errorMessage?: string
     settings?: GatewaySettings
-    preserveManualTrafficMigration?: boolean
   }
 ): void {
   const normalizedInput = {

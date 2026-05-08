@@ -312,7 +312,7 @@ function updateOpenAIOAuthAccountCredentials(
   }
   clearGatewayRuntimeCache()
   if (updated.status !== 'disabled') {
-    return clearAccountFailureState(account.id, {}, access) ?? updated
+    return clearAccountFailureState(account.id, access) ?? updated
   }
   return updated
 }

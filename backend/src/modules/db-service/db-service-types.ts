@@ -83,7 +83,6 @@ export type DbServiceOperation =
       bodyText?: string
       errorMessage?: string
       settings?: GatewaySettings
-      preserveManualTrafficMigration?: boolean
     }
   }
   | {

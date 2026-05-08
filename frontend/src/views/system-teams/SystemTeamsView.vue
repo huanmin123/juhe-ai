@@ -1,12 +1,12 @@
 <template>
   <a-card class="page-card system-teams-page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadData">
+    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="refreshTeams">
       <template #actions>
         <a-button v-if="isManagementView" type="primary" @click="openCreateTeam">新建团队</a-button>
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table system-teams-table" :columns="columns" :data-source="teams" row-key="id" :loading="loading" :scroll-x="900" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table system-teams-table" :columns="columns" :data-source="teams" row-key="id" :loading="loading" :scroll-x="900" pull-refresh-enabled :refreshing="loading" @mobile-refresh="refreshTeams">
       <template #emptyText>
         <a-empty class="page-empty-card" :description="emptyTeamDescription" />
       </template>
@@ -136,6 +136,8 @@ const memberSaving = ref(false)
 
 const teams = ref<SystemTeamSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
+const memberOptionsLoaded = ref(false)
+const memberOptionsScopeKey = ref('')
 const { isManagementView } = useScopedMenuView()
 
 const teamModalOpen = ref(false)
@@ -211,21 +213,36 @@ function formatDateTime(value?: string): string {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-async function loadData() {
+async function loadData(options: { forceOptions?: boolean } = {}) {
   loading.value = true
   try {
-    const [teamList, accounts] = await Promise.all([
+    const [teamList] = await Promise.all([
       isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
-      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      loadMemberOptions(options.forceOptions === true)
     ])
     teams.value = teamList
-    systemAccounts.value = accounts
   } catch (error) {
     console.error(error)
     message.error('加载团队数据失败')
   } finally {
     loading.value = false
   }
+}
+
+async function loadMemberOptions(force = false): Promise<void> {
+  const scopeKey = isManagementView.value ? 'management' : 'self'
+  if (!force && memberOptionsLoaded.value && memberOptionsScopeKey.value === scopeKey) {
+    return
+  }
+  systemAccounts.value = isManagementView.value
+    ? await api.systemAccounts.list()
+    : []
+  memberOptionsLoaded.value = true
+  memberOptionsScopeKey.value = scopeKey
+}
+
+function refreshTeams() {
+  void loadData({ forceOptions: true })
 }
 
 function openCreateTeam() {

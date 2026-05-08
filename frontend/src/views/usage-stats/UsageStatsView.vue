@@ -8,7 +8,7 @@
       :refresh-loading="loading"
       @search="applyFilters"
       @reset="resetFilters"
-      @refresh="loadData"
+      @refresh="refreshUsageStats"
     >
       <template #inline-filters>
         <a-select v-model:value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" @change="applyFilters" />
@@ -165,6 +165,8 @@ const authorizationUsageOverview = ref<AccountAuthorizationUsageOverview>()
 const authorizationUsageAccountId = ref<string>()
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
+const usageStatsOptionsLoaded = ref(false)
+const usageStatsOptionsScopeKey = ref('')
 const routeAuthorizationUsageHandled = ref(false)
 const pageSize = 20
 const defaultUsageStatsPageState = (): UsageStatsPageState => ({
@@ -227,16 +229,16 @@ const activeFilterCount = computed(() => [
   isManagementView.value && filters.systemAccountId !== allSystemAccountsValue
 ].filter(Boolean).length)
 
-async function loadData(options: { append?: boolean; quiet?: boolean } = {}) {
+async function loadData(options: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}) {
   if (!options.quiet) {
     loading.value = true
   }
   try {
+    applyRouteAuthorizationUsageScope()
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
-    const [usageOverview, providerList, systemAccountList] = await Promise.all([
+    const [usageOverview] = await Promise.all([
       isManagementView.value ? api.stats.accountUsage(accountUsageParams(systemAccountId)) : api.myStats.accountUsage(accountUsageParams()),
-      isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-      isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      loadUsageStatsOptions(options.forceOptions === true)
     ])
     overview.value = {
       ...usageOverview,
@@ -245,8 +247,6 @@ async function loadData(options: { append?: boolean; quiet?: boolean } = {}) {
     pagination.current = usageOverview.page
     pagination.pageSize = usageOverview.pageSize
     pagination.total = usageOverview.total
-    providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
-    systemAccounts.value = systemAccountList
     await openAuthorizationUsageFromRoute()
   } catch (error) {
     console.error(error)
@@ -258,18 +258,51 @@ async function loadData(options: { append?: boolean; quiet?: boolean } = {}) {
   }
 }
 
-async function openAuthorizationUsageFromRoute() {
+async function loadUsageStatsOptions(force = false): Promise<void> {
+  const scopeKey = isManagementView.value ? 'management' : 'self'
+  if (!force && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
+    return
+  }
+  if (!isManagementView.value) {
+    providers.value = [FALLBACK_PROVIDER]
+    systemAccounts.value = []
+    usageStatsOptionsLoaded.value = true
+    usageStatsOptionsScopeKey.value = scopeKey
+    return
+  }
+
+  const [providerList, systemAccountList] = await Promise.all([
+    api.providers.list(),
+    api.systemAccounts.list()
+  ])
+  providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
+  systemAccounts.value = systemAccountList
+  usageStatsOptionsLoaded.value = true
+  usageStatsOptionsScopeKey.value = scopeKey
+}
+
+function applyRouteAuthorizationUsageScope() {
   if (routeAuthorizationUsageHandled.value) return
   if (route.query.action !== 'authorization-usage' || typeof route.query.accountId !== 'string') return
   const systemAccountId = typeof route.query.systemAccountId === 'string' ? route.query.systemAccountId : undefined
   if (isManagementView.value && systemAccountId && filters.systemAccountId !== systemAccountId) {
     filters.systemAccountId = systemAccountId
+    pagination.current = 1
   }
+}
+
+async function openAuthorizationUsageFromRoute() {
+  if (routeAuthorizationUsageHandled.value) return
+  if (route.query.action !== 'authorization-usage' || typeof route.query.accountId !== 'string') return
   routeAuthorizationUsageHandled.value = true
   authorizationUsageAccountId.value = route.query.accountId
   authorizationUsageOpen.value = true
   authorizationUsageOverview.value = undefined
   await reloadAuthorizationUsage()
+}
+
+function refreshUsageStats() {
+  void loadData({ forceOptions: true })
 }
 
 function applyFilters() {
@@ -283,7 +316,7 @@ function resetFilters() {
   pagination.current = defaults.pagination.current
   pagination.pageSize = defaults.pagination.pageSize
   pageStateCache.clear()
-  void loadData()
+  void loadData({ forceOptions: true })
 }
 
 function handleSystemAccountFilterChange() {
@@ -316,7 +349,7 @@ async function refreshMobileRows() {
   mobileRefreshing.value = true
   pagination.current = 1
   try {
-    await loadData()
+    await loadData({ forceOptions: true })
   } finally {
     mobileRefreshing.value = false
   }
@@ -338,7 +371,8 @@ async function openAuthorizationUsage(row: AccountUsageStatsRow, keepRouteQuery 
   authorizationUsageOverview.value = undefined
   await reloadAuthorizationUsage()
   if (keepRouteQuery) {
-    await router.replace({ path: route.path, query: { ...route.query, accountId: row.id, action: 'authorization-usage' } })
+    const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
+    await router.replace({ path: route.path, query: { ...route.query, accountId: row.id, action: 'authorization-usage', systemAccountId } })
   }
 }
 

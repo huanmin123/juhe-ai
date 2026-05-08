@@ -250,7 +250,7 @@ accountsRouter.patch('/:id', (req, res) => {
     }
   }
   if (body.clearFailureState === true) {
-    clearAccountFailureState(req.params.id, {}, requestAccess)
+    clearAccountFailureState(req.params.id, requestAccess)
   }
   let account: ReturnType<typeof updateAccount>
   try {

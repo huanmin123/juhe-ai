@@ -59,7 +59,6 @@ export function applyAccountErrorHandling(
     bodyText?: string
     errorMessage?: string
     settings?: GatewaySettings
-    preserveManualTrafficMigration?: boolean
   }
 ): AccountErrorHandlingResult {
   if (input.success) {
@@ -67,9 +66,7 @@ export function applyAccountErrorHandling(
     if (!changed) {
       return { action: 'none', changed: false, accountStatus: account.status }
     }
-    const updated = clearAccountFailureState(account.id, {
-      preserveManualTrafficMigration: input.preserveManualTrafficMigration === true
-    })
+    const updated = clearAccountFailureState(account.id)
     return { action: 'none', changed, accountStatus: updated?.status ?? account.status }
   }
 

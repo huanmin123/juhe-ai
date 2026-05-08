@@ -519,10 +519,6 @@ function defaultTemporaryUnschedulableMinutes(): number {
   return Math.min(Math.max(Math.trunc(number), 1), 1440)
 }
 
-function isManualTrafficMigrationState(account: Pick<AccountSummary, 'lastErrorMessage' | 'status'>): boolean {
-  return account.status === 'temporary_unavailable' && account.lastErrorMessage === manualTrafficMigrationReason
-}
-
 function refreshGroupAccountStatsAfterWrite(): void {
   if (getDatabase().isTransaction) {
     return
@@ -1023,7 +1019,6 @@ export function deleteAccount(id: string, access?: AccessScope): boolean {
 
 export function clearAccountFailureState(
   id: string,
-  options: { preserveManualTrafficMigration?: boolean } = {},
   access?: AccessScope
 ): AccountSummary | undefined {
   const current = listAccounts(access).find((account) => account.id === id)
@@ -1034,10 +1029,6 @@ export function clearAccountFailureState(
   if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId, access)) {
     return undefined
   }
-  if (options.preserveManualTrafficMigration && isManualTrafficMigrationState(current)) {
-    return current
-  }
-
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
   if (expiredByPackage) {
     const result = getDatabase()

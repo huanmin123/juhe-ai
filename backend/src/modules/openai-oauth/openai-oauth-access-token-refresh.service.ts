@@ -297,7 +297,7 @@ function finalizeSuccessfulTokenRefresh(account: AccountSummary, options: OpenAI
     return account
   }
   const updated = account.status !== 'disabled'
-    ? clearAccountFailureState(account.id, {}, options.access) ?? account
+    ? clearAccountFailureState(account.id, options.access) ?? account
     : account
   clearGatewayRuntimeCache()
   return updated
