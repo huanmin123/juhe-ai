@@ -1,6 +1,7 @@
 import { once } from 'node:events'
 import type { Response } from 'express'
 
+import { logger } from '../../shared/logger.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import { emptyUsage, OpenAIStreamInspector, type ParsedUsage } from './openai-gateway-usage.js'
 import { isUpstreamRequestAbortedError, readStreamChunkWithAbort, readStreamChunkWithIdleTimeout } from './openai-gateway-upstream.js'
@@ -33,6 +34,7 @@ export async function pipeUpstreamStream(
   const upstreamCapture = new LimitedBufferCapture(streamAuditCaptureBytes)
   const diagnosticCapture = new LimitedBufferCapture(streamDiagnosticCaptureBytes)
   let completed = false
+  let parserSkipLogged = false
   let firstTokenMs: number | undefined
   let clientClosed = false
   const closeIterator = () => {
@@ -60,6 +62,13 @@ export async function pipeUpstreamStream(
       upstreamCapture.push(buffer)
       diagnosticCapture.push(buffer)
       const inspection = inspector.pushChunk(buffer)
+      if (inspection.skipped && !parserSkipLogged) {
+        parserSkipLogged = true
+        logger.warn({
+          event: 'gateway_stream_inspector_skipped',
+          reason: inspection.skipReason
+        }, '网关流式解析超过上限，已停止解析并继续转发')
+      }
       if (firstTokenMs === undefined && inspection.outputReceived) {
         firstTokenMs = Date.now() - startedAt
       }
@@ -93,6 +102,10 @@ export async function pipeUpstreamStream(
   }
 
   const inspection = inspector.finish()
+  if (inspection.skipped) {
+    endResponse(res)
+    return streamResult(completed, completed ? '已完成' : '上游流式响应已中断', firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture)
+  }
   if (!inspection.terminalReceived) {
     const message = '上游流在 OpenAI 终止事件前结束'
     handleStreamFailure(message)

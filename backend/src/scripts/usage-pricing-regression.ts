@@ -75,6 +75,11 @@ assert.equal(chatStreamInspection.terminalReceived, true)
 assert.equal(chatStreamInspection.outputReceived, true)
 assert.deepEqual(defined(chatStreamInspection.usage), defined(chatUsage))
 
+const oversizedStreamInspection = inspectOpenAIStreamText(`data: ${'x'.repeat(300 * 1024)}`)
+assert.equal(oversizedStreamInspection.skipped, true)
+assert.equal(oversizedStreamInspection.failedReceived, false)
+assert.equal(oversizedStreamInspection.terminalReceived, false)
+
 const gpt41Cost = estimateProviderCostUsd({
   providerCode: 'openai',
   model: 'gpt-4.1',

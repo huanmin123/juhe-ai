@@ -51,6 +51,8 @@ export interface OpenAIStreamInspection {
   terminalReceived: boolean
   failedReceived: boolean
   outputReceived: boolean
+  skipped: boolean
+  skipReason?: string
   errorCode?: string
   errorMessage?: string
   usage: ParsedUsage
@@ -187,10 +189,12 @@ export class OpenAIStreamInspector {
     terminalReceived: false,
     failedReceived: false,
     outputReceived: false,
+    skipped: false,
     usage: emptyUsage()
   }
   private eventName = ''
   private dataLines: string[] = []
+  private dataBytes = 0
   private pendingLine = ''
 
   pushChunk(chunk: Buffer | Uint8Array | string): OpenAIStreamInspection {
@@ -199,7 +203,13 @@ export class OpenAIStreamInspector {
   }
 
   pushText(text: string): OpenAIStreamInspection {
+    if (this.inspection.skipped) {
+      return this.snapshot()
+    }
     this.pendingLine += text
+    if (Buffer.byteLength(this.pendingLine, 'utf8') > streamInspectorMaxLineBytes) {
+      return this.skipParsing('SSE 单行超过网关解析上限')
+    }
     while (true) {
       const newlineIndex = this.pendingLine.indexOf('\n')
       if (newlineIndex < 0) break
@@ -211,6 +221,9 @@ export class OpenAIStreamInspector {
   }
 
   finish(): OpenAIStreamInspection {
+    if (this.inspection.skipped) {
+      return this.snapshot()
+    }
     if (this.pendingLine.length > 0) {
       const line = this.pendingLine.endsWith('\r') ? this.pendingLine.slice(0, -1) : this.pendingLine
       this.pendingLine = ''
@@ -235,19 +248,27 @@ export class OpenAIStreamInspector {
     if (line.startsWith('event:')) {
       this.eventName = line.slice(6).trim()
     } else if (line.startsWith('data:')) {
-      this.dataLines.push(line.slice(5).trimStart())
+      const dataLine = line.slice(5).trimStart()
+      this.dataBytes += Buffer.byteLength(dataLine, 'utf8')
+      if (this.dataBytes > streamInspectorMaxEventBytes) {
+        this.skipParsing('SSE 单事件超过网关解析上限')
+        return
+      }
+      this.dataLines.push(dataLine)
     }
   }
 
   private flushEvent(): void {
     if (this.dataLines.length === 0) {
       this.eventName = ''
+      this.dataBytes = 0
       return
     }
     const currentEventName = this.eventName
     const data = this.dataLines.join('\n').trim()
     this.eventName = ''
     this.dataLines = []
+    this.dataBytes = 0
     if (!data) return
     if (data === '[DONE]') {
       this.inspection.terminalReceived = true
@@ -281,7 +302,20 @@ export class OpenAIStreamInspector {
     } catch {
     }
   }
+
+  private skipParsing(reason: string): OpenAIStreamInspection {
+    this.pendingLine = ''
+    this.eventName = ''
+    this.dataLines = []
+    this.dataBytes = 0
+    this.inspection.skipped = true
+    this.inspection.skipReason = reason
+    return this.snapshot()
+  }
 }
+
+const streamInspectorMaxLineBytes = 256 * 1024
+const streamInspectorMaxEventBytes = 512 * 1024
 
 export function isOpenAIStreamServerOverloadedErrorCode(code?: string): boolean {
   return code === 'server_is_overloaded' || code === 'slow_down'

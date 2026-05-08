@@ -214,6 +214,9 @@ export async function preloadStreamResponseFirstChunk(
       }
 
       const inspection = inspector.pushChunk(buffer)
+      if (inspection.skipped) {
+        return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
+      }
       if (inspection.outputReceived) {
         return new PreloadedGatewayUpstreamResponse(response, iterator, chunks)
       }
