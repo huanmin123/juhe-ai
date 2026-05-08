@@ -16,7 +16,8 @@
     "test:scope": "pnpm --filter juhe-ai-backend test:scope",
     "test:proxy-negative": "pnpm --filter juhe-ai-backend test:proxy-negative",
     "test:large-response": "pnpm --filter juhe-ai-backend test:large-response",
-    "test:stream-first-output-timeout": "pnpm --filter juhe-ai-backend test:stream-first-output-timeout"
+    "test:stream-first-output-timeout": "pnpm --filter juhe-ai-backend test:stream-first-output-timeout",
+    "test:db-service-worker-local": "pnpm --filter juhe-ai-backend test:db-service-worker-local"
   },
   "engines": {
     "node": ">=22.5.0",

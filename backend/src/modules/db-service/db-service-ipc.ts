@@ -78,7 +78,7 @@ export async function requestDbService<T extends DbServiceOperation>(
   operation: T,
   options: { timeoutMs?: number; fallbackToLocal?: boolean } = {}
 ): Promise<DbServiceOperationResult<T>> {
-  if (runtimeConfig.processRole === 'db-service') {
+  if (runtimeConfig.processRole !== 'server') {
     return await runLocalDbServiceOperation(operation)
   }
 
