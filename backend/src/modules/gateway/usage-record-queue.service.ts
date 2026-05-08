@@ -14,7 +14,8 @@ const usageRecordMaxPending = 10000
 let pendingUsageRecords: UsageRecordInput[] = []
 let flushTimer: NodeJS.Timeout | undefined
 let flushing = false
-let droppedUsageRecordCount = 0
+let retainedOverflowWarningCount = 0
+let flushFailureCount = 0
 let shutdownHooksInstalled = false
 
 interface UsageRecordFlushOptions {
@@ -41,14 +42,14 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
   pendingUsageRecords.push(input)
   if (pendingUsageRecords.length > usageRecordMaxPending) {
     const overflowCount = pendingUsageRecords.length - usageRecordMaxPending
-    pendingUsageRecords.splice(0, overflowCount)
-    droppedUsageRecordCount += overflowCount
-    logger.error({
-      event: 'usage_record_queue_overflow',
+    retainedOverflowWarningCount += 1
+    logger.warn({
+      event: 'usage_record_queue_soft_limit_exceeded',
       overflowCount,
-      droppedUsageRecordCount,
+      retainedOverflowWarningCount,
       pendingCount: pendingUsageRecords.length
-    }, '使用记录队列已满')
+    }, '使用记录队列超过软上限，已保留待写入记录并触发立即落库')
+    flushUsageRecordQueue({ drain: true })
   }
   scheduleUsageRecordFlush(pendingUsageRecords.length >= usageRecordBatchSize ? 0 : usageRecordFlushIntervalMs)
 }
@@ -75,12 +76,14 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
       try {
         createUsageRecordsBatch(batch)
       } catch (error) {
-        pendingUsageRecords = [...batch, ...pendingUsageRecords].slice(0, usageRecordMaxPending)
+        pendingUsageRecords = [...batch, ...pendingUsageRecords]
+        flushFailureCount += 1
         logger.error(errorLogFields(error, {
           event: 'usage_record_queue_flush_failed',
           batchSize: batch.length,
-          pendingCount: pendingUsageRecords.length
-        }), '使用记录队列写入失败')
+          pendingCount: pendingUsageRecords.length,
+          flushFailureCount
+        }), '使用记录队列写入失败，已保留记录等待重试')
         shouldRetry = options.retryOnFailure !== false
         break
       }
@@ -101,10 +104,14 @@ export function flushAllUsageRecordQueue(): void {
 export function getUsageRecordQueueRuntime(): {
   queueLength: number
   droppedCount: number
+  retainedOverflowWarningCount: number
+  flushFailureCount: number
 } {
   return {
     queueLength: pendingUsageRecords.length,
-    droppedCount: droppedUsageRecordCount
+    droppedCount: 0,
+    retainedOverflowWarningCount,
+    flushFailureCount
   }
 }
 

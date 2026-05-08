@@ -56,7 +56,7 @@
 </template>
 
 <script setup lang="ts" generic="T extends Record<string, any>">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 import { normalizeResponsiveTableSorter, type ResponsiveDataListSort } from './responsiveDataListSorting'
 
 type RowKey = string | ((record: T) => string | number)
@@ -135,6 +135,7 @@ let listResizeObserver: ResizeObserver | undefined
 let tableMutationObserver: MutationObserver | undefined
 let tableScrollbarPlaceholderFrame = 0
 let tableScrollbarPlaceholderTimers: number[] = []
+let bodyScrollLocked = false
 
 const mobileDataSource = computed(() => props.mobileDataSource ?? props.dataSource)
 const tableColumns = computed(() => normalizeTableColumns(props.columns))
@@ -349,11 +350,23 @@ function toKebabCase(value: string): string {
 }
 
 function changeBodyScrollLock(delta: number) {
-  if (!props.lockBodyScroll) return
+  if (typeof document === 'undefined') return
   const body = document.body as HTMLBodyElement & Record<string, any>
   const nextCount = Math.max(0, Number(body[scrollLockCountKey] ?? 0) + delta)
   body[scrollLockCountKey] = nextCount
   body.classList.toggle(scrollLockClassName, nextCount > 0)
+}
+
+function lockBodyScroll() {
+  if (!props.lockBodyScroll || bodyScrollLocked) return
+  bodyScrollLocked = true
+  changeBodyScrollLock(1)
+}
+
+function unlockBodyScroll() {
+  if (!bodyScrollLocked) return
+  bodyScrollLocked = false
+  changeBodyScrollLock(-1)
 }
 
 function queueTableScrollbarPlaceholderUpdate() {
@@ -464,7 +477,7 @@ onMounted(() => {
   updateViewportState()
   updateListHeight()
   nextTick(queueTableScrollbarPlaceholderUpdate)
-  changeBodyScrollLock(1)
+  lockBodyScroll()
   if (typeof ResizeObserver !== 'undefined' && listRootRef.value) {
     listResizeObserver = new ResizeObserver(() => {
       updateListHeight()
@@ -478,8 +491,21 @@ onMounted(() => {
   window.addEventListener('resize', queueTableScrollbarPlaceholderUpdate, { passive: true })
 })
 
+onActivated(() => {
+  lockBodyScroll()
+  nextTick(() => {
+    updateViewportState()
+    updateListHeight()
+    queueTableScrollbarPlaceholderUpdate()
+  })
+})
+
+onDeactivated(() => {
+  unlockBodyScroll()
+})
+
 onBeforeUnmount(() => {
-  changeBodyScrollLock(-1)
+  unlockBodyScroll()
   if (typeof window !== 'undefined') {
     window.cancelAnimationFrame(tableScrollbarPlaceholderFrame)
     tableScrollbarPlaceholderTimers.forEach((timer) => window.clearTimeout(timer))

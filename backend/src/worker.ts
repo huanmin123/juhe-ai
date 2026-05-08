@@ -106,6 +106,8 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
     flushLastSuccessAt: typeof input.flushLastSuccessAt === 'string' ? input.flushLastSuccessAt : undefined,
     flushLastError: typeof input.flushLastError === 'string' ? input.flushLastError : undefined,
     droppedCount: typeof input.droppedCount === 'number' ? input.droppedCount : undefined,
+    retainedOverflowWarningCount: typeof input.retainedOverflowWarningCount === 'number' ? input.retainedOverflowWarningCount : undefined,
+    flushFailureCount: typeof input.flushFailureCount === 'number' ? input.flushFailureCount : undefined,
     retentionDays: typeof input.retentionDays === 'number' ? input.retentionDays : undefined
   }
 }
