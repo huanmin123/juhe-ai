@@ -39,6 +39,7 @@ export interface AccountRow {
 
 export interface AccountFailureRow {
   id: string
+  status: AccountStatus
   stream_failure_count: number
   stream_failure_window_started_at: string | null
 }

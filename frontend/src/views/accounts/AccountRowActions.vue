@@ -29,10 +29,12 @@ const emit = defineEmits<{
 
 const actions = computed<RowActionItem[]>(() => {
   if (isAuthorizedAccount(props.account)) {
-    return [
-      { key: 'test', label: '测试', icon: 'test', tone: 'info' },
-      { key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' }
-    ]
+    const authorizedList: RowActionItem[] = []
+    if (props.account.status !== 'disabled') {
+      authorizedList.push({ key: 'test', label: '测试', icon: 'test', tone: 'info' })
+    }
+    authorizedList.push({ key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' })
+    return authorizedList
   }
   const list: RowActionItem[] = []
   if (props.canEdit) {

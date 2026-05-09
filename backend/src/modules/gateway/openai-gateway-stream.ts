@@ -42,6 +42,8 @@ export async function pipeUpstreamStream(
   let parserSkipLogged = false
   let firstTokenMs: number | undefined
   let waitingForFirstOutput = true
+  let lastOutputAt = startedAt
+  let lastOutputEventCount = 0
   let upstreamChunkReceived = false
   let clientClosed = false
   const closeIterator = () => {
@@ -57,6 +59,7 @@ export async function pipeUpstreamStream(
       }
       const result = await readNextStreamChunk(iterator, settings, startedAt, {
         waitingForFirstOutput,
+        lastOutputAt,
         upstreamChunkReceived
       }, signal)
 
@@ -80,6 +83,10 @@ export async function pipeUpstreamStream(
       }
       if (firstTokenMs === undefined && inspection.outputReceived) {
         firstTokenMs = Date.now() - startedAt
+      }
+      if (inspection.outputEventCount > lastOutputEventCount) {
+        lastOutputEventCount = inspection.outputEventCount
+        lastOutputAt = Date.now()
       }
       if (waitingForFirstOutput && (inspection.outputReceived || inspection.failedReceived || inspection.terminalReceived || inspection.skipped)) {
         waitingForFirstOutput = false
@@ -147,6 +154,7 @@ function readNextStreamChunk(
   startedAt: number,
   status: {
     waitingForFirstOutput: boolean
+    lastOutputAt: number
     upstreamChunkReceived: boolean
   },
   signal?: AbortSignal
@@ -155,7 +163,17 @@ function readNextStreamChunk(
     return readStreamChunkWithAbort(iterator, signal)
   }
   if (!status.waitingForFirstOutput) {
-    return readStreamChunkWithIdleTimeout(iterator, settings.streamIdleTimeoutSeconds, signal)
+    const outputIdleTimeoutSeconds = Math.max(1, settings.streamIdleTimeoutSeconds)
+    const outputIdleRemainingMs = outputIdleTimeoutSeconds * 1000 - (Date.now() - status.lastOutputAt)
+    if (outputIdleRemainingMs <= 0) {
+      throw new Error(outputIdleTimeoutMessage(outputIdleTimeoutSeconds))
+    }
+    return readStreamChunkWithTimeout(
+      iterator,
+      Math.max(0.001, outputIdleRemainingMs / 1000),
+      () => new Error(outputIdleTimeoutMessage(outputIdleTimeoutSeconds)),
+      signal
+    )
   }
 
   const firstOutputTimeoutSeconds = Math.max(1, settings.streamRequestTimeoutSeconds)
@@ -182,6 +200,10 @@ function readNextStreamChunk(
 
 function firstOutputTimeoutMessage(timeoutSeconds: number): string {
   return `上游流式请求 ${timeoutSeconds}s 内未返回首个有效输出`
+}
+
+function outputIdleTimeoutMessage(timeoutSeconds: number): string {
+  return `上游流式响应 ${timeoutSeconds}s 内未返回新的有效输出`
 }
 
 function streamResult(

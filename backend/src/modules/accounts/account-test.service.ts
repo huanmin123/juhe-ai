@@ -29,6 +29,22 @@ export async function testOpenAIAccount(
 ): Promise<AccountTestResult> {
   const model = stringValue(input.model) || defaultTestModel
   const prompt = stringValue(input.prompt) || defaultTestPrompt
+  const startedAt = Date.now()
+  if (account.status === 'disabled') {
+    return {
+      accountId: account.id,
+      accountName: account.name,
+      providerCode: account.providerCode,
+      type: account.type,
+      success: false,
+      message: '账户已停用，不能执行测试；请先手动启用账户',
+      model,
+      responseText: '账户已停用，不能执行测试；请先手动启用账户',
+      durationMs: Date.now() - startedAt,
+      accountStatusChanged: false,
+      accountStatus: account.status
+    }
+  }
   const testRequest = createOpenAITestRequest({
     fallbackModel: model,
     prompt,
@@ -39,7 +55,6 @@ export async function testOpenAIAccount(
   const requestBodyText = JSON.stringify(requestBody)
   const requestUrl = testRequest.path
   const modelsUrl = gatewayModelsPath
-  const startedAt = Date.now()
 
   try {
     const resolved = resolveAccountTestCandidate(account, { groupId: stringValue(input.groupId) })

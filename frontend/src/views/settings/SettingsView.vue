@@ -79,13 +79,13 @@
           <div class="section-heading">
             <div>
               <h3>流式超时与换号</h3>
-              <p>分别控制“首包前等多久换账号”和“输出中停多久算中断”；累计失败达到阈值后，账号会临时不可调用。</p>
+              <p>分别控制“首包前等多久换账号”和“单次响应输出中停多久算中断”；累计失败达到阈值后，账号会临时不可调用。</p>
             </div>
             <a-switch v-model:checked="systemForm.streamCircuitBreakerEnabled" checked-children="启用" un-checked-children="关闭" />
           </div>
 
           <a-alert class="setting-alert section-alert" type="info" show-icon>
-            <template #message>流式请求如果首包等待过久会自动换账号重试；已经开始输出后长时间没有新数据，则记录为流式中断。</template>
+            <template #message>流式请求如果首包等待过久会自动换账号重试；单次流式响应开始输出后，超过阈值仍没有新的有效输出，则记录为流式中断。</template>
           </a-alert>
 
           <div class="settings-grid">
@@ -95,7 +95,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="输出停顿上限（秒）" extra="已收到首段内容后，服务端无法可靠续写不同客户端的上下文状态；超时或中断时会发送失败事件并结束本次流式响应，由客户端按自身上下文进行重试。">
+              <a-form-item label="输出停顿上限（秒）" extra="只作用于当前这次流式响应：首个有效输出后超过该时间没有新的有效输出，就发送失败事件并结束本次响应；心跳和非输出事件不刷新计时。">
                 <a-input-number v-model:value="systemForm.streamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>

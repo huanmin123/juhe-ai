@@ -1030,6 +1030,9 @@ export function clearAccountFailureState(
     return undefined
   }
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
+  if (current.status === 'disabled' && !expiredByPackage) {
+    return current
+  }
   if (expiredByPackage) {
     const result = getDatabase()
       .prepare(`
@@ -1074,6 +1077,9 @@ export function clearAccountFailureState(
 export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
   const current = listAccounts().find((account) => account.id === id)
   if (!current) {
+    return undefined
+  }
+  if (current.status === 'disabled') {
     return undefined
   }
 
@@ -1216,6 +1222,9 @@ export function markAccountDisabledByFailure(id: string, reason: string): Accoun
   if (!current) {
     return undefined
   }
+  if (current.status === 'disabled') {
+    return undefined
+  }
 
   const result = getDatabase()
     .prepare(`
@@ -1246,9 +1255,12 @@ export function recordAccountStreamFailure(input: {
   cooldownMinutes: number
   reason: string
 }): { count: number; triggered: boolean; account?: AccountSummary } {
-  const row = getDatabase().prepare('SELECT id, stream_failure_count, stream_failure_window_started_at FROM accounts WHERE id = ?').get(input.accountId) as unknown as AccountFailureRow | undefined
+  const row = getDatabase().prepare('SELECT id, status, stream_failure_count, stream_failure_window_started_at FROM accounts WHERE id = ?').get(input.accountId) as unknown as AccountFailureRow | undefined
   if (!row) {
     return { count: 0, triggered: false }
+  }
+  if (row.status === 'disabled') {
+    return { count: Math.max(0, row.stream_failure_count), triggered: false, account: listAccounts().find((item) => item.id === input.accountId) }
   }
 
   const now = new Date()

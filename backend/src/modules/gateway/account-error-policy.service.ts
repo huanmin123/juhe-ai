@@ -61,6 +61,10 @@ export function applyAccountErrorHandling(
     settings?: GatewaySettings
   }
 ): AccountErrorHandlingResult {
+  if (account.status === 'disabled') {
+    return { action: 'none', changed: false, accountStatus: account.status }
+  }
+
   if (input.success) {
     const changed = (account.status !== undefined && account.status !== 'active') || Boolean(account.cooldownUntil) || Boolean(account.lastErrorMessage)
     if (!changed) {

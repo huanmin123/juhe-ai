@@ -140,10 +140,14 @@ const actions = computed<RowActionItem[]>(() => {
   }
   return list
 })
-const authorizedActions = computed<RowActionItem[]>(() => [
-  { key: 'test', label: '测试', icon: 'test', tone: 'info' },
-  { key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' }
-])
+const authorizedActions = computed<RowActionItem[]>(() => {
+  const list: RowActionItem[] = []
+  if (props.account.status !== 'disabled') {
+    list.push({ key: 'test', label: '测试', icon: 'test', tone: 'info' })
+  }
+  list.push({ key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' })
+  return list
+})
 
 function handleActionClick(key: string) {
   if (key === 'bind-group') {

@@ -20,7 +20,6 @@ export const auditLogColumns = [
   { title: '分组', key: 'group', width: 150 },
   { title: '系统账户', key: 'systemAccount', width: 150 },
   { title: '耗时', key: 'duration', width: 90 },
-  { title: '原文', key: 'payload', width: 130 },
   { title: '时间', key: 'createdAt', width: 180 },
   { title: '操作', key: 'actions', width: 90, fixed: 'right' }
 ]

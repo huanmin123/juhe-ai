@@ -282,7 +282,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `id`
 - `team_id`
 - `system_account_id`
-- `member_role`：第一阶段固定 `member`
+- `member_role`：当前固定 `member`
 - `status`：`active`、`removed`
 - `joined_at`
 - `removed_at`
@@ -299,10 +299,10 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `grantee_system_account_id`：最终被授权系统账户
 - `source_type`：`manual`、`team`
 - `source_team_id`：团队来源 ID，手动个人授权为空
-- `scope`：第一阶段固定为 `use`
+- `scope`：当前固定为 `use`
 - `expires_at`：可选自动回收时间，到期后状态变为 `expired`，记录保留。
 - `limits_json`：美元成本额度限制 JSON，内部 `limit` 表示美元金额，支持 n 小时、日、周、月和累计总额度；为空表示不限制。
-- `model_policy_json`：预留字段，第一阶段不启用。
+- `model_policy_json`：预留字段，当前不启用。
 - `status`：`active`、`paused`、`expired`、`revoked`
 - `remark`
 - `created_by`
@@ -377,14 +377,14 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 真实网关请求返回 Codex rate-limit 响应头时，直接被动更新 `account_usage_snapshots`。
 - 账户测试如果拿到相同响应头，也可以作为副作用更新快照，但 UI 不把测试描述成“刷新用量”。
 - OAuth 账户创建成功后不主动发模型请求获取额度；首次真实请求或账户测试返回相关响应头后才出现快照。
-- 独立 background worker 不再注册 OAuth 用量快照主动刷新任务。
+- 独立 background worker 不再注册 OAuth 额度快照主动刷新任务。
 - AI 账户管理页更多菜单不提供“刷新用量”按钮，快照缺失时显示“暂无快照”或“等待真实请求更新”。
 
 建议字段：
 
 - `system_account_id`
 - `account_id`
-- `kind`：第一阶段固定为 `openai_codex`
+- `kind`：当前固定为 `openai_codex`
 - `source`：`gateway`、`gateway_error`、`account_test`
 - `snapshot_json`
 - `refresh_status`：`fresh`、`pending`、`failed`、`rate_limited`
@@ -446,11 +446,11 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 ## 系统账户隔离补充
 
-- `accounts`、`system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`audit_logs`、`account_usage_snapshots` 后续都会按 `system_account_id` 或明确的 owner/grantee 字段隔离；`system_settings` 在第一阶段按默认管理员作用域保存系统级运行策略。
+- `accounts`、`system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`audit_logs`、`account_usage_snapshots` 都按 `system_account_id` 或明确的 owner/grantee 字段隔离；`system_settings` 当前按默认管理员作用域保存系统级运行策略。
 - `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_model_hourly`、`usage_error_daily`、`usage_error_hourly` 也必须按 `system_account_id` 隔离。
 - `providers`、`proxy_profiles`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly` 保持全局共享；`providers` 和 `proxy_profiles` 只允许管理员维护，主机级系统监控默认仅管理员可见。`proxy_profiles.latency_ms`、`outbound_ip`、`outbound_region`、`test_status`、`last_tested_at` 和 `last_test_message` 是代理最近检测缓存，不参与账号调度事实判断。
 - 管理员可以读取所有系统账户的数据；普通用户只读取自己的系统账户数据，以及其他用户主动授权给自己的 AI 账户和分组使用摘要。
-- 原始审计日志虽然带有 `system_account_id`，第一阶段仍仅管理员可读取；普通用户不能通过审计日志接口查看自己的完整原文请求。
+- 原始审计日志虽然带有 `system_account_id`，当前仍仅管理员可读取；普通用户不能通过审计日志接口查看自己的完整原文请求。
 
 ## 敏感字段
 

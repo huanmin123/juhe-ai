@@ -1,17 +1,17 @@
-# PLAN-0014 OAuth 主动请求降噪与被动用量快照
+# PLAN-0014 OAuth 主动请求降噪与被动额度快照
 
 ## 基本信息
 
 - 编号：PLAN-0014
 - 状态：已完成
 - 创建时间：2026-05-08
-- 需求来源：用户复查 OpenAI OAuth / API Key 透传后，要求 OAuth 用量刷新被动优先，直接去掉主动刷新；Codex 请求形态识别暂不做，以用户体验优先。
+- 需求来源：用户复查 OpenAI OAuth / API Key 透传后，要求 OAuth 额度快照被动优先，直接去掉主动刷新；Codex 请求形态识别暂不做，以用户体验优先。
 - 执行者：Codex
 
 ## 需求目标
 
-- OpenAI OAuth 用量快照只从真实网关请求返回的 Codex rate-limit 响应头被动更新。
-- 移除建号后和后台定时的 OAuth 用量主动刷新，避免系统为了“看用量”额外请求上游模型接口。
+- OpenAI OAuth 额度快照只从真实网关请求返回的 Codex rate-limit 响应头被动更新。
+- 移除建号后和后台定时的 OAuth 额度快照主动刷新，避免系统为了“看额度”额外请求上游模型接口。
 - 账号质量主动探测能力直接删除，不保留 dormant 开关；冷却复测只保留“冷却到期后的恢复性复测”，默认开启且只处理 `rate_limited`、`temporary_unavailable`。
 - 本轮不做 Codex 请求形态识别或拒绝，不因为请求看起来“不像 Codex”而影响用户调用体验。
 - 文档明确 API Key 与 OAuth 的透传边界，避免再次把用户不知道的 OpenAI 组织、项目、Beta 字段放到账户表单。
@@ -40,7 +40,7 @@
 
 - [x] 新增本计划并更新计划索引。
 - [x] 移除后台 `openai-oauth-usage-refresh` 定时任务、候选筛选和主动刷新函数。
-- [x] 移除 OAuth 建号成功后的初始用量主动刷新。
+- [x] 移除 OAuth 建号成功后的初始额度快照主动刷新。
 - [x] 删除不再使用的 OAuth usage refresh 服务。
 - [x] 保留网关真实响应头被动快照写入，并在回归脚本中断言被动链路仍存在。
 - [x] 删除账号质量主动探测代码、默认设置和文档入口，不保留可重新开启的旧实现。
@@ -48,7 +48,7 @@
 - [x] 文档同步：OAuth 快照、用量统计口径、SQLite 默认设置、账号质量计划和透传比较文档。
 - [x] 回归验证并记录结果。
 - [x] 清理源码残留：删除 `account_quality_scores.last_probe_at` schema 定义和未使用的 `recordAccountQualityProbe()`。
-- [x] 清理本地 SQLite：备份后删除旧 probe 设置，并物理移除 `account_quality_scores.last_probe_at`。
+- [x] 清理本地 SQLite：通过一次性离线脚本备份后删除旧 probe 设置，并物理移除 `account_quality_scores.last_probe_at`；脚本完成后已从源码移除。
 - [x] 冷却恢复性复测改为学习最近真实请求形态，只取 `endpoint` / `model` / `stream` 元信息，不读取或重放用户请求内容。
 - [x] 补充回归验证并记录结果。
 
@@ -62,39 +62,39 @@
 | 命令类验证 | 后端类型检查 | `pnpm --filter juhe-ai-backend typecheck` | TypeScript 无错误 | 已通过 | 2026-05-08 通过 |
 | 命令类验证 | 全仓类型检查 | `pnpm typecheck` | 前后端类型检查通过或记录无关阻断 | 已通过 | 2026-05-08 通过 |
 | 功能主流程 | OAuth 真实请求被动快照 | 本地代码检查与回归脚本 | 网关收到 OAuth 上游响应头后仍调用 `persistOpenAICodexHeadersIfNeeded(..., 'gateway')` | 已通过 | `test:usage-pricing` 已断言 |
-| 异常与边界 | OAuth 建号 | 创建 OAuth 账户代码路径检查 | 建号成功不再发模型请求刷新用量，直接返回账户 | 已通过 | `test:usage-pricing` 已断言路由不引用主动刷新 |
+| 异常与边界 | OAuth 建号 | 创建 OAuth 账户代码路径检查 | 建号成功不再发模型请求刷新额度快照，直接返回账户 | 已通过 | `test:usage-pricing` 已断言路由不引用主动刷新 |
 | 后台任务 | OAuth usage refresh | worker 调度入口检查 | 不再注册 `openai-oauth-usage-refresh` 任务 | 已通过 | `test:usage-pricing` 已断言 |
 | 后台任务 | 质量主动探测已删除 | 代码检查与回归脚本 | worker 只刷新真实请求质量缓存，不再包含主动探测候选、执行和设置项 | 已通过 | 回归脚本断言后台代码不再引用主动探测开关和候选函数 |
 | 后台任务 | 冷却复测恢复性开启 | 默认设置和代码检查 | 默认只复测冷却到期且状态为 `rate_limited`、`temporary_unavailable` 的账号 | 已通过 | 默认启用，批量为 `10`，且 SQL 已限制状态范围 |
 | 后台任务 | 冷却复测请求形态 | 代码检查与回归脚本 | 复测优先学习最近真实 `endpoint/model/stream`，但探活 body 只使用最小安全 payload，不重放用户内容 | 已通过 | `test:usage-pricing` 已断言不再使用固定 `hi`，并断言读取真实请求形态 |
-| 存储清理 | 本地 probe 残留清理 | `pnpm --filter juhe-ai-backend exec tsx src/scripts/cleanup-account-quality-probe-residue.ts` | 备份数据库，删除旧 probe 设置，移除 `account_quality_scores.last_probe_at` | 已通过 | 2026-05-08 通过，两轮共删除旧 probe 设置 6 条，备份到 `backend/data/backups/` |
+| 存储清理 | 本地 probe 残留清理 | 一次性离线脚本 | 备份数据库，删除旧 probe 设置，移除 `account_quality_scores.last_probe_at` | 已通过 | 2026-05-08 通过，两轮共删除旧 probe 设置 6 条，备份到 `backend/data/backups/`；脚本已按预上线规则从源码移除 |
 | 存储清理 | 表结构和旧设置复核 | `PRAGMA table_info(account_quality_scores)` / 查询旧 probe 设置 | 本地库不再包含 `last_probe_at`，`system_settings` 不再有旧 probe key | 已通过 | 2026-05-08 通过 |
 
 ## 决策记录
 
 | 日期 | 决策 | 原因 | 影响 |
 | --- | --- | --- | --- |
-| 2026-05-08 | OAuth 用量快照改为纯被动更新 | 主动模型请求只为看额度，收益低且容易增加账号风险 | 建号和后台 worker 不再触发 OAuth usage refresh |
+| 2026-05-08 | OAuth 额度快照改为纯被动更新 | 主动模型请求只为看额度，收益低且容易增加账号风险 | 建号和后台 worker 不再触发 OAuth usage refresh |
 | 2026-05-08 | 质量主动探测直接删除 | 该能力不是恢复项，只是优化项；保留旧开关容易被后续误恢复并再次产生无业务价值的上游请求 | 调度永久回到真实请求质量缓存，不再保留旧探测开关 |
 | 2026-05-08 | 冷却复测保留恢复性默认开启 | 限流和临时不可调用有明确冷却时间，到期后需要自动确认是否恢复 | 只复测冷却到期的 `rate_limited`、`temporary_unavailable`，不扩展为普通后台测速 |
 | 2026-05-08 | 本轮不做 Codex 请求形态识别 | 用户体验优先，不因客户端形态判断误伤正常请求 | OAuth adapter 继续做协议适配，不新增拒绝策略 |
-| 2026-05-08 | 删除本地库和源码中的 probe 残留 | 主动探测已删除，继续保留 `last_probe_at` 和未调用函数会误导后续维护 | 新库 schema 和本地 SQLite 都不再包含 `last_probe_at`，旧设置通过离线脚本清理 |
+| 2026-05-08 | 删除本地库和源码中的 probe 残留 | 主动探测已删除，继续保留 `last_probe_at` 和未调用函数会误导后续维护 | 新库 schema 和本地 SQLite 都不再包含 `last_probe_at`，旧设置通过一次性离线脚本清理，脚本完成后移除 |
 | 2026-05-08 | 冷却复测只学习真实请求形态，不学习用户内容 | 固定 payload 容易形成高风险探活特征；重放用户 prompt 又有隐私和安全边界问题 | 复测只读取最近真实 `endpoint/model/stream`，生成最小 tokens 的新探活 body |
 
 ## 进度记录
 
-- 2026-05-08：创建计划，明确本轮去掉 OAuth 用量主动刷新，Codex 请求形态识别取消，质量探测默认降噪，冷却复测只保留恢复性口径。
-- 2026-05-08：完成后端改造：删除 OAuth usage refresh 服务，建号流程不再刷新用量，后台 worker 不再注册 usage refresh，质量主动探测代码直接删除，冷却复测恢复为受限默认开启。
+- 2026-05-08：创建计划，明确本轮去掉 OAuth 额度快照主动刷新，Codex 请求形态识别取消，质量探测默认降噪，冷却复测只保留恢复性口径。
+- 2026-05-08：完成后端改造：删除 OAuth usage refresh 服务，建号流程不再主动刷新额度快照，后台 worker 不再注册 usage refresh，质量主动探测代码直接删除，冷却复测恢复为受限默认开启。
 - 2026-05-08：完成文档同步：长期文档、阶段计划、后台任务说明、部署说明和 PLAN-0011 均改为被动快照与“质量主动探测已删除”的口径。
 - 2026-05-08：完成回归验证和类型检查。
 - 2026-05-08：复核后发现 `schema.ts` 和本地 SQLite 仍残留 `account_quality_scores.last_probe_at`，`account-quality.repository.ts` 仍残留未调用的 `recordAccountQualityProbe()`；已按“删除而非禁用”原则清理。
-- 2026-05-08：新增并执行一次性离线脚本 `cleanup-account-quality-probe-residue.ts`，备份本地数据库后删除旧 probe 设置和 `last_probe_at` 列；复查时补强脚本匹配规则，清理剩余 `accountQuality*Probe*` 设置，并验证脚本幂等。
+- 2026-05-08：新增并执行一次性离线脚本，备份本地数据库后删除旧 probe 设置和 `last_probe_at` 列；复查时补强脚本匹配规则，清理剩余 `accountQuality*Probe*` 设置，并验证脚本幂等。2026-05-09 文档对账时已按预上线规则移除该一次性脚本源码。
 - 2026-05-08：冷却复测不再固定 `prompt: 'hi'`；后台任务先读取真实使用记录中的接口形态元信息，测试服务再构造 `/v1/responses` 或 `/v1/chat/completions` 的最小探活 payload。
 
 ## 验收标准
 
-- `backend/src/modules/background/background-jobs.ts` 不再注册或调用 OAuth 用量主动刷新任务。
-- `backend/src/modules/openai-oauth/openai-oauth.routes.ts` 创建 OAuth 账户后不再发模型请求刷新用量。
+- `backend/src/modules/background/background-jobs.ts` 不再注册或调用 OAuth 额度快照主动刷新任务。
+- `backend/src/modules/openai-oauth/openai-oauth.routes.ts` 创建 OAuth 账户后不再发模型请求刷新额度快照。
 - `backend/src/modules/openai-oauth/openai-oauth-usage-refresh.service.ts` 不再被引用；如无保留必要则删除。
 - 网关 OAuth 响应头被动快照写入仍存在。
 - 默认实现下，账号质量主动探测不存在；冷却复测只对冷却到期的 `rate_limited`、`temporary_unavailable` 发起恢复性测试。
@@ -109,9 +109,9 @@
 - 2026-05-08：`pnpm --filter juhe-ai-backend test:openai-api-key-passthrough` 通过。
 - 2026-05-08：`pnpm --filter juhe-ai-backend typecheck` 通过。
 - 2026-05-08：`pnpm typecheck` 通过。
-- 2026-05-08：`pnpm --filter juhe-ai-backend exec tsx src/scripts/cleanup-account-quality-probe-residue.ts` 通过，两轮共删除旧 probe 设置 6 条，移除 `account_quality_scores.last_probe_at`，并生成本地备份。
+- 2026-05-08：一次性离线脚本执行通过，两轮共删除旧 probe 设置 6 条，移除 `account_quality_scores.last_probe_at`，并生成本地备份；2026-05-09 脚本源码已移除。
 - 2026-05-08：`PRAGMA table_info(account_quality_scores)` 和旧设置查询通过，本地库列清单不再包含 `last_probe_at`，`system_settings` 不再包含旧 probe key。
-- 2026-05-08：再次执行 `cleanup-account-quality-probe-residue.ts` 通过，`deletedSettings = 0`、`droppedLastProbeAt = false`，验证脚本幂等且无变更时不再重复生成备份。
+- 2026-05-08：再次执行一次性离线脚本通过，`deletedSettings = 0`、`droppedLastProbeAt = false`，验证脚本幂等且无变更时不再重复生成备份。
 - 2026-05-08：`pnpm --filter juhe-ai-backend test:usage-pricing` 通过。
 - 2026-05-08：`pnpm --filter juhe-ai-backend test:openai-api-key-passthrough` 通过。
 - 2026-05-08：`pnpm --filter juhe-ai-backend test:openai-oauth-codex-adapter` 通过。
@@ -127,9 +127,9 @@
 
 ## 完成总结
 
-- OAuth 用量快照已改为纯被动更新：真实网关响应头和账户测试副作用写入快照，建号和后台 worker 不再主动发模型请求拿额度。
+- OAuth 额度快照已改为纯被动更新：真实网关响应头和账户测试副作用写入快照，建号和后台 worker 不再主动发模型请求拿额度。
 - 已删除 `backend/src/modules/openai-oauth/openai-oauth-usage-refresh.service.ts`，并在回归脚本里断言后台任务和 OAuth 路由不再引用主动刷新。
 - 账号质量主动探测已删除；冷却账号复测保留恢复性默认开启，只处理冷却到期的 `rate_limited`、`temporary_unavailable`。
-- 源码和本地 SQLite 的 probe 残留已清理；`account_quality_scores.last_probe_at` 不再作为新库字段存在。
+- 源码和本地 SQLite 的 probe 残留已清理；`account_quality_scores.last_probe_at` 不再作为新库字段存在；一次性清理脚本已移除，避免成为长期维护入口。
 - 冷却复测已改为学习最近真实请求形态元信息并生成最小探活 payload，不再使用固定 `hi`。
 - Codex 请求形态识别本轮按用户要求不做；OAuth adapter 继续保持兼容体验优先。

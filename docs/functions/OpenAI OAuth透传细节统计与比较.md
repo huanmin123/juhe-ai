@@ -2,7 +2,7 @@
 
 > 创建时间：2026-05-08
 > 复查时间：2026-05-08
-> 关联文档：[中转透传机制调研与定位修正](中转透传机制调研与定位修正.md)、[OpenAI 一期计划](第一期OpenAI账号接入.md)、[OpenAI API Key 透传细节统计与比较](OpenAI%20API%20Key透传细节统计与比较.md)、[原始审计日志设计](原始审计日志设计.md)
+> 关联文档：[中转透传机制调研与定位修正](中转透传机制调研与定位修正.md)、[OpenAI 账号接入](OpenAI账号接入.md)、[OpenAI API Key 透传细节统计与比较](OpenAI%20API%20Key透传细节统计与比较.md)、[原始审计日志设计](原始审计日志设计.md)
 
 本文用于复查 `juhe-ai` 的 OpenAI OAuth / Codex 透传链路，并对比 `F:\temp-project\中转` 下几个主流中转项目的实现取舍。结论只用于协议兼容、账号隔离、异常请求降噪和可观测性，不用于绕过平台限制、规避风控或伪装身份。
 
@@ -10,7 +10,7 @@
 
 OpenAI OAuth 账号不能当成“API Key 的另一种凭据”来裸透传。它打的是 `https://chatgpt.com/backend-api/codex` 这类 ChatGPT / Codex backend，而公开 OpenAI API 的官方 base URL 是 `https://api.openai.com/v1`。因此 OAuth 链路应按内部 `openai_oauth_codex` adapter 处理：限制 endpoint、白名单 Header、归一化 body、隔离上游 session/cache 标识，并尽量减少后台主动请求。
 
-本次复查后，`juhe-ai` 已经吸收了 `new-api`、`sub2api_source`、`CLIProxyAPI` 中最关键的做法：OAuth 专用 adapter、Header allowlist、`store=false`、非 compact `stream=true`、compact 清理字段、系统角色转 developer、web search tool 名归一化、上游 session/cache 隔离，以及本地 400 校验。进一步复查后，OAuth 用量快照已经改为只从真实网关请求响应头被动更新；后台主动 usage refresh、建号后主动 usage refresh 已删除，账号质量主动探测也已直接删掉，不保留 dormant 开关；冷却复测只保留恢复性路径。Codex 客户端形态识别本轮明确不做，避免误伤用户体验。
+本次复查后，`juhe-ai` 已经吸收了 `new-api`、`sub2api_source`、`CLIProxyAPI` 中最关键的做法：OAuth 专用 adapter、Header allowlist、`store=false`、非 compact `stream=true`、compact 清理字段、系统角色转 developer、web search tool 名归一化、上游 session/cache 隔离，以及本地 400 校验。进一步复查后，OAuth 额度快照已经改为只从真实网关请求响应头被动更新；后台主动 usage refresh、建号后主动 usage refresh 已删除，账号质量主动探测也已直接删掉，不保留 dormant 开关；冷却复测只保留恢复性路径。Codex 客户端形态识别本轮明确不做，避免误伤用户体验。
 
 ## 官方边界
 
@@ -154,7 +154,7 @@ compact 会额外删除：
 - 非 compact 固定 `store=false`、`stream=true`；compact 删除 `store/stream` 等不需要字段。
 - 上游 `session_id`、`conversation_id`、`prompt_cache_key` 已做多租户隔离。
 - API Key 账号仍保留 raw body 真透传，并且不暴露 OpenAI 组织/项目/Beta 表单字段。
-- OAuth 用量快照已改为纯被动更新：真实网关响应头写入 `account_usage_snapshots`，后台和建号流程不再主动发模型请求拿额度。
+- OAuth 额度快照已改为纯被动更新：真实网关响应头写入 `account_usage_snapshots`，后台和建号流程不再主动发模型请求拿额度。
 - Codex 请求形态识别本轮不做；OAuth adapter 继续以兼容体验为先，只保留协议必要校验。
 
 ## 验证建议
@@ -167,11 +167,11 @@ compact 会额外删除：
 | 回归脚本 | 两个本地 API Key 使用同一 `prompt_cache_key` | 上游 session/cache 标识不同 |
 | 回归脚本 | API Key 账号请求 | 保持 raw body 和公开 API Header 语义，不走 OAuth adapter |
 | 回归脚本 | OAuth 后台 usage refresh | 后台任务和 OAuth 建号接口不再引用主动 usage refresh 服务 |
-| 回归脚本 | OAuth 被动用量快照 | 真实网关响应和上游错误响应仍调用 `persistOpenAICodexHeadersIfNeeded` 写快照 |
+| 回归脚本 | OAuth 被动额度快照 | 真实网关响应和上游错误响应仍调用 `persistOpenAICodexHeadersIfNeeded` 写快照 |
 | 后续审计 | 请求形态统计 | 能按 `openai_oauth_codex` / `openai_api_key_platform` 聚合查看过滤和归一化行为 |
 
 ## 结论
 
 当前最重要的透传原则已经明确：API Key 追求公开 OpenAI API 的 raw body 真透传；OAuth 追求 Codex backend 的协议适配和多租户隔离。两条线不能混用。
 
-从主流中转吸收下来的“好经验”不是某个神秘 Header，而是四个稳定动作：专用 adapter、Header allowlist、body normalize、session isolation。`juhe-ai` 现在已经把这四项落到 OAuth 链路里，并进一步把 OAuth 用量快照改成纯被动来源。下一轮真正值得继续磨的是审计统计和 `previous_response_id` 续链语义，让“账户异常”不再靠感觉猜，而是能按请求来源、错误码和后台任务来源拆开看。
+从主流中转吸收下来的“好经验”不是某个神秘 Header，而是四个稳定动作：专用 adapter、Header allowlist、body normalize、session isolation。`juhe-ai` 现在已经把这四项落到 OAuth 链路里，并进一步把 OAuth 额度快照改成纯被动来源。下一轮真正值得继续磨的是审计统计和 `previous_response_id` 续链语义，让“账户异常”不再靠感觉猜，而是能按请求来源、错误码和后台任务来源拆开看。

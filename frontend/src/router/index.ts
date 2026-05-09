@@ -93,7 +93,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/providers/ProvidersView.vue'),
     meta: {
       title: '供应商',
-      description: '管理当前支持的供应商能力与模型定价，第一期仅启用 OpenAI。',
+      description: '管理当前支持的供应商能力与模型定价，当前启用 OpenAI。',
       viewScope: 'admin',
       roles: ['admin']
     }

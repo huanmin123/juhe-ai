@@ -54,9 +54,6 @@
       <template v-else-if="column.key === 'duration'">
         <span>{{ formatDuration(record.durationMs) }}</span>
       </template>
-      <template v-else-if="column.key === 'payload'">
-        <span>{{ formatBytes(record.payloadBytes) }} / {{ record.payloadCount }} 段</span>
-      </template>
       <template v-else-if="column.key === 'createdAt'">
         <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
       </template>
@@ -91,10 +88,6 @@
             <span>时间</span>
             <strong>{{ formatDateTime(record.createdAt) }}</strong>
           </div>
-          <div class="mobile-list-meta-item">
-            <span>原文</span>
-            <strong>{{ formatBytes(record.payloadBytes) }}</strong>
-          </div>
         </div>
       </article>
     </template>
@@ -108,7 +101,6 @@ import type { RowActionItem } from '@/components/rowActions'
 import type { AuditLogSummary } from '@/types/domain'
 import {
   displayName,
-  formatBytes,
   formatDateTime,
   formatDuration,
   outcomeColor,

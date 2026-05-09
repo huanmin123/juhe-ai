@@ -300,7 +300,11 @@ accountsRouter.post('/:id/test', async (req, res) => {
     return
   }
   if (account.providerCode !== 'openai') {
-    res.status(400).json({ message: '第一阶段仅支持测试 OpenAI 账户' })
+    res.status(400).json({ message: '当前仅支持测试 OpenAI 账户' })
+    return
+  }
+  if (account.status === 'disabled') {
+    res.status(400).json({ message: '账户已停用，不能执行测试；请先手动启用账户' })
     return
   }
 

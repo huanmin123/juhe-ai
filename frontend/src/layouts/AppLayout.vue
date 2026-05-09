@@ -84,7 +84,7 @@ const keepAliveMax = 18
 
 const selectedKeys = computed(() => [route.path])
 const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
-const currentPageDescription = computed(() => route.meta.description || '第一期：OpenAI OAuth + API Key')
+const currentPageDescription = computed(() => route.meta.description || 'OpenAI OAuth + API Key')
 const currentUser = authState.currentUser
 const canSwitchMenuMode = computed(() => currentUser.value?.role === 'admin')
 const switchMenuModeLabel = computed(() => (appMenuMode.value === 'admin' ? '切换到用户模式' : '切换到管理模式'))

@@ -1,7 +1,7 @@
 # OpenAI API Key 透传细节统计与比较
 
 > 创建时间：2026-05-08
-> 关联文档：[中转透传机制调研与定位修正](中转透传机制调研与定位修正.md)、[OpenAI OAuth 透传细节统计与比较](OpenAI%20OAuth透传细节统计与比较.md)、[OpenAI 一期计划](第一期OpenAI账号接入.md)
+> 关联文档：[中转透传机制调研与定位修正](中转透传机制调研与定位修正.md)、[OpenAI OAuth 透传细节统计与比较](OpenAI%20OAuth透传细节统计与比较.md)、[OpenAI 账号接入](OpenAI账号接入.md)
 
 本文用于复查 `juhe-ai` 的 OpenAI API Key 账号透传链路，并对比 `F:\temp-project\中转` 下主流中转项目的请求头、请求体和账号边界处理。结论只用于协议正确性、账号隔离、异常噪声收敛和可观测性，不用于规避平台限制、绕过风控或伪造身份。
 
@@ -72,7 +72,7 @@ OpenAI OpenAPI spec 当前公开 base URL 是 `https://api.openai.com/v1`；`POS
 | `one-api` 常规 OpenAI adaptor | 只设置 `Content-Type`、`Accept`，再写 `Authorization` | 稳，但对客户端语义透传较少 |
 | `one-api` proxy adaptor | 复制更多客户端头，但删除 `Host`、`Content-Length`、`Accept-Encoding`、`Connection` | 即使 proxy 模式也不是无条件裸转 |
 | `new-api` | Header override 支持 `*` / regex passthrough，但统一跳过不安全头 | 适合借鉴“显式透传也要有不可绕过的安全跳过集” |
-| `Portkey` | provider headers 来自 provider options；客户端额外头来自 `forwardHeaders` | 组织、项目、Beta 在企业网关里通常属于管理员配置；本项目第一阶段不把这些高级项放进普通账户表单 |
+| `Portkey` | provider headers 来自 provider options；客户端额外头来自 `forwardHeaders` | 组织、项目、Beta 在企业网关里通常属于管理员配置；本项目当前不把这些高级项放进普通账户表单 |
 | `LiteLLM` | 通过代理配置决定 OpenAI org 是否转发，并过滤 SDK 噪声 | 对账号池中转来说，默认不信客户端跨账号头更稳 |
 
 ## API Key Header 决策
@@ -123,7 +123,7 @@ OpenAI OpenAPI spec 当前公开 base URL 是 `https://api.openai.com/v1`；`POS
 
 ## API Key 账号配置边界
 
-OpenAI API Key 账号凭据只保留第一阶段必要字段：
+OpenAI API Key 账号凭据只保留当前必要字段：
 
 | 字段 | 上游 Header | 默认值 | 用途 |
 | --- | --- | --- | --- |
@@ -138,7 +138,7 @@ OpenAI API Key 账号凭据只保留第一阶段必要字段：
 | --- | --- | --- | --- |
 | Header 边界 | `one-api`、`new-api`、Portkey、LiteLLM 都比旧实现更克制 | 这次补齐后已接近成熟项目边界 | Header 之前是短板，现在按账号池语义收敛 |
 | Body 透传 | 多数成熟网关会读取和转换 body | 我们的 API Key raw body 更接近真透传 | 保留，不要回退成重序列化 |
-| 账号池隔离 | Portkey / LiteLLM 的企业治理更成熟 | 我们轻量、直接，适合本地账号调度 | 第一阶段不引入重型策略，但关键边界要有 |
+| 账号池隔离 | Portkey / LiteLLM 的企业治理更成熟 | 我们轻量、直接，适合本地账号调度 | 当前版本不引入重型策略，但关键边界要有 |
 | 前端复杂度 | 企业网关配置更多 | 我们只保留 API Key 和 Base URL，不暴露用户难以判断的 OpenAI 账号上下文字段 | 保持轻量，把复杂边界留在后端策略里 |
 | OAuth / API Key 分层 | `new-api`、`sub2api_source` 对 Codex / OAuth 分层更明确 | 已通过 PLAN-0012 拆出 OAuth Codex adapter | API Key 和 OAuth 必须继续分开看 |
 
@@ -159,7 +159,7 @@ OpenAI API Key 账号凭据只保留第一阶段必要字段：
 | P1 | 原始审计日志增加 `header_policy` / `filtered_header_names` 摘要 | 如果后续继续排查“透传不对劲”，需要快速定位被过滤的头 |
 | P1 | API Key 自动重试前评估 `Idempotency-Key` | 如果实现跨账号请求级重试，必须避免幂等语义误导 |
 | P2 | 增加只读 Header 策略摘要 | 如果后续继续排查“透传不对劲”，可在测试结果里展示脱敏后的保留 / 过滤摘要 |
-| P2 | multipart / upload 场景回归 | 如果第一阶段开始重点支持文件上传、图片编辑等 multipart 接口，需要补 raw body + boundary 验证 |
+| P2 | multipart / upload 场景回归 | 如果后续重点支持文件上传、图片编辑等 multipart 接口，需要补 raw body + boundary 验证 |
 | P2 | 按 provider 拆 Header policy 单元 | 后续新增 Anthropic、Gemini 等供应商时，不能复用 OpenAI 的 Header 规则 |
 
 ## 验证建议

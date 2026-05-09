@@ -113,7 +113,16 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await waitForFailedUsageRecord(account.id)
 
-    console.log('流式首输出超时回归通过：非输出事件已透传，首个有效输出超时后返回 response.failed')
+    const outputThenHeartbeatResult = await requestOutputThenHeartbeatTimeout(baseUrl, apiKey.key)
+    assert(outputThenHeartbeatResult.streamText.includes('response.output_text.delta'), `客户端未收到首个输出事件：${outputThenHeartbeatResult.streamText}`)
+    assert(outputThenHeartbeatResult.streamText.includes('response.failed'), `客户端未收到输出后空闲失败事件：${outputThenHeartbeatResult.streamText}`)
+    assert(outputThenHeartbeatResult.streamText.includes('未返回新的有效输出'), `失败事件未说明有效输出空闲超时：${outputThenHeartbeatResult.streamText}`)
+    assert(
+      outputThenHeartbeatResult.durationMs >= 900 && outputThenHeartbeatResult.durationMs < 5000,
+      `输出后空闲超时没有按 1s 左右及时结束，耗时 ${outputThenHeartbeatResult.durationMs}ms`
+    )
+
+    console.log('流式输出超时回归通过：首输出前和输出后仅心跳场景都会返回 response.failed')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -135,19 +144,66 @@ function createSlowNonOutputStreamUpstream(): http.Server {
       return
     }
 
-    res.writeHead(200, {
-      'content-type': 'text/event-stream; charset=utf-8',
-      'cache-control': 'no-cache',
-      connection: 'keep-alive'
-    })
-    res.write('event: response.created\n')
-    res.write('data: {"type":"response.created","response":{"id":"resp_regression","status":"in_progress"}}\n\n')
+    const bodyChunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => bodyChunks.push(chunk))
+    req.on('end', () => {
+      let scenario = 'no-output'
+      try {
+        const body = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')) as { input?: unknown }
+        scenario = typeof body.input === 'string' ? body.input : scenario
+      } catch {
+      }
 
-    const interval = setInterval(() => {
-      res.write(': keep-alive\n\n')
-    }, 100)
-    res.on('close', () => clearInterval(interval))
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive'
+      })
+      res.write('event: response.created\n')
+      res.write('data: {"type":"response.created","response":{"id":"resp_regression","status":"in_progress"}}\n\n')
+      if (scenario === 'output-then-heartbeat') {
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"hi"}\n\n')
+      }
+
+      const interval = setInterval(() => {
+        res.write(': keep-alive\n\n')
+      }, 100)
+      res.on('close', () => clearInterval(interval))
+    })
   })
+}
+
+async function requestOutputThenHeartbeatTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 1,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'output-then-heartbeat',
+      stream: true
+    })
+  })
+  assert.equal(response.status, 200)
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  const streamText = await response.text()
+  return {
+    streamText,
+    durationMs: Date.now() - startedAt
+  }
 }
 
 function captureGatewayRawBody(req: RawBodyRequest, _res: ExpressResponse, next: NextFunction): void {

@@ -70,6 +70,8 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
     lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
     lines.push('等待后台复测；也可手动测试或在更多菜单恢复正常')
+  } else if (account.status === 'disabled') {
+    lines.push('停用账户不会被测试或后台任务自动恢复')
   }
   if (account.lastErrorMessage) {
     lines.push(`原因：${account.lastErrorMessage}`)

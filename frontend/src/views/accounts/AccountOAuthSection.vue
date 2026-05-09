@@ -28,7 +28,7 @@
       />
     </template>
 
-    <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，第一期先支持 OpenAI OAuth。" />
+    <a-alert v-else class="form-alert" type="warning" show-icon message="该供应商的 OAuth 创建流程尚未开放，当前支持 OpenAI OAuth。" />
   </section>
 </template>
 

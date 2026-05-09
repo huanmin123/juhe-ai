@@ -15,7 +15,7 @@ export const OPENAI_PROVIDER_SEED = {
   id: 'openai',
   code: 'openai',
   name: 'OpenAI',
-  description: '第一阶段内置供应商，支持 OAuth 与 API Key 两种账户接入方式',
+  description: '当前内置供应商，支持 OAuth 与 API Key 两种账户接入方式',
   enabled: 1,
   baseUrl: 'https://api.openai.com/v1',
   accountTypes: ['oauth', 'api_key'],

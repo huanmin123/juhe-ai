@@ -32,7 +32,7 @@
 - 不做绕过平台限制、伪装身份或规避风控策略；本计划只处理协议正确性、多租户隔离、兼容性和异常流量收敛。
 - 不引入前端复杂开关，例如 `codex_cli_only` 或高级 Header 透传配置；第一阶段保持轻量。
 - 不实现 WebSocket Codex 续链缓存，也不改写 `previous_response_id`；该字段需要独立设计上下文缓存后再处理。
-- 不大改后台主动探测和 OAuth 用量快照调度；本次仅在文档风险中记录，后续可单独计划收敛主动请求预算。
+- 本计划先聚焦 OAuth / Codex adapter；后台主动请求降噪已在后续 PLAN-0014 收口：OAuth 额度快照改为被动更新，账号质量主动探测已删除。
 - 不保证能解释既有账号封禁原因；没有上游侧审计数据时只能降低当前链路中的异常形态。
 
 ## 关联文档
@@ -41,7 +41,7 @@
 - 阶段计划：`docs/plans/第一阶段计划.md`
 - 调研文档：`docs/functions/OpenAI OAuth透传细节统计与比较.md`
 - 既有透传定位：`docs/functions/中转透传机制调研与定位修正.md`
-- 验证说明：`docs/develop/运行与验证说明.md`
+- 验证说明：`docs/develop/测试与验证说明.md`
 
 ## 方案概述
 
@@ -118,7 +118,7 @@
 - OAuth 非 compact 请求强制 `stream=true` 后，非流式客户端可能收到 SSE；这与 Codex backend 兼容优先的策略一致，但后续如要完整兼容非流式客户端，需要增加 SSE 到 JSON 的本地聚合转换。
 - `previous_response_id` 仍按客户端原值保留；如果真实问题集中在续链语义，需要新增 WebSocket / HTTP 上下文缓存设计。
 - Header 默认值不是“伪装策略”，只是缺省兼容值；真实 Codex 客户端的 `originator`、`version`、`user-agent` 允许在白名单内保留。
-- 后台 OAuth 用量快照、账号质量探测和冷却复测仍会产生真实上游请求；如封禁风险继续，需要单独计划收敛主动请求预算和频率。
+- 后续 PLAN-0014 已移除后台 OAuth 额度快照主动刷新和账号质量主动探测；当前仅冷却账号复测仍会在恢复场景产生最小探活请求。
 
 ## 完成总结
 
@@ -126,4 +126,4 @@
 - 实际完成内容：新增 OAuth Codex 专用 adapter，OAuth 账号上游请求现在会做 body normalize、Header allowlist、上游 session/cache 标识隔离和本地 400 校验；API Key 账号保留原有透传行为。
 - 主要改动位置：`backend/src/modules/gateway/openai-oauth-codex-adapter.ts`、`backend/src/modules/gateway/openai-gateway-upstream.ts`、`backend/src/modules/gateway/openai-gateway.routes.ts`、`backend/src/scripts/openai-oauth-codex-adapter-regression.ts`、`docs/architecture/架构总览.md`。
 - 验证结果：`pnpm --filter juhe-ai-backend test:openai-oauth-codex-adapter` 通过；`pnpm --filter juhe-ai-backend typecheck` 通过。
-- 后续建议：单独建立计划收敛 OAuth 用量快照、账号质量探测和冷却复测的主动请求预算；如需支持非流式 OAuth 客户端，再补 SSE 聚合到 JSON 的转换层；如需稳定续链，再设计 `previous_response_id` 上下文缓存。
+- 后续建议：如需支持非流式 OAuth 客户端，再补 SSE 聚合到 JSON 的转换层；如需稳定续链，再设计 `previous_response_id` 上下文缓存。主动请求边界以后以 PLAN-0014 的被动快照和恢复性复测口径为准。

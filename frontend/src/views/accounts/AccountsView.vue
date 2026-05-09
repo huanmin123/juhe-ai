@@ -445,7 +445,7 @@ function canUseAccountActions(account: AccountSummary): boolean {
 }
 
 function canTestAccount(account: AccountSummary): boolean {
-  return account.permissions?.canUse !== false
+  return account.status !== 'disabled' && account.permissions?.canUse !== false
 }
 
 function canManageGroupAccounts(group: GroupSummary): boolean {
@@ -839,7 +839,7 @@ async function saveAccount() {
     return
   }
   if (!editingId.value && form.type === 'oauth' && form.providerCode !== 'openai') {
-    message.warning('第一期只支持创建 OpenAI OAuth 账户')
+    message.warning('当前只支持创建 OpenAI OAuth 账户')
     return
   }
   if (!editingId.value && form.type === 'oauth' && form.oauthMode === 'manual' && !authResult.value?.sessionId) {
@@ -1067,7 +1067,7 @@ async function loadTestModels() {
 
 async function openTestModal(account: AccountSummary) {
   if (!canTestAccount(account)) {
-    message.warning('当前账户不能测试')
+    message.warning(account.status === 'disabled' ? '停用账户不能测试，请先手动启用账户' : '当前账户不能测试')
     return
   }
   testingAccount.value = account

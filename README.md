@@ -4,7 +4,7 @@
 
 项目适合个人或小团队管理多组 OpenAI 上游账号、多套代理和多个客户端接入场景。客户端只需要配置本服务的 Base URL 和本地 API Key；账号选择、授权边界、代理使用、失败切换、统计记录和排障审计都由后台处理。
 
-> 当前阶段仍以轻量闭环为主：第一阶段只正式落地 OpenAI 供应商，先把管理面、OpenAI 账号接入、统一授权、网关透传、统计和运维排障链路做稳，再扩展更多供应商或更重型的多实例能力。
+> 当前版本聚焦单机轻量部署和 OpenAI 兼容入口：管理面、OpenAI 账号接入、统一授权、网关透传、统计、审计和运维排障链路已经形成完整闭环；更多供应商和多实例能力按后续需求扩展。
 
 ![聚合 AI 管理后台预览](resources/images/home-page.png)
 
@@ -36,7 +36,7 @@
 - **OAuth 账号**：支持手动授权链接创建，也支持直接粘贴 Refresh Token 创建；后台会提前刷新 Access Token，请求前仍保留自动刷新兜底。
 - **API Key 账号**：支持填写上游 OpenAI API Key 创建账号；敏感凭据只在编辑弹窗中展示和修改，列表不暴露。
 - **账号调度属性**：支持启停、调度开关、优先级、并发上限、到期时间、代理绑定、错误策略和连接测试。
-- **OAuth 额度快照**：OpenAI OAuth 账号支持后台刷新 Codex `5h` / `7d` 额度快照，并在账号列表中展示进度、预计恢复时间和刷新状态。
+- **OAuth 额度快照**：OpenAI OAuth 账号从真实网关请求或账户测试响应头被动更新 Codex `5h` / `7d` 额度快照，并在账号列表中展示进度、预计恢复时间和快照状态。
 
 ### 分组、API Key 与统一授权
 
@@ -64,7 +64,7 @@
 - **系统监控**：后台采样 CPU、内存、RSS、Heap、事件循环延迟、网络吞吐和数据库大小，并维护小时聚合数据。
 - **日志搜索**：管理员可检索最近 3 天普通运行日志索引，按 `traceId`、级别、事件、路径、状态码、客户端 IP 和关键字定位链路。
 - **原始审计日志**：管理员可按 `traceId` 查看完整客户端请求、网关上游请求、上游响应和最终返回；完全成功请求默认 10% 采样，非成功、客户端中断、流式中断和中间重试失败链路全量保存。
-- **后台 worker**：统计聚合、系统采样、OAuth 额度刷新、运行日志索引维护、审计日志批量落库和清理任务在独立后台 worker 进程内执行，避免占用 Web/API 主进程事件循环。
+- **后台 worker**：统计聚合、系统采样、运行日志索引维护、审计日志批量落库、数据清理、账号质量缓存和冷却账号复测在独立后台 worker 进程内执行，避免占用 Web/API 主进程事件循环；OAuth 额度快照不做后台主动刷新。
 
 ## 技术栈
 
@@ -136,7 +136,7 @@ pnpm --filter juhe-ai-backend dev
 pnpm --filter juhe-ai-frontend dev
 ```
 
-后端开发启动时会由 Web/API 主进程自动拉起后台 worker 进程。后台 worker 负责统计、监控、OAuth 快照、日志索引和审计日志批量任务；正常情况下不要手动把 `JUHE_AI_PROCESS_ROLE` 改成 `worker` 常驻启动。
+后端开发启动时会由 Web/API 主进程自动拉起后台 worker 和本地 DB service 进程。后台 worker 负责统计、监控、日志索引、审计日志批量落库、数据清理、账号质量缓存和冷却账号复测；DB service 承接网关高频 SQLite 读写。OAuth 额度快照只从真实请求或账户测试响应头被动更新。正常情况下不要手动把 `JUHE_AI_PROCESS_ROLE` 改成 `worker` 或 `db-service` 常驻启动。
 
 ## 配置说明
 
@@ -253,7 +253,7 @@ pwsh ./start.ps1
 bash ./start.sh
 ```
 
-发布包由后端直接托管 `frontend/dist`，无需额外静态服务器即可访问管理后台。生产常驻运行时需要确认 Web/API 主进程和后台 worker 均正常存活。构建和部署前请阅读 `docs/deploy/构建指南.md` 与 `docs/deploy/部署指南.md`。
+发布包由后端直接托管 `frontend/dist`，无需额外静态服务器即可访问管理后台。生产常驻运行时需要确认 Web/API 主进程、后台 worker 和本地 DB service 均正常存活。构建和部署前请阅读 `docs/deploy/构建指南.md` 与 `docs/deploy/部署指南.md`。
 
 如需在打包时固定公网网关地址：
 
@@ -272,7 +272,7 @@ bash ./scripts/package-release.sh --frontend-gateway-base-url "https://你的域
 - 系统团队只是授权来源和成员集合，不改变成员自己的 API Key、使用记录和业务数据归属。
 - 授权只传递使用权，不传递编辑权、删除权、凭据查看权、成员管理权或二次授权权。
 - 使用记录按实际 API Key 所属系统账户入库；资源真实总量按 AI 账户 / 分组归属人聚合；授权消耗按“资源 × 用户”聚合。
-- 原始审计日志包含完整请求和响应原文，第一阶段仅管理员可见；对外分享数据库、截图或问题材料前必须注意移除敏感内容。
+- 原始审计日志包含完整请求和响应原文，仅管理员可见；对外分享数据库、截图或问题材料前必须注意移除敏感内容。
 
 ## 文档入口
 
@@ -281,13 +281,13 @@ bash ./scripts/package-release.sh --frontend-gateway-base-url "https://你的域
 - 后端架构：`docs/architecture/backend/README.md`
 - 前端架构：`docs/architecture/frontend/README.md`
 - 核心功能设计：`docs/functions/核心功能设计.md`
-- OpenAI 一期账号接入：`docs/functions/第一期OpenAI账号接入.md`
+- OpenAI 账号接入：`docs/functions/OpenAI账号接入.md`
 - 系统团队与统一授权：`docs/functions/系统团队与统一授权设计.md`
 - 原始审计日志：`docs/functions/原始审计日志设计.md`
 - 接口契约与权限矩阵：`docs/functions/接口契约与权限矩阵.md`
 - SQLite 存储说明：`docs/functions/SQLite存储说明.md`
 - 安全与日志策略：`docs/functions/安全与日志策略.md`
-- 第一阶段计划：`docs/plans/第一阶段计划.md`
+- 阶段计划归档：`docs/plans/第一阶段计划.md`
 - 系统团队与统一授权计划：`docs/plans/计划-0003-系统团队与统一授权新版.md`
 - 原始审计日志计划：`docs/plans/计划-0004-原始审计日志.md`
 - 后台任务进程隔离计划：`docs/plans/计划-0005-后台任务进程隔离.md`
@@ -297,13 +297,13 @@ bash ./scripts/package-release.sh --frontend-gateway-base-url "https://你的域
 - 构建指南：`docs/deploy/构建指南.md`
 - 部署指南：`docs/deploy/部署指南.md`
 
-## 当前阶段边界
+## 当前版本边界
 
-- 第一阶段只实现 OpenAI 供应商；其他供应商先保留架构扩展空间。
+- 当前实现只启用 OpenAI 供应商；其他供应商保留架构扩展空间。
 - 对外只兼容 OpenAI `/v1` 协议；后续供应商也优先通过 OpenAI 兼容格式接入客户端。
 - 存储默认使用 SQLite，优先服务单机和轻量部署场景。
-- 第一阶段不引入 Redis、Kafka 或分布式任务队列；后台任务通过独立本地 worker 进程隔离。
+- 当前版本不引入 Redis、Kafka 或分布式任务队列；后台任务通过独立本地 worker 进程隔离。
 - 代理是管理员维护的全局资源，普通用户不进入代理管理页。
 - 统计概览、系统监控、日志搜索和原始审计日志面向管理员；普通用户以使用记录和用量统计查看自己的调用情况。
 - 原始审计日志是高权限排障数据，不用于计费和统计；成功请求默认采样，非成功链路全量保存。
-- 更复杂的多实例会话、共享验证码存储、供应商插件化、授权额度上限和重型网关策略不属于当前轻量闭环优先级。
+- 更复杂的多实例会话、共享验证码存储、供应商插件化和重型网关策略不属于当前轻量部署优先级。

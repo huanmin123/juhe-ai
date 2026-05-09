@@ -51,6 +51,7 @@ export interface OpenAIStreamInspection {
   terminalReceived: boolean
   failedReceived: boolean
   outputReceived: boolean
+  outputEventCount: number
   skipped: boolean
   skipReason?: string
   errorCode?: string
@@ -200,6 +201,7 @@ export class OpenAIStreamInspector {
     terminalReceived: false,
     failedReceived: false,
     outputReceived: false,
+    outputEventCount: 0,
     skipped: false,
     usage: emptyUsage()
   }
@@ -290,6 +292,7 @@ export class OpenAIStreamInspector {
       const eventType = typeof event.type === 'string' ? event.type : currentEventName
       if (openAIStreamEventHasOutput(event, eventType)) {
         this.inspection.outputReceived = true
+        this.inspection.outputEventCount += 1
       }
       if (eventType === 'response.completed' || eventType === 'response.done') {
         this.inspection.terminalReceived = true

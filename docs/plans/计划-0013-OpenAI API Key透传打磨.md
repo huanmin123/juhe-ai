@@ -41,7 +41,7 @@
 
 - 架构文档：`docs/architecture/架构总览.md`
 - 功能设计：`docs/functions/核心功能设计.md`
-- OpenAI 一期：`docs/functions/第一期OpenAI账号接入.md`
+- OpenAI 账号接入：`docs/functions/OpenAI账号接入.md`
 - 透传定位：`docs/functions/中转透传机制调研与定位修正.md`
 - API Key 细节调研：`docs/functions/OpenAI API Key透传细节统计与比较.md`
 - OAuth 细节调研：`docs/functions/OpenAI OAuth透传细节统计与比较.md`
@@ -49,7 +49,7 @@
 ## 方案概述
 
 - 方案原则：API Key 账号走公开 OpenAI API 语义；请求体尽量原样，Header 透传必须尊重账号池、多租户和协议安全边界。
-- 数据变化：不改 schema；API Key 账号凭据只保存 `api_key` 和 `base_url` 等第一阶段必要字段，不新增 `openai_organization`、`openai_project`、`openai_beta`。
+- 数据变化：不改 schema；API Key 账号凭据只保存 `api_key` 和 `base_url` 等当前必要字段，不新增 `openai_organization`、`openai_project`、`openai_beta`。
 - 接口变化：管理 / 用户账户创建和编辑接口仍使用原 `credentials` 字段；不新增 API。
 - 前端变化：OpenAI API Key 配置区只保留 API Key 和 Base URL，撤回组织、项目和 Beta 输入项。
 - 后端变化：`buildUpstreamHeaders()` 增加 Header 过滤函数；过滤客户端组织 / 项目头，不读取账号凭据里的同类残留键。
@@ -60,7 +60,7 @@
 - [x] 复核本项目 API Key raw body 与 Header 构造。
 - [x] 复核参考项目的 Header 策略和 OpenAI provider options。
 - [x] 新增 API Key 透传统计比较文档并更新功能文档索引。
-- [x] 更新架构总览、核心功能设计和 OpenAI 一期文档。
+- [x] 更新架构总览、核心功能设计和 OpenAI 账号接入文档。
 - [x] 实现后端 Header 过滤，并撤回账号级 OpenAI Header 覆盖。
 - [x] 撤回前端 API Key 账户可选 OpenAI Header 配置。
 - [x] 新增 API Key passthrough 回归脚本和 package script。
