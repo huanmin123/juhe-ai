@@ -8,6 +8,7 @@ export interface UsageRecordCostBreakdown {
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cacheReadCostUsd?: number
+  cacheReadUsdPer1M?: number
   inputImageCostUsd?: number
   outputImageCostUsd?: number
   inputImageUsdPer1M?: number

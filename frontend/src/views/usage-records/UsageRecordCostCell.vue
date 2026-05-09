@@ -14,14 +14,6 @@
             <span class="cost-detail-value">{{ formatCost(costBreakdown.outputCostUsd) }}</span>
           </div>
           <div class="cost-detail-row">
-            <span>输入单价</span>
-            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.inputUsdPer1M) }}</span>
-          </div>
-          <div class="cost-detail-row">
-            <span>输出单价</span>
-            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.outputUsdPer1M) }}</span>
-          </div>
-          <div class="cost-detail-row">
             <span>缓存读取成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheReadCostUsd) }}</span>
           </div>
@@ -33,14 +25,6 @@
             <span>图片输出成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.outputImageCostUsd) }}</span>
           </div>
-          <div v-if="showInputImagePrice" class="cost-detail-row">
-            <span>图片输入单价</span>
-            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.inputImageUsdPer1M) }}</span>
-          </div>
-          <div v-if="showOutputImagePrice" class="cost-detail-row">
-            <span>图片输出单价</span>
-            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.outputImageUsdPer1M) }}</span>
-          </div>
           <div class="cost-detail-row">
             <span>账户计费</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.accountChargeUsd) }}</span>
@@ -48,6 +32,27 @@
           <div class="cost-detail-row">
             <span>倍率</span>
             <span class="cost-detail-value">{{ costBreakdown.multiplier }}x</span>
+          </div>
+          <div class="cost-detail-divider"></div>
+          <div class="cost-detail-row">
+            <span>输入单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.inputUsdPer1M) }}</span>
+          </div>
+          <div class="cost-detail-row">
+            <span>输出单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.outputUsdPer1M) }}</span>
+          </div>
+          <div class="cost-detail-row">
+            <span>缓存读取单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.cacheReadUsdPer1M) }}</span>
+          </div>
+          <div v-if="showInputImagePrice" class="cost-detail-row">
+            <span>图片输入单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.inputImageUsdPer1M) }}</span>
+          </div>
+          <div v-if="showOutputImagePrice" class="cost-detail-row">
+            <span>图片输出单价</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.outputImageUsdPer1M) }}</span>
           </div>
         </div>
       </template>
@@ -114,6 +119,12 @@ const showOutputImagePrice = computed(() => hasOutputImagePrice.value)
   justify-content: space-between;
   gap: 18px;
   line-height: 1.8;
+}
+
+.cost-detail-divider {
+  height: 1px;
+  margin: 6px 0;
+  background: rgb(148 163 184 / 22%);
 }
 
 .cost-detail-value {

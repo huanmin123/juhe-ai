@@ -191,10 +191,12 @@ const gpt55Breakdown = buildProviderCostBreakdown({
   model: 'gpt-5.5',
   inputTokens: 1000,
   outputTokens: 200,
+  cacheReadTokens: 300,
   inputImageTokens: 25
 })
 assert.equal(gpt55Breakdown?.inputImageCostUsd, undefined)
 assert.equal(gpt55Breakdown?.inputImageUsdPer1M, undefined)
+assert.equal(gpt55Breakdown?.cacheReadUsdPer1M, 0.5)
 
 const imageUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
   usage: {

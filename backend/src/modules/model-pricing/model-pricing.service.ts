@@ -66,6 +66,7 @@ export interface ProviderCostBreakdown {
   inputUsdPer1M?: number
   outputUsdPer1M?: number
   cacheReadCostUsd?: number
+  cacheReadUsdPer1M?: number
   inputImageCostUsd?: number
   outputImageCostUsd?: number
   inputImageUsdPer1M?: number
@@ -150,6 +151,7 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
     inputUsdPer1M: perMillion(inputPrice),
     outputUsdPer1M: perMillion(outputPrice),
     cacheReadCostUsd,
+    cacheReadUsdPer1M: perMillion(cachedInputPrice),
     inputImageCostUsd,
     outputImageCostUsd,
     inputImageUsdPer1M: perMillion(inputImagePrice),
