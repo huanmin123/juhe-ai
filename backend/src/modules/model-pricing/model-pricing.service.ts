@@ -101,13 +101,13 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
   const inputPrice = normalizePrice(pricing.input_cost_per_token)
   const outputPrice = normalizePrice(pricing.output_cost_per_token)
   const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost) ?? inputPrice
-  const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token) ?? inputPrice
-  const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token) ?? outputPrice
+  const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
+  const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
   if (inputPrice === undefined && outputPrice === undefined && cachedInputPrice === undefined && inputImagePrice === undefined && outputImagePrice === undefined) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
-  const inputImageTokens = Math.max(input.inputImageTokens ?? 0, 0)
-  const outputImageTokens = Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
+  const inputImageTokens = inputImagePrice === undefined ? 0 : Math.max(input.inputImageTokens ?? 0, 0)
+  const outputImageTokens = outputImagePrice === undefined ? 0 : Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
   const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens, 0)
   const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens, 0)
 
@@ -129,13 +129,13 @@ export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderC
   const inputPrice = normalizePrice(pricing.input_cost_per_token)
   const outputPrice = normalizePrice(pricing.output_cost_per_token)
   const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost) ?? inputPrice
-  const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token) ?? inputPrice
-  const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token) ?? outputPrice
+  const inputImagePrice = normalizePrice(pricing.input_cost_per_image_token)
+  const outputImagePrice = normalizePrice(pricing.output_cost_per_image_token)
   if (inputPrice === undefined && outputPrice === undefined && cachedInputPrice === undefined && inputImagePrice === undefined && outputImagePrice === undefined) return undefined
 
   const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
-  const inputImageTokens = Math.max(input.inputImageTokens ?? 0, 0)
-  const outputImageTokens = Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
+  const inputImageTokens = inputImagePrice === undefined ? 0 : Math.max(input.inputImageTokens ?? 0, 0)
+  const outputImageTokens = outputImagePrice === undefined ? 0 : Math.max(input.outputImageTokens ?? defaultImageOutputTokens(input, pricing), 0)
   const uncachedInputTokens = Math.max((input.inputTokens ?? 0) - cacheReadTokens - inputImageTokens, 0)
   const outputTokens = Math.max((input.outputTokens ?? 0) - outputImageTokens, 0)
   const inputCostUsd = inputPrice === undefined ? undefined : roundCost(uncachedInputTokens * inputPrice)

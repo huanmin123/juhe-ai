@@ -7,7 +7,7 @@ import {
   inspectOpenAIStreamText,
   parseOpenAIUsageFromJsonBuffer
 } from '../modules/gateway/openai-gateway-usage.js'
-import { estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
+import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
 import { usageSummaryFromAggregate } from '../storage/usage-stats-helpers.js'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
@@ -177,6 +177,25 @@ assert.equal(estimateProviderCostUsd({
   outputTokens: 200
 }), 0.0008)
 
+const gpt55ImageInputAsNormalTokensCost = estimateProviderCostUsd({
+  providerCode: 'openai',
+  model: 'gpt-5.5',
+  inputTokens: 1000,
+  outputTokens: 200,
+  inputImageTokens: 25
+})
+assert.equal(gpt55ImageInputAsNormalTokensCost, 0.011)
+
+const gpt55Breakdown = buildProviderCostBreakdown({
+  providerCode: 'openai',
+  model: 'gpt-5.5',
+  inputTokens: 1000,
+  outputTokens: 200,
+  inputImageTokens: 25
+})
+assert.equal(gpt55Breakdown?.inputImageCostUsd, undefined)
+assert.equal(gpt55Breakdown?.inputImageUsdPer1M, undefined)
+
 const imageUsage = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
   usage: {
     input_tokens: 100,
@@ -204,6 +223,18 @@ const imageCost = estimateProviderCostUsd({
   outputImageTokens: imageUsage.outputImageTokens
 })
 assert.equal(imageCost, 0.0305375)
+
+const imageBreakdown = buildProviderCostBreakdown({
+  providerCode: 'openai',
+  model: 'gpt-image-2',
+  inputTokens: imageUsage.inputTokens,
+  outputTokens: imageUsage.outputTokens,
+  cacheReadTokens: imageUsage.cacheReadTokens,
+  inputImageTokens: imageUsage.inputImageTokens,
+  outputImageTokens: imageUsage.outputImageTokens
+})
+assert.equal(imageBreakdown?.inputImageUsdPer1M, 8)
+assert.equal(imageBreakdown?.outputImageUsdPer1M, 30)
 
 const cachedUsageSummary = usageSummaryFromAggregate({
   request_count: 1,

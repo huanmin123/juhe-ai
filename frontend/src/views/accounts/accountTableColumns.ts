@@ -20,8 +20,8 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
     { title: '用量(日)', key: 'usage', width: 180 },
     { title: '代理', key: 'proxy', width: 180 },
     { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
-    sortableColumn({ title: '账户到期时间', key: 'accountExpiresAt', width: 180 }, 'accountExpiresAt', sortOrder),
     sortableColumn({ title: '最近使用时间', key: 'lastUsedAt', width: 180 }, 'lastUsedAt', sortOrder),
+    sortableColumn({ title: '账户到期时间', key: 'accountExpiresAt', width: 180 }, 'accountExpiresAt', sortOrder),
     sortableColumn({ title: '说明', dataIndex: 'notes', key: 'notes', width: 200 }, 'notes', sortOrder),
     { title: '操作', key: 'actions', width: 120, fixed: 'right' }
   )
@@ -80,8 +80,8 @@ const accountSortFields: AccountListSortField[] = [
   'systemAccount',
   'concurrency',
   'status',
-  'accountExpiresAt',
   'lastUsedAt',
+  'accountExpiresAt',
   'notes'
 ]
 

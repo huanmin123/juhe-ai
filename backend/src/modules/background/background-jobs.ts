@@ -364,7 +364,12 @@ async function currentNetworkMetrics(): Promise<NetworkMetricsSample> {
 }
 
 async function readNetworkCounterSnapshot(): Promise<NetworkCounterSnapshot | undefined> {
-  const counters = platform() === 'win32' ? await readWindowsNetworkCounters() : readProcNetworkCounters()
+  const currentPlatform = platform()
+  const counters = currentPlatform === 'win32'
+    ? await readWindowsNetworkCounters()
+    : currentPlatform === 'darwin'
+      ? await readDarwinNetworkCounters()
+      : readProcNetworkCounters()
   if (!counters) return undefined
   return { ...counters, sampledAtMs: Date.now() }
 }
@@ -410,6 +415,36 @@ if ($null -eq $tx) { $tx = 0 }
   } catch {
     return undefined
   }
+}
+
+async function readDarwinNetworkCounters(): Promise<{ rxBytes: number; txBytes: number } | undefined> {
+  try {
+    return parseDarwinNetworkCounters(await execFileText('netstat', ['-ibn'], 5000))
+  } catch {
+    return undefined
+  }
+}
+
+function parseDarwinNetworkCounters(output: string): { rxBytes: number; txBytes: number } | undefined {
+  let rxBytes = 0
+  let txBytes = 0
+
+  for (const line of output.split('\n')) {
+    const fields = line.trim().split(/\s+/)
+    if (fields.length < 10 || fields[2] === undefined || !fields[2].startsWith('<Link#')) continue
+
+    const interfaceName = fields[0]
+    if (!interfaceName || interfaceName === 'lo0' || interfaceName.endsWith('*')) continue
+
+    const rxValue = numberValue(fields[6])
+    const txValue = numberValue(fields[9])
+    if (rxValue === undefined || txValue === undefined) continue
+
+    rxBytes += rxValue
+    txBytes += txValue
+  }
+
+  return rxBytes > 0 || txBytes > 0 ? { rxBytes, txBytes } : undefined
 }
 
 function execFileText(file: string, args: string[], timeout: number): Promise<string> {

@@ -1,53 +1,53 @@
 <template>
   <span class="cost-cell-wrap">
     <span class="cost-cell">{{ formatCost(record.costUsd) }}</span>
-    <a-popover v-if="record.costBreakdown" trigger="hover" placement="right" overlay-class-name="cost-popover">
+    <a-popover v-if="costBreakdown" trigger="hover" placement="right" overlay-class-name="cost-popover">
       <template #content>
         <div class="cost-detail-panel">
           <div class="cost-detail-title">成本明细</div>
           <div class="cost-detail-row">
             <span>输入成本</span>
-            <span class="cost-detail-value">{{ formatCost(record.costBreakdown.inputCostUsd) }}</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.inputCostUsd) }}</span>
           </div>
           <div class="cost-detail-row">
             <span>输出成本</span>
-            <span class="cost-detail-value">{{ formatCost(record.costBreakdown.outputCostUsd) }}</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.outputCostUsd) }}</span>
           </div>
           <div class="cost-detail-row">
             <span>输入单价</span>
-            <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.inputUsdPer1M) }}</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.inputUsdPer1M) }}</span>
           </div>
           <div class="cost-detail-row">
             <span>输出单价</span>
-            <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.outputUsdPer1M) }}</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.outputUsdPer1M) }}</span>
           </div>
           <div class="cost-detail-row">
             <span>缓存读取成本</span>
-            <span class="cost-detail-value">{{ formatCost(record.costBreakdown.cacheReadCostUsd) }}</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheReadCostUsd) }}</span>
           </div>
-          <div v-if="record.costBreakdown.inputImageCostUsd !== undefined" class="cost-detail-row">
+          <div v-if="showInputImageCost" class="cost-detail-row">
             <span>图片输入成本</span>
-            <span class="cost-detail-value">{{ formatCost(record.costBreakdown.inputImageCostUsd) }}</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.inputImageCostUsd) }}</span>
           </div>
-          <div v-if="record.costBreakdown.outputImageCostUsd !== undefined" class="cost-detail-row">
+          <div v-if="showOutputImageCost" class="cost-detail-row">
             <span>图片输出成本</span>
-            <span class="cost-detail-value">{{ formatCost(record.costBreakdown.outputImageCostUsd) }}</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.outputImageCostUsd) }}</span>
           </div>
-          <div v-if="record.costBreakdown.inputImageUsdPer1M !== undefined" class="cost-detail-row">
+          <div v-if="showInputImagePrice" class="cost-detail-row">
             <span>图片输入单价</span>
-            <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.inputImageUsdPer1M) }}</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.inputImageUsdPer1M) }}</span>
           </div>
-          <div v-if="record.costBreakdown.outputImageUsdPer1M !== undefined" class="cost-detail-row">
+          <div v-if="showOutputImagePrice" class="cost-detail-row">
             <span>图片输出单价</span>
-            <span class="cost-detail-value">{{ formatUnitPrice(record.costBreakdown.outputImageUsdPer1M) }}</span>
+            <span class="cost-detail-value">{{ formatUnitPrice(costBreakdown.outputImageUsdPer1M) }}</span>
           </div>
           <div class="cost-detail-row">
             <span>账户计费</span>
-            <span class="cost-detail-value">{{ formatCost(record.costBreakdown.accountChargeUsd) }}</span>
+            <span class="cost-detail-value">{{ formatCost(costBreakdown.accountChargeUsd) }}</span>
           </div>
           <div class="cost-detail-row">
             <span>倍率</span>
-            <span class="cost-detail-value">{{ record.costBreakdown.multiplier }}x</span>
+            <span class="cost-detail-value">{{ costBreakdown.multiplier }}x</span>
           </div>
         </div>
       </template>
@@ -57,14 +57,23 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 
 import type { UsageRecordSummary } from '@/types/domain'
 import { formatCost, formatUnitPrice } from './usageRecordFormatters'
 
-defineProps<{
+const props = defineProps<{
   record: UsageRecordSummary
 }>()
+
+const costBreakdown = computed(() => props.record.costBreakdown)
+const hasInputImagePrice = computed(() => costBreakdown.value?.inputImageUsdPer1M !== undefined && costBreakdown.value.inputImageUsdPer1M !== costBreakdown.value.inputUsdPer1M)
+const hasOutputImagePrice = computed(() => costBreakdown.value?.outputImageUsdPer1M !== undefined && costBreakdown.value.outputImageUsdPer1M !== costBreakdown.value.outputUsdPer1M)
+const showInputImageCost = computed(() => hasInputImagePrice.value && costBreakdown.value?.inputImageCostUsd !== undefined)
+const showOutputImageCost = computed(() => hasOutputImagePrice.value && costBreakdown.value?.outputImageCostUsd !== undefined)
+const showInputImagePrice = computed(() => hasInputImagePrice.value)
+const showOutputImagePrice = computed(() => hasOutputImagePrice.value)
 </script>
 
 <style scoped>
