@@ -62,6 +62,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `runtime_logs`：保存最近 3 天普通运行日志的可检索字段和原始 JSON 行，用于管理员“日志搜索”页面。
 - `runtime_log_search`：FTS5 `trigram` 虚表，保存普通运行日志关键字段和原始 JSON，用于关键字检索。
 - `account_quality_scores`：按 `account_id` 保存账号质量缓存，包括质量分、质量状态、近 10 分钟真实网关首 token 聚合、成功率和最近真实样本时间。该表只作为调度辅助缓存，事实源仅为 `usage_records`；账号质量主动探测能力已删除，不保留重新开启的旧设置。超过 24 小时没有真实样本的质量分不参与调度。
+- `announcements`：保存平台公告，用户侧只读取最近 30 条已发布公告，管理员侧维护草稿、已发布和已下线公告。
+- `announcement_reads`：按 `announcement_id + system_account_id` 保存用户已读公告记录，支撑铃铛未读提醒跨刷新、跨浏览器保持一致。
 
 建议索引：
 
@@ -103,8 +105,11 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `audit_log_payloads(audit_log_id, part_type, sequence_index)`：审计详情按阶段和顺序读取原文。
 - `audit_log_payloads(audit_log_id, sequence_index)`：审计详情按真实捕获顺序展示完整链路片段。
 - `runtime_logs(trace_id, time, id)`：按链路 ID 快速抓取同一次请求相关运行日志。
-- `runtime_logs(time, id)`：默认读取最近日志和按时间范围检索。
+- `runtime_logs(time, id)`：默认读取最近日志。
 - `runtime_logs(level, time, id)`、`runtime_logs(event, time, id)`：按通用日志级别和事件定位问题；接口、状态码和客户端 IP 等请求维度只放在审计日志中查询。
+- `announcements(status, published_at, created_at)`：用户侧读取最近已发布公告。
+- `announcements(updated_at, created_at)`：管理员公告管理列表按最近更新排序。
+- `announcement_reads(system_account_id, read_at)`：按用户读取或排查公告已读状态。
 
 默认任务策略：
 
@@ -133,7 +138,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录并用单事务批量写入 `audit_logs`、`audit_log_attempts` 和 `audit_log_payloads`。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
 - 运行日志索引 worker 从 Pino JSONL 输出流旁路接收日志行，按 worker 队列批量写入 `runtime_logs` 和 `runtime_log_search`；索引失败只能写 `stderr`，不能再通过普通 logger 递归打日志。
-- “日志搜索”索引查询必须先使用 `traceId`、级别、事件和时间范围等通用索引条件缩小结果，关键字走 FTS5 `trigram` 虚表；列表默认展示最近 100 条并通过后端分页继续翻页。
+- “日志搜索”索引查询读取当前 SQLite 索引表，使用 `traceId`、级别和事件等通用索引条件缩小结果，关键字走 FTS5 `trigram` 虚表；列表默认展示最近 100 条并通过后端分页继续翻页。索引表保留周期由后台清理任务控制，查询接口不再提供时间范围筛选。
 - “日志搜索”的 `grep 模式` 直接扫描后端日志目录中当前保留的全部 `.log` 文件，不受索引表 3 天保留期限制，不设置查询超时，最多展示 100 行；全平台统一要求安装 `ripgrep`（`rg`），后端按文件更新时间从近到远、按文件末尾到开头的顺序返回最新匹配。
 - 审计队列是 best-effort 队列，系统重启、进程崩溃或队列溢出导致审计记录丢失可以接受；队列丢弃计数应进入运维监控。
 - 账户、分组、API Key 等列表接口只读 `usage_stats_totals` / `usage_stats_daily`，不要在列表查询里 `SUM usage_records`。
@@ -418,8 +423,9 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：进入临时不可调用前的默认短暂重试间隔。
 - `temporaryUnschedulableRetryAttempts = 3`：进入临时不可调用前的默认短暂重试次数。
 - `streamCircuitBreakerEnabled = true`：流熔断默认开启。
-- `streamRequestTimeoutSeconds = 180`：流式请求首个有效输出前的总熔断时间；上游持续发送 `response.created`、SSE 注释或其他非输出事件也不能无限延长等待，超时后网关补发 `response.failed` 并结束本次 SSE。
-- `streamIdleTimeoutSeconds = 60`、`streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
+- `streamRequestTimeoutSeconds = 180`：流式请求首段上游内容前的总熔断时间；超过该时间没有收到任何上游 chunk，网关补发 `response.failed` 并结束本次 SSE。
+- `streamIdleTimeoutSeconds = 60`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；同一个值也限制持续有 raw chunk 但没有形成完整 SSE 事件的等待时间。若流式解析器因单行或单事件过大跳过解析，后续只按 raw chunk 活动计时。
+- `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
 - `usageRecordRetentionDays = 7`：使用记录默认保留 7 天；清理时必须等统计游标已处理。

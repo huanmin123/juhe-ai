@@ -85,7 +85,7 @@
           </div>
 
           <a-alert class="setting-alert section-alert" type="info" show-icon>
-            <template #message>流式请求如果首包等待过久会自动换账号重试；单次流式响应开始输出后，超过阈值仍没有新的有效输出，则记录为流式中断。</template>
+            <template #message>流式请求如果首包等待过久会自动换账号重试；单次流式响应开始后，超过阈值仍没有任何上游新数据，则记录为流式中断。</template>
           </a-alert>
 
           <div class="settings-grid">
@@ -95,7 +95,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="输出停顿上限（秒）" extra="只作用于当前这次流式响应：首个有效输出后超过该时间没有新的有效输出，就发送失败事件并结束本次响应；心跳和非输出事件不刷新计时。">
+              <a-form-item label="输出停顿上限（秒）" extra="只作用于当前这次流式响应：收到首段上游内容后，超过该时间没有任何上游新数据，或持续有原始字节但没有形成完整 SSE 事件，就发送失败事件并结束本次响应；任意上游 chunk 仍会刷新原始数据计时。">
                 <a-input-number v-model:value="systemForm.streamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>

@@ -113,9 +113,7 @@ function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogL
       ? rawLevel as RuntimeLogLevel | 'all'
       : undefined,
     event: optionalQueryText(query.event),
-    keyword: optionalQueryText(query.keyword),
-    startedAt: optionalQueryText(query.startedAt),
-    endedAt: optionalQueryText(query.endedAt)
+    keyword: optionalQueryText(query.keyword)
   }
 }
 

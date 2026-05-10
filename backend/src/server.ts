@@ -5,6 +5,7 @@ import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
 import { accountsRouter } from './modules/accounts/accounts.routes.js'
+import { announcementsRouter } from './modules/announcements/announcements.routes.js'
 import { forceSelfAccessScope, requireAdmin, requireAuth } from './modules/auth/auth.middleware.js'
 import { authRouter } from './modules/auth/auth.routes.js'
 import { startBackgroundWorkerSupervisor } from './modules/background/background-worker-supervisor.js'
@@ -131,6 +132,7 @@ app.get('/api/settings/public', (_req, res) => {
 })
 
 app.use('/api', requireAuth)
+app.use('/api/announcements', announcementsRouter)
 app.use('/api/my-accounts', forceSelfAccessScope, accountsRouter)
 app.use('/api/my-groups', forceSelfAccessScope, groupsRouter)
 app.use('/api/my-api-keys', forceSelfAccessScope, apiKeysRouter)

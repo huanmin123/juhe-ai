@@ -54,9 +54,21 @@ export function orderOpenAIAccountsBySessionAffinity(
   if (boundIndex <= 0) {
     return accounts
   }
+  const boundAccount = accounts[boundIndex]
+  let targetIndex = boundIndex
+  for (let index = boundIndex - 1; index >= 0; index -= 1) {
+    if (!canSessionAffinityPromoteOver(boundAccount, accounts[index])) {
+      break
+    }
+    targetIndex = index
+  }
+  if (targetIndex === boundIndex) {
+    return accounts
+  }
   return [
-    accounts[boundIndex],
-    ...accounts.slice(0, boundIndex),
+    ...accounts.slice(0, targetIndex),
+    boundAccount,
+    ...accounts.slice(targetIndex, boundIndex),
     ...accounts.slice(boundIndex + 1)
   ]
 }
@@ -125,6 +137,20 @@ function valueAtPath(value: unknown, path: string[]): unknown {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function canSessionAffinityPromoteOver(boundAccount: OpenAIAccountSecret, currentAccount: OpenAIAccountSecret): boolean {
+  if (boundAccount.superPriorityEnabled !== currentAccount.superPriorityEnabled) {
+    return false
+  }
+  if (boundAccount.priority !== currentAccount.priority) {
+    return false
+  }
+  return accountQualityRank(boundAccount) <= accountQualityRank(currentAccount)
+}
+
+function accountQualityRank(account: OpenAIAccountSecret): number {
+  return typeof account.qualityScore === 'number' ? account.qualityScore : Number.POSITIVE_INFINITY
 }
 
 const sessionHeaderNames = [

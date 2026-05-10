@@ -632,6 +632,30 @@ export function applySchema(database: DatabaseSync): void {
       FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS announcements (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      level TEXT NOT NULL DEFAULT 'info',
+      status TEXT NOT NULL DEFAULT 'draft',
+      created_by TEXT NOT NULL,
+      updated_by TEXT,
+      published_at TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (created_by) REFERENCES system_accounts(id),
+      FOREIGN KEY (updated_by) REFERENCES system_accounts(id)
+    );
+
+    CREATE TABLE IF NOT EXISTS announcement_reads (
+      announcement_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      read_at TEXT NOT NULL,
+      PRIMARY KEY (announcement_id, system_account_id),
+      FOREIGN KEY (announcement_id) REFERENCES announcements(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_status ON accounts(provider_code, status);
     CREATE INDEX IF NOT EXISTS idx_api_keys_group ON api_keys(group_id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_created_at ON usage_records(created_at);
@@ -715,6 +739,9 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_error_hourly_hour ON usage_error_hourly(system_account_id, stat_hour, error_code);
     CREATE INDEX IF NOT EXISTS idx_usage_error_hourly_stat_hour ON usage_error_hourly(stat_hour);
     CREATE INDEX IF NOT EXISTS idx_system_metrics_samples_sampled_at ON system_metrics_samples(sampled_at);
+    CREATE INDEX IF NOT EXISTS idx_announcements_public ON announcements(status, published_at DESC, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
 }
 

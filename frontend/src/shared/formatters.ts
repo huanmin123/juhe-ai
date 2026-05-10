@@ -1,10 +1,20 @@
 import dayjs, { type Dayjs } from 'dayjs'
+import relativeTime from 'dayjs/plugin/relativeTime'
+
+dayjs.extend(relativeTime)
 
 export function formatDateTime(value?: string): string {
   if (!value) return '-'
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', { hour12: false })
+}
+
+export function formatRelativeDateTime(value?: string): string {
+  if (!value) return '-'
+  const parsed = dayjs(value)
+  if (!parsed.isValid()) return value
+  return `${parsed.fromNow()} ${parsed.format('YYYY-MM-DD HH:mm')}`
 }
 
 export function formatNumber(value?: number): string {

@@ -1,5 +1,6 @@
 import type { Response } from 'express'
 
+import { getRequestLogger } from '../../shared/request-context.js'
 import { readStreamChunkWithAbort, UpstreamRequestAbortedError } from './openai-gateway-upstream.js'
 
 export interface NonStreamPipeResult {
@@ -19,6 +20,12 @@ export interface LimitedBodyReadResult {
   truncated: boolean
   readBytes: number
   firstByteMs?: number
+}
+
+export interface ResponseWriteResult {
+  bytes: number
+  backpressure: boolean
+  drainWaitMs?: number
 }
 
 export const nonStreamResponseCaptureBytes = 2 * 1024 * 1024
@@ -143,14 +150,36 @@ export async function readUpstreamBodyLimited(
   }
 }
 
-export async function writeResponseChunk(res: Response, buffer: Buffer): Promise<void> {
+export async function writeResponseChunk(res: Response, buffer: Buffer): Promise<ResponseWriteResult> {
   if (res.writableEnded || res.destroyed) {
     throw new UpstreamRequestAbortedError('请求已取消', true)
   }
   if (res.write(buffer)) {
-    return
+    return { bytes: buffer.length, backpressure: false }
   }
-  await waitForResponseDrain(res)
+  const drainStartedAt = Date.now()
+  getRequestLogger().warn({
+    event: 'gateway_response_backpressure_started',
+    bytes: buffer.length,
+    writableLength: res.writableLength,
+    writableHighWaterMark: res.writableHighWaterMark,
+    headersSent: res.headersSent,
+    writableEnded: res.writableEnded,
+    destroyed: res.destroyed
+  }, '下游响应写入触发 backpressure，开始等待 drain')
+  await waitForResponseDrain(res, drainStartedAt)
+  const drainWaitMs = Date.now() - drainStartedAt
+  getRequestLogger().info({
+    event: 'gateway_response_backpressure_drained',
+    bytes: buffer.length,
+    drainWaitMs,
+    writableLength: res.writableLength,
+    writableHighWaterMark: res.writableHighWaterMark,
+    headersSent: res.headersSent,
+    writableEnded: res.writableEnded,
+    destroyed: res.destroyed
+  }, '下游响应 drain 已恢复')
+  return { bytes: buffer.length, backpressure: true, drainWaitMs }
 }
 
 export function endResponse(res: Response): void {
@@ -159,13 +188,24 @@ export function endResponse(res: Response): void {
   }
 }
 
-export async function closeAsyncIterator(iterator: AsyncIterator<Uint8Array>): Promise<void> {
+export async function closeAsyncIterator(iterator: AsyncIterator<Uint8Array>, timeoutMs = 1000): Promise<void> {
   if (!iterator.return) {
     return
   }
+  let timer: NodeJS.Timeout | undefined
   try {
-    await iterator.return()
+    await Promise.race([
+      Promise.resolve(iterator.return()),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, Math.max(1, timeoutMs))
+        timer.unref()
+      })
+    ])
   } catch {
+  } finally {
+    if (timer) {
+      clearTimeout(timer)
+    }
   }
 }
 
@@ -271,9 +311,22 @@ class RollingBufferCapture {
   }
 }
 
-function waitForResponseDrain(res: Response): Promise<void> {
+function waitForResponseDrain(res: Response, startedAt: number): Promise<void> {
   return new Promise((resolve, reject) => {
+    const waitingLogTimer = setInterval(() => {
+      getRequestLogger().warn({
+        event: 'gateway_response_drain_waiting',
+        waitMs: Date.now() - startedAt,
+        writableLength: res.writableLength,
+        writableHighWaterMark: res.writableHighWaterMark,
+        headersSent: res.headersSent,
+        writableEnded: res.writableEnded,
+        destroyed: res.destroyed
+      }, '下游响应仍在等待 drain')
+    }, 10_000)
+    waitingLogTimer.unref()
     const cleanup = () => {
+      clearInterval(waitingLogTimer)
       res.off('drain', onDrain)
       res.off('close', onClose)
       res.off('error', onError)

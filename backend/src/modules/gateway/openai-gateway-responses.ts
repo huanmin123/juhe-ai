@@ -34,8 +34,16 @@ export function writeGatewayStreamFailureEvent(res: Response, message: string): 
   return Buffer.from(`event: response.failed\ndata: ${JSON.stringify(payload)}\n\n`, 'utf8')
 }
 
-function gatewayStreamFailureCode(message: string): string {
-  return message.toLowerCase().includes('idle timeout')
+export function gatewayStreamFailureCode(message: string): string {
+  const normalized = message.toLowerCase()
+  return normalized.includes('idle timeout')
+    || normalized.includes('timeout')
+    || message.includes('超时')
+    || message.includes('无数据')
+    || message.includes('未返回首段数据')
+    || message.includes('未返回任何新数据')
+    || message.includes('未返回新的有效输出')
+    || message.includes('未形成完整 SSE 事件')
     ? 'upstream_stream_idle_timeout'
     : 'upstream_stream_interrupted'
 }

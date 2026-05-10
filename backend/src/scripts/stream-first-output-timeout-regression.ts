@@ -45,6 +45,7 @@ type RawBodyRequest = Request & { rawBody?: Buffer }
 const app = express()
 app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
+let scenarioCredentialIndex = 0
 
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
@@ -58,29 +59,16 @@ async function main(): Promise<void> {
     })
     gatewayCache.clearGatewayRuntimeCache()
 
-    upstreamServer = createSlowNonOutputStreamUpstream()
+    upstreamServer = createStreamTimeoutRegressionUpstream()
     await listen(upstreamServer)
     const upstreamBaseUrl = `http://127.0.0.1:${serverAddress(upstreamServer).port}/v1`
 
-    const group = repositories.createGroup({ name: '首输出超时回归分组', providerCode: 'openai', enabled: true })
-    const account = repositories.createAccount({
-      providerCode: 'openai',
-      name: '首输出超时回归账户',
-      type: 'api_key',
-      credentials: {
-        api_key: 'sk-stream-first-output-timeout',
-        base_url: upstreamBaseUrl
-      },
-      groupId: group.id,
-      status: 'active',
-      schedulable: true
-    })
-    const apiKey = apiKeyRepository.createApiKeyRecord({
-      name: '首输出超时回归 Key',
-      groupId: group.id,
-      status: 'active'
-    })
-    assert(apiKey.key, '临时 API Key 未返回明文密钥')
+    const noFirstChunkCredential = createScenarioCredential(upstreamBaseUrl, '首段等待')
+    const firstChunkIdleCredential = createScenarioCredential(upstreamBaseUrl, '首段后空闲')
+    const fragmentedSseEventCredential = createScenarioCredential(upstreamBaseUrl, '完整事件等待')
+    const parserSkippedCredential = createScenarioCredential(upstreamBaseUrl, '解析跳过后原样转发')
+    const missingTerminalCredential = createScenarioCredential(upstreamBaseUrl, '缺少终止事件')
+    const heartbeatCredential = createScenarioCredential(upstreamBaseUrl, '心跳刷新')
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -90,39 +78,68 @@ async function main(): Promise<void> {
     const response = await fetch(`${baseUrl}/v1/responses`, {
       method: 'POST',
       headers: {
-        authorization: `Bearer ${apiKey.key}`,
+        authorization: `Bearer ${noFirstChunkCredential.apiKey.key}`,
         'content-type': 'application/json',
         accept: 'text/event-stream'
       },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        input: 'hi',
+        input: 'no-first-chunk',
         stream: true
       })
     })
     assert.equal(response.status, 200)
     assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
-
     const streamText = await response.text()
     const durationMs = Date.now() - startedAt
-    assert(streamText.includes('response.created'), `客户端未收到上游首个非输出事件：${streamText}`)
     assert(streamText.includes('response.failed'), `客户端未收到网关失败事件：${streamText}`)
-    assert(streamText.includes('未返回首个有效输出'), `失败事件未说明首输出超时：${streamText}`)
-    assert(durationMs < 15000, `首输出超时没有及时结束，耗时 ${durationMs}ms`)
+    assert(streamText.includes('未返回首段数据'), `失败事件未说明首段等待超时：${streamText}`)
+    assert(streamText.includes('"code":"upstream_stream_idle_timeout"'), `首段等待超时错误码不正确：${streamText}`)
+    assert(durationMs < 15000, `首段等待超时没有及时结束，耗时 ${durationMs}ms`)
 
     usageRecordQueue.flushAllUsageRecordQueue()
-    await waitForFailedUsageRecord(account.id)
 
-    const outputThenHeartbeatResult = await requestOutputThenHeartbeatTimeout(baseUrl, apiKey.key)
-    assert(outputThenHeartbeatResult.streamText.includes('response.output_text.delta'), `客户端未收到首个输出事件：${outputThenHeartbeatResult.streamText}`)
-    assert(outputThenHeartbeatResult.streamText.includes('response.failed'), `客户端未收到输出后空闲失败事件：${outputThenHeartbeatResult.streamText}`)
-    assert(outputThenHeartbeatResult.streamText.includes('未返回新的有效输出'), `失败事件未说明有效输出空闲超时：${outputThenHeartbeatResult.streamText}`)
+    const firstChunkThenIdleResult = await requestFirstChunkThenIdleTimeout(baseUrl, firstChunkIdleCredential.apiKey.key)
+    assert(firstChunkThenIdleResult.streamText.includes('response.created'), `客户端未收到首段上游事件：${firstChunkThenIdleResult.streamText}`)
+    assert(firstChunkThenIdleResult.streamText.includes('response.failed'), `客户端未收到首段后空闲失败事件：${firstChunkThenIdleResult.streamText}`)
+    assert(firstChunkThenIdleResult.streamText.includes('未返回任何新数据'), `失败事件未说明流式无新数据超时：${firstChunkThenIdleResult.streamText}`)
+    assert(firstChunkThenIdleResult.streamText.includes('"code":"upstream_stream_idle_timeout"'), `首段后空闲错误码不正确：${firstChunkThenIdleResult.streamText}`)
     assert(
-      outputThenHeartbeatResult.durationMs >= 900 && outputThenHeartbeatResult.durationMs < 5000,
-      `输出后空闲超时没有按 1s 左右及时结束，耗时 ${outputThenHeartbeatResult.durationMs}ms`
+      firstChunkThenIdleResult.durationMs >= 900 && firstChunkThenIdleResult.durationMs < 5000,
+      `首段后空闲超时没有按 1s 左右及时结束，耗时 ${firstChunkThenIdleResult.durationMs}ms`
     )
 
-    console.log('流式输出超时回归通过：首输出前和输出后仅心跳场景都会返回 response.failed')
+    const fragmentedSseEventResult = await requestFragmentedSseEventTimeout(baseUrl, fragmentedSseEventCredential.apiKey.key)
+    assert(fragmentedSseEventResult.streamText.includes('response.failed'), `客户端未收到完整 SSE 事件等待失败事件：${fragmentedSseEventResult.streamText}`)
+    assert(fragmentedSseEventResult.streamText.includes('未形成完整 SSE 事件'), `失败事件未说明完整 SSE 事件等待超时：${fragmentedSseEventResult.streamText}`)
+    assert(fragmentedSseEventResult.streamText.includes('"code":"upstream_stream_idle_timeout"'), `完整 SSE 事件等待错误码不正确：${fragmentedSseEventResult.streamText}`)
+    assert(
+      fragmentedSseEventResult.durationMs >= 900 && fragmentedSseEventResult.durationMs < 5000,
+      `完整 SSE 事件等待超时没有按 1s 左右及时结束，耗时 ${fragmentedSseEventResult.durationMs}ms`
+    )
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertFailedUsageRecordErrorCode(fragmentedSseEventCredential.account.id, 'upstream_stream_idle_timeout')
+
+    const parserSkippedResult = await requestParserSkippedRawForward(baseUrl, parserSkippedCredential.apiKey.key)
+    assert(!parserSkippedResult.streamText.includes('response.failed'), '解析跳过后仍有原始上游数据持续到来时不应补发失败事件')
+    assert(
+      parserSkippedResult.durationMs >= 1200 && parserSkippedResult.durationMs < 5000,
+      `解析跳过后原样转发没有持续到上游 EOF，耗时 ${parserSkippedResult.durationMs}ms`
+    )
+
+    const missingTerminalResult = await requestMissingTerminalEof(baseUrl, missingTerminalCredential.apiKey.key)
+    assert(missingTerminalResult.streamText.includes('response.created'), `客户端未收到缺少终止事件场景的首段上游事件：${missingTerminalResult.streamText}`)
+    assert(missingTerminalResult.streamText.includes('response.failed'), `缺少终止事件场景未收到网关失败事件：${missingTerminalResult.streamText}`)
+    assert(missingTerminalResult.streamText.includes('OpenAI 终止事件前结束'), `缺少终止事件场景失败原因不正确：${missingTerminalResult.streamText}`)
+    assert(missingTerminalResult.streamText.includes('"code":"upstream_stream_interrupted"'), `缺少终止事件场景错误码不正确：${missingTerminalResult.streamText}`)
+
+    const heartbeatThenCompletedResult = await requestHeartbeatThenCompleted(baseUrl, heartbeatCredential.apiKey.key)
+    assert(heartbeatThenCompletedResult.streamText.includes('response.created'), `客户端未收到首段上游事件：${heartbeatThenCompletedResult.streamText}`)
+    assert(heartbeatThenCompletedResult.streamText.includes('response.completed'), `客户端未收到完成事件：${heartbeatThenCompletedResult.streamText}`)
+    assert(!heartbeatThenCompletedResult.streamText.includes('response.failed'), `上游持续心跳时不应触发失败事件：${heartbeatThenCompletedResult.streamText}`)
+    assert(heartbeatThenCompletedResult.durationMs < 5000, `持续心跳后完成没有及时结束，耗时 ${heartbeatThenCompletedResult.durationMs}ms`)
+
+    console.log('流式超时回归通过：首段等待、首段后无新数据、完整 SSE 事件等待、解析跳过后原样转发、缺少终止事件、心跳刷新空闲计时场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -136,7 +153,34 @@ async function main(): Promise<void> {
   }
 }
 
-function createSlowNonOutputStreamUpstream(): http.Server {
+function createScenarioCredential(upstreamBaseUrl: string, label: string): {
+  account: ReturnType<typeof repositories.createAccount>
+  apiKey: ReturnType<typeof apiKeyRepository.createApiKeyRecord>
+} {
+  const group = repositories.createGroup({ name: `流式超时回归分组-${label}`, providerCode: 'openai', enabled: true })
+  scenarioCredentialIndex += 1
+  const account = repositories.createAccount({
+    providerCode: 'openai',
+    name: `流式超时回归账户-${label}`,
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-stream-timeout-regression-${scenarioCredentialIndex}`,
+      base_url: upstreamBaseUrl
+    },
+    groupId: group.id,
+    status: 'active',
+    schedulable: true
+  })
+  const apiKey = apiKeyRepository.createApiKeyRecord({
+    name: `流式超时回归 Key-${label}`,
+    groupId: group.id,
+    status: 'active'
+  })
+  assert(apiKey.key, '临时 API Key 未返回明文密钥')
+  return { account, apiKey }
+}
+
+function createStreamTimeoutRegressionUpstream(): http.Server {
   return http.createServer((req, res) => {
     if (req.url !== '/v1/responses') {
       res.writeHead(200, { 'content-type': 'application/json' })
@@ -147,7 +191,7 @@ function createSlowNonOutputStreamUpstream(): http.Server {
     const bodyChunks: Buffer[] = []
     req.on('data', (chunk: Buffer) => bodyChunks.push(chunk))
     req.on('end', () => {
-      let scenario = 'no-output'
+      let scenario = 'no-first-chunk'
       try {
         const body = JSON.parse(Buffer.concat(bodyChunks).toString('utf8')) as { input?: unknown }
         scenario = typeof body.input === 'string' ? body.input : scenario
@@ -159,22 +203,74 @@ function createSlowNonOutputStreamUpstream(): http.Server {
         'cache-control': 'no-cache',
         connection: 'keep-alive'
       })
+      res.flushHeaders()
+      if (scenario === 'no-first-chunk') {
+        return
+      }
+      if (scenario === 'fragmented-sse-event-timeout') {
+        res.write('event: response.created\n')
+        res.write('data: {"type":"response.created"')
+        const chunks = [
+          ',"response":{"id":"resp_regression"',
+          ',"status":"in_progress"',
+          ',"metadata":{"fragment":1}',
+          ',"metadata":{"fragment":2}'
+        ]
+        let index = 0
+        const interval = setInterval(() => {
+          res.write(chunks[index % chunks.length])
+          index += 1
+        }, 200)
+        res.on('close', () => {
+          clearInterval(interval)
+        })
+        return
+      }
+      if (scenario === 'parser-skipped-raw-forward') {
+        res.write('data: ' + 'x'.repeat(270 * 1024))
+        let written = 0
+        const interval = setInterval(() => {
+          written += 1
+          res.write('x'.repeat(1024))
+          if (written >= 10) {
+            clearInterval(interval)
+            res.end()
+          }
+        }, 150)
+        res.on('close', () => {
+          clearInterval(interval)
+        })
+        return
+      }
       res.write('event: response.created\n')
       res.write('data: {"type":"response.created","response":{"id":"resp_regression","status":"in_progress"}}\n\n')
-      if (scenario === 'output-then-heartbeat') {
-        res.write('event: response.output_text.delta\n')
-        res.write('data: {"type":"response.output_text.delta","delta":"hi"}\n\n')
+      if (scenario === 'missing-terminal-eof') {
+        res.end()
+        return
       }
-
-      const interval = setInterval(() => {
-        res.write(': keep-alive\n\n')
-      }, 100)
-      res.on('close', () => clearInterval(interval))
+      if (scenario === 'first-chunk-then-idle') {
+        return
+      }
+      if (scenario === 'heartbeat-then-completed') {
+        const interval = setInterval(() => {
+          res.write(': keep-alive\n\n')
+        }, 100)
+        const doneTimer = setTimeout(() => {
+          clearInterval(interval)
+          res.write('event: response.completed\n')
+          res.write('data: {"type":"response.completed","response":{"id":"resp_regression","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}\n\n')
+          res.end()
+        }, 650)
+        res.on('close', () => {
+          clearInterval(interval)
+          clearTimeout(doneTimer)
+        })
+      }
     })
   })
 }
 
-async function requestOutputThenHeartbeatTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
     streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
@@ -193,11 +289,149 @@ async function requestOutputThenHeartbeatTimeout(baseUrl: string, apiKey: string
     },
     body: JSON.stringify({
       model: 'gpt-4o-mini',
-      input: 'output-then-heartbeat',
+      input: 'first-chunk-then-idle',
       stream: true
     })
   })
-  assert.equal(response.status, 200)
+  if (response.status !== 200) {
+    throw new Error(`首段后空闲场景状态码异常：${response.status} ${await response.text()}`)
+  }
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  const streamText = await response.text()
+  return {
+    streamText,
+    durationMs: Date.now() - startedAt
+  }
+}
+
+async function requestFragmentedSseEventTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 1,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'fragmented-sse-event-timeout',
+      stream: true
+    })
+  })
+  if (response.status !== 200) {
+    throw new Error(`完整 SSE 事件等待场景状态码异常：${response.status} ${await response.text()}`)
+  }
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  const streamText = await response.text()
+  return {
+    streamText,
+    durationMs: Date.now() - startedAt
+  }
+}
+
+async function requestParserSkippedRawForward(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 1,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'parser-skipped-raw-forward',
+      stream: true
+    })
+  })
+  if (response.status !== 200) {
+    throw new Error(`解析跳过后原样转发场景状态码异常：${response.status} ${await response.text()}`)
+  }
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  const streamText = await response.text()
+  return {
+    streamText,
+    durationMs: Date.now() - startedAt
+  }
+}
+
+async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 1,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'missing-terminal-eof',
+      stream: true
+    })
+  })
+  if (response.status !== 200) {
+    throw new Error(`缺少终止事件场景状态码异常：${response.status} ${await response.text()}`)
+  }
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  const startedAt = Date.now()
+  const streamText = await response.text()
+  return {
+    streamText,
+    durationMs: Date.now() - startedAt
+  }
+}
+
+async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 1,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'heartbeat-then-completed',
+      stream: true
+    })
+  })
+  if (response.status !== 200) {
+    throw new Error(`心跳刷新场景状态码异常：${response.status} ${await response.text()}`)
+  }
   assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
   const streamText = await response.text()
   return {
@@ -222,20 +456,11 @@ function captureGatewayRawBody(req: RawBodyRequest, _res: ExpressResponse, next:
   next()
 }
 
-async function waitForFailedUsageRecord(accountId: string): Promise<void> {
-  const startedAt = Date.now()
-  while (Date.now() - startedAt < 5000) {
-    const records = repositories.listUsageRecords(undefined, { result: 'failed', page: 1, pageSize: 20 })
-    if (records.items.some((record) => (
-      record.accountId === accountId
-      && record.success === false
-      && record.errorMessage?.includes('首个有效输出')
-    ))) {
-      return
-    }
-    await sleep(100)
-  }
-  throw new Error('未找到首输出超时失败使用记录')
+function assertFailedUsageRecordErrorCode(accountId: string, errorCode: string): void {
+  const records = repositories.listUsageRecords(undefined, { result: 'failed', page: 1, pageSize: 50 })
+  const record = records.items.find((item) => item.accountId === accountId && item.success === false)
+  assert(record, `未找到账号 ${accountId} 的失败使用记录`)
+  assert.equal(record.errorCode, errorCode, `失败使用记录错误码不正确：${record.errorCode}`)
 }
 
 function listen(server: http.Server): Promise<void> {
@@ -264,12 +489,8 @@ async function closeServer(server: http.Server | undefined): Promise<void> {
   })
 }
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolvePromise) => setTimeout(resolvePromise, ms))
-}
-
 main().catch((error) => {
-  console.error('\n流式首输出超时回归失败')
+  console.error('\n流式超时回归失败')
   console.error(error instanceof Error ? error.message : error)
   process.exitCode = 1
 })

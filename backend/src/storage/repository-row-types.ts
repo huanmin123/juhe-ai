@@ -6,6 +6,8 @@ import type {
   ResourceAuthorizationResourceType,
   ResourceAuthorizationSourceStatus,
   ResourceAuthorizationSourceType,
+  AnnouncementLevel,
+  AnnouncementStatus,
   SystemTeamMemberStatus,
   SystemTeamStatus
 } from '../domain/types.js'
@@ -124,6 +126,25 @@ export interface TeamResourceAuthorizationGrantRow {
   revoked_by: string | null
   revoked_at: string | null
   updated_at: string
+}
+
+export interface AnnouncementRow {
+  id: string
+  title: string
+  content: string
+  level: AnnouncementLevel
+  status: AnnouncementStatus
+  created_by: string
+  updated_by: string | null
+  published_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface AnnouncementReadRow {
+  announcement_id: string
+  system_account_id: string
+  read_at: string
 }
 
 export type AccountListRow = AccountRow & {

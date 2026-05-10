@@ -30,7 +30,10 @@
         <button class="link-button trace-cell" type="button" @click="$emit('trace', record.traceId)">{{ record.traceId ?? '-' }}</button>
       </template>
       <template v-else-if="column.key === 'event'">
-        <span :class="record.event ? 'mono-cell compact-cell' : 'muted-cell'">{{ record.event ?? '-' }}</span>
+        <a-tooltip v-if="record.event" :title="record.event">
+          <span class="compact-cell">{{ eventText(record.event) }}</span>
+        </a-tooltip>
+        <span v-else class="muted-cell">-</span>
       </template>
       <template v-else-if="column.key === 'message'">
         <span :class="record.errorMessage ? 'error-message-cell' : 'message-cell'">{{ messageText(record) }}</span>
@@ -54,7 +57,7 @@
           </div>
           <div class="mobile-list-meta-item">
             <span>事件</span>
-            <strong>{{ record.event ?? '-' }}</strong>
+            <strong>{{ eventText(record.event) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
             <span>消息</span>
@@ -78,7 +81,7 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { formatDateTime } from '@/shared/formatters'
 import type { RuntimeLogGrepItem, RuntimeLogSummary } from '@/types/domain'
-import { levelColor, levelText } from './runtimeLogFormatters'
+import { eventText, levelColor, levelText } from './runtimeLogFormatters'
 import { runtimeLogColumns } from './runtimeLogTableColumns'
 
 type RuntimeLogListRecord = RuntimeLogSummary | RuntimeLogGrepItem
@@ -133,9 +136,9 @@ function messageText(record: RuntimeLogListRecord): string {
 
 function cardTitle(record: RuntimeLogListRecord): string {
   if (props.messageMode === 'grep' && 'line' in record) {
-    return record.event || record.message || record.errorMessage || record.line || record.id
+    return (record.event ? eventText(record.event) : '') || record.message || record.errorMessage || record.line || record.id
   }
-  return record.event || record.message || record.errorMessage || record.id
+  return (record.event ? eventText(record.event) : '') || record.message || record.errorMessage || record.id
 }
 </script>
 

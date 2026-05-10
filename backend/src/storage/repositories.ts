@@ -61,6 +61,18 @@ export class DefaultGroupReadonlyError extends Error {
 
 export type { AccountUsageSummary, SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
 export {
+  createAnnouncement,
+  deleteAnnouncement,
+  listAnnouncements,
+  listPublicAnnouncements,
+  markPublicAnnouncementsRead,
+  publishAnnouncement,
+  unpublishAnnouncement,
+  updateAnnouncement,
+  type AnnouncementReadResult,
+  type AnnouncementInput
+} from './announcements.repository.js'
+export {
   createApiKeyRecord,
   deleteApiKey,
   listApiKeys,

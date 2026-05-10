@@ -199,6 +199,16 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/announcements',
+    component: () => import('@/views/announcements/AnnouncementsView.vue'),
+    meta: {
+      title: '公告管理',
+      description: '维护面向所有登录用户展示的平台公告，支持重要性标记、发布和下线。',
+      viewScope: 'admin',
+      roles: ['admin']
+    }
+  },
+  {
     path: '/system-accounts',
     component: () => import('@/views/system-accounts/SystemAccountsView.vue'),
     meta: {

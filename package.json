@@ -18,7 +18,8 @@
     "test:large-response": "pnpm --filter juhe-ai-backend test:large-response",
     "test:stream-first-output-timeout": "pnpm --filter juhe-ai-backend test:stream-first-output-timeout",
     "test:db-service-worker-local": "pnpm --filter juhe-ai-backend test:db-service-worker-local",
-    "test:disabled-account-state-guard": "pnpm --filter juhe-ai-backend test:disabled-account-state-guard"
+    "test:disabled-account-state-guard": "pnpm --filter juhe-ai-backend test:disabled-account-state-guard",
+    "test:session-affinity": "pnpm --filter juhe-ai-backend test:session-affinity"
   },
   "engines": {
     "node": ">=22.5.0",

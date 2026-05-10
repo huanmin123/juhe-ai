@@ -12,14 +12,17 @@
     />
     <a-layout class="main-shell">
       <AppHeader
+        :announcement-bell-shaking="hasNewAnnouncements"
         :can-switch-menu-mode="canSwitchMenuMode"
         :description="currentPageDescription"
+        :has-new-announcements="hasNewAnnouncements"
         :is-mobile="isMobile"
         :switch-menu-mode-label="switchMenuModeLabel"
         :title="currentPageTitle"
         :user-avatar-text="userAvatarText"
         :user-display-name="userDisplayName"
         :user-role-label="userRoleLabel"
+        @open-announcements="openAnnouncements"
         @open-sidebar="sidebarOpen = true"
         @user-menu-click="handleUserMenuClick"
       />
@@ -32,6 +35,11 @@
         </router-view>
       </a-layout-content>
     </a-layout>
+    <AnnouncementModal
+      v-model:open="announcementModalOpen"
+      :announcements="announcements"
+      :loading="announcementsLoading"
+    />
     <ChangePasswordModal v-model:open="passwordModalOpen" :form="passwordForm" :saving="passwordSaving" @ok="handleChangePassword" />
   </a-layout>
 </template>
@@ -39,6 +47,7 @@
 <script setup lang="ts">
 import {
   ApartmentOutlined,
+  BellOutlined,
   GlobalOutlined,
   BarChartOutlined,
   FundOutlined,
@@ -57,6 +66,7 @@ import type { ItemType } from 'ant-design-vue'
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
+import { api } from '@/api/client'
 import { authState, changePassword, logout } from '@/composables/useAuth'
 import { appBrand, loadAppBrandSettings } from '@/composables/useAppBrand'
 import {
@@ -68,6 +78,8 @@ import {
   type AppMenuMode
 } from '@/composables/useMenuMode'
 import { menuRoutes } from '@/router'
+import type { AnnouncementSummary } from '@/types/domain'
+import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
 import AppSidebar from './AppSidebar.vue'
 import ChangePasswordModal from './ChangePasswordModal.vue'
@@ -81,6 +93,10 @@ const passwordModalOpen = ref(false)
 const passwordSaving = ref(false)
 const passwordForm = reactive({ newPassword: '', confirmPassword: '' })
 const keepAliveMax = 18
+const announcementModalOpen = ref(false)
+const announcementsLoading = ref(false)
+const announcements = ref<AnnouncementSummary[]>([])
+let announcementsRefreshTimer: number | undefined
 
 const selectedKeys = computed(() => [route.path])
 const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
@@ -102,6 +118,7 @@ const userAvatarText = computed(() => {
   }
   return /^[\x00-\x7F]+$/.test(name) ? name.slice(0, 2).toUpperCase() : name.slice(0, 1)
 })
+const hasNewAnnouncements = computed(() => announcements.value.some((announcement) => !announcement.readAt))
 
 const ApiKeyMenuIcon = () =>
   h('span', { class: 'anticon menu-api-key-icon', role: 'img', 'aria-hidden': 'true' }, [
@@ -148,6 +165,7 @@ const menuIconMap = {
   '/usage-records': HistoryOutlined,
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,
+  '/announcements': BellOutlined,
   '/settings': SettingOutlined,
   '/system-accounts': TeamOutlined
 }
@@ -192,6 +210,50 @@ async function handleUserMenuClick(event: Parameters<NonNullable<MenuProps['onCl
   if (event.key === 'logout') {
     await logout()
     await router.replace('/login')
+  }
+}
+
+async function openAnnouncements() {
+  announcementModalOpen.value = true
+  const visibleAnnouncements = await loadAnnouncements()
+  await markAnnouncementsViewed(visibleAnnouncements)
+}
+
+async function refreshAnnouncementsInModal() {
+  const visibleAnnouncements = await loadAnnouncements()
+  if (announcementModalOpen.value) {
+    await markAnnouncementsViewed(visibleAnnouncements)
+  }
+}
+
+async function loadAnnouncements(): Promise<AnnouncementSummary[]> {
+  if (!currentUser.value) return announcements.value
+  announcementsLoading.value = true
+  try {
+    const nextAnnouncements = await api.announcements.publicList({ limit: 30 })
+    announcements.value = nextAnnouncements
+    return nextAnnouncements
+  } catch (error) {
+    console.error(error)
+    message.error('加载公告失败')
+    return announcements.value
+  } finally {
+    announcementsLoading.value = false
+  }
+}
+
+async function markAnnouncementsViewed(visibleAnnouncements = announcements.value) {
+  const unreadIds = visibleAnnouncements.filter((announcement) => !announcement.readAt).map((announcement) => announcement.id)
+  if (!unreadIds.length) return
+  try {
+    const result = await api.announcements.markRead({ announcementIds: unreadIds })
+    const readIds = new Set(unreadIds)
+    announcements.value = announcements.value.map((announcement) => readIds.has(announcement.id)
+      ? { ...announcement, readAt: result.readAt }
+      : announcement)
+  } catch (error) {
+    console.error(error)
+    message.error('记录公告已读失败')
   }
 }
 
@@ -243,10 +305,22 @@ onMounted(() => {
   loadAppBrandSettings().catch((error) => {
     console.error(error)
   })
+  loadAnnouncements().catch((error) => {
+    console.error(error)
+  })
+  announcementsRefreshTimer = window.setInterval(() => {
+    const refreshTask = announcementModalOpen.value ? refreshAnnouncementsInModal() : loadAnnouncements()
+    refreshTask.catch((error) => {
+      console.error(error)
+    })
+  }, 60000)
   window.addEventListener('resize', handleResize, { passive: true })
 })
 
 onBeforeUnmount(() => {
+  if (announcementsRefreshTimer) {
+    window.clearInterval(announcementsRefreshTimer)
+  }
   window.removeEventListener('resize', handleResize)
 })
 
@@ -262,6 +336,11 @@ watch(
 watch(
   currentUser,
   (user) => {
+    if (user) {
+      void loadAnnouncements()
+    } else {
+      announcements.value = []
+    }
     if (route.meta.viewScope === 'admin' || route.meta.viewScope === 'self') {
       setMenuModeFromRoute(user, route.meta.viewScope)
       return

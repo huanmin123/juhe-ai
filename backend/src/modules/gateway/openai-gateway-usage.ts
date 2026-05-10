@@ -52,11 +52,25 @@ export interface OpenAIStreamInspection {
   failedReceived: boolean
   outputReceived: boolean
   outputEventCount: number
+  eventCount: number
+  eventTypeCounts: Record<string, number>
+  lastEventType?: string
+  recentEventTypes: string[]
   skipped: boolean
   skipReason?: string
   errorCode?: string
   errorMessage?: string
   usage: ParsedUsage
+}
+
+export interface OpenAIStreamEventSummary {
+  type: string
+  dataBytes: number
+  terminal: boolean
+  failed: boolean
+  output: boolean
+  usage: boolean
+  parseError?: boolean
 }
 
 export function extractBearerToken(authorization?: string): string | undefined {
@@ -202,6 +216,9 @@ export class OpenAIStreamInspector {
     failedReceived: false,
     outputReceived: false,
     outputEventCount: 0,
+    eventCount: 0,
+    eventTypeCounts: {},
+    recentEventTypes: [],
     skipped: false,
     usage: emptyUsage()
   }
@@ -209,6 +226,7 @@ export class OpenAIStreamInspector {
   private dataLines: string[] = []
   private dataBytes = 0
   private pendingLine = ''
+  private pendingEventSummaries: OpenAIStreamEventSummary[] = []
 
   pushChunk(chunk: Buffer | Uint8Array | string): OpenAIStreamInspection {
     const text = typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')
@@ -249,8 +267,16 @@ export class OpenAIStreamInspector {
   snapshot(): OpenAIStreamInspection {
     return {
       ...this.inspection,
+      eventTypeCounts: { ...this.inspection.eventTypeCounts },
+      recentEventTypes: [...this.inspection.recentEventTypes],
       usage: { ...this.inspection.usage }
     }
+  }
+
+  drainEventSummaries(): OpenAIStreamEventSummary[] {
+    const summaries = this.pendingEventSummaries
+    this.pendingEventSummaries = []
+    return summaries.map((event) => ({ ...event }))
   }
 
   private processLine(line: string): void {
@@ -278,6 +304,7 @@ export class OpenAIStreamInspector {
       return
     }
     const currentEventName = this.eventName
+    const currentDataBytes = this.dataBytes
     const data = this.dataLines.join('\n').trim()
     this.eventName = ''
     this.dataLines = []
@@ -285,20 +312,35 @@ export class OpenAIStreamInspector {
     if (!data) return
     if (data === '[DONE]') {
       this.inspection.terminalReceived = true
+      this.recordEventSummary({
+        type: '[DONE]',
+        dataBytes: currentDataBytes,
+        terminal: true,
+        failed: false,
+        output: false,
+        usage: false
+      })
       return
     }
     try {
       const event = JSON.parse(data) as Record<string, unknown>
       const eventType = typeof event.type === 'string' ? event.type : currentEventName
+      let output = false
+      let terminal = false
+      let failed = false
       if (openAIStreamEventHasOutput(event, eventType)) {
         this.inspection.outputReceived = true
         this.inspection.outputEventCount += 1
+        output = true
       }
       if (eventType === 'response.completed' || eventType === 'response.done') {
         this.inspection.terminalReceived = true
+        terminal = true
       } else if (eventType === 'response.failed') {
         this.inspection.terminalReceived = true
         this.inspection.failedReceived = true
+        terminal = true
+        failed = true
         const error = typeof event.response === 'object' && event.response !== null
           && typeof (event.response as Record<string, unknown>).error === 'object'
           && (event.response as Record<string, unknown>).error !== null
@@ -310,10 +352,28 @@ export class OpenAIStreamInspector {
         this.inspection.errorMessage = typeof error?.message === 'string' ? error.message : this.inspection.errorMessage
       }
       const nextUsage = extractEventUsage(event)
+      const usage = hasAnyUsageValue(nextUsage)
       if (hasAnyUsageValue(nextUsage)) {
         this.inspection.usage = mergeUsage(this.inspection.usage, nextUsage)
       }
+      this.recordEventSummary({
+        type: eventType || currentEventName || 'message',
+        dataBytes: currentDataBytes,
+        terminal,
+        failed,
+        output,
+        usage
+      })
     } catch {
+      this.recordEventSummary({
+        type: currentEventName || 'message',
+        dataBytes: currentDataBytes,
+        terminal: false,
+        failed: false,
+        output: false,
+        usage: false,
+        parseError: true
+      })
     }
   }
 
@@ -326,10 +386,22 @@ export class OpenAIStreamInspector {
     this.inspection.skipReason = reason
     return this.snapshot()
   }
+
+  private recordEventSummary(summary: OpenAIStreamEventSummary): void {
+    this.inspection.eventCount += 1
+    this.inspection.lastEventType = summary.type
+    this.inspection.eventTypeCounts[summary.type] = (this.inspection.eventTypeCounts[summary.type] ?? 0) + 1
+    this.inspection.recentEventTypes.push(summary.type)
+    if (this.inspection.recentEventTypes.length > streamInspectorRecentEventLimit) {
+      this.inspection.recentEventTypes = this.inspection.recentEventTypes.slice(-streamInspectorRecentEventLimit)
+    }
+    this.pendingEventSummaries.push(summary)
+  }
 }
 
 const streamInspectorMaxLineBytes = 256 * 1024
 const streamInspectorMaxEventBytes = 512 * 1024
+const streamInspectorRecentEventLimit = 20
 
 export function isOpenAIStreamServerOverloadedErrorCode(code?: string): boolean {
   return code === 'server_is_overloaded' || code === 'slow_down'

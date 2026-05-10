@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { Router, type Request, type Response } from 'express'
 
 import { tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
-import { bindRequestContextFields, getTraceId } from '../../shared/request-context.js'
+import { bindRequestContextFields, getRequestLogger, getTraceId } from '../../shared/request-context.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   type GatewayApiKeyRow,
@@ -393,6 +393,7 @@ export async function handleOpenAIGatewayRequest(
         res.setHeader('content-type', 'text/event-stream; charset=utf-8')
       }
       if (shouldHandleAsStream) {
+        setGatewayStreamResponseHeaders(res)
         flushResponseHeadersIfSupported(res)
       }
       persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, 'gateway')
@@ -501,6 +502,7 @@ export async function handleOpenAIGatewayRequest(
           responseBody: streamResult.auditUpstreamBody,
           success: streamResult.completed && upstreamResponse.ok,
           errorPhase: streamResult.completed ? undefined : 'stream',
+          errorCode: streamResult.completed ? undefined : streamResult.errorCode,
           errorMessage: streamResult.completed ? undefined : streamResult.message
         })
         if (!streamResult.completed) {
@@ -519,6 +521,7 @@ export async function handleOpenAIGatewayRequest(
             firstTokenMs: streamResult.firstTokenMs,
             startedAt,
             usage: streamResult.usage,
+            errorCode: streamResult.errorCode,
             requestSnapshot,
             responseSnapshot: buildUsageResponseSnapshot({
               upstreamUrl,
@@ -537,6 +540,7 @@ export async function handleOpenAIGatewayRequest(
             responseBody: streamResult.auditResponseBody,
             responsePartType: 'gateway_response',
             errorPhase: 'stream',
+            errorCode: streamResult.errorCode,
             errorMessage: streamResult.message,
             accountId: account.id,
             firstTokenMs: streamResult.firstTokenMs
@@ -974,6 +978,13 @@ function flushResponseHeadersIfSupported(res: Response): void {
   }
 }
 
+function setGatewayStreamResponseHeaders(res: Response): void {
+  if (!res.hasHeader('cache-control')) {
+    res.setHeader('cache-control', 'no-cache, no-transform')
+  }
+  res.setHeader('x-accel-buffering', 'no')
+}
+
 class UpstreamAttemptError extends Error {
   constructor(message: string, readonly lastAttempt?: UpstreamAttempt) {
     super(message)
@@ -1073,15 +1084,45 @@ async function fetchFirstAvailableUpstream(
             body
           })
           try {
+            const socketTimeoutMs = upstreamSocketTimeoutMs(req, settings, account)
+            const requestTimeoutMs = upstreamRequestTimeoutMs(req, settings, account)
+            getRequestLogger().info({
+              event: 'gateway_upstream_request_started',
+              accountId: account.id,
+              accountType: account.type,
+              accountStatus: account.status,
+              upstreamUrl,
+              attemptIndex,
+              auditAttemptIndex,
+              method: req.method,
+              stream: isEffectiveOpenAIStreamRequest(req, account),
+              requestBodyBytes: typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : body?.byteLength,
+              socketTimeoutMs,
+              requestTimeoutMs,
+              proxyEnabled: Boolean(account.proxyUrl)
+            }, '网关开始请求上游')
             const response = await requestUpstream(upstreamUrl, {
               method: req.method,
               headers,
               body,
               proxyUrl: account.proxyUrl,
-              timeoutMs: upstreamSocketTimeoutMs(req, settings, account),
-              requestTimeoutMs: upstreamRequestTimeoutMs(req, settings, account),
+              timeoutMs: socketTimeoutMs,
+              requestTimeoutMs,
               signal
             })
+            getRequestLogger().info({
+              event: 'gateway_upstream_response_received',
+              accountId: account.id,
+              accountType: account.type,
+              upstreamUrl,
+              attemptIndex,
+              auditAttemptIndex,
+              statusCode: response.status,
+              ok: response.ok,
+              contentType: response.headers.get('content-type'),
+              elapsedMs: Date.now() - attemptStartedAt,
+              stream: isEffectiveOpenAIStreamRequest(req, account)
+            }, '网关收到上游响应头')
             lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
             if (response.ok) {
               rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
@@ -1096,7 +1137,7 @@ async function fetchFirstAvailableUpstream(
             const responseBody = responseBodyRead.body
             const responseBodyText = responseBodyRead.diagnosticBodyText
             if (responseBodyRead.truncated) {
-              logger.warn({
+              getRequestLogger().warn({
                 event: 'gateway_upstream_retry_error_body_truncated',
                 accountId: account.id,
                 statusCode: response.status,
@@ -1104,6 +1145,19 @@ async function fetchFirstAvailableUpstream(
                 upstreamUrl
               }, '上游失败响应体超过网关捕获上限，已截断用于重试诊断')
             }
+            getRequestLogger().warn({
+              event: 'gateway_upstream_response_failed',
+              accountId: account.id,
+              accountType: account.type,
+              upstreamUrl,
+              attemptIndex,
+              auditAttemptIndex,
+              statusCode: response.status,
+              contentType: response.headers.get('content-type'),
+              elapsedMs: Date.now() - attemptStartedAt,
+              responseBodyBytes: responseBody.byteLength,
+              responseBodyTruncated: responseBodyRead.truncated
+            }, '上游返回非成功状态')
             lastAttempt = {
               ...lastAttempt,
               responseHeaders: headersToObject(response.headers),
@@ -1161,6 +1215,16 @@ async function fetchFirstAvailableUpstream(
               throw error
             }
             const message = error instanceof Error ? error.message : '请求失败'
+            getRequestLogger().warn(errorLogFields(error, {
+              event: 'gateway_upstream_request_failed',
+              accountId: account.id,
+              accountType: account.type,
+              upstreamUrl,
+              attemptIndex,
+              auditAttemptIndex,
+              elapsedMs: Date.now() - attemptStartedAt,
+              stream: isEffectiveOpenAIStreamRequest(req, account)
+            }), '网关请求上游失败')
             lastAttempt = {
               accountId: account.id,
               accountName: account.name,

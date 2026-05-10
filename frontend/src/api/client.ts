@@ -8,6 +8,9 @@ import type {
   AccountTrafficMigrationSourceStatus,
   AccountAuthorizationUsageOverview,
   AccountUsageStatsOverview,
+  AnnouncementLevel,
+  AnnouncementStatus,
+  AnnouncementSummary,
   AuditLogDetail,
   AuditLogListResult,
   AuditLogPayloadDetail,
@@ -141,8 +144,6 @@ export interface RuntimeLogListParams {
   level?: RuntimeLogLevel | 'all'
   event?: string
   keyword?: string
-  startedAt?: string
-  endedAt?: string
   limit?: number
 }
 
@@ -156,6 +157,22 @@ export interface AuthorizationListParams extends ListParams {
 }
 
 export type AuthorizationScopeParams = ListParams
+
+export interface AnnouncementListParams {
+  limit?: number
+}
+
+export interface AnnouncementPayload {
+  title: string
+  content: string
+  level?: AnnouncementLevel
+  status?: AnnouncementStatus
+}
+
+export interface AnnouncementReadResult {
+  readAt: string
+  count: number
+}
 
 const http = axios.create({
   baseURL: normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined),
@@ -191,6 +208,16 @@ export const api = {
   },
   authorizationOptions: {
     granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/authorization-options/grantee-accounts'))
+  },
+  announcements: {
+    publicList: (params?: AnnouncementListParams) => unwrap<AnnouncementSummary[]>(http.get('/announcements/public', { params })),
+    markRead: (payload: { announcementIds: string[] }) => unwrap<AnnouncementReadResult>(http.post('/announcements/public/read', payload)),
+    list: () => unwrap<AnnouncementSummary[]>(http.get('/announcements')),
+    create: (payload: AnnouncementPayload) => unwrap<AnnouncementSummary>(http.post('/announcements', payload)),
+    update: (id: string, payload: Partial<AnnouncementPayload>) => unwrap<AnnouncementSummary>(http.patch(`/announcements/${id}`, payload)),
+    publish: (id: string) => unwrap<AnnouncementSummary>(http.post(`/announcements/${id}/publish`)),
+    unpublish: (id: string) => unwrap<AnnouncementSummary>(http.post(`/announcements/${id}/unpublish`)),
+    delete: (id: string) => http.delete(`/announcements/${id}`)
   },
   myAuthorizationOptions: {
     granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/my-authorization-options/grantee-accounts'))

@@ -1,5 +1,6 @@
 export * from './domain/base'
 export * from './domain/identity'
+export * from './domain/announcements'
 export * from './domain/providers'
 export * from './domain/usage-stats'
 export * from './domain/accounts'

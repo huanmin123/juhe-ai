@@ -27,8 +27,6 @@ export interface RuntimeLogListOptions {
   level?: RuntimeLogLevel | 'all'
   event?: string
   keyword?: string
-  startedAt?: string
-  endedAt?: string
 }
 
 export interface RuntimeLogListResult {
@@ -242,14 +240,8 @@ export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit =
 }
 
 function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: string; params: RuntimeLogFilterValue[] } {
-  const clauses: string[] = ['rl.time >= ?']
-  const params: RuntimeLogFilterValue[] = [normalizeStartedAt(options.startedAt)]
-  const endedAt = normalizeIsoDateTime(options.endedAt)
-
-  if (endedAt) {
-    clauses.push('rl.time <= ?')
-    params.push(endedAt)
-  }
+  const clauses: string[] = []
+  const params: RuntimeLogFilterValue[] = []
 
   pushExactTextFilter(clauses, params, 'rl.trace_id', options.traceId)
   pushExactTextFilter(clauses, params, 'rl.event', options.event)
@@ -261,7 +253,7 @@ function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: strin
   }
 
   return {
-    clause: `WHERE ${clauses.join(' AND ')}`,
+    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params
   }
 }
@@ -271,20 +263,6 @@ function pushExactTextFilter(clauses: string[], params: RuntimeLogFilterValue[],
   if (!text) return
   clauses.push(`${column} = ?`)
   params.push(text)
-}
-
-function normalizeStartedAt(value?: string): string {
-  const parsed = normalizeIsoDateTime(value)
-  const cutoff = retentionCutoffIso()
-  if (!parsed) return cutoff
-  return parsed > cutoff ? parsed : cutoff
-}
-
-function normalizeIsoDateTime(value?: string): string | undefined {
-  const text = value?.trim()
-  if (!text) return undefined
-  const timestamp = Date.parse(text)
-  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : undefined
 }
 
 function buildRuntimeLogKeywordFilter(value?: string): { clause: string; params: string[] } | undefined {

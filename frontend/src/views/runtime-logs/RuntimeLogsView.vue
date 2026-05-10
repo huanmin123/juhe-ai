@@ -20,6 +20,7 @@
             class="toolbar-select runtime-event-filter responsive-list-inline-filter"
             placeholder="事件"
             :options="eventOptions"
+            :filter-option="filterEventOption"
             @change="applyIndexFilters"
           />
           <a-input v-model:value="keywordFilter" allow-clear class="toolbar-select log-keyword-filter responsive-list-inline-filter" placeholder="关键字" @press-enter="applyIndexFilters" />
@@ -33,13 +34,10 @@
               <a-select v-model:value="levelFilter" :options="levelOptions" />
             </a-form-item>
             <a-form-item label="事件">
-              <a-select v-model:value="eventFilter" allow-clear show-search :options="eventOptions" placeholder="选择或输入事件" />
+              <a-select v-model:value="eventFilter" allow-clear show-search :options="eventOptions" :filter-option="filterEventOption" placeholder="选择或输入事件" />
             </a-form-item>
             <a-form-item label="关键字">
               <a-input v-model:value="keywordFilter" allow-clear placeholder="错误摘要或日志内容" />
-            </a-form-item>
-            <a-form-item label="时间范围">
-              <a-range-picker v-model:value="timeRangeFilter" show-time class="runtime-range-picker" />
             </a-form-item>
           </a-form>
         </template>
@@ -113,7 +111,8 @@
           <a-descriptions-item label="时间">{{ formatDateTime(selectedLog.time) }}</a-descriptions-item>
           <a-descriptions-item label="级别">{{ levelText(selectedLog.level) }}</a-descriptions-item>
           <a-descriptions-item label="traceId" :span="2">{{ selectedLog.traceId ?? '-' }}</a-descriptions-item>
-          <a-descriptions-item label="事件">{{ selectedLog.event ?? '-' }}</a-descriptions-item>
+          <a-descriptions-item label="事件">{{ eventText(selectedLog.event) }}</a-descriptions-item>
+          <a-descriptions-item v-if="selectedLog.event" label="事件原值">{{ selectedLog.event }}</a-descriptions-item>
           <a-descriptions-item label="消息" :span="2">{{ selectedLog.errorMessage || selectedLog.message || '-' }}</a-descriptions-item>
         </a-descriptions>
         <pre class="raw-block">{{ prettyRawJson(selectedLog.rawJson) }}</pre>
@@ -126,7 +125,8 @@
           <a-descriptions-item label="时间">{{ formatDateTime(selectedGrepItem.time) }}</a-descriptions-item>
           <a-descriptions-item label="级别">{{ levelText(selectedGrepItem.level) }}</a-descriptions-item>
           <a-descriptions-item label="traceId" :span="2">{{ selectedGrepItem.traceId ?? '-' }}</a-descriptions-item>
-          <a-descriptions-item label="事件">{{ selectedGrepItem.event ?? '-' }}</a-descriptions-item>
+          <a-descriptions-item label="事件">{{ eventText(selectedGrepItem.event) }}</a-descriptions-item>
+          <a-descriptions-item v-if="selectedGrepItem.event" label="事件原值">{{ selectedGrepItem.event }}</a-descriptions-item>
           <a-descriptions-item label="消息">{{ selectedGrepItem.errorMessage || selectedGrepItem.message || '-' }}</a-descriptions-item>
           <a-descriptions-item label="文件">{{ selectedGrepItem.fileName || selectedGrepItem.file }}</a-descriptions-item>
           <a-descriptions-item label="位置">{{ grepLinePositionText(selectedGrepItem) }}</a-descriptions-item>
@@ -139,8 +139,6 @@
 </template>
 
 <script setup lang="ts">
-import type { Dayjs } from 'dayjs'
-import dayjs from 'dayjs'
 import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
@@ -150,6 +148,7 @@ import { formatDateTime } from '@/shared/formatters'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import {
+  eventText,
   grepLinePositionText,
   levelText,
   prettyRawJson,
@@ -169,25 +168,22 @@ type RuntimeLogsPageState = {
   keywordFilter: string
   levelFilter: RuntimeLogLevel | 'all'
   pagination: { current: number; pageSize: number }
-  timeRangeFilter?: [string, string]
   traceIdFilter: string
   viewMode: RuntimeLogViewMode
 }
 const pageSize = 100
 const defaultRuntimeLogsPageState = (): RuntimeLogsPageState => {
-  const now = dayjs()
   return {
     eventFilter: undefined,
     grepKeywordFilter: '',
     keywordFilter: '',
     levelFilter: 'all',
     pagination: { current: 1, pageSize },
-    timeRangeFilter: [now.subtract(24, 'hour').toISOString(), now.toISOString()],
     traceIdFilter: '',
     viewMode: 'index'
   }
 }
-const pageStateCache = usePageStateCache<RuntimeLogsPageState>(undefined, defaultRuntimeLogsPageState)
+const pageStateCache = usePageStateCache<RuntimeLogsPageState>(undefined, defaultRuntimeLogsPageState, { version: 3 })
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
@@ -207,13 +203,12 @@ const grepKeywordFilter = ref(initialPageState.grepKeywordFilter)
 const levelFilter = ref<RuntimeLogLevel | 'all'>(initialPageState.levelFilter)
 const eventFilter = ref<string | undefined>(initialPageState.eventFilter)
 const keywordFilter = ref(initialPageState.keywordFilter)
-const timeRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseTimeRangeFilter(initialPageState.timeRangeFilter))
 const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 
 const viewModeOptions = runtimeLogViewModeOptions
 const levelOptions = runtimeLogLevelOptions
 
-const eventOptions = computed(() => (facets.value?.events ?? []).map((event) => ({ label: event, value: event })))
+const eventOptions = computed(() => (facets.value?.events ?? []).map((event) => ({ label: eventText(event), value: event, rawEvent: event })))
 const tablePagination = computed(() => ({
   current: pagination.current,
   pageSize: pagination.pageSize,
@@ -230,7 +225,6 @@ const activeFilterCount = computed(() => {
   if (levelFilter.value !== 'all') count += 1
   if (eventFilter.value) count += 1
   if (keywordFilter.value.trim()) count += 1
-  if (timeRangeFilter.value?.length) count += 1
   return count
 })
 
@@ -259,7 +253,6 @@ function resetFilters(): void {
   levelFilter.value = defaults.levelFilter
   eventFilter.value = defaults.eventFilter
   keywordFilter.value = defaults.keywordFilter
-  timeRangeFilter.value = parseTimeRangeFilter(defaults.timeRangeFilter)
   pagination.current = defaults.pagination.current
   pagination.pageSize = defaults.pagination.pageSize
   pageStateCache.clear()
@@ -273,21 +266,26 @@ function resetGrepSearch(): void {
   pageStateCache.scheduleWrite(snapshotPageState)
 }
 
+function filterEventOption(input: string, option?: { label?: string; rawEvent?: string; value?: string }): boolean {
+  const keyword = input.trim().toLowerCase()
+  if (!keyword) return true
+  return [option?.label, option?.rawEvent, option?.value].some((item) => String(item ?? '').toLowerCase().includes(keyword))
+}
+
 async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Promise<void> {
   if (!options.quiet) {
     loading.value = true
   }
   try {
+    const traceId = traceIdFilter.value.trim()
     const [result, nextFacets] = await Promise.all([
       api.runtimeLogs.list({
         page: pagination.current,
         pageSize: pagination.pageSize,
-        traceId: traceIdFilter.value || undefined,
+        traceId: traceId || undefined,
         level: levelFilter.value,
         event: eventFilter.value || undefined,
-        keyword: keywordFilter.value || undefined,
-        startedAt: timeRangeFilter.value?.[0]?.toISOString(),
-        endedAt: timeRangeFilter.value?.[1]?.toISOString()
+        keyword: keywordFilter.value || undefined
       }),
       api.runtimeLogs.facets()
     ])
@@ -386,14 +384,6 @@ function searchTrace(traceId?: string): void {
   void loadData()
 }
 
-function parseTimeRangeFilter(value?: [string, string]): [Dayjs, Dayjs] | undefined {
-  if (!value?.[0] || !value[1]) return undefined
-  const start = dayjs(value[0])
-  const end = dayjs(value[1])
-  if (!start.isValid() || !end.isValid()) return undefined
-  return [start, end]
-}
-
 function snapshotPageState(): RuntimeLogsPageState {
   return {
     eventFilter: eventFilter.value,
@@ -401,16 +391,9 @@ function snapshotPageState(): RuntimeLogsPageState {
     keywordFilter: keywordFilter.value,
     levelFilter: levelFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
-    timeRangeFilter: serializeTimeRangeFilter(),
     traceIdFilter: traceIdFilter.value,
     viewMode: viewMode.value
   }
-}
-
-function serializeTimeRangeFilter(): [string, string] | undefined {
-  const range = timeRangeFilter.value
-  if (!range?.[0] || !range[1]) return undefined
-  return [range[0].toISOString(), range[1].toISOString()]
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
@@ -441,10 +424,6 @@ onMounted(() => {
 
 .log-keyword-filter {
   width: 240px;
-}
-
-.runtime-range-picker {
-  width: 100%;
 }
 
 .grep-alert {
