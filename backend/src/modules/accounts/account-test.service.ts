@@ -1,11 +1,10 @@
 import { EventEmitter } from 'node:events'
-import { randomUUID } from 'node:crypto'
 import type { IncomingHttpHeaders } from 'node:http'
 import type { Request, Response } from 'express'
 
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
-import { withRequestContext, type RequestContext } from '../../shared/request-context.js'
+import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
   findOpenAIAccountForGroup,
   type RecentOpenAIRequestShape,
@@ -60,7 +59,7 @@ export async function testOpenAIAccount(
     const resolved = resolveAccountTestCandidate(account, { groupId: stringValue(input.groupId) })
     const request = createGatewayTestRequest(requestUrl, requestBody, requestBodyText, account.type === 'oauth', input.signal)
     const response = new MemoryGatewayResponse(startedAt)
-    const traceId = `acctest_${Date.now()}_${randomUUID()}`
+    const traceId = createTraceId()
     const context: RequestContext = {
       traceId,
       startedAt,
@@ -70,7 +69,7 @@ export async function testOpenAIAccount(
       clientIp: request.ip,
       systemAccountId: resolved.systemAccountId,
       groupId: resolved.groupId,
-      logger: resolvedLogger()
+      logger: resolvedLogger(traceId)
     }
 
     await withRequestContext(context, () => withRequestAuthContext(undefined, () => handleOpenAIGatewayRequest(request, response.asResponse(), {
@@ -548,6 +547,6 @@ function stringValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
 }
 
-function resolvedLogger(): RequestContext['logger'] {
-  return logger.child({ source: 'account_test' })
+function resolvedLogger(traceId: string): RequestContext['logger'] {
+  return logger.child({ source: 'account_test', traceId })
 }

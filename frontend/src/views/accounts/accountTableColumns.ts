@@ -15,7 +15,7 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
   }
   baseColumns.push(
     sortableColumn({ title: '并发数', key: 'concurrency', width: 100, align: 'center' }, 'concurrency', sortOrder),
-    sortableColumn({ title: '状态', key: 'status', width: 190 }, 'status', sortOrder),
+    sortableColumn({ title: '状态', key: 'status', width: 220 }, 'status', sortOrder),
     sortableColumn({ title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 }, 'priority', sortOrder),
     { title: '用量(日)', key: 'usage', width: 180 },
     { title: '代理', key: 'proxy', width: 180 },
@@ -73,6 +73,7 @@ function accountSortMultiple(field: AccountListSortField): number {
 const accountSortFields: AccountListSortField[] = [
   'priority',
   'superPriority',
+  'fallback',
   'qualityScore',
   'name',
   'type',
@@ -92,7 +93,7 @@ export function tableColumnKey(column: { key?: unknown; dataIndex?: unknown }): 
 }
 
 export function accountTableScrollX(isManagementView: boolean): number {
-  return (isManagementView ? 2340 : 2160) + accountSelectionColumnWidth
+  return (isManagementView ? 2370 : 2190) + accountSelectionColumnWidth
 }
 
 export function accountTableScrollY(): string {

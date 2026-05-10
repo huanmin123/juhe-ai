@@ -5,6 +5,7 @@ import { badRequest, ok } from '../../shared/http.js'
 import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccountsPage, listGroups, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
@@ -14,13 +15,14 @@ export const accountsRouter = Router()
 
 const accountCreateSchema = z.object({
   providerCode: z.string().min(1).optional(),
-  name: z.string().min(1),
-  type: z.string().min(1),
+  name: z.string().trim().min(1),
+  type: z.string().trim().min(1),
   credentials: z.record(z.unknown()).optional(),
   status: z.enum(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
   superPriorityEnabled: z.boolean().optional(),
+  fallbackEnabled: z.boolean().optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   schedulable: z.boolean().optional(),
@@ -47,6 +49,7 @@ const accountTrafficMigrationSchema = z.object({
 const accountListSortFields = new Set<AccountListSortField>([
   'priority',
   'superPriority',
+  'fallback',
   'qualityScore',
   'name',
   'type',
@@ -112,7 +115,17 @@ function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | u
   return text === 'all' || text === 'enabled' || text === 'disabled' || text === 'cooling' ? text : undefined
 }
 
-accountsRouter.post('/', (req, res) => {
+accountsRouter.post('/', mutationGuard({
+  operationKey: 'accounts.create',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    providerCode: normalizedText(bodyField(req, 'providerCode')) || 'openai',
+    type: normalizedText(bodyField(req, 'type')),
+    name: normalizedText(bodyField(req, 'name')),
+    credential: accountCredentialFingerprint(bodyField(req, 'credentials'))
+  })
+}), (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -194,7 +207,8 @@ accountsRouter.post('/', (req, res) => {
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '账户参数无效'))
+    const message = error instanceof Error ? error.message : '账户参数无效'
+    res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
   }
 })
 
@@ -382,6 +396,7 @@ accountsRouter.patch('/:id', (req, res) => {
               concurrencyLimit: '并发限制',
               priority: '优先级',
               superPriorityEnabled: '超级优先',
+              fallbackEnabled: '降级备用',
               proxyProfileId: '代理',
               errorPolicyId: '错误策略',
               schedulable: '参与调度',
@@ -414,7 +429,8 @@ accountsRouter.patch('/:id', (req, res) => {
       res.status(404).json({ message: '账户不存在' })
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '更新账户失败'))
+    const message = error instanceof Error ? error.message : '更新账户失败'
+    res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
   }
 })
 
@@ -522,3 +538,20 @@ accountsRouter.delete('/:id', (req, res) => {
   }
   res.status(204).send()
 })
+
+function accountCredentialFingerprint(credentials: unknown): string {
+  if (typeof credentials !== 'object' || credentials === null || Array.isArray(credentials)) {
+    return ''
+  }
+  const record = credentials as Record<string, unknown>
+  return sensitiveFingerprint(
+    record.apiKey
+      ?? record.api_key
+      ?? record.refreshToken
+      ?? record.refresh_token
+      ?? record.email
+      ?? record.accountId
+      ?? record.account_id
+      ?? ''
+  )
+}

@@ -284,7 +284,7 @@ function accountEnabledGroupId(accountId: string, systemAccountId: string): stri
       WHERE account_id = ?
         AND system_account_id = ?
         AND enabled = 1
-      ORDER BY updated_at DESC
+      ORDER BY updated_at DESC, group_id ASC, account_id ASC
       LIMIT 1
     `)
     .get(accountId, systemAccountId) as unknown as { group_id?: string } | undefined
@@ -303,7 +303,7 @@ function accountGroupBinding(accountId: string, systemAccountId: string): { grou
       WHERE group_accounts.account_id = ?
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-      ORDER BY group_accounts.updated_at DESC
+      ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
       LIMIT 1
     `)
     .get(accountId, systemAccountId) as unknown as { group_id?: string; group_name?: string; account_authorization_id?: string | null } | undefined
@@ -410,6 +410,7 @@ function disableExpiredAccounts(access?: AccessScope): void {
       SET status = 'disabled',
           schedulable = 0,
           super_priority_enabled = 0,
+          fallback_enabled = 0,
           cooldown_until = NULL,
           last_error_message = ?,
           updated_at = ?
@@ -478,6 +479,14 @@ function effectiveSuperPriorityEnabled(status: AccountStatus, value: unknown): b
   return status === 'active' && normalizeSuperPriorityInput(value, false)
 }
 
+function normalizeFallbackInput(value: unknown, fallback: boolean): boolean {
+  return normalizeSuperPriorityInput(value, fallback)
+}
+
+function effectiveFallbackEnabled(status: AccountStatus, value: unknown): boolean {
+  return status === 'active' && normalizeFallbackInput(value, false)
+}
+
 function usageScope(rowKey: string, systemAccountId: string, scopeId: string): UsageSummaryScopeRequest {
   return { rowKey, systemAccountId, scopeId }
 }
@@ -530,6 +539,10 @@ function runDelete(sql: string, id: string): boolean {
   return result.changes > 0
 }
 
+function normalizedEntityName(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+}
+
 function accountFingerprint(providerCode: string, type: string, baseUrl: string, secret: string): string {
   void providerCode
   void type
@@ -545,6 +558,44 @@ function isDuplicateAccountCredentialError(error: unknown): boolean {
 
 function throwDuplicateAccountCredentialError(): never {
   throw new DuplicateAccountCredentialError()
+}
+
+function isDuplicateAccountNameError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.message.includes('idx_accounts_owner_provider_name_unique_lower')
+}
+
+function assertAccountNameAvailable(systemAccountId: string, providerCode: string, name: string, excludeId?: string): void {
+  const params: string[] = [systemAccountId, providerCode, name]
+  const excludeClause = excludeId ? ' AND id <> ?' : ''
+  if (excludeId) {
+    params.push(excludeId)
+  }
+  const row = getDatabase()
+    .prepare(`SELECT id FROM accounts WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
+    .get(...params) as { id?: string } | undefined
+  if (row?.id) {
+    throw new Error(`同一供应商下账户名称已存在：${name}`)
+  }
+}
+
+function isDuplicateGroupNameError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.message.includes('idx_groups_owner_provider_name_unique_lower')
+}
+
+function assertGroupNameAvailable(systemAccountId: string, providerCode: string, name: string, excludeId?: string): void {
+  const params: string[] = [systemAccountId, providerCode, name]
+  const excludeClause = excludeId ? ' AND id <> ?' : ''
+  if (excludeId) {
+    params.push(excludeId)
+  }
+  const row = getDatabase()
+    .prepare(`SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
+    .get(...params) as { id?: string } | undefined
+  if (row?.id) {
+    throw new Error(`同一供应商下分组名称已存在：${name}`)
+  }
 }
 
 function defaultTemporaryUnschedulableMinutes(): number {
@@ -636,6 +687,7 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       currentConcurrency: isAuthorizedView ? 0 : (currentConcurrencyByAccount.get(row.id) ?? 0),
       priority: isAuthorizedView ? 0 : row.priority,
       superPriorityEnabled: !isAuthorizedView && row.status === 'active' && row.super_priority_enabled === 1,
+      fallbackEnabled: !isAuthorizedView && row.status === 'active' && row.fallback_enabled === 1,
       qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
       qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
       qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
@@ -743,7 +795,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
         AND cooldown_until IS NOT NULL
         AND cooldown_until <= ?
         AND (account_expires_at IS NULL OR account_expires_at > ?)
-      ORDER BY cooldown_until ASC, priority ASC
+      ORDER BY cooldown_until ASC, priority ASC, created_at ASC, id ASC
       LIMIT ?
     `)
     .all(nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
@@ -767,6 +819,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
       priority: row.priority,
       superPriorityEnabled: row.status === 'active' && row.super_priority_enabled === 1,
+      fallbackEnabled: row.status === 'active' && row.fallback_enabled === 1,
       proxyProfileId: row.proxy_profile_id ?? undefined,
       passthroughEnabled: row.passthrough_enabled === 1,
       errorPolicyId: row.error_policy_id ?? undefined,
@@ -790,7 +843,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
 export function createAccount(input: Record<string, unknown>, access?: AccessScope): AccountSummary {
   const now = nowIso()
   const id = newId('acc')
-  const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai')
+  const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai').trim() || 'openai'
   const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : typeof input.group_id === 'string' && input.group_id ? input.group_id : undefined
   const explicitGroup = explicitGroupId ? groupOwnerAndProvider(explicitGroupId) : undefined
   const requestedSystemAccountId = writeSystemAccountId(access)
@@ -798,7 +851,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const provider = listProviders().find((item) => item.code === providerCode)
   const credentials = typeof input.credentials === 'object' && input.credentials !== null ? input.credentials as Record<string, unknown> : {}
   const credentialMap = credentials as Record<string, unknown>
-  const accountType = String(input.type ?? 'api_key')
+  const accountType = String(input.type ?? 'api_key').trim() || 'api_key'
   const credentialSource = accountType === 'oauth'
     ? credentialMap.refresh_token ?? credentialMap.access_token ?? ''
     : credentialMap.api_key ?? ''
@@ -822,12 +875,17 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     throw new Error('账户分组无效')
   }
   const proxyProfileId = globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
+  const createSuperPriorityEnabled = effectiveSuperPriorityEnabled(nextStatus, input.superPriorityEnabled ?? input.super_priority_enabled)
+  const createFallbackEnabled = effectiveFallbackEnabled(nextStatus, input.fallbackEnabled ?? input.fallback_enabled)
+  if (createSuperPriorityEnabled && createFallbackEnabled) {
+    throw new Error('超级优先和降级备用不能同时开启')
+  }
   const account: AccountSummary = {
     id,
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
     providerCode,
-    name: String(input.name ?? `未命名 ${provider?.name ?? providerCode.toUpperCase()} 账户`),
+    name: normalizedEntityName(input.name, `未命名 ${provider?.name ?? providerCode.toUpperCase()} 账户`),
     notes: optionalString(input.notes),
     type: accountType,
     credentials,
@@ -835,7 +893,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? DEFAULT_ACCOUNT_CONCURRENCY_LIMIT),
     currentConcurrency: 0,
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? 0),
-    superPriorityEnabled: effectiveSuperPriorityEnabled(nextStatus, input.superPriorityEnabled ?? input.super_priority_enabled),
+    superPriorityEnabled: createSuperPriorityEnabled,
+    fallbackEnabled: createFallbackEnabled,
     proxyProfileId,
     passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
@@ -852,6 +911,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   }
 
   const database = getDatabase()
+  assertAccountNameAvailable(systemAccountId, providerCode, account.name)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
@@ -859,8 +919,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
-          priority, super_priority_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -878,6 +938,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.errorPolicyId ?? null,
         account.priority,
         account.superPriorityEnabled ? 1 : 0,
+        account.fallbackEnabled ? 1 : 0,
         account.schedulable ? 1 : 0,
         optionalString(input.notes) ?? null,
         account.accountExpiresAt ?? null,
@@ -896,6 +957,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     rollbackDatabaseTransaction(database, transactionStarted)
     if (isDuplicateAccountCredentialError(error)) {
       throwDuplicateAccountCredentialError()
+    }
+    if (isDuplicateAccountNameError(error)) {
+      throw new Error(`同一供应商下账户名称已存在：${account.name}`)
     }
     throw error
   }
@@ -970,17 +1034,37 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   if (hasSuperPriorityInput && requestedSuperPriority && nextStatus !== 'active') {
     throw new Error('只有正常状态的账户可以设置超级优先')
   }
-  const nextSuperPriorityEnabled = nextStatus === 'active' ? requestedSuperPriority : false
+  let nextSuperPriorityEnabled = nextStatus === 'active' ? requestedSuperPriority : false
+  const hasFallbackInput = Object.prototype.hasOwnProperty.call(input, 'fallbackEnabled')
+    || Object.prototype.hasOwnProperty.call(input, 'fallback_enabled')
+  const requestedFallback = normalizeFallbackInput(
+    Object.prototype.hasOwnProperty.call(input, 'fallbackEnabled') ? input.fallbackEnabled : input.fallback_enabled,
+    current.fallbackEnabled
+  )
+  if (hasFallbackInput && requestedFallback && nextStatus !== 'active') {
+    throw new Error('只有正常状态的账户可以设置降级备用')
+  }
+  if (hasSuperPriorityInput && requestedSuperPriority && hasFallbackInput && requestedFallback) {
+    throw new Error('超级优先和降级备用不能同时开启')
+  }
+  let nextFallbackEnabled = nextStatus === 'active' ? requestedFallback : false
+  if (hasSuperPriorityInput && nextSuperPriorityEnabled) {
+    nextFallbackEnabled = false
+  }
+  if (hasFallbackInput && nextFallbackEnabled) {
+    nextSuperPriorityEnabled = false
+  }
 
   const next: AccountSummary = {
     ...current,
-    name: typeof input.name === 'string' ? input.name : current.name,
+    name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
     notes: hasNotesInput ? optionalNullableString(input.notes) ?? undefined : current.notes,
     credentials,
     status: nextStatus,
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? current.concurrencyLimit),
     priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? current.priority),
     superPriorityEnabled: nextSuperPriorityEnabled,
+    fallbackEnabled: nextFallbackEnabled,
     proxyProfileId: Object.prototype.hasOwnProperty.call(input, 'proxyProfileId') || Object.prototype.hasOwnProperty.call(input, 'proxy_profile_id')
       ? globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
       : current.proxyProfileId,
@@ -1000,13 +1084,14 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     usage: current.usage
   }
 
+  assertAccountNameAvailable(systemAccountId, next.providerCode, next.name, id)
   try {
     const result = getDatabase()
       .prepare(`
       UPDATE accounts
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
-            error_policy_id = ?, priority = ?, super_priority_enabled = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
+            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
       .run(
@@ -1022,6 +1107,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.errorPolicyId ?? null,
         next.priority,
         next.superPriorityEnabled ? 1 : 0,
+        next.fallbackEnabled ? 1 : 0,
         next.schedulable ? 1 : 0,
         next.accountExpiresAt ?? null,
         next.cooldownUntil ?? null,
@@ -1036,6 +1122,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   } catch (error) {
     if (isDuplicateAccountCredentialError(error)) {
       throwDuplicateAccountCredentialError()
+    }
+    if (isDuplicateAccountNameError(error)) {
+      throw new Error(`同一供应商下账户名称已存在：${next.name}`)
     }
     throw error
   }
@@ -1075,6 +1164,7 @@ export function clearAccountFailureState(
         SET status = 'disabled',
             schedulable = 0,
             super_priority_enabled = 0,
+            fallback_enabled = 0,
             cooldown_until = NULL,
             last_error_message = ?,
             stream_failure_count = 0,
@@ -1126,6 +1216,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
         SET status = 'disabled',
             schedulable = 0,
             super_priority_enabled = 0,
+            fallback_enabled = 0,
             cooldown_until = NULL,
             last_error_message = ?,
             stream_failure_count = 0,
@@ -1148,6 +1239,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
       SET status = ?,
           schedulable = 1,
           super_priority_enabled = 0,
+          fallback_enabled = 0,
           cooldown_until = ?,
           last_error_message = ?,
           stream_failure_count = 0,
@@ -1211,6 +1303,7 @@ export function migrateAccountTraffic(input: {
           SET status = 'disabled',
               schedulable = 0,
               super_priority_enabled = 0,
+              fallback_enabled = 0,
               cooldown_until = NULL,
               last_error_message = ?,
               stream_failure_count = 0,
@@ -1224,6 +1317,7 @@ export function migrateAccountTraffic(input: {
           UPDATE accounts
           SET status = 'temporary_unavailable',
               super_priority_enabled = 0,
+              fallback_enabled = 0,
               cooldown_until = ?,
               last_error_message = ?,
               stream_failure_count = 0,
@@ -1267,6 +1361,7 @@ export function markAccountDisabledByFailure(id: string, reason: string): Accoun
       SET status = 'error',
           schedulable = 0,
           super_priority_enabled = 0,
+          fallback_enabled = 0,
           cooldown_until = NULL,
           last_error_message = ?,
           stream_failure_count = 0,
@@ -1397,12 +1492,14 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
 export function createGroup(input: Record<string, unknown>, access?: AccessScope): GroupSummary {
   const now = nowIso()
   const systemAccountId = writeSystemAccountId(access)
-  const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai')
+  const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai').trim() || 'openai'
+  const name = normalizedEntityName(input.name, '未命名分组')
+  assertGroupNameAvailable(systemAccountId, providerCode, name)
   const group: GroupSummary = {
     id: newId('grp'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
-    name: String(input.name ?? '未命名分组'),
+    name,
     providerCode,
     description: optionalString(input.description),
     enabled: input.enabled !== false,
@@ -1410,9 +1507,16 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
     accountIds: [],
     accountStats: emptyGroupAccountStats()
   }
-  getDatabase()
-    .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)')
-    .run(group.id, systemAccountId, group.name, group.providerCode, group.description ?? null, group.enabled ? 1 : 0, now, now)
+  try {
+    getDatabase()
+      .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)')
+      .run(group.id, systemAccountId, group.name, group.providerCode, group.description ?? null, group.enabled ? 1 : 0, now, now)
+  } catch (error) {
+    if (isDuplicateGroupNameError(error)) {
+      throw new Error(`同一供应商下分组名称已存在：${group.name}`)
+    }
+    throw error
+  }
   return group
 }
 
@@ -1431,18 +1535,30 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   const hasDescriptionInput = Object.prototype.hasOwnProperty.call(input, 'description')
   const next: GroupSummary = {
     ...current,
-    name: typeof input.name === 'string' ? input.name : current.name,
-    providerCode: typeof input.providerCode === 'string' ? input.providerCode : typeof input.provider_code === 'string' ? input.provider_code : current.providerCode,
+    name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
+    providerCode: typeof input.providerCode === 'string' && input.providerCode.trim()
+      ? input.providerCode.trim()
+      : typeof input.provider_code === 'string' && input.provider_code.trim()
+        ? input.provider_code.trim()
+        : current.providerCode,
     description: hasDescriptionInput ? optionalNullableString(input.description) ?? undefined : current.description,
     enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled
   }
   if (next.providerCode !== current.providerCode && current.accountStats.total > 0) {
     throw new Error('已有账户的分组不允许修改供应商')
   }
+  assertGroupNameAvailable(systemAccountId, next.providerCode, next.name, id)
   const database = getDatabase()
-  database
-    .prepare('UPDATE groups SET name = ?, provider_code = ?, description = ?, enabled = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-    .run(next.name, next.providerCode, next.description ?? null, next.enabled ? 1 : 0, nowIso(), id, systemAccountId)
+  try {
+    database
+      .prepare('UPDATE groups SET name = ?, provider_code = ?, description = ?, enabled = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+      .run(next.name, next.providerCode, next.description ?? null, next.enabled ? 1 : 0, nowIso(), id, systemAccountId)
+  } catch (error) {
+    if (isDuplicateGroupNameError(error)) {
+      throw new Error(`同一供应商下分组名称已存在：${next.name}`)
+    }
+    throw error
+  }
   return listGroups(access).find((group) => group.id === id)
 }
 
@@ -1549,10 +1665,10 @@ export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
         INNER JOIN system_team_members ON system_team_members.team_id = system_teams.id
         WHERE system_team_members.system_account_id = ?
           AND system_team_members.status = 'active'
-        ORDER BY system_teams.status ASC, system_teams.updated_at DESC, system_teams.name ASC
+        ORDER BY system_teams.status ASC, system_teams.updated_at DESC, system_teams.name ASC, system_teams.id ASC
       `)
       .all(scopedId) as unknown as SystemTeamRow[]
-    : getDatabase().prepare('SELECT * FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC').all() as unknown as SystemTeamRow[]
+    : getDatabase().prepare('SELECT * FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC, id ASC').all() as unknown as SystemTeamRow[]
   const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
   return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
 }
@@ -1560,7 +1676,7 @@ export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
 export function listAuthorizationGranteeAccounts(access?: AccessScope): SystemAccountPrincipalSummary[] {
   const database = getDatabase()
   if (canAccessAll(access)) {
-    const rows = database.prepare('SELECT * FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC').all() as unknown as SystemAccountRow[]
+    const rows = database.prepare('SELECT * FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC, id ASC').all() as unknown as SystemAccountRow[]
     return rows.map(systemAccountPrincipalSummaryFromRow)
   }
   const viewerId = currentSystemAccountId(access)
@@ -1579,7 +1695,7 @@ export function listAuthorizationGranteeAccounts(access?: AccessScope): SystemAc
              AND active_members.status = 'active'
              AND system_teams.status = 'active'
          )
-      ORDER BY system_accounts.status ASC, system_accounts.display_name ASC, system_accounts.username ASC
+      ORDER BY system_accounts.status ASC, system_accounts.display_name ASC, system_accounts.username ASC, system_accounts.id ASC
     `)
     .all(viewerId, viewerId) as unknown as SystemAccountRow[]
   return rows.map(systemAccountPrincipalSummaryFromRow)
@@ -1645,7 +1761,7 @@ export function addSystemTeamMembers(teamId: string, input: Record<string, unkno
     for (const systemAccountId of systemAccountIds) {
       const account = findSystemAccountById(systemAccountId)
       if (!account || account.status !== 'active') throw new Error('团队成员不存在或已停用')
-      const existing = database.prepare('SELECT * FROM system_team_members WHERE team_id = ? AND system_account_id = ? ORDER BY created_at DESC LIMIT 1').get(teamId, systemAccountId) as unknown as SystemTeamMemberRow | undefined
+      const existing = database.prepare('SELECT * FROM system_team_members WHERE team_id = ? AND system_account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1').get(teamId, systemAccountId) as unknown as SystemTeamMemberRow | undefined
       if (existing?.status === 'active') continue
       if (existing) {
         database.prepare("UPDATE system_team_members SET status = 'active', joined_at = ?, removed_at = NULL, updated_at = ? WHERE id = ?").run(now, now, existing.id)
@@ -1732,7 +1848,7 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
     params.push(directionSystemAccountId)
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
-  const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY CASE ra.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, ra.updated_at DESC, ra.created_at DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
+  const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY CASE ra.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, ra.updated_at DESC, ra.created_at DESC, ra.id DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
   return resourceAuthorizationSummaries(rows).map((summary) => withResourceAuthorizationPermissions(
     sanitizeResourceAuthorizationSummaryForAccess(summary, access),
     viewerSystemAccountId,
@@ -1910,7 +2026,7 @@ function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false):
   const ids = [...new Set(teamIds)].filter(Boolean)
   if (!ids.length) return new Map()
   const statusClause = activeOnly ? " AND system_team_members.status = 'active'" : ''
-  const rows = getDatabase().prepare(`SELECT system_team_members.*, system_accounts.display_name, system_accounts.username FROM system_team_members INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id WHERE system_team_members.team_id IN (${sqlPlaceholders(ids.length)})${statusClause} ORDER BY system_team_members.status ASC, system_team_members.joined_at ASC`).all(...ids) as unknown as Array<SystemTeamMemberRow & { display_name?: string; username?: string }>
+  const rows = getDatabase().prepare(`SELECT system_team_members.*, system_accounts.display_name, system_accounts.username FROM system_team_members INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id WHERE system_team_members.team_id IN (${sqlPlaceholders(ids.length)})${statusClause} ORDER BY system_team_members.status ASC, system_team_members.joined_at ASC, system_team_members.id ASC`).all(...ids) as unknown as Array<SystemTeamMemberRow & { display_name?: string; username?: string }>
   const result = new Map<string, SystemTeamMemberSummary[]>()
   for (const row of rows) {
     const member: SystemTeamMemberSummary = { id: row.id, teamId: row.team_id, systemAccountId: row.system_account_id, systemAccountName: row.display_name, username: row.username, memberRole: 'member', status: row.status, joinedAt: row.joined_at, removedAt: row.removed_at ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at }
@@ -1955,7 +2071,7 @@ function activeTeamMemberRows(teamId: string, database = getDatabase()): SystemT
     WHERE system_team_members.team_id = ?
       AND system_team_members.status = 'active'
       AND system_accounts.status = 'active'
-    ORDER BY system_team_members.joined_at ASC
+    ORDER BY system_team_members.joined_at ASC, system_team_members.id ASC
   `).all(teamId) as unknown as SystemTeamMemberRow[]
 }
 
@@ -2042,13 +2158,13 @@ function hasAnyActiveAuthorizationSource(database: DatabaseSync, authorizationId
 
 function firstActiveTeamSourceId(database: DatabaseSync, authorizationId: string): string | null {
   const row = database
-    .prepare("SELECT source_team_id FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = 'team' AND status = 'active' ORDER BY activated_at ASC, created_at ASC LIMIT 1")
+    .prepare("SELECT source_team_id FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = 'team' AND status = 'active' ORDER BY activated_at ASC, created_at ASC, id ASC LIMIT 1")
     .get(authorizationId) as unknown as { source_team_id?: string | null } | undefined
   return row?.source_team_id ?? null
 }
 
 function upsertResourceAuthorizationSource(database: DatabaseSync, authorizationId: string, sourceType: ResourceAuthorizationSourceType, sourceTeamId: string | undefined, actor: string, now: string, requestedStatus: ResourceAuthorizationSourceStatus): void {
-  const existing = database.prepare("SELECT * FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = ? AND COALESCE(source_team_id, '') = COALESCE(?, '') ORDER BY created_at DESC LIMIT 1").get(authorizationId, sourceType, sourceTeamId ?? null) as unknown as ResourceAuthorizationSourceRow | undefined
+  const existing = database.prepare("SELECT * FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = ? AND COALESCE(source_team_id, '') = COALESCE(?, '') ORDER BY created_at DESC, id DESC LIMIT 1").get(authorizationId, sourceType, sourceTeamId ?? null) as unknown as ResourceAuthorizationSourceRow | undefined
   if (existing) {
     database.prepare(`
       UPDATE resource_authorization_sources
@@ -2092,7 +2208,7 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
     SELECT source_team_id
     FROM resource_authorization_sources
     WHERE authorization_id = ? AND source_type = 'team' AND status = 'active'
-    ORDER BY activated_at ASC, created_at ASC
+    ORDER BY activated_at ASC, created_at ASC, id ASC
     LIMIT 1
   `).get(authorizationId) as unknown as { source_team_id?: string | null } | undefined
 
@@ -2120,7 +2236,7 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
     SELECT id
     FROM resource_authorization_sources
     WHERE authorization_id = ? AND source_type = 'manual' AND status = 'active'
-    ORDER BY activated_at ASC, created_at ASC
+    ORDER BY activated_at ASC, created_at ASC, id ASC
     LIMIT 1
   `).get(authorizationId) as unknown as { id?: string } | undefined
 

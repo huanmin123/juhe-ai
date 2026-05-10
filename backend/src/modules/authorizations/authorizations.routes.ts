@@ -11,6 +11,7 @@ import {
 } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
@@ -91,7 +92,17 @@ authorizationsRouter.get('/', (req, res) => {
   res.json(ok(listResourceAuthorizations(routeFilters, getRequestAccessScope(systemAccountId))))
 })
 
-authorizationsRouter.post('/', (req, res) => {
+authorizationsRouter.post('/', mutationGuard({
+  operationKey: 'authorizations.create',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    resourceType: textValue(bodyField(req, 'resourceType')),
+    resourceId: textValue(bodyField(req, 'resourceId')),
+    granteeType: textValue(bodyField(req, 'granteeType')),
+    granteeId: textValue(bodyField(req, 'granteeId'))
+  })
+}), (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)

@@ -98,6 +98,7 @@ export function applySchema(database: DatabaseSync): void {
       error_policy_id TEXT,
       priority INTEGER NOT NULL DEFAULT 0,
       super_priority_enabled INTEGER NOT NULL DEFAULT 0,
+      fallback_enabled INTEGER NOT NULL DEFAULT 0,
       schedulable INTEGER NOT NULL DEFAULT 1,
       notes TEXT,
       account_expires_at TEXT,
@@ -715,11 +716,14 @@ export function applySchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_display_name_unique_lower ON system_accounts(lower(display_name));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_owner_provider_name_unique_lower ON accounts(system_account_id, provider_code, lower(name));
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_last_used ON accounts(system_account_id, last_used_at);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);
     CREATE INDEX IF NOT EXISTS idx_accounts_super_priority ON accounts(super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_name_unique_lower ON groups(system_account_id, provider_code, lower(name));
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_owner_provider_default_unique ON groups(system_account_id, provider_code) WHERE is_default = 1;
     CREATE INDEX IF NOT EXISTS idx_system_teams_status ON system_teams(status, updated_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique ON system_teams(name);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_teams_name_unique_lower ON system_teams(lower(name));
@@ -742,7 +746,9 @@ export function applySchema(database: DatabaseSync): void {
     CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_sources_active_manual_unique ON resource_authorization_sources(authorization_id, source_type) WHERE status = 'active' AND source_type = 'manual';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_sources_active_team_unique ON resource_authorization_sources(authorization_id, source_type, source_team_id) WHERE status = 'active' AND source_type = 'team';
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
     CREATE INDEX IF NOT EXISTS idx_proxy_profiles_system_account ON proxy_profiles(system_account_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_profiles_name_unique_lower ON proxy_profiles(lower(name));
     CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);
     CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_sort ON usage_records(system_account_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_account_owner ON usage_records(account_owner_system_account_id, account_id, created_at);
@@ -804,6 +810,9 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_public ON announcements(status, published_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
+  `)
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
   `)
 }
 

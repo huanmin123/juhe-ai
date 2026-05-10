@@ -62,7 +62,7 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="teamModalOpen" :title="editingTeamId ? '编辑团队' : '新建团队'" width="620px" @ok="saveTeam">
+    <a-modal v-model:open="teamModalOpen" :title="editingTeamId ? '编辑团队' : '新建团队'" width="620px" :confirm-loading="teamSaving" :ok-button-props="{ disabled: teamSaving }" @ok="saveTeam">
       <a-form layout="vertical">
         <a-form-item label="团队名称" required>
           <a-input v-model:value="teamForm.name" placeholder="例如：产品运营团队" />
@@ -88,7 +88,7 @@
             :disabled="selectedTeam?.status !== 'active'"
             placeholder="选择一个或多个系统账户"
           />
-          <a-button type="primary" :loading="memberSaving" :disabled="selectedTeam?.status !== 'active'" @click="addMembers">添加成员</a-button>
+          <a-button type="primary" :loading="memberSaving" :disabled="selectedTeam?.status !== 'active' || memberSaving" v-submit-lock="{ key: 'system_teams.add_members', pending: memberSaving }" @click="addMembers">添加成员</a-button>
         </div>
         <a-alert
           v-if="isManagementView && selectedTeam?.status !== 'active'"
@@ -147,10 +147,13 @@ import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useSubmitAction } from '@/composables/useSubmitAction'
 import type { SystemAccountSummary, SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
 const loading = ref(false)
-const memberSaving = ref(false)
+const { submitAction, submittingRef } = useSubmitAction('system-teams')
+const teamSaving = submittingRef('system_teams.save')
+const memberSaving = submittingRef('system_teams.add_members')
 
 const teams = ref<SystemTeamSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
@@ -283,7 +286,7 @@ function openEditTeam(team: SystemTeamSummary) {
   teamModalOpen.value = true
 }
 
-async function saveTeam() {
+const saveTeam = submitAction('system_teams.save', async () => {
   const teamName = teamForm.name.trim()
   if (!teamName) {
     message.warning('请填写团队名称')
@@ -312,7 +315,7 @@ async function saveTeam() {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存团队失败'))
   }
-}
+})
 
 function openMemberModal(team: SystemTeamSummary) {
   selectedTeamId.value = team.id
@@ -336,13 +339,12 @@ function handleMemberAction(key: string, member: SystemTeamMemberSummary) {
   }
 }
 
-async function addMembers() {
+const addMembers = submitAction('system_teams.add_members', async () => {
   if (!selectedTeam.value) return
   if (!memberForm.systemAccountIds.length) {
     message.warning('请先选择成员')
     return
   }
-  memberSaving.value = true
   try {
     await api.systemTeams.addMembers(selectedTeam.value.id, {
       systemAccountIds: memberForm.systemAccountIds
@@ -354,9 +356,8 @@ async function addMembers() {
     console.error(error)
     message.error('添加成员失败')
   } finally {
-    memberSaving.value = false
   }
-}
+})
 
 async function removeMember(memberId: string) {
   if (!selectedTeam.value) return

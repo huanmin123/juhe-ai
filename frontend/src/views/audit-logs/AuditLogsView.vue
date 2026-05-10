@@ -196,6 +196,7 @@
                 </div>
                 <ReadonlyCodeViewer
                   ref="payloadCodeViewer"
+                  attached-toolbar
                   :content-type="selectedPayloadViewerContentType"
                   :show-toolbar="false"
                   :text="selectedPayloadCurrentText"

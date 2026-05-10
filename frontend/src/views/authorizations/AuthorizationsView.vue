@@ -36,6 +36,7 @@
       :has-grantee-options="hasCreateGranteeOptions"
       :resource-options="createResourceOptions"
       :resource-type-options="createResourceTypeOptions"
+      :saving="authorizationCreating"
       :teams="teams"
       :users="users"
       @ok="createAuthorization"
@@ -69,6 +70,7 @@ import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useSubmitAction } from '@/composables/useSubmitAction'
 import type { AccountSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
@@ -97,6 +99,8 @@ import {
 } from './authorizationTableColumns'
 
 const loading = ref(false)
+const { submitAction, submittingRef } = useSubmitAction('authorizations')
+const authorizationCreating = submittingRef('authorizations.create')
 const createModalOpen = ref(false)
 const usageDetailOpen = ref(false)
 const helpOpen = ref(false)
@@ -301,7 +305,7 @@ function resetFilters() {
   void loadData()
 }
 
-async function createAuthorization() {
+const createAuthorization = submitAction('authorizations.create', async () => {
   if (!createForm.resourceId) {
     message.warning('请选择资源')
     return
@@ -348,7 +352,7 @@ async function createAuthorization() {
     console.error(error)
     message.error(extractApiErrorMessage(error, '创建授权失败'))
   }
-}
+})
 
 async function revokeManualSource(item: ResourceAuthorizationSummary) {
   try {

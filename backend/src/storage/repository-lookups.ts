@@ -9,7 +9,7 @@ function uniqueIds(values: string[]): string[] {
 
 export function loadSystemAccountNameMap(): Map<string, string> {
   const rows = getDatabase()
-    .prepare('SELECT id, username, display_name FROM system_accounts ORDER BY created_at ASC')
+    .prepare('SELECT id, username, display_name FROM system_accounts ORDER BY created_at ASC, id ASC')
     .all() as unknown as Array<{ id: string; username: string; display_name: string }>
   return new Map(rows.map((row) => [row.id, row.display_name || row.username]))
 }

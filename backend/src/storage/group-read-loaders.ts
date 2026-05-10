@@ -39,7 +39,7 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
             AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
           )
         )
-      ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC
+      ORDER BY group_accounts.group_id ASC, group_accounts.created_at ASC, group_accounts.account_id ASC
     `)
     .all(...ids, now) as unknown as Array<{ group_id: string; account_id: string }>
   const result = new Map<string, string[]>()

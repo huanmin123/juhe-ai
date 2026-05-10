@@ -26,7 +26,7 @@
       :loading-more="mobileLoadingMore"
       :mobile-has-more="mobileHasMore"
       :pagination="tablePagination"
-      :scroll-x="isManagementView ? 2050 : 1870"
+      :scroll-x="isManagementView ? 2280 : 2100"
       mobile-pagination
       pull-refresh-enabled
       :refreshing="loading"
@@ -38,7 +38,17 @@
         <a-empty class="page-empty-card" description="当前条件下没有使用记录。" />
       </template>
       <template #bodyCell="{ column, record }">
-        <template v-if="column.key === 'apiKey'">
+        <template v-if="column.key === 'traceId'">
+          <div class="trace-id-cell">
+            <span class="trace-id-text">{{ record.traceId }}</span>
+            <a-tooltip title="复制 traceId">
+              <a-button size="small" type="text" @click.stop="copyTraceId(record.traceId)">
+                <template #icon><copy-outlined /></template>
+              </a-button>
+            </a-tooltip>
+          </div>
+        </template>
+        <template v-else-if="column.key === 'apiKey'">
           <span :class="record.apiKeyName ? 'name-cell' : 'muted-cell'">{{ displayName(record.apiKeyName, record.apiKeyId) }}</span>
         </template>
         <template v-else-if="column.key === 'group'">
@@ -93,41 +103,27 @@
         <template v-else-if="column.key === 'createdAt'">
           <span class="muted-cell">{{ formatDateTime(record.createdAt) }}</span>
         </template>
-        <template v-else-if="column.key === 'actions'">
-          <RowActions :actions="detailActions" @action-click="handleRecordAction($event, record)" />
-        </template>
       </template>
       <template #card="{ record }">
-        <UsageRecordMobileCard :is-management-view="isManagementView" :record="record" @detail="openDetail(record)" />
+        <UsageRecordMobileCard :is-management-view="isManagementView" :record="record" @copy-trace-id="copyTraceId" />
       </template>
     </ResponsiveDataList>
   </a-card>
-
-  <UsageRecordDetailDrawer
-    v-model:open="detailOpen"
-    :is-management-view="isManagementView"
-    :loading="detailLoading"
-    :record="selectedRecord"
-    @close="closeDetail"
-  />
-
 </template>
 
 <script setup lang="ts">
+import { CopyOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
-import RowActions from '@/components/RowActions.vue'
-import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
-import UsageRecordDetailDrawer from './UsageRecordDetailDrawer.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
 import UsageRecordResultCell from './UsageRecordResultCell.vue'
 import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
@@ -169,10 +165,6 @@ const initialPageState = pageStateCache.read()
 const loading = ref(false)
 const mobileLoadingMore = ref(false)
 const records = ref<UsageRecordSummary[]>([])
-const detailOpen = ref(false)
-const detailLoading = ref(false)
-let detailRequestVersion = 0
-const selectedRecord = ref<UsageRecordSummary>()
 const accountNameFilter = ref(initialPageState.accountNameFilter)
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
@@ -209,9 +201,6 @@ const tablePagination = computed(() => ({
   showSizeChanger: false,
   showTotal: (total: number) => `共 ${total} 条使用记录`
 }))
-const detailActions: RowActionItem[] = [
-  { key: 'detail', label: '详情', icon: 'detail', tone: 'info' }
-]
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -234,45 +223,10 @@ const columns = computed(() => {
     { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
     { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
     { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 },
-    { title: '操作', key: 'actions', width: 90, fixed: 'right' }
+    { title: 'traceId', dataIndex: 'traceId', key: 'traceId', width: 230 }
   )
   return baseColumns
 })
-
-async function openDetail(record: UsageRecordSummary): Promise<void> {
-  const requestVersion = ++detailRequestVersion
-  selectedRecord.value = record
-  detailOpen.value = true
-  detailLoading.value = true
-  try {
-    const detail = await fetchRecordDetail(record.id)
-    if (requestVersion === detailRequestVersion) {
-      selectedRecord.value = detail
-    }
-  } catch (error) {
-    console.error(error)
-    if (requestVersion === detailRequestVersion) {
-      message.error('加载使用记录详情失败')
-    }
-  } finally {
-    if (requestVersion === detailRequestVersion) {
-      detailLoading.value = false
-    }
-  }
-}
-
-function handleRecordAction(key: string, record: UsageRecordSummary): void {
-  if (key === 'detail') {
-    void openDetail(record)
-  }
-}
-
-function closeDetail(): void {
-  detailRequestVersion += 1
-  detailOpen.value = false
-  detailLoading.value = false
-  selectedRecord.value = undefined
-}
 
 function resetFilters(): void {
   const defaults = defaultUsageRecordsPageState()
@@ -402,17 +356,26 @@ async function loadSystemAccountOptions(force = false): Promise<void> {
   systemAccountsLoaded.value = true
 }
 
-async function fetchRecordDetail(id: string): Promise<UsageRecordSummary> {
-  return isManagementView.value
-    ? api.usageRecords.detail(id, { systemAccountId: scopedSystemAccountId(systemAccountFilter.value) })
-    : api.myUsageRecords.detail(id)
-}
-
 function normalizedStatusCode(value: string): number | undefined {
   const text = value.trim()
   if (!text) return undefined
   const statusCode = Number(text)
   return Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? statusCode : undefined
+}
+
+async function copyTraceId(traceId?: string): Promise<void> {
+  if (!traceId) return
+  if (!navigator.clipboard?.writeText) {
+    message.error('当前浏览器不支持自动复制，请手动选择 traceId 复制')
+    return
+  }
+  try {
+    await navigator.clipboard.writeText(traceId)
+    message.success('traceId 已复制')
+  } catch (error) {
+    console.error(error)
+    message.error('复制失败，请手动选择 traceId 复制')
+  }
 }
 
 function snapshotPageState(): UsageRecordsPageState {
@@ -447,6 +410,23 @@ onMounted(loadData)
   color: #475569;
   font-size: 12px;
   line-height: 1.3;
+}
+
+.trace-id-cell {
+  display: inline-flex;
+  align-items: center;
+  max-width: 220px;
+  gap: 4px;
+  vertical-align: bottom;
+}
+
+.trace-id-text {
+  overflow: hidden;
+  color: #334155;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .name-cell {

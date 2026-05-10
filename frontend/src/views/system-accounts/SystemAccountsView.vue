@@ -58,7 +58,7 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑系统账户' : '新增系统账户'" :confirm-loading="saving" @ok="handleSave">
+    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑系统账户' : '新增系统账户'" :confirm-loading="systemAccountSaving" :ok-button-props="{ disabled: systemAccountSaving }" @ok="handleSave">
       <a-form layout="vertical">
         <a-form-item label="用户名" required>
           <a-input v-model:value="form.username" :disabled="Boolean(editingId)" placeholder="例如 user01" />
@@ -84,7 +84,7 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="passwordModalOpen" title="重置系统账户密码" :confirm-loading="saving" @ok="handleResetPassword">
+    <a-modal v-model:open="passwordModalOpen" title="重置系统账户密码" :confirm-loading="resetPasswordSaving" :ok-button-props="{ disabled: resetPasswordSaving }" @ok="handleResetPassword">
       <a-form layout="vertical">
         <a-form-item label="新密码" required>
           <a-input-password v-model:value="resetPassword" placeholder="请输入新密码" />
@@ -105,10 +105,13 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useSubmitAction } from '@/composables/useSubmitAction'
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
 
 const loading = ref(false)
-const saving = ref(false)
+const { submitAction, submittingRef } = useSubmitAction('system-accounts')
+const systemAccountSaving = submittingRef('system_accounts.save')
+const resetPasswordSaving = submittingRef('system_accounts.reset_password')
 const modalOpen = ref(false)
 const passwordModalOpen = ref(false)
 const editingId = ref<string>()
@@ -188,7 +191,7 @@ function handleSystemAccountAction(key: string, record: SystemAccountSummary) {
   }
 }
 
-async function handleSave() {
+const handleSave = submitAction('system_accounts.save', async () => {
   const username = form.username.trim()
   const displayName = form.displayName.trim()
   if (!username || !displayName) {
@@ -207,7 +210,6 @@ async function handleSave() {
     message.warning('初始密码至少 4 位')
     return
   }
-  saving.value = true
   try {
     const basePayload = {
       displayName,
@@ -230,16 +232,14 @@ async function handleSave() {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存系统账户失败'))
   } finally {
-    saving.value = false
   }
-}
+})
 
-async function handleResetPassword() {
+const handleResetPassword = submitAction('system_accounts.reset_password', async () => {
   if (!resettingId.value || resetPassword.value.length < 4) {
     message.warning('新密码至少 4 位')
     return
   }
-  saving.value = true
   try {
     await api.systemAccounts.update(resettingId.value, { password: resetPassword.value, mustChangePassword: true })
     message.success('密码已重置')
@@ -249,9 +249,8 @@ async function handleResetPassword() {
     console.error(error)
     message.error('重置密码失败')
   } finally {
-    saving.value = false
   }
-}
+})
 
 async function loadData() {
   loading.value = true

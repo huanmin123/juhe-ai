@@ -2,6 +2,7 @@
   <div class="readonly-code-viewer" :class="{ 'readonly-code-viewer-loading': formatting }">
     <div v-if="showToolbar" class="readonly-code-viewer-toolbar">
       <div class="readonly-code-viewer-meta">
+        <strong v-if="title" class="readonly-code-viewer-title">{{ title }}</strong>
         <a-tag :color="isJson ? 'blue' : 'default'">{{ languageLabel }}</a-tag>
         <span>{{ formattedSizeText }}</span>
         <span v-if="formatError" class="readonly-code-viewer-warning">{{ formatError }}</span>
@@ -31,17 +32,21 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 const props = withDefaults(defineProps<{
+  attachedToolbar?: boolean
   contentType?: string
   emptyText?: string
   height?: number
   showToolbar?: boolean
   text?: string
+  title?: string
 }>(), {
+  attachedToolbar: false,
   contentType: '',
   emptyText: '',
   height: 420,
   showToolbar: true,
-  text: ''
+  text: '',
+  title: ''
 })
 
 const editorRoot = ref<HTMLElement>()
@@ -52,8 +57,11 @@ const formatting = ref(false)
 let editorView: EditorView | undefined
 let formatTaskId = 0
 
+const hasText = computed(() => Boolean(props.text))
 const sourceText = computed(() => props.text || props.emptyText)
-const isJson = computed(() => isJsonLike(props.contentType, sourceText.value))
+const isJson = computed(() => hasText.value
+  ? isJsonLike(props.contentType, props.text)
+  : isJsonLike('', props.emptyText))
 const languageLabel = computed(() => isJson.value ? 'JSON' : 'Text')
 const formattedSizeText = computed(() => formatBytes(new Blob([displayText.value]).size))
 
@@ -120,6 +128,7 @@ function updateEditor(): void {
 
 function createEditorState(doc: string, shouldUseJson: boolean): EditorState {
   const editorHeight = `${props.height}px`
+  const editorBorderRadius = props.showToolbar || props.attachedToolbar ? '0 0 8px 8px' : '8px'
   return EditorState.create({
     doc,
     extensions: [
@@ -135,7 +144,7 @@ function createEditorState(doc: string, shouldUseJson: boolean): EditorState {
         '&': {
           height: editorHeight,
           border: '1px solid #e2e8f0',
-          borderRadius: props.showToolbar ? '0 0 8px 8px' : '8px',
+          borderRadius: editorBorderRadius,
           fontSize: '12px'
         },
         '&.cm-focused': {
@@ -219,6 +228,13 @@ function formatBytes(value: number): string {
   gap: 8px;
   color: #64748b;
   font-size: 12px;
+}
+
+.readonly-code-viewer-title {
+  flex: 0 0 auto;
+  color: #0f172a;
+  font-size: 13px;
+  font-weight: 700;
 }
 
 .readonly-code-viewer-warning {

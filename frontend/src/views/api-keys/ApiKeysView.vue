@@ -129,7 +129,7 @@
       </div>
     </a-modal>
 
-    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑 API Key' : '新建 API Key'" width="640px" :ok-button-props="{ type: 'primary' }" @ok="saveApiKey">
+    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑 API Key' : '新建 API Key'" width="640px" :confirm-loading="apiKeySaving" :ok-button-props="{ type: 'primary', disabled: apiKeySaving }" @ok="saveApiKey">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
       <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建后直接复制保存即可。" type="info" show-icon />
       <a-form layout="vertical" class="modal-form">
@@ -183,6 +183,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useSubmitAction } from '@/composables/useSubmitAction'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -196,6 +197,8 @@ const createdKeyOpen = ref(false)
 const helpOpen = ref(false)
 const editingId = ref<string>()
 const createdKey = ref('')
+const { submitAction, submittingRef } = useSubmitAction('api-keys')
+const apiKeySaving = submittingRef('api_keys.save')
 const pageSize = 50
 type ApiKeysPageState = {
   groupFilter?: string
@@ -488,7 +491,7 @@ function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
   }
 }
 
-async function saveApiKey() {
+const saveApiKey = submitAction('api_keys.save', async () => {
   if (!form.name.trim()) {
     message.warning('请填写名称')
     return
@@ -527,7 +530,7 @@ async function saveApiKey() {
     console.error(error)
     message.error('保存 API Key 失败')
   }
-}
+})
 
 function quotaLimitsPayload(): ApiKeyQuotaLimits {
   return buildQuotaLimitsPayload(form.quotaLimits)

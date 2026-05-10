@@ -18,6 +18,7 @@ export interface AccountFormModel {
   status: AccountStatus
   concurrencyLimit: number
   priority: number
+  fallbackEnabled: boolean
   proxyProfileId?: string
   notes: string
 }

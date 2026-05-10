@@ -7,6 +7,7 @@ import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAcc
 import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
 import {
@@ -30,6 +31,8 @@ const createFromCodeSchema = z.object({
   name: z.string().optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
+  priority: z.number().int().optional(),
+  fallbackEnabled: z.boolean().optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
@@ -43,6 +46,8 @@ const createFromRefreshTokenSchema = z.object({
   name: z.string().optional(),
   groupId: z.string().optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
+  priority: z.number().int().optional(),
+  fallbackEnabled: z.boolean().optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
@@ -71,7 +76,18 @@ openAIOAuthRouter.post('/auth-url', (req, res) => {
   res.json(ok(generateOpenAIAuthURL()))
 })
 
-openAIOAuthRouter.post('/create-from-code', async (req, res) => {
+openAIOAuthRouter.post('/create-from-code', mutationGuard({
+  operationKey: 'openai_oauth.create_from_code',
+  processingTtlMs: 180_000,
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    sessionId: textValue(bodyField(req, 'sessionId')),
+    code: sensitiveFingerprint(bodyField(req, 'code')),
+    callbackUrl: sensitiveFingerprint(bodyField(req, 'callbackUrl')),
+    state: sensitiveFingerprint(bodyField(req, 'state'))
+  })
+}), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -106,6 +122,8 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
         },
         status: 'active',
         concurrencyLimit: parsed.data.concurrencyLimit,
+        priority: parsed.data.priority,
+        fallbackEnabled: parsed.data.fallbackEnabled,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
@@ -134,7 +152,15 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
   }
 })
 
-openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
+openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
+  operationKey: 'openai_oauth.create_from_refresh_token',
+  processingTtlMs: 180_000,
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    refreshToken: sensitiveFingerprint(bodyField(req, 'refreshToken'))
+  })
+}), async (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -166,6 +192,8 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
         },
         status: 'active',
         concurrencyLimit: parsed.data.concurrencyLimit,
+        priority: parsed.data.priority,
+        fallbackEnabled: parsed.data.fallbackEnabled,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,

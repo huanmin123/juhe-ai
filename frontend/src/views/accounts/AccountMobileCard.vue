@@ -39,7 +39,7 @@
       </div>
       <div class="account-mobile-meta-item">
         <span>优先级</span>
-        <strong>{{ account.priority }}</strong>
+        <strong>{{ account.fallbackEnabled ? `${account.priority} / 备用` : account.priority }}</strong>
       </div>
       <div class="account-mobile-meta-item">
         <span>用量(日)</span>

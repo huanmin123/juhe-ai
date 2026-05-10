@@ -143,6 +143,9 @@ function canSessionAffinityPromoteOver(boundAccount: OpenAIAccountSecret, curren
   if (boundAccount.superPriorityEnabled !== currentAccount.superPriorityEnabled) {
     return false
   }
+  if (boundAccount.fallbackEnabled !== currentAccount.fallbackEnabled) {
+    return false
+  }
   if (boundAccount.priority !== currentAccount.priority) {
     return false
   }

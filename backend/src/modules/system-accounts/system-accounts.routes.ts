@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { badRequest, ok } from '../../shared/http.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { clearGatewayApiKeyValidationCache, createSystemAccount, listSystemAccounts, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
+import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
@@ -32,7 +33,13 @@ systemAccountsRouter.get('/', requireAdmin, (_req, res) => {
   res.json(ok(listSystemAccounts()))
 })
 
-systemAccountsRouter.post('/', requireAdmin, (req, res) => {
+systemAccountsRouter.post('/', requireAdmin, mutationGuard({
+  operationKey: 'system_accounts.create',
+  fingerprint: (req) => ({
+    username: normalizedText(bodyField(req, 'username')),
+    displayName: normalizedText(bodyField(req, 'displayName'))
+  })
+}), (req, res) => {
   const parsed = createSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('系统账户参数无效'))

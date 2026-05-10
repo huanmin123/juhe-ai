@@ -5,6 +5,7 @@ import { badRequest, ok } from '../../shared/http.js'
 import { createApiKeyRecord, deleteApiKey, listApiKeysPage, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { clearApiKeyQuotaCache, invalidateApiKeyQuotaCacheById } from '../gateway/api-key-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
@@ -12,9 +13,9 @@ import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperatio
 export const apiKeysRouter = Router()
 
 const apiKeyCreateSchema = z.object({
-  name: z.string().min(1),
+  name: z.string().trim().min(1),
   description: z.string().trim().max(200).nullable().optional(),
-  groupId: z.string().min(1),
+  groupId: z.string().trim().min(1),
   status: z.enum(['active', 'disabled']).optional(),
   expiresAt: z.string().optional(),
   quotaLimits: z.record(z.string(), z.unknown()).nullable().optional()
@@ -51,7 +52,14 @@ function apiKeyStatusQueryValue(value: unknown): ApiKeyListOptions['status'] {
   return text === 'active' || text === 'disabled' || text === 'all' ? text : undefined
 }
 
-apiKeysRouter.post('/', (req, res) => {
+apiKeysRouter.post('/', mutationGuard({
+  operationKey: 'api_keys.create',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    name: normalizedText(bodyField(req, 'name'))
+  })
+}), (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -95,7 +103,8 @@ apiKeysRouter.post('/', (req, res) => {
     }, req)
     res.status(201).json(ok(apiKey, '明文密钥已保存，列表中可直接查看'))
   } catch (error) {
-    res.status(400).json(badRequest(error instanceof Error ? error.message : 'API Key 参数无效'))
+    const message = error instanceof Error ? error.message : 'API Key 参数无效'
+    res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
   }
 })
 
@@ -148,7 +157,8 @@ apiKeysRouter.patch('/:id', (req, res) => {
       res.status(404).json({ message: 'API Key 不存在' })
       return
     }
-    throw error
+    const message = error instanceof Error ? error.message : '更新 API Key 失败'
+    res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
   }
 })
 

@@ -13,7 +13,7 @@ interface ErrorPolicyRow {
 
 export function listErrorPolicies(access?: AccessScope): ErrorPolicySummary[] {
   const scope = buildSystemAccountWhereClause(access)
-  const rows = getDatabase().prepare(`SELECT id, system_account_id, name, enabled, rules_json FROM error_policies${scope.clause} ORDER BY name ASC`).all(...scope.params) as unknown as ErrorPolicyRow[]
+  const rows = getDatabase().prepare(`SELECT id, system_account_id, name, enabled, rules_json FROM error_policies${scope.clause} ORDER BY name ASC, id ASC`).all(...scope.params) as unknown as ErrorPolicyRow[]
   return rows.map((row) => ({
     id: row.id,
     name: row.name,

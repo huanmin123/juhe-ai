@@ -10,6 +10,7 @@ import type { OpenAIAccountSecret } from '../storage/repositories.js'
 function main(): void {
   testMissingBoundAccountDoesNotAffectCandidates()
   testAffinityDoesNotPromoteAcrossPriority()
+  testAffinityDoesNotPromoteFallbackOverPrimary()
   testAffinityDoesNotPromoteOverBetterQuality()
   testAffinityPromotesWithinSameAvailabilityBucket()
   console.log('OpenAI session affinity regression passed')
@@ -36,6 +37,18 @@ function testAffinityDoesNotPromoteAcrossPriority(): void {
   ]
 
   assert.deepEqual(orderedIds(accounts, sessionKey), ['better-priority', 'sticky-low-priority'])
+  forgetOpenAIAccountForSession(sessionKey)
+}
+
+function testAffinityDoesNotPromoteFallbackOverPrimary(): void {
+  const sessionKey = 'session-affinity-regression:fallback'
+  rememberOpenAIAccountForSession(sessionKey, 'sticky-fallback')
+  const accounts = [
+    createAccount('primary', { priority: 0 }),
+    createAccount('sticky-fallback', { priority: 0, fallbackEnabled: true })
+  ]
+
+  assert.deepEqual(orderedIds(accounts, sessionKey), ['primary', 'sticky-fallback'])
   forgetOpenAIAccountForSession(sessionKey)
 }
 
@@ -75,6 +88,7 @@ function createAccount(
     priority: number
     qualityScore?: number
     superPriorityEnabled?: boolean
+    fallbackEnabled?: boolean
   }
 ): OpenAIAccountSecret {
   return {
@@ -90,6 +104,7 @@ function createAccount(
     concurrencyLimit: 20,
     priority: options.priority,
     superPriorityEnabled: options.superPriorityEnabled ?? false,
+    fallbackEnabled: options.fallbackEnabled ?? false,
     qualityScore: options.qualityScore,
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-test',

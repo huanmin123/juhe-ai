@@ -1,8 +1,7 @@
-import { randomUUID } from 'node:crypto'
 import { Router, type Request, type Response } from 'express'
 
 import { tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
-import { bindRequestContextFields, getRequestLogger, getTraceId } from '../../shared/request-context.js'
+import { bindRequestContextFields, createTraceId, getRequestLogger, getTraceId } from '../../shared/request-context.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   type GatewayApiKeyRow,
@@ -20,6 +19,7 @@ import { estimateProviderCostUsd } from '../model-pricing/model-pricing.service.
 import { shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { refreshOpenAIOAuthAccountAccessToken } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import {
+  decideAccountErrorPolicy,
   parseErrorPayload,
   type GatewaySettings
 } from './account-error-policy.service.js'
@@ -114,7 +114,7 @@ export async function handleOpenAIGatewayRequest(
 ): Promise<void> {
   const startedAt = Date.now()
   const abortController = new AbortController()
-  const traceId = getTraceId() ?? randomUUID()
+  const traceId = getTraceId() ?? createTraceId()
   const clientIp = extractClientIp(req)
   const endpoint = requestEndpoint(req)
   const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
@@ -713,6 +713,22 @@ export async function handleOpenAIGatewayRequest(
       }
       return
     }
+    if (error instanceof UpstreamRejectedRequestError) {
+      const auditError = parseClientVisibleUpstreamErrorForAudit(error.response, error.message)
+      sendRawUpstreamErrorResponse(res, error.response)
+      auditCapture.finalize({
+        outcome: 'upstream_failed',
+        success: false,
+        statusCode: error.response.statusCode,
+        responseHeaders: responseHeadersToObject(res),
+        responseBody: error.response.bodyText,
+        responsePartType: 'gateway_error',
+        errorPhase: 'upstream_response',
+        errorCode: auditError.errorCode,
+        errorMessage: auditError.errorMessage
+      })
+      return
+    }
     if (error instanceof OpenAIOAuthCodexAdapterError) {
       const statusCode = error.statusCode
       const responsePayload = gatewayErrorPayload(error.message, error.type)
@@ -883,6 +899,33 @@ function buildDiagnosticUpstreamError(
   return { statusCode, payload, errorMessage }
 }
 
+function parseClientVisibleUpstreamErrorForAudit(
+  response: ClientVisibleUpstreamErrorResponse,
+  fallbackMessage: string
+): { errorMessage: string; errorCode?: string } {
+  const parsedError = response.bodyText ? parseErrorPayload(response.bodyText, response.headers) : {}
+  return {
+    errorMessage: stringValue(parsedError.message) || fallbackMessage,
+    errorCode: stringValue(parsedError.code) || stringValue(parsedError.type) || undefined
+  }
+}
+
+function sendRawUpstreamErrorResponse(res: Response, response: ClientVisibleUpstreamErrorResponse): void {
+  if (res.writableEnded || res.destroyed) {
+    return
+  }
+  if (!res.headersSent) {
+    res.status(response.statusCode)
+    copyResponseHeaders({
+      status: response.statusCode,
+      ok: false,
+      headers: response.headers,
+      body: null
+    }, res)
+  }
+  res.end(response.body)
+}
+
 type GatewayDiagnosticErrorPayload = ReturnType<typeof gatewayErrorPayload> & {
   upstream?: {
     statusCode?: number
@@ -991,6 +1034,42 @@ class UpstreamAttemptError extends Error {
   }
 }
 
+class UpstreamRejectedRequestError extends Error {
+  constructor(
+    message: string,
+    readonly lastAttempt: UpstreamAttempt,
+    readonly response: ClientVisibleUpstreamErrorResponse
+  ) {
+    super(message)
+  }
+}
+
+interface ClientVisibleUpstreamErrorResponse {
+  statusCode: number
+  headers: Headers
+  body: Buffer
+  bodyText: string
+}
+
+interface DeferredAccountFailure {
+  account: UpstreamAccount
+  input: {
+    success: false
+    statusCode: number
+    headers: Headers | Record<string, string | string[]>
+    bodyText: string
+    settings: GatewaySettings
+  }
+  signature?: UpstreamFailureSignature
+  lastAttempt: UpstreamAttempt
+  response?: ClientVisibleUpstreamErrorResponse
+}
+
+interface UpstreamFailureSignature {
+  key: string
+  label: string
+}
+
 async function fetchFirstAvailableUpstream(
   req: Request,
   accounts: UpstreamAccount[],
@@ -1004,6 +1083,7 @@ async function fetchFirstAvailableUpstream(
   let lastAttempt: UpstreamAttempt | undefined
   let auditAttemptIndex = 0
   const failedProxyDispatchKeys = new Map<string, string>()
+  const deferredAccountFailures: DeferredAccountFailure[] = []
 
   for (const originalAccount of accounts) {
     throwIfRequestAborted(signal)
@@ -1140,6 +1220,7 @@ async function fetchFirstAvailableUpstream(
             }, '网关收到上游响应头')
             lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
             if (response.ok) {
+              flushDeferredAccountFailures(deferredAccountFailures, sessionAffinityKey)
               rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
               keepConcurrencySlot = true
               return { account, response, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
@@ -1150,7 +1231,8 @@ async function fetchFirstAvailableUpstream(
               signal
             })
             const responseBody = responseBodyRead.body
-            const responseBodyText = responseBodyRead.diagnosticBodyText
+            const responseBodyText = responseBodyRead.bodyText
+            const diagnosticResponseBodyText = responseBodyRead.diagnosticBodyText
             if (responseBodyRead.truncated) {
               getRequestLogger().warn({
                 event: 'gateway_upstream_retry_error_body_truncated',
@@ -1176,7 +1258,7 @@ async function fetchFirstAvailableUpstream(
             lastAttempt = {
               ...lastAttempt,
               responseHeaders: headersToObject(response.headers),
-              responseBodyText
+              responseBodyText: diagnosticResponseBodyText
             }
             auditCapture.completeAttempt(auditAttemptId, {
               statusCode: response.status,
@@ -1184,27 +1266,46 @@ async function fetchFirstAvailableUpstream(
               responseBody,
               success: false,
               errorPhase: 'upstream_response',
-              errorMessage: responseBodyText
+              errorMessage: diagnosticResponseBodyText
             })
             recordFailedUpstreamAttempt(req, usageContext, account, {
               upstreamUrl,
               startedAt: attemptStartedAt,
               statusCode: response.status,
               headers: response.headers,
-              bodyText: responseBodyText
+              bodyText: diagnosticResponseBodyText
             })
             persistOpenAICodexHeadersIfNeeded(account, response.headers, 'gateway_error')
-            forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-            applyAccountErrorHandlingWithCacheInvalidation(account, {
+            const failureInput = {
               success: false,
               statusCode: response.status,
               headers: response.headers,
               bodyText: responseBodyText,
               settings
-            })
+            } as const
+            if (hasAccountErrorPolicyDecision(account, failureInput)) {
+              forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+              applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
+            } else {
+              deferUnknownAccountFailureOrRejectRequest(deferredAccountFailures, {
+                account,
+                input: failureInput,
+                signature: buildUpstreamFailureSignature(response.headers, responseBodyText),
+                lastAttempt,
+                response: responseBodyRead.truncated ? undefined : {
+                  statusCode: response.status,
+                  headers: response.headers,
+                  body: responseBody,
+                  bodyText: responseBodyText
+                }
+              })
+            }
             skipAccount = true
             break
           } catch (error) {
+            if (error instanceof UpstreamRejectedRequestError) {
+              throw error
+            }
             if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
               if (shouldRecordAbortedUpstreamAttempt(error)) {
                 const statusCode = lastAttempt?.accountId === account.id && lastAttempt.upstreamUrl === upstreamUrl ? lastAttempt.status : undefined
@@ -1278,12 +1379,110 @@ async function fetchFirstAvailableUpstream(
     }
   }
 
+  flushDeferredAccountFailures(deferredAccountFailures, sessionAffinityKey)
   throw new UpstreamAttemptError(
     lastAttempt
       ? '所有上游账户均失败；最后一次尝试 ' + lastAttempt.accountName + ' ' + lastAttempt.upstreamUrl + ' 返回 ' + (lastAttempt.message ?? lastAttempt.status)
       : '所有上游账户均失败',
     lastAttempt
   )
+}
+
+function hasAccountErrorPolicyDecision(
+  account: UpstreamAccount,
+  input: {
+    statusCode: number
+    headers: Headers | Record<string, string | string[]>
+    bodyText: string
+    settings: GatewaySettings
+  }
+): boolean {
+  const headers = input.headers instanceof Headers ? input.headers : headersFromObjectForPolicy(input.headers)
+  return Boolean(decideAccountErrorPolicy(account, input.statusCode, headers, Buffer.from(input.bodyText), input.settings))
+}
+
+function deferUnknownAccountFailureOrRejectRequest(
+  deferredAccountFailures: DeferredAccountFailure[],
+  failure: DeferredAccountFailure
+): void {
+  const matchedFailure = failure.signature
+    ? deferredAccountFailures.find((item) => item.account.id !== failure.account.id && item.signature?.key === failure.signature?.key)
+    : undefined
+
+  if (matchedFailure && failure.signature && failure.response) {
+    getRequestLogger().warn({
+      event: 'gateway_request_failure_signature_confirmed',
+      firstAccountId: matchedFailure.account.id,
+      firstAccountName: matchedFailure.account.name,
+      secondAccountId: failure.account.id,
+      secondAccountName: failure.account.name,
+      statusCode: failure.lastAttempt.status,
+      failureSignature: failure.signature.label
+    }, '多个上游账号返回一致错误，按请求级失败返回客户端')
+    throw new UpstreamRejectedRequestError(
+      '多个上游账号返回一致错误，判定为请求级失败：' + failure.signature.label,
+      failure.lastAttempt,
+      failure.response
+    )
+  }
+
+  deferredAccountFailures.push(failure)
+}
+
+function flushDeferredAccountFailures(deferredAccountFailures: DeferredAccountFailure[], sessionAffinityKey?: string): void {
+  while (deferredAccountFailures.length > 0) {
+    const failure = deferredAccountFailures.shift()
+    if (!failure) {
+      continue
+    }
+    forgetOpenAIAccountForSession(sessionAffinityKey, failure.account.id)
+    applyAccountErrorHandlingWithCacheInvalidation(failure.account, failure.input)
+  }
+}
+
+function buildUpstreamFailureSignature(headers: Headers, bodyText: string): UpstreamFailureSignature | undefined {
+  const parsedError = parseErrorPayload(bodyText, headers)
+  const parts = [
+    signaturePart('type', parsedError.type),
+    signaturePart('code', parsedError.code),
+    signaturePart('message', parsedError.message)
+  ].filter((part): part is string => Boolean(part))
+
+  if (parts.length > 0) {
+    return {
+      key: parts.join('|'),
+      label: signatureLabel(parts.join(' '))
+    }
+  }
+
+  const normalizedBody = normalizeFailureSignatureText(bodyText)
+  return normalizedBody
+    ? {
+      key: 'body:' + normalizedBody,
+      label: signatureLabel(normalizedBody)
+    }
+    : undefined
+}
+
+function signaturePart(name: string, value: unknown): string | undefined {
+  const normalized = normalizeFailureSignatureText(typeof value === 'string' ? value : '')
+  return normalized ? `${name}:${normalized}` : undefined
+}
+
+function normalizeFailureSignatureText(value: string): string {
+  return value.trim().replace(/\s+/g, ' ').toLowerCase().slice(0, 2000)
+}
+
+function signatureLabel(value: string): string {
+  return value.length > 240 ? value.slice(0, 240) + '...' : value
+}
+
+function headersFromObjectForPolicy(headers: Record<string, string | string[]>): Headers {
+  const output = new Headers()
+  for (const [name, value] of Object.entries(headers)) {
+    output.set(name, Array.isArray(value) ? value.join(', ') : value)
+  }
+  return output
 }
 
 function failedProxyDispatchReason(failedProxyDispatchKeys: Map<string, string>, account: UpstreamAccount): string | undefined {

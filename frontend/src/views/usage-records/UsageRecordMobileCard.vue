@@ -50,9 +50,13 @@
         <span>IP</span>
         <strong class="mono-cell">{{ record.clientIp ?? '-' }}</strong>
       </div>
+      <div class="mobile-list-meta-item mobile-list-meta-wide">
+        <span>traceId</span>
+        <strong class="mono-cell">{{ record.traceId }}</strong>
+      </div>
     </div>
     <div class="mobile-list-card-actions">
-      <a-button type="primary" @click="$emit('detail')">详情</a-button>
+      <a-button type="primary" @click="$emit('copyTraceId', record.traceId)">复制 traceId</a-button>
     </div>
   </article>
 </template>
@@ -78,6 +82,6 @@ defineProps<{
 }>()
 
 defineEmits<{
-  (event: 'detail'): void
+  (event: 'copyTraceId', traceId: string): void
 }>()
 </script>

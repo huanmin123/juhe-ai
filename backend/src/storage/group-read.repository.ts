@@ -9,12 +9,12 @@ export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
   const ownerSystemAccountId = manageableSystemAccountId(access)
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return getDatabase()
-      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC")
+      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC")
       .all() as unknown as GroupListRow[]
   }
   if (!viewerSystemAccountId) {
     return getDatabase()
-      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC")
+      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC")
       .all() as unknown as GroupListRow[]
   }
   return getDatabase()
@@ -33,7 +33,7 @@ export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
           AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           AND groups.system_account_id <> ?
       )
-      ORDER BY updated_at DESC
+      ORDER BY updated_at DESC, id DESC
     `)
     .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
 }

@@ -1,5 +1,5 @@
 <template>
-  <a-modal v-model:open="open" title="新增授权" width="680px" @ok="$emit('ok')">
+  <a-modal v-model:open="open" title="新增授权" width="680px" :confirm-loading="saving" :ok-button-props="{ disabled: saving }" @ok="$emit('ok')">
     <a-form layout="vertical">
       <a-form-item label="资源类型" required>
         <a-select v-model:value="form.resourceType" :options="resourceTypeOptions" />
@@ -61,6 +61,7 @@ defineProps<{
   hasGranteeOptions: boolean
   resourceOptions: Array<{ label: string; value: string }>
   resourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }>
+  saving?: boolean
   teams: SystemTeamSummary[]
   users: SystemAccountPrincipalSummary[]
 }>()

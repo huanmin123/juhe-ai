@@ -98,7 +98,7 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑代理' : '新建代理'" width="720px" :ok-button-props="{ type: 'primary' }" @ok="saveProxy">
+    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑代理' : '新建代理'" width="720px" :confirm-loading="proxySaving" :ok-button-props="{ type: 'primary', disabled: proxySaving }" @ok="saveProxy">
       <a-form layout="vertical" class="modal-form" autocomplete="off">
         <a-form-item label="名称" required>
           <a-input v-model:value="form.name" placeholder="例如 OpenAI OAuth 本地代理" />
@@ -247,12 +247,15 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useSubmitAction } from '@/composables/useSubmitAction'
 import { formatDateTime } from '@/shared/formatters'
 import type { ProxyProfileSummary, ProxyTestItemStatus, ProxyTestReport } from '@/types/domain'
 
 const loading = ref(false)
 const modalOpen = ref(false)
 const editingId = ref<string>()
+const { submitAction, submittingRef } = useSubmitAction('proxies')
+const proxySaving = submittingRef('proxies.save')
 const proxies = ref<ProxyProfileSummary[]>([])
 const testingProxyId = ref<string>()
 const testReportOpen = ref(false)
@@ -388,7 +391,7 @@ function handleProxyAction(key: string, proxy: ProxyProfileSummary) {
   }
 }
 
-async function saveProxy() {
+const saveProxy = submitAction('proxies.save', async () => {
   if (!form.name.trim() || !form.host.trim() || !form.port) {
     message.warning('请填写代理名称、Host 和端口')
     return
@@ -407,7 +410,7 @@ async function saveProxy() {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存代理失败'))
   }
-}
+})
 
 async function runProxyTest() {
   const id = selectedTestProxy.value?.id ?? testReport.value?.proxyId

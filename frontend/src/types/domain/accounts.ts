@@ -68,6 +68,7 @@ export interface AccountSummary {
   currentConcurrency: number
   priority: number
   superPriorityEnabled: boolean
+  fallbackEnabled: boolean
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number

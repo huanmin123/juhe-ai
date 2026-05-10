@@ -28,8 +28,12 @@ export interface RequestContextFields {
 
 const requestContextStorage = new AsyncLocalStorage<RequestContext>()
 
+export function createTraceId(): string {
+  return randomUUID()
+}
+
 export function requestContextMiddleware(req: Request, res: Response, next: NextFunction): void {
-  const traceId = normalizeTraceId(req) ?? randomUUID()
+  const traceId = normalizeTraceId(req) ?? createTraceId()
   const clientIp = extractClientIp(req)
   const contextLogger = logger.child({
     traceId

@@ -14,6 +14,7 @@ import {
 } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
+import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
 
 export const announcementsRouter = Router()
@@ -62,7 +63,15 @@ announcementsRouter.get('/', requireAdmin, (_req, res) => {
   res.json(ok(listAnnouncements()))
 })
 
-announcementsRouter.post('/', requireAdmin, (req, res) => {
+announcementsRouter.post('/', requireAdmin, mutationGuard({
+  operationKey: 'announcements.create',
+  fingerprint: (req) => ({
+    title: normalizedText(bodyField(req, 'title')),
+    content: sensitiveFingerprint(bodyField(req, 'content')),
+    level: textValue(bodyField(req, 'level')),
+    status: textValue(bodyField(req, 'status'))
+  })
+}), (req, res) => {
   const parsed = createAnnouncementSchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('公告参数无效'))

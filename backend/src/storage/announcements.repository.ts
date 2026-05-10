@@ -35,7 +35,7 @@ export function listPublicAnnouncements(systemAccountId: string, limit = publicA
         AND announcement_reads.system_account_id = ?
       WHERE announcements.status = 'published'
         AND announcements.published_at IS NOT NULL
-      ORDER BY announcements.published_at DESC, announcements.created_at DESC
+      ORDER BY announcements.published_at DESC, announcements.created_at DESC, announcements.id DESC
       LIMIT ?
     `)
     .all(systemAccountId, safeLimit) as unknown as PublicAnnouncementRow[]
@@ -88,7 +88,7 @@ export function listAnnouncements(): AnnouncementSummary[] {
     .prepare(`
       SELECT *
       FROM announcements
-      ORDER BY updated_at DESC, created_at DESC
+      ORDER BY updated_at DESC, created_at DESC, id DESC
     `)
     .all() as unknown as AnnouncementRow[]
   return announcementSummaries(rows, true)

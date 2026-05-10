@@ -5,14 +5,14 @@ const DEFAULT_OPENAI_GROUP_DESCRIPTION = ''
 
 export function defaultOpenAIGroupIdForSystemAccount(systemAccountId: string): string | undefined {
   const row = getDatabase()
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND (is_default = 1 OR name = ?) ORDER BY is_default DESC LIMIT 1')
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? AND (is_default = 1 OR name = ?) ORDER BY is_default DESC, updated_at DESC, id ASC LIMIT 1')
     .get(systemAccountId, 'openai', DEFAULT_OPENAI_GROUP_NAME) as unknown as { id?: string } | undefined
   return row?.id
 }
 
 export function defaultGroupIdForSystemAccount(providerCode: string, systemAccountId: string): string | undefined {
   const row = getDatabase()
-    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? ORDER BY is_default DESC, updated_at DESC LIMIT 1')
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? ORDER BY is_default DESC, updated_at DESC, id ASC LIMIT 1')
     .get(systemAccountId, providerCode) as unknown as { id?: string } | undefined
   if (row?.id) {
     return row.id

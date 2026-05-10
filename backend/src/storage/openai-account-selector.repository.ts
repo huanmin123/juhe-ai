@@ -21,6 +21,7 @@ export interface OpenAIAccountSecret {
   concurrencyLimit: number
   priority: number
   superPriorityEnabled: boolean
+  fallbackEnabled: boolean
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -103,7 +104,7 @@ export function findOpenAIAccountForGroup(
   const params = forceAvailability || options.includeUnavailable ? [accountId, now] : [accountId, now, now]
   const row = getDatabase()
     .prepare(`
-      SELECT id, system_account_id, name, type, status, concurrency_limit, priority, super_priority_enabled, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message,
+      SELECT id, system_account_id, name, type, status, concurrency_limit, priority, super_priority_enabled, fallback_enabled, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message,
         NULL AS quality_score,
         NULL AS quality_state,
         NULL AS quality_ewma_first_token_ms
@@ -153,7 +154,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
       FROM group_accounts
       INNER JOIN accounts ON accounts.id = group_accounts.account_id
       WHERE group_accounts.group_id = ? AND group_accounts.enabled = 1
-      ORDER BY accounts.super_priority_enabled DESC, accounts.priority ASC, group_accounts.weight DESC, group_accounts.created_at ASC
+      ORDER BY accounts.fallback_enabled ASC, accounts.super_priority_enabled DESC, accounts.priority ASC, group_accounts.weight DESC, group_accounts.created_at ASC, group_accounts.account_id ASC
     `)
     .all(groupId) as unknown as GroupAccountRow[]
 
@@ -161,7 +162,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
   for (const groupAccount of groupAccountRows) {
     const row = database
       .prepare(`
-        SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled,
+        SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
           accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message,
           account_quality.quality_score,
           account_quality.quality_state,
@@ -219,6 +220,7 @@ interface OpenAIAccountRow {
   concurrency_limit: number
   priority: number
   super_priority_enabled: number
+  fallback_enabled: number
   credentials_encrypted: string
   proxy_profile_id: string | null
   passthrough_enabled: number
@@ -272,6 +274,7 @@ function openAIAccountSecretFromRow(
     concurrencyLimit: Number(row.concurrency_limit ?? 1),
     priority: Number(row.priority ?? 0),
     superPriorityEnabled: row.status === 'active' && row.super_priority_enabled === 1,
+    fallbackEnabled: row.status === 'active' && row.fallback_enabled === 1,
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
     qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
@@ -301,13 +304,14 @@ function compareOpenAIAccountsByQuality(left: OpenAIAccountSecret, right: OpenAI
   if (leftHasQuality && rightHasQuality && leftQuality !== rightQuality) {
     return leftQuality - rightQuality
   }
-  return left.name.localeCompare(right.name, 'zh-CN')
+  const nameDelta = left.name.localeCompare(right.name, 'zh-CN')
+  return nameDelta !== 0 ? nameDelta : left.id.localeCompare(right.id)
 }
 
 function orderOpenAIAccountsForDispatch(accounts: OpenAIAccountSecret[]): OpenAIAccountSecret[] {
   const buckets = new Map<string, OpenAIAccountSecret[]>()
   for (const account of accounts) {
-    const bucketKey = `${account.superPriorityEnabled ? 1 : 0}:${account.priority}`
+    const bucketKey = `${account.fallbackEnabled ? 1 : 0}:${account.superPriorityEnabled ? 1 : 0}:${account.priority}`
     const bucket = buckets.get(bucketKey)
     if (bucket) {
       bucket.push(account)
@@ -316,8 +320,11 @@ function orderOpenAIAccountsForDispatch(accounts: OpenAIAccountSecret[]): OpenAI
     }
   }
   return [...accounts].sort((left, right) => {
-    const leftBucket = buckets.get(`${left.superPriorityEnabled ? 1 : 0}:${left.priority}`) ?? []
-    const rightBucket = buckets.get(`${right.superPriorityEnabled ? 1 : 0}:${right.priority}`) ?? []
+    const leftBucket = buckets.get(`${left.fallbackEnabled ? 1 : 0}:${left.superPriorityEnabled ? 1 : 0}:${left.priority}`) ?? []
+    const rightBucket = buckets.get(`${right.fallbackEnabled ? 1 : 0}:${right.superPriorityEnabled ? 1 : 0}:${right.priority}`) ?? []
+    const leftFallback = left.fallbackEnabled ? 1 : 0
+    const rightFallback = right.fallbackEnabled ? 1 : 0
+    if (leftFallback !== rightFallback) return leftFallback - rightFallback
     const leftSuper = left.superPriorityEnabled ? 1 : 0
     const rightSuper = right.superPriorityEnabled ? 1 : 0
     if (leftSuper !== rightSuper) return rightSuper - leftSuper
@@ -325,7 +332,8 @@ function orderOpenAIAccountsForDispatch(accounts: OpenAIAccountSecret[]): OpenAI
     if (leftBucket.length >= 2 && rightBucket.length >= 2) {
       return compareOpenAIAccountsByQuality(left, right)
     }
-    return left.name.localeCompare(right.name, 'zh-CN')
+    const nameDelta = left.name.localeCompare(right.name, 'zh-CN')
+    return nameDelta !== 0 ? nameDelta : left.id.localeCompare(right.id)
   })
 }
 
@@ -403,6 +411,7 @@ function disableExpiredAccountsForSelection(systemAccountId: string): void {
       SET status = 'disabled',
           schedulable = 0,
           super_priority_enabled = 0,
+          fallback_enabled = 0,
           cooldown_until = NULL,
           last_error_message = ?,
           updated_at = ?

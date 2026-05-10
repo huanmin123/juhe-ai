@@ -5,15 +5,16 @@ import { badRequest, ok } from '../../shared/http.js'
 import { DefaultGroupReadonlyError, createGroup, deleteGroup, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const groupsRouter = Router()
 
 const groupSchema = z.object({
-  name: z.string().min(1),
-  providerCode: z.string().min(1).optional(),
-  description: z.string().optional(),
+  name: z.string().trim().min(1),
+  providerCode: z.string().trim().min(1).optional(),
+  description: z.string().trim().optional(),
   enabled: z.boolean().optional()
 })
 
@@ -21,7 +22,15 @@ groupsRouter.get('/', (req, res) => {
   res.json(ok(listGroups(getRequestAccessScope(req.query.systemAccountId))))
 })
 
-groupsRouter.post('/', (req, res) => {
+groupsRouter.post('/', mutationGuard({
+  operationKey: 'groups.create',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    providerCode: normalizedText(bodyField(req, 'providerCode')) || 'openai',
+    name: normalizedText(bodyField(req, 'name'))
+  })
+}), (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     res.status(400).json(badRequest(scopeQuery.message))
@@ -43,32 +52,37 @@ groupsRouter.post('/', (req, res) => {
     res.status(400).json(badRequest(`供应商已停用：${providerCode}`))
     return
   }
-  const group = runLoggedOperation(() => {
-    const group = createGroup({ ...parsed.data, providerCode }, requestAccess)
-    const ownerSystemAccountId = resolveOperationOwner(group as unknown as Record<string, unknown>, requestAccess)
-    return {
-      result: group,
-      afterCommit: clearGatewayRuntimeCache,
-      log: {
-        operationScopeSystemAccountId: ownerSystemAccountId,
-        mode: operationMode(requestAccess),
-        module: 'groups',
-        action: 'create',
-        operationKey: 'groups.create',
-        resourceType: 'group',
-        resourceId: group.id,
-        resourceName: group.name,
-        summary: `创建分组：${group.name}`,
-        changes: [
-          safeChange('name', '名称', undefined, group.name),
-          safeChange('providerCode', '供应商', undefined, group.providerCode),
-          safeChange('enabled', '启用状态', undefined, group.enabled)
-        ],
-        viewers: viewer(ownerSystemAccountId, 'resource_owner')
+  try {
+    const group = runLoggedOperation(() => {
+      const group = createGroup({ ...parsed.data, providerCode }, requestAccess)
+      const ownerSystemAccountId = resolveOperationOwner(group as unknown as Record<string, unknown>, requestAccess)
+      return {
+        result: group,
+        afterCommit: clearGatewayRuntimeCache,
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'groups',
+          action: 'create',
+          operationKey: 'groups.create',
+          resourceType: 'group',
+          resourceId: group.id,
+          resourceName: group.name,
+          summary: `创建分组：${group.name}`,
+          changes: [
+            safeChange('name', '名称', undefined, group.name),
+            safeChange('providerCode', '供应商', undefined, group.providerCode),
+            safeChange('enabled', '启用状态', undefined, group.enabled)
+          ],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
       }
-    }
-  }, req)
-  res.status(201).json(ok(group))
+    }, req)
+    res.status(201).json(ok(group))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '创建分组失败'
+    res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
+  }
 })
 
 groupsRouter.patch('/:id', (req, res) => {
@@ -133,7 +147,8 @@ groupsRouter.patch('/:id', (req, res) => {
       res.status(404).json({ message: '分组不存在' })
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '更新分组失败'))
+    const message = error instanceof Error ? error.message : '更新分组失败'
+    res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
     return
   }
 })

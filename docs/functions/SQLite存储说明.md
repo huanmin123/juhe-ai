@@ -33,8 +33,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 客户请求链路中的高频 SQLite 读写优先通过独立本地 DB service 进程异步完成，降低 Web/API/网关主进程被同步 `DatabaseSync` 调用短暂阻塞的风险；DB service 不改变 SQLite 单写者模型。
 - 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
-- 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入请求幂等和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，幂等重放不写第二条操作日志。
-- 原始审计日志使用独立表保存完整链路原文；网关请求链路只能终态入队，后台批量写库，不能同步写审计表
+- 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志。
+- 原始审计日志使用独立表保存每次请求的轻量事件和上游尝试；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、加密、去重并通过 payload 引用保存，网关请求链路只能终态入队，后台批量写库，不能同步写审计表。
 - 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；搜索能力使用 SQLite 索引表 `runtime_logs` 和 FTS5 表 `runtime_log_search`，不在查询时扫描日志文件。
 - 系统团队、团队成员和统一资源授权使用独立表记录；授权不复制账户凭据，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
@@ -61,10 +61,11 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `operation_logs`：保存业务操作主事件，包括操作人、业务作用域、模块、动作、主资源、安全差异和 trace ID。
 - `operation_log_targets`：保存一次操作涉及或影响的资源，支持按资源反查历史操作。
 - `operation_log_viewers`：保存普通用户可见性和可见原因，资源删除或授权撤销后仍按当时关系追溯。
-- `idempotency_records`：保存管理端写接口的请求幂等记录，按 `actor_system_account_id + method + route_key + idempotency_key` 唯一，用于重复提交时返回第一次响应并避免重复写业务数据和操作日志。
-- `audit_logs`：保存每次被采样或非成功客户端请求的审计元数据，用于后台页面检索。
+- `audit_logs`：保存每次客户端请求的轻量审计事件元数据，用于后台页面检索。
 - `audit_log_attempts`：保存审计请求下每次上游尝试、命中账号、代理、状态码和错误摘要。
-- `audit_log_payloads`：保存客户端请求、上游请求、上游响应和最终网关响应的完整原文，建议加密存储。
+- `audit_payload_refs`：保存审计事件到 headers/body blob 的引用、part 类型、顺序、hash、大小和保留状态。
+- `audit_payload_blobs`：保存压缩加密后的客户端请求、上游请求、上游响应和最终网关响应 blob 元数据；blob 文件落在本地数据目录。
+- `audit_error_groups`：保存短时间窗口内重复错误的聚合信息，列表默认可按错误组查看。
 - `runtime_logs`：保存最近 3 天普通运行日志的可检索字段和原始 JSON 行，用于管理员“日志搜索”页面。
 - `runtime_log_search`：FTS5 `trigram` 虚表，保存普通运行日志关键字段和原始 JSON，用于关键字检索。
 - `account_quality_scores`：按 `account_id` 保存账号质量缓存，包括质量分、质量状态、近 10 分钟真实网关首 token 聚合、成功率和最近真实样本时间。该表只作为调度辅助缓存，事实源仅为 `usage_records`；账号质量主动探测能力已删除，不保留重新开启的旧设置。超过 24 小时没有真实样本的质量分不参与调度。
@@ -75,6 +76,12 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 
 - `system_accounts(lower(username))`：保证用户账户大小写不敏感唯一，用户账户创建后不允许修改。
 - `system_accounts(lower(display_name))`：保证用户名称大小写不敏感唯一。
+- `accounts(system_account_id, provider_code, lower(name))`：保证同一用户同一供应商下 AI 账户名称唯一，凭据唯一仍由 `credential_fingerprint` 兜底。
+- `groups(system_account_id, provider_code, lower(name))`：保证同一用户同一供应商下分组名称唯一。
+- `groups(system_account_id, provider_code) WHERE is_default = 1`：保证同一用户同一供应商只有一个默认分组。
+- `api_keys(system_account_id, lower(name))`：保证同一用户下 API Key 名称唯一，密钥本身仍由 `key_hash` 兜底。
+- `proxy_profiles(lower(name))`：保证代理配置名称全局唯一。
+- 上述第一批新增业务唯一索引已直接落到本地 SQLite；若旧库已有重复记录，应先离线清理旧数据，再让最新 schema 正常建索引，不在启动路径保留跳过索引的兼容逻辑。
 - `usage_records(system_account_id, created_at, id)`：统计 worker 增量扫描。
 - `usage_records(account_owner_system_account_id, account_id, created_at, id)`：账户所有者查看真实账户统一用量。
 - `usage_records(group_owner_system_account_id, group_id, created_at, id)`：分组所有者查看真实分组统一用量。
@@ -91,7 +98,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 有效资源查询需要在 service 层按 `resource_type + resource_id + caller_system_account_id` 去重；团队来源只能合并到用户授权来源摘要，不能展开成多条 AI 账户或分组。
 - `usage_records(system_account_id, first_token_ms, created_at, id)`、`usage_records(system_account_id, duration_ms, created_at, id)`、`usage_records(system_account_id, cost_usd, created_at, id)`：使用记录页按首 token、总耗时、成本排序时只取有限窗口，避免大数据量下前端全量排序或数据库临时排序。
 - `usage_records(first_token_ms, created_at, id)`、`usage_records(duration_ms, created_at, id)`、`usage_records(cost_usd, created_at, id)`：管理员查看全部系统账户时的全局排序索引。
-- `accounts(super_priority_enabled, status, priority)`：账号调度和列表排序读取超级优先与优先级。
+- `accounts(fallback_enabled, super_priority_enabled, status, priority)`：账号调度和列表排序读取降级备用、超级优先与优先级。
 - `account_quality_scores(provider_code, quality_score, quality_state)`：账号质量缓存排序和后台挑选候选。
 - `usage_stats_totals(system_account_id, scope_type, scope_id)`：列表读取累计值。
 - `usage_stats_daily(system_account_id, scope_type, scope_id, stat_date)`：今日和天级趋势读取。
@@ -113,17 +120,19 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `operation_log_viewers(system_account_id, created_at, operation_log_id)`：用户侧读取可见操作日志。
 - `operation_log_viewers(system_account_id, operation_log_id)`：用户侧当前页日志详情级别裁剪。
 - `operation_log_viewers(operation_log_id, system_account_id)`：详情权限校验。
-- `idempotency_records(actor_system_account_id, method, route_key, idempotency_key)`：管理端写接口幂等键唯一约束。
-- `idempotency_records(expires_at)`：幂等记录保留期清理。
-- `idempotency_records(status, locked_until)`：恢复或排查处理中的幂等请求。
 - `audit_logs(created_at, id)`：审计日志默认分页。
 - `audit_logs(system_account_id, created_at, id)`：管理员按调用方筛选审计日志。
 - `audit_logs(audit_outcome, created_at, id)`、`audit_logs(final_status_code, created_at, id)`：按结果和状态码筛选。
 - `audit_logs(path, created_at, id)`、`audit_logs(api_key_id, created_at, id)`、`audit_logs(group_id, created_at, id)`、`audit_logs(account_id, created_at, id)`：按接口、API Key、分组和账号定位问题。
 - `audit_logs(trace_id)`：按链路 ID 追踪完整链路。
 - `audit_log_attempts(audit_log_id, attempt_index)`：审计详情按尝试顺序读取。
-- `audit_log_payloads(audit_log_id, part_type, sequence_index)`：审计详情按阶段和顺序读取原文。
-- `audit_log_payloads(audit_log_id, sequence_index)`：审计详情按真实捕获顺序展示完整链路片段。
+- `audit_logs(error_group_id, created_at, id)`：按重复错误组反查每次 occurrence。
+- `audit_payload_refs(audit_log_id, part_type, sequence_index)`：审计详情按阶段和顺序读取 payload 引用。
+- `audit_payload_refs(audit_log_id, sequence_index)`：审计详情按真实捕获顺序展示完整链路片段。
+- `audit_payload_refs(headers_blob_id)`、`audit_payload_refs(body_blob_id)`：清理任务判断 blob 引用。
+- `audit_payload_blobs(sha256, raw_size_bytes, content_type)`：按原始内容 hash 做精确去重。
+- `audit_payload_blobs(retention_until, id)`：payload 分层清理。
+- `audit_error_groups(window_started_at, id)`、`audit_error_groups(fingerprint, window_started_at)`：错误组列表和 upsert 定位。
 - `runtime_logs(trace_id, time, id)`：按链路 ID 快速抓取同一次请求相关运行日志。
 - `runtime_logs(time, id)`：默认读取最近日志。
 - `runtime_logs(level, time, id)`、`runtime_logs(event, time, id)`：按通用日志级别和事件定位问题；接口、状态码和客户端 IP 等请求维度只放在审计日志中查询。
@@ -155,7 +164,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
 - 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属。
 - 系统采样的 `memory_used_percent` 表示主机实际内存压力口径，不是所有平台都等同于 `totalmem - freemem`。macOS 会把可回收文件缓存、inactive 和 speculative 页面排除在已用内存外，按 `vm_stat` 的 `Anonymous pages + Pages wired down + Pages occupied by compressor` 计算，避免把系统缓存误报为应用内存占用；读取失败时才回退到 Node 默认口径。
-- 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录并用单事务批量写入 `audit_logs`、`audit_log_attempts` 和 `audit_log_payloads`。
+- 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、加密、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；大 blob 文件写入本地数据目录。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
 - 运行日志索引 worker 从 Pino JSONL 输出流旁路接收日志行，按 worker 队列批量写入 `runtime_logs` 和 `runtime_log_search`；索引失败只能写 `stderr`，不能再通过普通 logger 递归打日志。
 - “日志搜索”索引查询读取当前 SQLite 索引表，使用 `traceId`、级别和事件等通用索引条件缩小结果，关键字走 FTS5 `trigram` 虚表；列表默认展示最近 100 条并通过后端分页继续翻页。索引表保留周期由后台清理任务控制，查询接口不再提供时间范围筛选。
@@ -171,7 +180,9 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 | --- | --- | --- | --- | --- |
 | `runtime_logs`、`runtime_log_search` | 普通运行日志搜索索引 | 固定最近 3 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只删除 SQLite 搜索索引，不删除后端 `.log` 文件 |
 | `operation_logs`、`operation_log_targets`、`operation_log_viewers` | 业务操作追溯日志 | 默认 365 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只按时间清理，不因资源删除级联删除历史日志 |
-| `audit_logs`、`audit_log_attempts`、`audit_log_payloads` | 原始审计日志和原文 payload | 固定 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 删除 `audit_logs` 后依赖外键级联删除 attempts 和 payloads |
+| `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 默认 90 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 事件可长期保留，正文过期不应删除事件 |
+| `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩加密 blob 元数据 | 成功正文默认 7 天，错误正文默认 30 天，安全事件正文默认 90 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
+| `audit_error_groups` | 重复错误聚合 | 默认 180 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只做展示和排障聚合，不替代事件记录 |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只删除超过保留期且已被统计游标处理过的记录，避免破坏统计聚合 |
 | `usage_stats_daily`、`usage_model_daily`、`usage_error_daily` | 日级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 用量统计页面最大窗口为近 1 个月，不再保留 180 天日缓存 |
 | `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly` | 小时级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 统计概览近 1 天到近 1 月均从小时缓存聚合 |
@@ -263,16 +274,17 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 
 ## 原始审计日志存储
 
-原始审计日志是独立于使用记录的高权限排障数据，具体行为见 [原始审计日志设计](原始审计日志设计.md)。
+原始审计日志是独立于使用记录的高权限排障数据，捕获行为见 [原始审计日志设计](原始审计日志设计.md)，容量治理见 [审计日志保全策略设计](审计日志保全策略设计.md)。
 
 源码边界：
 
-- `schema.ts` 中只保留当前 `audit_logs`、`audit_log_attempts`、`audit_log_payloads` 表结构和索引，不保留旧审计结构兼容分支。
+- `schema.ts` 中只保留当前审计事件、尝试、payload 引用、blob 元数据和错误聚合表结构，不保留旧审计结构兼容分支。
 - 网关模块只创建请求内捕获上下文、追加原始片段和终态投递，不直接调用 repository 同步写审计表。
-- 独立 background worker 进程里的审计批量落库服务负责从 worker 队列取终态记录，并在一个事务里写入主表、尝试表和 payload 表。
+- 独立 background worker 进程里的审计批量落库服务负责从 worker 队列取终态记录，计算正文保全策略、压缩、加密、去重和错误聚合，并用短事务写入元数据。
+- 大 payload blob 第一版存放在 `backend/data/audit/blobs/` 下的本地文件中，SQLite 只保存 blob 元数据和引用。
 - 审计 payload 不参与统计 worker，不作为用量事实源。
 
-建议新增 `audit_logs` 表：
+建议新增或扩展 `audit_logs` 表：
 
 - `id`
 - `trace_id`
@@ -296,17 +308,26 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `error_message`
 - `sample_bucket`
 - `sample_reason`
+- `payload_policy`：`full`、`sampled_full`、`metadata_only`、`summary_only`、`hash_only`、`dropped`
+- `payload_capture_status`：`complete`、`partial`、`metadata_only`、`expired`、`overflow`、`dropped`
+- `request_headers_sha256`
+- `request_body_sha256`
+- `response_headers_sha256`
+- `response_body_sha256`
 - `attempt_count`
-- `payload_count`
-- `payload_bytes`
-- `capture_status`：`complete`、`dropped`、`overflow`
+- `payload_ref_count`
+- `raw_payload_bytes`
+- `stored_payload_bytes`
+- `compressed_payload_bytes`
+- `compression_saved_bytes`
+- `error_group_id`
 - `started_at`
 - `ended_at`
 - `duration_ms`
 - `first_token_ms`
 - `created_at`
 
-建议新增 `audit_log_attempts` 表：
+建议新增或扩展 `audit_log_attempts` 表：
 
 - `id`
 - `audit_log_id`
@@ -327,7 +348,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `ended_at`
 - `duration_ms`
 
-建议新增 `audit_log_payloads` 表：
+建议新增 `audit_payload_refs` 表：
 
 - `id`
 - `audit_log_id`
@@ -336,20 +357,71 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `sequence_index`
 - `content_type`
 - `content_encoding`
-- `headers_encrypted`
-- `body_encrypted`
+- `headers_blob_id`
+- `body_blob_id`
+- `headers_sha256`
 - `body_sha256`
-- `size_bytes`
+- `raw_size_bytes`
+- `stored_size_bytes`
+- `capture_status`：`complete`、`summary_only`、`hash_only`、`expired`、`dropped`
+- `retention_until`
 - `created_at`
+
+建议新增 `audit_payload_blobs` 表：
+
+- `id`
+- `sha256`
+- `raw_size_bytes`
+- `compressed_size_bytes`
+- `content_type`
+- `content_encoding`
+- `compression`：`none`、`gzip`、`brotli`
+- `encryption`
+- `storage_backend`：第一版固定 `local_file`
+- `storage_key`
+- `ref_count`
+- `first_seen_at`
+- `last_seen_at`
+- `retention_until`
+- `created_at`
+
+建议新增 `audit_error_groups` 表：
+
+- `id`
+- `fingerprint`
+- `window_started_at`
+- `window_ended_at`
+- `system_account_id`
+- `api_key_id`
+- `group_id`
+- `account_id`
+- `provider_code`
+- `path`
+- `model`
+- `status_code`
+- `error_phase`
+- `error_code`
+- `error_type`
+- `normalized_request_fingerprint`
+- `normalized_error_fingerprint`
+- `count`
+- `first_event_id`
+- `last_event_id`
+- `sample_event_id`
+- `last_message`
+- `created_at`
+- `updated_at`
 
 保存规则：
 
-- `headers_encrypted` 和 `body_encrypted` 保存完整原文，不脱敏、不截断、不改写。
-- `headersSha256` 由详情接口读取 `headers_encrypted` 后按稳定 JSON 字符串计算，不新增存储列；旧审计记录只要 headers 可解密即可展示。
-- `body_sha256` 只针对 body 原文字节计算，不代表整条审计记录或完整请求的摘要。
-- 加密存储优先复用 `JUHE_AI_SECRET` 派生的应用层加密能力；复用旧数据库时必须保持该密钥稳定，否则原始审计 payload 无法解密。
-- 单条请求超过活跃捕获上限或队列上限时，不能写入伪完整记录；允许丢弃整条审计记录并增加队列丢弃计数。
-- 完全成功请求默认只保存 10%；非成功、客户端中断、流式中断和重试后成功请求全量保存。
+- `audit_logs` 每次客户端请求都写入轻量事件，正文采样不能导致事件缺失。
+- `headers_sha256` 和 `body_sha256` 均针对压缩、加密前的原始明文字节计算。
+- payload blob 先压缩再加密，压缩算法、加密方式、原始大小和压缩后大小必须记录。
+- 相同 `sha256 + raw_size_bytes + content_type` 的 blob 只存一份，多条事件通过 `audit_payload_refs` 引用。
+- 未完整保留正文时，`capture_status` 必须明确标记为 `summary_only`、`hash_only`、`expired`、`overflow` 或 `dropped`，不能伪装成完整原文。
+- 加密存储优先复用 `JUHE_AI_SECRET` 派生的应用层加密能力；复用旧数据库和 blob 目录时必须保持该密钥稳定，否则原始审计 payload 无法解密。
+- 单条请求超过活跃捕获上限或队列上限时，允许只保存轻量事件和降级原因；不能写入伪完整 payload。
+- 错误聚合只影响展示和排障汇总，不删除 `audit_logs` 事件。
 
 ## 系统团队与统一授权存储
 
@@ -497,7 +569,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 ## 错误兜底策略
 
-账户添加和编辑优先维护账号自己的 `credentials.error_handling_rules`。网关不会把未处理的上游 `4xx/5xx` 原样返回给客户端：如果当前账号的内嵌规则没有命中，当前账号会按 `defaultTemporaryUnschedulableMinutes` 进入临时不可调用，并切换到同分组内下一个可用账号重试；全部账号都不可用时，客户端只会收到“没有可用账号”的网关错误。
+账户添加和编辑优先维护账号自己的 `credentials.error_handling_rules`。命中内嵌账号错误规则时，网关按规则写入限流、临时不可调用或错误状态；未命中账号规则的上游非成功响应先作为待确认失败，不立即写入账号状态。后续账号请求成功时，前序待确认失败才按 `defaultTemporaryUnschedulableMinutes` 进入临时不可调用；两个不同账号返回同一错误签名时，网关判定为请求级失败，直接原样透传上游错误给客户端，不冷却账号、不继续扫池。凡是决定放行给客户端的上游响应，都必须透传上游状态码、可透传响应头和原始响应体，不改写、不包装为网关自有错误格式。
 
 ## 默认运行策略
 
@@ -533,14 +605,18 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `cooldownAccountRetestEnabled = true`：冷却账号后台复测默认开启，但只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
 - `cooldownAccountRetestBatchSize = 10`：默认每轮最多恢复性复测 10 个冷却到期账号。
 
-原始审计日志固定策略：
+原始审计日志与保全策略：
 
 - 固定启用原始审计日志，不提供系统设置开关。
-- 完全成功请求固定保存 `10%`；失败、重试后成功、客户端中断和流式中断全量保存。
+- 每次客户端请求都写入轻量审计事件；正文保留策略不影响事件存在。
+- 普通成功请求正文默认按稳定桶采样，未命中时保留 hash、大小、摘要和采样原因。
+- 失败、重试后成功、客户端中断、流式中断、安全 / 认证 / 权限事件和慢请求默认完整保全正文。
+- 正文 blob 先压缩再加密，按原始 hash 精确去重，并通过 payload 引用关联到事件。
+- 重复错误按短时间窗口聚合展示，但每次 occurrence 仍由 `audit_logs` 事件追溯。
 - 审计队列固定每 `5` 秒批量落库一次，单批最多 `50` 条客户端请求。
 - 待写队列最多保留 `1000` 条终态审计请求，近似最大原文体积为 `256MB`。
 - 单个请求活跃捕获上限为 `64MB`，超过后丢弃整条审计记录。
-- 原始审计日志固定保留 `7` 天。
+- 默认保留建议：事件元数据 `90` 天、成功正文 `7` 天、错误正文 `30` 天、安全事件正文 `90` 天、错误聚合组 `180` 天；具体以 [审计日志保全策略设计](审计日志保全策略设计.md) 为准。
 
 预上线阶段如本地库仍存在不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes`、`auditLogEnabled`、`auditLogSuccessSampleRate`、`auditLogFlushIntervalSeconds`、`auditLogBatchSize`、`auditLogQueueMaxItems`、`auditLogQueueMaxBytesMb`、`auditLogActiveCaptureMaxBytesMb`、`auditLogRetentionDays`、`proxyLatencyRefreshIntervalSeconds`、`proxyLatencyRefreshBatchSize` 等旧设置，直接通过备份后清洗或重建库处理；源码不保留启动清理分支。
 

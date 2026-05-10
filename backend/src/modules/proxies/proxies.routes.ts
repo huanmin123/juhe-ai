@@ -4,6 +4,7 @@ import { z } from 'zod'
 import { badRequest, ok } from '../../shared/http.js'
 import { createProxy, deleteProxy, listProxies, listProxyOptions, ProxyInUseError, updateProxy, updateProxyTestState } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
+import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
 import { testProxyById } from './proxy-test.service.js'
@@ -11,10 +12,10 @@ import { testProxyById } from './proxy-test.service.js'
 export const proxiesRouter = Router()
 
 const proxySchema = z.object({
-  name: z.string().min(1),
+  name: z.string().trim().min(1),
   description: z.string().trim().max(200).nullable().optional(),
   type: z.enum(['http', 'https', 'socks5', 'socks5h']),
-  host: z.string().min(1),
+  host: z.string().trim().min(1),
   port: z.number().int().min(1).max(65535),
   username: z.string().optional(),
   password: z.string().optional(),
@@ -29,40 +30,55 @@ proxiesRouter.get('/', requireAdmin, (_req, res) => {
   res.json(ok(listProxies()))
 })
 
-proxiesRouter.post('/', requireAdmin, (req, res) => {
+proxiesRouter.post('/', requireAdmin, mutationGuard({
+  operationKey: 'proxies.create',
+  fingerprint: (req) => ({
+    name: normalizedText(bodyField(req, 'name')),
+    type: normalizedText(bodyField(req, 'type')),
+    host: normalizedText(bodyField(req, 'host')),
+    port: bodyField(req, 'port'),
+    username: normalizedText(bodyField(req, 'username')),
+    password: sensitiveFingerprint(bodyField(req, 'password'))
+  })
+}), (req, res) => {
   const parsed = proxySchema.safeParse(req.body)
   if (!parsed.success) {
     res.status(400).json(badRequest('代理参数无效'))
     return
   }
-  const proxy = runLoggedOperation(() => {
-    const proxy = createProxy(parsed.data)
-    return {
-      result: proxy,
-      afterCommit: clearGatewayRuntimeCache,
-      log: {
-        mode: 'admin',
-        module: 'proxies',
-        action: 'create',
-        operationKey: 'proxies.create',
-        resourceType: 'proxy',
-        resourceId: proxy.id,
-        resourceName: proxy.name,
-        summary: `创建代理：${proxy.name}`,
-        visibilityScope: 'admin_only',
-        changes: [
-          safeChange('name', '名称', undefined, proxy.name),
-          safeChange('type', '类型', undefined, proxy.type),
-          safeChange('host', '主机', undefined, proxy.host),
-          safeChange('port', '端口', undefined, proxy.port),
-          safeChange('username', '用户名', undefined, proxy.username),
-          safeChange('password', '密码', undefined, parsed.data.password),
-          safeChange('enabled', '启用状态', undefined, proxy.enabled)
-        ]
+  try {
+    const proxy = runLoggedOperation(() => {
+      const proxy = createProxy(parsed.data)
+      return {
+        result: proxy,
+        afterCommit: clearGatewayRuntimeCache,
+        log: {
+          mode: 'admin',
+          module: 'proxies',
+          action: 'create',
+          operationKey: 'proxies.create',
+          resourceType: 'proxy',
+          resourceId: proxy.id,
+          resourceName: proxy.name,
+          summary: `创建代理：${proxy.name}`,
+          visibilityScope: 'admin_only',
+          changes: [
+            safeChange('name', '名称', undefined, proxy.name),
+            safeChange('type', '类型', undefined, proxy.type),
+            safeChange('host', '主机', undefined, proxy.host),
+            safeChange('port', '端口', undefined, proxy.port),
+            safeChange('username', '用户名', undefined, proxy.username),
+            safeChange('password', '密码', undefined, parsed.data.password),
+            safeChange('enabled', '启用状态', undefined, proxy.enabled)
+          ]
+        }
       }
-    }
-  }, req)
-  res.status(201).json(ok(proxy))
+    }, req)
+    res.status(201).json(ok(proxy))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : '创建代理失败'
+    res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
+  }
 })
 
 proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
@@ -110,7 +126,8 @@ proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
       res.status(404).json({ message: '代理不存在' })
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '更新代理失败'))
+    const message = error instanceof Error ? error.message : '更新代理失败'
+    res.status(message.includes('已存在') ? 409 : 400).json(badRequest(message))
   }
 })
 

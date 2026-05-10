@@ -103,7 +103,7 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑分组' : '新建分组'" width="640px" :ok-button-props="{ type: 'primary' }" @ok="saveGroup">
+    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑分组' : '新建分组'" width="640px" :confirm-loading="groupSaving" :ok-button-props="{ type: 'primary', disabled: groupSaving }" @ok="saveGroup">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
       <a-form layout="vertical">
         <a-form-item label="分组名称" required>
@@ -139,6 +139,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useSubmitAction } from '@/composables/useSubmitAction'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
 import type { GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -156,6 +157,8 @@ const FALLBACK_PROVIDER: ProviderDefinition = {
 const loading = ref(false)
 const modalOpen = ref(false)
 const editingId = ref<string>()
+const { submitAction, submittingRef } = useSubmitAction('groups')
+const groupSaving = submittingRef('groups.save')
 const groups = ref<GroupSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
@@ -363,7 +366,7 @@ function openEdit(group: GroupSummary) {
   modalOpen.value = true
 }
 
-async function saveGroup() {
+const saveGroup = submitAction('groups.save', async () => {
   if (!form.name.trim()) {
     message.warning('请填写分组名称')
     return
@@ -390,7 +393,7 @@ async function saveGroup() {
     console.error(error)
     message.error('保存分组失败')
   }
-}
+})
 
 async function removeGroup(id: string) {
   const group = groups.value.find((item) => item.id === id)

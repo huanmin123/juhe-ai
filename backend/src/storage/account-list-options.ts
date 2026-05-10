@@ -1,4 +1,4 @@
-export type AccountListSortField = 'priority' | 'superPriority' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
+export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
 export type AccountListSortDirection = 'asc' | 'desc'
 
 export interface AccountListSort {
@@ -32,6 +32,7 @@ export interface NormalizedAccountListOptions {
 const accountListSortColumns: Record<AccountListSortField, string> = {
   priority: 'account_rows.priority',
   superPriority: 'account_rows.super_priority_enabled',
+  fallback: 'account_rows.fallback_enabled',
   qualityScore: 'account_quality.quality_score',
   name: 'account_rows.name COLLATE NOCASE',
   type: 'account_rows.type COLLATE NOCASE',
@@ -82,7 +83,7 @@ export function buildAccountListOrderClause(options: Pick<NormalizedAccountListO
     }
     return `${accountListSortColumns[sort.field]} ${direction}`
   })
-  return `ORDER BY ${orderParts.join(', ')}`
+  return `ORDER BY ${[...orderParts, 'account_rows.created_at ASC', 'account_rows.id ASC'].join(', ')}`
 }
 
 function normalizeTextFilter(value: unknown): string | undefined {

@@ -64,7 +64,7 @@ export function loadResourceAuthorizationSourcesByAuthorizationIds(authorization
     FROM resource_authorization_sources ras
     LEFT JOIN system_teams ON system_teams.id = ras.source_team_id
     WHERE ras.authorization_id IN (${sqlPlaceholders(ids.length)})
-    ORDER BY ras.status ASC, ras.created_at ASC
+    ORDER BY ras.status ASC, ras.created_at ASC, ras.id ASC
   `).all(...ids) as unknown as Array<ResourceAuthorizationSourceRow & { team_name?: string | null }>
   const result = new Map<string, ResourceAuthorizationSourceSummary[]>()
   for (const row of rows) {

@@ -26,7 +26,7 @@ export interface SessionWithAccount {
 }
 
 export function listSystemAccounts(): SystemAccountSummary[] {
-  const rows = getDatabase().prepare('SELECT * FROM system_accounts ORDER BY created_at ASC').all() as unknown as SystemAccountRow[]
+  const rows = getDatabase().prepare('SELECT * FROM system_accounts ORDER BY created_at ASC, id ASC').all() as unknown as SystemAccountRow[]
   return rows.map(systemAccountSummaryFromRow)
 }
 

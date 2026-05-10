@@ -201,7 +201,7 @@ export function getRuntimeLogFacets(): RuntimeLogFacets {
       FROM runtime_logs
       WHERE time >= ? AND event IS NOT NULL AND event <> ''
       GROUP BY event
-      ORDER BY MAX(time) DESC
+      ORDER BY MAX(time) DESC, event ASC
       LIMIT 80
     `)
     .all(cutoff) as RuntimeLogRow[]

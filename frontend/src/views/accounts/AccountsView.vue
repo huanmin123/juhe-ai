@@ -156,6 +156,7 @@ import type { AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { useSubmitAction } from '@/composables/useSubmitAction'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountTrafficMigrationSourceStatus, AccountType, GroupSummary, OpenAIAuthURLResult, ProviderDefinition, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -206,7 +207,8 @@ import { countActiveAccountFilters } from './accountListFilters'
 import { useAccountMobilePagination } from './useAccountMobilePagination'
 
 const loading = ref(false)
-const saving = ref(false)
+const { submitAction, submittingRef } = useSubmitAction('accounts')
+const saving = submittingRef('accounts.save')
 const authLoading = ref(false)
 const testModalOpen = ref(false)
 const testRunning = ref(false)
@@ -390,7 +392,7 @@ const modalTitle = computed(() => {
 const modalConfirmLoading = computed(() => saving.value)
 const modalOkButtonProps = computed(() => ({
   type: 'primary' as const,
-  disabled: !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
+  disabled: saving.value || !hasAccountType.value || (!editingId.value && isOAuthForm.value && !isOpenAIOAuthForm.value)
 }))
 const selectedAccountTypeTitle = computed(() => hasAccountType.value ? accountTypeTitle(form.providerCode, form.type) : '')
 
@@ -504,7 +506,11 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     if (account.status === 'active') {
       items.push({
         key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
-        label: account.superPriorityEnabled ? '取消超级优先' : '设为超级优先'
+        label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'
+      })
+      items.push({
+        key: account.fallbackEnabled ? 'fallback-off' : 'fallback-on',
+        label: account.fallbackEnabled ? '取消降级备用' : '降级备用'
       })
     }
     items.push({ key: 'migrate-traffic', label: '迁移流量' })
@@ -527,6 +533,8 @@ function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
   if (item.key === 'restore-normal') return { ...item, icon: 'restore', tone: 'success' }
   if (item.key === 'super-priority-on') return { ...item, icon: 'superPriority', tone: 'warning' }
   if (item.key === 'super-priority-off') return { ...item, icon: 'superPriority', tone: 'default' }
+  if (item.key === 'fallback-on') return { ...item, icon: 'fallback', tone: 'purple' }
+  if (item.key === 'fallback-off') return { ...item, icon: 'fallback', tone: 'default' }
   if (item.key === 'migrate-traffic') return { ...item, icon: 'migrate', tone: 'purple' }
   return item
 }
@@ -675,6 +683,7 @@ function selectAccountType(type: AccountType) {
     notes: form.notes,
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
+    fallbackEnabled: form.fallbackEnabled,
     accountExpiresAt: form.accountExpiresAt
   })
   ensureDefaultGroupSelected(providerCode)
@@ -690,6 +699,7 @@ function openEdit(account: AccountSummary) {
     status: account.status,
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
+    fallbackEnabled: account.fallbackEnabled,
     proxyProfileId: account.proxyProfileId,
     accountExpiresAt: parseDatePickerValue(account.accountExpiresAt),
     groupId: groupIdForAccount(account.id),
@@ -809,7 +819,7 @@ function buildCredentials() {
   })
 }
 
-async function saveAccount() {
+const saveAccount = submitAction('accounts.save', async () => {
   if (!form.providerCode) {
     message.warning('请先选择供应商')
     return
@@ -868,13 +878,13 @@ async function saveAccount() {
     status: form.status,
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
+    fallbackEnabled: form.fallbackEnabled,
     proxyProfileId: form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(form.accountExpiresAt),
     groupId: form.groupId,
     notes: form.notes
   }
 
-  saving.value = true
   try {
     if (editingId.value) {
       if (isManagementView.value) {
@@ -900,9 +910,8 @@ async function saveAccount() {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存账户失败'))
   } finally {
-    saving.value = false
   }
-}
+})
 
 async function generateOAuthUrl() {
   authLoading.value = true
@@ -945,6 +954,8 @@ async function createOAuthAccountFromUnifiedForm() {
     name: form.name.trim() || undefined,
     groupId: form.groupId,
     concurrencyLimit: form.concurrencyLimit,
+    priority: form.priority,
+    fallbackEnabled: form.fallbackEnabled,
     proxyProfileId: form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(form.accountExpiresAt),
     credentialsPatch: { error_handling_rules: buildCredentials().error_handling_rules },
@@ -1289,7 +1300,16 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
       message.warning('只有正常状态的账户可以设置超级优先')
       return
     }
-    await updateAccountState(account, { superPriorityEnabled: enabled }, enabled ? '已设为超级优先' : '已取消超级优先')
+    await updateAccountState(account, { superPriorityEnabled: enabled }, enabled ? '已开启超级优先' : '已取消超级优先')
+    return
+  }
+  if (key === 'fallback-on' || key === 'fallback-off') {
+    const enabled = key === 'fallback-on'
+    if (enabled && account.status !== 'active') {
+      message.warning('只有正常状态的账户可以设置降级备用')
+      return
+    }
+    await updateAccountState(account, { fallbackEnabled: enabled }, enabled ? '已开启降级备用' : '已取消降级备用')
     return
   }
   if (key === 'migrate-traffic') {

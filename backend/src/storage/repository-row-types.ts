@@ -28,6 +28,7 @@ export interface AccountRow {
   error_policy_id: string | null
   priority: number
   super_priority_enabled: number
+  fallback_enabled: number
   schedulable: number
   account_expires_at: string | null
   last_used_at: string | null

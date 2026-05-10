@@ -12,6 +12,7 @@ import {
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import { bodyField, mutationGuard, normalizedText, queryField, sortedTextValues } from '../deduplication/mutation-guard.middleware.js'
 import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
@@ -62,7 +63,14 @@ systemTeamsRouter.get('/', requireAdmin, (req, res) => {
   res.json(ok(listSystemTeams(getRequestAccessScope(scopeQuery.data.systemAccountId))))
 })
 
-systemTeamsRouter.post('/', requireAdmin, (req, res) => {
+systemTeamsRouter.post('/', requireAdmin, mutationGuard({
+  operationKey: 'system_teams.create',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    name: normalizedText(bodyField(req, 'name'))
+  })
+}), (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)
@@ -161,7 +169,15 @@ systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
   }
 })
 
-systemTeamsRouter.post('/:id/members', requireAdmin, (req, res) => {
+systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
+  operationKey: 'system_teams.add_members',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    teamId: req.params.id,
+    memberIds: sortedTextValues(bodyField(req, 'systemAccountIds'))
+  })
+}), (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)
   if (!scopeQuery.success) {
     sendBadRequest(res, scopeQuery.message)

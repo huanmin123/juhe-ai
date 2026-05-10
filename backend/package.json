@@ -12,6 +12,7 @@
     "test:stream-first-output-timeout": "tsx src/scripts/stream-first-output-timeout-regression.ts",
     "test:db-service-worker-local": "tsx src/scripts/db-service-worker-local-regression.ts",
     "test:disabled-account-state-guard": "tsx src/scripts/disabled-account-state-guard-regression.ts",
+    "test:account-list-stable-sort": "tsx src/scripts/account-list-stable-sort-regression.ts",
     "test:session-affinity": "tsx src/scripts/session-affinity-regression.ts",
     "test:usage-pricing": "tsx src/scripts/usage-pricing-regression.ts",
     "test:openai-oauth-codex-adapter": "tsx src/scripts/openai-oauth-codex-adapter-regression.ts",

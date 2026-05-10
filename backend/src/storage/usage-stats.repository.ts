@@ -310,7 +310,7 @@ export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOver
     FROM usage_model_hourly
     WHERE system_account_id = ? AND stat_hour >= ?
     GROUP BY provider_code, model
-    ORDER BY request_count DESC LIMIT 10
+    ORDER BY request_count DESC, provider_code ASC, model ASC LIMIT 10
   `).all(statsScope.systemAccountId, sinceHour) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
 
   const errorRows = database.prepare(`
@@ -319,7 +319,7 @@ export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOver
     FROM usage_error_hourly
     WHERE system_account_id = ? AND stat_hour >= ?
     GROUP BY error_group, provider_code, error_code
-    ORDER BY error_count DESC LIMIT 10
+    ORDER BY error_count DESC, provider_code ASC, error_code ASC, error_group ASC LIMIT 10
   `).all(statsScope.systemAccountId, sinceHour) as unknown as Array<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>
 
   return {
@@ -346,7 +346,7 @@ export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOver
 
 export function getSystemMetricsOverview(windowKey: UsageOverviewWindowKey = 'last1d'): SystemMetricsOverview {
   const database = getDatabase()
-  const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
+  const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC, id DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
   const window = usageOverviewWindow(windowKey)
   const sinceHour = hourKey(new Date(Date.now() - window.hours * 60 * 60 * 1000))
   const rows = database.prepare('SELECT * FROM system_metrics_hourly WHERE stat_hour >= ? ORDER BY stat_hour ASC').all(sinceHour) as unknown as Array<Record<string, unknown>>

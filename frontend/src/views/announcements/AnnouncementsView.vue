@@ -63,7 +63,7 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑公告' : '新增公告'" width="720px" :confirm-loading="saving" @ok="saveAnnouncement">
+    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑公告' : '新增公告'" width="720px" :confirm-loading="announcementSaving" :ok-button-props="{ disabled: announcementSaving }" @ok="saveAnnouncement">
       <a-form layout="vertical" class="modal-form">
         <a-form-item label="标题" required>
           <a-input v-model:value="form.title" :maxlength="120" show-count placeholder="请输入公告标题" />
@@ -99,6 +99,7 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useSubmitAction } from '@/composables/useSubmitAction'
 import { formatDateTime } from '@/shared/formatters'
 import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '@/types/domain'
 import {
@@ -109,7 +110,8 @@ import {
 } from './announcementFormatters'
 
 const loading = ref(false)
-const saving = ref(false)
+const { submitAction, submittingRef } = useSubmitAction('announcements')
+const announcementSaving = submittingRef('announcements.save')
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const announcements = ref<AnnouncementSummary[]>([])
@@ -192,14 +194,13 @@ function openEdit(record: AnnouncementSummary) {
   modalOpen.value = true
 }
 
-async function saveAnnouncement() {
+const saveAnnouncement = submitAction('announcements.save', async () => {
   const title = form.title.trim()
   const content = form.content.trim()
   if (!title || !content) {
     message.warning('请填写公告标题和内容')
     return
   }
-  saving.value = true
   try {
     const payload = { title, content, level: form.level, status: form.status }
     if (editingId.value) {
@@ -215,9 +216,8 @@ async function saveAnnouncement() {
     console.error(error)
     message.error(extractApiErrorMessage(error, '保存公告失败'))
   } finally {
-    saving.value = false
   }
-}
+})
 
 async function publishAnnouncement(id: string) {
   try {

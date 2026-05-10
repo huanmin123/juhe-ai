@@ -84,7 +84,7 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
     .prepare(`SELECT COUNT(*) AS total FROM api_keys ${filters.clause}`)
     .get(...filters.params) as { total?: number } | undefined
   const rows = getDatabase()
-    .prepare(`SELECT * FROM api_keys ${filters.clause} ORDER BY updated_at DESC ${limitClause}`)
+    .prepare(`SELECT * FROM api_keys ${filters.clause} ORDER BY updated_at DESC, created_at DESC, id DESC ${limitClause}`)
     .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
   const items = apiKeySummariesFromRows(rows, access)
   return {
@@ -189,7 +189,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     id: newId('key'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
     systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
-    name: String(input.name ?? '未命名 API Key'),
+    name: normalizedApiKeyName(input.name, '未命名 API Key'),
     description: optionalString(input.description),
     keyPrefix,
     status: input.status === 'disabled' ? 'disabled' : 'active',
@@ -199,12 +199,20 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     usage: emptyAccountUsageSummary(),
     key
   }
-  getDatabase()
-    .prepare(`
-      INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, groupAuthorization?.id ?? null, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
+  assertApiKeyNameAvailable(systemAccountId, record.name)
+  try {
+    getDatabase()
+      .prepare(`
+        INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, groupAuthorization?.id ?? null, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
+  } catch (error) {
+    if (isDuplicateApiKeyNameError(error)) {
+      throw new Error(`API Key 名称已存在：${record.name}`)
+    }
+    throw error
+  }
   return record
 }
 
@@ -228,16 +236,24 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   }
   const next: ApiKeySummary = {
     ...current,
-    name: typeof input.name === 'string' ? input.name : current.name,
+    name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
     description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
     status: input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : current.status,
     groupId: nextGroupId,
     expiresAt: optionalServerDateTimeIso(input.expiresAt ?? input.expires_at) ?? current.expiresAt,
     quotaLimits: normalizeRequestQuotaLimits(input.quotaLimits, current.quotaLimits ?? emptyRequestQuotaLimits())
   }
-  getDatabase()
-    .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, group_authorization_id = ?, expires_at = ?, quota_limits_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-    .run(next.name, next.description ?? null, next.status, next.groupId, nextGroupAuthorization?.id ?? null, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), nowIso(), id, systemAccountId)
+  assertApiKeyNameAvailable(systemAccountId, next.name, id)
+  try {
+    getDatabase()
+      .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, group_authorization_id = ?, expires_at = ?, quota_limits_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+      .run(next.name, next.description ?? null, next.status, next.groupId, nextGroupAuthorization?.id ?? null, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), nowIso(), id, systemAccountId)
+  } catch (error) {
+    if (isDuplicateApiKeyNameError(error)) {
+      throw new Error(`API Key 名称已存在：${next.name}`)
+    }
+    throw error
+  }
   invalidateGatewayApiKeyCacheById(id)
   return next
 }
@@ -331,4 +347,27 @@ function apiKeySystemAccountId(apiKeyId: string): string | undefined {
 function canManageApiKeyOwner(ownerSystemAccountId: string, access?: AccessScope): boolean {
   const scopedOwnerId = manageableSystemAccountId(access)
   return !scopedOwnerId || scopedOwnerId === ownerSystemAccountId
+}
+
+function normalizedApiKeyName(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+}
+
+function assertApiKeyNameAvailable(systemAccountId: string, name: string, excludeId?: string): void {
+  const params: string[] = [systemAccountId, name]
+  const excludeClause = excludeId ? ' AND id <> ?' : ''
+  if (excludeId) {
+    params.push(excludeId)
+  }
+  const row = getDatabase()
+    .prepare(`SELECT id FROM api_keys WHERE system_account_id = ? AND lower(name) = lower(?)${excludeClause} LIMIT 1`)
+    .get(...params) as { id?: string } | undefined
+  if (row?.id) {
+    throw new Error(`API Key 名称已存在：${name}`)
+  }
+}
+
+function isDuplicateApiKeyNameError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.message.includes('idx_api_keys_owner_name_unique_lower')
 }

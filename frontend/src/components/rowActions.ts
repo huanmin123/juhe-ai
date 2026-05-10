@@ -8,6 +8,7 @@ export type RowActionIcon =
   | 'disable'
   | 'edit'
   | 'enable'
+  | 'fallback'
   | 'members'
   | 'migrate'
   | 'more'

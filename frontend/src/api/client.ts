@@ -79,7 +79,7 @@ interface AccountUsageStatsParams extends ListParams {
 }
 
 export type SortDirection = 'asc' | 'desc'
-export type AccountListSortField = 'priority' | 'superPriority' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
+export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
 
 export interface AccountListSortParam {
   field: AccountListSortField

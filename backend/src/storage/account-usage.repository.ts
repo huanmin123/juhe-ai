@@ -134,7 +134,9 @@ function buildAuthorizationTeamUsageDetails(authorizations: Array<ResourceAuthor
     memberUsage: team.memberUsage.sort(compareAuthorizationTeamMemberUsage)
   })).sort((left, right) => {
     const requestDelta = right.usageByWindow.total.requestCount - left.usageByWindow.total.requestCount
-    return requestDelta !== 0 ? requestDelta : (left.teamName ?? left.teamId).localeCompare(right.teamName ?? right.teamId)
+    if (requestDelta !== 0) return requestDelta
+    const nameDelta = (left.teamName ?? left.teamId).localeCompare(right.teamName ?? right.teamId)
+    return nameDelta !== 0 ? nameDelta : left.teamId.localeCompare(right.teamId)
   })
 }
 
@@ -145,5 +147,6 @@ function addUsageByWindow(left: UsageByWindow, right: UsageByWindow): UsageByWin
 function compareAuthorizationTeamMemberUsage(left: AuthorizationTeamMemberUsageDetail, right: AuthorizationTeamMemberUsageDetail): number {
   const requestDelta = right.usageByWindow.total.requestCount - left.usageByWindow.total.requestCount
   if (requestDelta !== 0) return requestDelta
-  return (left.systemAccountName ?? left.username ?? left.systemAccountId).localeCompare(right.systemAccountName ?? right.username ?? right.systemAccountId)
+  const nameDelta = (left.systemAccountName ?? left.username ?? left.systemAccountId).localeCompare(right.systemAccountName ?? right.username ?? right.systemAccountId)
+  return nameDelta !== 0 ? nameDelta : left.systemAccountId.localeCompare(right.systemAccountId)
 }

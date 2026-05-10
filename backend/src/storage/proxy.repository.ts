@@ -59,13 +59,13 @@ export class ProxyProfileUnavailableError extends Error {
 }
 
 export function listProxies(): ProxyProfileSummary[] {
-  const rows = getDatabase().prepare('SELECT * FROM proxy_profiles ORDER BY updated_at DESC').all() as unknown as ProxyRow[]
+  const rows = getDatabase().prepare('SELECT * FROM proxy_profiles ORDER BY updated_at DESC, id DESC').all() as unknown as ProxyRow[]
   return rows.map(proxySummaryFromRow)
 }
 
 export function listProxyOptions(): ProxyProfileOptionSummary[] {
   const rows = getDatabase()
-    .prepare('SELECT id, name, type, enabled FROM proxy_profiles WHERE enabled = 1 ORDER BY name ASC, updated_at DESC')
+    .prepare('SELECT id, name, type, enabled FROM proxy_profiles WHERE enabled = 1 ORDER BY name ASC, updated_at DESC, id ASC')
     .all() as unknown as Array<Pick<ProxyRow, 'id' | 'name' | 'type' | 'enabled'>>
   return rows.map((row) => ({
     id: row.id,
@@ -98,7 +98,7 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
   const now = nowIso()
   const proxy: ProxyProfileSummary = {
     id: newId('proxy'),
-    name: String(input.name ?? '未命名代理'),
+    name: normalizedProxyName(input.name, '未命名代理'),
     description: optionalString(input.description),
     type: String(input.type ?? 'socks5h'),
     host: String(input.host ?? ''),
@@ -111,12 +111,20 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
     outboundRegion: undefined,
     lastTestMessage: undefined
   }
-  getDatabase()
-    .prepare(`
-      INSERT INTO proxy_profiles (id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(proxy.id, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, input.password ? encryptJson({ password: input.password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
+  assertProxyNameAvailable(proxy.name)
+  try {
+    getDatabase()
+      .prepare(`
+        INSERT INTO proxy_profiles (id, name, description, type, host, port, username, password_encrypted, enabled, test_status, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `)
+      .run(proxy.id, proxy.name, proxy.description ?? null, proxy.type, proxy.host, proxy.port, proxy.username ?? null, input.password ? encryptJson({ password: input.password }) : null, proxy.enabled ? 1 : 0, proxy.testStatus, now, now)
+  } catch (error) {
+    if (isDuplicateProxyNameError(error)) {
+      throw new Error(`代理名称已存在：${proxy.name}`)
+    }
+    throw error
+  }
   return proxy
 }
 
@@ -132,7 +140,7 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   const hasUsernameInput = Object.prototype.hasOwnProperty.call(input, 'username')
   const next: ProxyProfileSummary = {
     ...current,
-    name: typeof input.name === 'string' ? input.name : current.name,
+    name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
     description: input.description === undefined ? current.description : optionalNullableString(input.description) ?? undefined,
     type: typeof input.type === 'string' ? input.type : current.type,
     host: typeof input.host === 'string' ? input.host : current.host,
@@ -148,31 +156,39 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
   const nextPasswordEncrypted = shouldUpdatePassword
     ? encryptJson({ password: String(input.password) })
     : currentSecret?.password_encrypted ?? null
-  getDatabase()
-    .prepare(`
-      UPDATE proxy_profiles
-      SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, password_encrypted = ?, enabled = ?,
-        test_status = ?, latency_ms = ?, outbound_ip = ?, outbound_region = ?, last_test_message = ?, last_tested_at = ?, updated_at = ?
-      WHERE id = ?
-    `)
-    .run(
-      next.name,
-      next.description ?? null,
-      next.type,
-      next.host,
-      next.port,
-      next.username ?? null,
-      nextPasswordEncrypted,
-      next.enabled ? 1 : 0,
-      shouldResetTestState ? 'unknown' : next.testStatus,
-      shouldResetTestState ? null : next.latencyMs ?? null,
-      shouldResetTestState ? null : next.outboundIp ?? null,
-      shouldResetTestState ? null : next.outboundRegion ?? null,
-      shouldResetTestState ? null : next.lastTestMessage ?? null,
-      shouldResetTestState ? null : next.lastTestedAt ?? null,
-      nowIso(),
-      id
-    )
+  assertProxyNameAvailable(next.name, id)
+  try {
+    getDatabase()
+      .prepare(`
+        UPDATE proxy_profiles
+        SET name = ?, description = ?, type = ?, host = ?, port = ?, username = ?, password_encrypted = ?, enabled = ?,
+          test_status = ?, latency_ms = ?, outbound_ip = ?, outbound_region = ?, last_test_message = ?, last_tested_at = ?, updated_at = ?
+        WHERE id = ?
+      `)
+      .run(
+        next.name,
+        next.description ?? null,
+        next.type,
+        next.host,
+        next.port,
+        next.username ?? null,
+        nextPasswordEncrypted,
+        next.enabled ? 1 : 0,
+        shouldResetTestState ? 'unknown' : next.testStatus,
+        shouldResetTestState ? null : next.latencyMs ?? null,
+        shouldResetTestState ? null : next.outboundIp ?? null,
+        shouldResetTestState ? null : next.outboundRegion ?? null,
+        shouldResetTestState ? null : next.lastTestMessage ?? null,
+        shouldResetTestState ? null : next.lastTestedAt ?? null,
+        nowIso(),
+        id
+      )
+  } catch (error) {
+    if (isDuplicateProxyNameError(error)) {
+      throw new Error(`代理名称已存在：${next.name}`)
+    }
+    throw error
+  }
   return listProxies().find((proxy) => proxy.id === id) ?? next
 }
 
@@ -187,7 +203,7 @@ export function listEnabledProxyTestConfigs(limit = 20): ProxyProfileTestConfig[
       SELECT *
       FROM proxy_profiles
       WHERE enabled = 1
-      ORDER BY last_tested_at IS NOT NULL ASC, last_tested_at ASC, updated_at DESC
+      ORDER BY last_tested_at IS NOT NULL ASC, last_tested_at ASC, updated_at DESC, id ASC
       LIMIT ?
     `)
     .all(Math.max(1, Math.trunc(limit))) as unknown as ProxyRow[]
@@ -247,7 +263,7 @@ function proxyUsageSummary(id: string): { accountCount: number; accountNames: st
     return { accountCount: 0, accountNames: [] }
   }
   const rows = getDatabase()
-    .prepare('SELECT name FROM accounts WHERE proxy_profile_id = ? ORDER BY name ASC LIMIT 3')
+    .prepare('SELECT name FROM accounts WHERE proxy_profile_id = ? ORDER BY name ASC, id ASC LIMIT 3')
     .all(id) as unknown as Array<{ name?: string }>
   return {
     accountCount,
@@ -298,4 +314,27 @@ function proxyPassword(row: Pick<ProxyRow, 'password_encrypted'>): string | unde
   if (!row.password_encrypted) return undefined
   const decrypted = decryptJson<{ password?: unknown }>(row.password_encrypted)
   return typeof decrypted.password === 'string' ? decrypted.password : undefined
+}
+
+function normalizedProxyName(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : fallback
+}
+
+function assertProxyNameAvailable(name: string, excludeId?: string): void {
+  const params: string[] = [name]
+  const excludeClause = excludeId ? ' AND id <> ?' : ''
+  if (excludeId) {
+    params.push(excludeId)
+  }
+  const row = getDatabase()
+    .prepare(`SELECT id FROM proxy_profiles WHERE lower(name) = lower(?)${excludeClause} LIMIT 1`)
+    .get(...params) as { id?: string } | undefined
+  if (row?.id) {
+    throw new Error(`代理名称已存在：${name}`)
+  }
+}
+
+function isDuplicateProxyNameError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  return error.message.includes('idx_proxy_profiles_name_unique_lower')
 }

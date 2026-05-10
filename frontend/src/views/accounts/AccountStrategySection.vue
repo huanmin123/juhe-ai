@@ -16,8 +16,11 @@
       <a-form-item label="优先级">
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
       </a-form-item>
+      <a-form-item label="降级备用">
+        <a-switch v-model:checked="form.fallbackEnabled" :disabled="form.status !== 'active'" checked-children="启用" un-checked-children="关闭" />
+      </a-form-item>
     </div>
-    <div class="form-help strategy-help">优先级数字越小越优先；当前账号失败后会切换到下一个可用账号。</div>
+    <div class="form-help strategy-help">优先级数字越小越优先；降级备用只在同分组其他可用账户都失败或不可用后参与调度。</div>
     <a-form-item class="strategy-proxy-field" label="代理">
       <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
       <div v-if="!isManagementView" class="form-help">代理配置由管理员统一维护；这里可以选择已启用的全局代理。</div>
@@ -62,7 +65,7 @@ defineProps<{
 
 .strategy-grid {
   display: grid;
-  grid-template-columns: minmax(160px, 1.3fr) minmax(120px, 1fr) minmax(120px, 1fr);
+  grid-template-columns: minmax(160px, 1.3fr) minmax(120px, 1fr) minmax(120px, 1fr) minmax(120px, 1fr);
   gap: 0 16px;
 }
 

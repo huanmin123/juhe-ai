@@ -4,6 +4,10 @@ import './styles/global.css'
 import { createApp } from 'vue'
 
 import App from './App.vue'
+import { submitLockDirective } from './directives/submitLock'
 import { router } from './router'
 
-createApp(App).use(router).mount('#app')
+const app = createApp(App)
+
+app.directive('submit-lock', submitLockDirective)
+app.use(router).mount('#app')
