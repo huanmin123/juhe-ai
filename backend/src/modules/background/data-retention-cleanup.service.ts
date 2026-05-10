@@ -1,6 +1,7 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { cleanupAuditLogsBefore } from '../../storage/audit-logs.repository.js'
+import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import {
   cleanupExpiredSystemSessions,
   cleanupProcessedUsageRecordsBefore,
@@ -10,18 +11,20 @@ import {
 import { getSettings } from '../../storage/settings.repository.js'
 import { cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
 import { dateKey, hourKey } from '../../storage/usage-stats-helpers.js'
+import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 
 const dayMs = 24 * 60 * 60 * 1000
-const logRetentionMaxDays = 7
 const usageRecordRetentionMaxDays = 7
 const statsRetentionMaxDays = 30
 const systemMetricsRawRetentionMaxDays = 7
+const operationLogRetentionMaxDays = 3650
 const defaultCleanupBatchSize = 10000
 const defaultCleanupMaxBatchesPerRun = 10
 
 let cleanupRunning = false
 
 export interface DataRetentionCleanupResult {
+  operationLogs: number
   auditLogs: number
   runtimeLogs: number
   usageRecords: number
@@ -51,7 +54,8 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
     const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', defaultCleanupMaxBatchesPerRun, 1, 100)
     const now = Date.now()
     const retention = {
-      auditLogDays: settingNumber(settings, 'auditLogRetentionDays', 7, 1, logRetentionMaxDays),
+      auditLogDays: readAuditLogSettings().retentionDays,
+      operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 365, 1, operationLogRetentionMaxDays),
       runtimeLogDays: runtimeLogIndexRetentionDays,
       usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 7, 1, usageRecordRetentionMaxDays),
       statsDailyDays: settingNumber(settings, 'usageStatsDailyRetentionDays', 30, 1, statsRetentionMaxDays),
@@ -61,6 +65,7 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
     }
 
     const result = emptyCleanupResult()
+    result.operationLogs = cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
     result.auditLogs = cleanupInBatches(() => cleanupAuditLogsBefore(cutoffIso(now, retention.auditLogDays), batchSize), batchSize, maxBatches)
     result.runtimeLogs = cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
     result.usageRecords = cleanupInBatches(() => cleanupProcessedUsageRecordsBefore(cutoffIso(now, retention.usageRecordDays), batchSize), batchSize, maxBatches)
@@ -128,6 +133,7 @@ function settingNumber(settings: Record<string, unknown>, key: string, fallback:
 
 function emptyCleanupResult(): DataRetentionCleanupResult {
   return {
+    operationLogs: 0,
     auditLogs: 0,
     runtimeLogs: 0,
     usageRecords: 0,

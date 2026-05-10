@@ -13,6 +13,7 @@
       :scroll="tableScroll"
       :table-layout="tableLayout"
       :row-selection="rowSelection"
+      :expandable="expandable"
       @change="handleTableChange"
     >
       <template #emptyText>
@@ -69,8 +70,10 @@ const props = withDefaults(defineProps<{
   loading?: boolean
   scrollX?: number | string
   tableScrollY?: number | string
+  tableScrollEnabled?: boolean
   pagination?: TablePagination
   rowSelection?: Record<string, any>
+  expandable?: Record<string, any>
   mobileDataSource?: T[]
   mobilePagination?: boolean
   mobileHasMore?: boolean
@@ -87,6 +90,7 @@ const props = withDefaults(defineProps<{
   rowKey: 'id',
   loading: false,
   tableScrollY: 'calc(100dvh - 286px)',
+  tableScrollEnabled: true,
   pagination: undefined,
   mobileBreakpoint: 900,
   tableClass: '',
@@ -142,6 +146,7 @@ const tableColumns = computed(() => normalizeTableColumns(props.columns))
 const tableClassNames = computed(() => [
   'responsive-data-list-table',
   props.tableClass,
+  { 'responsive-data-list-table-natural': !props.tableScrollEnabled },
   { 'responsive-data-list-table-overlay-scrollbar': hasOverlayScrollbarPlaceholder.value }
 ])
 const tableStyleVars = computed(() => ({
@@ -167,6 +172,9 @@ const hasTablePagination = computed(() => {
 })
 
 const tableScroll = computed(() => {
+  if (!props.tableScrollEnabled) {
+    return props.scrollX ? { x: props.adaptiveColumnWidth ? 'max-content' : props.scrollX } : undefined
+  }
   const scroll: Record<string, number | string> = { y: tableScrollY.value }
   if (props.scrollX) scroll.x = props.adaptiveColumnWidth ? 'max-content' : props.scrollX
   return scroll
@@ -381,6 +389,11 @@ function queueTableScrollbarPlaceholderUpdate() {
 }
 
 function updateTableScrollbarPlaceholderState() {
+  if (!props.tableScrollEnabled) {
+    hasOverlayScrollbarPlaceholder.value = false
+    scrollbarPlaceholderWidth.value = 0
+    return
+  }
   if (isMobile.value) {
     hasOverlayScrollbarPlaceholder.value = false
     scrollbarPlaceholderWidth.value = 0
@@ -538,6 +551,12 @@ onBeforeUnmount(() => {
   overflow: hidden;
 }
 
+.responsive-data-list-table-natural {
+  display: block;
+  flex: initial;
+  overflow: visible;
+}
+
 .responsive-data-list-table :deep(.ant-spin-nested-loading),
 .responsive-data-list-table :deep(.ant-spin-container) {
   display: flex;
@@ -546,9 +565,19 @@ onBeforeUnmount(() => {
   flex-direction: column;
 }
 
+.responsive-data-list-table-natural :deep(.ant-spin-nested-loading),
+.responsive-data-list-table-natural :deep(.ant-spin-container) {
+  display: block;
+  flex: initial;
+}
+
 .responsive-data-list-table :deep(.ant-table) {
   min-height: 0;
   flex: 1 1 auto;
+}
+
+.responsive-data-list-table-natural :deep(.ant-table) {
+  flex: initial;
 }
 
 .responsive-data-list-table :deep(.ant-table-body) {

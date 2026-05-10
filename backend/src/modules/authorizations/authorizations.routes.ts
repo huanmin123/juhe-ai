@@ -13,6 +13,7 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export const authorizationsRouter = Router()
 
@@ -102,9 +103,36 @@ authorizationsRouter.post('/', (req, res) => {
     return
   }
   try {
-    const authorization = createResourceAuthorization(parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
-    clearGatewayRuntimeCache()
-    clearAuthorizationQuotaCache()
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const authorization = runLoggedOperation(() => {
+      const authorization = createResourceAuthorization(parsed.data, requestAccess)
+      return {
+        result: authorization,
+        afterCommit: clearAuthorizationRuntimeCaches,
+        log: {
+          operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'authorizations',
+          action: 'create',
+          operationKey: 'authorizations.create',
+          resourceType: 'authorization',
+          resourceId: authorization.id,
+          resourceName: authorization.resourceName ?? authorization.resourceId,
+          summary: `创建资源授权：${authorization.resourceName ?? authorization.resourceId} -> ${authorization.granteeSystemAccountName ?? authorization.granteeUsername ?? authorization.granteeSystemAccountId}`,
+          changes: [
+            safeChange('resourceType', '资源类型', undefined, authorization.resourceType),
+            safeChange('resourceId', '授权资源', undefined, authorization.resourceName ?? authorization.resourceId),
+            safeChange('granteeSystemAccountId', '被授权用户', undefined, authorization.granteeSystemAccountName ?? authorization.granteeSystemAccountId),
+            safeChange('status', '状态', undefined, authorization.status),
+            safeChange('expiresAt', '过期时间', undefined, authorization.expiresAt),
+            safeChange('limits', '额度限制', undefined, authorization.limits),
+            safeChange('modelPolicy', '模型策略', undefined, authorization.modelPolicy)
+          ],
+          targets: authorizationTargets(authorization),
+          viewers: authorizationViewers(authorization)
+        }
+      }
+    }, req)
     res.status(201).json(ok(authorization))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '创建授权失败'))
@@ -133,15 +161,45 @@ authorizationsRouter.delete('/:id', (req, res) => {
     return
   }
   try {
-    const authorization = revokeResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
-    if (!authorization) {
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const authorization = runLoggedOperation(() => {
+      const before = listResourceAuthorizations({ status: 'all' }, requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const authorization = revokeResourceAuthorization(paramsParsed.data.id, parsed.data, requestAccess)
+      if (!authorization) {
+        throw new Error('授权记录不存在')
+      }
+      return {
+        result: authorization,
+        afterCommit: clearAuthorizationRuntimeCaches,
+        log: {
+          operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'authorizations',
+          action: 'revoke',
+          operationKey: 'authorizations.revoke',
+          resourceType: 'authorization',
+          resourceId: authorization.id,
+          resourceName: authorization.resourceName ?? authorization.resourceId,
+          summary: `撤销资源授权：${authorization.resourceName ?? authorization.resourceId} -> ${authorization.granteeSystemAccountName ?? authorization.granteeUsername ?? authorization.granteeSystemAccountId}`,
+          changes: [
+            ...diffSafeFields(before as unknown as Record<string, unknown> | undefined, authorization as unknown as Record<string, unknown>, {
+              status: '状态',
+              expiresAt: '过期时间',
+              limits: '额度限制'
+            }),
+            safeChange('revoked', '撤销状态', false, true)
+          ],
+          targets: authorizationTargets(authorization),
+          viewers: authorizationViewers(authorization)
+        }
+      }
+    }, req)
+    res.json(ok(authorization))
+  } catch (error) {
+    if (error instanceof Error && error.message === '授权记录不存在') {
       sendNotFound(res, '授权记录不存在')
       return
     }
-    clearGatewayRuntimeCache()
-    clearAuthorizationQuotaCache()
-    res.json(ok(authorization))
-  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '撤销授权失败'))
   }
 })
@@ -163,15 +221,42 @@ authorizationsRouter.patch('/:id', (req, res) => {
     return
   }
   try {
-    const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
-    if (!authorization) {
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const authorization = runLoggedOperation(() => {
+      const before = listResourceAuthorizations({ status: 'all' }, requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, requestAccess)
+      if (!authorization) {
+        throw new Error('授权记录不存在')
+      }
+      return {
+        result: authorization,
+        afterCommit: clearAuthorizationRuntimeCaches,
+        log: {
+          operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'authorizations',
+          action: 'update',
+          operationKey: 'authorizations.update',
+          resourceType: 'authorization',
+          resourceId: authorization.id,
+          resourceName: authorization.resourceName ?? authorization.resourceId,
+          summary: `更新资源授权：${authorization.resourceName ?? authorization.resourceId}`,
+          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, authorization as unknown as Record<string, unknown>, {
+            status: '状态',
+            expiresAt: '过期时间',
+            limits: '额度限制'
+          }),
+          targets: authorizationTargets(authorization),
+          viewers: authorizationViewers(authorization)
+        }
+      }
+    }, req)
+    res.json(ok(authorization))
+  } catch (error) {
+    if (error instanceof Error && error.message === '授权记录不存在') {
       sendNotFound(res, '授权记录不存在')
       return
     }
-    clearGatewayRuntimeCache()
-    clearAuthorizationQuotaCache()
-    res.json(ok(authorization))
-  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '修改授权失败'))
   }
 })
@@ -193,15 +278,42 @@ authorizationsRouter.patch('/:id/expire', (req, res) => {
     return
   }
   try {
-    const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
-    if (!authorization) {
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const authorization = runLoggedOperation(() => {
+      const before = listResourceAuthorizations({ status: 'all' }, requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, requestAccess)
+      if (!authorization) {
+        throw new Error('授权记录不存在')
+      }
+      return {
+        result: authorization,
+        afterCommit: clearAuthorizationRuntimeCaches,
+        log: {
+          operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'authorizations',
+          action: 'update_expire',
+          operationKey: 'authorizations.update_expire',
+          resourceType: 'authorization',
+          resourceId: authorization.id,
+          resourceName: authorization.resourceName ?? authorization.resourceId,
+          summary: `更新授权有效期：${authorization.resourceName ?? authorization.resourceId}`,
+          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, authorization as unknown as Record<string, unknown>, {
+            expiresAt: '过期时间',
+            limits: '额度限制',
+            status: '状态'
+          }),
+          targets: authorizationTargets(authorization),
+          viewers: authorizationViewers(authorization)
+        }
+      }
+    }, req)
+    res.json(ok(authorization))
+  } catch (error) {
+    if (error instanceof Error && error.message === '授权记录不存在') {
       sendNotFound(res, '授权记录不存在')
       return
     }
-    clearGatewayRuntimeCache()
-    clearAuthorizationQuotaCache()
-    res.json(ok(authorization))
-  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '修改授权失败'))
   }
 })
@@ -224,3 +336,34 @@ authorizationsRouter.get('/:id/usage', (req, res) => {
   }
   res.json(ok(authorization))
 })
+
+function authorizationTargets(authorization: ReturnType<typeof listResourceAuthorizations>[number]) {
+  return [
+    ownerTarget({
+      targetType: authorization.resourceType,
+      targetId: authorization.resourceId,
+      targetName: authorization.resourceName,
+      ownerSystemAccountId: authorization.resourceOwnerSystemAccountId,
+      relation: 'owner'
+    }),
+    ownerTarget({
+      targetType: 'system_account',
+      targetId: authorization.granteeSystemAccountId,
+      targetName: authorization.granteeSystemAccountName ?? authorization.granteeUsername,
+      ownerSystemAccountId: authorization.granteeSystemAccountId,
+      relation: 'grantee'
+    })
+  ]
+}
+
+function authorizationViewers(authorization: ReturnType<typeof listResourceAuthorizations>[number]) {
+  return viewers(
+    viewer(authorization.resourceOwnerSystemAccountId, 'authorization_owner'),
+    viewer(authorization.granteeSystemAccountId, 'authorization_grantee')
+  )
+}
+
+function clearAuthorizationRuntimeCaches(): void {
+  clearGatewayRuntimeCache()
+  clearAuthorizationQuotaCache()
+}

@@ -1003,9 +1003,23 @@ async function fetchFirstAvailableUpstream(
   const retryAttempts = Math.max(0, settings.temporaryUnschedulableRetryAttempts)
   let lastAttempt: UpstreamAttempt | undefined
   let auditAttemptIndex = 0
+  const failedProxyDispatchKeys = new Map<string, string>()
 
   for (const originalAccount of accounts) {
     throwIfRequestAborted(signal)
+    const skippedProxyReason = failedProxyDispatchReason(failedProxyDispatchKeys, originalAccount)
+    if (skippedProxyReason) {
+      const message = `账户绑定的代理已在本次调度中失败，跳过重复尝试：${skippedProxyReason}`
+      lastAttempt = { accountId: originalAccount.id, accountName: originalAccount.name, upstreamUrl: 'proxy:skipped', message }
+      getRequestLogger().warn({
+        event: 'gateway_proxy_duplicate_skipped',
+        accountId: originalAccount.id,
+        accountType: originalAccount.type,
+        proxyProfileId: originalAccount.proxyProfileId,
+        proxyConfigured: Boolean(originalAccount.proxyProfileId || originalAccount.proxyUrl)
+      }, '跳过已失败代理绑定账号')
+      continue
+    }
     if (originalAccount.proxyProfileUnavailable) {
       const attemptStartedAt = Date.now()
       const message = originalAccount.proxyProfileErrorMessage ?? '账户绑定的代理不可用'
@@ -1016,6 +1030,7 @@ async function fetchFirstAvailableUpstream(
         errorMessage: message
       })
       applyAccountErrorHandlingWithCacheInvalidation(originalAccount, { success: false, errorMessage: message, settings })
+      rememberFailedProxyForDispatch(failedProxyDispatchKeys, originalAccount, message)
       continue
     }
     const account = await prepareUpstreamAccount(originalAccount, signal)
@@ -1247,6 +1262,7 @@ async function fetchFirstAvailableUpstream(
             }
             forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
             applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
+            rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
             skipAccount = true
             break
           }
@@ -1268,6 +1284,24 @@ async function fetchFirstAvailableUpstream(
       : '所有上游账户均失败',
     lastAttempt
   )
+}
+
+function failedProxyDispatchReason(failedProxyDispatchKeys: Map<string, string>, account: UpstreamAccount): string | undefined {
+  const key = accountProxyDispatchKey(account)
+  return key ? failedProxyDispatchKeys.get(key) : undefined
+}
+
+function rememberFailedProxyForDispatch(failedProxyDispatchKeys: Map<string, string>, account: UpstreamAccount, reason: string): void {
+  const key = accountProxyDispatchKey(account)
+  if (key) {
+    failedProxyDispatchKeys.set(key, reason)
+  }
+}
+
+function accountProxyDispatchKey(account: UpstreamAccount): string | undefined {
+  if (account.proxyProfileId) return `profile:${account.proxyProfileId}`
+  if (account.proxyUrl) return `url:${account.proxyUrl}`
+  return undefined
 }
 
 async function waitBeforeTemporaryUnschedulableRetry(settings: GatewaySettings): Promise<void> {

@@ -75,25 +75,66 @@
 
           <a-tabs>
             <a-tab-pane key="attempts" tab="上游尝试">
-              <a-table size="small" :pagination="false" :columns="attemptColumns" :data-source="detail.attempts" row-key="id">
+              <ResponsiveDataList
+                table-class="audit-detail-table"
+                size="small"
+                :columns="attemptColumns"
+                :data-source="detail.attempts"
+                row-key="id"
+                :pagination="false"
+                :table-scroll-enabled="false"
+                :mobile-breakpoint="1024"
+                :lock-body-scroll="false"
+              >
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.key === 'success'">
                     <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
                   </template>
                   <template v-else-if="column.key === 'account'">
-                    {{ displayName(record.accountName, record.accountId) }}
+                    <span class="attempt-account-cell">{{ displayName(record.accountName, record.accountId) }}</span>
                   </template>
                   <template v-else-if="column.key === 'duration'">
                     {{ formatDuration(record.durationMs) }}
                   </template>
                   <template v-else-if="column.key === 'url'">
-                    <span class="url-cell">{{ record.upstreamUrl }}</span>
+                    <span class="url-cell">{{ record.upstreamUrl || '-' }}</span>
+                  </template>
+                  <template v-else-if="column.key === 'error'">
+                    <span class="error-cell">{{ record.errorMessage || '-' }}</span>
                   </template>
                 </template>
-              </a-table>
+                <template #card="{ record }">
+                  <article class="payload-mobile-card">
+                    <div class="payload-mobile-card-head">
+                      <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
+                      <span>{{ formatDuration(record.durationMs) }}</span>
+                    </div>
+                    <div class="payload-mobile-card-grid">
+                      <span>序号</span>
+                      <strong>{{ record.attemptIndex }}</strong>
+                      <span>账号</span>
+                      <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
+                      <span>状态码</span>
+                      <strong>{{ record.upstreamStatusCode ?? '-' }}</strong>
+                      <span>上游 URL</span>
+                      <strong>{{ record.upstreamUrl }}</strong>
+                    </div>
+                  </article>
+                </template>
+              </ResponsiveDataList>
             </a-tab-pane>
             <a-tab-pane key="payloads" tab="原始内容">
-              <a-table size="small" :pagination="false" :columns="payloadColumns" :data-source="detail.payloads" row-key="id">
+              <ResponsiveDataList
+                table-class="audit-payload-table"
+                size="small"
+                :columns="payloadColumns"
+                :data-source="detail.payloads"
+                row-key="id"
+                :pagination="false"
+                :table-scroll-enabled="false"
+                :mobile-breakpoint="1024"
+                :lock-body-scroll="false"
+              >
                 <template #bodyCell="{ column, record }">
                   <template v-if="column.key === 'partType'">
                     <a-tag>{{ payloadPartText(record.partType) }}</a-tag>
@@ -101,24 +142,64 @@
                   <template v-else-if="column.key === 'size'">
                     {{ formatBytes(record.sizeBytes) }}
                   </template>
+                  <template v-else-if="column.key === 'headersSha256'">
+                    <a-tooltip :title="record.headersSha256 || '-'">
+                      <span class="hash-cell">{{ formatHashPreview(record.headersSha256) }}</span>
+                    </a-tooltip>
+                  </template>
+                  <template v-else-if="column.key === 'bodySha256'">
+                    <a-tooltip :title="record.bodySha256 || '-'">
+                      <span class="hash-cell">{{ formatHashPreview(record.bodySha256) }}</span>
+                    </a-tooltip>
+                  </template>
                   <template v-else-if="column.key === 'actions'">
                     <RowActions :actions="payloadActions(record.id)" @action-click="loadPayload(record.id)" />
                   </template>
                 </template>
-              </a-table>
+                <template #card="{ record }">
+                  <article class="payload-mobile-card">
+                    <div class="payload-mobile-card-head">
+                      <a-tag>{{ payloadPartText(record.partType) }}</a-tag>
+                      <span>{{ formatBytes(record.sizeBytes) }}</span>
+                    </div>
+                    <div class="payload-mobile-card-grid">
+                      <span>序号</span>
+                      <strong>{{ record.sequenceIndex }}</strong>
+                      <span>类型</span>
+                      <strong>{{ record.contentType || '-' }}</strong>
+                      <span>Headers SHA256</span>
+                      <strong class="hash-cell">{{ formatHashPreview(record.headersSha256) }}</strong>
+                      <span>Body SHA256</span>
+                      <strong class="hash-cell">{{ formatHashPreview(record.bodySha256) }}</strong>
+                    </div>
+                    <RowActions :actions="payloadActions(record.id)" variant="button" @action-click="loadPayload(record.id)" />
+                  </article>
+                </template>
+              </ResponsiveDataList>
               <div v-if="selectedPayload" class="payload-viewer">
-                <div class="payload-viewer-head">
-                  <strong>{{ payloadPartText(selectedPayload.partType) }}</strong>
-                  <span>{{ formatBytes(selectedPayload.sizeBytes) }}</span>
+                <div class="payload-viewer-toolbar">
+                  <div class="payload-viewer-main">
+                    <strong>{{ payloadPartText(selectedPayload.partType) }}</strong>
+                    <span>{{ formatBytes(selectedPayload.sizeBytes) }}</span>
+                    <a-tabs v-model:activeKey="payloadContentTab" class="payload-content-tabs" size="small">
+                      <a-tab-pane key="headers" tab="Headers" />
+                      <a-tab-pane key="body" tab="Body" />
+                    </a-tabs>
+                  </div>
+                  <div class="payload-viewer-actions">
+                    <a-tooltip title="复制当前内容">
+                      <a-button size="small" :disabled="!selectedPayloadCurrentText" @click="copySelectedPayloadText">
+                        <template #icon><copy-outlined /></template>
+                      </a-button>
+                    </a-tooltip>
+                  </div>
                 </div>
-                <a-tabs>
-                  <a-tab-pane key="headers" tab="Headers">
-                    <pre class="raw-block">{{ prettyJson(selectedPayload.headers ?? {}) }}</pre>
-                  </a-tab-pane>
-                  <a-tab-pane key="body" tab="Body">
-                    <pre class="raw-block">{{ selectedPayload.bodyText ?? selectedPayload.bodyBase64 ?? '' }}</pre>
-                  </a-tab-pane>
-                </a-tabs>
+                <AuditPayloadCodeViewer
+                  ref="payloadCodeViewer"
+                  :content-type="selectedPayloadViewerContentType"
+                  :show-toolbar="false"
+                  :text="selectedPayloadCurrentText"
+                />
               </div>
             </a-tab-pane>
           </a-tabs>
@@ -129,11 +210,13 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { CopyOutlined } from '@ant-design/icons-vue'
+import { computed, defineAsyncComponent, onMounted, reactive, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
@@ -144,6 +227,7 @@ import {
   formatBytes,
   formatDateTime,
   formatDuration,
+  formatHashPreview,
   normalizedStatusCode,
   outcomeText,
   payloadPartText,
@@ -164,6 +248,8 @@ const runtime = ref<AuditLogRuntime>()
 const detail = ref<AuditLogDetail>()
 const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
+const payloadContentTab = ref<'headers' | 'body'>('body')
+const payloadCodeViewer = ref<{ copyDisplayText: () => Promise<void> }>()
 
 const pageSize = 100
 type AuditLogsPageState = {
@@ -198,6 +284,7 @@ const pagination = reactive({ current: initialPageState.pagination.current, page
 const outcomeOptions = auditOutcomeOptions
 const attemptColumns = auditAttemptColumns
 const payloadColumns = auditPayloadColumns
+const AuditPayloadCodeViewer = defineAsyncComponent(() => import('./AuditPayloadCodeViewer.vue'))
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -220,6 +307,15 @@ const tablePagination = computed(() => ({
 }))
 
 const mobileHasMore = computed(() => records.value.length < pagination.total)
+const selectedPayloadCurrentText = computed(() => {
+  if (!selectedPayload.value) return ''
+  return payloadContentTab.value === 'headers'
+    ? prettyJson(selectedPayload.value.headers ?? {})
+    : selectedPayload.value.bodyText ?? selectedPayload.value.bodyBase64 ?? ''
+})
+const selectedPayloadViewerContentType = computed(() => payloadContentTab.value === 'headers'
+  ? 'application/json'
+  : selectedPayload.value?.contentType)
 
 function applyFilters(): void {
   pagination.current = 1
@@ -318,12 +414,17 @@ async function loadPayload(payloadId: string): Promise<void> {
   payloadLoadingId.value = payloadId
   try {
     selectedPayload.value = await api.auditLogs.payload(detail.value.id, payloadId)
+    payloadContentTab.value = 'body'
   } catch (error) {
     console.error(error)
     message.error('加载原始内容失败')
   } finally {
     payloadLoadingId.value = ''
   }
+}
+
+async function copySelectedPayloadText(): Promise<void> {
+  await payloadCodeViewer.value?.copyDisplayText()
 }
 
 function payloadActions(payloadId: string): RowActionItem[] {
@@ -376,19 +477,27 @@ onMounted(loadData)
   width: 150px;
 }
 
+.attempt-account-cell,
+.error-cell,
 .url-cell,
 .mono-cell {
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
 }
 
+:deep(.audit-detail-table .ant-table-cell) {
+  vertical-align: top;
+  white-space: normal;
+}
+
+.attempt-account-cell,
+.error-cell,
 .url-cell {
-  display: inline-block;
-  max-width: 320px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  vertical-align: bottom;
+  display: block;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
+  word-break: break-word;
 }
 
 .detail-warning {
@@ -401,30 +510,101 @@ onMounted(loadData)
 
 .payload-viewer {
   margin-top: 16px;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  overflow: hidden;
 }
 
-.payload-viewer-head {
+.payload-viewer-toolbar {
   display: flex;
+  align-items: center;
   justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
+  gap: 16px;
+  min-height: 42px;
+  padding: 0 10px;
   background: #f8fafc;
-  border-bottom: 1px solid #e2e8f0;
+  border: 1px solid #e2e8f0;
+  border-bottom: 0;
+  border-radius: 8px 8px 0 0;
 }
 
-.raw-block {
-  max-height: 420px;
-  margin: 0;
-  padding: 12px;
-  overflow: auto;
+.payload-viewer-main {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  flex: 1 1 auto;
+  gap: 12px;
+  color: #64748b;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.payload-viewer-main strong {
+  flex: 0 0 auto;
   color: #0f172a;
-  background: #f8fafc;
+  font-size: 13px;
+}
+
+.payload-viewer-main span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.payload-content-tabs {
+  flex: 0 0 auto;
+}
+
+.payload-content-tabs :deep(.ant-tabs-nav) {
+  margin-bottom: 0;
+}
+
+.payload-content-tabs :deep(.ant-tabs-nav-operations) {
+  display: none !important;
+}
+
+.payload-content-tabs :deep(.ant-tabs-content-holder) {
+  display: none;
+}
+
+.payload-viewer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+}
+
+.hash-cell {
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
+  white-space: nowrap;
 }
+
+.payload-mobile-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.payload-mobile-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.payload-mobile-card-grid {
+  display: grid;
+  grid-template-columns: minmax(88px, auto) minmax(0, 1fr);
+  gap: 6px 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.payload-mobile-card-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  text-overflow: ellipsis;
+}
+
 </style>

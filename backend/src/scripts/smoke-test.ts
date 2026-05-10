@@ -93,14 +93,6 @@ interface SystemSettings {
   streamIdleTimeoutSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
-  auditLogEnabled?: boolean
-  auditLogSuccessSampleRate?: number
-  auditLogFlushIntervalSeconds?: number
-  auditLogBatchSize?: number
-  auditLogQueueMaxItems?: number
-  auditLogQueueMaxBytesMb?: number
-  auditLogActiveCaptureMaxBytesMb?: number
-  auditLogRetentionDays?: number
 }
 
 interface ResponsePayload {
@@ -145,14 +137,20 @@ async function main(): Promise<void> {
     assert(typeof settings.streamIdleTimeoutSeconds === 'number', '系统设置缺少 streamIdleTimeoutSeconds')
     assert(typeof settings.streamFailureThresholdCount === 'number', '系统设置缺少 streamFailureThresholdCount')
     assert(typeof settings.streamFailureThresholdWindowMinutes === 'number', '系统设置缺少 streamFailureThresholdWindowMinutes')
-    assert(typeof settings.auditLogEnabled === 'boolean', '系统设置缺少 auditLogEnabled')
-    assert(typeof settings.auditLogSuccessSampleRate === 'number', '系统设置缺少 auditLogSuccessSampleRate')
-    assert(typeof settings.auditLogFlushIntervalSeconds === 'number', '系统设置缺少 auditLogFlushIntervalSeconds')
-    assert(typeof settings.auditLogBatchSize === 'number', '系统设置缺少 auditLogBatchSize')
-    assert(typeof settings.auditLogQueueMaxItems === 'number', '系统设置缺少 auditLogQueueMaxItems')
-    assert(typeof settings.auditLogQueueMaxBytesMb === 'number', '系统设置缺少 auditLogQueueMaxBytesMb')
-    assert(typeof settings.auditLogActiveCaptureMaxBytesMb === 'number', '系统设置缺少 auditLogActiveCaptureMaxBytesMb')
-    assert(typeof settings.auditLogRetentionDays === 'number', '系统设置缺少 auditLogRetentionDays')
+    for (const key of [
+      'auditLogEnabled',
+      'auditLogSuccessSampleRate',
+      'auditLogFlushIntervalSeconds',
+      'auditLogBatchSize',
+      'auditLogQueueMaxItems',
+      'auditLogQueueMaxBytesMb',
+      'auditLogActiveCaptureMaxBytesMb',
+      'auditLogRetentionDays',
+      'proxyLatencyRefreshIntervalSeconds',
+      'proxyLatencyRefreshBatchSize'
+    ]) {
+      assert(!Object.prototype.hasOwnProperty.call(settings, key), `系统设置不应返回 ${key}`)
+    }
     summary.push('系统设置检查通过')
 
     const accounts = await getEnvelope<AccountSummary[]>('/api/accounts')

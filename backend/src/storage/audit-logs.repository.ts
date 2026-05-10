@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { decryptJson, encryptJson } from './crypto.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
@@ -141,6 +141,7 @@ export interface AuditLogPayloadSummary {
   sequenceIndex: number
   contentType?: string
   contentEncoding?: string
+  headersSha256?: string
   bodySha256?: string
   sizeBytes: number
   createdAt: string
@@ -217,7 +218,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
     ON CONFLICT(id) DO NOTHING
   `)
 
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const input of inputs) {
       if (input.apiKeyId && !apiKeyExists(database, input.apiKeyId)) {
@@ -311,10 +312,10 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
       }
     }
 
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
-      database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(database, transactionStarted)
     } catch {
     }
     throw error
@@ -404,9 +405,7 @@ export function getAuditLogPayload(auditLogId: string, payloadId: string): Audit
   if (!row) return undefined
 
   const summary = auditLogPayloadSummaryFromRow(row)
-  const headers = typeof row.headers_encrypted === 'string'
-    ? decryptJson<Record<string, string | string[]>>(row.headers_encrypted)
-    : undefined
+  const headers = decryptPayloadHeaders(row)
   const body = typeof row.body_encrypted === 'string'
     ? decryptJson<{ text?: string; base64?: string }>(row.body_encrypted)
     : undefined
@@ -601,12 +600,42 @@ function auditLogPayloadSummaryFromRow(row: AuditLogRow): AuditLogPayloadSummary
     sequenceIndex: Number(row.sequence_index ?? 0),
     contentType: optionalString(row.content_type),
     contentEncoding: optionalString(row.content_encoding),
+    headersSha256: payloadHeadersSha256(row),
     bodySha256: optionalString(row.body_sha256),
     sizeBytes: Number(row.size_bytes ?? 0),
     createdAt: String(row.created_at),
     hasHeaders: typeof row.headers_encrypted === 'string' && row.headers_encrypted.length > 0,
     hasBody: typeof row.body_encrypted === 'string' && row.body_encrypted.length > 0
   }
+}
+
+function payloadHeadersSha256(row: AuditLogRow): string | undefined {
+  try {
+    const headers = decryptPayloadHeaders(row)
+    return headers ? createHash('sha256').update(stableJsonStringify(headers)).digest('hex') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function decryptPayloadHeaders(row: AuditLogRow): Record<string, string | string[]> | undefined {
+  return typeof row.headers_encrypted === 'string'
+    ? decryptJson<Record<string, string | string[]>>(row.headers_encrypted)
+    : undefined
+}
+
+function stableJsonStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJsonStringify).join(',')}]`
+  }
+  if (value && typeof value === 'object') {
+    const object = value as Record<string, unknown>
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJsonStringify(object[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
 }
 
 function numberValue(value: unknown): number | undefined {

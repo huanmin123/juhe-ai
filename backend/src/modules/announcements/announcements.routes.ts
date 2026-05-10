@@ -14,6 +14,7 @@ import {
 } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
+import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
 
 export const announcementsRouter = Router()
 
@@ -67,7 +68,30 @@ announcementsRouter.post('/', requireAdmin, (req, res) => {
     res.status(400).json(badRequest('公告参数无效'))
     return
   }
-  res.status(201).json(ok(createAnnouncement(parsed.data, requireActor())))
+  const announcement = runLoggedOperation(() => {
+    const announcement = createAnnouncement(parsed.data, requireActor())
+    return {
+      result: announcement,
+      log: {
+        mode: 'admin',
+        module: 'announcements',
+        action: 'create',
+        operationKey: 'announcements.create',
+        resourceType: 'announcement',
+        resourceId: announcement.id,
+        resourceName: announcement.title,
+        summary: `创建公告：${announcement.title}`,
+        visibilityScope: announcement.status === 'published' ? 'all_users' : 'admin_only',
+        detailLevel: announcement.status === 'published' ? 'summary' : 'full',
+        changes: [
+          safeChange('title', '标题', undefined, announcement.title),
+          safeChange('level', '级别', undefined, announcement.level),
+          safeChange('status', '状态', undefined, announcement.status)
+        ]
+      }
+    }
+  }, req)
+  res.status(201).json(ok(announcement))
 })
 
 announcementsRouter.patch('/:id', requireAdmin, (req, res) => {
@@ -76,37 +100,135 @@ announcementsRouter.patch('/:id', requireAdmin, (req, res) => {
     res.status(400).json(badRequest('公告参数无效'))
     return
   }
-  const announcement = updateAnnouncement(req.params.id, parsed.data, requireActor())
-  if (!announcement) {
+  const before = listAnnouncements().find((item) => item.id === req.params.id)
+  if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
   }
+  const announcement = runLoggedOperation(() => {
+    const announcement = updateAnnouncement(req.params.id, parsed.data, requireActor())
+    if (!announcement) {
+      throw new Error('公告不存在')
+    }
+    return {
+      result: announcement,
+      log: {
+        mode: 'admin',
+        module: 'announcements',
+        action: 'update',
+        operationKey: 'announcements.update',
+        resourceType: 'announcement',
+        resourceId: announcement.id,
+        resourceName: announcement.title,
+        summary: `更新公告：${announcement.title}`,
+        visibilityScope: announcement.status === 'published' || before?.status === 'published' ? 'all_users' : 'admin_only',
+        detailLevel: announcement.status === 'published' || before?.status === 'published' ? 'summary' : 'full',
+        changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, announcement as unknown as Record<string, unknown>, {
+          title: '标题',
+          content: '内容',
+          level: '级别',
+          status: '状态'
+        })
+      }
+    }
+  }, req)
   res.json(ok(announcement))
 })
 
 announcementsRouter.post('/:id/publish', requireAdmin, (req, res) => {
-  const announcement = publishAnnouncement(req.params.id, requireActor())
-  if (!announcement) {
+  const before = listAnnouncements().find((item) => item.id === req.params.id)
+  if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
   }
+  const announcement = runLoggedOperation(() => {
+    const announcement = publishAnnouncement(req.params.id, requireActor())
+    if (!announcement) {
+      throw new Error('公告不存在')
+    }
+    return {
+      result: announcement,
+      log: {
+        mode: 'admin',
+        module: 'announcements',
+        action: 'publish',
+        operationKey: 'announcements.publish',
+        resourceType: 'announcement',
+        resourceId: announcement.id,
+        resourceName: announcement.title,
+        summary: `发布公告：${announcement.title}`,
+        visibilityScope: 'all_users',
+        detailLevel: 'summary',
+        changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, announcement as unknown as Record<string, unknown>, {
+          status: '状态',
+          publishedAt: '发布时间'
+        })
+      }
+    }
+  }, req)
   res.json(ok(announcement))
 })
 
 announcementsRouter.post('/:id/unpublish', requireAdmin, (req, res) => {
-  const announcement = unpublishAnnouncement(req.params.id, requireActor())
-  if (!announcement) {
+  const before = listAnnouncements().find((item) => item.id === req.params.id)
+  if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
   }
+  const announcement = runLoggedOperation(() => {
+    const announcement = unpublishAnnouncement(req.params.id, requireActor())
+    if (!announcement) {
+      throw new Error('公告不存在')
+    }
+    return {
+      result: announcement,
+      log: {
+        mode: 'admin',
+        module: 'announcements',
+        action: 'unpublish',
+        operationKey: 'announcements.unpublish',
+        resourceType: 'announcement',
+        resourceId: announcement.id,
+        resourceName: announcement.title,
+        summary: `下线公告：${announcement.title}`,
+        visibilityScope: 'all_users',
+        detailLevel: 'summary',
+        changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, announcement as unknown as Record<string, unknown>, {
+          status: '状态'
+        })
+      }
+    }
+  }, req)
   res.json(ok(announcement))
 })
 
 announcementsRouter.delete('/:id', requireAdmin, (req, res) => {
-  if (!deleteAnnouncement(req.params.id)) {
+  const before = listAnnouncements().find((item) => item.id === req.params.id)
+  if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
   }
+  runLoggedOperation(() => {
+    if (!deleteAnnouncement(req.params.id)) {
+      throw new Error('公告不存在')
+    }
+    return {
+      result: true,
+      log: {
+        mode: 'admin',
+        module: 'announcements',
+        action: 'delete',
+        operationKey: 'announcements.delete',
+        resourceType: 'announcement',
+        resourceId: req.params.id,
+        resourceName: before?.title ?? req.params.id,
+        summary: `删除公告：${before?.title ?? req.params.id}`,
+        visibilityScope: before?.status === 'published' ? 'all_users' : 'admin_only',
+        detailLevel: before?.status === 'published' ? 'summary' : 'full',
+        changes: [safeChange('deleted', '删除状态', false, true)]
+      }
+    }
+  }, req)
   res.status(204).send()
 })
 

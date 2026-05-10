@@ -3,23 +3,30 @@
     <div class="authorization-usage-modal">
       <a-tabs class="authorization-usage-tabs">
         <a-tab-pane key="users" tab="授权用户">
-          <a-table :columns="userColumns" :data-source="overview?.users ?? []" :row-key="rowKey" :loading="loading" :pagination="false" :scroll="{ x: userTableScrollX }">
+          <ResponsiveDataList :columns="userColumns" :data-source="overview?.users ?? []" :row-key="rowKey" :loading="loading" :pagination="false" :scroll-x="userTableScrollX" :lock-body-scroll="false">
             <template #bodyCell="{ column, record }">
               <div v-if="column.key === 'grantee'" class="usage-principal-cell">
                 <strong>{{ formatPrincipalName(record.granteeSystemAccountName, record.granteeUsername) }}</strong>
               </div>
               <UsageStatCell v-else-if="isWindowColumn(column.key)" :usage="record.usageByWindow[column.key]" compact />
             </template>
-          </a-table>
+            <template #card="{ record }">
+              <article class="usage-mobile-card">
+                <strong>{{ formatPrincipalName(record.granteeSystemAccountName, record.granteeUsername) }}</strong>
+                <span v-for="window in currentWindows(overview?.windows)" :key="window.key">{{ window.label }} {{ formatUsageBrief(record.usageByWindow[window.key]) }}</span>
+              </article>
+            </template>
+          </ResponsiveDataList>
         </a-tab-pane>
         <a-tab-pane key="teams" tab="授权团队">
-          <a-table
+          <ResponsiveDataList
             :columns="teamColumns"
             :data-source="teamDataSource"
             :row-key="rowKey"
             :loading="loading"
             :pagination="false"
-            :scroll="{ x: teamTableScrollX }"
+            :scroll-x="teamTableScrollX"
+            :lock-body-scroll="false"
             :expandable="{ expandIcon: () => null, rowExpandable: (record: TeamUsageRow) => Boolean(record.children) }"
           >
             <template #bodyCell="{ column, record }">
@@ -40,7 +47,20 @@
               <UsageStatCell v-else-if="isWindowColumn(column.key)" :usage="record.usageByWindow[column.key]" compact />
               <RowActions v-else-if="column.key === 'actions'" :actions="teamActions(record)" @action-click="toggleTeam(record.teamId)" />
             </template>
-          </a-table>
+            <template #card="{ record }">
+              <article v-if="record.isMembersRow" class="usage-mobile-card">
+                <strong>成员明细</strong>
+                <span v-for="member in record.memberUsage" :key="member.authorizationId">{{ formatPrincipalName(member.systemAccountName, member.username) }}</span>
+                <span v-if="!record.memberUsage.length" class="muted-cell">暂无成员消耗</span>
+              </article>
+              <article v-else class="usage-mobile-card">
+                <strong>{{ record.teamName || record.teamId }}</strong>
+                <span>{{ record.memberUsage.length }} 个成员</span>
+                <span v-for="window in currentWindows(overview?.windows)" :key="window.key">{{ window.label }} {{ formatUsageBrief(record.usageByWindow[window.key]) }}</span>
+                <RowActions :actions="teamActions(record)" variant="button" @action-click="toggleTeam(record.teamId)" />
+              </article>
+            </template>
+          </ResponsiveDataList>
         </a-tab-pane>
       </a-tabs>
     </div>
@@ -50,6 +70,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type {
@@ -182,5 +203,21 @@ function currentWindows(source = props.overview?.windows) {
 
 .muted-cell {
   color: #94a3b8;
+}
+
+.usage-mobile-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.usage-mobile-card strong {
+  color: #0f172a;
+  font-size: 13px;
 }
 </style>

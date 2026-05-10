@@ -58,6 +58,11 @@ export function prettyJson(value: unknown): string {
   return JSON.stringify(value, null, 2)
 }
 
+export function formatHashPreview(value?: string): string {
+  if (!value) return '-'
+  return value.length > 8 ? `${value.slice(0, 4)}....${value.slice(-4)}` : value
+}
+
 export function normalizedStatusCode(value: string): number | undefined {
   const text = value.trim()
   if (!text) return undefined

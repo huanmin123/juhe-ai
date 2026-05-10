@@ -68,6 +68,7 @@ export interface AuditLogPayloadSummary {
   sequenceIndex: number
   contentType?: string
   contentEncoding?: string
+  headersSha256?: string
   bodySha256?: string
   sizeBytes: number
   createdAt: string

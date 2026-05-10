@@ -1,5 +1,5 @@
 import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '../domain/types.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { loadSystemAccountsByIds } from './repository-lookups.js'
 import type { AnnouncementRow } from './repository-row-types.js'
@@ -60,8 +60,8 @@ export function markPublicAnnouncementsRead(systemAccountId: string, announcemen
 
   if (!publishedRows.length) return { readAt, count: 0 }
 
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
-    database.exec('BEGIN')
     const statement = database.prepare(`
       INSERT INTO announcement_reads (announcement_id, system_account_id, read_at)
       VALUES (?, ?, ?)
@@ -71,10 +71,10 @@ export function markPublicAnnouncementsRead(systemAccountId: string, announcemen
     for (const row of publishedRows) {
       statement.run(row.id, systemAccountId, readAt)
     }
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
-      database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(database, transactionStarted)
     } catch {
       // Ignore rollback failures so the original write error is preserved.
     }

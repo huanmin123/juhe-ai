@@ -1,7 +1,7 @@
 import type { ApiKeySummary, ProviderCode } from '../domain/types.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { createApiKey, decryptJson, encryptJson, hashSecret } from './crypto.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { defaultOpenAIGroupIdForSystemAccount } from './default-group.repository.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { loadSystemAccountNameMap } from './repository-lookups.js'
@@ -250,18 +250,18 @@ export function deleteApiKey(id: string, access?: AccessScope): boolean {
     return false
   }
 
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     deleteApiKeyRelatedData(database, row)
     const result = database.prepare('DELETE FROM api_keys WHERE id = ? AND system_account_id = ?').run(row.id, row.system_account_id)
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
     if (result.changes > 0) {
       invalidateGatewayApiKeyCacheById(row.id)
     }
     return result.changes > 0
   } catch (error) {
     try {
-      database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(database, transactionStarted)
     } catch {
     }
     throw error

@@ -27,6 +27,9 @@ export default defineConfig(({ mode }) => {
             if (id.includes('node_modules/@ant-design/icons-vue')) {
               return 'ant-design-icons'
             }
+            if (id.includes('node_modules/@codemirror') || id.includes('node_modules/@lezer') || id.includes('node_modules/style-mod') || id.includes('node_modules/crelt') || id.includes('node_modules/w3c-keyname')) {
+              return 'codemirror'
+            }
             if (id.includes('node_modules/zrender')) {
               return 'zrender'
             }

@@ -56,6 +56,8 @@ interface ProxyOutboundInfo {
 type OutboundProbeParser = 'ip-api' | 'ipwhois' | 'ipsb' | 'ipinfo' | 'ipify' | 'httpbin'
 
 const probeTimeoutMs = 15000
+export const proxyLatencyRefreshIntervalSeconds = 60
+export const proxyLatencyRefreshBatchSize = 20
 const outboundProbeTargets = [
   { url: 'http://ip-api.com/json/?lang=zh-CN', parser: 'ip-api' },
   { url: 'https://ipwho.is/', parser: 'ipwhois' },
@@ -65,10 +67,10 @@ const outboundProbeTargets = [
   { url: 'http://httpbin.org/ip', parser: 'httpbin' }
 ] as const
 
-export async function testProxyById(id: string): Promise<ProxyTestReport | undefined> {
+export async function testProxyById(id: string, options: { persist?: boolean } = {}): Promise<ProxyTestReport | undefined> {
   const proxy = getProxyTestConfig(id)
   if (!proxy) return undefined
-  return testProxy(proxy, { persist: true, includeOutboundInfo: true })
+  return testProxy(proxy, { persist: options.persist ?? true, includeOutboundInfo: true })
 }
 
 export async function refreshProxyLatencyBatch(limit: number): Promise<void> {

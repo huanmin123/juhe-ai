@@ -53,7 +53,7 @@
           <div class="section-heading">
             <div>
               <h3>账户调度默认值</h3>
-              <p>这些配置是系统级运行策略，保存后会影响网关调度、审计日志和后台任务。</p>
+              <p>这些配置是系统级运行策略，保存后会影响网关调度和后台任务。</p>
             </div>
           </div>
           <div class="settings-grid">
@@ -107,80 +107,6 @@
             <div class="setting-item">
               <a-form-item label="失败统计窗口（分钟）" extra="只统计这个时间窗口内的流式失败；超过窗口后重新计数。">
                 <a-input-number v-model:value="systemForm.streamFailureThresholdWindowMinutes" :min="1" :max="1440" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section">
-          <div class="section-heading">
-            <div>
-              <h3>代理质量刷新</h3>
-              <p>后台定期检测代理延迟，用于账户绑定代理后的排障和状态展示；代理本身仍由代理管理页维护。</p>
-            </div>
-          </div>
-
-          <div class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="刷新间隔（秒）" extra="后台每隔多久触发一次代理延迟刷新；值越小越及时，但会增加后台检测频率。">
-                <a-input-number v-model:value="systemForm.proxyLatencyRefreshIntervalSeconds" :min="10" :max="3600" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="单批检测数量" extra="每轮最多检测多少个代理，代理数量较多时会分批刷新。">
-                <a-input-number v-model:value="systemForm.proxyLatencyRefreshBatchSize" :min="1" :max="100" style="width: 100%" />
-              </a-form-item>
-            </div>
-          </div>
-        </section>
-
-        <section class="settings-section">
-          <div class="section-heading">
-            <div>
-              <h3>原始审计日志</h3>
-              <p>记录完整请求头、请求体和响应内容；失败请求全量保存，成功请求按比例采样。</p>
-            </div>
-            <a-switch v-model:checked="systemForm.auditLogEnabled" checked-children="启用" un-checked-children="关闭" />
-          </div>
-
-          <a-alert class="setting-alert section-alert" type="warning" show-icon>
-            <template #message>审计日志包含完整凭据和业务内容，只在管理员页面查看；队列满或单次捕获超限时会丢弃整条审计记录，不阻塞正常请求。</template>
-          </a-alert>
-
-          <div class="settings-grid">
-            <div class="setting-item">
-              <a-form-item label="成功采样比例" extra="完全成功且没有重试的请求按这个比例保存；失败、重试后成功和客户端断开始终全量保存。">
-                <a-input-number v-model:value="systemForm.auditLogSuccessSampleRate" :min="0" :max="1" :step="0.01" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="批量落库间隔（秒）" extra="审计日志只先进内存队列，达到间隔或批量阈值后后台写库。">
-                <a-input-number v-model:value="systemForm.auditLogFlushIntervalSeconds" :min="1" :max="3600" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="单批写入数量" extra="每批最多写入多少条终态审计请求。">
-                <a-input-number v-model:value="systemForm.auditLogBatchSize" :min="1" :max="1000" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="队列最大条数" extra="内存队列超过上限会优先丢弃成功采样记录。">
-                <a-input-number v-model:value="systemForm.auditLogQueueMaxItems" :min="1" :max="100000" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="队列最大体积（MB）" extra="按 headers 和 body 近似体积估算，不保证精确等于数据库体积。">
-                <a-input-number v-model:value="systemForm.auditLogQueueMaxBytesMb" :min="1" :max="10240" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="单请求捕获上限（MB）" extra="超过后丢弃整条审计记录，避免写入不完整原文。">
-                <a-input-number v-model:value="systemForm.auditLogActiveCaptureMaxBytesMb" :min="1" :max="10240" style="width: 100%" />
-              </a-form-item>
-            </div>
-            <div class="setting-item">
-              <a-form-item label="保留天数" extra="后台清理任务会删除超过保留期的审计日志和 payload。">
-                <a-input-number v-model:value="systemForm.auditLogRetentionDays" :min="1" :max="7" style="width: 100%" />
               </a-form-item>
             </div>
           </div>

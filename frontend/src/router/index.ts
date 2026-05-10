@@ -79,6 +79,15 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/my-operation-logs',
+    component: () => import('@/views/operation-logs/OperationLogsView.vue'),
+    meta: {
+      title: '我的操作日志',
+      description: '查看自己发起、管理员代操作和影响到自己的业务变更记录。',
+      viewScope: 'self'
+    }
+  },
+  {
     path: '/stats',
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {
@@ -174,6 +183,16 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '使用记录管理',
       description: '按系统账户查看网关请求、命中账户、Token 用量、成本和错误状态。',
+      viewScope: 'admin',
+      roles: ['admin']
+    }
+  },
+  {
+    path: '/operation-logs',
+    component: () => import('@/views/operation-logs/OperationLogsView.vue'),
+    meta: {
+      title: '操作日志管理',
+      description: '查看所有用户的业务变更操作日志，追溯操作人、资源、影响用户和 traceId。',
       viewScope: 'admin',
       roles: ['admin']
     }

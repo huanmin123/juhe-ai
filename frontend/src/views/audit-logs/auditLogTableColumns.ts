@@ -25,20 +25,21 @@ export const auditLogColumns = [
 ]
 
 export const auditAttemptColumns = [
-  { title: '#', dataIndex: 'attemptIndex', width: 60 },
-  { title: '结果', key: 'success', width: 90 },
-  { title: '账号', key: 'account', width: 160 },
-  { title: '状态码', dataIndex: 'upstreamStatusCode', width: 90 },
-  { title: '耗时', key: 'duration', width: 90 },
-  { title: '上游 URL', key: 'url', width: 320 },
-  { title: '错误', dataIndex: 'errorMessage', width: 220 }
+  { title: '#', dataIndex: 'attemptIndex', width: 52 },
+  { title: '结果', key: 'success', width: 76 },
+  { title: '账号', key: 'account', width: 132 },
+  { title: '状态码', dataIndex: 'upstreamStatusCode', width: 76 },
+  { title: '耗时', key: 'duration', width: 76 },
+  { title: '上游 URL', key: 'url', width: 220 },
+  { title: '错误', key: 'error', width: 160 }
 ]
 
 export const auditPayloadColumns = [
-  { title: '部分', key: 'partType', width: 140 },
-  { title: '序号', dataIndex: 'sequenceIndex', width: 80 },
-  { title: '类型', dataIndex: 'contentType', width: 180 },
-  { title: '大小', key: 'size', width: 100 },
-  { title: 'SHA256', dataIndex: 'bodySha256', width: 260 },
-  { title: '操作', key: 'actions', width: 110 }
+  { title: '部分', key: 'partType', width: 116 },
+  { title: '序号', dataIndex: 'sequenceIndex', width: 76 },
+  { title: '类型', dataIndex: 'contentType', width: 150 },
+  { title: '大小', key: 'size', width: 82 },
+  { title: 'Headers SHA256', key: 'headersSha256', width: 130 },
+  { title: 'Body SHA256', key: 'bodySha256', width: 130 },
+  { title: '操作', key: 'actions', width: 72 }
 ]

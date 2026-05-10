@@ -1,5 +1,5 @@
 import { buildSystemAccountScopeClause, currentSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { loadSystemAccountNameMap } from './repository-lookups.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
@@ -290,7 +290,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   const updateAccountStatement = database.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
   const accountLastUsedAt = new Map<string, string>()
 
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const input of inputs) {
       if (input.apiKeyId && !apiKeyExists(database, input.apiKeyId)) {
@@ -350,10 +350,10 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
       updateAccountStatement.run(lastUsedAt, lastUsedAt, accountId)
     }
 
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
-      database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(database, transactionStarted)
     } catch {
     }
     throw error

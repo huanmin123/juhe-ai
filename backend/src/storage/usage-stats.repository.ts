@@ -2,7 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import type { UsageOverviewWindowDefinition, UsageOverviewWindowKey } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { averageFromSum, hourKey } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateUsageStatsRecord } from './usage-stats-writers.js'
@@ -61,7 +61,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
   }
 
   const updatedAt = nowIso()
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const row of rows) {
       aggregateUsageStatsRecord(database, row, updatedAt)
@@ -73,9 +73,9 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
       lastSuccessAt: updatedAt,
       lagSeconds: statsLagSecondsFromCursor(last.created_at)
     })
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     updateStatsJobState(database, {
       lastErrorMessage: error instanceof Error ? error.message : '用量统计聚合失败',
       lagSeconds: latestUsageStatsLagSeconds()
@@ -89,7 +89,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
 export function refreshGroupAccountStatsCache(): void {
   const database = getDatabase()
   const updatedAt = nowIso()
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     database.prepare('DELETE FROM group_account_stats').run()
     const activeAuthorizationUntil = updatedAt
@@ -208,9 +208,9 @@ export function refreshGroupAccountStatsCache(): void {
       activeAuthorizationUntil,
       updatedAt
     )
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
 }
@@ -219,7 +219,7 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
   const database = getDatabase()
   const sampledAt = nowIso()
   const statHour = hourKey(new Date(sampledAt))
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
       .prepare(`
@@ -250,9 +250,9 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
         sampledAt
       )
     upsertSystemMetricsHourly(database, statHour, input, sampledAt)
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
 }

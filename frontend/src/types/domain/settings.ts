@@ -9,16 +9,6 @@ export interface SystemSettings {
   streamIdleTimeoutSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
-  auditLogEnabled?: boolean
-  auditLogSuccessSampleRate?: number
-  auditLogFlushIntervalSeconds?: number
-  auditLogBatchSize?: number
-  auditLogQueueMaxItems?: number
-  auditLogQueueMaxBytesMb?: number
-  auditLogActiveCaptureMaxBytesMb?: number
-  auditLogRetentionDays?: number
-  proxyLatencyRefreshIntervalSeconds?: number
-  proxyLatencyRefreshBatchSize?: number
   [key: string]: unknown
 }
 

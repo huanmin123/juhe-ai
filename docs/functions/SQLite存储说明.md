@@ -32,6 +32,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 客户请求链路中的高频 SQLite 读写优先通过独立本地 DB service 进程异步完成，降低 Web/API/网关主进程被同步 `DatabaseSync` 调用短暂阻塞的风险；DB service 不改变 SQLite 单写者模型。
 - 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
+- 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
 - 原始审计日志使用独立表保存完整链路原文；网关请求链路只能终态入队，后台批量写库，不能同步写审计表
 - 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；搜索能力使用 SQLite 索引表 `runtime_logs` 和 FTS5 表 `runtime_log_search`，不在查询时扫描日志文件。
 - 系统团队、团队成员和统一资源授权使用独立表记录；授权不复制账户凭据，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
@@ -56,6 +57,9 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、事件循环延迟、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。
+- `operation_logs`：保存业务操作主事件，包括操作人、业务作用域、模块、动作、主资源、安全差异和 trace ID。
+- `operation_log_targets`：保存一次操作涉及或影响的资源，支持按资源反查历史操作。
+- `operation_log_viewers`：保存普通用户可见性和可见原因，资源删除或授权撤销后仍按当时关系追溯。
 - `audit_logs`：保存每次被采样或非成功客户端请求的审计元数据，用于后台页面检索。
 - `audit_log_attempts`：保存审计请求下每次上游尝试、命中账号、代理、状态码和错误摘要。
 - `audit_log_payloads`：保存客户端请求、上游请求、上游响应和最终网关响应的完整原文，建议加密存储。
@@ -96,6 +100,15 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `usage_error_hourly(system_account_id, stat_hour, error_group, error_code)`：监控窗口错误分布读取。
 - `group_account_stats(system_account_id, group_id)`：分组列表读取账户数量与状态统计。
 - `stats_job_state(scope_type, scope_id, job_name)`：后台任务游标读取。
+- `operation_logs(created_at, id)`：操作日志默认分页。
+- `operation_logs(actor_system_account_id, created_at, id)`：按操作人筛选。
+- `operation_logs(operation_scope_system_account_id, created_at, id)`：按业务作用域筛选。
+- `operation_logs(module, action, created_at, id)`：按模块和动作筛选。
+- `operation_logs(resource_type, resource_id, created_at, id)`：按主资源追溯。
+- `operation_logs(trace_id)`：按链路 ID 关联普通运行日志。
+- `operation_log_targets(target_type, target_id, created_at)`：按任意受影响资源反查。
+- `operation_log_viewers(system_account_id, created_at, operation_log_id)`：用户侧读取可见操作日志。
+- `operation_log_viewers(operation_log_id, system_account_id)`：详情权限校验。
 - `audit_logs(created_at, id)`：审计日志默认分页。
 - `audit_logs(system_account_id, created_at, id)`：管理员按调用方筛选审计日志。
 - `audit_logs(audit_outcome, created_at, id)`、`audit_logs(final_status_code, created_at, id)`：按结果和状态码筛选。
@@ -123,7 +136,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 分组账户统计 worker 定时重建 `group_account_stats`，分组列表不得在查询时临时 `COUNT/SUM group_accounts + accounts`。
 - 账号质量刷新 worker 默认每 10 分钟执行一次：先 flush 使用记录队列，再按近 10 分钟真实网关 `usage_records.first_token_ms` 刷新 `account_quality_scores`。主动探测能力已删除，worker 只处理真实请求样本，源码和预上线本地库都不再保留 `last_probe_at`。超过 24 小时未更新的质量分不参与网关调度。
 - 冷却账号恢复性复测只处理冷却到期的 `rate_limited`、`temporary_unavailable` 账号；复测前优先从最近真实 `usage_records` 学习 `endpoint/model/stream` 元信息，但不读取 `request_snapshot_json`，也不重放用户 prompt、工具参数或文件内容。没有可用形态样本时才回退到最小 Responses 探活。
-- 代理延迟刷新 worker 默认每 1 分钟按批量大小检测启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新。
+- 代理延迟刷新 worker 固定每 1 分钟检测最多 20 个启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新，不提供系统设置项调整。
 - 授权账户调用需要同时写入调用方统计、真实账户统计和授权消耗统计：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；账户所有者的账户总用量按 `account_owner_system_account_id + account_id` 聚合；授权管理按 `account_owner_system_account_id + account_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 授权分组调用需要同时写入调用方统计、真实分组统计和授权消耗统计：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权管理按 `group_owner_system_account_id + group_authorization_id` 聚合，并过滤资源归属人自用消耗。
 - 授权管理列表和用量明细只读取 `usage_stats_daily` / `usage_stats_totals` 缓存；前端查询和详情接口不能临时 `SUM usage_records`，否则会把高频统计压力转移到页面请求。
@@ -150,7 +163,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 | 表 | 数据类型 | 保留策略 | 是否已有统一定时清理 | 注意事项 |
 | --- | --- | --- | --- | --- |
 | `runtime_logs`、`runtime_log_search` | 普通运行日志搜索索引 | 固定最近 3 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只删除 SQLite 搜索索引，不删除后端 `.log` 文件 |
-| `audit_logs`、`audit_log_attempts`、`audit_log_payloads` | 原始审计日志和原文 payload | 默认 7 天，系统设置最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 删除 `audit_logs` 后依赖外键级联删除 attempts 和 payloads |
+| `operation_logs`、`operation_log_targets`、`operation_log_viewers` | 业务操作追溯日志 | 默认 365 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只按时间清理，不因资源删除级联删除历史日志 |
+| `audit_logs`、`audit_log_attempts`、`audit_log_payloads` | 原始审计日志和原文 payload | 固定 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 删除 `audit_logs` 后依赖外键级联删除 attempts 和 payloads |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只删除超过保留期且已被统计游标处理过的记录，避免破坏统计聚合 |
 | `usage_stats_daily`、`usage_model_daily`、`usage_error_daily` | 日级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 用量统计页面最大窗口为近 1 个月，不再保留 180 天日缓存 |
 | `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly` | 小时级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 统计概览近 1 天到近 1 月均从小时缓存聚合 |
@@ -172,6 +186,72 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 清理任务按批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 10000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 10` 批，避免长时间占用 SQLite 写锁。
 - 统计聚合、系统指标采样、审计日志落库和运行日志索引队列只负责写入或聚合，不再在各自流程里顺手删除历史表数据。
 - 如果统计缓存损坏，可以运行 `pnpm --filter juhe-ai-backend stats:rebuild` 从尚未清理的 `usage_records` 重新构建缓存。该命令会清空并重建当前 `.env` 指向数据库里的统计缓存，执行前应确认数据库路径并先备份。
+
+## 操作日志存储
+
+操作日志是独立于使用记录和原始审计日志的业务变更追溯数据，具体行为见 [操作日志设计](操作日志设计.md)。
+
+源码边界：
+
+- `schema.ts` 中只保留当前 `operation_logs`、`operation_log_targets`、`operation_log_viewers` 表结构和索引。
+- 操作日志只记录成功提交的状态变更；`GET`、列表、详情、筛选、分页和日志查看不写操作日志。
+- 操作日志不保存完整请求体、完整响应体、完整 headers、凭据、token、代理密码、验证码、登录密码或原始审计 payload。
+- 删除业务资源时不删除历史操作日志；历史日志保留当时的资源 ID、资源名称、安全摘要和影响用户。
+- 普通用户可见性优先由 `operation_log_viewers` 预计算，全员安全摘要由 `operation_logs.visibility_scope = 'all_users'` 承载。
+
+建议新增 `operation_logs` 表：
+
+- `id`
+- `trace_id`
+- `actor_system_account_id`
+- `actor_username`
+- `actor_display_name`
+- `actor_role`：`admin`、`user`
+- `operation_scope_system_account_id`
+- `mode`：`self`、`admin`
+- `module`
+- `action`
+- `operation_key`
+- `resource_type`
+- `resource_id`
+- `resource_name`
+- `summary`
+- `detail_level`：`full`、`summary`
+- `visibility_scope`：`targeted`、`all_users`、`admin_only`
+- `changes_json`
+- `metadata_json`
+- `method`
+- `path`
+- `status_code`
+- `client_ip`
+- `user_agent`
+- `created_at`
+
+建议新增 `operation_log_targets` 表：
+
+- `id`
+- `operation_log_id`
+- `target_type`
+- `target_id`
+- `target_name`
+- `target_owner_system_account_id`
+- `relation`：`primary`、`affected`、`created`、`deleted`、`owner`、`grantee`、`team_member`、`bound_resource`
+- `created_at`
+
+建议新增 `operation_log_viewers` 表：
+
+- `operation_log_id`
+- `system_account_id`
+- `visibility_reason`：`actor_self`、`resource_owner`、`admin_managed_my_resource`、`authorization_owner`、`authorization_grantee`、`team_member`、`team_authorization`、`global_affected`、`bound_resource_affected`
+- `detail_level`：`full`、`summary`
+- `created_at`
+
+保存规则：
+
+- `changes_json` 只保存安全字段差异；敏感字段只保存“已变更”“已清空”“已设置”等摘要。
+- `metadata_json` 只保存业务排查所需的安全上下文，例如授权来源摘要、设置分组、资源归属快照等。
+- 管理员操作某个用户资源时，`actor_system_account_id` 保存真实管理员，`operation_scope_system_account_id` 保存被管理用户或资源 owner。
+- 全员可见的设置或公告变化可不展开 `operation_log_viewers`，由 `visibility_scope = 'all_users'` 支撑用户侧查询。
 
 ## 原始审计日志存储
 
@@ -257,6 +337,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 保存规则：
 
 - `headers_encrypted` 和 `body_encrypted` 保存完整原文，不脱敏、不截断、不改写。
+- `headersSha256` 由详情接口读取 `headers_encrypted` 后按稳定 JSON 字符串计算，不新增存储列；旧审计记录只要 headers 可解密即可展示。
+- `body_sha256` 只针对 body 原文字节计算，不代表整条审计记录或完整请求的摘要。
 - 加密存储优先复用 `JUHE_AI_SECRET` 派生的应用层加密能力；复用旧数据库时必须保持该密钥稳定，否则原始审计 payload 无法解密。
 - 单条请求超过活跃捕获上限或队列上限时，不能写入伪完整记录；允许丢弃整条审计记录并增加队列丢弃计数。
 - 完全成功请求默认只保存 10%；非成功、客户端中断、流式中断和重试后成功请求全量保存。
@@ -434,29 +516,34 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `dataRetentionCleanupBatchSize = 10000`、`dataRetentionCleanupMaxBatchesPerRun = 10`：统一表数据清理任务的批量上限。
 - OAuth 额度快照不再有后台主动刷新默认项；快照只由真实网关响应头和账户测试副作用被动更新。
 - `statsLagWarningSeconds = 300`：统计任务滞后超过该值时在运维概览里提示。
-- `auditLogEnabled = true`：默认启用原始审计日志。
-- `auditLogSuccessSampleRate = 0.1`：完全成功请求默认保存 10%。
-- `auditLogFlushIntervalSeconds = 5`：审计队列默认每 5 秒批量落库一次。
-- `auditLogBatchSize = 50`：审计队列单批最多写入 50 条客户端请求。
-- `auditLogQueueMaxItems = 1000`：待写队列最多保留 1000 条终态审计请求。
-- `auditLogQueueMaxBytesMb = 256`：待写队列近似最大原文体积，单位 MB。
-- `auditLogActiveCaptureMaxBytesMb = 64`：单个请求活跃捕获上限，单位 MB，超过后丢弃整条审计记录。
-- `auditLogRetentionDays = 7`：原始审计日志默认保留 7 天，系统设置最多允许 7 天。
+- `operationLogEnabled = true`：默认启用操作日志。
+- `operationLogRetentionDays = 365`：操作日志默认保留 365 天。
+- `operationLogMaxChangesPerRecord = 100`：单条操作日志最多保存 100 个字段差异，超过后折叠摘要。
 - `accountQualityRefreshIntervalSeconds = 600`：账号质量缓存默认每 10 分钟刷新一次。
 - `accountQualityWindowMinutes = 10`：真实网关请求首 token 统计窗口默认 10 分钟。
 - 账号质量主动探测相关默认设置已删除，不允许通过系统配置恢复。
 - `cooldownAccountRetestEnabled = true`：冷却账号后台复测默认开启，但只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
 - `cooldownAccountRetestBatchSize = 10`：默认每轮最多恢复性复测 10 个冷却到期账号。
 
-预上线阶段如本地库仍存在不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes` 等旧设置，直接通过备份后清洗或重建库处理；源码不保留启动清理分支。
+原始审计日志固定策略：
+
+- 固定启用原始审计日志，不提供系统设置开关。
+- 完全成功请求固定保存 `10%`；失败、重试后成功、客户端中断和流式中断全量保存。
+- 审计队列固定每 `5` 秒批量落库一次，单批最多 `50` 条客户端请求。
+- 待写队列最多保留 `1000` 条终态审计请求，近似最大原文体积为 `256MB`。
+- 单个请求活跃捕获上限为 `64MB`，超过后丢弃整条审计记录。
+- 原始审计日志固定保留 `7` 天。
+
+预上线阶段如本地库仍存在不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes`、`auditLogEnabled`、`auditLogSuccessSampleRate`、`auditLogFlushIntervalSeconds`、`auditLogBatchSize`、`auditLogQueueMaxItems`、`auditLogQueueMaxBytesMb`、`auditLogActiveCaptureMaxBytesMb`、`auditLogRetentionDays`、`proxyLatencyRefreshIntervalSeconds`、`proxyLatencyRefreshBatchSize` 等旧设置，直接通过备份后清洗或重建库处理；源码不保留启动清理分支。
 
 ## 系统账户隔离补充
 
-- `accounts`、`system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`audit_logs`、`account_usage_snapshots` 都按 `system_account_id` 或明确的 owner/grantee 字段隔离；`system_settings` 当前按默认管理员作用域保存系统级运行策略。
+- `accounts`、`system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts`、`api_keys`、`error_policies`、`usage_records`、`operation_logs`、`operation_log_targets`、`operation_log_viewers`、`audit_logs`、`account_usage_snapshots` 都按 `system_account_id` 或明确的 owner/grantee/viewer 字段隔离；`system_settings` 当前按默认管理员作用域保存系统级运行策略。
 - `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_model_hourly`、`usage_error_daily`、`usage_error_hourly` 也必须按 `system_account_id` 隔离。
 - `providers`、`proxy_profiles`、`global_settings`、`system_metrics_samples`、`system_metrics_hourly` 保持全局共享；`providers` 和 `proxy_profiles` 只允许管理员维护，主机级系统监控默认仅管理员可见。`proxy_profiles.latency_ms`、`outbound_ip`、`outbound_region`、`test_status`、`last_tested_at` 和 `last_test_message` 是代理最近检测缓存，不参与账号调度事实判断。
 - 管理员可以读取所有系统账户的数据；普通用户只读取自己的系统账户数据，以及其他用户主动授权给自己的 AI 账户和分组使用摘要。
 - 原始审计日志虽然带有 `system_account_id`，当前仍仅管理员可读取；普通用户不能通过审计日志接口查看自己的完整原文请求。
+- 操作日志按 `operation_log_viewers.system_account_id` 和 `visibility_scope = 'all_users'` 控制普通用户可见范围；管理员可读取全部操作日志。
 
 ## 敏感字段
 
@@ -465,6 +552,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - OpenAI OAuth token
 - OpenAI API Key
 - 代理密码
+- 操作日志中涉及敏感字段的变更详情
 - 原始审计日志 payload 中的完整 headers 和 body
 
 这是单人自用系统，自有账户接口会返回前端需要展示的完整密钥；授权账户和授权分组接口不能返回完整密钥，只能返回列表摘要和必要状态。数据库中仍尽量加密保存。
@@ -473,4 +561,4 @@ API Key 明文只在创建时返回一次。
 
 API Key 额度配置不属于敏感凭据，保存在 `api_keys.quota_limits_json`：空值表示不限制，JSON 内 `limit` 表示美元金额；日额度按服务端本地自然日 0 点重置，周额度按周一 0 点重置，月额度按每月 1 号 0 点重置，总额度读取累计 `total_cost_usd` 缓存。网关只读取 API Key 维度统计缓存判断美元成本额度，不回扫明细表，也不做实时扣减。
 
-更完整的凭据展示、请求快照、原始审计日志、日志脱敏、数据保留和备份迁移规则见 [安全与日志策略](安全与日志策略.md) 与 [原始审计日志设计](原始审计日志设计.md)。
+更完整的凭据展示、请求快照、操作日志、原始审计日志、日志脱敏、数据保留和备份迁移规则见 [安全与日志策略](安全与日志策略.md)、[操作日志设计](操作日志设计.md) 与 [原始审计日志设计](原始审计日志设计.md)。

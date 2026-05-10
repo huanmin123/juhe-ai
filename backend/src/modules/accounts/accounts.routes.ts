@@ -7,6 +7,7 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
+import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 export const accountsRouter = Router()
@@ -148,11 +149,41 @@ accountsRouter.post('/', (req, res) => {
   }
 
   try {
-    const account = createAccount({
-      ...parsed.data,
-      providerCode
-    }, requestAccess)
-    clearGatewayRuntimeCache()
+    const account = runLoggedOperation(() => {
+      const account = createAccount({
+        ...parsed.data,
+        providerCode
+      }, requestAccess)
+      const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+      return {
+        result: account,
+        afterCommit: clearGatewayRuntimeCache,
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'accounts',
+          action: 'create',
+          operationKey: 'accounts.create',
+          resourceType: 'account',
+          resourceId: account.id,
+          resourceName: account.name,
+          summary: `创建 AI 账户：${account.name}`,
+          changes: [
+            safeChange('name', '名称', undefined, account.name),
+            safeChange('providerCode', '供应商', undefined, account.providerCode),
+            safeChange('type', '账户类型', undefined, account.type),
+            safeChange('status', '状态', undefined, account.status),
+            safeChange('credentials', '凭据', undefined, parsed.data.credentials),
+            safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
+            safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
+            safeChange('errorPolicyId', '错误策略', undefined, account.errorPolicyId),
+            safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt),
+            safeChange('notes', '备注', undefined, account.notes)
+          ],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
     res.status(201).json(ok(account))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
@@ -180,13 +211,36 @@ accountsRouter.post('/:id/group', (req, res) => {
     return
   }
 
-  const account = setAccountGroup(req.params.id, parsed.data.groupId, requestAccess)
-  if (!account) {
-    res.status(400).json(badRequest('账户不存在、授权已失效或分组不可用'))
-    return
+  const before = findAccountForTest(req.params.id, requestAccess)
+  try {
+    const account = runLoggedOperation(() => {
+      const account = setAccountGroup(req.params.id, parsed.data.groupId, requestAccess)
+      if (!account) {
+        throw new Error('账户不存在、授权已失效或分组不可用')
+      }
+      const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+      return {
+        result: account,
+        afterCommit: clearGatewayRuntimeCache,
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'accounts',
+          action: 'bind_group',
+          operationKey: 'accounts.bind_group',
+          resourceType: 'account',
+          resourceId: account.id,
+          resourceName: account.name,
+          summary: `绑定账户分组：${account.name}`,
+          changes: [safeChange('groupId', '绑定分组', before?.boundGroupId, account.boundGroupId)],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
+    res.json(ok(account))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '绑定账户分组失败'))
   }
-  clearGatewayRuntimeCache()
-  res.json(ok(account))
 })
 
 accountsRouter.post('/:id/traffic-migration', (req, res) => {
@@ -203,23 +257,60 @@ accountsRouter.post('/:id/traffic-migration', (req, res) => {
   }
 
   try {
-    const migration = migrateAccountTraffic({
-      sourceAccountId: req.params.id,
-      targetAccountId: parsed.data.targetAccountId,
-      sourceStatus: parsed.data.sourceStatus ?? 'temporary_unavailable'
-    }, requestAccess)
-    if (!migration) {
-      res.status(404).json({ message: '账户不存在或无权迁移' })
-      return
-    }
-    const affinityResult = migrateOpenAIAccountSessionAffinity(req.params.id, parsed.data.targetAccountId)
-    clearGatewayRuntimeCache()
+    let affinityResult = { migratedSessionCount: 0 }
+    const migration = runLoggedOperation(() => {
+      const migration = migrateAccountTraffic({
+        sourceAccountId: req.params.id,
+        targetAccountId: parsed.data.targetAccountId,
+        sourceStatus: parsed.data.sourceStatus ?? 'temporary_unavailable'
+      }, requestAccess)
+      if (!migration) {
+        throw new Error('账户不存在或无权迁移')
+      }
+      const ownerSystemAccountId = resolveOperationOwner(migration.sourceAccount as unknown as Record<string, unknown>, requestAccess)
+      return {
+        result: migration,
+        afterCommit: () => {
+          affinityResult = migrateOpenAIAccountSessionAffinity(req.params.id, parsed.data.targetAccountId)
+          clearGatewayRuntimeCache()
+        },
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'accounts',
+          action: 'traffic_migration',
+          operationKey: 'accounts.traffic_migration',
+          resourceType: 'account',
+          resourceId: migration.sourceAccount.id,
+          resourceName: migration.sourceAccount.name,
+          summary: `迁移账户流量：${migration.sourceAccount.name} -> ${migration.targetAccount.name}`,
+          changes: [
+            safeChange('targetAccountId', '目标账户', undefined, migration.targetAccount.name),
+            safeChange('sourceStatus', '源账户状态', undefined, parsed.data.sourceStatus ?? 'temporary_unavailable')
+          ],
+          targets: [
+            {
+              targetType: 'account',
+              targetId: migration.targetAccount.id,
+              targetName: migration.targetAccount.name,
+              targetOwnerSystemAccountId: resolveOperationOwner(migration.targetAccount as unknown as Record<string, unknown>, requestAccess),
+              relation: 'affected'
+            }
+          ],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
     res.json(ok({
       ...migration,
       ...affinityResult,
       sourceStatus: parsed.data.sourceStatus ?? 'temporary_unavailable'
     }))
   } catch (error) {
+    if (error instanceof Error && error.message === '账户不存在或无权迁移') {
+      res.status(404).json({ message: '账户不存在或无权迁移' })
+      return
+    }
     res.status(400).json(badRequest(error instanceof Error ? error.message : '迁移流量失败'))
   }
 })
@@ -249,12 +340,63 @@ accountsRouter.patch('/:id', (req, res) => {
       return
     }
   }
-  if (body.clearFailureState === true) {
-    clearAccountFailureState(req.params.id, requestAccess)
-  }
-  let account: ReturnType<typeof updateAccount>
   try {
-    account = updateAccount(req.params.id, body, requestAccess)
+    const account = runLoggedOperation(() => {
+      if (body.clearFailureState === true) {
+        const restoredAccount = clearAccountFailureState(req.params.id, requestAccess)
+        if (!restoredAccount) {
+          throw new Error('账户不存在')
+        }
+      }
+      let account = updateAccount(req.params.id, body, requestAccess)
+      if (!account) {
+        throw new Error('账户不存在')
+      }
+      if (hasGroupId) {
+        const nextAccount = setAccountGroup(account.id, body.groupId as string, requestAccess)
+        if (!nextAccount) {
+          throw new Error('账户分组无效')
+        }
+        account = nextAccount
+      }
+      const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+      return {
+        result: account,
+        afterCommit: clearGatewayRuntimeCache,
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'accounts',
+          action: body.clearFailureState === true ? 'restore' : 'update',
+          operationKey: body.clearFailureState === true ? 'accounts.restore' : 'accounts.update',
+          resourceType: 'account',
+          resourceId: account.id,
+          resourceName: account.name,
+          summary: body.clearFailureState === true ? `恢复 AI 账户：${account.name}` : `更新 AI 账户：${account.name}`,
+          changes: [
+            ...diffSafeFields(existingAccount as unknown as Record<string, unknown>, account as unknown as Record<string, unknown>, {
+              name: '名称',
+              notes: '备注',
+              credentials: '凭据',
+              status: '状态',
+              concurrencyLimit: '并发限制',
+              priority: '优先级',
+              superPriorityEnabled: '超级优先',
+              proxyProfileId: '代理',
+              errorPolicyId: '错误策略',
+              schedulable: '参与调度',
+              accountExpiresAt: '过期时间',
+              boundGroupId: '绑定分组',
+              cooldownUntil: '冷却结束时间',
+              lastErrorMessage: '错误信息'
+            }),
+            ...(body.clearFailureState === true ? [safeChange('clearFailureState', '恢复异常状态', false, true)] : [])
+          ],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
+    res.json(ok(account))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
       res.status(409).json({ message: error.message })
@@ -264,22 +406,16 @@ accountsRouter.patch('/:id', (req, res) => {
       res.status(400).json(badRequest(error.message))
       return
     }
-    res.status(400).json(badRequest(error instanceof Error ? error.message : '更新账户失败'))
-    return
-  }
-  if (!account) {
-    res.status(404).json({ message: '账户不存在' })
-    return
-  }
-  if (hasGroupId) {
-    const nextAccount = setAccountGroup(account.id, body.groupId as string, requestAccess)
-    if (!nextAccount) {
+    if (error instanceof Error && error.message === '账户分组无效') {
       res.status(400).json(badRequest('账户分组无效'))
       return
     }
+    if (error instanceof Error && error.message === '账户不存在') {
+      res.status(404).json({ message: '账户不存在' })
+      return
+    }
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '更新账户失败'))
   }
-  clearGatewayRuntimeCache()
-  res.json(ok(account))
 })
 
 accountsRouter.post('/:id/test', async (req, res) => {
@@ -320,6 +456,22 @@ accountsRouter.post('/:id/test', async (req, res) => {
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
+    if (result.accountStatusChanged) {
+      const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+      recordOperationLog({
+        operationScopeSystemAccountId: ownerSystemAccountId,
+        mode: operationMode(requestAccess),
+        module: 'accounts',
+        action: 'test_status_changed',
+        operationKey: 'accounts.test_status_changed',
+        resourceType: 'account',
+        resourceId: account.id,
+        resourceName: account.name,
+        summary: `账户测试更新状态：${account.name}`,
+        changes: [safeChange('status', '状态', account.status, result.accountStatus)],
+        viewers: viewer(ownerSystemAccountId, 'resource_owner')
+      }, req)
+    }
     res.json(ok(result))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) {
@@ -336,10 +488,37 @@ accountsRouter.delete('/:id', (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  if (!deleteAccount(req.params.id, requestAccess)) {
-    res.status(404).json({ message: '账户不存在' })
-    return
+  const before = findAccountForTest(req.params.id, requestAccess) ?? listAccountsPage(requestAccess, { limit: 200 }).items.find((item) => item.id === req.params.id)
+  const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
+  try {
+    runLoggedOperation(() => {
+      if (!deleteAccount(req.params.id, requestAccess)) {
+        throw new Error('账户不存在')
+      }
+      return {
+        result: true,
+        afterCommit: clearGatewayRuntimeCache,
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'accounts',
+          action: 'delete',
+          operationKey: 'accounts.delete',
+          resourceType: 'account',
+          resourceId: req.params.id,
+          resourceName: before?.name ?? req.params.id,
+          summary: `删除 AI 账户：${before?.name ?? req.params.id}`,
+          changes: [safeChange('deleted', '删除状态', false, true)],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
+  } catch (error) {
+    if (error instanceof Error && error.message === '账户不存在') {
+      res.status(404).json({ message: '账户不存在' })
+      return
+    }
+    throw error
   }
-  clearGatewayRuntimeCache()
   res.status(204).send()
 })

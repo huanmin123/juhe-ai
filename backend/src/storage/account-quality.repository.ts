@@ -1,4 +1,4 @@
-import { getDatabase, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 
 export type AccountQualityState = 'fresh' | 'stale' | 'failed' | 'unknown'
 
@@ -90,7 +90,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
     }>
 
   const activeAccountIds = new Set(rows.map((row) => row.account_id))
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     const deleteResult = database
       .prepare('DELETE FROM account_quality_scores WHERE account_id NOT IN (SELECT id FROM accounts)')
@@ -145,11 +145,11 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       markAccountQualityStale(existing.account_id, windowStartedAt, windowEndedAt, updatedAt)
     }
 
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
     return { refreshed: rows.length, removed: Number(deleteResult.changes ?? 0), windowStartedAt, windowEndedAt }
   } catch (error) {
     try {
-      database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(database, transactionStarted)
     } catch {
     }
     throw error

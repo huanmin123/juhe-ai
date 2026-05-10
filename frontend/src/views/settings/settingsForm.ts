@@ -15,16 +15,6 @@ export interface SystemForm {
   streamIdleTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
-  auditLogEnabled: boolean
-  auditLogSuccessSampleRate: number
-  auditLogFlushIntervalSeconds: number
-  auditLogBatchSize: number
-  auditLogQueueMaxItems: number
-  auditLogQueueMaxBytesMb: number
-  auditLogActiveCaptureMaxBytesMb: number
-  auditLogRetentionDays: number
-  proxyLatencyRefreshIntervalSeconds: number
-  proxyLatencyRefreshBatchSize: number
 }
 
 export const defaultGlobalSettings: GlobalForm = {
@@ -40,17 +30,7 @@ export const defaultSystemSettings: SystemForm = {
   streamRequestTimeoutSeconds: 180,
   streamIdleTimeoutSeconds: 60,
   streamFailureThresholdCount: 3,
-  streamFailureThresholdWindowMinutes: 10,
-  auditLogEnabled: true,
-  auditLogSuccessSampleRate: 0.1,
-  auditLogFlushIntervalSeconds: 5,
-  auditLogBatchSize: 50,
-  auditLogQueueMaxItems: 1000,
-  auditLogQueueMaxBytesMb: 256,
-  auditLogActiveCaptureMaxBytesMb: 64,
-  auditLogRetentionDays: 7,
-  proxyLatencyRefreshIntervalSeconds: 60,
-  proxyLatencyRefreshBatchSize: 20
+  streamFailureThresholdWindowMinutes: 10
 }
 
 export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): GlobalForm {
@@ -69,24 +49,8 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     streamRequestTimeoutSeconds: numberValue(settings.streamRequestTimeoutSeconds, defaultSystemSettings.streamRequestTimeoutSeconds, 10, 3600),
     streamIdleTimeoutSeconds: numberValue(settings.streamIdleTimeoutSeconds, defaultSystemSettings.streamIdleTimeoutSeconds, 1, 3600),
     streamFailureThresholdCount: numberValue(settings.streamFailureThresholdCount, defaultSystemSettings.streamFailureThresholdCount, 1, 100),
-    streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSystemSettings.streamFailureThresholdWindowMinutes, 1, 1440),
-    auditLogEnabled: booleanValue(settings.auditLogEnabled, defaultSystemSettings.auditLogEnabled),
-    auditLogSuccessSampleRate: decimalValue(settings.auditLogSuccessSampleRate, defaultSystemSettings.auditLogSuccessSampleRate, 0, 1),
-    auditLogFlushIntervalSeconds: numberValue(settings.auditLogFlushIntervalSeconds, defaultSystemSettings.auditLogFlushIntervalSeconds, 1, 3600),
-    auditLogBatchSize: numberValue(settings.auditLogBatchSize, defaultSystemSettings.auditLogBatchSize, 1, 1000),
-    auditLogQueueMaxItems: numberValue(settings.auditLogQueueMaxItems, defaultSystemSettings.auditLogQueueMaxItems, 1, 100000),
-    auditLogQueueMaxBytesMb: numberValue(settings.auditLogQueueMaxBytesMb, defaultSystemSettings.auditLogQueueMaxBytesMb, 1, 10240),
-    auditLogActiveCaptureMaxBytesMb: numberValue(settings.auditLogActiveCaptureMaxBytesMb, defaultSystemSettings.auditLogActiveCaptureMaxBytesMb, 1, 10240),
-    auditLogRetentionDays: numberValue(settings.auditLogRetentionDays, defaultSystemSettings.auditLogRetentionDays, 1, 7),
-    proxyLatencyRefreshIntervalSeconds: numberValue(settings.proxyLatencyRefreshIntervalSeconds, defaultSystemSettings.proxyLatencyRefreshIntervalSeconds, 10, 3600),
-    proxyLatencyRefreshBatchSize: numberValue(settings.proxyLatencyRefreshBatchSize, defaultSystemSettings.proxyLatencyRefreshBatchSize, 1, 100)
+    streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSystemSettings.streamFailureThresholdWindowMinutes, 1, 1440)
   }
-}
-
-function decimalValue(value: unknown, fallback: number, min: number, max: number): number {
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  if (!Number.isFinite(number)) return fallback
-  return Math.min(Math.max(number, min), max)
 }
 
 function numberValue(value: unknown, fallback: number, min: number, max: number): number {

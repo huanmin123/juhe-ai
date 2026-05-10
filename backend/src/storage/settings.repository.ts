@@ -7,6 +7,22 @@ interface GlobalSettingRow {
 }
 
 const SYSTEM_SETTINGS_ACCOUNT_ID = 'sys_admin'
+const HIDDEN_SYSTEM_SETTINGS = new Set([
+  'apiKeyPrefix',
+  'defaultOpenAIBaseUrl',
+  'defaultErrorPolicyId',
+  'defaultAccountConcurrencyLimit',
+  'auditLogEnabled',
+  'auditLogSuccessSampleRate',
+  'auditLogFlushIntervalSeconds',
+  'auditLogBatchSize',
+  'auditLogQueueMaxItems',
+  'auditLogQueueMaxBytesMb',
+  'auditLogActiveCaptureMaxBytesMb',
+  'auditLogRetentionDays',
+  'proxyLatencyRefreshIntervalSeconds',
+  'proxyLatencyRefreshBatchSize'
+])
 
 export function listGlobalSettings(): Record<string, unknown> {
   const rows = getDatabase().prepare('SELECT key, value_json, updated_at FROM global_settings ORDER BY key ASC').all() as unknown as Array<GlobalSettingRow>
@@ -55,5 +71,5 @@ export function updateSettings(input: Record<string, unknown>): Record<string, u
 }
 
 function isHiddenSystemSetting(key: string): boolean {
-  return key === 'apiKeyPrefix' || key === 'defaultOpenAIBaseUrl' || key === 'defaultErrorPolicyId' || key === 'defaultAccountConcurrencyLimit'
+  return HIDDEN_SYSTEM_SETTINGS.has(key)
 }

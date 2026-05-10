@@ -1,4 +1,4 @@
-import { getDatabase, newId, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { optionalString } from './value-utils.js'
 
@@ -79,7 +79,7 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
     ) VALUES (?, ?, ?, ?, ?, ?)
   `)
 
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const input of inputs) {
       const id = input.id ?? newId('rtlog')
@@ -110,10 +110,10 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
         input.rawJson
       )
     }
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
-      database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(database, transactionStarted)
     } catch {
     }
     throw error
@@ -224,15 +224,15 @@ export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit =
   if (ids.length === 0) return 0
 
   const placeholders = sqlPlaceholders(ids.length)
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     database.prepare(`DELETE FROM runtime_log_search WHERE log_id IN (${placeholders})`).run(...ids)
     const result = database.prepare(`DELETE FROM runtime_logs WHERE id IN (${placeholders})`).run(...ids)
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
     return Number(result.changes ?? 0)
   } catch (error) {
     try {
-      database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(database, transactionStarted)
     } catch {
     }
     throw error

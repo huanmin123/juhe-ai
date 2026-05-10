@@ -23,6 +23,38 @@ export function getDatabase(): DatabaseSync {
   return database
 }
 
+export function beginDatabaseTransaction(target = getDatabase()): boolean {
+  if (target.isTransaction) {
+    return false
+  }
+  target.exec('BEGIN')
+  return true
+}
+
+export function commitDatabaseTransaction(target: DatabaseSync, started: boolean): void {
+  if (started) {
+    target.exec('COMMIT')
+  }
+}
+
+export function rollbackDatabaseTransaction(target: DatabaseSync, started: boolean): void {
+  if (started) {
+    target.exec('ROLLBACK')
+  }
+}
+
+export function runInDatabaseTransaction<T>(operation: () => T, target = getDatabase()): T {
+  const transactionStarted = beginDatabaseTransaction(target)
+  try {
+    const result = operation()
+    commitDatabaseTransaction(target, transactionStarted)
+    return result
+  } catch (error) {
+    rollbackDatabaseTransaction(target, transactionStarted)
+    throw error
+  }
+}
+
 function configureDatabase(database: DatabaseSync): void {
   database.exec(`
     PRAGMA busy_timeout = ${sqliteBusyTimeoutMs};

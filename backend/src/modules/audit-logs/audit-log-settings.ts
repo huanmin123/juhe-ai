@@ -1,6 +1,3 @@
-import { getSettings } from '../../storage/repositories.js'
-import { createAppCache } from '../../shared/cache.js'
-
 export interface AuditLogSettings {
   enabled: boolean
   successSampleRate: number
@@ -12,49 +9,20 @@ export interface AuditLogSettings {
   retentionDays: number
 }
 
-const auditLogSettingsCache = createAppCache<string, AuditLogSettings>({
-  name: 'audit-log:settings',
-  max: 1,
-  ttlMs: 1000
+const auditLogMb = 1024 * 1024
+
+// 原始审计日志是固定排障能力，不通过 system_settings 暴露配置。
+export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
+  enabled: true,
+  successSampleRate: 0.1,
+  flushIntervalSeconds: 5,
+  batchSize: 50,
+  queueMaxItems: 1000,
+  queueMaxBytes: 256 * auditLogMb,
+  activeCaptureMaxBytes: 64 * auditLogMb,
+  retentionDays: 7
 })
 
 export function readAuditLogSettings(): AuditLogSettings {
-  const cached = auditLogSettingsCache.get('current')
-  if (cached) return cached
-  const settings = auditLogSettingsFromRecord(getSettings())
-  auditLogSettingsCache.set('current', settings)
-  return settings
-}
-
-export function clearAuditLogSettingsCache(): void {
-  auditLogSettingsCache.clear()
-}
-
-export function auditLogSettingsFromRecord(settings: Record<string, unknown>): AuditLogSettings {
-  return {
-    enabled: booleanSetting(settings.auditLogEnabled, true),
-    successSampleRate: decimalSetting(settings.auditLogSuccessSampleRate, 0.1, 0, 1),
-    flushIntervalSeconds: numberSetting(settings.auditLogFlushIntervalSeconds, 5, 1, 3600),
-    batchSize: numberSetting(settings.auditLogBatchSize, 50, 1, 1000),
-    queueMaxItems: numberSetting(settings.auditLogQueueMaxItems, 1000, 1, 100000),
-    queueMaxBytes: numberSetting(settings.auditLogQueueMaxBytesMb, 256, 1, 10240) * 1024 * 1024,
-    activeCaptureMaxBytes: numberSetting(settings.auditLogActiveCaptureMaxBytesMb, 64, 1, 10240) * 1024 * 1024,
-    retentionDays: numberSetting(settings.auditLogRetentionDays, 7, 1, 7)
-  }
-}
-
-function booleanSetting(value: unknown, fallback: boolean): boolean {
-  return typeof value === 'boolean' ? value : fallback
-}
-
-function decimalSetting(value: unknown, fallback: number, min: number, max: number): number {
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  if (!Number.isFinite(number)) return fallback
-  return Math.min(Math.max(number, min), max)
-}
-
-function numberSetting(value: unknown, fallback: number, min: number, max: number): number {
-  const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
-  if (!Number.isFinite(number)) return fallback
-  return Math.min(Math.max(Math.trunc(number), min), max)
+  return fixedAuditLogSettings
 }

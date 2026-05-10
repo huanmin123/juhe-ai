@@ -74,15 +74,17 @@
       <a-tabs v-model:activeKey="selectedModelCategory" class="model-tabs" size="small">
         <a-tab-pane v-for="tab in modelCategoryTabs" :key="tab.key" :tab="tab.label" />
       </a-tabs>
-      <a-table
+      <ResponsiveDataList
         class="model-table"
+        table-class="model-table"
         size="small"
         :columns="modelColumns"
         :data-source="filteredModels"
         row-key="model"
         :loading="modelLoading"
         :pagination="{ pageSize: 20, hideOnSinglePage: true, showSizeChanger: false }"
-        :scroll="{ x: 1500 }"
+        :scroll-x="1500"
+        :lock-body-scroll="false"
       >
         <template #emptyText>
           <a-empty class="page-empty-card" description="这个供应商暂未配置模型价格。" />
@@ -135,7 +137,23 @@
             </div>
           </template>
         </template>
-      </a-table>
+        <template #card="{ record }">
+          <article class="model-mobile-card">
+            <div class="model-mobile-card-head">
+              <strong class="mono-cell">{{ record.model }}</strong>
+              <a-tag>{{ formatModelCategory(record) }}</a-tag>
+            </div>
+            <div class="model-mobile-card-grid">
+              <span>发布时间</span>
+              <strong>{{ record.releaseDate || '-' }}</strong>
+              <span>接口协议</span>
+              <strong>{{ (record.supportedApiProtocols ?? []).map(formatApiProtocol).join(' / ') || '-' }}</strong>
+              <span>上下文</span>
+              <strong>{{ formatTokens(record.maxInputTokens) }} / {{ formatTokens(record.maxOutputTokens) }}</strong>
+            </div>
+          </article>
+        </template>
+      </ResponsiveDataList>
     </a-modal>
   </a-card>
 </template>
@@ -463,6 +481,37 @@ onMounted(loadProviders)
   flex-direction: column;
   gap: 2px;
   line-height: 1.5;
+}
+
+.model-mobile-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.model-mobile-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.model-mobile-card-grid {
+  display: grid;
+  grid-template-columns: minmax(76px, auto) minmax(0, 1fr);
+  gap: 6px 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.model-mobile-card-grid strong {
+  min-width: 0;
+  overflow: hidden;
+  color: #0f172a;
+  text-overflow: ellipsis;
 }
 
 .muted-text {

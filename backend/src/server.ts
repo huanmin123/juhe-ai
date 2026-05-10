@@ -25,6 +25,7 @@ import { systemAccountsRouter } from './modules/system-accounts/system-accounts.
 import { myTeamsRouter, systemTeamsRouter } from './modules/system-teams/system-teams.routes.js'
 import { usageRecordsRouter } from './modules/usage-records/usage-records.routes.js'
 import { openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
+import { myOperationLogsRouter, operationLogsRouter } from './modules/operation-logs/operation-logs.routes.js'
 import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
 import { openAIOAuthRouter } from './modules/openai-oauth/openai-oauth.routes.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
@@ -141,6 +142,7 @@ app.use('/api/my-authorizations', forceSelfAccessScope, authorizationsRouter)
 app.use('/api/my-openai-oauth', forceSelfAccessScope, openAIOAuthRouter)
 app.use('/api/my-usage-records', forceSelfAccessScope, usageRecordsRouter)
 app.use('/api/my-stats', forceSelfAccessScope, statsRouter)
+app.use('/api/my-operation-logs', forceSelfAccessScope, myOperationLogsRouter)
 app.use('/api/providers', requireAdmin, providersRouter)
 app.use('/api/error-policies', errorPoliciesRouter)
 app.use('/api/accounts', requireAdmin, accountsRouter)
@@ -151,6 +153,7 @@ app.use('/api/authorizations', requireAdmin, authorizationsRouter)
 app.use('/api/openai-oauth', requireAdmin, openAIOAuthRouter)
 app.use('/api/proxies', proxiesRouter)
 app.use('/api/usage-records', requireAdmin, usageRecordsRouter)
+app.use('/api/operation-logs', requireAdmin, operationLogsRouter)
 app.use('/api/audit-logs', requireAdmin, auditLogsRouter)
 app.use('/api/runtime-logs', requireAdmin, runtimeLogsRouter)
 app.use('/api/stats', requireAdmin, statsRouter)

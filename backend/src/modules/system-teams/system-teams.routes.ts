@@ -14,6 +14,7 @@ import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-co
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export const systemTeamsRouter = Router()
 export const myTeamsRouter = Router()
@@ -73,8 +74,31 @@ systemTeamsRouter.post('/', requireAdmin, (req, res) => {
     return
   }
   try {
-    const team = createSystemTeam(parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
-    clearGatewayRuntimeCache()
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const team = runLoggedOperation(() => {
+      const team = createSystemTeam(parsed.data, requestAccess)
+      return {
+        result: team,
+        afterCommit: clearGatewayRuntimeCache,
+        log: {
+          mode: operationMode(requestAccess),
+          module: 'system_teams',
+          action: 'create',
+          operationKey: 'system_teams.create',
+          resourceType: 'system_team',
+          resourceId: team.id,
+          resourceName: team.name,
+          summary: `创建系统团队：${team.name}`,
+          changes: [
+            safeChange('name', '团队名称', undefined, team.name),
+            safeChange('description', '说明', undefined, team.description),
+            safeChange('status', '状态', undefined, team.status)
+          ],
+          targets: teamMemberTargets(team),
+          viewers: teamMemberViewers(team)
+        }
+      }
+    }, req)
     res.status(201).json(ok(team))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '创建团队失败'))
@@ -98,15 +122,41 @@ systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
     return
   }
   try {
-    const team = updateSystemTeam(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
-    if (!team) {
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const team = runLoggedOperation(() => {
+      const before = listSystemTeams(requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const team = updateSystemTeam(paramsParsed.data.id, parsed.data, requestAccess)
+      if (!team) {
+        throw new Error('团队不存在')
+      }
+      return {
+        result: team,
+        afterCommit: clearSystemTeamRuntimeCaches,
+        log: {
+          mode: operationMode(requestAccess),
+          module: 'system_teams',
+          action: 'update',
+          operationKey: 'system_teams.update',
+          resourceType: 'system_team',
+          resourceId: team.id,
+          resourceName: team.name,
+          summary: `更新系统团队：${team.name}`,
+          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, team as unknown as Record<string, unknown>, {
+            name: '团队名称',
+            description: '说明',
+            status: '状态'
+          }),
+          targets: teamMemberTargets(team),
+          viewers: teamMemberViewers(team)
+        }
+      }
+    }, req)
+    res.json(ok(team))
+  } catch (error) {
+    if (error instanceof Error && error.message === '团队不存在') {
       sendNotFound(res, '团队不存在')
       return
     }
-    clearGatewayRuntimeCache()
-    clearAuthorizationQuotaCache()
-    res.json(ok(team))
-  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '更新团队失败'))
   }
 })
@@ -128,15 +178,48 @@ systemTeamsRouter.post('/:id/members', requireAdmin, (req, res) => {
     return
   }
   try {
-    const team = addSystemTeamMembers(paramsParsed.data.id, parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId))
-    if (!team) {
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const team = runLoggedOperation(() => {
+      const before = listSystemTeams(requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const beforeMemberIds = new Set((before?.members ?? []).map((member) => member.systemAccountId))
+      const team = addSystemTeamMembers(paramsParsed.data.id, parsed.data, requestAccess)
+      if (!team) {
+        throw new Error('团队不存在或已停用')
+      }
+      const addedMembers = (team.members ?? []).filter((member) => !beforeMemberIds.has(member.systemAccountId))
+      return {
+        result: team,
+        afterCommit: clearSystemTeamRuntimeCaches,
+        log: {
+          mode: operationMode(requestAccess),
+          module: 'system_teams',
+          action: 'add_members',
+          operationKey: 'system_teams.add_members',
+          resourceType: 'system_team',
+          resourceId: team.id,
+          resourceName: team.name,
+          summary: `添加团队成员：${team.name}`,
+          changes: [safeChange('members', '新增成员', undefined, addedMembers.map((member) => member.systemAccountName ?? member.username ?? member.systemAccountId).join('、'))],
+          targets: [
+            ...teamMemberTargets(team),
+            ...addedMembers.map((member) => ownerTarget({
+              targetType: 'system_account',
+              targetId: member.systemAccountId,
+              targetName: member.systemAccountName ?? member.username,
+              ownerSystemAccountId: member.systemAccountId,
+              relation: 'team_member'
+            }))
+          ],
+          viewers: viewers(teamMemberViewers(team), ...addedMembers.map((member) => viewer(member.systemAccountId, 'team_member')))
+        }
+      }
+    }, req)
+    res.json(ok(team))
+  } catch (error) {
+    if (error instanceof Error && error.message === '团队不存在或已停用') {
       sendNotFound(res, '团队不存在或已停用')
       return
     }
-    clearGatewayRuntimeCache()
-    clearAuthorizationQuotaCache()
-    res.json(ok(team))
-  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '添加团队成员失败'))
   }
 })
@@ -153,15 +236,66 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
     return
   }
   try {
-    const team = removeSystemTeamMember(paramsParsed.data.id, paramsParsed.data.memberId, getRequestAccessScope(scopeQuery.data.systemAccountId))
-    if (!team) {
+    const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+    const team = runLoggedOperation(() => {
+      const before = listSystemTeams(requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const removedMember = before?.members?.find((member) => member.id === paramsParsed.data.memberId)
+      const team = removeSystemTeamMember(paramsParsed.data.id, paramsParsed.data.memberId, requestAccess)
+      if (!team) {
+        throw new Error('团队成员不存在')
+      }
+      return {
+        result: team,
+        afterCommit: clearSystemTeamRuntimeCaches,
+        log: {
+          mode: operationMode(requestAccess),
+          module: 'system_teams',
+          action: 'remove_member',
+          operationKey: 'system_teams.remove_member',
+          resourceType: 'system_team',
+          resourceId: team.id,
+          resourceName: team.name,
+          summary: `移除团队成员：${team.name}`,
+          changes: [safeChange('member', '移除成员', removedMember?.systemAccountName ?? removedMember?.username ?? removedMember?.systemAccountId, undefined)],
+          targets: [
+            ...teamMemberTargets(team),
+            ...(removedMember ? [ownerTarget({
+              targetType: 'system_account',
+              targetId: removedMember.systemAccountId,
+              targetName: removedMember.systemAccountName ?? removedMember.username,
+              ownerSystemAccountId: removedMember.systemAccountId,
+              relation: 'team_member'
+            })] : [])
+          ],
+          viewers: viewers(teamMemberViewers(team), removedMember ? viewer(removedMember.systemAccountId, 'team_member') : [])
+        }
+      }
+    }, req)
+    res.json(ok(team))
+  } catch (error) {
+    if (error instanceof Error && error.message === '团队成员不存在') {
       sendNotFound(res, '团队成员不存在')
       return
     }
-    clearGatewayRuntimeCache()
-    clearAuthorizationQuotaCache()
-    res.json(ok(team))
-  } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : '移除团队成员失败'))
   }
 })
+
+function teamMemberTargets(team: ReturnType<typeof listSystemTeams>[number]) {
+  return (team.members ?? []).map((member) => ownerTarget({
+    targetType: 'system_account',
+    targetId: member.systemAccountId,
+    targetName: member.systemAccountName ?? member.username,
+    ownerSystemAccountId: member.systemAccountId,
+    relation: 'team_member'
+  }))
+}
+
+function teamMemberViewers(team: ReturnType<typeof listSystemTeams>[number]) {
+  return viewers(...(team.members ?? []).map((member) => viewer(member.systemAccountId, 'team_member')))
+}
+
+function clearSystemTeamRuntimeCaches(): void {
+  clearGatewayRuntimeCache()
+  clearAuthorizationQuotaCache()
+}

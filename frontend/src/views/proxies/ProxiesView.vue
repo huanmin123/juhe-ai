@@ -184,13 +184,15 @@
           </div>
         </section>
 
-        <a-table
-          class="proxy-report-table"
+        <ResponsiveDataList
           size="small"
+          table-class="proxy-report-table"
           :columns="reportColumns"
           :data-source="testReport.items"
           :pagination="false"
           row-key="name"
+          :table-scroll-enabled="false"
+          :lock-body-scroll="false"
         >
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'status'">
@@ -206,7 +208,23 @@
               <span>{{ record.message }}</span>
             </template>
           </template>
-        </a-table>
+          <template #card="{ record }">
+            <article class="proxy-report-card">
+              <div class="proxy-report-card-head">
+                <strong>{{ record.name }}</strong>
+                <a-tag :color="testItemStatusColor(record.status)">{{ testItemStatusText(record.status) }}</a-tag>
+              </div>
+              <div class="proxy-report-card-grid">
+                <span>HTTP</span>
+                <strong>{{ record.httpStatus ?? '-' }}</strong>
+                <span>延迟</span>
+                <strong>{{ formatLatency(record.latencyMs) }}</strong>
+                <span>说明</span>
+                <strong>{{ record.message }}</strong>
+              </div>
+            </article>
+          </template>
+        </ResponsiveDataList>
 
         <div class="proxy-report-footer">
           <a-space>
@@ -516,6 +534,36 @@ onMounted(loadData)
 
 .proxy-report-table :deep(.ant-table-cell) {
   white-space: normal;
+}
+
+.proxy-report-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.proxy-report-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.proxy-report-card-grid {
+  display: grid;
+  grid-template-columns: minmax(52px, auto) minmax(0, 1fr);
+  gap: 6px 10px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.proxy-report-card-grid strong {
+  min-width: 0;
+  color: #0f172a;
+  font-weight: 400;
 }
 
 .proxy-report-footer {

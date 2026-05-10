@@ -400,6 +400,57 @@ export function applySchema(database: DatabaseSync): void {
       FOREIGN KEY (attempt_id) REFERENCES audit_log_attempts(id) ON DELETE SET NULL
     );
 
+    CREATE TABLE IF NOT EXISTS operation_logs (
+      id TEXT PRIMARY KEY,
+      trace_id TEXT,
+      actor_system_account_id TEXT NOT NULL,
+      actor_username TEXT,
+      actor_display_name TEXT,
+      actor_role TEXT NOT NULL,
+      operation_scope_system_account_id TEXT,
+      mode TEXT NOT NULL DEFAULT 'self',
+      module TEXT NOT NULL,
+      action TEXT NOT NULL,
+      operation_key TEXT NOT NULL,
+      resource_type TEXT NOT NULL,
+      resource_id TEXT,
+      resource_name TEXT,
+      summary TEXT NOT NULL,
+      detail_level TEXT NOT NULL DEFAULT 'full',
+      visibility_scope TEXT NOT NULL DEFAULT 'targeted',
+      changes_json TEXT NOT NULL DEFAULT '[]',
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      method TEXT,
+      path TEXT,
+      status_code INTEGER,
+      client_ip TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS operation_log_targets (
+      id TEXT PRIMARY KEY,
+      operation_log_id TEXT NOT NULL,
+      target_type TEXT NOT NULL,
+      target_id TEXT,
+      target_name TEXT,
+      target_owner_system_account_id TEXT,
+      relation TEXT NOT NULL DEFAULT 'affected',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS operation_log_viewers (
+      operation_log_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      visibility_reason TEXT NOT NULL,
+      detail_level TEXT NOT NULL DEFAULT 'full',
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (operation_log_id, system_account_id, visibility_reason),
+      FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE,
+      FOREIGN KEY (system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS runtime_logs (
       id TEXT PRIMARY KEY,
       log_file TEXT,
@@ -717,6 +768,15 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_audit_log_attempts_log_index ON audit_log_attempts(audit_log_id, attempt_index);
     CREATE INDEX IF NOT EXISTS idx_audit_log_payloads_log_part ON audit_log_payloads(audit_log_id, part_type, sequence_index);
     CREATE INDEX IF NOT EXISTS idx_audit_log_payloads_log_sequence ON audit_log_payloads(audit_log_id, sequence_index);
+    CREATE INDEX IF NOT EXISTS idx_operation_logs_created ON operation_logs(created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_operation_logs_actor_created ON operation_logs(actor_system_account_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_operation_logs_scope_created ON operation_logs(operation_scope_system_account_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_operation_logs_module_action_created ON operation_logs(module, action, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_operation_logs_resource_created ON operation_logs(resource_type, resource_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_id ON operation_logs(trace_id);
+    CREATE INDEX IF NOT EXISTS idx_operation_log_targets_target ON operation_log_targets(target_type, target_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_account_created ON operation_log_viewers(system_account_id, created_at, operation_log_id);
+    CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_log_account ON operation_log_viewers(operation_log_id, system_account_id);
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_time ON runtime_logs(time DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_trace_id_time ON runtime_logs(trace_id, time DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_level_time ON runtime_logs(level, time DESC, id DESC);

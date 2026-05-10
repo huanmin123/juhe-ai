@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto'
 
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
 import { hashPassword, hashSecret, verifyPassword } from './crypto.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
 import { systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
@@ -93,7 +93,7 @@ export function createSystemAccount(input: {
     createdAt: now,
     updatedAt: now
   }
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
       .prepare(`
@@ -103,9 +103,9 @@ export function createSystemAccount(input: {
       `)
       .run(summary.id, summary.username, summary.displayName, summary.description ?? null, summary.role, summary.status, hashPassword(input.password), summary.mustChangePassword ? 1 : 0, now, now)
     ensureDefaultOpenAIGroupForSystemAccount(summary.id, now)
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
   return summary

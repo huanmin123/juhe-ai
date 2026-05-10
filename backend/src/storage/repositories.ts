@@ -10,7 +10,7 @@ import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } fr
 import { createApiKeyRecord, deleteApiKey, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
-import { getDatabase, newId, nowIso } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
@@ -168,6 +168,29 @@ export {
   type AuditOutcome,
   type AuditPayloadPartType
 } from './audit-logs.repository.js'
+export {
+  cleanupOperationLogsBefore,
+  createOperationLog,
+  getOperationLogDetail,
+  getOperationLogDetailForViewer,
+  listOperationLogs,
+  listOperationLogsForViewer,
+  type OperationLogChange,
+  type OperationLogDetail,
+  type OperationLogDetailLevel,
+  type OperationLogInput,
+  type OperationLogListOptions,
+  type OperationLogListResult,
+  type OperationLogMode,
+  type OperationLogSummary,
+  type OperationLogTargetInput,
+  type OperationLogTargetRelation,
+  type OperationLogTargetSummary,
+  type OperationLogViewerInput,
+  type OperationLogViewerSummary,
+  type OperationLogVisibilityReason,
+  type OperationLogVisibilityScope
+} from './operation-logs.repository.js'
 export {
   cleanupRuntimeLogIndex,
   createRuntimeLogsBatch,
@@ -829,7 +852,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   }
 
   const database = getDatabase()
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
       .prepare(`
@@ -868,9 +891,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     database
       .prepare('INSERT INTO group_accounts (system_account_id, group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
       .run(systemAccountId, groupId, account.id, 1, now, now)
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     if (isDuplicateAccountCredentialError(error)) {
       throwDuplicateAccountCredentialError()
     }
@@ -1179,7 +1202,7 @@ export function migrateAccountTraffic(input: {
     ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
     : null
   const database = getDatabase()
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     const updateResult = input.sourceStatus === 'disabled'
       ? database
@@ -1210,12 +1233,12 @@ export function migrateAccountTraffic(input: {
         `)
         .run(sourceCooldownUntil, reason, now, sourceRow.id, sourceRow.system_account_id)
     if (Number(updateResult.changes ?? 0) <= 0) {
-      database.exec('ROLLBACK')
+      rollbackDatabaseTransaction(database, transactionStarted)
       return undefined
     }
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
@@ -1586,7 +1609,7 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
   const status = input.status === 'disabled' ? 'disabled' : input.status === 'active' ? 'active' : row.status
   const now = nowIso()
   let authorizationChanged = false
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
       .prepare('UPDATE system_teams SET name = ?, description = ?, status = ?, updated_at = ? WHERE id = ?')
@@ -1599,9 +1622,9 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
       reactivateTeamGrantSources(id, access, database, now)
       authorizationChanged = true
     }
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
   if (authorizationChanged) {
@@ -1617,7 +1640,7 @@ export function addSystemTeamMembers(teamId: string, input: Record<string, unkno
   if (!systemAccountIds.length) throw new Error('请选择团队成员')
   const database = getDatabase()
   const now = nowIso()
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const systemAccountId of systemAccountIds) {
       const account = findSystemAccountById(systemAccountId)
@@ -1632,9 +1655,9 @@ export function addSystemTeamMembers(teamId: string, input: Record<string, unkno
       }
       applyActiveTeamGrantsToMember(teamId, systemAccountId, access, database, now)
     }
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
@@ -1646,13 +1669,13 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
   const member = database.prepare("SELECT * FROM system_team_members WHERE id = ? AND team_id = ? AND status = 'active'").get(memberId, teamId) as unknown as SystemTeamMemberRow | undefined
   if (!member) return undefined
   const now = nowIso()
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     database.prepare("UPDATE system_team_members SET status = 'removed', removed_at = ?, updated_at = ? WHERE id = ?").run(now, now, memberId)
     revokeTeamSourcesForMember(teamId, member.system_account_id, currentSystemAccountId(access), database, now)
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
@@ -1730,7 +1753,7 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
   const now = nowIso()
   const actor = currentSystemAccountId(access)
   const createdIds: string[] = []
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     if (granteeType === 'team') {
       const team = database.prepare("SELECT * FROM system_teams WHERE id = ? AND status = 'active'").get(granteeId) as unknown as SystemTeamRow | undefined
@@ -1749,9 +1772,9 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
       const authorization = upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
       createdIds.push(authorization.id)
     }
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
@@ -1772,7 +1795,7 @@ export function revokeResourceAuthorization(authorizationId: string, input: Reco
   const revokeAll = input.revokeAll === true || input.revoke_all === true
   const sourceType = normalizeSourceType(input.sourceType ?? input.source_type)
   const sourceTeamId = optionalString(input.sourceTeamId ?? input.source_team_id ?? input.teamId ?? input.team_id)
-  database.exec('BEGIN')
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
     if (revokeAll || !sourceType) {
       database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'authorization_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND status IN ('active', 'superseded')").run(now, actor, now, now, authorizationId)
@@ -1792,9 +1815,9 @@ export function revokeResourceAuthorization(authorizationId: string, input: Reco
       }
       refreshResourceAuthorizationEffectiveSource(authorizationId, actor, now, database)
     }
-    database.exec('COMMIT')
+    commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
-    database.exec('ROLLBACK')
+    rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
   refreshGroupAccountStatsAfterWrite()

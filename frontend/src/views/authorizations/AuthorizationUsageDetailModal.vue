@@ -20,7 +20,7 @@
           </article>
         </div>
         <div class="usage-section-title usage-subsection-title">团队来源成员今日消耗</div>
-        <a-table size="small" :columns="teamUsageColumns" :data-source="teamUsageRows" row-key="key" :pagination="false">
+        <ResponsiveDataList size="small" :columns="teamUsageColumns" :data-source="teamUsageRows" row-key="key" :pagination="false" :table-scroll-enabled="false" :lock-body-scroll="false">
           <template #emptyText>
             <a-empty description="暂无团队成员用量" />
           </template>
@@ -35,10 +35,17 @@
               {{ usageSummaryText(record.usage) }}
             </template>
           </template>
-        </a-table>
+          <template #card="{ record }">
+            <article class="usage-detail-card">
+              <strong>{{ record.systemAccountName || '未命名成员' }}</strong>
+              <span>团队：{{ record.teamName }}</span>
+              <span>{{ usageSummaryText(record.usage) }}</span>
+            </article>
+          </template>
+        </ResponsiveDataList>
       </div>
       <div class="usage-section-title">每系统账户今日消耗</div>
-      <a-table size="small" :columns="usageDetailColumns" :data-source="usageDetails" row-key="systemAccountId" :pagination="false">
+      <ResponsiveDataList size="small" :columns="usageDetailColumns" :data-source="usageDetails" row-key="systemAccountId" :pagination="false" :table-scroll-enabled="false" :lock-body-scroll="false">
         <template #emptyText>
           <a-empty description="暂无用量明细" />
         </template>
@@ -53,7 +60,14 @@
             {{ formatDateTime(record.lastUsedAt) }}
           </template>
         </template>
-      </a-table>
+        <template #card="{ record }">
+          <article class="usage-detail-card">
+            <strong>{{ record.systemAccountName || '未知账户' }}</strong>
+            <span>{{ usageSummaryText(record) }}</span>
+            <span>最近使用：{{ formatDateTime(record.lastUsedAt) }}</span>
+          </article>
+        </template>
+      </ResponsiveDataList>
     </template>
   </a-modal>
 </template>
@@ -61,6 +75,7 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import type { AuthorizationUserUsageDetail, ResourceAuthorizationSummary } from '@/types/domain'
 import { formatDateTime, usageSummaryText, type TeamUsageSummary } from './authorizationFormatters'
 
@@ -139,5 +154,21 @@ const title = computed(() => props.authorization
 .usage-team-card-meta {
   color: #64748b;
   font-size: 12px;
+}
+
+.usage-detail-card {
+  display: grid;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.usage-detail-card strong {
+  color: #0f172a;
+  font-size: 13px;
 }
 </style>

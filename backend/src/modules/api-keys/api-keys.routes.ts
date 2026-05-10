@@ -7,6 +7,7 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearApiKeyQuotaCache, invalidateApiKeyQuotaCacheById } from '../gateway/api-key-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const apiKeysRouter = Router()
 
@@ -63,9 +64,35 @@ apiKeysRouter.post('/', (req, res) => {
     return
   }
   try {
-    const apiKey = createApiKeyRecord(parsed.data, requestAccess)
-    clearGatewayRuntimeCache()
-    clearApiKeyQuotaCache()
+    const apiKey = runLoggedOperation(() => {
+      const apiKey = createApiKeyRecord(parsed.data, requestAccess)
+      const ownerSystemAccountId = resolveOperationOwner(apiKey as unknown as Record<string, unknown>, requestAccess)
+      return {
+        result: apiKey,
+        afterCommit: () => {
+          clearGatewayRuntimeCache()
+          clearApiKeyQuotaCache()
+        },
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'api_keys',
+          action: 'create',
+          operationKey: 'api_keys.create',
+          resourceType: 'api_key',
+          resourceId: apiKey.id,
+          resourceName: apiKey.name,
+          summary: `创建 API Key：${apiKey.name}`,
+          changes: [
+            safeChange('name', '名称', undefined, apiKey.name),
+            safeChange('status', '状态', undefined, apiKey.status),
+            safeChange('groupId', '绑定分组', undefined, apiKey.groupId),
+            safeChange('key', '密钥', undefined, apiKey.keyPrefix)
+          ],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
     res.status(201).json(ok(apiKey, '明文密钥已保存，列表中可直接查看'))
   } catch (error) {
     res.status(400).json(badRequest(error instanceof Error ? error.message : 'API Key 参数无效'))
@@ -78,14 +105,51 @@ apiKeysRouter.patch('/:id', (req, res) => {
     res.status(400).json(badRequest(scopeQuery.message))
     return
   }
-  const apiKey = updateApiKey(req.params.id, req.body as Record<string, unknown>, getRequestAccessScope(scopeQuery.data.systemAccountId))
-  if (!apiKey) {
-    res.status(404).json({ message: 'API Key 不存在' })
-    return
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const before = listApiKeysPage(requestAccess, { limit: 200 }).items.find((item) => item.id === req.params.id)
+  try {
+    const apiKey = runLoggedOperation(() => {
+      const apiKey = updateApiKey(req.params.id, req.body as Record<string, unknown>, requestAccess)
+      if (!apiKey) {
+        throw new Error('API Key 不存在')
+      }
+      const ownerSystemAccountId = resolveOperationOwner(apiKey as unknown as Record<string, unknown>, requestAccess)
+      return {
+        result: apiKey,
+        afterCommit: () => {
+          clearGatewayRuntimeCache()
+          invalidateApiKeyQuotaCacheById(req.params.id)
+        },
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'api_keys',
+          action: 'update',
+          operationKey: 'api_keys.update',
+          resourceType: 'api_key',
+          resourceId: apiKey.id,
+          resourceName: apiKey.name,
+          summary: `更新 API Key：${apiKey.name}`,
+          changes: diffSafeFields(before as unknown as Record<string, unknown> | undefined, apiKey as unknown as Record<string, unknown>, {
+            name: '名称',
+            description: '说明',
+            status: '状态',
+            groupId: '绑定分组',
+            expiresAt: '过期时间',
+            quotaLimits: '额度限制'
+          }),
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
+    res.json(ok(apiKey))
+  } catch (error) {
+    if (error instanceof Error && error.message === 'API Key 不存在') {
+      res.status(404).json({ message: 'API Key 不存在' })
+      return
+    }
+    throw error
   }
-  clearGatewayRuntimeCache()
-  invalidateApiKeyQuotaCacheById(req.params.id)
-  res.json(ok(apiKey))
 })
 
 apiKeysRouter.delete('/:id', (req, res) => {
@@ -94,11 +158,41 @@ apiKeysRouter.delete('/:id', (req, res) => {
     res.status(400).json(badRequest(scopeQuery.message))
     return
   }
-  if (!deleteApiKey(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))) {
-    res.status(404).json({ message: 'API Key 不存在' })
-    return
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const before = listApiKeysPage(requestAccess, { limit: 200 }).items.find((item) => item.id === req.params.id)
+  const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
+  try {
+    runLoggedOperation(() => {
+      if (!deleteApiKey(req.params.id, requestAccess)) {
+        throw new Error('API Key 不存在')
+      }
+      return {
+        result: true,
+        afterCommit: () => {
+          clearGatewayRuntimeCache()
+          invalidateApiKeyQuotaCacheById(req.params.id)
+        },
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'api_keys',
+          action: 'delete',
+          operationKey: 'api_keys.delete',
+          resourceType: 'api_key',
+          resourceId: req.params.id,
+          resourceName: before?.name ?? req.params.id,
+          summary: `删除 API Key：${before?.name ?? req.params.id}`,
+          changes: [safeChange('deleted', '删除状态', false, true)],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
+  } catch (error) {
+    if (error instanceof Error && error.message === 'API Key 不存在') {
+      res.status(404).json({ message: 'API Key 不存在' })
+      return
+    }
+    throw error
   }
-  clearGatewayRuntimeCache()
-  invalidateApiKeyQuotaCacheById(req.params.id)
   res.status(204).send()
 })

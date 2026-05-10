@@ -28,6 +28,7 @@ export interface OpenAIAccountSecret {
   apiKey: string
   refreshToken?: string
   clientId?: string
+  proxyProfileId?: string
   proxyUrl?: string
   proxyProfileUnavailable?: boolean
   proxyProfileErrorMessage?: string
@@ -278,6 +279,7 @@ function openAIAccountSecretFromRow(
     apiKey,
     refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,
     clientId: typeof credentials.client_id === 'string' ? credentials.client_id : undefined,
+    proxyProfileId: row.proxy_profile_id ?? undefined,
     proxyUrl: proxyProfile.proxyUrl,
     proxyProfileUnavailable: proxyProfile.unavailable,
     proxyProfileErrorMessage: proxyProfile.errorMessage,

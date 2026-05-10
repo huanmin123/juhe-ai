@@ -96,7 +96,16 @@
           show-icon
           message="团队已停用，暂时不能添加新成员；如需继续维护，请先把团队状态改为启用。"
         />
-        <a-table size="small" :columns="memberColumns" :data-source="activeTeamMembers" row-key="id" :pagination="false">
+        <ResponsiveDataList
+          size="small"
+          table-class="team-members-table"
+          :columns="memberColumns"
+          :data-source="activeTeamMembers"
+          row-key="id"
+          :pagination="false"
+          :table-scroll-enabled="false"
+          :lock-body-scroll="false"
+        >
           <template #emptyText>
             <a-empty description="还没有成员" />
           </template>
@@ -111,7 +120,16 @@
               <RowActions :actions="memberActions" @action-click="handleMemberAction($event, record)" />
             </template>
           </template>
-        </a-table>
+          <template #card="{ record }">
+            <article class="team-member-card">
+              <div>
+                <strong>{{ memberDisplayName(record) }}</strong>
+                <span>{{ formatDateTime(record.joinedAt || record.createdAt) }}</span>
+              </div>
+              <RowActions v-if="isManagementView" :actions="memberActions" variant="button" @action-click="handleMemberAction($event, record)" />
+            </article>
+          </template>
+        </ResponsiveDataList>
       </div>
     </a-modal>
   </a-card>
@@ -408,6 +426,29 @@ onMounted(loadData)
 
 .system-teams-table :deep(.ant-table-cell) {
   white-space: nowrap;
+}
+
+.team-member-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.team-member-card div {
+  display: grid;
+  gap: 4px;
+}
+
+.team-member-card strong {
+  color: #0f172a;
+}
+
+.team-member-card span {
+  color: #64748b;
+  font-size: 12px;
 }
 
 @media (max-width: 768px) {

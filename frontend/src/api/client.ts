@@ -29,6 +29,8 @@ import type {
   GlobalSettings,
   GroupSummary,
   OpenAIAuthURLResult,
+  OperationLogDetail,
+  OperationLogListResult,
   ProviderDefinition,
   ProviderModelPricing,
   ProxyProfileOptionSummary,
@@ -144,6 +146,23 @@ export interface RuntimeLogListParams {
   level?: RuntimeLogLevel | 'all'
   event?: string
   keyword?: string
+  limit?: number
+}
+
+export interface OperationLogListParams {
+  page?: number
+  pageSize?: number
+  keyword?: string
+  module?: string
+  action?: string
+  resourceType?: string
+  resourceId?: string
+  traceId?: string
+  startAt?: string
+  endAt?: string
+  actorSystemAccountId?: string
+  affectedSystemAccountId?: string
+  operationScopeSystemAccountId?: string
   limit?: number
 }
 
@@ -356,6 +375,14 @@ export const api = {
     facets: () => unwrap<RuntimeLogFacets>(http.get('/runtime-logs/facets')),
     grep: (params?: RuntimeLogGrepParams) => unwrap<RuntimeLogGrepResult>(http.get('/runtime-logs/grep', { params, ...noTimeout }))
   },
+  operationLogs: {
+    list: (params?: OperationLogListParams) => unwrap<OperationLogListResult>(http.get('/operation-logs', { params })),
+    detail: (id: string) => unwrap<OperationLogDetail>(http.get(`/operation-logs/${id}`))
+  },
+  myOperationLogs: {
+    list: (params?: OperationLogListParams) => unwrap<OperationLogListResult>(http.get('/my-operation-logs', { params: stripAdminOperationLogParams(params) })),
+    detail: (id: string) => unwrap<OperationLogDetail>(http.get(`/my-operation-logs/${id}`))
+  },
   stats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
     accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
@@ -380,6 +407,15 @@ function stripSystemAccountParam<T extends object>(params?: T): Record<string, u
   if (!params) return undefined
   const output = { ...params } as Record<string, unknown>
   delete output.systemAccountId
+  return Object.keys(output).length ? output : undefined
+}
+
+function stripAdminOperationLogParams(params?: OperationLogListParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output = { ...params } as Record<string, unknown>
+  delete output.actorSystemAccountId
+  delete output.affectedSystemAccountId
+  delete output.operationScopeSystemAccountId
   return Object.keys(output).length ? output : undefined
 }
 
