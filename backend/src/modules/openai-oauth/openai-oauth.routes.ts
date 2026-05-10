@@ -8,7 +8,7 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
-import { operationMode, recordOperationLog, resolveOperationOwner, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
 import {
   buildOpenAIOAuthCredentials,
   exchangeOpenAIAuthCode,
@@ -96,24 +96,30 @@ openAIOAuthRouter.post('/create-from-code', async (req, res) => {
       state,
       proxyUrl: resolveProxyUrlForProfile(parsed.data.proxyProfileId)
     })
-    const account = createAccount({
-      name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
-      type: 'oauth',
-      credentials: {
-        ...buildOpenAIOAuthCredentials(tokenInfo),
-        ...(parsed.data.credentialsPatch ?? {})
-      },
-      status: 'active',
-      concurrencyLimit: parsed.data.concurrencyLimit,
-      proxyProfileId: parsed.data.proxyProfileId,
-      errorPolicyId: parsed.data.errorPolicyId,
-      accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
-      passthroughEnabled: true,
-      schedulable: true,
-      groupId: parsed.data.groupId,
-      notes: parsed.data.notes
-    }, requestAccess)
-    recordOAuthCreateLog(account, requestAccess, req, 'openai_oauth.create_from_code', '通过授权码创建 OpenAI OAuth 账户')
+    const account = runLoggedOperation(() => {
+      const account = createAccount({
+        name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
+        type: 'oauth',
+        credentials: {
+          ...buildOpenAIOAuthCredentials(tokenInfo),
+          ...(parsed.data.credentialsPatch ?? {})
+        },
+        status: 'active',
+        concurrencyLimit: parsed.data.concurrencyLimit,
+        proxyProfileId: parsed.data.proxyProfileId,
+        errorPolicyId: parsed.data.errorPolicyId,
+        accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
+        passthroughEnabled: true,
+        schedulable: true,
+        groupId: parsed.data.groupId,
+        notes: parsed.data.notes
+      }, requestAccess)
+      return {
+        result: account,
+        afterCommit: clearGatewayRuntimeCache,
+        log: buildOAuthCreateLog(account, requestAccess, 'openai_oauth.create_from_code', '通过授权码创建 OpenAI OAuth 账户')
+      }
+    }, req)
     res.status(201).json(ok(account))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
@@ -150,24 +156,30 @@ openAIOAuthRouter.post('/create-from-refresh-token', async (req, res) => {
       refreshToken: parsed.data.refreshToken,
       proxyUrl: resolveProxyUrlForProfile(parsed.data.proxyProfileId)
     })
-    const account = createAccount({
-      name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
-      type: 'oauth',
-      credentials: {
-        ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken: parsed.data.refreshToken }),
-        ...(parsed.data.credentialsPatch ?? {})
-      },
-      status: 'active',
-      concurrencyLimit: parsed.data.concurrencyLimit,
-      proxyProfileId: parsed.data.proxyProfileId,
-      errorPolicyId: parsed.data.errorPolicyId,
-      accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
-      passthroughEnabled: true,
-      schedulable: true,
-      groupId: parsed.data.groupId,
-      notes: parsed.data.notes
-    }, requestAccess)
-    recordOAuthCreateLog(account, requestAccess, req, 'openai_oauth.create_from_refresh_token', '通过 Refresh Token 创建 OpenAI OAuth 账户')
+    const account = runLoggedOperation(() => {
+      const account = createAccount({
+        name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
+        type: 'oauth',
+        credentials: {
+          ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken: parsed.data.refreshToken }),
+          ...(parsed.data.credentialsPatch ?? {})
+        },
+        status: 'active',
+        concurrencyLimit: parsed.data.concurrencyLimit,
+        proxyProfileId: parsed.data.proxyProfileId,
+        errorPolicyId: parsed.data.errorPolicyId,
+        accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
+        passthroughEnabled: true,
+        schedulable: true,
+        groupId: parsed.data.groupId,
+        notes: parsed.data.notes
+      }, requestAccess)
+      return {
+        result: account,
+        afterCommit: clearGatewayRuntimeCache,
+        log: buildOAuthCreateLog(account, requestAccess, 'openai_oauth.create_from_refresh_token', '通过 Refresh Token 创建 OpenAI OAuth 账户')
+      }
+    }, req)
     res.status(201).json(ok(account))
   } catch (error) {
     if (error instanceof DuplicateAccountCredentialError) {
@@ -207,8 +219,7 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
-    clearGatewayRuntimeCache()
-    recordOAuthUpdateLog(account, updated, requestAccess, req, 'refresh_token', '刷新 OpenAI OAuth Token')
+    recordOperationLog(buildOAuthUpdateLog(account, updated, requestAccess, 'refresh_token', '刷新 OpenAI OAuth Token'), req)
     res.json(ok(updated))
   } catch (error) {
     if (abortController.signal.aborted || res.writableEnded) {
@@ -248,8 +259,14 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
       state,
       proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
     })
-    const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
-    recordOAuthUpdateLog(account, updated, requestAccess, req, 'reauthorize_from_code', '重新授权 OpenAI OAuth 账户')
+    const updated = runLoggedOperation(() => {
+      const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
+      return {
+        result: updated,
+        afterCommit: clearGatewayRuntimeCache,
+        log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_code', '重新授权 OpenAI OAuth 账户')
+      }
+    }, req)
     res.json(ok(updated))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'OpenAI OAuth 重新授权失败')
@@ -280,8 +297,14 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
       clientId: stringCredential(account.credentials, 'client_id'),
       proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
     })
-    const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
-    recordOAuthUpdateLog(account, updated, requestAccess, req, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 OpenAI OAuth 账户')
+    const updated = runLoggedOperation(() => {
+      const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
+      return {
+        result: updated,
+        afterCommit: clearGatewayRuntimeCache,
+        log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 OpenAI OAuth 账户')
+      }
+    }, req)
     res.json(ok(updated))
   } catch (error) {
     handleOAuthAccountUpdateError(error, res, 'OpenAI OAuth Refresh Token 重新授权失败')
@@ -316,7 +339,6 @@ function updateOpenAIOAuthAccountCredentials(
   if (!updated) {
     throw new Error('OpenAI OAuth 账户不存在或无法更新')
   }
-  clearGatewayRuntimeCache()
   if (updated.status !== 'disabled') {
     return clearAccountFailureState(account.id, access) ?? updated
   }
@@ -335,15 +357,14 @@ function handleOAuthAccountUpdateError(error: unknown, res: Response, fallbackMe
   res.status(502).json({ message: error instanceof Error ? error.message : fallbackMessage })
 }
 
-function recordOAuthCreateLog(
+function buildOAuthCreateLog(
   account: ReturnType<typeof createAccount>,
   access: AccessScope | undefined,
-  req: Parameters<typeof recordOperationLog>[1],
   operationKey: string,
   summaryPrefix: string
-): void {
+): OperationLogRecordInput {
   const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, access)
-  recordOperationLog({
+  return {
     operationScopeSystemAccountId: ownerSystemAccountId,
     mode: operationMode(access),
     module: 'openai_oauth',
@@ -362,21 +383,20 @@ function recordOAuthCreateLog(
       safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt)
     ],
     viewers: viewer(ownerSystemAccountId, 'resource_owner')
-  }, req)
+  }
 }
 
-function recordOAuthUpdateLog(
+function buildOAuthUpdateLog(
   before: NonNullable<ReturnType<typeof findEditableOpenAIOAuthAccount>>,
   after: Awaited<ReturnType<typeof refreshOpenAIOAuthAccountAccessToken>> | ReturnType<typeof updateOpenAIOAuthAccountCredentials>,
   access: AccessScope | undefined,
-  req: Parameters<typeof recordOperationLog>[1],
   action: string,
   summaryPrefix: string
-): void {
+): OperationLogRecordInput {
   const ownerSystemAccountId = resolveOperationOwner(after as unknown as Record<string, unknown>, access)
   const resourceName = 'name' in after && typeof after.name === 'string' ? after.name : before.name
   const afterRecord = after as Partial<typeof before>
-  recordOperationLog({
+  return {
     operationScopeSystemAccountId: ownerSystemAccountId,
     mode: operationMode(access),
     module: 'openai_oauth',
@@ -393,7 +413,7 @@ function recordOAuthUpdateLog(
       safeChange('lastErrorMessage', '错误信息', before.lastErrorMessage, afterRecord.lastErrorMessage)
     ],
     viewers: viewer(ownerSystemAccountId, 'resource_owner')
-  }, req)
+  }
 }
 
 function stringCredential(credentials: Record<string, unknown>, key: string): string | undefined {

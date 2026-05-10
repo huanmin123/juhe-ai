@@ -122,12 +122,13 @@
           <a-descriptions bordered size="small" :column="2" class="detail-descriptions">
             <a-descriptions-item label="时间">{{ formatDateTime(detail.createdAt) }}</a-descriptions-item>
             <a-descriptions-item label="动作">{{ moduleText(detail.module) }} / {{ actionText(detail.action) }}</a-descriptions-item>
+            <a-descriptions-item label="操作标识">{{ detail.operationKey }}</a-descriptions-item>
             <a-descriptions-item label="操作人">{{ actorText(detail) }}</a-descriptions-item>
             <a-descriptions-item label="业务归属">{{ displayName(detail.operationScopeSystemAccountName, detail.operationScopeSystemAccountId) }}</a-descriptions-item>
             <a-descriptions-item label="资源">{{ resourceText(detail) }}</a-descriptions-item>
             <a-descriptions-item label="可见范围">{{ visibilityText(detail.visibilityScope) }}</a-descriptions-item>
-            <a-descriptions-item label="请求">{{ detail.method ?? '-' }} {{ detail.path ?? '' }}</a-descriptions-item>
-            <a-descriptions-item label="客户端 IP">{{ detail.clientIp ?? '-' }}</a-descriptions-item>
+            <a-descriptions-item v-if="detail.method || detail.path" label="请求">{{ requestText(detail) }}</a-descriptions-item>
+            <a-descriptions-item v-if="detail.clientIp" label="客户端 IP">{{ detail.clientIp }}</a-descriptions-item>
             <a-descriptions-item label="traceId" :span="2">{{ detail.traceId ?? '-' }}</a-descriptions-item>
             <a-descriptions-item label="摘要" :span="2">{{ detail.summary }}</a-descriptions-item>
           </a-descriptions>
@@ -280,6 +281,8 @@ const actionOptions = [
   { label: '全部动作', value: 'all' },
   { label: '创建', value: 'create' },
   { label: '创建账户', value: 'create_account' },
+  { label: '授权码创建账户', value: 'create_from_code' },
+  { label: 'Refresh Token 创建账户', value: 'create_from_refresh_token' },
   { label: '更新', value: 'update' },
   { label: '更新有效期', value: 'update_expire' },
   { label: '更新全局设置', value: 'update_global' },
@@ -515,6 +518,10 @@ function resourceText(record: Pick<OperationLogSummary, 'resourceType' | 'resour
   return `${resourceTypeText(record.resourceType)}：${displayName(record.resourceName, record.resourceId)}`
 }
 
+function requestText(record: Pick<OperationLogSummary, 'method' | 'path'>): string {
+  return [record.method, record.path].filter(Boolean).join(' ') || '-'
+}
+
 function resourceTypeText(value: string): string {
   return resourceTypeTextMap[value] ?? value
 }
@@ -574,6 +581,8 @@ const actionTextMap: Record<string, string> = {
   bind_group: '绑定分组',
   create: '创建',
   create_account: '创建账户',
+  create_from_code: '授权码创建账户',
+  create_from_refresh_token: 'Refresh Token 创建账户',
   delete: '删除',
   publish: '发布',
   reauthorize_from_code: '重新授权',

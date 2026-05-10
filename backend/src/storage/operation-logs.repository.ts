@@ -163,6 +163,8 @@ export function createOperationLog(input: OperationLogInput): OperationLogSummar
   const detailLevel = input.detailLevel ?? 'full'
   const targets = normalizeTargets(input)
   const viewers = normalizeViewers(input)
+  const changesJson = safeJsonStringify(input.changes ?? [], '[]')
+  const metadataJson = safeJsonStringify(input.metadata ?? {}, '{}')
 
   const insertLog = database.prepare(`
     INSERT INTO operation_logs (
@@ -203,8 +205,8 @@ export function createOperationLog(input: OperationLogInput): OperationLogSummar
       input.summary,
       detailLevel,
       visibilityScope,
-      JSON.stringify(input.changes ?? []),
-      JSON.stringify(input.metadata ?? {}),
+      changesJson,
+      metadataJson,
       input.method ?? null,
       input.path ?? null,
       integerOrNull(input.statusCode),
@@ -263,15 +265,15 @@ export function createOperationLog(input: OperationLogInput): OperationLogSummar
     summary: input.summary,
     detail_level: detailLevel,
     visibility_scope: visibilityScope,
-    changes_json: JSON.stringify(input.changes ?? []),
-    metadata_json: JSON.stringify(input.metadata ?? {}),
+    changes_json: changesJson,
+    metadata_json: metadataJson,
     method: input.method,
     path: input.path,
     status_code: input.statusCode,
     client_ip: input.clientIp,
     user_agent: input.userAgent,
     created_at: createdAt
-  }, loadSystemAccountNames([input.actorSystemAccountId, input.operationScopeSystemAccountId]))
+  }, new Map())
 }
 
 export function listOperationLogs(options: OperationLogListOptions = {}): OperationLogListResult {
@@ -280,8 +282,7 @@ export function listOperationLogs(options: OperationLogListOptions = {}): Operat
 }
 
 export function listOperationLogsForViewer(systemAccountId: string, options: OperationLogListOptions = {}): OperationLogListResult {
-  const filters = buildViewerOperationLogFilters(systemAccountId, options)
-  return listOperationLogsWithFilters(filters, options, systemAccountId)
+  return listVisibleOperationLogsForViewer(systemAccountId, options)
 }
 
 export function getOperationLogDetail(id: string): OperationLogDetail | undefined {
@@ -293,16 +294,19 @@ export function getOperationLogDetailForViewer(id: string, systemAccountId: stri
     ol.id = ?
     AND (
       ol.visibility_scope = 'all_users'
-      OR EXISTS (
-        SELECT 1 FROM operation_log_viewers olv
-        WHERE olv.operation_log_id = ol.id AND olv.system_account_id = ?
+      OR (
+        ol.visibility_scope = 'targeted'
+        AND EXISTS (
+          SELECT 1 FROM operation_log_viewers olv
+          WHERE olv.operation_log_id = ol.id AND olv.system_account_id = ?
+        )
       )
     )
   `, [id, systemAccountId])
   if (!detail) return undefined
 
   const viewerLevel = loadViewerDetailLevels([detail.id], systemAccountId).get(detail.id)
-  return sanitizeOperationLogDetailForViewer(detail, effectiveViewerDetailLevel(detail.detailLevel, viewerLevel))
+  return sanitizeOperationLogDetailForViewer(detail, effectiveViewerDetailLevel(detail.detailLevel, viewerLevel, detail.visibilityScope))
 }
 
 export function cleanupOperationLogsBefore(cutoffCreatedAt: string, limit?: number): number {
@@ -355,9 +359,75 @@ function listOperationLogsWithFilters(filters: { clause: string; params: Operati
     : new Map<string, OperationLogDetailLevel>()
   return {
     items: rows.map((row) => {
-      const summary = operationLogSummaryFromRow(row, systemAccountNames)
+      const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
       if (!viewerSystemAccountId) return summary
-      return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id)))
+      return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
+    }),
+    total: Number(totalRow?.total ?? 0),
+    page,
+    pageSize
+  }
+}
+
+function listVisibleOperationLogsForViewer(systemAccountId: string, options: OperationLogListOptions): OperationLogListResult {
+  const pageSize = normalizeOperationLogPageSize(options.pageSize ?? options.limit)
+  const page = normalizeOperationLogPage(options.page)
+  const offset = (page - 1) * pageSize
+  const database = getDatabase()
+  const commonFilters = buildCommonOperationLogFilters(options)
+  const targetedClause = ['ol.visibility_scope = \'targeted\'', ...commonFilters.clauses].join(' AND ')
+  const allUsersClause = ['ol.visibility_scope = \'all_users\'', ...commonFilters.clauses].join(' AND ')
+  const targetedParams: OperationLogFilterValue[] = [systemAccountId, ...commonFilters.params]
+  const allUsersParams = commonFilters.params
+
+  const targetedVisibleJoin = `
+    INNER JOIN (
+      SELECT DISTINCT operation_log_id
+      FROM operation_log_viewers
+      WHERE system_account_id = ?
+    ) visible ON visible.operation_log_id = ol.id
+  `
+  const totalRow = database
+    .prepare(`
+      SELECT COALESCE(SUM(total), 0) AS total
+      FROM (
+        SELECT COUNT(*) AS total
+        FROM operation_logs ol
+        ${targetedVisibleJoin}
+        WHERE ${targetedClause}
+        UNION ALL
+        SELECT COUNT(*) AS total
+        FROM operation_logs ol
+        WHERE ${allUsersClause}
+      ) visible_counts
+    `)
+    .get(...targetedParams, ...allUsersParams) as OperationLogRow | undefined
+  const rows = database
+    .prepare(`
+      SELECT *
+      FROM (
+        SELECT ol.*
+        FROM operation_logs ol
+        ${targetedVisibleJoin}
+        WHERE ${targetedClause}
+        UNION ALL
+        SELECT ol.*
+        FROM operation_logs ol
+        WHERE ${allUsersClause}
+      ) visible_logs
+      ORDER BY created_at DESC, id DESC
+      LIMIT ? OFFSET ?
+    `)
+    .all(...targetedParams, ...allUsersParams, pageSize, offset) as OperationLogRow[]
+  const systemAccountNames = loadSystemAccountNames(rows.flatMap((row) => [
+    optionalString(row.actor_system_account_id),
+    optionalString(row.operation_scope_system_account_id)
+  ]))
+  const viewerDetailLevels = loadViewerDetailLevels(rows.map((row) => String(row.id)), systemAccountId)
+  return {
+    items: rows.map((row) => {
+      const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
+      return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
     }),
     total: Number(totalRow?.total ?? 0),
     page,
@@ -392,31 +462,18 @@ function getOperationLogDetailWithClause(whereClause: string, params: OperationL
 }
 
 function buildOperationLogFilters(options: OperationLogListOptions): { clause: string; params: OperationLogFilterValue[] } {
-  const clauses: string[] = []
-  const params: OperationLogFilterValue[] = []
-  pushCommonOperationLogFilters(clauses, params, options)
+  const { clauses, params } = buildCommonOperationLogFilters(options)
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params
   }
 }
 
-function buildViewerOperationLogFilters(systemAccountId: string, options: OperationLogListOptions): { clause: string; params: OperationLogFilterValue[] } {
-  const clauses: string[] = [
-    `(
-      ol.visibility_scope = 'all_users'
-      OR EXISTS (
-        SELECT 1 FROM operation_log_viewers olv
-        WHERE olv.operation_log_id = ol.id AND olv.system_account_id = ?
-      )
-    )`
-  ]
-  const params: OperationLogFilterValue[] = [systemAccountId]
+function buildCommonOperationLogFilters(options: OperationLogListOptions): { clauses: string[]; params: OperationLogFilterValue[] } {
+  const clauses: string[] = []
+  const params: OperationLogFilterValue[] = []
   pushCommonOperationLogFilters(clauses, params, options)
-  return {
-    clause: `WHERE ${clauses.join(' AND ')}`,
-    params
-  }
+  return { clauses, params }
 }
 
 function pushCommonOperationLogFilters(clauses: string[], params: OperationLogFilterValue[], options: OperationLogListOptions): void {
@@ -430,9 +487,12 @@ function pushCommonOperationLogFilters(clauses: string[], params: OperationLogFi
 
   const affectedSystemAccountId = options.affectedSystemAccountId?.trim()
   if (affectedSystemAccountId) {
-    clauses.push(`EXISTS (
-      SELECT 1 FROM operation_log_viewers affected
-      WHERE affected.operation_log_id = ol.id AND affected.system_account_id = ?
+    clauses.push(`(
+      ol.visibility_scope = 'all_users'
+      OR EXISTS (
+        SELECT 1 FROM operation_log_viewers affected
+        WHERE affected.operation_log_id = ol.id AND affected.system_account_id = ?
+      )
     )`)
     params.push(affectedSystemAccountId)
   }
@@ -470,9 +530,10 @@ function pushLikeFilter(clauses: string[], params: OperationLogFilterValue[], co
   params.push(`%${text}%`)
 }
 
-function operationLogSummaryFromRow(row: OperationLogRow, systemAccountNames: Map<string, string>): OperationLogSummary {
+function operationLogSummaryFromRow(row: OperationLogRow, systemAccountNames: Map<string, string>, options: { includePayload?: boolean } = {}): OperationLogSummary {
   const actorSystemAccountId = String(row.actor_system_account_id)
   const operationScopeSystemAccountId = optionalString(row.operation_scope_system_account_id)
+  const includePayload = options.includePayload !== false
   return {
     id: String(row.id),
     traceId: optionalString(row.trace_id),
@@ -493,8 +554,8 @@ function operationLogSummaryFromRow(row: OperationLogRow, systemAccountNames: Ma
     summary: String(row.summary),
     detailLevel: String(row.detail_level) as OperationLogDetailLevel,
     visibilityScope: String(row.visibility_scope) as OperationLogVisibilityScope,
-    changes: parseJsonArray(row.changes_json),
-    metadata: parseJsonObject(row.metadata_json),
+    changes: includePayload ? parseJsonArray(row.changes_json) : [],
+    metadata: includePayload ? parseJsonObject(row.metadata_json) : {},
     method: optionalString(row.method),
     path: optionalString(row.path),
     statusCode: numberValue(row.status_code),
@@ -552,7 +613,10 @@ function loadViewerDetailLevels(operationLogIds: string[], systemAccountId: stri
   return levels
 }
 
-function effectiveViewerDetailLevel(logDetailLevel: OperationLogDetailLevel, viewerDetailLevel?: OperationLogDetailLevel): OperationLogDetailLevel {
+function effectiveViewerDetailLevel(logDetailLevel: OperationLogDetailLevel, viewerDetailLevel?: OperationLogDetailLevel, visibilityScope?: OperationLogVisibilityScope): OperationLogDetailLevel {
+  if (visibilityScope === 'all_users') {
+    return 'summary'
+  }
   if (logDetailLevel === 'summary' || viewerDetailLevel === 'summary') {
     return 'summary'
   }
@@ -614,8 +678,8 @@ function normalizeTargets(input: OperationLogInput): OperationLogTargetInput[] {
 
 function normalizeViewers(input: OperationLogInput): OperationLogViewerInput[] {
   const viewers = [...(input.viewers ?? [])]
-  if (input.visibilityScope === 'admin_only') {
-    return dedupeViewers(viewers)
+  if (input.visibilityScope === 'admin_only' || input.visibilityScope === 'all_users') {
+    return []
   }
   viewers.push({ systemAccountId: input.actorSystemAccountId, visibilityReason: 'actor_self', detailLevel: input.detailLevel })
   if (input.operationScopeSystemAccountId && input.operationScopeSystemAccountId !== input.actorSystemAccountId) {
@@ -685,4 +749,12 @@ function integerOrNull(value: unknown): number | null {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function safeJsonStringify(value: unknown, fallback: string): string {
+  try {
+    return JSON.stringify(value) ?? fallback
+  } catch {
+    return fallback
+  }
 }

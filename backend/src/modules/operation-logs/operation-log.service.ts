@@ -1,6 +1,7 @@
 import type { Request } from 'express'
 
-import { getRequestContext } from '../../shared/request-context.js'
+import { errorLogFields } from '../../shared/logger.js'
+import { getRequestContext, getRequestLogger } from '../../shared/request-context.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { runInDatabaseTransaction } from '../../storage/database.js'
 import {
@@ -45,13 +46,15 @@ const sensitiveFieldNames = new Set([
 ])
 
 export function recordOperationLog(input: OperationLogRecordInput, req?: Request): void {
-  if (!input.force && !operationLogEnabled()) {
-    return
-  }
   const actor = getRequestAuthContext()
   const requestContext = getRequestContext()
   const actorSystemAccountId = input.actorSystemAccountId ?? actor?.systemAccountId
   if (!actorSystemAccountId) {
+    return
+  }
+
+  const settings = getSettings()
+  if (!input.force && settings.operationLogEnabled === false) {
     return
   }
 
@@ -67,7 +70,7 @@ export function recordOperationLog(input: OperationLogRecordInput, req?: Request
     path: requestPath,
     clientIp: input.clientIp ?? requestContext?.clientIp,
     userAgent: input.userAgent ?? req?.header('user-agent'),
-    changes: sanitizeOperationChanges(input.changes ?? []),
+    changes: sanitizeOperationChanges(input.changes ?? [], operationLogMaxChangesPerRecord(settings)),
     targets: input.targets,
     viewers: input.viewers
   })
@@ -84,7 +87,7 @@ export function runLoggedOperation<T>(operation: () => LoggedOperationResult<T>,
     afterCommit = outcome.afterCommit
     return outcome.result
   })
-  afterCommit?.()
+  runAfterCommitEffect(afterCommit)
   return result
 }
 
@@ -138,7 +141,7 @@ export function diffSafeFields(before: Record<string, unknown> | undefined, afte
   for (const [field, label] of Object.entries(labels)) {
     const beforeValue = before?.[field]
     const afterValue = after?.[field]
-    if (JSON.stringify(beforeValue ?? null) === JSON.stringify(afterValue ?? null)) {
+    if (operationLogComparableValue(beforeValue ?? null) === operationLogComparableValue(afterValue ?? null)) {
       continue
     }
     changes.push(safeChange(field, label, beforeValue, afterValue))
@@ -159,8 +162,7 @@ export function safeChange(field: string, label: string, before: unknown, after:
   return { field, label, before: normalizeSafeValue(before), after: normalizeSafeValue(after) }
 }
 
-function sanitizeOperationChanges(changes: OperationLogChange[]): OperationLogChange[] {
-  const maxChanges = operationLogMaxChangesPerRecord()
+function sanitizeOperationChanges(changes: OperationLogChange[], maxChanges: number): OperationLogChange[] {
   const normalized = changes.map((change) => isSensitiveField(change.field) || change.sensitive
     ? {
         field: change.field,
@@ -196,7 +198,15 @@ function normalizeSafeValue(value: unknown): unknown {
   if (value === null || typeof value === 'number' || typeof value === 'boolean') {
     return value
   }
-  return JSON.stringify(value).slice(0, 500)
+  if (typeof value === 'bigint') {
+    return value.toString()
+  }
+  try {
+    const serialized = JSON.stringify(value)
+    return (serialized ?? String(value)).slice(0, 500)
+  } catch {
+    return String(value).slice(0, 500)
+  }
 }
 
 function isSensitiveField(field: string): boolean {
@@ -204,15 +214,33 @@ function isSensitiveField(field: string): boolean {
   return sensitiveFieldNames.has(normalized) || [...sensitiveFieldNames].some((name) => normalized.toLowerCase().includes(name.toLowerCase()))
 }
 
-function operationLogEnabled(): boolean {
-  const value = getSettings().operationLogEnabled
-  return value !== false
-}
-
-function operationLogMaxChangesPerRecord(): number {
-  const value = getSettings().operationLogMaxChangesPerRecord
+function operationLogMaxChangesPerRecord(settings: Record<string, unknown>): number {
+  const value = settings.operationLogMaxChangesPerRecord
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) ? Math.max(1, Math.min(500, Math.trunc(number))) : 100
+}
+
+function operationLogComparableValue(value: unknown): string {
+  if (typeof value === 'bigint') {
+    return `bigint:${value.toString()}`
+  }
+  try {
+    const serialized = JSON.stringify(value)
+    return serialized ?? String(value)
+  } catch {
+    return String(value)
+  }
+}
+
+function runAfterCommitEffect(afterCommit?: () => void): void {
+  if (!afterCommit) return
+  try {
+    afterCommit()
+  } catch (error) {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'operation_log_after_commit_effect_failed'
+    }), '操作日志提交后副作用执行失败')
+  }
 }
 
 function firstString(...values: unknown[]): string | undefined {

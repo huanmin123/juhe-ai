@@ -194,7 +194,7 @@
                     </a-tooltip>
                   </div>
                 </div>
-                <AuditPayloadCodeViewer
+                <ReadonlyCodeViewer
                   ref="payloadCodeViewer"
                   :content-type="selectedPayloadViewerContentType"
                   :show-toolbar="false"
@@ -211,13 +211,14 @@
 
 <script setup lang="ts">
 import { CopyOutlined } from '@ant-design/icons-vue'
-import { computed, defineAsyncComponent, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import ReadonlyCodeViewer from '@/components/ReadonlyCodeViewer.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -284,8 +285,6 @@ const pagination = reactive({ current: initialPageState.pagination.current, page
 const outcomeOptions = auditOutcomeOptions
 const attemptColumns = auditAttemptColumns
 const payloadColumns = auditPayloadColumns
-const AuditPayloadCodeViewer = defineAsyncComponent(() => import('./AuditPayloadCodeViewer.vue'))
-
 const activeFilterCount = computed(() => {
   let count = 0
   if (traceIdFilter.value.trim()) count += 1

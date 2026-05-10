@@ -33,6 +33,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 客户请求链路中的高频 SQLite 读写优先通过独立本地 DB service 进程异步完成，降低 Web/API/网关主进程被同步 `DatabaseSync` 调用短暂阻塞的风险；DB service 不改变 SQLite 单写者模型。
 - 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
+- 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入请求幂等和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，幂等重放不写第二条操作日志。
 - 原始审计日志使用独立表保存完整链路原文；网关请求链路只能终态入队，后台批量写库，不能同步写审计表
 - 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；搜索能力使用 SQLite 索引表 `runtime_logs` 和 FTS5 表 `runtime_log_search`，不在查询时扫描日志文件。
 - 系统团队、团队成员和统一资源授权使用独立表记录；授权不复制账户凭据，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
@@ -60,6 +61,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `operation_logs`：保存业务操作主事件，包括操作人、业务作用域、模块、动作、主资源、安全差异和 trace ID。
 - `operation_log_targets`：保存一次操作涉及或影响的资源，支持按资源反查历史操作。
 - `operation_log_viewers`：保存普通用户可见性和可见原因，资源删除或授权撤销后仍按当时关系追溯。
+- `idempotency_records`：保存管理端写接口的请求幂等记录，按 `actor_system_account_id + method + route_key + idempotency_key` 唯一，用于重复提交时返回第一次响应并避免重复写业务数据和操作日志。
 - `audit_logs`：保存每次被采样或非成功客户端请求的审计元数据，用于后台页面检索。
 - `audit_log_attempts`：保存审计请求下每次上游尝试、命中账号、代理、状态码和错误摘要。
 - `audit_log_payloads`：保存客户端请求、上游请求、上游响应和最终网关响应的完整原文，建议加密存储。
@@ -105,10 +107,15 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `operation_logs(operation_scope_system_account_id, created_at, id)`：按业务作用域筛选。
 - `operation_logs(module, action, created_at, id)`：按模块和动作筛选。
 - `operation_logs(resource_type, resource_id, created_at, id)`：按主资源追溯。
+- `operation_logs(visibility_scope, created_at, id)`：用户侧合并全员摘要日志。
 - `operation_logs(trace_id)`：按链路 ID 关联普通运行日志。
 - `operation_log_targets(target_type, target_id, created_at)`：按任意受影响资源反查。
 - `operation_log_viewers(system_account_id, created_at, operation_log_id)`：用户侧读取可见操作日志。
+- `operation_log_viewers(system_account_id, operation_log_id)`：用户侧当前页日志详情级别裁剪。
 - `operation_log_viewers(operation_log_id, system_account_id)`：详情权限校验。
+- `idempotency_records(actor_system_account_id, method, route_key, idempotency_key)`：管理端写接口幂等键唯一约束。
+- `idempotency_records(expires_at)`：幂等记录保留期清理。
+- `idempotency_records(status, locked_until)`：恢复或排查处理中的幂等请求。
 - `audit_logs(created_at, id)`：审计日志默认分页。
 - `audit_logs(system_account_id, created_at, id)`：管理员按调用方筛选审计日志。
 - `audit_logs(audit_outcome, created_at, id)`、`audit_logs(final_status_code, created_at, id)`：按结果和状态码筛选。
@@ -197,7 +204,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 操作日志只记录成功提交的状态变更；`GET`、列表、详情、筛选、分页和日志查看不写操作日志。
 - 操作日志不保存完整请求体、完整响应体、完整 headers、凭据、token、代理密码、验证码、登录密码或原始审计 payload。
 - 删除业务资源时不删除历史操作日志；历史日志保留当时的资源 ID、资源名称、安全摘要和影响用户。
-- 普通用户可见性优先由 `operation_log_viewers` 预计算，全员安全摘要由 `operation_logs.visibility_scope = 'all_users'` 承载。
+- 普通用户可见性优先由 `operation_log_viewers` 预计算，全员安全摘要由 `operation_logs.visibility_scope = 'all_users'` 承载，不为全员摘要展开 viewer 行。
+- 用户侧列表由 `operation_log_viewers.system_account_id` 命中的可见集合与 `visibility_scope = 'all_users'` 的全员摘要集合合并，列表不解析字段差异 JSON，详情按权限再读取明细。
 
 建议新增 `operation_logs` 表：
 
