@@ -109,6 +109,7 @@ function createAccount(
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-test',
     passthroughEnabled: true,
+    streamFailureCount: 0,
     credentials: {}
   }
 }

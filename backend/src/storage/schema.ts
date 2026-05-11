@@ -354,6 +354,10 @@ export function applySchema(database: DatabaseSync): void {
       attempt_count INTEGER NOT NULL DEFAULT 0,
       payload_count INTEGER NOT NULL DEFAULT 0,
       payload_bytes INTEGER NOT NULL DEFAULT 0,
+      raw_payload_bytes INTEGER NOT NULL DEFAULT 0,
+      compressed_payload_bytes INTEGER NOT NULL DEFAULT 0,
+      compression_saved_bytes INTEGER NOT NULL DEFAULT 0,
+      error_group_id TEXT,
       capture_status TEXT NOT NULL DEFAULT 'complete',
       started_at TEXT NOT NULL,
       ended_at TEXT NOT NULL,
@@ -399,6 +403,71 @@ export function applySchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL,
       FOREIGN KEY (audit_log_id) REFERENCES audit_logs(id) ON DELETE CASCADE,
       FOREIGN KEY (attempt_id) REFERENCES audit_log_attempts(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_payload_blobs (
+      id TEXT PRIMARY KEY,
+      sha256 TEXT NOT NULL,
+      raw_size_bytes INTEGER NOT NULL DEFAULT 0,
+      compressed_size_bytes INTEGER NOT NULL DEFAULT 0,
+      content_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+      content_encoding TEXT,
+      compression TEXT NOT NULL DEFAULT 'none',
+      storage_key TEXT NOT NULL,
+      ref_count INTEGER NOT NULL DEFAULT 0,
+      first_seen_at TEXT NOT NULL,
+      last_seen_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_payload_refs (
+      id TEXT PRIMARY KEY,
+      audit_log_id TEXT NOT NULL,
+      attempt_id TEXT,
+      part_type TEXT NOT NULL,
+      sequence_index INTEGER NOT NULL DEFAULT 0,
+      content_type TEXT,
+      content_encoding TEXT,
+      headers_blob_id TEXT,
+      body_blob_id TEXT,
+      headers_sha256 TEXT,
+      body_sha256 TEXT,
+      raw_size_bytes INTEGER NOT NULL DEFAULT 0,
+      compressed_size_bytes INTEGER NOT NULL DEFAULT 0,
+      capture_status TEXT NOT NULL DEFAULT 'complete',
+      created_at TEXT NOT NULL,
+      FOREIGN KEY (audit_log_id) REFERENCES audit_logs(id) ON DELETE CASCADE,
+      FOREIGN KEY (attempt_id) REFERENCES audit_log_attempts(id) ON DELETE SET NULL,
+      FOREIGN KEY (headers_blob_id) REFERENCES audit_payload_blobs(id) ON DELETE SET NULL,
+      FOREIGN KEY (body_blob_id) REFERENCES audit_payload_blobs(id) ON DELETE SET NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS audit_error_groups (
+      id TEXT PRIMARY KEY,
+      fingerprint TEXT NOT NULL,
+      window_started_at TEXT NOT NULL,
+      window_ended_at TEXT NOT NULL,
+      system_account_id TEXT,
+      api_key_id TEXT,
+      group_id TEXT,
+      account_id TEXT,
+      provider_code TEXT,
+      path TEXT,
+      model TEXT,
+      status_code INTEGER,
+      error_phase TEXT,
+      error_code TEXT,
+      error_type TEXT,
+      request_fingerprint TEXT,
+      error_fingerprint TEXT,
+      count INTEGER NOT NULL DEFAULT 0,
+      first_event_id TEXT,
+      last_event_id TEXT,
+      sample_event_id TEXT,
+      last_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      UNIQUE(fingerprint, window_started_at)
     );
 
     CREATE TABLE IF NOT EXISTS operation_logs (
@@ -774,6 +843,13 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_audit_log_attempts_log_index ON audit_log_attempts(audit_log_id, attempt_index);
     CREATE INDEX IF NOT EXISTS idx_audit_log_payloads_log_part ON audit_log_payloads(audit_log_id, part_type, sequence_index);
     CREATE INDEX IF NOT EXISTS idx_audit_log_payloads_log_sequence ON audit_log_payloads(audit_log_id, sequence_index);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_payload_blobs_unique ON audit_payload_blobs(sha256, raw_size_bytes, content_type);
+    CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_log_part ON audit_payload_refs(audit_log_id, part_type, sequence_index);
+    CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_log_sequence ON audit_payload_refs(audit_log_id, sequence_index);
+    CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_headers_blob ON audit_payload_refs(headers_blob_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_body_blob ON audit_payload_refs(body_blob_id);
+    CREATE INDEX IF NOT EXISTS idx_audit_error_groups_window ON audit_error_groups(window_started_at, id);
+    CREATE INDEX IF NOT EXISTS idx_audit_error_groups_fingerprint_window ON audit_error_groups(fingerprint, window_started_at);
     CREATE INDEX IF NOT EXISTS idx_operation_logs_created ON operation_logs(created_at, id);
     CREATE INDEX IF NOT EXISTS idx_operation_logs_actor_created ON operation_logs(actor_system_account_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_operation_logs_scope_created ON operation_logs(operation_scope_system_account_id, created_at, id);
@@ -796,6 +872,7 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_scope_date ON usage_stats_daily(system_account_id, scope_type, scope_id, stat_date);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_date ON usage_stats_daily(stat_date);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_scope_hour ON usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour);
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_scope_stat_hour ON usage_stats_hourly(system_account_id, scope_type, stat_hour, scope_id);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_hour ON usage_stats_hourly(stat_hour);
     CREATE INDEX IF NOT EXISTS idx_usage_model_daily_date ON usage_model_daily(system_account_id, stat_date, model);
     CREATE INDEX IF NOT EXISTS idx_usage_model_daily_stat_date ON usage_model_daily(stat_date);
@@ -811,9 +888,26 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+  ensureAuditLogSchemaEvolution(database)
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_error_group_created ON audit_logs(error_group_id, created_at, id);
   `)
+}
+
+function ensureAuditLogSchemaEvolution(database: DatabaseSync): void {
+  ensureColumn(database, 'audit_logs', 'raw_payload_bytes', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'audit_logs', 'compressed_payload_bytes', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'audit_logs', 'compression_saved_bytes', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'audit_logs', 'error_group_id', 'TEXT')
+}
+
+function ensureColumn(database: DatabaseSync, tableName: string, columnName: string, definition: string): void {
+  const rows = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
+  if (rows.some((row) => row.name === columnName)) {
+    return
+  }
+  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
 }
 
 export function seedDefaults(database: DatabaseSync): void {

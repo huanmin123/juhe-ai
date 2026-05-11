@@ -8,9 +8,13 @@ import type {
   AccountTrafficMigrationSourceStatus,
   AccountAuthorizationUsageOverview,
   AccountUsageStatsOverview,
+  AiPerformanceAccountOption,
+  AiPerformanceOverview,
+  AiPerformanceWindowKey,
   AnnouncementLevel,
   AnnouncementStatus,
   AnnouncementSummary,
+  AuditErrorGroupListResult,
   AuditLogDetail,
   AuditLogListResult,
   AuditLogPayloadDetail,
@@ -78,6 +82,17 @@ interface AccountUsageStatsParams extends ListParams {
   limit?: number
 }
 
+interface AiPerformanceParams {
+  window?: AiPerformanceWindowKey
+  accountIds?: string[]
+}
+
+interface AiPerformanceAccountOptionsParams {
+  keyword?: string
+  accountIds?: string[]
+  limit?: number
+}
+
 export type SortDirection = 'asc' | 'desc'
 export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
 
@@ -130,6 +145,19 @@ export interface AuditLogListParams extends ListParams {
   groupId?: string
   accountId?: string
   clientIp?: string
+  errorGroupId?: string
+  limit?: number
+}
+
+export interface AuditErrorGroupListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  statusCode?: number
+  path?: string
+  model?: string
+  apiKeyId?: string
+  groupId?: string
+  accountId?: string
   limit?: number
 }
 
@@ -366,6 +394,8 @@ export const api = {
   },
   auditLogs: {
     list: (params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get('/audit-logs', { params, ...noTimeout })),
+    errorGroups: (params?: AuditErrorGroupListParams) => unwrap<AuditErrorGroupListResult>(http.get('/audit-logs/error-groups', { params, ...noTimeout })),
+    errorGroupEvents: (id: string, params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get(`/audit-logs/error-groups/${id}/events`, { params, ...noTimeout })),
     runtime: () => unwrap<AuditLogRuntime>(http.get('/audit-logs/runtime', noTimeout)),
     detail: (id: string) => unwrap<AuditLogDetail>(http.get(`/audit-logs/${id}`, noTimeout)),
     payload: (id: string, payloadId: string) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, noTimeout))
@@ -392,7 +422,9 @@ export const api = {
   myStats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),
     accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/my-stats/account-usage', { params: stripSystemAccountParam(params) })),
-    accountAuthorizationUsage: (id: string) => unwrap<AccountAuthorizationUsageOverview>(http.get(`/my-stats/accounts/${id}/authorization-usage`))
+    accountAuthorizationUsage: (id: string) => unwrap<AccountAuthorizationUsageOverview>(http.get(`/my-stats/accounts/${id}/authorization-usage`)),
+    aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params) })),
+    aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params) }))
   },
   settings: {
     public: () => unwrap<GlobalSettings>(http.get('/settings/public')),
@@ -434,4 +466,21 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
     output.sorts = params.sorts.map((sort) => `${sort.field}:${sort.order}`).join(',')
   }
   return output
+}
+
+function aiPerformanceParams(params?: AiPerformanceParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (params.window) output.window = params.window
+  if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
+  return Object.keys(output).length ? output : undefined
+}
+
+function aiPerformanceAccountOptionsParams(params?: AiPerformanceAccountOptionsParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
+  if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
+  if (params.limit) output.limit = params.limit
+  return Object.keys(output).length ? output : undefined
 }

@@ -93,7 +93,15 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
       queueBytes: auditRuntime.queueBytes,
       flushLastSuccessAt: auditRuntime.flushLastSuccessAt,
       flushLastError: auditRuntime.flushLastError,
-      droppedCount: auditRuntime.droppedSuccessCount + auditRuntime.droppedFailureCount + auditRuntime.droppedOverflowCount + auditRuntime.droppedOversizeCount
+      droppedCount: auditRuntime.droppedSuccessCount + auditRuntime.droppedFailureCount + auditRuntime.droppedOverflowCount + auditRuntime.droppedOversizeCount,
+      droppedSuccessCount: auditRuntime.droppedSuccessCount,
+      droppedFailureCount: auditRuntime.droppedFailureCount,
+      droppedOverflowCount: auditRuntime.droppedOverflowCount,
+      droppedOversizeCount: auditRuntime.droppedOversizeCount,
+      retentionDays: auditRuntime.retentionDays,
+      successRetentionDays: auditRuntime.successRetentionDays,
+      failureRetentionDays: auditRuntime.failureRetentionDays,
+      errorGroupRetentionDays: auditRuntime.errorGroupRetentionDays
     }),
     runtimeLogIndexQueue: queueRuntime(runtimeLogRuntime)
   }
@@ -106,9 +114,16 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
     flushLastSuccessAt: typeof input.flushLastSuccessAt === 'string' ? input.flushLastSuccessAt : undefined,
     flushLastError: typeof input.flushLastError === 'string' ? input.flushLastError : undefined,
     droppedCount: typeof input.droppedCount === 'number' ? input.droppedCount : undefined,
+    droppedSuccessCount: typeof input.droppedSuccessCount === 'number' ? input.droppedSuccessCount : undefined,
+    droppedFailureCount: typeof input.droppedFailureCount === 'number' ? input.droppedFailureCount : undefined,
+    droppedOverflowCount: typeof input.droppedOverflowCount === 'number' ? input.droppedOverflowCount : undefined,
+    droppedOversizeCount: typeof input.droppedOversizeCount === 'number' ? input.droppedOversizeCount : undefined,
     retainedOverflowWarningCount: typeof input.retainedOverflowWarningCount === 'number' ? input.retainedOverflowWarningCount : undefined,
     flushFailureCount: typeof input.flushFailureCount === 'number' ? input.flushFailureCount : undefined,
-    retentionDays: typeof input.retentionDays === 'number' ? input.retentionDays : undefined
+    retentionDays: typeof input.retentionDays === 'number' ? input.retentionDays : undefined,
+    successRetentionDays: typeof input.successRetentionDays === 'number' ? input.successRetentionDays : undefined,
+    failureRetentionDays: typeof input.failureRetentionDays === 'number' ? input.failureRetentionDays : undefined,
+    errorGroupRetentionDays: typeof input.errorGroupRetentionDays === 'number' ? input.errorGroupRetentionDays : undefined
   }
 }
 

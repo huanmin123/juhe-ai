@@ -10,9 +10,16 @@ export interface BackgroundWorkerQueueRuntime {
   flushLastSuccessAt?: string
   flushLastError?: string
   droppedCount?: number
+  droppedSuccessCount?: number
+  droppedFailureCount?: number
+  droppedOverflowCount?: number
+  droppedOversizeCount?: number
   retainedOverflowWarningCount?: number
   flushFailureCount?: number
   retentionDays?: number
+  successRetentionDays?: number
+  failureRetentionDays?: number
+  errorGroupRetentionDays?: number
 }
 
 export interface BackgroundWorkerRuntimeSnapshot {
@@ -98,6 +105,10 @@ export function sendUsageRecordsToWorker(items: UsageRecordInput[]): boolean {
 }
 
 export function sendAuditLogsToWorker(items: AuditLogInput[]): boolean {
+  if (runtimeConfig.processRole === 'worker' || !workerProcess || !workerReady) {
+    return false
+  }
+
   return sendBackgroundWorkerMessage({
     type: 'background_worker_audit_logs',
     items
@@ -255,21 +266,71 @@ function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
 
 function enforceWorkerMessageQueueLimits(): void {
   while (regularWorkerMessageQueue.length > maxPendingMessages || regularWorkerMessageQueueBytes > maxPendingMessageBytes) {
-    const dropped = shiftRegularWorkerMessage()
+    const dropped = shiftDroppableRegularWorkerMessage()
     if (!dropped) {
       break
     }
     pendingPendingMessagesWarningCount += 1
-    process.stderr.write(`[background-worker] 消息队列已满，已丢弃最早消息 ${pendingPendingMessagesWarningCount} 次\n`)
+    process.stderr.write(`[background-worker] 消息队列已满，已丢弃 ${describeDroppedWorkerMessage(dropped)} ${pendingPendingMessagesWarningCount} 次\n`)
   }
 }
 
-function shiftRegularWorkerMessage(): BackgroundWorkerMessage | undefined {
-  const message = regularWorkerMessageQueue.shift()
+function shiftDroppableRegularWorkerMessage(): BackgroundWorkerMessage | undefined {
+  const droppedSuccessAudit = shiftSuccessAuditWorkerMessage()
+  if (droppedSuccessAudit) return droppedSuccessAudit
+
+  const runtimeLogIndex = regularWorkerMessageQueue.findIndex((message) => message.type === 'background_worker_runtime_log_line')
+  if (runtimeLogIndex >= 0) {
+    return removeRegularWorkerMessageAt(runtimeLogIndex)
+  }
+
+  const nonAuditIndex = regularWorkerMessageQueue.findIndex((message) => message.type !== 'background_worker_audit_logs')
+  if (nonAuditIndex >= 0) {
+    return removeRegularWorkerMessageAt(nonAuditIndex)
+  }
+
+  return removeRegularWorkerMessageAt(0)
+}
+
+function shiftSuccessAuditWorkerMessage(): BackgroundWorkerMessage | undefined {
+  const messageIndex = regularWorkerMessageQueue.findIndex((message) => message.type === 'background_worker_audit_logs' && message.items.some(isSuccessAuditSample))
+  if (messageIndex < 0) return undefined
+
+  const message = regularWorkerMessageQueue[messageIndex]
+  if (!message || message.type !== 'background_worker_audit_logs') return undefined
+
+  const droppedItems = message.items.filter(isSuccessAuditSample)
+  const retainedItems = message.items.filter((item) => !isSuccessAuditSample(item))
+  if (retainedItems.length === 0) {
+    return removeRegularWorkerMessageAt(messageIndex)
+  }
+
+  const originalBytes = estimateWorkerMessageBytes(message)
+  const retainedMessage: BackgroundWorkerMessage = { ...message, items: retainedItems }
+  regularWorkerMessageQueue[messageIndex] = retainedMessage
+  regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - originalBytes + estimateWorkerMessageBytes(retainedMessage))
+  return { ...message, items: droppedItems }
+}
+
+function removeRegularWorkerMessageAt(index: number): BackgroundWorkerMessage | undefined {
+  const [message] = regularWorkerMessageQueue.splice(index, 1)
   if (message) {
     regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - estimateWorkerMessageBytes(message))
   }
   return message
+}
+
+function isSuccessAuditSample(input: AuditLogInput): boolean {
+  return input.auditOutcome === 'success' && input.success === true
+}
+
+function describeDroppedWorkerMessage(message: BackgroundWorkerMessage): string {
+  if (message.type !== 'background_worker_audit_logs') {
+    return `${message.type} 消息`
+  }
+  const successCount = message.items.filter(isSuccessAuditSample).length
+  const retainedCount = message.items.length - successCount
+  return `审计日志消息（成功样本 ${successCount} 条，需保留事件 ${retainedCount} 条）`
 }
 
 function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {

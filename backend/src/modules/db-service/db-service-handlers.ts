@@ -1,5 +1,6 @@
 import {
   clearGatewayApiKeyValidationCache,
+  clearAccountStreamFailureState,
   listOpenAIAccountsForGroup,
   recordAccountStreamFailure,
   resolveGroupUsageAccessMetadata,
@@ -105,6 +106,13 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         clearGatewayRuntimeCacheLocal()
       }
       return { count: result.count, triggered: result.triggered }
+    }
+    case 'clear_account_stream_failure_state': {
+      const changed = clearAccountStreamFailureState(operation.accountId)
+      if (changed) {
+        clearGatewayRuntimeCacheLocal()
+      }
+      return { changed }
     }
     case 'clear_gateway_runtime_cache':
       clearGatewayRuntimeCacheLocal()

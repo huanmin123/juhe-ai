@@ -97,6 +97,10 @@ export type DbServiceOperation =
     }
   }
   | {
+    type: 'clear_account_stream_failure_state'
+    accountId: string
+  }
+  | {
     type: 'clear_gateway_runtime_cache'
   }
   | {
@@ -116,6 +120,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'persist_openai_codex_usage_headers' } ? { persisted: boolean } :
   T extends { type: 'apply_account_error_handling' } ? AccountErrorHandlingResult :
   T extends { type: 'record_account_stream_failure' } ? { count: number; triggered: boolean } :
+  T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'status' } ? DbServiceRuntimeSnapshot :
   unknown

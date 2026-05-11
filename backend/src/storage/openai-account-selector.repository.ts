@@ -37,6 +37,8 @@ export interface OpenAIAccountSecret {
   errorPolicyId?: string
   cooldownUntil?: string
   lastErrorMessage?: string
+  streamFailureCount: number
+  streamFailureWindowStartedAt?: string
   expiresAt?: string
   credentials: Record<string, unknown>
 }
@@ -104,7 +106,7 @@ export function findOpenAIAccountForGroup(
   const params = forceAvailability || options.includeUnavailable ? [accountId, now] : [accountId, now, now]
   const row = getDatabase()
     .prepare(`
-      SELECT id, system_account_id, name, type, status, concurrency_limit, priority, super_priority_enabled, fallback_enabled, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message,
+      SELECT id, system_account_id, name, type, status, concurrency_limit, priority, super_priority_enabled, fallback_enabled, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at,
         NULL AS quality_score,
         NULL AS quality_state,
         NULL AS quality_ewma_first_token_ms
@@ -163,7 +165,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
     const row = database
       .prepare(`
         SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
-          accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message,
+          accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
           account_quality.quality_score,
           account_quality.quality_state,
           account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms
@@ -227,6 +229,8 @@ interface OpenAIAccountRow {
   error_policy_id: string | null
   cooldown_until: string | null
   last_error_message: string | null
+  stream_failure_count: number
+  stream_failure_window_started_at: string | null
   quality_score?: number | null
   quality_state?: string | null
   quality_ewma_first_token_ms?: number | null
@@ -290,6 +294,8 @@ function openAIAccountSecretFromRow(
     errorPolicyId: row.error_policy_id ?? undefined,
     cooldownUntil: row.cooldown_until ?? undefined,
     lastErrorMessage: row.last_error_message ?? undefined,
+    streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
+    streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
     credentials
   }

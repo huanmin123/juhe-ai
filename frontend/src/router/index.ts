@@ -70,6 +70,16 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/my-ai-performance',
+    component: () => import('@/views/ai-performance/AiPerformanceView.vue'),
+    meta: {
+      title: 'AI性能监控',
+      description: '按小时查看自己 AI 账户的首 token 和总耗时趋势。',
+      viewScope: 'self',
+      keepAlive: false
+    }
+  },
+  {
     path: '/my-usage-records',
     component: () => import('@/views/usage-records/UsageRecordsView.vue'),
     meta: {

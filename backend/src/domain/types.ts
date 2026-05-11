@@ -164,6 +164,67 @@ export interface UsageOverviewWindowDefinition {
   hours: number
 }
 
+export type AiPerformanceWindowKey = 'last1d' | 'last3d' | 'last7d'
+
+export interface AiPerformanceWindowDefinition {
+  key: AiPerformanceWindowKey
+  label: string
+  hours: number
+}
+
+export interface AiPerformanceAccount {
+  id: string
+  name: string
+  status: AccountStatus
+  providerCode: ProviderCode
+  systemAccountId: string
+  systemAccountName?: string
+  requestCountLast7d: number
+  selected: boolean
+  defaultVisible: boolean
+}
+
+export interface AiPerformanceAccountOption {
+  id: string
+  name: string
+  status: AccountStatus
+  providerCode: ProviderCode
+  systemAccountId: string
+  requestCountLast7d: number
+}
+
+export interface AiPerformancePoint {
+  statHour: string
+  requestCount: number
+  firstTokenCount: number
+  averageFirstTokenMs?: number
+  durationCount: number
+  averageDurationMs?: number
+}
+
+export interface AiPerformanceAccountSeries {
+  accountId: string
+  accountName: string
+  systemAccountId: string
+  points: AiPerformancePoint[]
+}
+
+export interface AiPerformanceOverview {
+  window: AiPerformanceWindowDefinition
+  defaultAccounts: AiPerformanceAccount[]
+  selectedAccounts: AiPerformanceAccount[]
+  accounts: AiPerformanceAccount[]
+  hourlySeries: AiPerformanceAccountSeries[]
+  summary: {
+    requestCount: number
+    firstTokenCount: number
+    averageFirstTokenMs?: number
+    durationCount: number
+    averageDurationMs?: number
+  }
+  statsLagSeconds: number
+}
+
 export type UsageStatsWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last15d' | 'last30d' | 'total'
 
 export interface UsageStatsWindowDefinition {

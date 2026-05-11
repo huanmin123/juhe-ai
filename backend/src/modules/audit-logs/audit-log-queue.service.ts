@@ -40,6 +40,10 @@ export interface AuditLogQueueRuntime {
   droppedFailureCount: number
   droppedOverflowCount: number
   droppedOversizeCount: number
+  retentionDays: number
+  successRetentionDays: number
+  failureRetentionDays: number
+  errorGroupRetentionDays: number
 }
 
 export function recordDroppedAuditCapture(input: {
@@ -48,26 +52,35 @@ export function recordDroppedAuditCapture(input: {
   success: boolean
   bytes: number
   reason: 'active_capture_overflow' | 'gateway_body_rejected'
+  method?: string
+  path?: string
+  queryString?: string
+  statusCode?: number
+  errorPhase?: string
+  errorCode?: string
+  errorMessage?: string
 }): void {
-  const queued: QueuedAuditLog = {
-    input: {
-      id: `audit_${Date.now()}_${randomUUID()}`,
-      traceId: input.traceId,
-      auditOutcome: input.auditOutcome as AuditLogInput['auditOutcome'],
-      success: input.success,
-      method: 'UNKNOWN',
-      path: 'unknown',
-      sampleBucket: 0,
-      sampleReason: input.reason,
-      startedAt: nowIso(),
-      endedAt: nowIso(),
-      attempts: [],
-      payloads: []
-    },
-    bytes: input.bytes,
-    success: input.success
-  }
-  recordDrop(queued, 'oversize')
+  const timestamp = nowIso()
+  enqueueAuditLog({
+    id: `audit_${Date.now()}_${randomUUID()}`,
+    traceId: input.traceId,
+    auditOutcome: input.auditOutcome as AuditLogInput['auditOutcome'],
+    success: input.success,
+    method: input.method?.toUpperCase() ?? 'UNKNOWN',
+    path: input.path ?? 'unknown',
+    queryString: input.queryString,
+    finalStatusCode: input.statusCode,
+    errorPhase: input.errorPhase,
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    sampleBucket: 0,
+    sampleReason: input.reason,
+    captureStatus: input.reason === 'gateway_body_rejected' ? 'overflow' : 'dropped',
+    startedAt: timestamp,
+    endedAt: timestamp,
+    attempts: [],
+    payloads: []
+  })
 }
 
 export function enqueueAuditLog(input: AuditLogInput): void {
@@ -158,6 +171,7 @@ export function flushAllAuditLogQueue(): void {
 }
 
 export function getAuditLogQueueRuntime(): AuditLogQueueRuntime {
+  const settings = readAuditLogSettings()
   return {
     queueLength: pendingAuditLogs.length,
     queueBytes: pendingBytes,
@@ -166,7 +180,11 @@ export function getAuditLogQueueRuntime(): AuditLogQueueRuntime {
     droppedSuccessCount,
     droppedFailureCount,
     droppedOverflowCount,
-    droppedOversizeCount
+    droppedOversizeCount,
+    retentionDays: settings.retentionDays,
+    successRetentionDays: settings.successRetentionDays,
+    failureRetentionDays: settings.failureRetentionDays,
+    errorGroupRetentionDays: settings.errorGroupRetentionDays
   }
 }
 

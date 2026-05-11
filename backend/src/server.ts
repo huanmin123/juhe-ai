@@ -83,7 +83,14 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
     auditOutcome: 'gateway_failed',
     success: false,
     bytes: Number(error.received ?? error.length ?? error.limit ?? 0),
-    reason: 'gateway_body_rejected'
+    reason: 'gateway_body_rejected',
+    method: req.method,
+    path: req.path,
+    queryString: req.originalUrl.includes('?') ? req.originalUrl.split('?').slice(1).join('?') : undefined,
+    statusCode,
+    errorPhase: 'gateway',
+    errorCode: error.type,
+    errorMessage: message
   })
   getRequestLogger().warn({
     event: 'gateway_raw_body_rejected',

@@ -63,6 +63,24 @@ export function formatHashPreview(value?: string): string {
   return value.length > 8 ? `${value.slice(0, 4)}....${value.slice(-4)}` : value
 }
 
+export function compressionText(rawBytes: number, compressedBytes: number): string {
+  if (!rawBytes) return '-'
+  if (!compressedBytes || compressedBytes >= rawBytes) return '未压缩'
+  const ratio = Math.max(0, Math.round((1 - compressedBytes / rawBytes) * 100))
+  return `${formatBytes(compressedBytes)} / 节省 ${ratio}%`
+}
+
+export function captureStatusText(value?: string): string {
+  return {
+    complete: '完整',
+    summary_only: '仅摘要',
+    hash_only: '仅 Hash',
+    expired: '已过期',
+    overflow: '超限丢弃',
+    dropped: '已丢弃'
+  }[value || ''] ?? (value || '-')
+}
+
 export function normalizedStatusCode(value: string): number | undefined {
   const text = value.trim()
   if (!text) return undefined

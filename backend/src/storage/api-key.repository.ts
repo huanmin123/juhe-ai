@@ -297,7 +297,6 @@ function deleteApiKeyRelatedData(database: ReturnType<typeof getDatabase>, row: 
   for (const tableName of ['usage_stats_totals', 'usage_stats_daily', 'usage_stats_hourly']) {
     database.prepare(`DELETE FROM ${tableName} WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`).run(row.system_account_id, row.id)
   }
-  database.prepare('DELETE FROM audit_logs WHERE api_key_id = ?').run(row.id)
   database.prepare('DELETE FROM usage_records WHERE api_key_id = ?').run(row.id)
 }
 

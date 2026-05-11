@@ -19,6 +19,8 @@ export const auditLogColumns = [
   { title: 'API Key', key: 'apiKey', width: 150 },
   { title: '分组', key: 'group', width: 150 },
   { title: '系统账户', key: 'systemAccount', width: 150 },
+  { title: 'Payload', key: 'payload', width: 150 },
+  { title: '压缩', key: 'compression', width: 150 },
   { title: '耗时', key: 'duration', width: 90 },
   { title: '时间', key: 'createdAt', width: 180 },
   { title: '操作', key: 'actions', width: 90, fixed: 'right' }
@@ -39,7 +41,19 @@ export const auditPayloadColumns = [
   { title: '序号', dataIndex: 'sequenceIndex', width: 76 },
   { title: '类型', dataIndex: 'contentType', width: 150 },
   { title: '大小', key: 'size', width: 82 },
+  { title: '状态', key: 'captureStatus', width: 86 },
   { title: 'Headers SHA256', key: 'headersSha256', width: 130 },
   { title: 'Body SHA256', key: 'bodySha256', width: 130 },
   { title: '操作', key: 'actions', width: 72 }
+]
+
+export const auditErrorGroupColumns = [
+  { title: '次数', key: 'count', width: 90 },
+  { title: '最近时间', key: 'updatedAt', width: 180 },
+  { title: '状态码', key: 'status', width: 90 },
+  { title: '接口', key: 'path', width: 210 },
+  { title: '模型', key: 'model', width: 150 },
+  { title: '账号', key: 'account', width: 160 },
+  { title: '错误', key: 'error', width: 260 },
+  { title: '操作', key: 'actions', width: 90, fixed: 'right' }
 ]

@@ -654,6 +654,9 @@ export async function handleOpenAIGatewayRequest(
           success: true,
           settings: activeGatewaySettings
         })
+        if (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage) {
+          clearAccountStreamFailureStateWithCacheInvalidation(account.id)
+        }
       }
 
       recordCompletedUpstreamAttempt(req, {
@@ -1558,6 +1561,22 @@ function handleStreamFailure(account: UpstreamAccount, reason: string, settings:
       cooldownMinutes: settings.defaultTemporaryUnschedulableMinutes,
       reason
     }
+  })
+}
+
+function clearAccountStreamFailureStateWithCacheInvalidation(accountId: string): void {
+  void requestDbService({
+    type: 'clear_account_stream_failure_state',
+    accountId
+  }, { fallbackToLocal: false }).then((result) => {
+    if (result.changed) {
+      clearGatewayRuntimeCache()
+    }
+  }).catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'gateway_account_stream_failure_clear_failed',
+      accountId
+    }), '网关清理账号流式失败计数失败')
   })
 }
 

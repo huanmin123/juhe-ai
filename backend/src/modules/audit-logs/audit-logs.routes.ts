@@ -4,6 +4,9 @@ import { ok, sendNotFound } from '../../shared/http.js'
 import {
   getAuditLogDetail,
   getAuditLogPayload,
+  listAuditErrorGroupEvents,
+  listAuditErrorGroups,
+  type AuditErrorGroupListOptions,
   listAuditLogs,
   type AuditLogListOptions,
   type AuditOutcome
@@ -29,13 +32,13 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
   const auditLogQueue = workerSnapshot?.auditLogQueue
   res.json(ok({
     queueLength: auditLogQueue?.queueLength ?? 0,
-    queueBytes: 0,
+    queueBytes: auditLogQueue?.queueBytes ?? 0,
     flushLastSuccessAt: auditLogQueue?.flushLastSuccessAt,
     flushLastError: auditLogQueue?.flushLastError,
-    droppedSuccessCount: 0,
-    droppedFailureCount: 0,
-    droppedOverflowCount: 0,
-    droppedOversizeCount: auditLogQueue?.droppedCount ?? 0,
+    droppedSuccessCount: auditLogQueue?.droppedSuccessCount ?? 0,
+    droppedFailureCount: auditLogQueue?.droppedFailureCount ?? 0,
+    droppedOverflowCount: auditLogQueue?.droppedOverflowCount ?? 0,
+    droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? auditLogQueue?.droppedCount ?? 0,
     activeCaptureCount: getActiveAuditCaptureCount(),
     worker: {
       pid: workerSnapshot?.pid ?? getBackgroundWorkerState().pid,
@@ -44,6 +47,14 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
     },
     settings: readAuditLogSettings()
   }))
+})
+
+auditLogsRouter.get('/error-groups', (req, res) => {
+  res.json(ok(listAuditErrorGroups(parseAuditErrorGroupListOptions(req.query))))
+})
+
+auditLogsRouter.get('/error-groups/:id/events', (req, res) => {
+  res.json(ok(listAuditErrorGroupEvents(req.params.id, parseAuditLogListOptions(req.query))))
 })
 
 auditLogsRouter.get('/:id', (req, res) => {
@@ -95,6 +106,25 @@ function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListO
     groupId: optionalQueryText(query.groupId),
     accountId: optionalQueryText(query.accountId),
     clientIp: optionalQueryText(query.clientIp)
+  }
+}
+
+function parseAuditErrorGroupListOptions(query: Record<string, unknown>): AuditErrorGroupListOptions {
+  const rawPage = numberQueryValue(query.page)
+  const rawPageSize = numberQueryValue(query.pageSize)
+  const rawLimit = typeof query.limit === 'string' ? Number(query.limit) : undefined
+  const rawStatusCode = typeof query.statusCode === 'string' ? Number(query.statusCode) : undefined
+  return {
+    page: Number.isInteger(rawPage) ? rawPage : undefined,
+    pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
+    limit: Number.isInteger(rawLimit) ? rawLimit : undefined,
+    path: optionalQueryText(query.path),
+    model: optionalQueryText(query.model),
+    statusCode: isHttpStatusCode(rawStatusCode) ? rawStatusCode : undefined,
+    systemAccountId: optionalQueryText(query.systemAccountId),
+    apiKeyId: optionalQueryText(query.apiKeyId),
+    groupId: optionalQueryText(query.groupId),
+    accountId: optionalQueryText(query.accountId)
   }
 }
 

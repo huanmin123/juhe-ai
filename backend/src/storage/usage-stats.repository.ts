@@ -1,8 +1,17 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { UsageOverviewWindowDefinition, UsageOverviewWindowKey } from '../domain/types.js'
+import type {
+  AiPerformanceAccount,
+  AiPerformanceAccountOption,
+  AiPerformanceOverview,
+  AiPerformanceWindowDefinition,
+  AiPerformanceWindowKey,
+  UsageOverviewWindowDefinition,
+  UsageOverviewWindowKey
+} from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { sqlPlaceholders } from './query-utils.js'
 import { averageFromSum, hourKey } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateUsageStatsRecord } from './usage-stats-writers.js'
@@ -19,9 +28,13 @@ import {
 } from './usage-stats-types.js'
 
 export type { SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOverview } from './usage-stats-types.js'
-export type { UsageOverviewWindowKey } from '../domain/types.js'
+export type { AiPerformanceWindowKey, UsageOverviewWindowKey } from '../domain/types.js'
 
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
+const AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT = 20
+const AI_PERFORMANCE_ACCOUNT_OPTION_DEFAULT_LIMIT = 30
+const AI_PERFORMANCE_ACCOUNT_OPTION_MAX_LIMIT = 50
+const HOUR_MS = 60 * 60 * 1000
 
 const USAGE_OVERVIEW_WINDOWS: UsageOverviewWindowDefinition[] = [
   { key: 'last1d', label: '近一天', hours: 24 },
@@ -36,6 +49,12 @@ const USAGE_OVERVIEW_TREND_BUCKET_HOURS: Record<UsageOverviewWindowKey, number> 
   last7d: 24,
   last30d: 24
 }
+
+const AI_PERFORMANCE_WINDOWS: AiPerformanceWindowDefinition[] = [
+  { key: 'last1d', label: '近一天', hours: 24 },
+  { key: 'last3d', label: '近三天', hours: 72 },
+  { key: 'last7d', label: '近一周', hours: 168 }
+]
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
   const database = getDatabase()
@@ -344,6 +363,99 @@ export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOver
   }
 }
 
+export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerformanceWindowKey = 'last1d', accountIds: string[] = []): AiPerformanceOverview {
+  const database = getDatabase()
+  const systemAccountId = currentSystemAccountId(access)
+  const window = aiPerformanceWindow(windowKey)
+  const now = Date.now()
+  const hourBuckets = hourBucketsUntilNow(window.hours, now)
+  const windowSinceHour = hourBuckets[0] ?? hourKey(new Date(now))
+  const activeSinceHour = hourKey(new Date(now - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS))
+  const selectedAccountIds = uniqueNonEmpty(accountIds).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
+
+  const defaultRows = loadDefaultAiPerformanceAccounts(database, systemAccountId, activeSinceHour)
+  const selectedRows = selectedAccountIds.length
+    ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, selectedAccountIds)
+    : []
+  const defaultIds = new Set(defaultRows.map((row) => row.id))
+  const selectedIds = new Set(selectedRows.map((row) => row.id))
+  const orderedRows = dedupeAiPerformanceAccountRows([...defaultRows, ...selectedRows])
+  const accounts = orderedRows.map((row) => mapAiPerformanceAccount(row, defaultIds, selectedIds))
+  const hourlyRows = accounts.length
+    ? loadAiPerformanceHourlyRows(database, systemAccountId, accounts.map((account) => account.id), windowSinceHour)
+    : []
+  const hourlyRowsByAccountHour = new Map(hourlyRows.map((row) => [`${row.scope_id}\n${row.stat_hour}`, row]))
+  const summaryMath = { requestCount: 0, firstTokenMsSum: 0, firstTokenMsCount: 0, durationMsSum: 0, durationMsCount: 0 }
+
+  const hourlySeries = accounts.map((account) => ({
+    accountId: account.id,
+    accountName: account.name,
+    systemAccountId: account.systemAccountId,
+    points: hourBuckets.map((statHour) => {
+      const row = hourlyRowsByAccountHour.get(`${account.id}\n${statHour}`)
+      const requestCount = Number(row?.request_count ?? 0)
+      const firstTokenCount = Number(row?.first_token_ms_count ?? 0)
+      const durationCount = Number(row?.duration_ms_count ?? 0)
+      summaryMath.requestCount += requestCount
+      summaryMath.firstTokenMsSum += Number(row?.first_token_ms_sum ?? 0)
+      summaryMath.firstTokenMsCount += firstTokenCount
+      summaryMath.durationMsSum += Number(row?.duration_ms_sum ?? 0)
+      summaryMath.durationMsCount += durationCount
+      return {
+        statHour,
+        requestCount,
+        firstTokenCount,
+        averageFirstTokenMs: averageFromSum(row?.first_token_ms_sum, row?.first_token_ms_count),
+        durationCount,
+        averageDurationMs: averageFromSum(row?.duration_ms_sum, row?.duration_ms_count)
+      }
+    })
+  }))
+
+  return {
+    window,
+    defaultAccounts: accounts.filter((account) => account.defaultVisible),
+    selectedAccounts: accounts.filter((account) => account.selected),
+    accounts,
+    hourlySeries,
+    summary: {
+      requestCount: summaryMath.requestCount,
+      firstTokenCount: summaryMath.firstTokenMsCount,
+      averageFirstTokenMs: averageFromSum(summaryMath.firstTokenMsSum, summaryMath.firstTokenMsCount),
+      durationCount: summaryMath.durationMsCount,
+      averageDurationMs: averageFromSum(summaryMath.durationMsSum, summaryMath.durationMsCount)
+    },
+    statsLagSeconds: latestUsageStatsLagSeconds()
+  }
+}
+
+export function listAiPerformanceAccountOptions(
+  access?: AccessScope,
+  options: { keyword?: string; accountIds?: string[]; limit?: number } = {}
+): AiPerformanceAccountOption[] {
+  const database = getDatabase()
+  const systemAccountId = currentSystemAccountId(access)
+  const activeSinceHour = hourKey(new Date(Date.now() - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS))
+  const selectedAccountIds = uniqueNonEmpty(options.accountIds ?? []).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
+  const searchLimit = boundedAccountOptionLimit(options.limit)
+  const searchRows = loadAiPerformanceAccountOptionRows(database, systemAccountId, activeSinceHour, {
+    keyword: options.keyword?.trim(),
+    limit: searchLimit
+  })
+  const selectedRows = selectedAccountIds.length
+    ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, selectedAccountIds)
+    : []
+  const rows = dedupeAiPerformanceAccountRows([...searchRows, ...selectedRows])
+  return rows.map((row) => ({
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    providerCode: row.provider_code,
+    systemAccountId: row.system_account_id,
+    requestCountLast7d: Number(row.request_count_last_7d ?? 0)
+  }))
+}
+
 export function getSystemMetricsOverview(windowKey: UsageOverviewWindowKey = 'last1d'): SystemMetricsOverview {
   const database = getDatabase()
   const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC, id DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
@@ -358,6 +470,198 @@ export function getSystemMetricsOverview(windowKey: UsageOverviewWindowKey = 'la
 
 function usageOverviewWindow(windowKey: UsageOverviewWindowKey): UsageOverviewWindowDefinition {
   return USAGE_OVERVIEW_WINDOWS.find((window) => window.key === windowKey) ?? USAGE_OVERVIEW_WINDOWS[0]
+}
+
+function aiPerformanceWindow(windowKey: AiPerformanceWindowKey): AiPerformanceWindowDefinition {
+  return AI_PERFORMANCE_WINDOWS.find((window) => window.key === windowKey) ?? AI_PERFORMANCE_WINDOWS[0]
+}
+
+interface AiPerformanceAccountRow {
+  id: string
+  name: string
+  status: AiPerformanceAccount['status']
+  provider_code: string
+  system_account_id: string
+  system_account_name: string | null
+  request_count_last_7d: number
+  last_stat_hour: string | null
+}
+
+interface AiPerformanceHourlyRow {
+  scope_id: string
+  stat_hour: string
+  request_count: number
+  duration_ms_sum: number
+  duration_ms_count: number
+  first_token_ms_sum: number
+  first_token_ms_count: number
+}
+
+function loadDefaultAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, activeSinceHour: string, limit = 10): AiPerformanceAccountRow[] {
+  return database.prepare(`
+    SELECT
+      accounts.id,
+      accounts.name,
+      accounts.status,
+      accounts.provider_code,
+      accounts.system_account_id,
+      system_accounts.display_name AS system_account_name,
+      COALESCE(SUM(usage_stats_hourly.request_count), 0) AS request_count_last_7d,
+      MAX(usage_stats_hourly.stat_hour) AS last_stat_hour
+    FROM usage_stats_hourly
+    INNER JOIN accounts
+      ON accounts.id = usage_stats_hourly.scope_id
+      AND accounts.system_account_id = usage_stats_hourly.system_account_id
+    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
+    WHERE usage_stats_hourly.system_account_id = ?
+      AND usage_stats_hourly.scope_type = 'account'
+      AND usage_stats_hourly.stat_hour >= ?
+    GROUP BY accounts.id
+    HAVING SUM(usage_stats_hourly.request_count) > 0
+    ORDER BY request_count_last_7d DESC, last_stat_hour DESC, lower(accounts.name) ASC, accounts.id ASC
+    LIMIT ?
+  `).all(systemAccountId, activeSinceHour, limit) as unknown as AiPerformanceAccountRow[]
+}
+
+function loadSelectedAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, activeSinceHour: string, accountIds: string[]): AiPerformanceAccountRow[] {
+  const placeholders = sqlPlaceholders(accountIds.length)
+  const rows = database.prepare(`
+    SELECT
+      accounts.id,
+      accounts.name,
+      accounts.status,
+      accounts.provider_code,
+      accounts.system_account_id,
+      system_accounts.display_name AS system_account_name,
+      COALESCE(SUM(usage_stats_hourly.request_count), 0) AS request_count_last_7d,
+      MAX(usage_stats_hourly.stat_hour) AS last_stat_hour
+    FROM accounts
+    LEFT JOIN usage_stats_hourly
+      ON usage_stats_hourly.system_account_id = accounts.system_account_id
+      AND usage_stats_hourly.scope_type = 'account'
+      AND usage_stats_hourly.scope_id = accounts.id
+      AND usage_stats_hourly.stat_hour >= ?
+    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
+    WHERE accounts.system_account_id = ?
+      AND accounts.id IN (${placeholders})
+    GROUP BY accounts.id
+  `).all(activeSinceHour, systemAccountId, ...accountIds) as unknown as AiPerformanceAccountRow[]
+  const order = new Map(accountIds.map((id, index) => [id, index]))
+  return rows.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
+}
+
+function loadAiPerformanceHourlyRows(database: DatabaseSync, systemAccountId: string, accountIds: string[], sinceHour: string): AiPerformanceHourlyRow[] {
+  const placeholders = sqlPlaceholders(accountIds.length)
+  return database.prepare(`
+    SELECT
+      scope_id,
+      stat_hour,
+      request_count,
+      duration_ms_sum,
+      duration_ms_count,
+      first_token_ms_sum,
+      first_token_ms_count
+    FROM usage_stats_hourly
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND scope_id IN (${placeholders})
+      AND stat_hour >= ?
+    ORDER BY stat_hour ASC
+  `).all(systemAccountId, ...accountIds, sinceHour) as unknown as AiPerformanceHourlyRow[]
+}
+
+function loadAiPerformanceAccountOptionRows(
+  database: DatabaseSync,
+  systemAccountId: string,
+  activeSinceHour: string,
+  options: { keyword?: string; limit: number }
+): AiPerformanceAccountRow[] {
+  const keyword = options.keyword?.trim()
+  if (!keyword) {
+    return loadDefaultAiPerformanceAccounts(database, systemAccountId, activeSinceHour, options.limit)
+  }
+
+  const clauses = ['accounts.system_account_id = ?']
+  const params: Array<string | number> = [activeSinceHour, systemAccountId]
+  const likeKeyword = `%${keyword}%`
+  clauses.push('(accounts.name LIKE ? OR accounts.id LIKE ? OR accounts.provider_code LIKE ?)')
+  params.push(likeKeyword, likeKeyword, likeKeyword)
+
+  return database.prepare(`
+    SELECT *
+    FROM (
+      SELECT
+        accounts.id,
+        accounts.name,
+        accounts.status,
+        accounts.provider_code,
+        accounts.system_account_id,
+        NULL AS system_account_name,
+        COALESCE(SUM(usage_stats_hourly.request_count), 0) AS request_count_last_7d,
+        MAX(usage_stats_hourly.stat_hour) AS last_stat_hour
+      FROM accounts
+      LEFT JOIN usage_stats_hourly
+        ON usage_stats_hourly.system_account_id = accounts.system_account_id
+        AND usage_stats_hourly.scope_type = 'account'
+        AND usage_stats_hourly.scope_id = accounts.id
+        AND usage_stats_hourly.stat_hour >= ?
+      WHERE ${clauses.join(' AND ')}
+      GROUP BY accounts.id
+      ORDER BY
+        CASE WHEN request_count_last_7d > 0 THEN 0 ELSE 1 END ASC,
+        request_count_last_7d DESC,
+        last_stat_hour DESC,
+        lower(accounts.name) ASC,
+        accounts.id ASC
+      LIMIT ?
+    )
+  `).all(...params, options.limit) as unknown as AiPerformanceAccountRow[]
+}
+
+function dedupeAiPerformanceAccountRows(rows: AiPerformanceAccountRow[]): AiPerformanceAccountRow[] {
+  const seen = new Set<string>()
+  return rows.filter((row) => {
+    if (seen.has(row.id)) return false
+    seen.add(row.id)
+    return true
+  })
+}
+
+function mapAiPerformanceAccount(row: AiPerformanceAccountRow, defaultIds: Set<string>, selectedIds: Set<string>): AiPerformanceAccount {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status,
+    providerCode: row.provider_code,
+    systemAccountId: row.system_account_id,
+    systemAccountName: row.system_account_name ?? undefined,
+    requestCountLast7d: Number(row.request_count_last_7d ?? 0),
+    selected: selectedIds.has(row.id),
+    defaultVisible: defaultIds.has(row.id)
+  }
+}
+
+function hourBucketsUntilNow(hours: number, now = Date.now()): string[] {
+  const size = Math.max(1, Math.trunc(hours))
+  return Array.from({ length: size }, (_, index) => hourKey(new Date(now - (size - 1 - index) * HOUR_MS)))
+}
+
+function uniqueNonEmpty(values: string[]): string[] {
+  const seen = new Set<string>()
+  const result: string[] = []
+  for (const value of values) {
+    const text = value.trim()
+    if (!text || seen.has(text)) continue
+    seen.add(text)
+    result.push(text)
+  }
+  return result
+}
+
+function boundedAccountOptionLimit(value?: number): number {
+  const number = Number(value ?? AI_PERFORMANCE_ACCOUNT_OPTION_DEFAULT_LIMIT)
+  if (!Number.isFinite(number)) return AI_PERFORMANCE_ACCOUNT_OPTION_DEFAULT_LIMIT
+  return Math.min(AI_PERFORMANCE_ACCOUNT_OPTION_MAX_LIMIT, Math.max(1, Math.trunc(number)))
 }
 
 function trendBucketHours(windowKey: UsageOverviewWindowKey): number {

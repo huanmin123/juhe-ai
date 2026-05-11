@@ -150,11 +150,18 @@ export type {
   ApiKeyListResult
 } from './api-key.repository.js'
 export {
+  cleanupAuditLogsByRetention,
   cleanupAuditLogsBefore,
+  cleanupUnreferencedAuditPayloadBlobs,
   createAuditLogsBatch,
   getAuditLogDetail,
   getAuditLogPayload,
+  listAuditErrorGroupEvents,
+  listAuditErrorGroups,
   listAuditLogs,
+  type AuditErrorGroupListOptions,
+  type AuditErrorGroupListResult,
+  type AuditErrorGroupSummary,
   type AuditLogAttemptInput,
   type AuditLogAttemptSummary,
   type AuditLogDetail,
@@ -1197,6 +1204,29 @@ export function clearAccountFailureState(
   }
 
   return listAccounts(access).find((account) => account.id === id)
+}
+
+export function clearAccountStreamFailureState(id: string): boolean {
+  const result = getDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET stream_failure_count = 0,
+          stream_failure_window_started_at = NULL,
+          last_error_message = CASE
+            WHEN status = 'active' THEN NULL
+            ELSE last_error_message
+          END,
+          updated_at = ?
+      WHERE id = ?
+        AND status <> 'disabled'
+        AND (
+          stream_failure_count > 0
+          OR stream_failure_window_started_at IS NOT NULL
+          OR (status = 'active' AND last_error_message IS NOT NULL)
+        )
+    `)
+    .run(nowIso(), id)
+  return Number(result.changes ?? 0) > 0
 }
 
 export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {

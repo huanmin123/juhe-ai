@@ -10,7 +10,7 @@ import type {
   AuditPayloadPartType,
   OpenAIAccountSecret
 } from '../../storage/repositories.js'
-import { enqueueAuditLog, recordDroppedAuditCapture } from '../audit-logs/audit-log-queue.service.js'
+import { enqueueAuditLog } from '../audit-logs/audit-log-queue.service.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 import { headersToObject, requestModel } from './openai-gateway-usage.js'
 
@@ -222,17 +222,6 @@ export class AuditCaptureContext {
         contentEncoding: headerValue(input.responseHeaders, 'content-encoding')
       })
     }
-    if (this.overflowed) {
-      recordDroppedAuditCapture({
-        traceId: this.traceId,
-        auditOutcome: outcome,
-        success,
-        bytes: this.approximateBytes,
-        reason: 'active_capture_overflow'
-      })
-      return
-    }
-
     const auditLog: AuditLogInput = {
       id: `audit_${Date.now()}_${randomUUID()}`,
       traceId: this.traceId,
@@ -254,7 +243,7 @@ export class AuditCaptureContext {
       errorMessage: this.clientAborted ? input.errorMessage ?? 'Client aborted request' : input.errorMessage,
       sampleBucket,
       sampleReason: outcome === 'success' ? `success_sample_${this.successSampleRate}` : 'full_capture',
-      captureStatus: 'complete',
+      captureStatus: this.overflowed ? 'overflow' : 'complete',
       startedAt: this.startedAtIso,
       endedAt: new Date(endedAtMs).toISOString(),
       durationMs: endedAtMs - this.startedAtMs,

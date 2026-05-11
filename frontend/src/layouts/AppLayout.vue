@@ -160,6 +160,7 @@ const menuIconMap = {
   '/api-keys': ApiKeyMenuIcon,
   '/proxies': NodeIndexOutlined,
   '/stats': BarChartOutlined,
+  '/my-ai-performance': BarChartOutlined,
   '/my-usage-stats': FundOutlined,
   '/usage-stats': FundOutlined,
   '/my-usage-records': HistoryOutlined,

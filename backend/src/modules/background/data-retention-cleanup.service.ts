@@ -1,6 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { cleanupAuditLogsBefore } from '../../storage/audit-logs.repository.js'
+import { cleanupAuditLogsByRetention } from '../../storage/audit-logs.repository.js'
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import {
   cleanupExpiredSystemSessions,
@@ -54,7 +54,9 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
     const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', defaultCleanupMaxBatchesPerRun, 1, 100)
     const now = Date.now()
     const retention = {
-      auditLogDays: readAuditLogSettings().retentionDays,
+      auditLogSuccessDays: readAuditLogSettings().successRetentionDays,
+      auditLogFailureDays: readAuditLogSettings().failureRetentionDays,
+      auditErrorGroupDays: readAuditLogSettings().errorGroupRetentionDays,
       operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 365, 1, operationLogRetentionMaxDays),
       runtimeLogDays: runtimeLogIndexRetentionDays,
       usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 7, 1, usageRecordRetentionMaxDays),
@@ -66,7 +68,12 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
 
     const result = emptyCleanupResult()
     result.operationLogs = cleanupInBatches(() => cleanupOperationLogsBefore(cutoffIso(now, retention.operationLogDays), batchSize), batchSize, maxBatches)
-    result.auditLogs = cleanupInBatches(() => cleanupAuditLogsBefore(cutoffIso(now, retention.auditLogDays), batchSize), batchSize, maxBatches)
+    result.auditLogs = cleanupInBatches(() => cleanupAuditLogsByRetention({
+      successCutoffCreatedAt: cutoffIso(now, retention.auditLogSuccessDays),
+      failureCutoffCreatedAt: cutoffIso(now, retention.auditLogFailureDays),
+      errorGroupCutoffUpdatedAt: cutoffIso(now, retention.auditErrorGroupDays),
+      limit: batchSize
+    }), batchSize, maxBatches)
     result.runtimeLogs = cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
     result.usageRecords = cleanupInBatches(() => cleanupProcessedUsageRecordsBefore(cutoffIso(now, retention.usageRecordDays), batchSize), batchSize, maxBatches)
 

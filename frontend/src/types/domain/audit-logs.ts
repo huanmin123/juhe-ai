@@ -31,6 +31,10 @@ export interface AuditLogSummary {
   attemptCount: number
   payloadCount: number
   payloadBytes: number
+  rawPayloadBytes: number
+  compressedPayloadBytes: number
+  compressionSavedBytes: number
+  errorGroupId?: string
   captureStatus: string
   startedAt: string
   endedAt: string
@@ -71,6 +75,8 @@ export interface AuditLogPayloadSummary {
   headersSha256?: string
   bodySha256?: string
   sizeBytes: number
+  compressedSizeBytes: number
+  captureStatus: string
   createdAt: string
   hasHeaders: boolean
   hasBody: boolean
@@ -106,11 +112,52 @@ export interface AuditLogRuntime {
     queueMaxBytes: number
     activeCaptureMaxBytes: number
     retentionDays: number
+    successRetentionDays: number
+    failureRetentionDays: number
+    errorGroupRetentionDays: number
   }
 }
 
 export interface AuditLogListResult {
   items: AuditLogSummary[]
+  total: number
+  page: number
+  pageSize: number
+}
+
+export interface AuditErrorGroupSummary {
+  id: string
+  fingerprint: string
+  windowStartedAt: string
+  windowEndedAt: string
+  systemAccountId?: string
+  systemAccountName?: string
+  apiKeyId?: string
+  apiKeyName?: string
+  groupId?: string
+  groupName?: string
+  accountId?: string
+  accountName?: string
+  providerCode?: string
+  path?: string
+  model?: string
+  statusCode?: number
+  errorPhase?: string
+  errorCode?: string
+  errorType?: string
+  requestFingerprint?: string
+  errorFingerprint?: string
+  count: number
+  firstEventId?: string
+  lastEventId?: string
+  sampleEventId?: string
+  lastMessage?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AuditErrorGroupListResult {
+  items: AuditErrorGroupSummary[]
   total: number
   page: number
   pageSize: number
