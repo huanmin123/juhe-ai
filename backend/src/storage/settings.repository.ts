@@ -7,22 +7,43 @@ interface GlobalSettingRow {
 }
 
 const SYSTEM_SETTINGS_ACCOUNT_ID = 'sys_admin'
-const HIDDEN_SYSTEM_SETTINGS = new Set([
-  'apiKeyPrefix',
-  'defaultOpenAIBaseUrl',
-  'defaultErrorPolicyId',
-  'defaultAccountConcurrencyLimit',
-  'auditLogEnabled',
-  'auditLogSuccessSampleRate',
-  'auditLogFlushIntervalSeconds',
-  'auditLogBatchSize',
-  'auditLogQueueMaxItems',
-  'auditLogQueueMaxBytesMb',
-  'auditLogActiveCaptureMaxBytesMb',
-  'auditLogRetentionDays',
-  'proxyLatencyRefreshIntervalSeconds',
-  'proxyLatencyRefreshBatchSize'
-])
+export const systemSettingKeys = [
+  'defaultTemporaryUnschedulableMinutes',
+  'temporaryUnschedulableRetryIntervalSeconds',
+  'temporaryUnschedulableRetryAttempts',
+  'streamCircuitBreakerEnabled',
+  'streamRequestTimeoutSeconds',
+  'streamIdleTimeoutSeconds',
+  'streamFailureThresholdCount',
+  'streamFailureThresholdWindowMinutes',
+  'operationLogEnabled',
+  'operationLogRetentionDays',
+  'operationLogMaxChangesPerRecord',
+  'statsAggregationIntervalSeconds',
+  'statsAggregationBatchSize',
+  'statsAggregationMaxBatchesPerRun',
+  'groupAccountStatsRefreshIntervalSeconds',
+  'systemMetricsSampleIntervalSeconds',
+  'accountQualityRefreshIntervalSeconds',
+  'accountQualityWindowMinutes',
+  'cooldownAccountRetestEnabled',
+  'cooldownAccountRetestIntervalSeconds',
+  'cooldownAccountRetestBatchSize',
+  'cooldownAccountRetestModel',
+  'oauthAccessTokenRefreshIntervalSeconds',
+  'oauthAccessTokenRefreshLeadSeconds',
+  'oauthAccessTokenRefreshBatchSize',
+  'oauthAccessTokenRefreshRetryBackoffSeconds',
+  'usageRecordRetentionDays',
+  'usageStatsDailyRetentionDays',
+  'usageStatsHourlyRetentionDays',
+  'systemMetricsRetentionDays',
+  'systemMetricsHourlyRetentionDays',
+  'dataRetentionCleanupBatchSize',
+  'dataRetentionCleanupMaxBatchesPerRun'
+] as const
+
+const SYSTEM_SETTING_KEYS = new Set<string>(systemSettingKeys)
 
 export function listGlobalSettings(): Record<string, unknown> {
   const rows = getDatabase().prepare('SELECT key, value_json, updated_at FROM global_settings ORDER BY key ASC').all() as unknown as Array<GlobalSettingRow>
@@ -50,7 +71,7 @@ function pickGlobalSettings(input: Record<string, unknown>): Record<string, unkn
 export function getSettings(): Record<string, unknown> {
   const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
   const rows = getDatabase().prepare('SELECT key, value_json FROM system_settings WHERE system_account_id = ? ORDER BY key ASC').all(systemAccountId) as Array<{ key: string; value_json: string }>
-  return Object.fromEntries(rows.filter((row) => !isHiddenSystemSetting(row.key)).map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
+  return Object.fromEntries(rows.filter((row) => isSystemSettingKey(row.key)).map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
 }
 
 export function updateSettings(input: Record<string, unknown>): Record<string, unknown> {
@@ -62,7 +83,7 @@ export function updateSettings(input: Record<string, unknown>): Record<string, u
   `)
   const now = nowIso()
   for (const [key, value] of Object.entries(input)) {
-    if (isHiddenSystemSetting(key)) {
+    if (!isSystemSettingKey(key)) {
       continue
     }
     statement.run(systemAccountId, key, JSON.stringify(value), now)
@@ -70,6 +91,6 @@ export function updateSettings(input: Record<string, unknown>): Record<string, u
   return getSettings()
 }
 
-function isHiddenSystemSetting(key: string): boolean {
-  return HIDDEN_SYSTEM_SETTINGS.has(key)
+function isSystemSettingKey(key: string): boolean {
+  return SYSTEM_SETTING_KEYS.has(key)
 }

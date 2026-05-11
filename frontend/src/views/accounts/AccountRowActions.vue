@@ -53,7 +53,7 @@ const actions = computed<RowActionItem[]>(() => {
   return list
 })
 
-const moreItems = computed(() => isAuthorizedAccount(props.account) ? [] : props.menuItems)
+const moreItems = computed(() => props.menuItems)
 
 function handleActionClick(key: string) {
   if (key === 'bind-group') {

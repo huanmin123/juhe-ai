@@ -514,6 +514,24 @@ function sanitizeAuthorizationSourcesForViewer(sources: ResourceAuthorizationSum
   }))
 }
 
+function normalizedGroupAccountLocalStatus(value: unknown): AccountStatus | undefined {
+  return normalizeAccountStatus(value, 'active')
+}
+
+function authorizedAccountEffectiveStatus(ownerStatus: AccountStatus, localStatus: AccountStatus | undefined, localCooldownUntil: string | null | undefined): AccountStatus {
+  if (ownerStatus !== 'active') {
+    return ownerStatus
+  }
+  if (localStatus === 'temporary_unavailable' && localCooldownUntil && !isLaterIso(localCooldownUntil, nowIso())) {
+    return 'active'
+  }
+  return localStatus ?? 'active'
+}
+
+function authorizedBindingSystemAccountId(access?: AccessScope): string {
+  return scopedSystemAccountId(access) ?? currentSystemAccountId(access)
+}
+
 function isLaterIso(value?: string, current?: string): boolean {
   if (!value) return false
   if (!current) return true
@@ -678,6 +696,13 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
     const groupBinding = groupBindingSystemAccountId
       ? accountGroupBindingFromRow(row, groupBindingSystemAccountId) ?? accountGroupBinding(row.id, groupBindingSystemAccountId)
       : undefined
+    const authorizedLocalStatus = normalizedGroupAccountLocalStatus(row.bound_group_local_status)
+    const effectiveAuthorizedStatus = isAuthorizedView && groupBinding
+      ? authorizedAccountEffectiveStatus(row.status, authorizedLocalStatus, row.bound_group_local_cooldown_until)
+      : row.status
+    const effectiveAuthorizedSchedulable = isAuthorizedView
+      ? row.status === 'active' && effectiveAuthorizedStatus === 'active'
+      : row.schedulable === 1
     return {
       id: row.id,
       systemAccountId: includeSystemAccountFields(access) ? row.system_account_id : undefined,
@@ -689,12 +714,16 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       notes: isAuthorizedView ? undefined : row.notes ?? undefined,
       type: row.type,
       credentials: accountCredentialsForList(row),
-      status: row.status,
+      status: effectiveAuthorizedStatus,
       concurrencyLimit: isAuthorizedView ? 0 : row.concurrency_limit,
       currentConcurrency: isAuthorizedView ? 0 : (currentConcurrencyByAccount.get(row.id) ?? 0),
       priority: isAuthorizedView ? 0 : row.priority,
-      superPriorityEnabled: !isAuthorizedView && row.status === 'active' && row.super_priority_enabled === 1,
-      fallbackEnabled: !isAuthorizedView && row.status === 'active' && row.fallback_enabled === 1,
+      superPriorityEnabled: isAuthorizedView
+        ? effectiveAuthorizedStatus === 'active' && row.bound_group_local_super_priority_enabled === 1
+        : row.status === 'active' && row.super_priority_enabled === 1,
+      fallbackEnabled: isAuthorizedView
+        ? effectiveAuthorizedStatus === 'active' && row.bound_group_local_fallback_enabled === 1
+        : row.status === 'active' && row.fallback_enabled === 1,
       qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
       qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
       qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
@@ -702,13 +731,16 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       qualityRecentRequestCount: typeof row.quality_recent_request_count === 'number' ? row.quality_recent_request_count : undefined,
       qualityRecentSuccessRate: typeof row.quality_recent_success_rate === 'number' ? row.quality_recent_success_rate : undefined,
       qualityUpdatedAt: row.quality_updated_at ?? undefined,
-      proxyProfileId: isAuthorizedView ? undefined : row.proxy_profile_id ?? undefined,
+      proxyProfileId: row.proxy_profile_id ?? undefined,
       passthroughEnabled: isAuthorizedView ? false : row.passthrough_enabled === 1,
       errorPolicyId: isAuthorizedView ? undefined : row.error_policy_id ?? undefined,
-      schedulable: isAuthorizedView ? row.status === 'active' : row.schedulable === 1,
+      schedulable: effectiveAuthorizedSchedulable,
       accountExpiresAt: isAuthorizedView ? undefined : row.account_expires_at ?? undefined,
-      cooldownUntil: isAuthorizedView ? undefined : row.cooldown_until ?? undefined,
-      lastErrorMessage: isAuthorizedView ? undefined : row.last_error_message ?? undefined,
+      cooldownUntil: isAuthorizedView ? row.bound_group_local_cooldown_until ?? undefined : row.cooldown_until ?? undefined,
+      lastErrorMessage: isAuthorizedView ? row.bound_group_local_last_error_message ?? undefined : row.last_error_message ?? undefined,
+      localStatus: isAuthorizedView ? authorizedLocalStatus : undefined,
+      localCooldownUntil: isAuthorizedView ? row.bound_group_local_cooldown_until ?? undefined : undefined,
+      localLastErrorMessage: isAuthorizedView ? row.bound_group_local_last_error_message ?? undefined : undefined,
       lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? usage.lastUsedAt,
       todayUsage,
       usage,
@@ -1290,6 +1322,10 @@ export function migrateAccountTraffic(input: {
   targetAccountId: string
   sourceStatus: AccountTrafficMigrationSourceStatus
 }, access?: AccessScope): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string } | undefined {
+  const sourceVisibleAccount = listAccounts(access).find((account) => account.id === input.sourceAccountId)
+  if (sourceVisibleAccount?.accessType === 'authorized') {
+    return migrateAuthorizedAccountBindingTraffic(input, access)
+  }
   if (input.sourceAccountId === input.targetAccountId) {
     throw new Error('目标账户不能和当前账户相同')
   }
@@ -1374,6 +1410,114 @@ export function migrateAccountTraffic(input: {
     return undefined
   }
   return { sourceAccount, targetAccount, sourceCooldownUntil: sourceCooldownUntil ?? undefined }
+}
+
+export function updateAuthorizedAccountBindingDispatch(
+  accountId: string,
+  input: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean },
+  access?: AccessScope
+): AccountSummary | undefined {
+  const systemAccountId = authorizedBindingSystemAccountId(access)
+  const current = listAccounts(access).find((account) => account.id === accountId && account.accessType === 'authorized')
+  if (!current?.boundGroupId) {
+    throw new Error('授权账户需要先绑定到你的分组')
+  }
+  if (current.status !== 'active' && (input.superPriorityEnabled === true || input.fallbackEnabled === true)) {
+    throw new Error('只有正常状态的授权账户可以调整调度标记')
+  }
+  const hasSuperPriorityInput = Object.prototype.hasOwnProperty.call(input, 'superPriorityEnabled')
+  const hasFallbackInput = Object.prototype.hasOwnProperty.call(input, 'fallbackEnabled')
+  const nextSuperPriority = hasSuperPriorityInput ? input.superPriorityEnabled === true : current.superPriorityEnabled
+  const nextFallback = hasFallbackInput ? input.fallbackEnabled === true : current.fallbackEnabled
+  if (nextSuperPriority && nextFallback) {
+    throw new Error('超级优先和降级备用不能同时开启')
+  }
+  const clearFailureState = input.clearFailureState === true
+  const now = nowIso()
+  const result = getDatabase()
+    .prepare(`
+      UPDATE group_accounts
+      SET local_status = ?,
+          local_cooldown_until = ?,
+          local_last_error_message = ?,
+          local_super_priority_enabled = ?,
+          local_fallback_enabled = ?,
+          updated_at = ?
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND enabled = 1
+        AND account_authorization_id IS NOT NULL
+    `)
+    .run(
+      clearFailureState ? 'active' : current.localStatus ?? 'active',
+      clearFailureState ? null : current.localCooldownUntil ?? null,
+      clearFailureState ? null : current.localLastErrorMessage ?? null,
+      nextSuperPriority ? 1 : 0,
+      nextFallback ? 1 : 0,
+      now,
+      accountId,
+      systemAccountId
+    )
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
+  }
+  refreshGroupAccountStatsAfterWrite()
+  return listAccounts({ systemAccountId, role: 'user' }).find((account) => account.id === accountId)
+}
+
+function migrateAuthorizedAccountBindingTraffic(input: {
+  sourceAccountId: string
+  targetAccountId: string
+  sourceStatus: AccountTrafficMigrationSourceStatus
+}, access?: AccessScope): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string } | undefined {
+  const systemAccountId = authorizedBindingSystemAccountId(access)
+  if (input.sourceAccountId === input.targetAccountId) {
+    throw new Error('目标账户不能和当前账户相同')
+  }
+  const visibleAccounts = listAccounts({ systemAccountId, role: 'user' })
+  const sourceAccount = visibleAccounts.find((account) => account.id === input.sourceAccountId && account.accessType === 'authorized')
+  const targetAccount = visibleAccounts.find((account) => account.id === input.targetAccountId)
+  if (!sourceAccount || !targetAccount) {
+    return undefined
+  }
+  if (!sourceAccount.boundGroupId || !targetAccount.boundGroupId || sourceAccount.boundGroupId !== targetAccount.boundGroupId) {
+    throw new Error('目标账户必须和当前账户在你的同一个分组内')
+  }
+  if (sourceAccount.providerCode !== targetAccount.providerCode) {
+    throw new Error('目标账户必须和当前账户属于同一个供应商')
+  }
+  if (targetAccount.status !== 'active' || !targetAccount.schedulable || isLaterIso(targetAccount.cooldownUntil, nowIso())) {
+    throw new Error('目标账户当前不可调度，请选择正常可用的账户')
+  }
+  const sourceCooldownUntil = input.sourceStatus === 'temporary_unavailable'
+    ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+    : null
+  const now = nowIso()
+  const sourceLocalStatus = input.sourceStatus === 'disabled' ? 'disabled' : 'temporary_unavailable'
+  const result = getDatabase()
+    .prepare(`
+      UPDATE group_accounts
+      SET local_status = ?,
+          local_cooldown_until = ?,
+          local_last_error_message = ?,
+          local_super_priority_enabled = 0,
+          local_fallback_enabled = 0,
+          updated_at = ?
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND group_id = ?
+        AND enabled = 1
+        AND account_authorization_id IS NOT NULL
+    `)
+    .run(sourceLocalStatus, sourceCooldownUntil, manualTrafficMigrationReason, now, sourceAccount.id, systemAccountId, sourceAccount.boundGroupId)
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
+  }
+  refreshGroupAccountStatsAfterWrite()
+  const nextAccounts = listAccounts({ systemAccountId, role: 'user' })
+  const nextSource = nextAccounts.find((account) => account.id === input.sourceAccountId)
+  const nextTarget = nextAccounts.find((account) => account.id === input.targetAccountId)
+  return nextSource && nextTarget ? { sourceAccount: nextSource, targetAccount: nextTarget, sourceCooldownUntil: sourceCooldownUntil ?? undefined } : undefined
 }
 
 export function markAccountDisabledByFailure(id: string, reason: string): AccountSummary | undefined {

@@ -1,7 +1,8 @@
 import { runtimeConfig } from './config/runtime.js'
 import {
   type BackgroundWorkerRuntimeSnapshot,
-  type BackgroundWorkerQueueRuntime
+  type BackgroundWorkerQueueRuntime,
+  type BackgroundWorkerRuntimeLogQueueRuntime
 } from './modules/background/background-ipc.js'
 import { startBackgroundJobs } from './modules/background/background-jobs.js'
 import { enqueueAuditLogsLocal, flushAllAuditLogQueue, getAuditLogQueueRuntime } from './modules/audit-logs/audit-log-queue.service.js'
@@ -98,12 +99,11 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
       droppedFailureCount: auditRuntime.droppedFailureCount,
       droppedOverflowCount: auditRuntime.droppedOverflowCount,
       droppedOversizeCount: auditRuntime.droppedOversizeCount,
-      retentionDays: auditRuntime.retentionDays,
       successRetentionDays: auditRuntime.successRetentionDays,
       failureRetentionDays: auditRuntime.failureRetentionDays,
       errorGroupRetentionDays: auditRuntime.errorGroupRetentionDays
     }),
-    runtimeLogIndexQueue: queueRuntime(runtimeLogRuntime)
+    runtimeLogIndexQueue: runtimeLogQueueRuntime(runtimeLogRuntime)
   }
 }
 
@@ -120,10 +120,16 @@ function queueRuntime(input: BackgroundWorkerQueueRuntime): BackgroundWorkerQueu
     droppedOversizeCount: typeof input.droppedOversizeCount === 'number' ? input.droppedOversizeCount : undefined,
     retainedOverflowWarningCount: typeof input.retainedOverflowWarningCount === 'number' ? input.retainedOverflowWarningCount : undefined,
     flushFailureCount: typeof input.flushFailureCount === 'number' ? input.flushFailureCount : undefined,
-    retentionDays: typeof input.retentionDays === 'number' ? input.retentionDays : undefined,
     successRetentionDays: typeof input.successRetentionDays === 'number' ? input.successRetentionDays : undefined,
     failureRetentionDays: typeof input.failureRetentionDays === 'number' ? input.failureRetentionDays : undefined,
     errorGroupRetentionDays: typeof input.errorGroupRetentionDays === 'number' ? input.errorGroupRetentionDays : undefined
+  }
+}
+
+function runtimeLogQueueRuntime(input: BackgroundWorkerRuntimeLogQueueRuntime): BackgroundWorkerRuntimeLogQueueRuntime {
+  return {
+    ...queueRuntime(input),
+    retentionDays: input.retentionDays
   }
 }
 

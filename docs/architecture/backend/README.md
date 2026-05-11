@@ -124,7 +124,7 @@ flowchart LR
 
 - SQLite 是当前唯一持久化存储；不引入 Redis、ClickHouse 或独立任务队列。
 - `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。
-- `audit_logs`、`audit_log_attempts` 和 `audit_log_payloads` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
+- `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
 - 启动时通过 `applySchema()` 创建当前版本需要的表和索引，不承载一次性旧库修复逻辑。
 - 启动时通过 `seedDefaults()` 写入默认管理员、OpenAI 供应商、默认 OpenAI 分组、全局设置和系统设置。
 - 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
@@ -143,7 +143,7 @@ flowchart LR
 | 团队、授权与分组 | `system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts` | 系统团队、团队成员、统一资源授权、分组和分组账号绑定 |
 | 网关访问 | `api_keys` | 本地网关密钥、分组绑定、状态、过期和配额占位 |
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
-| 原始审计 | `audit_logs`、`audit_log_attempts`、`audit_log_payloads` | 客户端请求、上游尝试、上游响应和最终返回的完整链路原文 |
+| 原始审计 | `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs`、`audit_error_groups` | 审计事件、上游尝试、payload 引用、压缩 blob 元数据和重复错误聚合 |
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
 | 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_model_hourly`、`usage_error_daily`、`usage_error_hourly`、`group_account_stats` | 列表统计、趋势图、模型分布、错误聚合和分组账户状态缓存 |
 | 后台任务 | `stats_job_state` | 聚合游标、任务状态、统计滞后和错误信息 |
@@ -187,7 +187,7 @@ erDiagram
 | 本地网关 API Key | `api_keys.key_hash`、`api_keys.key_secret_encrypted` | 校验用哈希，自用复制需要时按权限展示完整 key |
 | 代理密码 | `proxy_profiles.password_encrypted` | 加密存储，列表不明文暴露 |
 | 请求与响应快照 | `usage_records.request_snapshot_json`、`usage_records.response_snapshot_json` | 用于排查，必须避免额外写入不必要敏感头 |
-| 原始审计 payload | `audit_log_payloads.headers_encrypted`、`audit_log_payloads.body_encrypted` | 保存完整原文，不脱敏不截断，建议加密存储且仅管理员可读 |
+| 原始审计 payload | `audit_payload_refs.headers_blob_id`、`audit_payload_refs.body_blob_id`、`audit_payload_blobs.storage_key` | payload 通过引用关联压缩 blob 文件，按原始 hash 精确去重；完整原文仅管理员可读 |
 
 ### 6.5 索引与查询
 

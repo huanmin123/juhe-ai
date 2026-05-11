@@ -308,6 +308,9 @@ export interface AccountSummary {
   accountExpiresAt?: string
   cooldownUntil?: string
   lastErrorMessage?: string
+  localStatus?: AccountStatus
+  localCooldownUntil?: string
+  localLastErrorMessage?: string
   lastUsedAt?: string
   todayUsage: AccountUsageSummary
   usage: AccountUsageSummary

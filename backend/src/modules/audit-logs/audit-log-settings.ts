@@ -6,7 +6,6 @@ export interface AuditLogSettings {
   queueMaxItems: number
   queueMaxBytes: number
   activeCaptureMaxBytes: number
-  retentionDays: number
   successRetentionDays: number
   failureRetentionDays: number
   errorGroupRetentionDays: number
@@ -23,7 +22,6 @@ export const fixedAuditLogSettings: AuditLogSettings = Object.freeze({
   queueMaxItems: 1000,
   queueMaxBytes: 256 * auditLogMb,
   activeCaptureMaxBytes: 64 * auditLogMb,
-  retentionDays: 7,
   successRetentionDays: 7,
   failureRetentionDays: 30,
   errorGroupRetentionDays: 30

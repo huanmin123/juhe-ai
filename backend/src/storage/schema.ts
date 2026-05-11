@@ -221,6 +221,11 @@ export function applySchema(database: DatabaseSync): void {
       group_id TEXT NOT NULL,
       account_id TEXT NOT NULL,
       account_authorization_id TEXT,
+      local_status TEXT NOT NULL DEFAULT 'active',
+      local_cooldown_until TEXT,
+      local_last_error_message TEXT,
+      local_super_priority_enabled INTEGER NOT NULL DEFAULT 0,
+      local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
       weight INTEGER NOT NULL DEFAULT 1,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
@@ -386,23 +391,6 @@ export function applySchema(database: DatabaseSync): void {
       ended_at TEXT,
       duration_ms INTEGER,
       FOREIGN KEY (audit_log_id) REFERENCES audit_logs(id) ON DELETE CASCADE
-    );
-
-    CREATE TABLE IF NOT EXISTS audit_log_payloads (
-      id TEXT PRIMARY KEY,
-      audit_log_id TEXT NOT NULL,
-      attempt_id TEXT,
-      part_type TEXT NOT NULL,
-      sequence_index INTEGER NOT NULL DEFAULT 0,
-      content_type TEXT,
-      content_encoding TEXT,
-      headers_encrypted TEXT,
-      body_encrypted TEXT,
-      body_sha256 TEXT,
-      size_bytes INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      FOREIGN KEY (audit_log_id) REFERENCES audit_logs(id) ON DELETE CASCADE,
-      FOREIGN KEY (attempt_id) REFERENCES audit_log_attempts(id) ON DELETE SET NULL
     );
 
     CREATE TABLE IF NOT EXISTS audit_payload_blobs (
@@ -841,8 +829,6 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_audit_logs_group_created ON audit_logs(group_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_account_created ON audit_logs(account_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_log_attempts_log_index ON audit_log_attempts(audit_log_id, attempt_index);
-    CREATE INDEX IF NOT EXISTS idx_audit_log_payloads_log_part ON audit_log_payloads(audit_log_id, part_type, sequence_index);
-    CREATE INDEX IF NOT EXISTS idx_audit_log_payloads_log_sequence ON audit_log_payloads(audit_log_id, sequence_index);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_payload_blobs_unique ON audit_payload_blobs(sha256, raw_size_bytes, content_type);
     CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_log_part ON audit_payload_refs(audit_log_id, part_type, sequence_index);
     CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_log_sequence ON audit_payload_refs(audit_log_id, sequence_index);
@@ -888,26 +874,23 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
-  ensureAuditLogSchemaEvolution(database)
   database.exec(`
     CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_error_group_created ON audit_logs(error_group_id, created_at, id);
   `)
+  ensureColumn(database, 'group_accounts', 'local_status', "TEXT NOT NULL DEFAULT 'active'")
+  ensureColumn(database, 'group_accounts', 'local_cooldown_until', 'TEXT')
+  ensureColumn(database, 'group_accounts', 'local_last_error_message', 'TEXT')
+  ensureColumn(database, 'group_accounts', 'local_super_priority_enabled', 'INTEGER NOT NULL DEFAULT 0')
+  ensureColumn(database, 'group_accounts', 'local_fallback_enabled', 'INTEGER NOT NULL DEFAULT 0')
 }
 
-function ensureAuditLogSchemaEvolution(database: DatabaseSync): void {
-  ensureColumn(database, 'audit_logs', 'raw_payload_bytes', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(database, 'audit_logs', 'compressed_payload_bytes', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(database, 'audit_logs', 'compression_saved_bytes', 'INTEGER NOT NULL DEFAULT 0')
-  ensureColumn(database, 'audit_logs', 'error_group_id', 'TEXT')
-}
-
-function ensureColumn(database: DatabaseSync, tableName: string, columnName: string, definition: string): void {
-  const rows = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
-  if (rows.some((row) => row.name === columnName)) {
+function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {
+  const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name?: string }>
+  if (rows.some((row) => row.name === column)) {
     return
   }
-  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
+  database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
 }
 
 export function seedDefaults(database: DatabaseSync): void {

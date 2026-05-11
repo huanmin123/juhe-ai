@@ -43,7 +43,7 @@ function queryAccountRowsForAccess(
   }
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return queryRows(`
-        SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+        SELECT account_rows.*, ${groupBindingSelectColumns()},
           account_quality.quality_score,
           account_quality.quality_state,
           account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms,
@@ -73,7 +73,7 @@ function queryAccountRowsForAccess(
   }
   if (!viewerSystemAccountId) {
     return queryRows(`
-        SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+        SELECT account_rows.*, ${groupBindingSelectColumns()},
           account_quality.quality_score,
           account_quality.quality_state,
           account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms,
@@ -102,7 +102,7 @@ function queryAccountRowsForAccess(
       `)
   }
   return queryRows(`
-      SELECT account_rows.*, group_bindings.system_account_id AS binding_system_account_id, group_bindings.group_id AS bound_group_id, group_bindings.group_name AS bound_group_name, group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+      SELECT account_rows.*, ${groupBindingSelectColumns()},
         account_quality.quality_score,
         account_quality.quality_state,
         account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms,
@@ -153,6 +153,18 @@ export function loadAccountAuthorizationUsageSummaries(scopes: UsageSummaryScope
   return loadAuthorizationUsageSummariesForScopes(scopes, 'account_authorization', statDate)
 }
 
+function groupBindingSelectColumns(): string {
+  return `group_bindings.system_account_id AS binding_system_account_id,
+          group_bindings.group_id AS bound_group_id,
+          group_bindings.group_name AS bound_group_name,
+          group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+          group_bindings.local_status AS bound_group_local_status,
+          group_bindings.local_cooldown_until AS bound_group_local_cooldown_until,
+          group_bindings.local_last_error_message AS bound_group_local_last_error_message,
+          group_bindings.local_super_priority_enabled AS bound_group_local_super_priority_enabled,
+          group_bindings.local_fallback_enabled AS bound_group_local_fallback_enabled`
+}
+
 function accountBindingSubquery(): string {
   return `(
     SELECT
@@ -160,6 +172,11 @@ function accountBindingSubquery(): string {
       group_accounts.account_id,
       group_accounts.group_id,
       group_accounts.account_authorization_id,
+      group_accounts.local_status,
+      group_accounts.local_cooldown_until,
+      group_accounts.local_last_error_message,
+      group_accounts.local_super_priority_enabled,
+      group_accounts.local_fallback_enabled,
       groups.name AS group_name
     FROM group_accounts
     INNER JOIN groups ON groups.id = group_accounts.group_id

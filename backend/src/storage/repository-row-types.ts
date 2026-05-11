@@ -156,6 +156,11 @@ export type AccountListRow = AccountRow & {
   bound_group_id?: string | null
   bound_group_name?: string | null
   bound_group_account_authorization_id?: string | null
+  bound_group_local_status?: AccountStatus | null
+  bound_group_local_cooldown_until?: string | null
+  bound_group_local_last_error_message?: string | null
+  bound_group_local_super_priority_enabled?: number | null
+  bound_group_local_fallback_enabled?: number | null
   quality_score?: number | null
   quality_state?: string | null
   quality_ewma_first_token_ms?: number | null

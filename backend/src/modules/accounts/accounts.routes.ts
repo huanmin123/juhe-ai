@@ -1,9 +1,10 @@
 import { Router } from 'express'
 import { z } from 'zod'
 
+import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccountsPage, listGroups, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
-import { getRequestAccessScope } from '../auth/request-context.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccountsPage, listGroups, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
@@ -44,6 +45,12 @@ const accountGroupSchema = z.object({
 const accountTrafficMigrationSchema = z.object({
   targetAccountId: z.string().trim().min(1, '目标账户不能为空'),
   sourceStatus: z.enum(['temporary_unavailable', 'disabled']).optional()
+})
+
+const authorizedAccountDispatchSchema = z.object({
+  superPriorityEnabled: z.boolean().optional(),
+  fallbackEnabled: z.boolean().optional(),
+  clearFailureState: z.boolean().optional()
 })
 
 const accountListSortFields = new Set<AccountListSortField>([
@@ -281,11 +288,13 @@ accountsRouter.post('/:id/traffic-migration', (req, res) => {
       if (!migration) {
         throw new Error('账户不存在或无权迁移')
       }
-      const ownerSystemAccountId = resolveOperationOwner(migration.sourceAccount as unknown as Record<string, unknown>, requestAccess)
+      const ownerSystemAccountId = authorizedLocalOperationOwner(migration.sourceAccount, requestAccess)
+        ?? resolveOperationOwner(migration.sourceAccount as unknown as Record<string, unknown>, requestAccess)
       return {
         result: migration,
         afterCommit: () => {
-          affinityResult = migrateOpenAIAccountSessionAffinity(req.params.id, parsed.data.targetAccountId)
+          const affinityScope = authorizedMigrationAffinityScope(migration.sourceAccount, requestAccess)
+          affinityResult = migrateOpenAIAccountSessionAffinity(req.params.id, parsed.data.targetAccountId, affinityScope)
           clearGatewayRuntimeCache()
         },
         log: {
@@ -326,6 +335,72 @@ accountsRouter.post('/:id/traffic-migration', (req, res) => {
       return
     }
     res.status(400).json(badRequest(error instanceof Error ? error.message : '迁移流量失败'))
+  }
+})
+
+function authorizedLocalOperationOwner(account: AccountSummary, access?: RequestAccessScope): string | undefined {
+  return account.accessType === 'authorized' ? effectiveRequestSystemAccountId(access) : undefined
+}
+
+function authorizedMigrationAffinityScope(account: AccountSummary, access?: RequestAccessScope): { systemAccountId: string; groupId: string } | undefined {
+  const systemAccountId = effectiveRequestSystemAccountId(access)
+  return account.accessType === 'authorized' && account.boundGroupId && systemAccountId
+    ? { systemAccountId, groupId: account.boundGroupId }
+    : undefined
+}
+
+function effectiveRequestSystemAccountId(access?: RequestAccessScope): string | undefined {
+  return access?.systemAccountFilterId?.trim() || access?.systemAccountId
+}
+
+accountsRouter.patch('/:id/authorized-dispatch', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const parsed = authorizedAccountDispatchSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('授权账户调度参数无效'))
+    return
+  }
+  try {
+    const account = runLoggedOperation(() => {
+      const account = updateAuthorizedAccountBindingDispatch(req.params.id, parsed.data, requestAccess)
+      if (!account) {
+        throw new Error('授权账户不存在或尚未绑定分组')
+      }
+      const ownerSystemAccountId = effectiveRequestSystemAccountId(requestAccess)
+      return {
+        result: account,
+        afterCommit: clearGatewayRuntimeCache,
+        log: {
+          operationScopeSystemAccountId: ownerSystemAccountId,
+          mode: operationMode(requestAccess),
+          module: 'accounts',
+          action: 'authorized_dispatch',
+          operationKey: 'accounts.authorized_dispatch',
+          resourceType: 'account',
+          resourceId: account.id,
+          resourceName: account.name,
+          summary: `调整授权账户使用设置：${account.name}`,
+          changes: [
+            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'superPriorityEnabled') ? [safeChange('localSuperPriorityEnabled', '本地超级优先', undefined, parsed.data.superPriorityEnabled)] : []),
+            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'fallbackEnabled') ? [safeChange('localFallbackEnabled', '本地降级备用', undefined, parsed.data.fallbackEnabled)] : []),
+            ...(parsed.data.clearFailureState === true ? [safeChange('clearLocalFailureState', '恢复本地异常状态', false, true)] : [])
+          ],
+          viewers: viewer(ownerSystemAccountId, 'resource_owner')
+        }
+      }
+    }, req)
+    if (!account) {
+      res.status(404).json({ message: '授权账户不存在或尚未绑定分组' })
+      return
+    }
+    res.json(ok(account))
+  } catch (error) {
+    res.status(400).json(badRequest(error instanceof Error ? error.message : '更新授权账户调度设置失败'))
   }
 })
 

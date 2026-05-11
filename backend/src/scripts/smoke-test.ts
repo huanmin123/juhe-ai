@@ -1,4 +1,5 @@
 import { runtimeConfig } from '../config/runtime.js'
+import { systemSettingKeys } from '../storage/settings.repository.js'
 
 const backendUrl = trimTrailingSlash(runtimeConfig.smokeTest.backendUrl)
 const accountName = runtimeConfig.smokeTest.accountName
@@ -93,6 +94,31 @@ interface SystemSettings {
   streamIdleTimeoutSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
+  operationLogEnabled?: boolean
+  operationLogRetentionDays?: number
+  operationLogMaxChangesPerRecord?: number
+  statsAggregationIntervalSeconds?: number
+  statsAggregationBatchSize?: number
+  statsAggregationMaxBatchesPerRun?: number
+  groupAccountStatsRefreshIntervalSeconds?: number
+  systemMetricsSampleIntervalSeconds?: number
+  accountQualityRefreshIntervalSeconds?: number
+  accountQualityWindowMinutes?: number
+  cooldownAccountRetestEnabled?: boolean
+  cooldownAccountRetestIntervalSeconds?: number
+  cooldownAccountRetestBatchSize?: number
+  cooldownAccountRetestModel?: string
+  oauthAccessTokenRefreshIntervalSeconds?: number
+  oauthAccessTokenRefreshLeadSeconds?: number
+  oauthAccessTokenRefreshBatchSize?: number
+  oauthAccessTokenRefreshRetryBackoffSeconds?: number
+  usageRecordRetentionDays?: number
+  usageStatsDailyRetentionDays?: number
+  usageStatsHourlyRetentionDays?: number
+  systemMetricsRetentionDays?: number
+  systemMetricsHourlyRetentionDays?: number
+  dataRetentionCleanupBatchSize?: number
+  dataRetentionCleanupMaxBatchesPerRun?: number
 }
 
 interface ResponsePayload {
@@ -128,7 +154,6 @@ async function main(): Promise<void> {
     summary.push('登录通过')
 
     const settings = await getEnvelope<SystemSettings>('/api/settings')
-    assert(!Object.prototype.hasOwnProperty.call(settings, 'defaultErrorPolicyId'), '系统设置不应返回 defaultErrorPolicyId')
     assert(typeof settings.defaultTemporaryUnschedulableMinutes === 'number', '系统设置缺少 defaultTemporaryUnschedulableMinutes')
     assert(typeof settings.temporaryUnschedulableRetryIntervalSeconds === 'number', '系统设置缺少 temporaryUnschedulableRetryIntervalSeconds')
     assert(typeof settings.temporaryUnschedulableRetryAttempts === 'number', '系统设置缺少 temporaryUnschedulableRetryAttempts')
@@ -137,20 +162,32 @@ async function main(): Promise<void> {
     assert(typeof settings.streamIdleTimeoutSeconds === 'number', '系统设置缺少 streamIdleTimeoutSeconds')
     assert(typeof settings.streamFailureThresholdCount === 'number', '系统设置缺少 streamFailureThresholdCount')
     assert(typeof settings.streamFailureThresholdWindowMinutes === 'number', '系统设置缺少 streamFailureThresholdWindowMinutes')
-    for (const key of [
-      'auditLogEnabled',
-      'auditLogSuccessSampleRate',
-      'auditLogFlushIntervalSeconds',
-      'auditLogBatchSize',
-      'auditLogQueueMaxItems',
-      'auditLogQueueMaxBytesMb',
-      'auditLogActiveCaptureMaxBytesMb',
-      'auditLogRetentionDays',
-      'proxyLatencyRefreshIntervalSeconds',
-      'proxyLatencyRefreshBatchSize'
-    ]) {
-      assert(!Object.prototype.hasOwnProperty.call(settings, key), `系统设置不应返回 ${key}`)
-    }
+    assert(typeof settings.operationLogEnabled === 'boolean', '系统设置缺少 operationLogEnabled')
+    assert(typeof settings.operationLogRetentionDays === 'number', '系统设置缺少 operationLogRetentionDays')
+    assert(typeof settings.operationLogMaxChangesPerRecord === 'number', '系统设置缺少 operationLogMaxChangesPerRecord')
+    assert(typeof settings.statsAggregationIntervalSeconds === 'number', '系统设置缺少 statsAggregationIntervalSeconds')
+    assert(typeof settings.statsAggregationBatchSize === 'number', '系统设置缺少 statsAggregationBatchSize')
+    assert(typeof settings.statsAggregationMaxBatchesPerRun === 'number', '系统设置缺少 statsAggregationMaxBatchesPerRun')
+    assert(typeof settings.groupAccountStatsRefreshIntervalSeconds === 'number', '系统设置缺少 groupAccountStatsRefreshIntervalSeconds')
+    assert(typeof settings.systemMetricsSampleIntervalSeconds === 'number', '系统设置缺少 systemMetricsSampleIntervalSeconds')
+    assert(typeof settings.accountQualityRefreshIntervalSeconds === 'number', '系统设置缺少 accountQualityRefreshIntervalSeconds')
+    assert(typeof settings.accountQualityWindowMinutes === 'number', '系统设置缺少 accountQualityWindowMinutes')
+    assert(typeof settings.cooldownAccountRetestEnabled === 'boolean', '系统设置缺少 cooldownAccountRetestEnabled')
+    assert(typeof settings.cooldownAccountRetestIntervalSeconds === 'number', '系统设置缺少 cooldownAccountRetestIntervalSeconds')
+    assert(typeof settings.cooldownAccountRetestBatchSize === 'number', '系统设置缺少 cooldownAccountRetestBatchSize')
+    assert(typeof settings.cooldownAccountRetestModel === 'string', '系统设置缺少 cooldownAccountRetestModel')
+    assert(typeof settings.oauthAccessTokenRefreshIntervalSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshIntervalSeconds')
+    assert(typeof settings.oauthAccessTokenRefreshLeadSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshLeadSeconds')
+    assert(typeof settings.oauthAccessTokenRefreshBatchSize === 'number', '系统设置缺少 oauthAccessTokenRefreshBatchSize')
+    assert(typeof settings.oauthAccessTokenRefreshRetryBackoffSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshRetryBackoffSeconds')
+    assert(typeof settings.usageRecordRetentionDays === 'number', '系统设置缺少 usageRecordRetentionDays')
+    assert(typeof settings.usageStatsDailyRetentionDays === 'number', '系统设置缺少 usageStatsDailyRetentionDays')
+    assert(typeof settings.usageStatsHourlyRetentionDays === 'number', '系统设置缺少 usageStatsHourlyRetentionDays')
+    assert(typeof settings.systemMetricsRetentionDays === 'number', '系统设置缺少 systemMetricsRetentionDays')
+    assert(typeof settings.systemMetricsHourlyRetentionDays === 'number', '系统设置缺少 systemMetricsHourlyRetentionDays')
+    assert(typeof settings.dataRetentionCleanupBatchSize === 'number', '系统设置缺少 dataRetentionCleanupBatchSize')
+    assert(typeof settings.dataRetentionCleanupMaxBatchesPerRun === 'number', '系统设置缺少 dataRetentionCleanupMaxBatchesPerRun')
+    assertExactSettingKeys(settings)
     summary.push('系统设置检查通过')
 
     const accounts = await getEnvelope<AccountSummary[]>('/api/accounts')
@@ -531,6 +568,15 @@ function assert(condition: unknown, message: string): asserts condition {
   if (!condition) {
     throw new Error(message)
   }
+}
+
+function assertExactSettingKeys(settings: object): void {
+  const expectedKeys = [...systemSettingKeys].sort()
+  const actualKeys = Object.keys(settings).sort()
+  assert(
+    actualKeys.length === expectedKeys.length && actualKeys.every((key, index) => key === expectedKeys[index]),
+    `系统设置字段不匹配：expected=${expectedKeys.join(',')} actual=${actualKeys.join(',')}`
+  )
 }
 
 main().catch((error) => {

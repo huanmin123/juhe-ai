@@ -456,10 +456,13 @@ function canManageGroupAccounts(group: GroupSummary): boolean {
 
 function canUseAsTrafficMigrationTarget(source: AccountSummary, target: AccountSummary): boolean {
   if (target.id === source.id) return false
-  if (!canEditAccount(target)) return false
   if (target.providerCode !== source.providerCode) return false
-  if (target.ownerSystemAccountId !== source.ownerSystemAccountId) return false
   if (groupIdForAccount(target.id) !== groupIdForAccount(source.id)) return false
+  if (isAuthorizedAccount(source)) {
+    return target.permissions?.canUse !== false && target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
+  }
+  if (!canEditAccount(target)) return false
+  if (target.ownerSystemAccountId !== source.ownerSystemAccountId) return false
   return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
 }
 
@@ -492,6 +495,23 @@ function ensureDefaultGroupSelected(providerCode = form.providerCode) {
 
 function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
+  if (isAuthorizedAccount(account)) {
+    if (account.boundGroupId && account.localStatus && account.localStatus !== 'active') {
+      items.push({ key: 'restore-normal', label: '恢复正常' })
+    }
+    if (account.status === 'active') {
+      items.push({
+        key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
+        label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'
+      })
+      items.push({
+        key: account.fallbackEnabled ? 'fallback-off' : 'fallback-on',
+        label: account.fallbackEnabled ? '取消降级备用' : '降级备用'
+      })
+      items.push({ key: 'migrate-traffic', label: '迁移流量' })
+    }
+    return items.map(normalizeAccountMenuItem)
+  }
   if (canTestAccount(account)) {
     items.push({ key: 'test', label: '测试' })
   }
@@ -721,8 +741,12 @@ function openBindGroup(account: AccountSummary) {
 }
 
 function openTrafficMigration(account: AccountSummary) {
-  if (!canUseAccountActions(account)) {
+  if (!canUseAccountActions(account) && !isAuthorizedAccount(account)) {
     message.warning('授权账户不能迁移流量')
+    return
+  }
+  if (isAuthorizedAccount(account) && !account.boundGroupId) {
+    message.warning('请先把授权账户绑定到你的分组')
     return
   }
   trafficMigrationSourceAccount.value = account
@@ -799,7 +823,8 @@ async function saveTrafficMigration() {
       ? await api.accounts.migrateTraffic(source.id, payload, accountScopeParams.value)
       : await api.myAccounts.migrateTraffic(source.id, payload)
     const statusText = result.sourceStatus === 'disabled' ? '停用账户' : '临时不可调用'
-    message.success(`后续请求将切到 ${result.targetAccount.name}，当前连接不中断；原账户已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
+    const scopeText = isAuthorizedAccount(source) ? '你的分组内' : ''
+    message.success(`后续请求将在${scopeText}切到 ${result.targetAccount.name}，当前连接不中断；原账户已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
     trafficMigrationModalOpen.value = false
     trafficMigrationSourceAccount.value = undefined
     await loadData()
@@ -1245,6 +1270,21 @@ async function batchSetStatus(status: 'active' | 'disabled') {
 }
 
 async function updateAccountState(account: AccountSummary, payload: Record<string, unknown>, successText: string) {
+  if (isAuthorizedAccount(account)) {
+    try {
+      if (isManagementView.value) {
+        await api.accounts.updateAuthorizedDispatch(account.id, payload, accountScopeParams.value)
+      } else {
+        await api.myAccounts.updateAuthorizedDispatch(account.id, payload)
+      }
+      message.success(successText)
+      await loadData()
+    } catch (error) {
+      console.error(error)
+      message.error(extractApiErrorMessage(error, '授权账户调度设置更新失败'))
+    }
+    return
+  }
   if (!canEditAccount(account)) {
     message.warning('授权账户不能修改状态')
     return
@@ -1269,8 +1309,14 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
     return
   }
   if (!canUseAccountActions(account)) {
-    message.warning('授权账户仅可使用，不能执行管理操作')
-    return
+    if (!isAuthorizedAccount(account)) {
+      message.warning('授权账户仅可使用，不能执行管理操作')
+      return
+    }
+    if (!['restore-normal', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic'].includes(key)) {
+      message.warning('授权账户仅支持使用侧调度操作')
+      return
+    }
   }
   if (key === 'refresh-oauth-token') {
     if (tokenRefreshLoading.value) return
@@ -1287,6 +1333,14 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
     return
   }
   if (key === 'restore-normal') {
+    if (isAuthorizedAccount(account)) {
+      if (!account.localStatus || account.localStatus === 'active') {
+        message.warning('当前授权账户不需要恢复')
+        return
+      }
+      await updateAccountState(account, { clearFailureState: true }, '授权账户已恢复正常')
+      return
+    }
     if (!isTemporaryAccountStatus(account)) {
       message.warning('当前账户不需要恢复')
       return
@@ -1300,6 +1354,10 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
       message.warning('只有正常状态的账户可以设置超级优先')
       return
     }
+    if (isAuthorizedAccount(account) && !account.boundGroupId) {
+      message.warning('请先把授权账户绑定到你的分组')
+      return
+    }
     await updateAccountState(account, { superPriorityEnabled: enabled }, enabled ? '已开启超级优先' : '已取消超级优先')
     return
   }
@@ -1307,6 +1365,10 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
     const enabled = key === 'fallback-on'
     if (enabled && account.status !== 'active') {
       message.warning('只有正常状态的账户可以设置降级备用')
+      return
+    }
+    if (isAuthorizedAccount(account) && !account.boundGroupId) {
+      message.warning('请先把授权账户绑定到你的分组')
       return
     }
     await updateAccountState(account, { fallbackEnabled: enabled }, enabled ? '已开启降级备用' : '已取消降级备用')

@@ -6,6 +6,7 @@ import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 
 interface SessionBinding {
   accountId: string
+  scope?: OpenAIGatewaySessionAffinityScope
 }
 
 const sessionAffinityTtlMs = 60 * 60 * 1000
@@ -16,6 +17,12 @@ const sessionAffinityCache = createAppCache<string, SessionBinding>({
   ttlMs: sessionAffinityTtlMs,
   updateAgeOnGet: true
 })
+
+export interface OpenAIGatewaySessionAffinityScope {
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+}
 
 export function resolveOpenAIGatewaySessionAffinityKey(req: Request, input: {
   systemAccountId: string
@@ -73,11 +80,11 @@ export function orderOpenAIAccountsBySessionAffinity(
   ]
 }
 
-export function rememberOpenAIAccountForSession(sessionAffinityKey: string | undefined, accountId: string): void {
+export function rememberOpenAIAccountForSession(sessionAffinityKey: string | undefined, accountId: string, scope?: OpenAIGatewaySessionAffinityScope): void {
   if (!sessionAffinityKey) {
     return
   }
-  sessionAffinityCache.set(sessionAffinityKey, { accountId })
+  sessionAffinityCache.set(sessionAffinityKey, { accountId, scope })
 }
 
 export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undefined, accountId?: string): void {
@@ -94,16 +101,35 @@ export function forgetOpenAIAccountForSession(sessionAffinityKey: string | undef
   sessionAffinityCache.delete(sessionAffinityKey)
 }
 
-export function migrateOpenAIAccountSessionAffinity(sourceAccountId: string, targetAccountId: string): { migratedSessionCount: number } {
+export function migrateOpenAIAccountSessionAffinity(sourceAccountId: string, targetAccountId: string, scope?: Partial<OpenAIGatewaySessionAffinityScope>): { migratedSessionCount: number } {
   let migratedSessionCount = 0
   for (const [key, binding] of sessionAffinityCache.entries()) {
     if (binding.accountId !== sourceAccountId) {
       continue
     }
-    sessionAffinityCache.set(key, { accountId: targetAccountId })
+    if (scope && !sessionBindingMatchesScope(binding, scope)) {
+      continue
+    }
+    sessionAffinityCache.set(key, { accountId: targetAccountId, scope: binding.scope })
     migratedSessionCount += 1
   }
   return { migratedSessionCount }
+}
+
+function sessionBindingMatchesScope(binding: SessionBinding, scope: Partial<OpenAIGatewaySessionAffinityScope>): boolean {
+  if (!binding.scope) {
+    return false
+  }
+  if (scope.systemAccountId && binding.scope.systemAccountId !== scope.systemAccountId) {
+    return false
+  }
+  if (scope.groupId && binding.scope.groupId !== scope.groupId) {
+    return false
+  }
+  if (scope.apiKeyId && binding.scope.apiKeyId !== scope.apiKeyId) {
+    return false
+  }
+  return true
 }
 
 function extractSessionIdentity(req: Request): { source: string; value: string } | undefined {

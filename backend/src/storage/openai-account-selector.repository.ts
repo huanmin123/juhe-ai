@@ -52,6 +52,11 @@ export interface GroupUsageAccessMetadata {
 interface GroupAccountRow {
   account_id: string
   account_authorization_id?: string | null
+  local_status?: AccountStatus | null
+  local_cooldown_until?: string | null
+  local_last_error_message?: string | null
+  local_super_priority_enabled?: number | null
+  local_fallback_enabled?: number | null
 }
 
 type ResourceAuthorizationRow = {
@@ -77,7 +82,9 @@ export function findOpenAIAccountForGroup(
   const forceAvailability = options.ignoreAvailability === true
   const groupAccount = getDatabase()
     .prepare(`
-      SELECT group_accounts.account_id, group_accounts.account_authorization_id
+      SELECT group_accounts.account_id, group_accounts.account_authorization_id,
+        group_accounts.local_status, group_accounts.local_cooldown_until, group_accounts.local_last_error_message,
+        group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled
       FROM group_accounts
       WHERE group_accounts.group_id = ?
         AND group_accounts.account_id = ?
@@ -121,7 +128,7 @@ export function findOpenAIAccountForGroup(
   if (!row) {
     return undefined
   }
-  return openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount.account_authorization_id ?? undefined, {
+  return openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount, {
     enforceSchedulableAuthorization: !forceAvailability && !options.includeUnavailable
   })
 }
@@ -152,11 +159,19 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
   disableExpiredAccountsForSelection(groupAccess.groupOwnerSystemAccountId)
   const groupAccountRows = database
     .prepare(`
-      SELECT group_accounts.account_id, group_accounts.account_authorization_id
+      SELECT group_accounts.account_id, group_accounts.account_authorization_id,
+        group_accounts.local_status, group_accounts.local_cooldown_until, group_accounts.local_last_error_message,
+        group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled
       FROM group_accounts
       INNER JOIN accounts ON accounts.id = group_accounts.account_id
       WHERE group_accounts.group_id = ? AND group_accounts.enabled = 1
-      ORDER BY accounts.fallback_enabled ASC, accounts.super_priority_enabled DESC, accounts.priority ASC, group_accounts.weight DESC, group_accounts.created_at ASC, group_accounts.account_id ASC
+      ORDER BY
+        CASE WHEN group_accounts.account_authorization_id IS NOT NULL THEN group_accounts.local_fallback_enabled ELSE accounts.fallback_enabled END ASC,
+        CASE WHEN group_accounts.account_authorization_id IS NOT NULL THEN group_accounts.local_super_priority_enabled ELSE accounts.super_priority_enabled END DESC,
+        CASE WHEN group_accounts.account_authorization_id IS NOT NULL THEN 0 ELSE accounts.priority END ASC,
+        group_accounts.weight DESC,
+        group_accounts.created_at ASC,
+        group_accounts.account_id ASC
     `)
     .all(groupId) as unknown as GroupAccountRow[]
 
@@ -192,6 +207,9 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
     if (!apiKey) {
       continue
     }
+    if (!isGroupAccountLocallyAvailable(groupAccount, now)) {
+      continue
+    }
     const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, groupAccount.account_authorization_id ?? undefined)
     if (!accountAccess) {
       continue
@@ -204,7 +222,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
     })) {
       continue
     }
-    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount.account_authorization_id ?? undefined)
+    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount)
     if (account) {
       accounts.push(account)
     }
@@ -240,7 +258,7 @@ function openAIAccountSecretFromRow(
   row: OpenAIAccountRow,
   groupAccess: GroupUsageAccessMetadata,
   systemAccountId: string,
-  boundAccountAuthorizationId?: string,
+  groupAccount?: GroupAccountRow,
   options: { enforceSchedulableAuthorization?: boolean } = {}
 ): OpenAIAccountSecret | undefined {
   const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
@@ -250,7 +268,7 @@ function openAIAccountSecretFromRow(
   if (!apiKey) {
     return undefined
   }
-  const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, boundAccountAuthorizationId)
+  const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, groupAccount?.account_authorization_id ?? undefined)
   if (!accountAccess) {
     return undefined
   }
@@ -263,6 +281,10 @@ function openAIAccountSecretFromRow(
     return undefined
   }
   const proxyProfile = resolveOpenAIAccountProxyUrl(row.proxy_profile_id)
+  const isAccountAuthorized = accountAccess.accountAccessType === 'account_authorized'
+  const isLocalAccountAuthorized = isAccountAuthorized && Boolean(groupAccount?.account_authorization_id)
+  const localSuperPriorityEnabled = isLocalAccountAuthorized && groupAccount?.local_super_priority_enabled === 1
+  const localFallbackEnabled = isLocalAccountAuthorized && groupAccount?.local_fallback_enabled === 1
   return {
     id: row.id,
     systemAccountId: row.system_account_id,
@@ -276,9 +298,9 @@ function openAIAccountSecretFromRow(
     type: row.type,
     status: row.status,
     concurrencyLimit: Number(row.concurrency_limit ?? 1),
-    priority: Number(row.priority ?? 0),
-    superPriorityEnabled: row.status === 'active' && row.super_priority_enabled === 1,
-    fallbackEnabled: row.status === 'active' && row.fallback_enabled === 1,
+    priority: isLocalAccountAuthorized ? 0 : Number(row.priority ?? 0),
+    superPriorityEnabled: row.status === 'active' && (isLocalAccountAuthorized ? localSuperPriorityEnabled : row.super_priority_enabled === 1),
+    fallbackEnabled: row.status === 'active' && (isLocalAccountAuthorized ? localFallbackEnabled : row.fallback_enabled === 1),
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
     qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
@@ -341,6 +363,17 @@ function orderOpenAIAccountsForDispatch(accounts: OpenAIAccountSecret[]): OpenAI
     const nameDelta = left.name.localeCompare(right.name, 'zh-CN')
     return nameDelta !== 0 ? nameDelta : left.id.localeCompare(right.id)
   })
+}
+
+function isGroupAccountLocallyAvailable(groupAccount: GroupAccountRow, now: string): boolean {
+  const localStatus = groupAccount.local_status ?? 'active'
+  if (localStatus === 'active') {
+    return true
+  }
+  if (localStatus === 'temporary_unavailable' && groupAccount.local_cooldown_until) {
+    return groupAccount.local_cooldown_until <= now
+  }
+  return false
 }
 
 function qualityFreshAfterIso(): string {

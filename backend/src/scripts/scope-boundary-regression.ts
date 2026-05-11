@@ -73,6 +73,7 @@ interface AccountSummary {
   type?: string
   status?: string
   accessType?: string
+  proxyProfileId?: string
 }
 
 interface AccountListResult {
@@ -173,6 +174,7 @@ interface SeedState {
   userBCookie: string
   userAAccountId: string
   userBAccountId: string
+  userBProxyId: string
   teamSharedId: string
   teamUserBOnlyId: string
   inboundAuthorizationId: string
@@ -202,6 +204,7 @@ async function main(): Promise<void> {
     assertSameIds(userAMyAccounts, [{ id: seed.userAAccountId }, { id: seed.userBAccountId }], '用户 A 的 my-accounts 未返回自有账户和授权给自己的账户')
     assert(userAMyAccounts.some((account) => account.id === seed.userAAccountId && account.ownerSystemAccountId === seed.userAId), '用户 A 的 my-accounts 缺少自有账户')
     assert(userAMyAccounts.some((account) => account.id === seed.userBAccountId && account.ownerSystemAccountId === seed.userBId && account.accessType === 'authorized'), '用户 A 的 my-accounts 缺少授权给自己的账户')
+    assert(userAMyAccounts.some((account) => account.id === seed.userBAccountId && account.proxyProfileId === seed.userBProxyId), '用户 A 的授权账户应保留所有者绑定的代理标记')
     const userAMyAccountsWithQuery = await getAccountItems(baseUrl, `/api/my-accounts?systemAccountId=${seed.userBId}`, seed.userACookie)
     assertSameIds(userAMyAccounts, userAMyAccountsWithQuery, '用户 A 传 systemAccountId 后 my-accounts 结果发生变化')
     summary.push('我的账户自有作用域检查通过')
@@ -348,6 +351,13 @@ function seedData(): SeedState {
 
   const userAAccess = { systemAccountId: userA.id, role: 'user' as const }
   const userBAccess = { systemAccountId: userB.id, role: 'user' as const }
+  const userBProxy = repositories.createProxy({
+    name: '用户 B 授权账户代理',
+    type: 'http',
+    host: '127.0.0.1',
+    port: 9,
+    enabled: true
+  })
   const userAAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '用户 A 账户',
@@ -358,7 +368,8 @@ function seedData(): SeedState {
     providerCode: 'openai',
     name: '用户 B 账户',
     type: 'api_key',
-    credentials: { api_key: 'sk-scope-user-b', base_url: 'https://api.openai.com/v1' }
+    credentials: { api_key: 'sk-scope-user-b', base_url: 'https://api.openai.com/v1' },
+    proxyProfileId: userBProxy.id
   }, userBAccess)
   repositories.createAccount({
     providerCode: 'openai',
@@ -408,6 +419,7 @@ function seedData(): SeedState {
     userBCookie: sessionCookie(userB.id),
     userAAccountId: userAAccount.id,
     userBAccountId: userBAccount.id,
+    userBProxyId: userBProxy.id,
     teamSharedId: teamShared.id,
     teamUserBOnlyId: teamUserBOnly.id,
     inboundAuthorizationId: inboundAuthorization.id,

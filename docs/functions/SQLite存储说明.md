@@ -130,8 +130,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `audit_payload_refs(audit_log_id, part_type, sequence_index)`：审计详情按阶段和顺序读取 payload 引用。
 - `audit_payload_refs(audit_log_id, sequence_index)`：审计详情按真实捕获顺序展示完整链路片段。
 - `audit_payload_refs(headers_blob_id)`、`audit_payload_refs(body_blob_id)`：清理任务判断 blob 引用。
-- `audit_payload_blobs(sha256, raw_size_bytes, content_type)`：按原始内容 hash 做精确去重。
-- `audit_payload_blobs(retention_until, id)`：payload 分层清理。
+- `audit_payload_blobs(sha256, raw_size_bytes, content_type)`：payload 去重和无引用 blob 清理。
 - `audit_error_groups(window_started_at, id)`、`audit_error_groups(fingerprint, window_started_at)`：错误组列表和 upsert 定位。
 - `runtime_logs(trace_id, time, id)`：按链路 ID 快速抓取同一次请求相关运行日志。
 - `runtime_logs(time, id)`：默认读取最近日志。
@@ -363,9 +362,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `headers_sha256`
 - `body_sha256`
 - `raw_size_bytes`
-- `stored_size_bytes`
+- `compressed_size_bytes`
 - `capture_status`：`complete`、`summary_only`、`hash_only`、`expired`、`dropped`
-- `retention_until`
 - `created_at`
 
 建议新增 `audit_payload_blobs` 表：
@@ -376,14 +374,11 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `compressed_size_bytes`
 - `content_type`
 - `content_encoding`
-- `compression`：`none`、`gzip`、`brotli`
-- `encryption`
-- `storage_backend`：第一版固定 `local_file`
+- `compression`：当前固定支持 `none`、`gzip`
 - `storage_key`
 - `ref_count`
 - `first_seen_at`
 - `last_seen_at`
-- `retention_until`
 - `created_at`
 
 建议新增 `audit_error_groups` 表：
@@ -589,13 +584,14 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `streamIdleTimeoutSeconds = 60`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；同一个值也限制持续有 raw chunk 但没有形成完整 SSE 事件的等待时间。若流式解析器因单行或单事件过大跳过解析，后续只按 raw chunk 活动计时。
 - `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
+- `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合批量上限。
+- `groupAccountStatsRefreshIntervalSeconds = 60`：分组账户统计缓存默认刷新间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
 - `usageRecordRetentionDays = 7`：使用记录默认保留 7 天；清理时必须等统计游标已处理。
 - `usageStatsHourlyRetentionDays = 30`、`usageStatsDailyRetentionDays = 30`：统计汇总缓存默认保留 30 天。
 - `systemMetricsRetentionDays = 7`、`systemMetricsHourlyRetentionDays = 30`：系统监控原始采样默认保留 7 天，小时汇总默认保留 30 天。
 - `dataRetentionCleanupBatchSize = 10000`、`dataRetentionCleanupMaxBatchesPerRun = 10`：统一表数据清理任务的批量上限。
 - OAuth 额度快照不再有后台主动刷新默认项；快照只由真实网关响应头和账户测试副作用被动更新。
-- `statsLagWarningSeconds = 300`：统计任务滞后超过该值时在运维概览里提示。
 - `operationLogEnabled = true`：默认启用操作日志。
 - `operationLogRetentionDays = 365`：操作日志默认保留 365 天。
 - `operationLogMaxChangesPerRecord = 100`：单条操作日志最多保存 100 个字段差异，超过后折叠摘要。
@@ -603,6 +599,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `accountQualityWindowMinutes = 10`：真实网关请求首 token 统计窗口默认 10 分钟。
 - 账号质量主动探测相关默认设置已删除，不允许通过系统配置恢复。
 - `cooldownAccountRetestEnabled = true`：冷却账号后台复测默认开启，但只用于冷却到期后的恢复性测试；请求形态只学习真实流量的低风险元信息，不复用用户请求内容。
+- `cooldownAccountRetestIntervalSeconds = 60`：冷却账号后台复测默认扫描间隔。
 - `cooldownAccountRetestBatchSize = 10`：默认每轮最多恢复性复测 10 个冷却到期账号。
 
 原始审计日志与保全策略：
@@ -616,9 +613,9 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 审计队列固定每 `5` 秒批量落库一次，单批最多 `50` 条客户端请求。
 - 待写队列最多保留 `1000` 条终态审计请求，近似最大原文体积为 `256MB`。
 - 单个请求活跃捕获上限为 `64MB`，超过后丢弃整条审计记录。
-- 默认保留建议：成功样本 `7` 天、失败 / 异常事件 `30` 天、失败 / 异常正文 `30` 天、错误聚合组 `30` 天；具体以 [审计日志保全策略设计](审计日志保全策略设计.md) 为准。
+- 默认固定保留：成功样本 `7` 天，失败 / 异常事件 `30` 天，失败 / 异常正文随事件引用分层清理，错误聚合组 `30` 天；具体以 [审计日志保全策略设计](审计日志保全策略设计.md) 为准。
 
-预上线阶段如本地库仍存在不再展示的 `defaultErrorPolicyId`、`streamFailureAction`、`streamAccountCooldownMinutes`、`overloadCooldownEnabled`、`overloadCooldownMinutes`、`auditLogEnabled`、`auditLogSuccessSampleRate`、`auditLogFlushIntervalSeconds`、`auditLogBatchSize`、`auditLogQueueMaxItems`、`auditLogQueueMaxBytesMb`、`auditLogActiveCaptureMaxBytesMb`、`auditLogRetentionDays`、`proxyLatencyRefreshIntervalSeconds`、`proxyLatencyRefreshBatchSize` 等旧设置，直接通过备份后清洗或重建库处理；源码不保留启动清理分支。
+系统设置接口只返回并写入当前白名单内的键；本地库如果残留不在白名单内的旧键，直接通过备份后清洗或重建库处理。源码不保留启动清理分支，运行时也不会读取这些旧键。
 
 ## 系统账户隔离补充
 

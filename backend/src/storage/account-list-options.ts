@@ -30,9 +30,9 @@ export interface NormalizedAccountListOptions {
 }
 
 const accountListSortColumns: Record<AccountListSortField, string> = {
-  priority: 'account_rows.priority',
-  superPriority: 'account_rows.super_priority_enabled',
-  fallback: 'account_rows.fallback_enabled',
+  priority: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.priority END",
+  superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.super_priority_enabled END",
+  fallback: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.fallback_enabled END",
   qualityScore: 'account_quality.quality_score',
   name: 'account_rows.name COLLATE NOCASE',
   type: 'account_rows.type COLLATE NOCASE',

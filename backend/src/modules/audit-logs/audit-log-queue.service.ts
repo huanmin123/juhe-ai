@@ -40,7 +40,6 @@ export interface AuditLogQueueRuntime {
   droppedFailureCount: number
   droppedOverflowCount: number
   droppedOversizeCount: number
-  retentionDays: number
   successRetentionDays: number
   failureRetentionDays: number
   errorGroupRetentionDays: number
@@ -181,7 +180,6 @@ export function getAuditLogQueueRuntime(): AuditLogQueueRuntime {
     droppedFailureCount,
     droppedOverflowCount,
     droppedOversizeCount,
-    retentionDays: settings.retentionDays,
     successRetentionDays: settings.successRetentionDays,
     failureRetentionDays: settings.failureRetentionDays,
     errorGroupRetentionDays: settings.errorGroupRetentionDays

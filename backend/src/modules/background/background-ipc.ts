@@ -16,10 +16,13 @@ export interface BackgroundWorkerQueueRuntime {
   droppedOversizeCount?: number
   retainedOverflowWarningCount?: number
   flushFailureCount?: number
-  retentionDays?: number
   successRetentionDays?: number
   failureRetentionDays?: number
   errorGroupRetentionDays?: number
+}
+
+export interface BackgroundWorkerRuntimeLogQueueRuntime extends BackgroundWorkerQueueRuntime {
+  retentionDays: number
 }
 
 export interface BackgroundWorkerRuntimeSnapshot {
@@ -28,7 +31,7 @@ export interface BackgroundWorkerRuntimeSnapshot {
   processRole: 'worker'
   usageRecordQueue: BackgroundWorkerQueueRuntime
   auditLogQueue: BackgroundWorkerQueueRuntime
-  runtimeLogIndexQueue: BackgroundWorkerQueueRuntime
+  runtimeLogIndexQueue: BackgroundWorkerRuntimeLogQueueRuntime
 }
 
 type BackgroundWorkerMessage =

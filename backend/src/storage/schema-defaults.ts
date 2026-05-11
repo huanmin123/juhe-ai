@@ -23,8 +23,6 @@ export const OPENAI_PROVIDER_SEED = {
 } as const
 
 export const DEFAULT_SYSTEM_SETTINGS = [
-  ['appName', '聚合 AI'],
-  ['appIcon', '/brand-icon.svg'],
   ['defaultTemporaryUnschedulableMinutes', 5],
   ['temporaryUnschedulableRetryIntervalSeconds', 3],
   ['temporaryUnschedulableRetryAttempts', 3],
@@ -36,9 +34,15 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['operationLogEnabled', true],
   ['operationLogRetentionDays', 365],
   ['operationLogMaxChangesPerRecord', 100],
+  ['statsAggregationIntervalSeconds', 60],
+  ['statsAggregationBatchSize', 2000],
+  ['statsAggregationMaxBatchesPerRun', 5],
+  ['groupAccountStatsRefreshIntervalSeconds', 60],
+  ['systemMetricsSampleIntervalSeconds', 30],
   ['accountQualityRefreshIntervalSeconds', 600],
   ['accountQualityWindowMinutes', 10],
   ['cooldownAccountRetestEnabled', true],
+  ['cooldownAccountRetestIntervalSeconds', 60],
   ['cooldownAccountRetestBatchSize', 10],
   ['cooldownAccountRetestModel', 'gpt-5.5'],
   ['oauthAccessTokenRefreshIntervalSeconds', 60],

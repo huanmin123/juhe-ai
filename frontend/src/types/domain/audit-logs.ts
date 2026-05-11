@@ -111,7 +111,6 @@ export interface AuditLogRuntime {
     queueMaxItems: number
     queueMaxBytes: number
     activeCaptureMaxBytes: number
-    retentionDays: number
     successRetentionDays: number
     failureRetentionDays: number
     errorGroupRetentionDays: number

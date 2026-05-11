@@ -61,7 +61,7 @@
 
     <div class="account-mobile-card-actions">
       <template v-if="isAuthorizedAccount(account)">
-        <RowActions variant="button" :actions="authorizedActions" @action-click="handleActionClick" />
+        <RowActions variant="button" :actions="authorizedActions" :more-actions="menuItems" @action-click="handleActionClick" />
       </template>
       <template v-else>
         <RowActions variant="button" :actions="actions" :more-actions="menuItems" @action-click="handleActionClick" />

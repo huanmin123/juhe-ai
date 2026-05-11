@@ -4,7 +4,6 @@ import { dirname, isAbsolute, relative, resolve } from 'node:path'
 import { gunzipSync, gzipSync } from 'node:zlib'
 
 import { backendRoot } from '../config/runtime.js'
-import { decryptJson } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
@@ -571,8 +570,6 @@ export function getAuditLogPayload(auditLogId: string, payloadId: string): Audit
       ...bodyDetail(bodyBuffer)
     }
   }
-
-  return getLegacyAuditLogPayload(auditLogId, payloadId)
 }
 
 export function cleanupAuditLogsBefore(cutoffCreatedAt: string, limit?: number): number {
@@ -893,52 +890,9 @@ function auditErrorWindowStart(timestamp: string): string {
 }
 
 function getAuditPayloadRows(auditLogId: string): AuditLogRow[] {
-  const rows = getDatabase()
+  return getDatabase()
     .prepare('SELECT * FROM audit_payload_refs WHERE audit_log_id = ? ORDER BY sequence_index ASC, id ASC')
     .all(auditLogId) as AuditLogRow[]
-  if (rows.length > 0) {
-    return rows
-  }
-  return getDatabase()
-    .prepare('SELECT * FROM audit_log_payloads WHERE audit_log_id = ? ORDER BY sequence_index ASC, id ASC')
-    .all(auditLogId) as AuditLogRow[]
-}
-
-function getLegacyAuditLogPayload(auditLogId: string, payloadId: string): AuditLogPayloadDetail | undefined {
-  const row = getDatabase()
-    .prepare('SELECT * FROM audit_log_payloads WHERE audit_log_id = ? AND id = ?')
-    .get(auditLogId, payloadId) as AuditLogRow | undefined
-  if (!row) return undefined
-
-  const summary = auditLogPayloadSummaryFromRow(row)
-  const headers = legacyPayloadHeaders(row)
-  const body = legacyPayloadBody(row)
-  return {
-    ...summary,
-    headers,
-    bodyText: body?.text,
-    bodyBase64: body?.base64
-  }
-}
-
-function legacyPayloadHeaders(row: AuditLogRow): Record<string, string | string[]> | undefined {
-  try {
-    return typeof row.headers_encrypted === 'string'
-      ? decryptJson<Record<string, string | string[]>>(row.headers_encrypted)
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function legacyPayloadBody(row: AuditLogRow): { text?: string; base64?: string } | undefined {
-  try {
-    return typeof row.body_encrypted === 'string'
-      ? decryptJson<{ text?: string; base64?: string }>(row.body_encrypted)
-      : undefined
-  } catch {
-    return undefined
-  }
 }
 
 function buildAuditLogFilters(options: AuditLogListOptions): { clause: string; params: AuditLogFilterValue[] } {
@@ -1140,8 +1094,7 @@ function auditLogAttemptFromRow(
 }
 
 function auditLogPayloadSummaryFromRow(row: AuditLogRow): AuditLogPayloadSummary {
-  const legacy = 'body_encrypted' in row || 'headers_encrypted' in row
-  const sizeBytes = Number(row.raw_size_bytes ?? row.size_bytes ?? 0)
+  const sizeBytes = Number(row.raw_size_bytes ?? 0)
   return {
     id: String(row.id),
     attemptId: optionalString(row.attempt_id),
@@ -1149,24 +1102,15 @@ function auditLogPayloadSummaryFromRow(row: AuditLogRow): AuditLogPayloadSummary
     sequenceIndex: Number(row.sequence_index ?? 0),
     contentType: optionalString(row.content_type),
     contentEncoding: optionalString(row.content_encoding),
-    headersSha256: optionalString(row.headers_sha256) ?? (legacy ? legacyPayloadHeadersSha256(row) : undefined),
+    headersSha256: optionalString(row.headers_sha256),
     bodySha256: optionalString(row.body_sha256),
     sizeBytes,
     compressedSizeBytes: Number(row.compressed_size_bytes ?? sizeBytes),
     captureStatus: String(row.capture_status ?? 'complete') as AuditPayloadCaptureStatus,
     createdAt: String(row.created_at),
-    hasHeaders: legacy
-      ? typeof row.headers_encrypted === 'string' && row.headers_encrypted.length > 0
-      : Boolean(optionalString(row.headers_blob_id)),
-    hasBody: legacy
-      ? typeof row.body_encrypted === 'string' && row.body_encrypted.length > 0
-      : Boolean(optionalString(row.body_blob_id))
+    hasHeaders: Boolean(optionalString(row.headers_blob_id)),
+    hasBody: Boolean(optionalString(row.body_blob_id))
   }
-}
-
-function legacyPayloadHeadersSha256(row: AuditLogRow): string | undefined {
-  const headers = legacyPayloadHeaders(row)
-  return headers ? createHash('sha256').update(stableJsonStringify(headers)).digest('hex') : undefined
 }
 
 function bodyToBuffer(body: Buffer | string | undefined): Buffer | undefined {

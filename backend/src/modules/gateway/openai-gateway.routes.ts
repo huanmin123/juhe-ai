@@ -1224,7 +1224,7 @@ async function fetchFirstAvailableUpstream(
             lastAttempt = { accountId: account.id, accountName: account.name, upstreamUrl, status: response.status }
             if (response.ok) {
               flushDeferredAccountFailures(deferredAccountFailures, sessionAffinityKey)
-              rememberOpenAIAccountForSession(sessionAffinityKey, account.id)
+              rememberOpenAIAccountForSession(sessionAffinityKey, account.id, { systemAccountId: usageContext.systemAccountId, apiKeyId: usageContext.apiKeyId, groupId: usageContext.groupId })
               keepConcurrencySlot = true
               return { account, response, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
             }
