@@ -83,7 +83,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/ai-performance/AiPerformanceView.vue'),
     meta: {
       title: 'AI性能监控',
-      description: '按小时查看自己 AI 账户的首 token 和总耗时趋势。',
+      description: '按小时追踪自有 AI 账户的首 token 与总耗时变化，帮助定位响应变慢的账户；默认展示近 7 天活跃前 10 个，临时指定仅本次生效。',
       viewScope: 'self',
       keepAlive: false
     }

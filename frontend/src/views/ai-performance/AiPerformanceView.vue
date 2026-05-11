@@ -42,9 +42,6 @@
           </button>
         </span>
       </div>
-      <div class="ai-performance-tip">
-        默认显示最近 7 天活跃度最高的前 10 个自有 AI 账户；临时指定仅本次查看生效。
-      </div>
     </a-card>
 
     <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" />
@@ -410,12 +407,6 @@ onBeforeUnmount(() => {
 .ai-performance-legend-remove:hover {
   color: #ef4444;
   background: #fee2e2;
-}
-
-.ai-performance-tip {
-  margin-top: 10px;
-  color: #64748b;
-  font-size: 13px;
 }
 
 .ai-performance-section {
