@@ -1,4 +1,7 @@
-import type { AccountUsageSummary, UsageByWindow, UsageStatsWindowDefinition } from '../domain/types.js'
+import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary, UsageByWindow, UsageStatsWindowDefinition } from '../domain/types.js'
+
+const dayMs = 24 * 60 * 60 * 1000
+export const ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS = 31
 
 export const USAGE_STATS_WINDOWS: UsageStatsWindowDefinition[] = [
   { key: 'last1d', label: '近1天', days: 1 },
@@ -17,6 +20,13 @@ export function emptyAccountUsageSummary(): AccountUsageSummary {
     cacheReadTokens: 0,
     totalTokens: 0,
     totalCost: 0
+  }
+}
+
+export function emptyAccountUsageDailyPoint(statDate: string): AccountUsageDailyPoint {
+  return {
+    statDate,
+    ...emptyAccountUsageSummary()
   }
 }
 
@@ -84,6 +94,37 @@ export function dateKey(date = new Date()): string {
   return `${year}-${month}-${day}`
 }
 
+export function normalizeAccountUsageStatsRange(input: { startDate?: string; endDate?: string } = {}): AccountUsageStatsRange {
+  const today = startOfLocalDay(new Date())
+  const defaultStart = addDays(today, -(ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS - 1))
+  let end = parseDateKey(input.endDate) ?? today
+  if (end > today) {
+    end = today
+  }
+  let start = parseDateKey(input.startDate) ?? defaultStart
+  if (start > end) {
+    start = end
+  }
+  const earliestStart = addDays(end, -(ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS - 1))
+  if (start < earliestStart) {
+    start = earliestStart
+  }
+  return {
+    startDate: dateKey(start),
+    endDate: dateKey(end),
+    days: daysBetweenInclusive(start, end),
+    maxDays: ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS
+  }
+}
+
+export function dateKeysInRange(range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): string[] {
+  const start = parseDateKey(range.startDate)
+  const end = parseDateKey(range.endDate)
+  if (!start || !end || start > end) return []
+  const days = Math.min(ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS, daysBetweenInclusive(start, end))
+  return Array.from({ length: days }, (_, index) => dateKey(addDays(start, index)))
+}
+
 export function hourKey(date: Date): string {
   const year = date.getFullYear()
   const month = String(date.getMonth() + 1).padStart(2, '0')
@@ -101,4 +142,32 @@ export function averageFromSum(sum: unknown, count: unknown): number | undefined
   const numericSum = Number(sum ?? 0)
   const numericCount = Number(count ?? 0)
   return numericCount > 0 ? Math.round(numericSum / numericCount) : undefined
+}
+
+function parseDateKey(value?: string): Date | undefined {
+  if (!value) return undefined
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return undefined
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const date = new Date(year, month - 1, day)
+  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+    return undefined
+  }
+  return startOfLocalDay(date)
+}
+
+function startOfLocalDay(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate())
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function daysBetweenInclusive(start: Date, end: Date): number {
+  return Math.max(1, Math.floor((startOfLocalDay(end).getTime() - startOfLocalDay(start).getTime()) / dayMs) + 1)
 }

@@ -235,6 +235,17 @@ export interface UsageStatsWindowDefinition {
 
 export type UsageByWindow = Record<UsageStatsWindowKey, AccountUsageSummary>
 
+export interface AccountUsageStatsRange {
+  startDate: string
+  endDate: string
+  days: number
+  maxDays: number
+}
+
+export interface AccountUsageDailyPoint extends AccountUsageSummary {
+  statDate: string
+}
+
 export interface ResourcePermissions {
   canUse: boolean
   canEdit: boolean
@@ -350,6 +361,8 @@ export interface AccountUsageStatsRow {
   status: AccountStatus
   accessType?: ResourceAccessType
   usageByWindow: UsageByWindow
+  rangeUsage: AccountUsageSummary
+  dailyUsage: AccountUsageDailyPoint[]
   authorizationUsageAvailable: boolean
   authorizationCount: number
   authorizationTeamCount: number
@@ -357,6 +370,8 @@ export interface AccountUsageStatsRow {
 
 export interface AccountUsageStatsOverview {
   windows: UsageStatsWindowDefinition[]
+  range: AccountUsageStatsRange
+  summary: AccountUsageSummary
   rows: AccountUsageStatsRow[]
   total: number
   page: number
