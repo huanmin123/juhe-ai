@@ -6,6 +6,7 @@ import {
   bytesPerSecondToMbps,
   formatCost,
   formatDuration,
+  formatDurationSeconds,
   formatHourLabel,
   formatInteger,
   formatNetworkRateFromMbps,
@@ -48,8 +49,8 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
       },
       {
         type: 'value',
-        name: '响应 ms',
-        axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
+        name: '响应',
+        axisLabel: { formatter: durationAxisLabel, color: '#64748b' },
         splitLine: { show: false }
       }
     ],
@@ -268,7 +269,7 @@ function usageTrendTooltip(params: unknown) {
   for (const point of points) {
     const name = String(point.seriesName ?? '')
     const value = pointValue(point)
-    const formatted = name === '平均响应' ? formatDuration(value) : formatInteger(value)
+    const formatted = name === '平均响应' ? formatDurationSeconds(value) : formatInteger(value)
     lines.push(`${point.marker ?? ''}${name}: ${formatted}`)
   }
   return lines.join('<br/>')
@@ -384,6 +385,10 @@ interface TooltipRectLike {
 
 function pointValue(point?: TooltipPoint) {
   return numberFromTooltip(point?.value)
+}
+
+function durationAxisLabel(value: number) {
+  return formatDurationSeconds(value)
 }
 
 function numberFromTooltip(value: unknown): number | undefined {

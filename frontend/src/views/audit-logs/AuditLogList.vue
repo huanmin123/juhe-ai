@@ -5,7 +5,7 @@
     :data-source="records"
     row-key="id"
     :loading="loading"
-    :scroll-x="1780"
+    :scroll-x="1480"
     :pagination="pagination"
     mobile-pagination
     :mobile-has-more="mobileHasMore"
@@ -51,12 +51,6 @@
       <template v-else-if="column.key === 'systemAccount'">
         <span>{{ displayName(record.systemAccountName, record.systemAccountId) }}</span>
       </template>
-      <template v-else-if="column.key === 'payload'">
-        <span>{{ formatBytes(record.rawPayloadBytes || record.payloadBytes) }}</span>
-      </template>
-      <template v-else-if="column.key === 'compression'">
-        <span>{{ compressionText(record.rawPayloadBytes || record.payloadBytes, record.compressedPayloadBytes || record.payloadBytes) }}</span>
-      </template>
       <template v-else-if="column.key === 'duration'">
         <span>{{ formatDuration(record.durationMs) }}</span>
       </template>
@@ -91,10 +85,6 @@
             <strong>{{ formatDuration(record.durationMs) }}</strong>
           </div>
           <div class="mobile-list-meta-item">
-            <span>Payload</span>
-            <strong>{{ formatBytes(record.rawPayloadBytes || record.payloadBytes) }}</strong>
-          </div>
-          <div class="mobile-list-meta-item">
             <span>时间</span>
             <strong>{{ formatDateTime(record.createdAt) }}</strong>
           </div>
@@ -114,8 +104,6 @@ import type { RowActionItem } from '@/components/rowActions'
 import type { AuditLogSummary } from '@/types/domain'
 import {
   displayName,
-  compressionText,
-  formatBytes,
   formatDateTime,
   formatDuration,
   outcomeColor,

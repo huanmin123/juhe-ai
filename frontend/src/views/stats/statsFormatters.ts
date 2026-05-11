@@ -19,6 +19,15 @@ export function formatDuration(value?: number) {
   return value === undefined ? '-' : `${Math.round(value)} ms`
 }
 
+export function formatDurationSeconds(value?: number) {
+  if (value === undefined || !Number.isFinite(value)) return '-'
+  const seconds = value / 1000
+  if (seconds === 0) return '0s'
+  if (seconds < 1) return `${seconds.toFixed(2)}s`
+  if (seconds < 10) return `${seconds.toFixed(1)}s`
+  return `${Math.round(seconds)}s`
+}
+
 export function formatSeconds(value?: number) {
   return value === undefined ? '-' : `${Math.round(value)} 秒`
 }

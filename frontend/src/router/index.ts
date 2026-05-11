@@ -16,6 +16,15 @@ declare module 'vue-router' {
 
 export const menuRoutes: RouteRecordRaw[] = [
   {
+    path: '/my-stats',
+    component: () => import('@/views/stats/StatsView.vue'),
+    meta: {
+      title: '统计概览',
+      description: '查看自己的有效请求、Token 趋势、模型分布和成本概览。',
+      viewScope: 'self'
+    }
+  },
+  {
     path: '/my-accounts',
     component: () => import('@/views/accounts/AccountsView.vue'),
     meta: {

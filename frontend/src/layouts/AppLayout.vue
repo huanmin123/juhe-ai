@@ -159,6 +159,7 @@ const menuIconMap = {
   '/my-api-keys': ApiKeyMenuIcon,
   '/api-keys': ApiKeyMenuIcon,
   '/proxies': NodeIndexOutlined,
+  '/my-stats': BarChartOutlined,
   '/stats': BarChartOutlined,
   '/my-ai-performance': BarChartOutlined,
   '/my-usage-stats': FundOutlined,

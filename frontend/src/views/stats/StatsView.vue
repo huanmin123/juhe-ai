@@ -2,7 +2,21 @@
   <div class="stats-page">
     <a-card class="page-card stats-header-card">
       <div class="page-toolbar stats-toolbar">
-        <a-segmented v-model:value="selectedWindow" class="stats-window-segmented" :options="windowOptions" :disabled="loading" @change="handleWindowChange" />
+        <div class="stats-toolbar-filters">
+          <a-segmented v-model:value="selectedWindow" class="stats-window-segmented" :options="windowOptions" :disabled="loading" @change="handleWindowChange" />
+          <SystemPrincipalSelect
+            v-if="isManagementView"
+            v-model:value="selectedSystemAccountId"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :disabled="loading"
+            all-label="全部用户"
+            class="stats-system-account-select"
+            include-all
+            placeholder="筛选用户"
+            @change="handleSystemAccountChange"
+          />
+        </div>
         <div class="page-toolbar-actions">
           <a-button :loading="loading" @click="loadData">
             <template #icon>
@@ -29,7 +43,7 @@
       </a-col>
     </a-row>
 
-    <a-row :gutter="[16, 16]" class="stats-section">
+    <a-row v-if="showAdminDetailCharts" :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="10">
         <StatsChartCard :title="`消耗错误 Top 10（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasErrors" :empty-description="errorEmptyDescription">
           <div ref="errorChartRef" class="chart-panel" />
@@ -51,14 +65,16 @@ import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 
 import { api } from '@/api/client'
-import { authState } from '@/composables/useAuth'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { init, type ECharts } from '@/lib/echarts'
-import type { SystemMetricsOverview, UsageOverviewWindowKey, UsageStatsOverview } from '@/types/domain'
+import type { SystemAccountSummary, SystemMetricsOverview, UsageOverviewWindowKey, UsageStatsOverview } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from './StatsChartCard.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
 import { buildErrorOption, buildModelDistributionOption, buildSystemMetricsOption, buildUsageTrendOption } from './statsChartOptions'
-import { formatCompactInteger, formatCost, formatDuration, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
+import { formatCompactInteger, formatCost, formatDurationSeconds, formatInteger, formatPercent, formatSeconds } from './statsFormatters'
 
 const windowOptions: Array<{ label: string; value: UsageOverviewWindowKey }> = [
   { label: '近一天', value: 'last1d' },
@@ -68,18 +84,23 @@ const windowOptions: Array<{ label: string; value: UsageOverviewWindowKey }> = [
 ]
 type StatsPageState = {
   selectedWindow: UsageOverviewWindowKey
+  selectedSystemAccountId: string
 }
 const defaultStatsPageState = (): StatsPageState => ({
-  selectedWindow: 'last1d'
+  selectedWindow: 'last1d',
+  selectedSystemAccountId: allSystemAccountsValue
 })
 const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState)
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
 const selectedWindow = ref<UsageOverviewWindowKey>(windowOptions.some((item) => item.value === initialPageState.selectedWindow) ? initialPageState.selectedWindow : 'last1d')
+const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId || allSystemAccountsValue)
 const usageOverview = ref<UsageStatsOverview>()
 const systemMetrics = ref<SystemMetricsOverview>()
-const isAdmin = authState.isAdmin
+const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccountsLoaded = ref(false)
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
 const usageTrendChartRef = ref<HTMLDivElement>()
 const modelDistributionChartRef = ref<HTMLDivElement>()
@@ -95,23 +116,24 @@ const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ??
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
 const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
 const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?? 0) > 0)
-const hasVisibleSystemTrend = computed(() => isAdmin.value && hasSystemTrend.value)
+const hasVisibleSystemTrend = computed(() => showAdminDetailCharts.value && hasSystemTrend.value)
 const hasUsageOverview = computed(() => Boolean(usageOverview.value))
 const initialLoading = computed(() => loading.value && !hasUsageOverview.value)
-const systemInitialLoading = computed(() => loading.value && isAdmin.value && !systemMetrics.value)
+const systemInitialLoading = computed(() => loading.value && isManagementView.value && !systemMetrics.value)
+const showAdminDetailCharts = computed(() => isManagementView.value)
 const currentWindowLabel = computed(() => usageOverview.value?.window.label ?? windowOptions.find((item) => item.value === selectedWindow.value)?.label ?? '近一天')
 const hasWindowUsage = computed(() => (usageOverview.value?.summary.requestCount ?? 0) > 0)
 const usageTrendEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无趋势数据，窗口指标已在上方展示` : `${currentWindowLabel.value}暂无趋势数据`)
 const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.value}暂无模型调用`)
 const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无消耗错误，排障错误请查看日志` : `${currentWindowLabel.value}暂无消耗错误`)
-const systemTrendEmptyDescription = computed(() => isAdmin.value ? '等待后台监控采样' : '系统监控仅管理员可见')
+const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
 
 const summaryCards = computed(() => {
   const summary = usageOverview.value?.summary
   const windowLabel = currentWindowLabel.value
   return [
     { key: 'requests', label: `${windowLabel}有效请求`, value: formatInteger(summary?.requestCount), extra: `消耗错误率 ${formatPercent((summary?.errorRate ?? 0) * 100)} / 错误 ${formatInteger(summary?.errorCount)}` },
-    { key: 'duration', label: `${windowLabel}平均响应`, value: formatDuration(summary?.averageDurationMs), extra: `首 Token ${formatDuration(summary?.averageFirstTokenMs)}` },
+    { key: 'duration', label: `${windowLabel}平均响应`, value: formatDurationSeconds(summary?.averageDurationMs), extra: `首 Token ${formatDurationSeconds(summary?.averageFirstTokenMs)}` },
     { key: 'tokens', label: `${windowLabel} Token`, value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存 ${formatCompactInteger(summary?.cacheReadTokens)}` },
     { key: 'cost', label: `${windowLabel}成本`, value: formatCost(summary?.totalCost), extra: `统计滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
   ]
@@ -120,8 +142,12 @@ const summaryCards = computed(() => {
 async function loadData() {
   loading.value = true
   try {
-    usageOverview.value = await api.stats.usageOverview({ window: selectedWindow.value })
-    if (isAdmin.value) {
+    await loadSystemAccounts()
+    const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
+    usageOverview.value = isManagementView.value
+      ? await api.stats.usageOverview({ window: selectedWindow.value, systemAccountId })
+      : await api.myStats.usageOverview({ window: selectedWindow.value })
+    if (isManagementView.value) {
       systemMetrics.value = await api.stats.systemMetrics({ window: selectedWindow.value })
     } else {
       systemMetrics.value = undefined
@@ -138,6 +164,16 @@ async function loadData() {
 function handleWindowChange(value: string | number) {
   selectedWindow.value = value as UsageOverviewWindowKey
   void loadData()
+}
+
+function handleSystemAccountChange() {
+  void loadData()
+}
+
+async function loadSystemAccounts(): Promise<void> {
+  if (!isManagementView.value || systemAccountsLoaded.value) return
+  systemAccounts.value = await api.systemAccounts.list()
+  systemAccountsLoaded.value = true
 }
 
 function renderCharts() {
@@ -173,7 +209,7 @@ function renderModelDistributionChart() {
 }
 
 function renderErrorChart() {
-  if (!hasErrors.value) {
+  if (!showAdminDetailCharts.value || !hasErrors.value) {
     disposeChart(errorChart)
     return
   }
@@ -184,7 +220,7 @@ function renderErrorChart() {
 }
 
 function renderSystemMetricsChart() {
-  if (!isAdmin.value || !hasSystemTrend.value) {
+  if (!showAdminDetailCharts.value || !hasSystemTrend.value) {
     disposeChart(systemMetricsChart)
     return
   }
@@ -218,7 +254,8 @@ function resizeCharts() {
 
 function snapshotPageState(): StatsPageState {
   return {
-    selectedWindow: selectedWindow.value
+    selectedWindow: selectedWindow.value,
+    selectedSystemAccountId: selectedSystemAccountId.value
   }
 }
 
@@ -253,9 +290,20 @@ onBeforeUnmount(() => {
   margin: 0;
 }
 
+.stats-toolbar-filters {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
 .stats-window-segmented {
   width: max-content;
   max-width: 100%;
+}
+
+.stats-system-account-select {
+  width: 220px;
 }
 
 .stats-section {
@@ -320,9 +368,23 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 768px) {
+  .stats-toolbar {
+    align-items: stretch;
+  }
+
+  .stats-toolbar-filters {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
   .stats-window-segmented {
     width: 100%;
     min-width: 0;
+  }
+
+  .stats-system-account-select {
+    width: 100%;
   }
 
   .chart-panel,

@@ -53,12 +53,6 @@
     <a-drawer v-model:open="detailOpen" width="min(980px, 96vw)" title="审计详情" :body-style="{ padding: '18px' }">
       <a-spin :spinning="detailLoading">
         <template v-if="detail">
-          <a-alert
-            type="warning"
-            show-icon
-            message="原始审计日志包含完整凭据、请求头、请求体和响应内容，仅用于管理员排障。"
-            class="detail-warning"
-          />
           <a-descriptions bordered size="small" :column="2" class="detail-descriptions">
             <a-descriptions-item label="traceId">{{ detail.traceId }}</a-descriptions-item>
             <a-descriptions-item label="结果">{{ outcomeText(detail.auditOutcome) }}</a-descriptions-item>
@@ -75,24 +69,6 @@
 
           <a-tabs>
             <a-tab-pane key="attempts" tab="上游尝试">
-              <section v-if="detail.errorGroup" class="error-group-panel">
-                <div class="error-group-panel-head">
-                  <strong>错误聚合</strong>
-                  <a-tag color="red">{{ detail.errorGroup.count }} 次</a-tag>
-                </div>
-                <div class="error-group-grid">
-                  <span>窗口</span>
-                  <strong>{{ formatDateTime(detail.errorGroup.windowStartedAt) }} - {{ formatDateTime(detail.errorGroup.windowEndedAt) }}</strong>
-                  <span>状态码</span>
-                  <strong>{{ detail.errorGroup.statusCode ?? '-' }}</strong>
-                  <span>错误码</span>
-                  <strong>{{ detail.errorGroup.errorCode || '-' }}</strong>
-                  <span>错误阶段</span>
-                  <strong>{{ detail.errorGroup.errorPhase || '-' }}</strong>
-                  <span>最近错误</span>
-                  <strong class="error-cell">{{ detail.errorGroup.lastMessage || '-' }}</strong>
-                </div>
-              </section>
               <ResponsiveDataList
                 table-class="audit-detail-table"
                 size="small"
@@ -101,6 +77,7 @@
                 row-key="id"
                 :pagination="false"
                 :table-scroll-enabled="false"
+                :adaptive-column-width="false"
                 :mobile-breakpoint="1024"
                 :lock-body-scroll="false"
               >
@@ -110,6 +87,9 @@
                   </template>
                   <template v-else-if="column.key === 'account'">
                     <span class="attempt-account-cell">{{ displayName(record.accountName, record.accountId) }}</span>
+                  </template>
+                  <template v-else-if="column.key === 'startedAt'">
+                    <span class="detail-time-cell muted-cell">{{ formatDateTime(record.startedAt) }}</span>
                   </template>
                   <template v-else-if="column.key === 'duration'">
                     {{ formatDuration(record.durationMs) }}
@@ -134,6 +114,8 @@
                       <strong>{{ displayName(record.accountName, record.accountId) }}</strong>
                       <span>状态码</span>
                       <strong>{{ record.upstreamStatusCode ?? '-' }}</strong>
+                      <span>时间</span>
+                      <strong>{{ formatDateTime(record.startedAt) }}</strong>
                       <span>上游 URL</span>
                       <strong>{{ record.upstreamUrl }}</strong>
                     </div>
@@ -150,6 +132,7 @@
                 row-key="id"
                 :pagination="false"
                 :table-scroll-enabled="false"
+                :adaptive-column-width="false"
                 :mobile-breakpoint="1024"
                 :lock-body-scroll="false"
               >
@@ -162,6 +145,9 @@
                   </template>
                   <template v-else-if="column.key === 'captureStatus'">
                     <a-tag>{{ captureStatusText(record.captureStatus) }}</a-tag>
+                  </template>
+                  <template v-else-if="column.key === 'createdAt'">
+                    <span class="detail-time-cell muted-cell">{{ formatDateTime(record.createdAt) }}</span>
                   </template>
                   <template v-else-if="column.key === 'headersSha256'">
                     <a-tooltip :title="record.headersSha256 || '-'">
@@ -190,6 +176,8 @@
                       <strong>{{ record.contentType || '-' }}</strong>
                       <span>状态</span>
                       <strong>{{ captureStatusText(record.captureStatus) }}</strong>
+                      <span>时间</span>
+                      <strong>{{ formatDateTime(record.createdAt) }}</strong>
                       <span>Headers SHA256</span>
                       <strong class="hash-cell">{{ formatHashPreview(record.headersSha256) }}</strong>
                       <span>Body SHA256</span>
@@ -506,7 +494,8 @@ onMounted(loadData)
 .attempt-account-cell,
 .error-cell,
 .url-cell,
-.mono-cell {
+.mono-cell,
+.detail-time-cell {
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
 }
@@ -517,6 +506,7 @@ onMounted(loadData)
 }
 
 .attempt-account-cell,
+.detail-time-cell,
 .error-cell,
 .url-cell {
   display: block;
@@ -526,48 +516,8 @@ onMounted(loadData)
   word-break: break-word;
 }
 
-.detail-warning {
-  margin-bottom: 14px;
-}
-
 .detail-descriptions {
   margin-bottom: 16px;
-}
-
-.error-group-panel {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 16px;
-  padding: 12px;
-  border: 1px solid #fde2e2;
-  border-radius: 8px;
-  background: #fff7f7;
-}
-
-.error-group-panel-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
-
-.error-group-panel-head strong {
-  color: #7f1d1d;
-}
-
-.error-group-grid {
-  display: grid;
-  grid-template-columns: 88px minmax(0, 1fr);
-  gap: 8px 12px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.error-group-grid strong {
-  min-width: 0;
-  color: #0f172a;
-  font-weight: 500;
-  overflow-wrap: anywhere;
 }
 
 .payload-viewer {
@@ -633,8 +583,12 @@ onMounted(loadData)
 }
 
 .hash-cell {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
   font-family: Consolas, 'Courier New', monospace;
   font-size: 12px;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 

@@ -19,30 +19,30 @@ export const auditLogColumns = [
   { title: 'API Key', key: 'apiKey', width: 150 },
   { title: '分组', key: 'group', width: 150 },
   { title: '系统账户', key: 'systemAccount', width: 150 },
-  { title: 'Payload', key: 'payload', width: 150 },
-  { title: '压缩', key: 'compression', width: 150 },
   { title: '耗时', key: 'duration', width: 90 },
   { title: '时间', key: 'createdAt', width: 180 },
   { title: '操作', key: 'actions', width: 90, fixed: 'right' }
 ]
 
 export const auditAttemptColumns = [
-  { title: '#', dataIndex: 'attemptIndex', width: 52 },
-  { title: '结果', key: 'success', width: 76 },
-  { title: '账号', key: 'account', width: 132 },
-  { title: '状态码', dataIndex: 'upstreamStatusCode', width: 76 },
-  { title: '耗时', key: 'duration', width: 76 },
-  { title: '上游 URL', key: 'url', width: 220 },
-  { title: '错误', key: 'error', width: 160 }
+  { title: '#', dataIndex: 'attemptIndex', width: 44 },
+  { title: '结果', key: 'success', width: 64 },
+  { title: '账号', key: 'account', width: 112 },
+  { title: '状态码', dataIndex: 'upstreamStatusCode', width: 64 },
+  { title: '时间', key: 'startedAt', width: 132 },
+  { title: '耗时', key: 'duration', width: 64 },
+  { title: '上游 URL', key: 'url', width: 190 },
+  { title: '错误', key: 'error', width: 150 }
 ]
 
 export const auditPayloadColumns = [
-  { title: '部分', key: 'partType', width: 116 },
-  { title: '序号', dataIndex: 'sequenceIndex', width: 76 },
-  { title: '类型', dataIndex: 'contentType', width: 150 },
-  { title: '大小', key: 'size', width: 82 },
-  { title: '状态', key: 'captureStatus', width: 86 },
-  { title: 'Headers SHA256', key: 'headersSha256', width: 130 },
-  { title: 'Body SHA256', key: 'bodySha256', width: 130 },
-  { title: '操作', key: 'actions', width: 72 }
+  { title: '部分', key: 'partType', width: 96 },
+  { title: '序号', dataIndex: 'sequenceIndex', width: 56 },
+  { title: '类型', dataIndex: 'contentType', width: 118 },
+  { title: '大小', key: 'size', width: 68 },
+  { title: '状态', key: 'captureStatus', width: 72 },
+  { title: '时间', key: 'createdAt', width: 132 },
+  { title: 'Headers SHA256', key: 'headersSha256', width: 92 },
+  { title: 'Body SHA256', key: 'bodySha256', width: 92 },
+  { title: '操作', key: 'actions', width: 56 }
 ]
