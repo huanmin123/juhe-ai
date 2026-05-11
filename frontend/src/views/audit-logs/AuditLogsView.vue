@@ -38,64 +38,17 @@
       </template>
     </ResponsiveListToolbar>
 
-    <a-tabs v-model:activeKey="activeView" class="audit-view-tabs">
-      <a-tab-pane key="events" tab="审计事件">
-        <AuditLogList
-          :records="records"
-          :loading="loading"
-          :pagination="tablePagination"
-          :mobile-has-more="mobileHasMore"
-          :loading-more="mobileLoadingMore"
-          @change="handleTableChange"
-          @detail="openDetail"
-          @mobile-load-more="loadMoreMobileRecords"
-          @mobile-refresh="refreshMobileRecords"
-        />
-      </a-tab-pane>
-      <a-tab-pane key="groups" tab="错误聚合">
-        <ResponsiveDataList
-          table-class="page-table audit-error-group-table"
-          :columns="errorGroupColumns"
-          :data-source="errorGroups"
-          row-key="id"
-          :loading="loading"
-          :pagination="errorGroupPagination"
-          :scroll-x="1240"
-          @change="handleErrorGroupTableChange"
-        >
-          <template #emptyText>
-            <a-empty class="page-empty-card" description="暂无重复错误聚合" />
-          </template>
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'count'">
-              <a-tag color="red">{{ record.count }} 次</a-tag>
-            </template>
-            <template v-else-if="column.key === 'updatedAt'">
-              <span class="muted-cell">{{ formatDateTime(record.updatedAt) }}</span>
-            </template>
-            <template v-else-if="column.key === 'status'">
-              <a-tag :color="statusColor(record.statusCode, false)">{{ record.statusCode ?? '-' }}</a-tag>
-            </template>
-            <template v-else-if="column.key === 'path'">
-              <span class="endpoint-cell">{{ record.path || '-' }}</span>
-            </template>
-            <template v-else-if="column.key === 'model'">
-              <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
-              <span v-else>-</span>
-            </template>
-            <template v-else-if="column.key === 'account'">
-              {{ displayName(record.accountName, record.accountId) }}
-            </template>
-            <template v-else-if="column.key === 'error'">
-              <span class="error-cell">{{ record.lastMessage || record.errorCode || '-' }}</span>
-            </template>
-            <template v-else-if="column.key === 'actions'">
-              <RowActions :actions="groupActions" @action-click="openErrorGroup(record.id)" />
-            </template>
-          </template>
-        </ResponsiveDataList>
-      </a-tab-pane>
-    </a-tabs>
+    <AuditLogList
+      :records="records"
+      :loading="loading"
+      :pagination="tablePagination"
+      :mobile-has-more="mobileHasMore"
+      :loading-more="mobileLoadingMore"
+      @change="handleTableChange"
+      @detail="openDetail"
+      @mobile-load-more="loadMoreMobileRecords"
+      @mobile-refresh="refreshMobileRecords"
+    />
 
     <a-drawer v-model:open="detailOpen" width="min(980px, 96vw)" title="审计详情" :body-style="{ padding: '18px' }">
       <a-spin :spinning="detailLoading">
@@ -119,6 +72,25 @@
             <a-descriptions-item label="采样">{{ detail.sampleReason }} / {{ detail.sampleBucket }}</a-descriptions-item>
             <a-descriptions-item label="错误" :span="2">{{ detail.errorMessage ?? '-' }}</a-descriptions-item>
           </a-descriptions>
+
+          <section v-if="detail.errorGroup" class="error-group-panel">
+            <div class="error-group-panel-head">
+              <strong>错误聚合</strong>
+              <a-tag color="red">{{ detail.errorGroup.count }} 次</a-tag>
+            </div>
+            <div class="error-group-grid">
+              <span>窗口</span>
+              <strong>{{ formatDateTime(detail.errorGroup.windowStartedAt) }} - {{ formatDateTime(detail.errorGroup.windowEndedAt) }}</strong>
+              <span>状态码</span>
+              <strong>{{ detail.errorGroup.statusCode ?? '-' }}</strong>
+              <span>错误码</span>
+              <strong>{{ detail.errorGroup.errorCode || '-' }}</strong>
+              <span>错误阶段</span>
+              <strong>{{ detail.errorGroup.errorPhase || '-' }}</strong>
+              <span>最近错误</span>
+              <strong class="error-cell">{{ detail.errorGroup.lastMessage || '-' }}</strong>
+            </div>
+          </section>
 
           <a-tabs>
             <a-tab-pane key="attempts" tab="上游尝试">
@@ -268,7 +240,7 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { AuditErrorGroupSummary, AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
+import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import ReadonlyCodeViewer from '@/components/ReadonlyCodeViewer.vue'
@@ -291,7 +263,6 @@ import {
 } from './auditLogFormatters'
 import {
   auditAttemptColumns,
-  auditErrorGroupColumns,
   auditOutcomeOptions,
   auditPayloadColumns
 } from './auditLogTableColumns'
@@ -301,7 +272,6 @@ const detailLoading = ref(false)
 const payloadLoadingId = ref('')
 const mobileLoadingMore = ref(false)
 const records = ref<AuditLogSummary[]>([])
-const errorGroups = ref<AuditErrorGroupSummary[]>([])
 const runtime = ref<AuditLogRuntime>()
 const detail = ref<AuditLogDetail>()
 const selectedPayload = ref<AuditLogPayloadDetail>()
@@ -310,8 +280,6 @@ const payloadContentTab = ref<'headers' | 'body'>('body')
 const payloadCodeViewer = ref<{ copyDisplayText: () => Promise<void> }>()
 
 const pageSize = 100
-const activeView = ref<'events' | 'groups'>('events')
-const activeErrorGroupId = ref<string>()
 type AuditLogsPageState = {
   clientIpFilter: string
   modelFilter: string
@@ -340,15 +308,10 @@ const statusCodeFilter = ref(initialPageState.statusCodeFilter)
 const modelFilter = ref(initialPageState.modelFilter)
 const clientIpFilter = ref(initialPageState.clientIpFilter)
 const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
-const errorGroupsPage = reactive({ current: 1, pageSize, total: 0 })
 
 const outcomeOptions = auditOutcomeOptions
 const attemptColumns = auditAttemptColumns
 const payloadColumns = auditPayloadColumns
-const errorGroupColumns = auditErrorGroupColumns
-const groupActions: RowActionItem[] = [
-  { key: 'events', label: '查看事件', icon: 'detail', tone: 'info' }
-]
 const activeFilterCount = computed(() => {
   let count = 0
   if (traceIdFilter.value.trim()) count += 1
@@ -368,14 +331,6 @@ const tablePagination = computed(() => ({
   showSizeChanger: false,
   showTotal: (total: number) => `共 ${total} 条审计日志`
 }))
-const errorGroupPagination = computed(() => ({
-  current: errorGroupsPage.current,
-  pageSize: errorGroupsPage.pageSize,
-  total: errorGroupsPage.total,
-  hideOnSinglePage: true,
-  showSizeChanger: false,
-  showTotal: (total: number) => `共 ${total} 个错误组`
-}))
 
 const mobileHasMore = computed(() => records.value.length < pagination.total)
 const selectedPayloadCurrentText = computed(() => {
@@ -389,9 +344,7 @@ const selectedPayloadViewerContentType = computed(() => payloadContentTab.value 
   : selectedPayload.value?.contentType)
 
 function applyFilters(): void {
-  activeErrorGroupId.value = undefined
   pagination.current = 1
-  errorGroupsPage.current = 1
   void loadData()
 }
 
@@ -403,11 +356,8 @@ function resetFilters(): void {
   statusCodeFilter.value = defaults.statusCodeFilter
   modelFilter.value = defaults.modelFilter
   clientIpFilter.value = defaults.clientIpFilter
-  activeErrorGroupId.value = undefined
   pagination.current = defaults.pagination.current
   pagination.pageSize = defaults.pagination.pageSize
-  errorGroupsPage.current = 1
-  errorGroupsPage.pageSize = pageSize
   pageStateCache.clear()
   void loadData()
 }
@@ -417,10 +367,7 @@ async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Pr
     loading.value = true
   }
   try {
-    const listParams = activeErrorGroupId.value ? {
-      page: pagination.current,
-      pageSize: pagination.pageSize
-    } : {
+    const listParams = {
       page: pagination.current,
       pageSize: pagination.pageSize,
       traceId: traceIdFilter.value || undefined,
@@ -430,27 +377,14 @@ async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Pr
       model: modelFilter.value || undefined,
       clientIp: clientIpFilter.value || undefined
     }
-    const [listResult, errorGroupResult, runtimeInfo] = await Promise.all([
-      activeErrorGroupId.value
-        ? api.auditLogs.errorGroupEvents(activeErrorGroupId.value, listParams)
-        : api.auditLogs.list(listParams),
-      api.auditLogs.errorGroups({
-        page: errorGroupsPage.current,
-        pageSize: errorGroupsPage.pageSize,
-        path: pathFilter.value || undefined,
-        statusCode: normalizedStatusCode(statusCodeFilter.value),
-        model: modelFilter.value || undefined
-      }),
+    const [listResult, runtimeInfo] = await Promise.all([
+      api.auditLogs.list(listParams),
       api.auditLogs.runtime()
     ])
     pagination.current = listResult.page
     pagination.pageSize = listResult.pageSize
     pagination.total = listResult.total
     records.value = options.append ? [...records.value, ...listResult.items] : listResult.items
-    errorGroupsPage.current = errorGroupResult.page
-    errorGroupsPage.pageSize = errorGroupResult.pageSize
-    errorGroupsPage.total = errorGroupResult.total
-    errorGroups.value = errorGroupResult.items
     runtime.value = runtimeInfo
   } catch (error) {
     console.error(error)
@@ -470,23 +404,6 @@ function handleTableChange(paginationInfo: unknown): void {
   pagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
   pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
   void loadData()
-}
-
-function handleErrorGroupTableChange(paginationInfo: unknown): void {
-  if (!paginationInfo || typeof paginationInfo !== 'object') return
-  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
-  const nextCurrent = Number(next.current)
-  const nextPageSize = Number(next.pageSize)
-  errorGroupsPage.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
-  errorGroupsPage.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
-  void loadData()
-}
-
-async function openErrorGroup(errorGroupId: string): Promise<void> {
-  activeErrorGroupId.value = errorGroupId
-  activeView.value = 'events'
-  pagination.current = 1
-  await loadData()
 }
 
 async function loadMoreMobileRecords(): Promise<void> {
@@ -587,10 +504,6 @@ onMounted(loadData)
   width: 150px;
 }
 
-.audit-view-tabs {
-  margin-top: 4px;
-}
-
 .attempt-account-cell,
 .error-cell,
 .url-cell,
@@ -620,6 +533,42 @@ onMounted(loadData)
 
 .detail-descriptions {
   margin-bottom: 16px;
+}
+
+.error-group-panel {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding: 12px;
+  border: 1px solid #fde2e2;
+  border-radius: 8px;
+  background: #fff7f7;
+}
+
+.error-group-panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.error-group-panel-head strong {
+  color: #7f1d1d;
+}
+
+.error-group-grid {
+  display: grid;
+  grid-template-columns: 88px minmax(0, 1fr);
+  gap: 8px 12px;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.error-group-grid strong {
+  min-width: 0;
+  color: #0f172a;
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
 .payload-viewer {

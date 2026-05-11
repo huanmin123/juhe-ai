@@ -14,7 +14,6 @@ import type {
   AnnouncementLevel,
   AnnouncementStatus,
   AnnouncementSummary,
-  AuditErrorGroupListResult,
   AuditLogDetail,
   AuditLogListResult,
   AuditLogPayloadDetail,
@@ -146,18 +145,6 @@ export interface AuditLogListParams extends ListParams {
   accountId?: string
   clientIp?: string
   errorGroupId?: string
-  limit?: number
-}
-
-export interface AuditErrorGroupListParams extends ListParams {
-  page?: number
-  pageSize?: number
-  statusCode?: number
-  path?: string
-  model?: string
-  apiKeyId?: string
-  groupId?: string
-  accountId?: string
   limit?: number
 }
 
@@ -396,8 +383,6 @@ export const api = {
   },
   auditLogs: {
     list: (params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get('/audit-logs', { params, ...noTimeout })),
-    errorGroups: (params?: AuditErrorGroupListParams) => unwrap<AuditErrorGroupListResult>(http.get('/audit-logs/error-groups', { params, ...noTimeout })),
-    errorGroupEvents: (id: string, params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get(`/audit-logs/error-groups/${id}/events`, { params, ...noTimeout })),
     runtime: () => unwrap<AuditLogRuntime>(http.get('/audit-logs/runtime', noTimeout)),
     detail: (id: string) => unwrap<AuditLogDetail>(http.get(`/audit-logs/${id}`, noTimeout)),
     payload: (id: string, payloadId: string) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, noTimeout))

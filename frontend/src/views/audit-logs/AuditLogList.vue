@@ -21,7 +21,7 @@
     </template>
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'traceId'">
-        <button class="link-button trace-cell" type="button" @click="$emit('detail', record)">{{ record.traceId }}</button>
+        <span class="trace-cell mono-cell">{{ record.traceId }}</span>
       </template>
       <template v-else-if="column.key === 'outcome'">
         <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
@@ -68,7 +68,7 @@
       </template>
     </template>
     <template #card="{ record }">
-      <article class="mobile-list-card" @click="$emit('detail', record)">
+      <article class="mobile-list-card">
         <div class="mobile-list-card-head">
           <div class="mobile-list-card-title">{{ record.method }} {{ record.path }}</div>
           <div class="mobile-list-card-tags">
@@ -98,6 +98,9 @@
             <span>时间</span>
             <strong>{{ formatDateTime(record.createdAt) }}</strong>
           </div>
+        </div>
+        <div class="mobile-list-card-actions">
+          <RowActions variant="button" :actions="detailActions" @action-click="handleActionClick($event, record)" />
         </div>
       </article>
     </template>
@@ -153,14 +156,6 @@ function handleActionClick(key: string, record: AuditLogSummary) {
   white-space: nowrap;
 }
 
-.link-button {
-  padding: 0;
-  color: #1677ff;
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-}
-
 .trace-cell,
 .endpoint-cell,
 .mono-cell {
@@ -169,6 +164,7 @@ function handleActionClick(key: string, record: AuditLogSummary) {
 }
 
 .trace-cell {
+  display: inline-block;
   max-width: 230px;
   overflow: hidden;
   text-overflow: ellipsis;

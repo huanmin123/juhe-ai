@@ -41,9 +41,9 @@
         <span>优先级</span>
         <strong>{{ account.fallbackEnabled ? `${account.priority} / 备用` : account.priority }}</strong>
       </div>
-      <div class="account-mobile-meta-item">
+      <div class="account-mobile-meta-item account-mobile-meta-wide">
         <span>用量(日)</span>
-        <strong>{{ formatAccountUsageSummary(account.todayUsage) }}</strong>
+        <AccountUsageCell :account="account" />
       </div>
       <div class="account-mobile-meta-item">
         <span>最近使用</span>
@@ -78,11 +78,11 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { AccountSummary, ProxyProfileOptionSummary } from '@/types/domain'
 import AccountStatusTag from './AccountStatusTag.vue'
+import AccountUsageCell from './AccountUsageCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
   accountLastUsedAt,
   accountTypeText,
-  formatAccountUsageSummary,
   formatDateTime,
   isAccountPackageExpired,
   isAuthorizedAccount,

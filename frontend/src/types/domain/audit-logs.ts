@@ -84,6 +84,7 @@ export interface AuditLogPayloadSummary {
 
 export interface AuditLogDetail extends AuditLogSummary {
   attempts: AuditLogAttemptSummary[]
+  errorGroup?: AuditErrorGroupSummary
   payloads: AuditLogPayloadSummary[]
 }
 
@@ -153,11 +154,4 @@ export interface AuditErrorGroupSummary {
   lastMessage?: string
   createdAt: string
   updatedAt: string
-}
-
-export interface AuditErrorGroupListResult {
-  items: AuditErrorGroupSummary[]
-  total: number
-  page: number
-  pageSize: number
 }

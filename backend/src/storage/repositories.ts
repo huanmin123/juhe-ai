@@ -744,7 +744,7 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       lastUsedAt: isAuthorizedView ? usage.lastUsedAt : row.last_used_at ?? usage.lastUsedAt,
       todayUsage,
       usage,
-      oauthUsage: !isAuthorizedView && row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined,
+      oauthUsage: row.provider_code === 'openai' && row.type === 'oauth' ? oauthUsageByAccount.get(row.id) : undefined,
       accessType: row.access_type ?? 'owner',
       accountAuthorizationId: row.authorization_id ?? undefined,
       boundGroupId: groupBinding?.groupId,

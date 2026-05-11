@@ -161,6 +161,7 @@ export interface AuditLogPayloadSummary {
 
 export interface AuditLogDetail extends AuditLogSummary {
   attempts: AuditLogAttemptSummary[]
+  errorGroup?: AuditErrorGroupSummary
   payloads: AuditLogPayloadSummary[]
 }
 
@@ -543,13 +544,33 @@ export function getAuditLogDetail(id: string): AuditLogDetail | undefined {
     .all(id) as AuditLogRow[]
   const payloadRows = getAuditPayloadRows(id)
   const systemAccountNames = loadSystemAccountNameMap()
+  const errorGroupId = optionalString(row.error_group_id)
   const accountNames = loadAccountNameMap(attemptRows.map((attempt) => String(attempt.account_id ?? '')).filter(Boolean))
   const groupNames = loadGroupNameMap(attemptRows.map((attempt) => String(attempt.group_id ?? '')).filter(Boolean))
   return {
     ...auditLogSummaryFromRow(row, systemAccountNames),
     attempts: attemptRows.map((attempt) => auditLogAttemptFromRow(attempt, accountNames, groupNames)),
+    errorGroup: errorGroupId ? getAuditErrorGroupById(errorGroupId, systemAccountNames) : undefined,
     payloads: payloadRows.map(auditLogPayloadSummaryFromRow)
   }
+}
+
+function getAuditErrorGroupById(id: string, systemAccountNames: Map<string, string>): AuditErrorGroupSummary | undefined {
+  const row = getDatabase()
+    .prepare(`
+      SELECT
+        aeg.*,
+        ak.name AS api_key_name,
+        g.name AS group_name,
+        a.name AS account_name
+      FROM audit_error_groups aeg
+      LEFT JOIN api_keys ak ON ak.id = aeg.api_key_id
+      LEFT JOIN groups g ON g.id = aeg.group_id
+      LEFT JOIN accounts a ON a.id = aeg.account_id
+      WHERE aeg.id = ?
+    `)
+    .get(id) as AuditLogRow | undefined
+  return row ? auditErrorGroupFromRow(row, systemAccountNames) : undefined
 }
 
 export function getAuditLogPayload(auditLogId: string, payloadId: string): AuditLogPayloadDetail | undefined {

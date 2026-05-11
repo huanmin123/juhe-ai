@@ -207,6 +207,7 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - 后台策略：不再注册 OAuth 额度快照主动探测任务；后台只保留 Access Token 预刷新。
 - 429 处理：收到 OAuth Codex 429 时，先解析 header 里已耗尽窗口的 reset 时间；如果 header 不足，再解析响应体 `error.resets_at` 或 `error.resets_in_seconds`；计算出的时间写入账号 `rate_limited` 冷却截止时间，后台下次刷新不早于 reset 时间。
 - UI 展示：OAuth 行在“用量情况”里显示本地请求/token/成本摘要，同时额外显示 `5h`、`7d` 两条进度条、百分比、倒计时/恢复时间、快照更新时间和快照来源；API Key 行不显示这两条 OAuth 额度进度。
+- 授权展示：OAuth 额度快照是账号非敏感运行态，被授权用户获得该 OAuth 账户使用权后，也能在自己的账户列表看到同一账号的 `5h` / `7d` 额度进度，但仍不能查看 Access Token、Refresh Token 或完整请求内容。
 - UI 限制：更多菜单不提供“刷新用量”按钮；快照缺失或过期时显示“等待真实请求更新”或“暂无快照”，不触发前端即时探测。
 
 ## 账户列表字段
