@@ -1,9 +1,9 @@
 import type { EChartsOption } from 'echarts'
 
 import type { AiPerformanceOverview } from '@/types/domain'
-import { axisNumberLabel, formatDuration, formatHourLabel, formatInteger } from '@/views/stats/statsFormatters'
+import { formatHourLabel, formatInteger } from '@/views/stats/statsFormatters'
 
-const chartColors = ['#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#2f54eb', '#a0d911', '#fa541c', '#8c8c8c', '#08979c', '#531dab']
+export const chartColors = ['#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#2f54eb', '#a0d911', '#fa541c', '#8c8c8c', '#08979c', '#531dab']
 
 export type AiPerformanceMetric = 'firstToken' | 'duration'
 
@@ -26,18 +26,12 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
       trigger: 'axis',
       formatter: (params: unknown) => performanceTooltip(params, overview, metric)
     },
-    legend: {
-      type: 'scroll',
-      bottom: 0,
-      itemWidth: 10,
-      itemHeight: 10,
-      data: overview.hourlySeries.map((series) => displayName(series.accountId, series.accountName))
-    },
+    legend: { show: false },
     grid: {
       left: 52,
       right: 28,
       top: 28,
-      bottom: 64
+      bottom: 36
     },
     xAxis: {
       type: 'category',
@@ -48,8 +42,8 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
     },
     yAxis: {
       type: 'value',
-      name: 'ms',
-      axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
+      name: '耗时',
+      axisLabel: { formatter: durationAxisLabel, color: '#64748b' },
       splitLine: { lineStyle: { color: '#edf2f7' } }
     },
     series: overview.hourlySeries.map((series) => {
@@ -59,7 +53,7 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
         name: seriesName,
         type: 'line',
         smooth: true,
-        connectNulls: false,
+        connectNulls: true,
         symbol: 'circle',
         symbolSize: 5,
         emphasis: { focus: 'series' },
@@ -107,7 +101,7 @@ function performanceTooltip(params: unknown, overview: AiPerformanceOverview, me
       account?.selected ? '指定' : ''
     ].filter(Boolean)
     const suffix = badges.length ? `（${badges.join('，')}）` : ''
-    lines.push(`${point.marker ?? ''}${escapeHtml(accountName)}${suffix}: ${formatDuration(pointValue(point))}，样本 ${formatInteger(numberFromTooltip(data.sampleCount))}，请求 ${formatInteger(numberFromTooltip(data.requestCount))}`)
+    lines.push(`${point.marker ?? ''}${escapeHtml(accountName)}${suffix}: ${formatDurationSeconds(pointValue(point))}，样本 ${formatInteger(numberFromTooltip(data.sampleCount))}，请求 ${formatInteger(numberFromTooltip(data.requestCount))}`)
   }
   return lines.join('<br/>')
 }
@@ -145,4 +139,18 @@ function escapeHtml(value: unknown) {
     "'": '&#39;'
   }
   return String(value ?? '').replace(/[&<>"']/g, (character) => htmlEscapes[character])
+}
+
+function durationAxisLabel(value: number) {
+  if (!Number.isFinite(value)) return ''
+  return formatDurationSeconds(value)
+}
+
+function formatDurationSeconds(value?: number) {
+  if (value === undefined || !Number.isFinite(value)) return '-'
+  const seconds = value / 1000
+  if (seconds === 0) return '0s'
+  if (seconds < 1) return `${seconds.toFixed(2)}s`
+  if (seconds < 10) return `${seconds.toFixed(1)}s`
+  return `${Math.round(seconds)}s`
 }

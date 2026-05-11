@@ -2,25 +2,25 @@
   <div class="ai-performance-page">
     <a-card class="page-card ai-performance-header-card">
       <div class="page-toolbar ai-performance-toolbar">
-        <a-space class="ai-performance-filters" :size="12" wrap>
+        <div class="ai-performance-filters">
           <a-segmented v-model:value="selectedWindow" class="ai-performance-window-segmented" :options="windowOptions" :disabled="loading" @change="handleWindowChange" />
           <a-select
-            v-model:value="selectedAccountIds"
+            :value="accountPickerValue"
             class="ai-performance-account-select"
             mode="multiple"
             allow-clear
             show-search
-            :max-tag-count="3"
+            :max-tag-count="0"
             :options="accountOptions"
             :loading="accountsLoading"
             :disabled="loading"
             :filter-option="false"
-            placeholder="临时指定账户"
-            @change="handleAccountChange"
+            placeholder="搜索并添加账户"
+            @select="handleAccountSelect"
             @search="handleAccountSearch"
             @dropdown-visible-change="handleAccountDropdownVisibleChange"
           />
-        </a-space>
+        </div>
         <div class="page-toolbar-actions">
           <a-button :disabled="!selectedAccountIds.length || loading" @click="resetSelectedAccounts">重置指定</a-button>
           <a-button :loading="loading" @click="loadPerformance">
@@ -30,6 +30,17 @@
             刷新
           </a-button>
         </div>
+      </div>
+      <div v-if="legendItems.length" class="ai-performance-legend" aria-label="展示账户">
+        <span v-for="item in legendItems" :key="item.account.id" class="ai-performance-legend-item">
+          <span class="ai-performance-legend-dot" :style="{ backgroundColor: item.color }" />
+          <span class="ai-performance-legend-name">{{ item.label }}</span>
+          <span v-if="item.account.selected" class="ai-performance-legend-badge">指定</span>
+          <span v-else-if="item.account.defaultVisible" class="ai-performance-legend-badge">默认</span>
+          <button v-if="item.account.selected" class="ai-performance-legend-remove" type="button" :aria-label="`移除 ${item.label}`" @click="removeSelectedAccount(item.account.id)">
+            <CloseOutlined />
+          </button>
+        </span>
       </div>
       <div class="ai-performance-tip">
         默认显示最近 7 天活跃度最高的前 10 个自有 AI 账户；临时指定仅本次查看生效。
@@ -56,7 +67,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import { CloseOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
@@ -65,7 +76,7 @@ import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview, 
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDuration, formatInteger, formatSeconds } from '@/views/stats/statsFormatters'
-import { buildAiPerformanceOption } from './aiPerformanceChartOptions'
+import { buildAiPerformanceOption, chartColors } from './aiPerformanceChartOptions'
 
 const windowOptions: Array<{ label: string; value: AiPerformanceWindowKey }> = [
   { label: '近一天', value: 'last1d' },
@@ -75,6 +86,7 @@ const windowOptions: Array<{ label: string; value: AiPerformanceWindowKey }> = [
 
 const selectedWindow = ref<AiPerformanceWindowKey>('last1d')
 const selectedAccountIds = ref<string[]>([])
+const accountPickerValue = ref<string[]>([])
 const overview = ref<AiPerformanceOverview>()
 const accounts = ref<AiPerformanceAccountOption[]>([])
 const loading = ref(false)
@@ -102,6 +114,37 @@ const accountOptions = computed(() => accounts.value
     label: accountOptionLabel(account),
     value: account.id
   })))
+
+const legendItems = computed(() => {
+  const currentOverview = overview.value
+  if (!currentOverview) return []
+  const nameCounts = currentOverview.accounts.reduce((counts, account) => {
+    counts.set(account.name, (counts.get(account.name) ?? 0) + 1)
+    return counts
+  }, new Map<string, number>())
+  const accountById = new Map(currentOverview.accounts.map((account) => [account.id, account]))
+  return currentOverview.hourlySeries.map((series, index) => {
+    const account = accountById.get(series.accountId)
+    const accountName = account?.name ?? series.accountName
+    const label = (nameCounts.get(accountName) ?? 0) > 1 && account?.providerCode
+      ? `${accountName}（${account.providerCode}）`
+      : accountName
+    return {
+      account: account ?? {
+        id: series.accountId,
+        name: series.accountName,
+        status: 'active' as AccountStatus,
+        providerCode: 'openai',
+        systemAccountId: series.systemAccountId,
+        requestCountLast7d: 0,
+        selected: false,
+        defaultVisible: false
+      },
+      label,
+      color: chartColors[index % chartColors.length]
+    }
+  })
+})
 
 const summaryCards = computed(() => {
   const summary = overview.value?.summary
@@ -156,16 +199,18 @@ function handleWindowChange(value: string | number) {
   void loadPerformance()
 }
 
-function handleAccountChange(value: unknown) {
-  const ids = Array.isArray(value) ? value.map((item) => String(item)) : []
+function handleAccountSelect(value: unknown) {
+  accountPickerValue.value = []
+  const id = String(value ?? '').trim()
+  if (!id || selectedAccountIds.value.includes(id)) return
+  const ids = [...selectedAccountIds.value, id]
   if (ids.length > 20) {
-    selectedAccountIds.value = ids.slice(0, 20)
     message.warning('临时指定账户最多选择 20 个')
-    void loadAccounts()
-  } else {
-    selectedAccountIds.value = ids
-    void loadAccounts()
+    return
   }
+  selectedAccountIds.value = ids
+  accountSearchKeyword.value = ''
+  void loadAccounts()
   void loadPerformance()
 }
 
@@ -185,6 +230,13 @@ function handleAccountDropdownVisibleChange(open: boolean) {
 
 function resetSelectedAccounts() {
   selectedAccountIds.value = []
+  accountPickerValue.value = []
+  void loadAccounts()
+  void loadPerformance()
+}
+
+function removeSelectedAccount(id: string) {
+  selectedAccountIds.value = selectedAccountIds.value.filter((accountId) => accountId !== id)
   void loadAccounts()
   void loadPerformance()
 }
@@ -285,7 +337,11 @@ onBeforeUnmount(() => {
 }
 
 .ai-performance-filters {
-  flex: 1 1 520px;
+  display: flex;
+  flex: 1 1 720px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
   min-width: 0;
 }
 
@@ -295,7 +351,65 @@ onBeforeUnmount(() => {
 }
 
 .ai-performance-account-select {
-  width: min(520px, 100%);
+  flex: 1 1 360px;
+  min-width: 320px;
+  max-width: 560px;
+}
+
+.ai-performance-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  margin-top: 12px;
+}
+
+.ai-performance-legend-item {
+  display: inline-flex;
+  align-items: center;
+  max-width: min(360px, 100%);
+  gap: 6px;
+  color: #334155;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.ai-performance-legend-dot {
+  width: 10px;
+  height: 10px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+}
+
+.ai-performance-legend-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-performance-legend-badge {
+  flex: 0 0 auto;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.ai-performance-legend-remove {
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  color: #64748b;
+  background: transparent;
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.ai-performance-legend-remove:hover {
+  color: #ef4444;
+  background: #fee2e2;
 }
 
 .ai-performance-tip {
@@ -314,10 +428,15 @@ onBeforeUnmount(() => {
 }
 
 @media (max-width: 768px) {
+  .ai-performance-filters {
+    flex: 1 1 auto;
+  }
+
   .ai-performance-window-segmented,
   .ai-performance-account-select {
     width: 100%;
     min-width: 0;
+    max-width: none;
   }
 
   .chart-panel {

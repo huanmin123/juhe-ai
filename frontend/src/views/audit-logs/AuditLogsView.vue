@@ -73,27 +73,26 @@
             <a-descriptions-item label="错误" :span="2">{{ detail.errorMessage ?? '-' }}</a-descriptions-item>
           </a-descriptions>
 
-          <section v-if="detail.errorGroup" class="error-group-panel">
-            <div class="error-group-panel-head">
-              <strong>错误聚合</strong>
-              <a-tag color="red">{{ detail.errorGroup.count }} 次</a-tag>
-            </div>
-            <div class="error-group-grid">
-              <span>窗口</span>
-              <strong>{{ formatDateTime(detail.errorGroup.windowStartedAt) }} - {{ formatDateTime(detail.errorGroup.windowEndedAt) }}</strong>
-              <span>状态码</span>
-              <strong>{{ detail.errorGroup.statusCode ?? '-' }}</strong>
-              <span>错误码</span>
-              <strong>{{ detail.errorGroup.errorCode || '-' }}</strong>
-              <span>错误阶段</span>
-              <strong>{{ detail.errorGroup.errorPhase || '-' }}</strong>
-              <span>最近错误</span>
-              <strong class="error-cell">{{ detail.errorGroup.lastMessage || '-' }}</strong>
-            </div>
-          </section>
-
           <a-tabs>
             <a-tab-pane key="attempts" tab="上游尝试">
+              <section v-if="detail.errorGroup" class="error-group-panel">
+                <div class="error-group-panel-head">
+                  <strong>错误聚合</strong>
+                  <a-tag color="red">{{ detail.errorGroup.count }} 次</a-tag>
+                </div>
+                <div class="error-group-grid">
+                  <span>窗口</span>
+                  <strong>{{ formatDateTime(detail.errorGroup.windowStartedAt) }} - {{ formatDateTime(detail.errorGroup.windowEndedAt) }}</strong>
+                  <span>状态码</span>
+                  <strong>{{ detail.errorGroup.statusCode ?? '-' }}</strong>
+                  <span>错误码</span>
+                  <strong>{{ detail.errorGroup.errorCode || '-' }}</strong>
+                  <span>错误阶段</span>
+                  <strong>{{ detail.errorGroup.errorPhase || '-' }}</strong>
+                  <span>最近错误</span>
+                  <strong class="error-cell">{{ detail.errorGroup.lastMessage || '-' }}</strong>
+                </div>
+              </section>
               <ResponsiveDataList
                 table-class="audit-detail-table"
                 size="small"
