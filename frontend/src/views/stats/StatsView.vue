@@ -31,25 +31,54 @@
     <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" />
 
     <a-row :gutter="[16, 16]" class="stats-section">
-      <a-col :xs="24" :xl="14">
-        <StatsChartCard :title="`有效请求 / Token / 平均响应（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasUsageTrend" :empty-description="usageTrendEmptyDescription">
+      <a-col :xs="24" :xl="showAdminDetailCharts ? 14 : 24">
+        <StatsChartCard
+          :title="`请求、失败、Token 消耗、平均总耗时（${currentWindowLabel}）`"
+          :description="usageTrendDescription"
+          :loading="initialLoading"
+          :has-data="hasUsageTrend"
+          :empty-description="usageTrendEmptyDescription"
+        >
           <div ref="usageTrendChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
       </a-col>
-      <a-col :xs="24" :xl="10">
-        <StatsChartCard :title="`模型分布（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasModelDistribution" :empty-description="modelDistributionEmptyDescription">
+      <a-col v-if="showAdminDetailCharts" :xs="24" :xl="10">
+        <StatsChartCard
+          :title="`模型分布（${currentWindowLabel}）`"
+          description="按模型汇总 Token 消耗；没有 Token 的记录会用请求次数参与展示。"
+          :loading="initialLoading"
+          :has-data="hasModelDistribution"
+          :empty-description="modelDistributionEmptyDescription"
+        >
           <div ref="modelDistributionChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
       </a-col>
     </a-row>
 
-    <a-row v-if="showAdminDetailCharts" :gutter="[16, 16]" class="stats-section">
-      <a-col :xs="24" :xl="10">
-        <StatsChartCard :title="`消耗错误 Top 10（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasErrors" :empty-description="errorEmptyDescription">
-          <div ref="errorChartRef" class="chart-panel" />
+    <a-row :gutter="[16, 16]" class="stats-section">
+      <a-col :xs="24" :xl="showAdminDetailCharts ? 10 : 12">
+        <StatsChartCard
+          :title="`错误 Top 10（${currentWindowLabel}）`"
+          description="统计窗口内失败请求按错误码聚合；悬浮可查看状态码和错误信息。"
+          :loading="initialLoading"
+          :has-data="hasErrors"
+          :empty-description="errorEmptyDescription"
+        >
+          <div ref="errorChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
       </a-col>
-      <a-col :xs="24" :xl="14">
+      <a-col v-if="!showAdminDetailCharts" :xs="24" :xl="12">
+        <StatsChartCard
+          :title="`模型分布（${currentWindowLabel}）`"
+          description="按模型汇总 Token 消耗；没有 Token 的记录会用请求次数参与展示。"
+          :loading="initialLoading"
+          :has-data="hasModelDistribution"
+          :empty-description="modelDistributionEmptyDescription"
+        >
+          <div ref="modelDistributionChartRef" class="chart-panel chart-panel-large" />
+        </StatsChartCard>
+      </a-col>
+      <a-col v-if="showAdminDetailCharts" :xs="24" :xl="14">
         <StatsChartCard :title="`系统性能 / 网络吞吐趋势（${currentWindowLabel}）`" :loading="systemInitialLoading" :has-data="hasVisibleSystemTrend" :empty-description="systemTrendEmptyDescription">
           <div ref="systemMetricsChartRef" class="chart-panel chart-panel-large" />
         </StatsChartCard>
@@ -125,16 +154,17 @@ const currentWindowLabel = computed(() => usageOverview.value?.window.label ?? w
 const hasWindowUsage = computed(() => (usageOverview.value?.summary.requestCount ?? 0) > 0)
 const usageTrendEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无趋势数据，窗口指标已在上方展示` : `${currentWindowLabel.value}暂无趋势数据`)
 const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.value}暂无模型调用`)
-const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无消耗错误，排障错误请查看日志` : `${currentWindowLabel.value}暂无消耗错误`)
+const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无失败请求` : `${currentWindowLabel.value}暂无失败请求`)
 const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
+const usageTrendDescription = computed(() => `${currentWindowLabel.value} Token 消耗 = 输入 Token + 输出 Token + 缓存读取 Token；失败 = 失败请求次数；平均总耗时 = 网关记录的请求总耗时平均值。`)
 
 const summaryCards = computed(() => {
   const summary = usageOverview.value?.summary
   const windowLabel = currentWindowLabel.value
   return [
-    { key: 'requests', label: `${windowLabel}有效请求`, value: formatInteger(summary?.requestCount), extra: `消耗错误率 ${formatPercent((summary?.errorRate ?? 0) * 100)} / 错误 ${formatInteger(summary?.errorCount)}` },
-    { key: 'duration', label: `${windowLabel}平均响应`, value: formatDurationSeconds(summary?.averageDurationMs), extra: `首 Token ${formatDurationSeconds(summary?.averageFirstTokenMs)}` },
-    { key: 'tokens', label: `${windowLabel} Token`, value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存 ${formatCompactInteger(summary?.cacheReadTokens)}` },
+    { key: 'requests', label: `${windowLabel}请求`, value: formatInteger(summary?.requestCount), extra: `成功 ${formatInteger(summary?.successCount)} / 失败 ${formatInteger(summary?.errorCount)} / 失败率 ${formatPercent((summary?.errorRate ?? 0) * 100)}` },
+    { key: 'firstToken', label: `${windowLabel}平均首 Token`, value: formatDurationSeconds(summary?.averageFirstTokenMs), extra: `平均总耗时 ${formatDurationSeconds(summary?.averageDurationMs)}` },
+    { key: 'tokens', label: `${windowLabel}Token 消耗`, value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读取 ${formatCompactInteger(summary?.cacheReadTokens)}` },
     { key: 'cost', label: `${windowLabel}成本`, value: formatCost(summary?.totalCost), extra: `统计滞后 ${formatSeconds(usageOverview.value?.statsLagSeconds)}` }
   ]
 })
@@ -209,7 +239,7 @@ function renderModelDistributionChart() {
 }
 
 function renderErrorChart() {
-  if (!showAdminDetailCharts.value || !hasErrors.value) {
+  if (!hasErrors.value) {
     disposeChart(errorChart)
     return
   }
@@ -308,6 +338,10 @@ onBeforeUnmount(() => {
 
 .stats-section {
   margin-top: 0;
+}
+
+.stats-section :deep(.ant-col) {
+  display: flex;
 }
 
 .chart-panel {

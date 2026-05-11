@@ -36,7 +36,7 @@ export function usageSummaryFromAggregate(row: {
     inputTokens,
     outputTokens,
     cacheReadTokens,
-    totalTokens: inputTokens + outputTokens,
+    totalTokens: inputTokens + outputTokens + cacheReadTokens,
     totalCost: Number(row.total_cost ?? 0),
     lastUsedAt: row.last_used_at ?? undefined
   }

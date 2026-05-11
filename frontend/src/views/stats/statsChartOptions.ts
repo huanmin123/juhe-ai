@@ -18,14 +18,14 @@ const ERROR_TOOLTIP_EDGE_GAP = 12
 
 export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']): EChartsOption {
   return {
-    color: ['#1677ff', '#52c41a', '#faad14'],
+    color: ['#1677ff', '#ff4d4f', '#52c41a', '#faad14'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => usageTrendTooltip(params)
     },
     legend: {
       bottom: 0,
-      data: ['有效请求', 'Token', '平均响应']
+      data: ['请求数', '失败请求', 'Token 消耗', '平均总耗时']
     },
     grid: {
       left: 48,
@@ -43,7 +43,7 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
     yAxis: [
       {
         type: 'value',
-        name: '请求 / Token',
+        name: '次数 / Token',
         axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
         splitLine: { lineStyle: { color: '#edf2f7' } }
       },
@@ -56,14 +56,22 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
     ],
     series: [
       {
-        name: '有效请求',
+        name: '请求数',
         type: 'bar',
         barMaxWidth: 18,
         data: trend.map((item) => item.requestCount),
         itemStyle: { borderRadius: [4, 4, 0, 0] }
       },
       {
-        name: 'Token',
+        name: '失败请求',
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 6,
+        data: trend.map((item) => item.errorCount)
+      },
+      {
+        name: 'Token 消耗',
         type: 'line',
         smooth: true,
         symbol: 'circle',
@@ -72,7 +80,7 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
         areaStyle: { opacity: 0.08 }
       },
       {
-        name: '平均响应',
+        name: '平均总耗时',
         type: 'line',
         yAxisIndex: 1,
         smooth: true,
@@ -159,7 +167,7 @@ export function buildErrorOption(errors: UsageStatsOverview['errors']): EChartsO
     },
     series: [
       {
-        name: '消耗错误次数',
+        name: '失败请求次数',
         type: 'bar',
         barMaxWidth: 28,
         data: errors.map((item, index) => ({
@@ -269,7 +277,7 @@ function usageTrendTooltip(params: unknown) {
   for (const point of points) {
     const name = String(point.seriesName ?? '')
     const value = pointValue(point)
-    const formatted = name === '平均响应' ? formatDurationSeconds(value) : formatInteger(value)
+    const formatted = name === '平均总耗时' ? formatDurationSeconds(value) : formatInteger(value)
     lines.push(`${point.marker ?? ''}${name}: ${formatted}`)
   }
   return lines.join('<br/>')
@@ -281,8 +289,8 @@ function modelTooltip(params: unknown) {
   return [
     `<strong>${point?.name ?? ''}</strong>`,
     `供应商：${data.providerCode ?? '-'}`,
-    `有效请求：${formatInteger(numberFromTooltip(data.requestCount))}`,
-    `Token：${formatInteger(numberFromTooltip(data.totalTokens))}`,
+    `请求数：${formatInteger(numberFromTooltip(data.requestCount))}`,
+    `Token 消耗：${formatInteger(numberFromTooltip(data.totalTokens))}`,
     `成本：${formatCost(numberFromTooltip(data.totalCost))}`
   ].join('<br/>')
 }

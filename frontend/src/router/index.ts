@@ -20,7 +20,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {
       title: '统计概览',
-      description: '查看自己的有效请求、Token 趋势、模型分布和成本概览。',
+      description: '查看自己的请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和成本概览。',
       viewScope: 'self'
     }
   },
@@ -111,7 +111,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/stats/StatsView.vue'),
     meta: {
       title: '统计概览',
-      description: '按监控窗口查看有效请求、Token 使用趋势、模型分布、消耗错误和系统性能。',
+      description: '按监控窗口查看请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和系统性能。',
       viewScope: 'admin',
       roles: ['admin']
     }

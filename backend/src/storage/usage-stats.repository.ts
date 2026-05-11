@@ -349,7 +349,7 @@ export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOver
       providerCode: row.provider_code,
       model: row.model,
       requestCount: Number(row.request_count ?? 0),
-      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0),
+      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0) + Number(row.cache_read_tokens ?? 0),
       totalCost: Number(row.total_cost ?? 0)
     })),
     errors: errorRows.map((row) => ({
@@ -690,7 +690,7 @@ function aggregateUsageTrendRows(
   return [...buckets.values()].map((bucket) => ({
     statHour: bucket.statHour,
     requestCount: bucket.requestCount,
-    totalTokens: bucket.inputTokens + bucket.outputTokens,
+    totalTokens: bucket.inputTokens + bucket.outputTokens + bucket.cacheReadTokens,
     totalCost: bucket.totalCost,
     averageDurationMs: averageFromSum(bucket.durationMsSum, bucket.durationMsCount),
     errorCount: bucket.errorCount
