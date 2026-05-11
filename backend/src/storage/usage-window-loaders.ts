@@ -1,9 +1,11 @@
-import type { AccountUsageSummary, UsageByWindow } from '../domain/types.js'
+import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary, UsageByWindow } from '../domain/types.js'
 import { getDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import {
   addUsageSummaries,
+  dateKeysInRange,
   dateKey,
+  emptyAccountUsageDailyPoint,
   emptyUsageByWindow,
   USAGE_STATS_WINDOWS,
   usageSummaryFromAggregate
@@ -14,6 +16,11 @@ export interface UsageStatsScopeRequest {
   systemAccountId: string
   scopeType: string
   scopeId: string
+}
+
+export interface UsageStatsDailySeries {
+  rangeUsage: AccountUsageSummary
+  dailyUsage: AccountUsageDailyPoint[]
 }
 
 type UsageStatsScopeAggregateRow = {
@@ -131,6 +138,89 @@ export function loadUsageByWindowForScopeRequests(scopes: UsageStatsScopeRequest
   }
 
   return result
+}
+
+export function loadUsageDailySeriesForScopeRequests(scopes: UsageStatsScopeRequest[], range: AccountUsageStatsRange): Map<string, UsageStatsDailySeries> {
+  const dateKeys = dateKeysInRange(range)
+  const validScopes = scopes.filter((scope) => scope.rowKey && scope.systemAccountId && scope.scopeType && scope.scopeId)
+  const result = new Map<string, UsageStatsDailySeries>()
+  const rowKeysByScopeMapKey = new Map<string, Set<string>>()
+  const scopeRowsByMapKey = new Map<string, UsageStatsScopeRequest>()
+  for (const scope of validScopes) {
+    result.set(scope.rowKey, emptyUsageDailySeries(dateKeys))
+    const mapKey = usageStatsScopeMapKey(scope)
+    scopeRowsByMapKey.set(mapKey, scope)
+    const rowKeys = rowKeysByScopeMapKey.get(mapKey) ?? new Set<string>()
+    rowKeys.add(scope.rowKey)
+    rowKeysByScopeMapKey.set(mapKey, rowKeys)
+  }
+  const normalizedScopes = [...scopeRowsByMapKey.values()]
+  if (!normalizedScopes.length || !dateKeys.length) return result
+
+  const database = getDatabase()
+  const rows: UsageStatsScopeAggregateRow[] = []
+  const scopesBySystemAccountId = new Map<string, UsageStatsScopeRequest[]>()
+  for (const scope of normalizedScopes) {
+    scopesBySystemAccountId.set(scope.systemAccountId, [...(scopesBySystemAccountId.get(scope.systemAccountId) ?? []), scope])
+  }
+
+  for (const [systemAccountId, systemScopes] of scopesBySystemAccountId) {
+    const scopeTypes = [...new Set(systemScopes.map((scope) => scope.scopeType))]
+    const scopeIds = [...new Set(systemScopes.map((scope) => scope.scopeId))]
+    for (const scopeIdChunk of chunkValues(scopeIds, 400)) {
+      rows.push(...database.prepare(`
+        SELECT
+          system_account_id,
+          scope_type,
+          scope_id,
+          scope_id AS account_id,
+          stat_date,
+          request_count,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          total_cost_usd AS total_cost,
+          last_used_at
+        FROM usage_stats_daily
+        WHERE system_account_id = ?
+          AND scope_type IN (${sqlPlaceholders(scopeTypes.length)})
+          AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
+          AND stat_date >= ?
+          AND stat_date <= ?
+      `).all(systemAccountId, ...scopeTypes, ...scopeIdChunk, range.startDate, range.endDate) as unknown as UsageStatsScopeAggregateRow[])
+    }
+  }
+
+  const dateIndex = new Map(dateKeys.map((statDate, index) => [statDate, index]))
+  for (const row of rows) {
+    const rowKeys = rowKeysByScopeMapKey.get(usageStatsRowMapKey(row))
+    if (!rowKeys || !row.stat_date) continue
+    const index = dateIndex.get(row.stat_date)
+    if (index === undefined) continue
+    const rowUsage = usageSummaryFromAggregate(row)
+    for (const rowKey of rowKeys) {
+      const series = result.get(rowKey)
+      if (!series) continue
+      series.dailyUsage[index] = { statDate: row.stat_date, ...rowUsage }
+      series.rangeUsage = addUsageSummaries(series.rangeUsage, rowUsage)
+    }
+  }
+
+  return result
+}
+
+function emptyUsageDailySeries(dateKeys: string[]): UsageStatsDailySeries {
+  return {
+    rangeUsage: usageSummaryFromAggregate({
+      request_count: 0,
+      input_tokens: 0,
+      output_tokens: 0,
+      cache_read_tokens: 0,
+      total_cost: 0,
+      last_used_at: null
+    }),
+    dailyUsage: dateKeys.map(emptyAccountUsageDailyPoint)
+  }
 }
 
 function usageStatsScopeMapKey(scope: Pick<UsageStatsScopeRequest, 'systemAccountId' | 'scopeType' | 'scopeId'>): string {
