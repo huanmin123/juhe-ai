@@ -56,7 +56,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/authorizations/AuthorizationsView.vue'),
     meta: {
       title: '我的授权',
-      description: '管理自己授权出去或授权给自己的账户、分组和团队授权。',
+      description: '管理自己授权出去或授权给自己的账户、分组和团队授权，并查看授权用量明细。',
       viewScope: 'self'
     }
   },
@@ -74,7 +74,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/usage-stats/UsageStatsView.vue'),
     meta: {
       title: '我的用量',
-      description: '查看自己账户、授权资源和 API Key 的用量统计。',
+      description: '按日查看近一个月内账户消耗趋势，可搜索追加账户并点击账户列表筛选趋势。',
       viewScope: 'self'
     }
   },
@@ -83,7 +83,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/ai-performance/AiPerformanceView.vue'),
     meta: {
       title: 'AI性能监控',
-      description: '按小时追踪自有 AI 账户的首 token 与总耗时变化，帮助定位响应变慢的账户；默认展示近 7 天活跃前 10 个，临时指定仅本次生效。',
+      description: '按小时追踪自有 AI 账户的首 token 与总耗时变化；默认展示近 7 天活跃前 10 个，可搜索添加账户并点击账户列表筛选统计视图。',
       viewScope: 'self',
       keepAlive: false
     }
@@ -191,7 +191,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/usage-stats/UsageStatsView.vue'),
     meta: {
       title: '用量统计管理',
-      description: '按系统账户查看多日累计用量，并查看授权用户与团队的消耗情况。',
+      description: '按系统账户查看近一个月内账户按日消耗趋势，可搜索追加账户并点击账户列表筛选趋势。',
       viewScope: 'admin',
       roles: ['admin']
     }

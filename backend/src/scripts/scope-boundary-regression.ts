@@ -25,7 +25,8 @@ const [
   { forceSelfAccessScope, requireAdmin, requireAuth },
   { requestContextMiddleware },
   databaseModule,
-  repositories
+  repositories,
+  usageStatsRepository
 ] = await Promise.all([
   import('../modules/accounts/accounts.routes.js'),
   import('../modules/api-keys/api-keys.routes.js'),
@@ -37,7 +38,8 @@ const [
   import('../modules/auth/auth.middleware.js'),
   import('../shared/request-context.js'),
   import('../storage/database.js'),
-  import('../storage/repositories.js')
+  import('../storage/repositories.js'),
+  import('../storage/usage-stats.repository.js')
 ])
 
 const app = express()
@@ -129,6 +131,9 @@ interface AccountUsageStatsRow {
   ownerSystemAccountId: string
   name: string
   type: string
+  rangeUsage: {
+    requestCount: number
+  }
 }
 
 interface AccountUsageStatsOverview {
@@ -136,6 +141,20 @@ interface AccountUsageStatsOverview {
   total: number
   page: number
   pageSize: number
+}
+
+interface AiPerformanceAccountOption {
+  id: string
+  name: string
+  systemAccountId: string
+  requestCountLast7d: number
+}
+
+interface AiPerformanceOverview {
+  accounts: AiPerformanceAccountOption[]
+  summary: {
+    requestCount: number
+  }
 }
 
 interface SystemTeamMemberSummary {
@@ -250,7 +269,7 @@ async function main(): Promise<void> {
     summary.push('API Key 分页筛选检查通过')
 
     const userAUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/api/my-usage-records?systemAccountId=${seed.userBId}&page=1&pageSize=2`, seed.userACookie)
-    assert(userAUsage.total === 2, `用户 A 使用记录总数异常：${userAUsage.total}`)
+    assert(userAUsage.total === 3, `用户 A 使用记录总数异常：${userAUsage.total}`)
     assert(userAUsage.items.length === 2, `用户 A 使用记录分页数量异常：${userAUsage.items.length}`)
     assert(userAUsage.items.every((record) => record.systemAccountId === undefined || record.systemAccountId === seed.userAId), '用户 A 的 my-usage-records 返回了其他用户记录')
     summary.push('我的使用记录自有作用域检查通过')
@@ -275,6 +294,9 @@ async function main(): Promise<void> {
     assert(userAApiKeyUsage.total === userAMyAccounts.length && userAApiKeyUsage.rows.every((row) => row.type === 'api_key'), '用户侧账号用量统计类型筛选异常')
     const userAKeywordUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/api/my-stats/account-usage?keyword=${encodeURIComponent('用户 A')}&page=1&pageSize=10`, seed.userACookie)
     assert(userAKeywordUsage.total === 1 && userAKeywordUsage.rows[0]?.id === seed.userAAccountId, '用户侧账号用量统计关键词筛选异常')
+    const userAAuthorizedAccountUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/api/my-stats/account-usage?keyword=${encodeURIComponent('用户 B')}&page=1&pageSize=10`, seed.userACookie)
+    assert(userAAuthorizedAccountUsage.total === 1 && userAAuthorizedAccountUsage.rows[0]?.id === seed.userBAccountId, '用户 A 我的用量应能看到自己使用的授权账户')
+    assert(userAAuthorizedAccountUsage.rows[0]?.rangeUsage.requestCount === 1, `用户 A 我的用量授权账户请求数异常：${userAAuthorizedAccountUsage.rows[0]?.rangeUsage.requestCount}`)
 
     const userBAccountUsagePage1 = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/api/stats/account-usage?systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
     assert(userBAccountUsagePage1.total === 2 && userBAccountUsagePage1.rows.length === 1 && userBAccountUsagePage1.pageSize === 1, '管理账号用量统计分页第一页异常')
@@ -283,9 +305,19 @@ async function main(): Promise<void> {
     assert(userBAccountUsagePage2.rows.length === 1 && userBAccountUsagePage2.rows[0]?.ownerSystemAccountId === seed.userBId, '管理账号用量统计分页第二页异常')
     const userBAccountUsageKeyword = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/api/stats/account-usage?systemAccountId=${seed.userBId}&keyword=${encodeURIComponent('用户 B')}&page=1&pageSize=10`, seed.adminCookie)
     assert(userBAccountUsageKeyword.total === 1 && userBAccountUsageKeyword.rows[0]?.name.includes('用户 B'), '管理账号用量统计关键词筛选异常')
+    assert(userBAccountUsageKeyword.rows[0]?.rangeUsage.requestCount === 3, `用户 B 我的用量不应混入被授权人调用，实际 ${userBAccountUsageKeyword.rows[0]?.rangeUsage.requestCount}`)
     const userBOAuthUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/api/stats/account-usage?systemAccountId=${seed.userBId}&type=oauth&page=1&pageSize=10`, seed.adminCookie)
     assert(userBOAuthUsage.total === 1 && userBOAuthUsage.rows[0]?.type === 'oauth', '管理账号用量统计类型筛选异常')
     summary.push('账号用量统计分页筛选检查通过')
+
+    const userAAiPerformanceAccounts = await getEnvelope<AiPerformanceAccountOption[]>(baseUrl, `/api/my-stats/ai-performance/accounts?keyword=${encodeURIComponent('用户 B')}`, seed.userACookie)
+    assert(!userAAiPerformanceAccounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控不应返回别人授权给我的账户')
+    const userAAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/api/my-stats/ai-performance?window=last7d&accountIds=${seed.userBAccountId}`, seed.userACookie)
+    assert(!userAAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控选中参数不应越权加入授权账户')
+    const userBAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, '/api/my-stats/ai-performance?window=last7d', seed.userBCookie)
+    assert(userBAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控拥有者应能看到自己的账户')
+    assert(userBAiPerformance.summary.requestCount === 4, `AI性能监控应按账户整体统计包含被授权人调用，实际 ${userBAiPerformance.summary.requestCount}`)
+    summary.push('AI性能监控拥有者口径和授权账户隔离检查通过')
 
     const userATeams = await getEnvelope<SystemTeamSummary[]>(baseUrl, '/api/my-teams', seed.userACookie)
     assert(userATeams.length === 1 && userATeams[0]?.id === seed.teamSharedId, '用户 A 我的团队没有只返回自己加入的团队')
@@ -402,13 +434,17 @@ function seedData(): SeedState {
     name: '用户 A Key',
     groupId: repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
   }, userAAccess)
+  const usageBaseTime = new Date(Date.now() - 60 * 60 * 1000)
+  const usageAt = (offsetSeconds: number) => new Date(usageBaseTime.getTime() + offsetSeconds * 1000).toISOString()
   repositories.createUsageRecordsBatch([
-    usageRecord('scope_usage_a_1', userA.id, userAAccount.id, 'GET /v1/models', 'scope-model-a', 200, true, '2026-05-07T00:00:01.000Z'),
-    usageRecord('scope_usage_a_2', userA.id, userAAccount.id, 'POST /v1/responses', 'scope-model-a', 500, false, '2026-05-07T00:00:02.000Z'),
-    usageRecord('scope_usage_b_1', userB.id, userBAccount.id, 'GET /v1/models', 'scope-model-b', 200, true, '2026-05-07T00:00:03.000Z'),
-    usageRecord('scope_usage_b_2', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-b', 429, false, '2026-05-07T00:00:04.000Z'),
-    usageRecord('scope_usage_b_3', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-c', 200, true, '2026-05-07T00:00:05.000Z')
+    usageRecord('scope_usage_a_1', userA.id, userAAccount.id, 'GET /v1/models', 'scope-model-a', 200, true, usageAt(1)),
+    usageRecord('scope_usage_a_2', userA.id, userAAccount.id, 'POST /v1/responses', 'scope-model-a', 500, false, usageAt(2)),
+    usageRecord('scope_usage_a_authorized_b_1', userA.id, userBAccount.id, 'POST /v1/responses', 'scope-model-authorized', 200, true, usageAt(3)),
+    usageRecord('scope_usage_b_1', userB.id, userBAccount.id, 'GET /v1/models', 'scope-model-b', 200, true, usageAt(4)),
+    usageRecord('scope_usage_b_2', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-b', 429, false, usageAt(5)),
+    usageRecord('scope_usage_b_3', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-c', 200, true, usageAt(6))
   ])
+  while (usageStatsRepository.aggregateUsageStatsBatch(1000) > 0) {}
 
   return {
     adminId: admin.id,

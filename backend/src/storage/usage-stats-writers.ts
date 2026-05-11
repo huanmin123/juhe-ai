@@ -5,6 +5,7 @@ import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usage
 import {
   GLOBAL_STATS_SYSTEM_ACCOUNT_ID,
   type UsageStatsAccumulator,
+  type UsageStatsEntry,
   type UsageStatsRecordRow
 } from './usage-stats-types.js'
 
@@ -20,9 +21,7 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
   const statDate = dateKey(createdAt)
   const statHour = hourKey(createdAt)
   for (const entry of usageStatsEntries(row)) {
-    upsertUsageStatsTotal(database, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt)
-    upsertUsageStatsDaily(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statDate, entry.accumulator, updatedAt)
-    upsertUsageStatsHourly(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statHour, entry.accumulator, updatedAt)
+    upsertUsageStatsEntry(database, entry, statDate, statHour, updatedAt)
   }
   if (row.model) {
     upsertUsageModelDaily(database, row, statDate, updatedAt)
@@ -32,6 +31,19 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
     upsertUsageErrorDaily(database, row, statDate, updatedAt)
     upsertUsageErrorHourly(database, row, statHour, updatedAt)
   }
+}
+
+export function aggregateCallerAccountUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
+  if (!row.account_id || !shouldAggregateUsageStatsRecord(row) || isDeletedApiKeyRecord(database, row)) {
+    return
+  }
+  const createdAt = new Date(row.created_at)
+  upsertUsageStatsEntry(database, {
+    systemAccountId: row.system_account_id,
+    scopeType: 'caller_account',
+    scopeId: row.account_id,
+    accumulator: usageStatsAccumulatorFromRecord(row)
+  }, dateKey(createdAt), hourKey(createdAt), updatedAt)
 }
 
 export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string): void {
@@ -55,6 +67,12 @@ export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStats
     subtractUsageErrorDaily(database, row, statDate, updatedAt)
     subtractUsageErrorHourly(database, row, statHour, updatedAt)
   }
+}
+
+function upsertUsageStatsEntry(database: DatabaseSync, entry: UsageStatsEntry, statDate: string, statHour: string, updatedAt: string): void {
+  upsertUsageStatsTotal(database, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt)
+  upsertUsageStatsDaily(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statDate, entry.accumulator, updatedAt)
+  upsertUsageStatsHourly(database, entry.systemAccountId, entry.scopeType, entry.scopeId, statHour, entry.accumulator, updatedAt)
 }
 
 function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, stats: UsageStatsAccumulator, updatedAt: string): void {

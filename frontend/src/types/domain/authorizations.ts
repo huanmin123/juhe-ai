@@ -1,6 +1,6 @@
 import type { AccountStatus, AccountType, AuthorizationResourceType, AuthorizationSourceStatus, AuthorizationSourceType, AuthorizationStatus, ProviderCode, ResourceAccessType, TeamMemberStatus, TeamStatus } from './base'
 import type { RequestQuotaLimits } from './access'
-import type { AccountUsageSummary, UsageByWindow, UsageStatsWindowDefinition } from './usage-stats'
+import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from './usage-stats'
 
 export interface SystemTeamMemberSummary {
   id: string
@@ -57,6 +57,17 @@ export interface AuthorizationUserUsageDetail {
   totalTokens: number
   totalCost: number
   lastUsedAt?: string
+  rangeUsage?: AccountUsageSummary
+  dailyUsage?: AccountUsageDailyPoint[]
+  usageBuckets?: AuthorizationUsageBucket[]
+}
+
+export type AuthorizationUsageGroupBy = 'day' | 'week'
+
+export interface AuthorizationUsageBucket extends AccountUsageSummary {
+  bucketKey: string
+  startDate: string
+  endDate: string
 }
 
 export interface ResourceAuthorizationSummary {
@@ -90,7 +101,9 @@ export interface ResourceAuthorizationSummary {
   authorizationSources: AuthorizationSourceSummary[]
   usage: AccountUsageSummary
   usageBySystemAccount?: AuthorizationUserUsageDetail[]
-  usageByWindow?: UsageByWindow
+  usageRange?: AccountUsageStatsRange
+  usageGroupBy?: AuthorizationUsageGroupBy
+  usageBuckets?: AuthorizationUsageBucket[]
   permissions?: {
     canEdit: boolean
     canAuthorize: boolean
@@ -108,44 +121,19 @@ export interface AccountUsageStatsRow {
   type: AccountType
   status: AccountStatus
   accessType?: ResourceAccessType
-  usageByWindow: UsageByWindow
+  rangeUsage: AccountUsageSummary
+  dailyUsage: AccountUsageDailyPoint[]
   authorizationUsageAvailable: boolean
   authorizationCount: number
   authorizationTeamCount: number
 }
 
 export interface AccountUsageStatsOverview {
-  windows: UsageStatsWindowDefinition[]
+  range: AccountUsageStatsRange
+  summary: AccountUsageSummary
   rows: AccountUsageStatsRow[]
   total: number
   page: number
   pageSize: number
-  statsLagSeconds: number
-}
-
-export interface AuthorizationTeamMemberUsageDetail {
-  authorizationId: string
-  systemAccountId: string
-  systemAccountName?: string
-  username?: string
-  usageByWindow: UsageByWindow
-}
-
-export interface AuthorizationTeamUsageDetail {
-  teamId: string
-  teamName?: string
-  usageByWindow: UsageByWindow
-  memberUsage: AuthorizationTeamMemberUsageDetail[]
-}
-
-export interface AccountAuthorizationUsageOverview {
-  resourceType: 'account'
-  resourceId: string
-  resourceName: string
-  resourceOwnerSystemAccountId: string
-  resourceOwnerSystemAccountName?: string
-  windows: UsageStatsWindowDefinition[]
-  users: Array<ResourceAuthorizationSummary & { usageByWindow: UsageByWindow }>
-  teams: AuthorizationTeamUsageDetail[]
   statsLagSeconds: number
 }

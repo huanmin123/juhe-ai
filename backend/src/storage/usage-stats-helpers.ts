@@ -1,16 +1,7 @@
-import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary, UsageByWindow, UsageStatsWindowDefinition } from '../domain/types.js'
+import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 export const ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS = 31
-
-export const USAGE_STATS_WINDOWS: UsageStatsWindowDefinition[] = [
-  { key: 'last1d', label: '近1天', days: 1 },
-  { key: 'last3d', label: '近3天', days: 3 },
-  { key: 'last7d', label: '近一周', days: 7 },
-  { key: 'last15d', label: '近半月', days: 15 },
-  { key: 'last30d', label: '近一月', days: 30 },
-  { key: 'total', label: '总用量' }
-]
 
 export function emptyAccountUsageSummary(): AccountUsageSummary {
   return {
@@ -50,10 +41,6 @@ export function usageSummaryFromAggregate(row: {
     totalCost: Number(row.total_cost ?? 0),
     lastUsedAt: row.last_used_at ?? undefined
   }
-}
-
-export function emptyUsageByWindow(): UsageByWindow {
-  return Object.fromEntries(USAGE_STATS_WINDOWS.map((window) => [window.key, emptyAccountUsageSummary()])) as UsageByWindow
 }
 
 export function addUsageSummaries(left: AccountUsageSummary | undefined, right: AccountUsageSummary | undefined): AccountUsageSummary {

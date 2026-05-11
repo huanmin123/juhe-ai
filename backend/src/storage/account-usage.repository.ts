@@ -1,17 +1,13 @@
 import type {
-  AccountAuthorizationUsageOverview,
   AccountSummary,
+  AccountUsageStatsRange,
   AccountUsageStatsOverview,
-  AccountUsageStatsRow,
-  AuthorizationTeamMemberUsageDetail,
-  AuthorizationTeamUsageDetail,
-  ProviderCode,
-  ResourceAuthorizationSummary,
-  UsageByWindow
+  AccountUsageStatsRow
 } from '../domain/types.js'
-import { currentSystemAccountId, type AccessScope } from './access-scope.js'
+import { currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { latestUsageStatsLagSeconds } from './usage-stats.repository.js'
-import { addUsageSummaries, emptyUsageByWindow, USAGE_STATS_WINDOWS } from './usage-stats-helpers.js'
+import { addUsageSummaries, emptyAccountUsageSummary } from './usage-stats-helpers.js'
+import type { UsageStatsDailySeries } from './usage-window-loaders.js'
 
 export function getAccountUsageStatsOverview(input: {
   access?: AccessScope
@@ -19,20 +15,17 @@ export function getAccountUsageStatsOverview(input: {
   total?: number
   page?: number
   pageSize?: number
-  loadUsageByWindow: (scopes: UsageScopeRequest[]) => Map<string, UsageByWindow>
+  range: AccountUsageStatsRange
+  loadUsageDailySeries: (scopes: UsageScopeRequest[], range: AccountUsageStatsRange) => Map<string, UsageStatsDailySeries>
 }): AccountUsageStatsOverview {
-  const scopes = input.accounts.map((account) => ({
-    rowKey: accountUsageStatsRowKey(account),
-    systemAccountId: account.accessType === 'authorized' && account.accountAuthorizationId
-      ? account.ownerSystemAccountId ?? account.systemAccountId ?? currentSystemAccountId(input.access)
-      : account.ownerSystemAccountId ?? account.systemAccountId ?? currentSystemAccountId(input.access),
-    scopeType: account.accessType === 'authorized' && account.accountAuthorizationId ? 'account_authorization' : 'account',
-    scopeId: account.accessType === 'authorized' && account.accountAuthorizationId ? account.accountAuthorizationId : account.id
-  }))
-  const usageByRowKey = input.loadUsageByWindow(scopes)
-  return {
-    windows: USAGE_STATS_WINDOWS,
-    rows: input.accounts.map((account): AccountUsageStatsRow => ({
+  const scopes = input.accounts.map((account) => accountUsageScope(account, input.access))
+  const dailySeriesByRowKey = input.loadUsageDailySeries(scopes, input.range)
+  let summary = emptyAccountUsageSummary()
+  const rows = input.accounts.map((account): AccountUsageStatsRow => {
+    const rowKey = accountUsageStatsRowKey(account)
+    const dailySeries = dailySeriesByRowKey.get(rowKey)
+    summary = addUsageSummaries(summary, dailySeries?.rangeUsage)
+    return {
       id: account.id,
       systemAccountId: account.systemAccountId,
       systemAccountName: account.systemAccountName,
@@ -43,50 +36,20 @@ export function getAccountUsageStatsOverview(input: {
       type: account.type,
       status: account.status,
       accessType: account.accessType,
-      usageByWindow: usageByRowKey.get(accountUsageStatsRowKey(account)) ?? emptyUsageByWindow(),
+      rangeUsage: dailySeries?.rangeUsage ?? emptyAccountUsageSummary(),
+      dailyUsage: dailySeries?.dailyUsage ?? [],
       authorizationUsageAvailable: account.authorizationUsageAvailable === true,
       authorizationCount: account.authorizationCount ?? 0,
       authorizationTeamCount: account.authorizationTeamCount ?? 0
-    })),
+    }
+  })
+  return {
+    range: input.range,
+    summary,
+    rows,
     total: input.total ?? input.accounts.length,
     page: input.page ?? 1,
     pageSize: input.pageSize ?? input.accounts.length,
-    statsLagSeconds: latestUsageStatsLagSeconds()
-  }
-}
-
-export function getAccountAuthorizationUsageOverview(input: {
-  account: {
-    id: string
-    systemAccountId: string
-    name: string
-    providerCode: ProviderCode
-  }
-  authorizations: ResourceAuthorizationSummary[]
-  ownerName?: string
-  loadUsageByWindow: (scopes: UsageScopeRequest[]) => Map<string, UsageByWindow>
-}): AccountAuthorizationUsageOverview {
-  const usageScopes = input.authorizations.map((authorization) => ({
-    rowKey: authorization.id,
-    systemAccountId: authorization.resourceOwnerSystemAccountId,
-    scopeType: 'account_authorization',
-    scopeId: authorization.id
-  }))
-  const usageByAuthorizationId = input.loadUsageByWindow(usageScopes)
-  const users = input.authorizations.map((authorization) => ({
-    ...authorization,
-    usageByWindow: usageByAuthorizationId.get(authorization.id) ?? emptyUsageByWindow()
-  }))
-  const teams = buildAuthorizationTeamUsageDetails(users)
-  return {
-    resourceType: 'account',
-    resourceId: input.account.id,
-    resourceName: input.account.name,
-    resourceOwnerSystemAccountId: input.account.systemAccountId,
-    resourceOwnerSystemAccountName: input.ownerName,
-    windows: USAGE_STATS_WINDOWS,
-    users,
-    teams,
     statsLagSeconds: latestUsageStatsLagSeconds()
   }
 }
@@ -102,51 +65,21 @@ function accountUsageStatsRowKey(account: AccountSummary): string {
   return `${account.id}:${account.accountAuthorizationId ?? 'owner'}`
 }
 
-function buildAuthorizationTeamUsageDetails(authorizations: Array<ResourceAuthorizationSummary & { usageByWindow: UsageByWindow }>): AuthorizationTeamUsageDetail[] {
-  const teams = new Map<string, AuthorizationTeamUsageDetail>()
-  for (const authorization of authorizations) {
-    const activeTeamSources = (authorization.authorizationSources ?? authorization.sources ?? [])
-      .filter((source) => source.sourceType === 'team' && source.status === 'active' && source.sourceTeamId)
-    for (const source of activeTeamSources) {
-      const teamId = source.sourceTeamId
-      if (!teamId) continue
-      const existing = teams.get(teamId) ?? {
-        teamId,
-        teamName: source.sourceTeamName,
-        usageByWindow: emptyUsageByWindow(),
-        memberUsage: []
-      }
-      existing.teamName = existing.teamName ?? source.sourceTeamName
-      existing.usageByWindow = addUsageByWindow(existing.usageByWindow, authorization.usageByWindow)
-      existing.memberUsage.push({
-        authorizationId: authorization.id,
-        systemAccountId: authorization.granteeSystemAccountId,
-        systemAccountName: authorization.granteeSystemAccountName,
-        username: authorization.granteeUsername,
-        usageByWindow: authorization.usageByWindow
-      })
-      teams.set(teamId, existing)
+function accountUsageScope(account: AccountSummary, access?: AccessScope): UsageScopeRequest {
+  const callerSystemAccountId = scopedSystemAccountId(access)
+  if (callerSystemAccountId) {
+    return {
+      rowKey: accountUsageStatsRowKey(account),
+      systemAccountId: callerSystemAccountId,
+      scopeType: 'caller_account',
+      scopeId: account.id
     }
   }
 
-  return [...teams.values()].map((team) => ({
-    ...team,
-    memberUsage: team.memberUsage.sort(compareAuthorizationTeamMemberUsage)
-  })).sort((left, right) => {
-    const requestDelta = right.usageByWindow.total.requestCount - left.usageByWindow.total.requestCount
-    if (requestDelta !== 0) return requestDelta
-    const nameDelta = (left.teamName ?? left.teamId).localeCompare(right.teamName ?? right.teamId)
-    return nameDelta !== 0 ? nameDelta : left.teamId.localeCompare(right.teamId)
-  })
-}
-
-function addUsageByWindow(left: UsageByWindow, right: UsageByWindow): UsageByWindow {
-  return Object.fromEntries(USAGE_STATS_WINDOWS.map((window) => [window.key, addUsageSummaries(left[window.key], right[window.key])])) as UsageByWindow
-}
-
-function compareAuthorizationTeamMemberUsage(left: AuthorizationTeamMemberUsageDetail, right: AuthorizationTeamMemberUsageDetail): number {
-  const requestDelta = right.usageByWindow.total.requestCount - left.usageByWindow.total.requestCount
-  if (requestDelta !== 0) return requestDelta
-  const nameDelta = (left.systemAccountName ?? left.username ?? left.systemAccountId).localeCompare(right.systemAccountName ?? right.username ?? right.systemAccountId)
-  return nameDelta !== 0 ? nameDelta : left.systemAccountId.localeCompare(right.systemAccountId)
+  return {
+    rowKey: accountUsageStatsRowKey(account),
+    systemAccountId: account.ownerSystemAccountId ?? account.systemAccountId ?? currentSystemAccountId(access),
+    scopeType: account.accessType === 'authorized' && account.accountAuthorizationId ? 'account_authorization' : 'account',
+    scopeId: account.accessType === 'authorized' && account.accountAuthorizationId ? account.accountAuthorizationId : account.id
+  }
 }

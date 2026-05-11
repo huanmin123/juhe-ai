@@ -22,7 +22,7 @@
           />
         </div>
         <div class="page-toolbar-actions">
-          <a-button :disabled="!selectedAccountIds.length || loading" @click="resetSelectedAccounts">重置指定</a-button>
+          <a-button :disabled="(!addedAccountIds.length && !activeAccountIds.length) || loading" @click="resetAccounts">重置</a-button>
           <a-button :loading="loading" @click="loadPerformance">
             <template #icon>
               <ReloadOutlined />
@@ -31,16 +31,19 @@
           </a-button>
         </div>
       </div>
-      <div v-if="legendItems.length" class="ai-performance-legend" aria-label="展示账户">
-        <span v-for="item in legendItems" :key="item.account.id" class="ai-performance-legend-item">
+      <div v-if="accountFilterItems.length" class="ai-performance-account-list" aria-label="性能账户筛选">
+        <button
+          v-for="item in accountFilterItems"
+          :key="item.account.id"
+          class="ai-performance-account-filter-item"
+          :class="{ active: item.selected, muted: hasActiveAccountFilter && !item.selected }"
+          type="button"
+          :aria-pressed="item.selected"
+          @click="toggleAccountFilter(item.account.id)"
+        >
           <span class="ai-performance-legend-dot" :style="{ backgroundColor: item.color }" />
           <span class="ai-performance-legend-name">{{ item.label }}</span>
-          <span v-if="item.account.defaultVisible" class="ai-performance-legend-badge">默认</span>
-          <span v-else-if="item.account.selected" class="ai-performance-legend-badge">指定</span>
-          <button v-if="item.account.selected && !item.account.defaultVisible" class="ai-performance-legend-remove" type="button" :aria-label="`移除 ${item.label}`" @click="removeSelectedAccount(item.account.id)">
-            <CloseOutlined />
-          </button>
-        </span>
+        </button>
       </div>
     </a-card>
 
@@ -64,7 +67,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
-import { CloseOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
@@ -82,7 +85,8 @@ const windowOptions: Array<{ label: string; value: AiPerformanceWindowKey }> = [
 ]
 
 const selectedWindow = ref<AiPerformanceWindowKey>('last1d')
-const selectedAccountIds = ref<string[]>([])
+const addedAccountIds = ref<string[]>([])
+const activeAccountIds = ref<string[]>([])
 const accountPickerValue = ref<string[]>([])
 const overview = ref<AiPerformanceOverview>()
 const accounts = ref<AiPerformanceAccountOption[]>([])
@@ -100,9 +104,32 @@ const durationChart = shallowRef<ECharts>()
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
 const currentWindowLabel = computed(() => overview.value?.window.label ?? windowOptions.find((item) => item.value === selectedWindow.value)?.label ?? '近一天')
-const hasAccounts = computed(() => (overview.value?.accounts.length ?? 0) > 0)
-const hasFirstTokenData = computed(() => (overview.value?.hourlySeries ?? []).some((series) => series.points.some((point) => point.averageFirstTokenMs !== undefined)))
-const hasDurationData = computed(() => (overview.value?.hourlySeries ?? []).some((series) => series.points.some((point) => point.averageDurationMs !== undefined)))
+const overviewAccounts = computed(() => overview.value?.accounts ?? [])
+const activeAccountIdSet = computed(() => new Set(activeAccountIds.value))
+const hasActiveAccountFilter = computed(() => activeAccountIds.value.length > 0)
+const visibleAccounts = computed(() => {
+  if (!hasActiveAccountFilter.value) return overviewAccounts.value
+  return overviewAccounts.value.filter((account) => activeAccountIdSet.value.has(account.id))
+})
+const visibleAccountIdSet = computed(() => new Set(visibleAccounts.value.map((account) => account.id)))
+const visibleHourlySeries = computed(() => (overview.value?.hourlySeries ?? []).filter((series) => visibleAccountIdSet.value.has(series.accountId)))
+const visibleSummary = computed(() => computeAiPerformanceSummary(visibleHourlySeries.value))
+const visibleOverview = computed<AiPerformanceOverview | undefined>(() => {
+  const currentOverview = overview.value
+  if (!currentOverview) return undefined
+  const visibleIds = visibleAccountIdSet.value
+  return {
+    ...currentOverview,
+    accounts: visibleAccounts.value,
+    defaultAccounts: currentOverview.defaultAccounts.filter((account) => visibleIds.has(account.id)),
+    selectedAccounts: currentOverview.selectedAccounts.filter((account) => visibleIds.has(account.id)),
+    hourlySeries: visibleHourlySeries.value,
+    summary: visibleSummary.value
+  }
+})
+const hasAccounts = computed(() => visibleAccounts.value.length > 0)
+const hasFirstTokenData = computed(() => visibleHourlySeries.value.some((series) => series.points.some((point) => point.averageFirstTokenMs !== undefined)))
+const hasDurationData = computed(() => visibleHourlySeries.value.some((series) => series.points.some((point) => point.averageDurationMs !== undefined)))
 const firstTokenEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无首 token 样本` : '最近 7 天暂无活跃 AI 账户')
 const durationEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无总耗时样本` : '最近 7 天暂无活跃 AI 账户')
 
@@ -112,7 +139,7 @@ const accountOptions = computed(() => accounts.value
     value: account.id
   })))
 
-const legendItems = computed(() => {
+const accountFilterItems = computed(() => {
   const currentOverview = overview.value
   if (!currentOverview) return []
   const nameCounts = currentOverview.accounts.reduce((counts, account) => {
@@ -120,6 +147,7 @@ const legendItems = computed(() => {
     return counts
   }, new Map<string, number>())
   const accountById = new Map(currentOverview.accounts.map((account) => [account.id, account]))
+  const activeIds = activeAccountIdSet.value
   return orderedAiPerformanceSeries(currentOverview).map((series, index) => {
     const account = accountById.get(series.accountId)
     const accountName = account?.name ?? series.accountName
@@ -138,15 +166,17 @@ const legendItems = computed(() => {
         defaultVisible: false
       },
       label,
-      color: chartColors[index % chartColors.length]
+      color: chartColors[index % chartColors.length],
+      selected: activeIds.has(series.accountId)
     }
   })
 })
+const seriesColorByAccountId = computed(() => new Map(accountFilterItems.value.map((item) => [item.account.id, item.color])))
 
 const summaryCards = computed(() => {
-  const summary = overview.value?.summary
+  const summary = visibleSummary.value
   return [
-    { key: 'accounts', label: '展示账户', value: formatInteger(overview.value?.accounts.length), extra: `默认 ${formatInteger(overview.value?.defaultAccounts.length)} / 指定 ${formatInteger(overview.value?.selectedAccounts.length)}` },
+    { key: 'accounts', label: '统计账户', value: formatInteger(visibleAccounts.value.length), extra: hasActiveAccountFilter.value ? `已筛选 ${formatInteger(visibleAccounts.value.length)} 个` : `当前列表 ${formatInteger(visibleAccounts.value.length)} 个` },
     { key: 'requests', label: `${currentWindowLabel.value}请求`, value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
     { key: 'firstToken', label: '平均首 token', value: formatDuration(summary?.averageFirstTokenMs), extra: `样本 ${formatInteger(summary?.firstTokenCount)}` },
     { key: 'duration', label: '平均总耗时', value: formatDuration(summary?.averageDurationMs), extra: `样本 ${formatInteger(summary?.durationCount)}` }
@@ -158,8 +188,9 @@ async function loadPerformance() {
   try {
     overview.value = await api.myStats.aiPerformance({
       window: selectedWindow.value,
-      accountIds: selectedAccountIds.value
+      accountIds: addedAccountIds.value
     })
+    pruneAccountState()
   } catch (error) {
     console.error(error)
     message.error('AI性能监控数据加载失败')
@@ -176,7 +207,7 @@ async function loadAccounts() {
     const keyword = accountSearchKeyword.value.trim()
     const nextAccounts = await api.myStats.aiPerformanceAccounts({
       keyword,
-      accountIds: selectedAccountIds.value,
+      accountIds: addedAccountIds.value,
       limit: 30
     })
     if (requestSeq !== accountSearchSeq) return
@@ -199,16 +230,27 @@ function handleWindowChange(value: string | number) {
 function handleAccountSelect(value: unknown) {
   accountPickerValue.value = []
   const id = String(value ?? '').trim()
-  if (!id || selectedAccountIds.value.includes(id)) return
-  const ids = [...selectedAccountIds.value, id]
-  if (ids.length > 20) {
-    message.warning('临时指定账户最多选择 20 个')
-    return
-  }
-  selectedAccountIds.value = ids
   accountSearchKeyword.value = ''
+  if (!id) return
+  const currentAccountIds = new Set(overviewAccounts.value.map((account) => account.id))
+  const needsBackendAppend = !currentAccountIds.has(id) && !addedAccountIds.value.includes(id)
+  if (needsBackendAppend) {
+    const ids = [...addedAccountIds.value, id]
+    if (ids.length > 20) {
+      message.warning('添加账户最多 20 个')
+      return
+    }
+    addedAccountIds.value = ids
+  }
+  if (hasActiveAccountFilter.value && !activeAccountIds.value.includes(id)) {
+    activeAccountIds.value = [...activeAccountIds.value, id]
+  }
   void loadAccounts()
-  void loadPerformance()
+  if (needsBackendAppend) {
+    void loadPerformance()
+  } else {
+    renderCharts()
+  }
 }
 
 function handleAccountSearch(value: string) {
@@ -225,17 +267,21 @@ function handleAccountDropdownVisibleChange(open: boolean) {
   }
 }
 
-function resetSelectedAccounts() {
-  selectedAccountIds.value = []
+function resetAccounts() {
+  addedAccountIds.value = []
+  activeAccountIds.value = []
   accountPickerValue.value = []
+  accountSearchKeyword.value = ''
   void loadAccounts()
   void loadPerformance()
 }
 
-function removeSelectedAccount(id: string) {
-  selectedAccountIds.value = selectedAccountIds.value.filter((accountId) => accountId !== id)
-  void loadAccounts()
-  void loadPerformance()
+function toggleAccountFilter(id: string) {
+  if (!overviewAccounts.value.some((account) => account.id === id)) return
+  activeAccountIds.value = activeAccountIds.value.includes(id)
+    ? activeAccountIds.value.filter((accountId) => accountId !== id)
+    : [...activeAccountIds.value, id]
+  renderCharts()
 }
 
 function renderCharts() {
@@ -247,23 +293,23 @@ function renderCharts() {
 }
 
 function renderFirstTokenChart() {
-  if (!overview.value || !hasFirstTokenData.value) {
+  if (!visibleOverview.value || !hasFirstTokenData.value) {
     disposeChart(firstTokenChart)
     return
   }
   const chart = ensureChart(firstTokenChartRef, firstTokenChart)
   if (!chart) return
-  chart.setOption(buildAiPerformanceOption(overview.value, 'firstToken'), { notMerge: true })
+  chart.setOption(buildAiPerformanceOption(visibleOverview.value, 'firstToken', { colorByAccountId: seriesColorByAccountId.value }), { notMerge: true })
 }
 
 function renderDurationChart() {
-  if (!overview.value || !hasDurationData.value) {
+  if (!visibleOverview.value || !hasDurationData.value) {
     disposeChart(durationChart)
     return
   }
   const chart = ensureChart(durationChartRef, durationChart)
   if (!chart) return
-  chart.setOption(buildAiPerformanceOption(overview.value, 'duration'), { notMerge: true })
+  chart.setOption(buildAiPerformanceOption(visibleOverview.value, 'duration', { colorByAccountId: seriesColorByAccountId.value }), { notMerge: true })
 }
 
 function ensureChart(elementRef: Ref<HTMLDivElement | undefined>, chartRef: ShallowRef<ECharts | undefined>) {
@@ -302,6 +348,45 @@ function accountStatusText(status: AccountStatus) {
     temporary_unavailable: '临时不可用'
   }
   return labels[status] ?? status
+}
+
+function computeAiPerformanceSummary(seriesList: AiPerformanceOverview['hourlySeries']): AiPerformanceOverview['summary'] {
+  const summary = {
+    requestCount: 0,
+    firstTokenCount: 0,
+    firstTokenMsWeightedSum: 0,
+    durationCount: 0,
+    durationMsWeightedSum: 0
+  }
+  for (const series of seriesList) {
+    for (const point of series.points) {
+      summary.requestCount += point.requestCount
+      summary.firstTokenCount += point.firstTokenCount
+      summary.durationCount += point.durationCount
+      if (point.averageFirstTokenMs !== undefined) {
+        summary.firstTokenMsWeightedSum += point.averageFirstTokenMs * point.firstTokenCount
+      }
+      if (point.averageDurationMs !== undefined) {
+        summary.durationMsWeightedSum += point.averageDurationMs * point.durationCount
+      }
+    }
+  }
+  return {
+    requestCount: summary.requestCount,
+    firstTokenCount: summary.firstTokenCount,
+    averageFirstTokenMs: summary.firstTokenCount ? summary.firstTokenMsWeightedSum / summary.firstTokenCount : undefined,
+    durationCount: summary.durationCount,
+    averageDurationMs: summary.durationCount ? summary.durationMsWeightedSum / summary.durationCount : undefined
+  }
+}
+
+function pruneAccountState() {
+  const currentOverview = overview.value
+  if (!currentOverview) return
+  const currentIds = new Set(currentOverview.accounts.map((account) => account.id))
+  const backendAddedIds = new Set(currentOverview.selectedAccounts.map((account) => account.id))
+  addedAccountIds.value = addedAccountIds.value.filter((id) => backendAddedIds.has(id))
+  activeAccountIds.value = activeAccountIds.value.filter((id) => currentIds.has(id))
 }
 
 onMounted(() => {
@@ -353,21 +438,37 @@ onBeforeUnmount(() => {
   max-width: 560px;
 }
 
-.ai-performance-legend {
+.ai-performance-account-list {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px 14px;
+  gap: 8px 10px;
   margin-top: 12px;
 }
 
-.ai-performance-legend-item {
+.ai-performance-account-filter-item {
   display: inline-flex;
   align-items: center;
   max-width: min(360px, 100%);
   gap: 6px;
+  padding: 2px 8px;
+  border: 1px solid transparent;
+  border-radius: 6px;
   color: #334155;
+  background: transparent;
   font-size: 13px;
   line-height: 20px;
+  cursor: pointer;
+  transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
+}
+
+.ai-performance-account-filter-item:hover,
+.ai-performance-account-filter-item.active {
+  border-color: #91caff;
+  background: #e6f4ff;
+}
+
+.ai-performance-account-filter-item.muted {
+  opacity: 0.46;
 }
 
 .ai-performance-legend-dot {
@@ -382,31 +483,6 @@ onBeforeUnmount(() => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-}
-
-.ai-performance-legend-badge {
-  flex: 0 0 auto;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.ai-performance-legend-remove {
-  display: inline-flex;
-  width: 18px;
-  height: 18px;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  color: #64748b;
-  background: transparent;
-  border: 0;
-  border-radius: 50%;
-  cursor: pointer;
-}
-
-.ai-performance-legend-remove:hover {
-  color: #ef4444;
-  background: #fee2e2;
 }
 
 .ai-performance-section {

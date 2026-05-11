@@ -9,6 +9,7 @@ import {
   revokeResourceAuthorization,
   updateResourceAuthorization
 } from '../../storage/repositories.js'
+import { normalizeAccountUsageStatsRange } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
@@ -30,6 +31,13 @@ const authorizationsQuerySchema = z.object({
   status: z.enum(['active', 'paused', 'expired', 'revoked', 'all']).optional(),
   direction: z.enum(['all', 'outbound', 'inbound']).optional(),
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional()
+})
+
+const authorizationUsageQuerySchema = z.object({
+  systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
+  startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
+  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional(),
+  groupBy: z.enum(['day', 'week']).optional()
 })
 
 const createAuthorizationSchema = z.object({
@@ -330,9 +338,9 @@ authorizationsRouter.patch('/:id/expire', (req, res) => {
 })
 
 authorizationsRouter.get('/:id/usage', (req, res) => {
-  const scopeQuery = parseRequestScopeQuery(req.query)
-  if (!scopeQuery.success) {
-    sendBadRequest(res, scopeQuery.message)
+  const queryParsed = parseOrBadRequest(authorizationUsageQuerySchema, req.query, '查询参数不合法')
+  if (!queryParsed.success) {
+    sendBadRequest(res, queryParsed.message)
     return
   }
   const paramsParsed = parseOrBadRequest(authorizationIdParamsSchema, req.params, '授权记录 ID 不合法')
@@ -340,7 +348,17 @@ authorizationsRouter.get('/:id/usage', (req, res) => {
     sendBadRequest(res, paramsParsed.message)
     return
   }
-  const authorization = getResourceAuthorizationUsage(paramsParsed.data.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+  const authorization = getResourceAuthorizationUsage(
+    paramsParsed.data.id,
+    getRequestAccessScope(queryParsed.data.systemAccountId),
+    {
+      range: normalizeAccountUsageStatsRange({
+        startDate: queryParsed.data.startDate,
+        endDate: queryParsed.data.endDate
+      }),
+      groupBy: queryParsed.data.groupBy ?? 'day'
+    }
+  )
   if (!authorization) {
     sendNotFound(res, '授权记录不存在')
     return

@@ -14,7 +14,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId
 import { sqlPlaceholders } from './query-utils.js'
 import { averageFromSum, hourKey } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
-import { aggregateUsageStatsRecord } from './usage-stats-writers.js'
+import { aggregateCallerAccountUsageStatsRecord, aggregateUsageStatsRecord } from './usage-stats-writers.js'
 import {
   GLOBAL_STATS_SCOPE_ID,
   GLOBAL_STATS_SYSTEM_ACCOUNT_ID,
@@ -31,6 +31,7 @@ export type { SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOvervie
 export type { AiPerformanceWindowKey, UsageOverviewWindowKey } from '../domain/types.js'
 
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
+const CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME = 'caller_account_usage_stats_backfill'
 const AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT = 20
 const AI_PERFORMANCE_ACCOUNT_OPTION_DEFAULT_LIMIT = 30
 const AI_PERFORMANCE_ACCOUNT_OPTION_MAX_LIMIT = 50
@@ -58,6 +59,7 @@ const AI_PERFORMANCE_WINDOWS: AiPerformanceWindowDefinition[] = [
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
   const database = getDatabase()
+  ensureCallerAccountUsageStatsBackfill(database)
   const state = usageStatsJobState(database)
   const safeCreatedBefore = usageStatsSafeCreatedBefore()
   const rows = database
@@ -103,6 +105,80 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
   }
 
   return rows.length
+}
+
+function ensureCallerAccountUsageStatsBackfill(database: DatabaseSync): void {
+  const backfillState = database
+    .prepare("SELECT last_success_at FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
+    .get(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME) as unknown as { last_success_at?: string | null } | undefined
+  if (backfillState?.last_success_at) {
+    return
+  }
+
+  const usageStatsState = usageStatsJobState(database)
+  if (!usageStatsState.cursorCreatedAt) {
+    recordCallerAccountUsageStatsBackfill(database, 'skipped')
+    return
+  }
+
+  const existing = database
+    .prepare("SELECT 1 AS found FROM usage_stats_totals WHERE scope_type = 'caller_account' LIMIT 1")
+    .get() as unknown as { found?: number } | undefined
+  if (existing?.found) {
+    recordCallerAccountUsageStatsBackfill(database, 'existing')
+    return
+  }
+
+  const rows = database
+    .prepare(`
+      SELECT *
+      FROM usage_records
+      WHERE account_id IS NOT NULL
+        AND (created_at < ? OR (created_at = ? AND id <= ?))
+      ORDER BY created_at ASC, id ASC
+    `)
+    .all(usageStatsState.cursorCreatedAt, usageStatsState.cursorCreatedAt, usageStatsState.cursorId) as unknown as UsageStatsRecordRow[]
+  const updatedAt = nowIso()
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    for (const row of rows) {
+      aggregateCallerAccountUsageStatsRecord(database, row, updatedAt)
+    }
+    recordCallerAccountUsageStatsBackfill(database, `processed:${rows.length}`, updatedAt)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    recordCallerAccountUsageStatsBackfillFailure(database, error)
+    throw error
+  }
+}
+
+function recordCallerAccountUsageStatsBackfill(database: DatabaseSync, cursorId: string, updatedAt = nowIso()): void {
+  database.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES ('global', '', ?, '', ?, ?, NULL, 0, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_id = excluded.cursor_id,
+      last_success_at = excluded.last_success_at,
+      last_error_message = NULL,
+      lag_seconds = 0,
+      updated_at = excluded.updated_at
+  `).run(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME, cursorId, updatedAt, updatedAt)
+}
+
+function recordCallerAccountUsageStatsBackfillFailure(database: DatabaseSync, error: unknown): void {
+  const updatedAt = nowIso()
+  const message = error instanceof Error ? error.message : 'caller_account 用量统计回填失败'
+  database.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES ('global', '', ?, '', 'failed', NULL, ?, 0, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_id = excluded.cursor_id,
+      last_success_at = NULL,
+      last_error_message = excluded.last_error_message,
+      lag_seconds = 0,
+      updated_at = excluded.updated_at
+  `).run(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME, message, updatedAt)
 }
 
 export function refreshGroupAccountStatsCache(): void {

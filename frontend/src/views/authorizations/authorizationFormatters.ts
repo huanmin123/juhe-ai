@@ -11,6 +11,7 @@ import {
 import type {
   AccountUsageSummary,
   AuthorizationSourceSummary,
+  AuthorizationUsageBucket,
   AuthorizationStatus,
   AuthorizationUserUsageDetail,
   ResourceAuthorizationSummary,
@@ -23,6 +24,9 @@ export interface AuthorizationUsageResponseDetail {
   systemAccountName?: string
   username?: string
   usage?: Partial<AccountUsageSummary>
+  rangeUsage?: Partial<AccountUsageSummary>
+  dailyUsage?: Array<Partial<AccountUsageSummary> & { statDate?: string }>
+  usageBuckets?: Array<Partial<AccountUsageSummary> & { bucketKey?: string; startDate?: string; endDate?: string }>
   requestCount?: number
   inputTokens?: number
   outputTokens?: number
@@ -36,6 +40,10 @@ export interface AuthorizationUsageResponseShape {
   authorization?: ResourceAuthorizationSummary
   usage?: Partial<AccountUsageSummary>
   details?: AuthorizationUsageResponseDetail[]
+  usageBySystemAccount?: AuthorizationUsageResponseDetail[]
+  usageRange?: ResourceAuthorizationSummary['usageRange']
+  usageGroupBy?: ResourceAuthorizationSummary['usageGroupBy']
+  usageBuckets?: AuthorizationUsageResponseDetail['usageBuckets']
 }
 
 export interface TeamUsageSummary {
@@ -244,32 +252,58 @@ export function normalizeUsageDetail(detail: AuthorizationUsageResponseDetail): 
   if (!detail.systemAccountId) {
     return undefined
   }
-  const usage = normalizeUsageSummary(detail.usage ?? detail)
+  const usage = normalizeUsageSummary(detail.rangeUsage ?? detail.usage ?? detail)
   return {
     systemAccountId: detail.systemAccountId,
     systemAccountName: detail.systemAccountName || detail.username || '未知账户',
+    username: detail.username,
     requestCount: usage.requestCount,
     inputTokens: usage.inputTokens,
     outputTokens: usage.outputTokens,
     cacheReadTokens: usage.cacheReadTokens,
     totalTokens: usage.totalTokens,
     totalCost: usage.totalCost,
-    lastUsedAt: usage.lastUsedAt
+    lastUsedAt: usage.lastUsedAt,
+    rangeUsage: usage,
+    dailyUsage: Array.isArray(detail.dailyUsage)
+      ? detail.dailyUsage
+        .filter((point): point is Partial<AccountUsageSummary> & { statDate: string } => typeof point.statDate === 'string')
+        .map((point) => ({ ...normalizeUsageSummary(point), statDate: point.statDate }))
+      : undefined,
+    usageBuckets: normalizeUsageBuckets(detail.usageBuckets)
   }
+}
+
+export function normalizeUsageBuckets(buckets?: AuthorizationUsageResponseDetail['usageBuckets']): AuthorizationUsageBucket[] | undefined {
+  if (!Array.isArray(buckets)) return undefined
+  return buckets
+    .filter((bucket): bucket is Partial<AccountUsageSummary> & { bucketKey: string; startDate: string; endDate: string } => (
+      typeof bucket.bucketKey === 'string' && typeof bucket.startDate === 'string' && typeof bucket.endDate === 'string'
+    ))
+    .map((bucket) => ({
+      ...normalizeUsageSummary(bucket),
+      bucketKey: bucket.bucketKey,
+      startDate: bucket.startDate,
+      endDate: bucket.endDate
+    }))
 }
 
 export function normalizeAuthorizationUsageResponse(payload: unknown, fallback: ResourceAuthorizationSummary): ResourceAuthorizationSummary {
   if (payload && typeof payload === 'object' && 'authorization' in payload) {
     const response = payload as AuthorizationUsageResponseShape
     const authorization = response.authorization ?? fallback
-    const usageBySystemAccount = Array.isArray(response.details)
-      ? response.details.map(normalizeUsageDetail).filter((detail): detail is AuthorizationUserUsageDetail => Boolean(detail))
+    const responseDetails = Array.isArray(response.details) ? response.details : response.usageBySystemAccount
+    const usageBySystemAccount = Array.isArray(responseDetails)
+      ? responseDetails.map(normalizeUsageDetail).filter((detail): detail is AuthorizationUserUsageDetail => Boolean(detail))
       : authorization.usageBySystemAccount ?? []
     return {
       ...fallback,
       ...authorization,
       usage: normalizeUsageSummary(response.usage ?? authorization.usage ?? fallback.usage),
-      usageBySystemAccount
+      usageBySystemAccount,
+      usageRange: response.usageRange ?? authorization.usageRange ?? fallback.usageRange,
+      usageGroupBy: response.usageGroupBy ?? authorization.usageGroupBy ?? fallback.usageGroupBy,
+      usageBuckets: normalizeUsageBuckets(response.usageBuckets) ?? authorization.usageBuckets ?? fallback.usageBuckets
     }
   }
   const authorization = (payload as Partial<ResourceAuthorizationSummary>) ?? {}
@@ -277,7 +311,10 @@ export function normalizeAuthorizationUsageResponse(payload: unknown, fallback: 
     ...fallback,
     ...authorization,
     usage: normalizeUsageSummary(authorization.usage ?? fallback.usage),
-    usageBySystemAccount: Array.isArray(authorization.usageBySystemAccount) ? authorization.usageBySystemAccount : fallback.usageBySystemAccount ?? []
+    usageBySystemAccount: Array.isArray(authorization.usageBySystemAccount) ? authorization.usageBySystemAccount : fallback.usageBySystemAccount ?? [],
+    usageRange: authorization.usageRange ?? fallback.usageRange,
+    usageGroupBy: authorization.usageGroupBy ?? fallback.usageGroupBy,
+    usageBuckets: authorization.usageBuckets ?? fallback.usageBuckets
   }
 }
 

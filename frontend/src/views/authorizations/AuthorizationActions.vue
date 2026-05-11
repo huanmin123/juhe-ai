@@ -28,7 +28,7 @@ const props = defineProps<{
 
 const canManageAuthorization = computed(() => props.isManagementView || props.authorization.permissions?.canEdit === true)
 const actions = computed<RowActionItem[]>(() => [
-  { key: 'usage-detail', label: '明细', icon: 'detail', tone: 'info' }
+  { key: 'usage-detail', label: '用量明细', icon: 'detail', tone: 'info' }
 ])
 const moreActions = computed<RowActionItem[]>(() => {
   if (!canManageAuthorization.value) return []

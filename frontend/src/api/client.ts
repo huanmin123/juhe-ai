@@ -6,7 +6,6 @@ import type {
   AccountTestResult,
   AccountTrafficMigrationResult,
   AccountTrafficMigrationSourceStatus,
-  AccountAuthorizationUsageOverview,
   AccountUsageStatsOverview,
   AiPerformanceAccountOption,
   AiPerformanceOverview,
@@ -77,6 +76,8 @@ interface AccountUsageStatsParams extends ListParams {
   pageSize?: number
   keyword?: string
   type?: string
+  startDate?: string
+  endDate?: string
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
   limit?: number
 }
@@ -191,6 +192,12 @@ export interface AuthorizationListParams extends ListParams {
 }
 
 export type AuthorizationScopeParams = ListParams
+
+export interface AuthorizationUsageParams extends AuthorizationScopeParams {
+  startDate?: string
+  endDate?: string
+  groupBy?: 'day' | 'week'
+}
 
 export interface AnnouncementListParams {
   limit?: number
@@ -319,7 +326,7 @@ export const api = {
     update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}`, payload, { params })),
     updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}/expire`, payload, { params })),
     revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { data: payload, params })),
-    usage: (id: string, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`, { params }))
+    usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`, { params }))
   },
   myAuthorizations: {
     list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/my-authorizations', { params: stripSystemAccountParam(params) })),
@@ -335,7 +342,7 @@ export const api = {
     update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/my-authorizations/${id}`, payload)),
     updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }) => unwrap<ResourceAuthorizationSummary>(http.patch(`/my-authorizations/${id}/expire`, payload)),
     revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }) => unwrap<ResourceAuthorizationSummary>(http.delete(`/my-authorizations/${id}`, { data: payload })),
-    usage: (id: string) => unwrap<ResourceAuthorizationSummary>(http.get(`/my-authorizations/${id}/usage`))
+    usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/my-authorizations/${id}/usage`, { params: stripSystemAccountParam(params) }))
   },
   apiKeys: {
     list: (params?: ApiKeyListParams) => unwrap<ApiKeyListResult>(http.get('/api-keys', { params })),
@@ -403,13 +410,11 @@ export const api = {
   stats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
     accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
-    accountAuthorizationUsage: (id: string, params?: ListParams) => unwrap<AccountAuthorizationUsageOverview>(http.get(`/stats/accounts/${id}/authorization-usage`, { params })),
     systemMetrics: (params?: Pick<UsageOverviewParams, 'window'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params }))
   },
   myStats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),
     accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/my-stats/account-usage', { params: stripSystemAccountParam(params) })),
-    accountAuthorizationUsage: (id: string) => unwrap<AccountAuthorizationUsageOverview>(http.get(`/my-stats/accounts/${id}/authorization-usage`)),
     aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params) })),
     aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params) }))
   },

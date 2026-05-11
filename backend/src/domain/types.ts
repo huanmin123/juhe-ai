@@ -225,16 +225,6 @@ export interface AiPerformanceOverview {
   statsLagSeconds: number
 }
 
-export type UsageStatsWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last15d' | 'last30d' | 'total'
-
-export interface UsageStatsWindowDefinition {
-  key: UsageStatsWindowKey
-  label: string
-  days?: number
-}
-
-export type UsageByWindow = Record<UsageStatsWindowKey, AccountUsageSummary>
-
 export interface AccountUsageStatsRange {
   startDate: string
   endDate: string
@@ -360,7 +350,6 @@ export interface AccountUsageStatsRow {
   type: AccountType
   status: AccountStatus
   accessType?: ResourceAccessType
-  usageByWindow: UsageByWindow
   rangeUsage: AccountUsageSummary
   dailyUsage: AccountUsageDailyPoint[]
   authorizationUsageAvailable: boolean
@@ -369,7 +358,6 @@ export interface AccountUsageStatsRow {
 }
 
 export interface AccountUsageStatsOverview {
-  windows: UsageStatsWindowDefinition[]
   range: AccountUsageStatsRange
   summary: AccountUsageSummary
   rows: AccountUsageStatsRow[]
@@ -443,6 +431,17 @@ export interface ResourceAuthorizationUsageDetail {
   totalTokens: number
   totalCost: number
   lastUsedAt?: string
+  rangeUsage?: AccountUsageSummary
+  dailyUsage?: AccountUsageDailyPoint[]
+  usageBuckets?: ResourceAuthorizationUsageBucket[]
+}
+
+export type ResourceAuthorizationUsageGroupBy = 'day' | 'week'
+
+export interface ResourceAuthorizationUsageBucket extends AccountUsageSummary {
+  bucketKey: string
+  startDate: string
+  endDate: string
 }
 
 export interface ResourceAuthorizationSummary {
@@ -470,6 +469,9 @@ export interface ResourceAuthorizationSummary {
   authorizationSources?: ResourceAuthorizationSourceSummary[]
   usage: AccountUsageSummary
   usageBySystemAccount?: ResourceAuthorizationUsageDetail[]
+  usageRange?: AccountUsageStatsRange
+  usageGroupBy?: ResourceAuthorizationUsageGroupBy
+  usageBuckets?: ResourceAuthorizationUsageBucket[]
   permissions?: Pick<ResourcePermissions, 'canEdit' | 'canAuthorize'>
   createdBy: string
   createdAt: string
@@ -480,37 +482,6 @@ export interface ResourceAuthorizationSummary {
 }
 
 export type ResourceAuthorizationUsageSummary = ResourceAuthorizationSummary
-
-export interface AuthorizationUsageWindowDetail extends ResourceAuthorizationSummary {
-  usageByWindow: UsageByWindow
-}
-
-export interface AuthorizationTeamMemberUsageDetail {
-  authorizationId: string
-  systemAccountId: string
-  systemAccountName?: string
-  username?: string
-  usageByWindow: UsageByWindow
-}
-
-export interface AuthorizationTeamUsageDetail {
-  teamId: string
-  teamName?: string
-  usageByWindow: UsageByWindow
-  memberUsage: AuthorizationTeamMemberUsageDetail[]
-}
-
-export interface AccountAuthorizationUsageOverview {
-  resourceType: 'account'
-  resourceId: string
-  resourceName: string
-  resourceOwnerSystemAccountId: string
-  resourceOwnerSystemAccountName?: string
-  windows: UsageStatsWindowDefinition[]
-  users: AuthorizationUsageWindowDetail[]
-  teams: AuthorizationTeamUsageDetail[]
-  statsLagSeconds: number
-}
 
 export interface ApiKeySummary {
   id: string

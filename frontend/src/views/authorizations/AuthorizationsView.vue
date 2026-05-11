@@ -51,27 +51,31 @@
     <AuthorizationUsageDetailModal
       v-model:open="usageDetailOpen"
       :authorization="selectedAuthorization"
+      :group-by="usageDetailGroupBy"
+      :loading="usageDetailLoading"
+      :range="usageDetailRange"
       :team-usage-columns="teamUsageColumns"
       :team-usage-rows="selectedTeamUsageRows"
       :team-usage-summaries="selectedTeamUsageSummaries"
       :usage-detail-columns="usageDetailColumns"
       :usage-details="selectedAuthorizationUsageDetails"
+      @range-change="handleUsageRangeChange"
     />
   </a-card>
 </template>
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import type { Dayjs } from 'dayjs'
+import dayjs, { type Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { api } from '@/api/client'
+import { api, type AuthorizationUsageParams } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
-import type { AccountSummary, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
+import type { AccountSummary, AuthorizationUsageGroupBy, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
 import AuthorizationFilterToolbar from './AuthorizationFilterToolbar.vue'
@@ -118,6 +122,14 @@ const selectedAuthorization = ref<ResourceAuthorizationSummary>()
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
 const selectedAuthorizationUsageDetails = ref<AuthorizationUserUsageDetail[]>([])
 const selectedResourceAuthorizations = ref<ResourceAuthorizationSummary[]>([])
+const usageDetailLoading = ref(false)
+
+const defaultUsageDetailRange = (): [Dayjs, Dayjs] => {
+  const end = dayjs().startOf('day')
+  return [end.subtract(30, 'day'), end]
+}
+const usageDetailRange = ref<[Dayjs, Dayjs]>(defaultUsageDetailRange())
+const usageDetailGroupBy = ref<AuthorizationUsageGroupBy>('day')
 
 type AuthorizationFilters = {
   direction: AuthorizationDirectionFilter
@@ -459,19 +471,53 @@ async function confirmExpireChange() {
 }
 
 async function openUsageDetail(item: ResourceAuthorizationSummary) {
+  selectedAuthorization.value = item
+  selectedAuthorizationUsageDetails.value = item.usageBySystemAccount ?? []
+  selectedResourceAuthorizations.value = [item]
+  usageDetailRange.value = defaultUsageDetailRange()
+  usageDetailGroupBy.value = 'day'
+  usageDetailOpen.value = true
+  await loadUsageDetail(item)
+}
+
+async function handleUsageRangeChange(payload: { range: [Dayjs, Dayjs]; groupBy: AuthorizationUsageGroupBy }) {
+  usageDetailRange.value = payload.range
+  usageDetailGroupBy.value = payload.groupBy
+  if (selectedAuthorization.value) {
+    await loadUsageDetail(selectedAuthorization.value)
+  }
+}
+
+async function loadUsageDetail(item: ResourceAuthorizationSummary) {
+  usageDetailLoading.value = true
   try {
+    const [startDate, endDate] = usageDetailRange.value
+    const usageParams: AuthorizationUsageParams = {
+      startDate: formatDateKey(startDate),
+      endDate: formatDateKey(endDate),
+      groupBy: usageDetailGroupBy.value
+    }
     const usagePayload = isManagementView.value
-      ? await api.authorizations.usage(item.id, authorizationScopeParams.value)
-      : await api.myAuthorizations.usage(item.id)
+      ? await api.authorizations.usage(item.id, { ...usageParams, ...authorizationScopeParams.value })
+      : await api.myAuthorizations.usage(item.id, usageParams)
     const detail = normalizeAuthorizationUsageResponse(usagePayload, item)
     selectedResourceAuthorizations.value = [detail]
     selectedAuthorization.value = detail
     selectedAuthorizationUsageDetails.value = detail.usageBySystemAccount ?? []
-    usageDetailOpen.value = true
+    if (detail.usageRange) {
+      usageDetailRange.value = [dayjs(detail.usageRange.startDate), dayjs(detail.usageRange.endDate)]
+    }
+    usageDetailGroupBy.value = detail.usageGroupBy ?? usageDetailGroupBy.value
   } catch (error) {
     console.error(error)
     message.error('加载用量明细失败')
+  } finally {
+    usageDetailLoading.value = false
   }
+}
+
+function formatDateKey(value: Dayjs): string {
+  return value.format('YYYY-MM-DD')
 }
 
 onMounted(async () => {

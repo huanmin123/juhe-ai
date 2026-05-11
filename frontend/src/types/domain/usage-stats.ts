@@ -10,15 +10,16 @@ export interface AccountUsageSummary {
   lastUsedAt?: string
 }
 
-export type UsageStatsWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last15d' | 'last30d' | 'total'
-
-export interface UsageStatsWindowDefinition {
-  key: UsageStatsWindowKey
-  label: string
-  days?: number
+export interface AccountUsageStatsRange {
+  startDate: string
+  endDate: string
+  days: number
+  maxDays: number
 }
 
-export type UsageByWindow = Record<UsageStatsWindowKey, AccountUsageSummary>
+export interface AccountUsageDailyPoint extends AccountUsageSummary {
+  statDate: string
+}
 
 export type UsageOverviewWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last30d'
 

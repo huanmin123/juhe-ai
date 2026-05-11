@@ -8,9 +8,14 @@ export const chartColors = ['#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2
 export type AiPerformanceMetric = 'firstToken' | 'duration'
 type AiPerformanceSeries = AiPerformanceOverview['hourlySeries'][number]
 
-export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric: AiPerformanceMetric): EChartsOption {
+interface AiPerformanceOptionContext {
+  colorByAccountId?: Map<string, string>
+}
+
+export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric: AiPerformanceMetric, context: AiPerformanceOptionContext = {}): EChartsOption {
   const hours = overview.hourlySeries[0]?.points.map((point) => point.statHour) ?? []
   const orderedSeries = orderedAiPerformanceSeries(overview)
+  const colors = orderedSeries.map((series, index) => context.colorByAccountId?.get(series.accountId) ?? chartColors[index % chartColors.length])
   const accountById = new Map(overview.accounts.map((account) => [account.id, account]))
   const nameCounts = overview.accounts.reduce((counts, account) => {
     counts.set(account.name, (counts.get(account.name) ?? 0) + 1)
@@ -23,7 +28,7 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
       : accountName
   }
   return {
-    color: chartColors,
+    color: colors.length ? colors : chartColors,
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => performanceTooltip(params, overview, metric)
@@ -48,9 +53,10 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
       axisLabel: { formatter: durationAxisLabel, color: '#64748b' },
       splitLine: { lineStyle: { color: '#edf2f7' } }
     },
-    series: orderedSeries.map((series) => {
+    series: orderedSeries.map((series, index) => {
       const account = accountById.get(series.accountId)
       const seriesName = displayName(series.accountId, series.accountName)
+      const color = colors[index]
       return {
         name: seriesName,
         type: 'line',
@@ -58,6 +64,8 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
         connectNulls: true,
         symbol: 'circle',
         symbolSize: 5,
+        lineStyle: { color },
+        itemStyle: { color },
         emphasis: { focus: 'series' },
         data: series.points.map((point) => ({
           value: metric === 'firstToken' ? point.averageFirstTokenMs ?? null : point.averageDurationMs ?? null,
@@ -109,18 +117,11 @@ function performanceTooltip(params: unknown, overview: AiPerformanceOverview, me
   if (!visiblePoints.length) {
     return [`<strong>${title}</strong>`, emptyMessage].join('<br/>')
   }
-  const accountById = new Map(overview.accounts.map((account) => [account.id, account]))
   const lines = [`<strong>${title}</strong>`]
   for (const point of visiblePoints) {
     const data = tooltipData(point)
     const accountName = String(data.accountDisplayName ?? point.seriesName ?? data.accountName ?? '')
-    const account = accountById.get(String(data.accountId ?? ''))
-    const badges = [
-      account?.defaultVisible ? '默认' : '',
-      account?.selected ? '指定' : ''
-    ].filter(Boolean)
-    const suffix = badges.length ? `（${badges.join('，')}）` : ''
-    lines.push(`${point.marker ?? ''}${escapeHtml(accountName)}${suffix}: ${formatDurationSeconds(pointValue(point))}，样本 ${formatInteger(numberFromTooltip(data.sampleCount))}，请求 ${formatInteger(numberFromTooltip(data.requestCount))}`)
+    lines.push(`${point.marker ?? ''}${escapeHtml(accountName)}: ${formatDurationSeconds(pointValue(point))}，样本 ${formatInteger(numberFromTooltip(data.sampleCount))}，请求 ${formatInteger(numberFromTooltip(data.requestCount))}`)
   }
   return lines.join('<br/>')
 }

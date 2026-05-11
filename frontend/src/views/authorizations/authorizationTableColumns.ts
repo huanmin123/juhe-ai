@@ -16,14 +16,14 @@ export const authorizationColumns = [
 
 export const authorizationUsageDetailColumns = [
   { title: '系统账户', key: 'name', width: 220 },
-  { title: '今日用量', key: 'usage', width: 180 },
+  { title: '范围用量', key: 'usage', width: 180 },
   { title: '最后使用', key: 'lastUsedAt', width: 180 }
 ]
 
 export const authorizationTeamUsageColumns = [
   { title: '团队', key: 'teamName', width: 180 },
   { title: '成员', key: 'memberName', width: 180 },
-  { title: '今日用量', key: 'usage', width: 180 }
+  { title: '范围用量', key: 'usage', width: 180 }
 ]
 
 export const authorizationResourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }> = [
