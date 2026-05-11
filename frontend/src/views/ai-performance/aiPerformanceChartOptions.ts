@@ -6,9 +6,11 @@ import { formatHourLabel, formatInteger } from '@/views/stats/statsFormatters'
 export const chartColors = ['#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#2f54eb', '#a0d911', '#fa541c', '#8c8c8c', '#08979c', '#531dab']
 
 export type AiPerformanceMetric = 'firstToken' | 'duration'
+type AiPerformanceSeries = AiPerformanceOverview['hourlySeries'][number]
 
 export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric: AiPerformanceMetric): EChartsOption {
   const hours = overview.hourlySeries[0]?.points.map((point) => point.statHour) ?? []
+  const orderedSeries = orderedAiPerformanceSeries(overview)
   const accountById = new Map(overview.accounts.map((account) => [account.id, account]))
   const nameCounts = overview.accounts.reduce((counts, account) => {
     counts.set(account.name, (counts.get(account.name) ?? 0) + 1)
@@ -46,7 +48,7 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
       axisLabel: { formatter: durationAxisLabel, color: '#64748b' },
       splitLine: { lineStyle: { color: '#edf2f7' } }
     },
-    series: overview.hourlySeries.map((series) => {
+    series: orderedSeries.map((series) => {
       const account = accountById.get(series.accountId)
       const seriesName = displayName(series.accountId, series.accountName)
       return {
@@ -71,6 +73,23 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
       }
     })
   }
+}
+
+export function orderedAiPerformanceSeries(overview: AiPerformanceOverview): AiPerformanceSeries[] {
+  const accountById = new Map(overview.accounts.map((account) => [account.id, account]))
+  const originalIndexById = new Map(overview.hourlySeries.map((series, index) => [series.accountId, index]))
+  return [...overview.hourlySeries].sort((left, right) => {
+    const leftRank = accountLegendRank(accountById.get(left.accountId))
+    const rightRank = accountLegendRank(accountById.get(right.accountId))
+    return leftRank - rightRank
+      || (originalIndexById.get(left.accountId) ?? 0) - (originalIndexById.get(right.accountId) ?? 0)
+  })
+}
+
+function accountLegendRank(account?: AiPerformanceOverview['accounts'][number]) {
+  if (account?.defaultVisible) return 0
+  if (account?.selected) return 1
+  return 2
 }
 
 interface TooltipPoint {

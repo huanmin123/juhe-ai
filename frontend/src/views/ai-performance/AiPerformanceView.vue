@@ -35,9 +35,9 @@
         <span v-for="item in legendItems" :key="item.account.id" class="ai-performance-legend-item">
           <span class="ai-performance-legend-dot" :style="{ backgroundColor: item.color }" />
           <span class="ai-performance-legend-name">{{ item.label }}</span>
-          <span v-if="item.account.selected" class="ai-performance-legend-badge">指定</span>
-          <span v-else-if="item.account.defaultVisible" class="ai-performance-legend-badge">默认</span>
-          <button v-if="item.account.selected" class="ai-performance-legend-remove" type="button" :aria-label="`移除 ${item.label}`" @click="removeSelectedAccount(item.account.id)">
+          <span v-if="item.account.defaultVisible" class="ai-performance-legend-badge">默认</span>
+          <span v-else-if="item.account.selected" class="ai-performance-legend-badge">指定</span>
+          <button v-if="item.account.selected && !item.account.defaultVisible" class="ai-performance-legend-remove" type="button" :aria-label="`移除 ${item.label}`" @click="removeSelectedAccount(item.account.id)">
             <CloseOutlined />
           </button>
         </span>
@@ -76,7 +76,7 @@ import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview, 
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDuration, formatInteger, formatSeconds } from '@/views/stats/statsFormatters'
-import { buildAiPerformanceOption, chartColors } from './aiPerformanceChartOptions'
+import { buildAiPerformanceOption, chartColors, orderedAiPerformanceSeries } from './aiPerformanceChartOptions'
 
 const windowOptions: Array<{ label: string; value: AiPerformanceWindowKey }> = [
   { label: '近一天', value: 'last1d' },
@@ -123,7 +123,7 @@ const legendItems = computed(() => {
     return counts
   }, new Map<string, number>())
   const accountById = new Map(currentOverview.accounts.map((account) => [account.id, account]))
-  return currentOverview.hourlySeries.map((series, index) => {
+  return orderedAiPerformanceSeries(currentOverview).map((series, index) => {
     const account = accountById.get(series.accountId)
     const accountName = account?.name ?? series.accountName
     const label = (nameCounts.get(accountName) ?? 0) > 1 && account?.providerCode
