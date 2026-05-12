@@ -125,7 +125,7 @@ export function dateKeysInRange(range: Pick<AccountUsageStatsRange, 'startDate' 
   const end = parseDateKey(range.endDate)
   if (!start || !end || start > end) return []
   const days = Math.min(ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS, daysBetweenInclusive(start, end))
-  return Array.from({ length: days }, (_, index) => dateKey(addDays(start, index)))
+  return Array.from({ length: days }, (_, index) => localDateKey(addDays(start, index)))
 }
 
 export function hourKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {

@@ -179,31 +179,22 @@ onBeforeUnmount(() => {
   position: relative;
   max-width: 680px;
   margin-top: 36px;
-  padding: 22px 24px 20px;
-  overflow: hidden;
-  border: 1px solid rgba(96, 165, 250, 0.1);
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(5, 11, 24, 0.66), rgba(3, 8, 19, 0.44));
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03), 0 20px 60px rgba(2, 6, 23, 0.24);
-  isolation: isolate;
+  padding: 8px 0 0;
 }
 
 .hero-stage::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  background:
-    radial-gradient(circle at 24% 40%, rgba(37, 99, 235, 0.18), transparent 32%),
-    radial-gradient(circle at 82% 22%, rgba(56, 189, 248, 0.1), transparent 24%),
-    linear-gradient(135deg, rgba(96, 165, 250, 0.04), transparent 48%);
+  content: none;
 }
 
 .hero-stage::after {
   content: '';
   position: absolute;
-  inset: 26px 24px;
-  border: 1px solid rgba(96, 165, 250, 0.06);
-  border-radius: 14px;
+  top: 148px;
+  left: 34px;
+  width: 620px;
+  height: 1px;
+  background: linear-gradient(90deg, rgba(96, 165, 250, 0), rgba(96, 165, 250, 0.22), rgba(96, 165, 250, 0));
+  pointer-events: none;
 }
 
 .hero-showcase {
@@ -213,15 +204,27 @@ onBeforeUnmount(() => {
   gap: 24px;
   align-items: center;
   min-height: 228px;
+  padding: 0 0 14px;
   z-index: 1;
 }
 
 .hero-showcase::before {
   content: '';
   position: absolute;
-  right: 0;
-  bottom: 14px;
-  left: 0;
+  top: 18px;
+  left: 50%;
+  width: 1px;
+  height: 176px;
+  background: linear-gradient(180deg, rgba(96, 165, 250, 0), rgba(96, 165, 250, 0.18), rgba(96, 165, 250, 0));
+  transform: translateX(14px);
+}
+
+.hero-showcase::after {
+  content: '';
+  position: absolute;
+  right: 18px;
+  bottom: 22px;
+  left: 20px;
   height: 1px;
   background: linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.18), transparent);
 }
@@ -238,20 +241,17 @@ onBeforeUnmount(() => {
 .showcase-core-panel::before {
   content: '';
   position: absolute;
-  inset: auto 18px 18px;
-  height: 1px;
-  background:
-    linear-gradient(90deg, transparent, rgba(96, 165, 250, 0.26), transparent);
+  top: 50%;
+  left: 16px;
+  width: 300px;
+  height: 300px;
+  background: radial-gradient(circle, rgba(37, 99, 235, 0.12), transparent 56%);
+  transform: translateY(-50%);
+  filter: blur(8px);
 }
 
 .showcase-core-panel::after {
-  content: '';
-  position: absolute;
-  inset: 18px 22px 18px 0;
-  background:
-    radial-gradient(circle at 30% 50%, rgba(37, 99, 235, 0.08), transparent 26%),
-    linear-gradient(90deg, rgba(96, 165, 250, 0.04), transparent 76%);
-  border-radius: 14px;
+  content: none;
 }
 
 .orbital-core {
@@ -414,7 +414,7 @@ onBeforeUnmount(() => {
   padding: 8px 0 8px 24px;
   background: transparent;
   border: 0;
-  border-left: 1px solid rgba(96, 165, 250, 0.16);
+  border-left: 1px solid rgba(96, 165, 250, 0.12);
   box-shadow: none;
   overflow: visible;
 }
@@ -470,7 +470,7 @@ onBeforeUnmount(() => {
   gap: 0;
   margin-top: 18px;
   padding-top: 18px;
-  border-top: 1px solid rgba(96, 165, 250, 0.12);
+  border-top: 1px solid rgba(96, 165, 250, 0.1);
 }
 
 .capability-card {
@@ -485,7 +485,7 @@ onBeforeUnmount(() => {
 
 .capability-card + .capability-card {
   padding: 0 18px;
-  border-left: 1px solid rgba(96, 165, 250, 0.1);
+  border-left: 1px solid rgba(96, 165, 250, 0.08);
 }
 
 .capability-card:last-child {
@@ -527,7 +527,7 @@ onBeforeUnmount(() => {
 @media (max-width: 1160px) {
   .hero-stage {
     max-width: 640px;
-    padding: 20px 20px 18px;
+    padding-top: 4px;
   }
 
   .hero-showcase {
@@ -567,7 +567,7 @@ onBeforeUnmount(() => {
   }
 }
 
-@media (max-width: 820px) {
+@media (max-width: 1080px) {
   .hero-panel {
     display: none;
   }

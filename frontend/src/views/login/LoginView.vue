@@ -358,9 +358,11 @@ async function loadBrandSettings(): Promise<void> {
 
 @media (max-width: 1080px) {
   .login-page {
+    min-height: 100dvh;
     grid-template-columns: 1fr;
     justify-items: center;
-    gap: 34px;
+    align-content: center;
+    gap: 0;
     padding: 36px 24px;
   }
 
