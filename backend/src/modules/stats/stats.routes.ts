@@ -7,6 +7,7 @@ import {
   type AccountListOptions,
   type AccountListSchedulableFilter
 } from '../../storage/repositories.js'
+import { getDatabase } from '../../storage/database.js'
 import {
   getAiPerformanceOverview,
   getSystemMetricsOverview,
@@ -15,7 +16,7 @@ import {
   type AiPerformanceWindowKey,
   type UsageOverviewWindowKey
 } from '../../storage/usage-stats.repository.js'
-import { normalizeAccountUsageStatsRange } from '../../storage/usage-stats-helpers.js'
+import { normalizeAccountUsageStatsRange, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 
@@ -80,6 +81,7 @@ statsRouter.get('/account-usage', (req, res) => {
 })
 
 function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOptions & { range: ReturnType<typeof normalizeAccountUsageStatsRange> } {
+  const timezone = usageStatsTimezone(getDatabase())
   return {
     page: integerQueryValue(query.page),
     pageSize: integerQueryValue(query.pageSize),
@@ -90,7 +92,7 @@ function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOp
     range: normalizeAccountUsageStatsRange({
       startDate: optionalQueryText(query.startDate),
       endDate: optionalQueryText(query.endDate)
-    })
+    }, timezone)
   }
 }
 

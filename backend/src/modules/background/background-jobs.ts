@@ -13,9 +13,11 @@ import {
 } from '../../storage/repositories.js'
 import {
   aggregateUsageStatsBatch,
+  checkUsageStatsConsistency,
   insertSystemMetricsSample,
   latestUsageStatsLagSeconds,
-  refreshGroupAccountStatsCache
+  refreshGroupAccountStatsCache,
+  refreshUsageRankSnapshots
 } from '../../storage/usage-stats.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
@@ -40,6 +42,8 @@ export function startBackgroundJobs(): void {
 
   scheduler.schedule({ name: 'usage-stats-aggregation', intervalMs: settingsNumber('statsAggregationIntervalSeconds', 60, 5, 3600) * 1000, task: runUsageStatsAggregation })
   scheduler.schedule({ name: 'group-account-stats-refresh', intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 60, 5, 3600) * 1000, task: runGroupAccountStatsRefresh })
+  scheduler.schedule({ name: 'usage-rank-snapshots-refresh', intervalMs: 30 * 60 * 1000, task: runUsageRankSnapshotsRefresh })
+  scheduler.schedule({ name: 'usage-stats-consistency-check', intervalMs: 60 * 60 * 1000, task: runUsageStatsConsistencyCheck })
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: 60 * 1000, task: runResourceAuthorizationExpirySweep })
   scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000, task: runSystemMetricsSample })
   scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: proxyLatencyRefreshIntervalSeconds * 1000, task: runProxyLatencyRefresh })
@@ -382,6 +386,28 @@ async function readNetworkCounterSnapshot(): Promise<NetworkCounterSnapshot | un
       : readProcNetworkCounters()
   if (!counters) return undefined
   return { ...counters, sampledAtMs: Date.now() }
+}
+
+async function runUsageRankSnapshotsRefresh(): Promise<void> {
+  try {
+    refreshUsageRankSnapshots()
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_usage_rank_snapshots_refresh_failed' }), '用量排行快照刷新失败')
+  }
+}
+
+async function runUsageStatsConsistencyCheck(): Promise<void> {
+  try {
+    const issues = checkUsageStatsConsistency(20)
+    if (!issues.length) return
+    logger.warn({
+      event: 'usage_stats_consistency_mismatch',
+      issueCount: issues.length,
+      issues: issues.slice(0, 20)
+    }, '用量统计聚合桶一致性校验发现差异')
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_usage_stats_consistency_check_failed' }), '用量统计聚合桶一致性校验失败')
+  }
 }
 
 function readProcNetworkCounters(): { rxBytes: number; txBytes: number } | undefined {

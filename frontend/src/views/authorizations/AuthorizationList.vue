@@ -45,11 +45,14 @@
       <template v-else-if="column.key === 'createdAt'">
         {{ formatDateTime(record.createdAt) }}
       </template>
+      <template v-else-if="column.key === 'lastUsedAt'">
+        {{ formatDateTime(record.lastUsedAt ?? record.usage?.lastUsedAt) }}
+      </template>
       <template v-else-if="column.key === 'remark'">
         <span>{{ record.remark || '-' }}</span>
       </template>
       <template v-else-if="column.key === 'actions'">
-        <AuthorizationActions :authorization="record" :is-management-view="isManagementView" compact @usage-detail="$emit('usage-detail', record)" @menu-click="$emit('menu-click', $event, record)" />
+        <AuthorizationActions v-if="showActions" :authorization="record" :is-management-view="isManagementView" compact @menu-click="$emit('menu-click', $event, record)" />
       </template>
     </template>
 
@@ -77,8 +80,12 @@
             </strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
-            <span>用量(日)</span>
+            <span>{{ usageColumnLabel }}</span>
             <strong><UsageSummaryTags :usage="record.usage" /></strong>
+          </div>
+          <div v-if="showLastUsedAt" class="mobile-list-meta-item mobile-list-meta-wide">
+            <span>最后使用</span>
+            <strong>{{ formatDateTime(record.lastUsedAt ?? record.usage?.lastUsedAt) }}</strong>
           </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>额度限制</span>
@@ -89,7 +96,7 @@
             <strong>{{ record.remark || '-' }}</strong>
           </div>
         </div>
-        <AuthorizationActions :authorization="record" :is-management-view="isManagementView" @usage-detail="$emit('usage-detail', record)" @menu-click="$emit('menu-click', $event, record)" />
+        <AuthorizationActions v-if="showActions" :authorization="record" :is-management-view="isManagementView" @menu-click="$emit('menu-click', $event, record)" />
       </article>
     </template>
   </ResponsiveDataList>
@@ -104,26 +111,56 @@ import type { ResourceAuthorizationSummary } from '@/types/domain'
 import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
-import { authorizationColumns } from './authorizationTableColumns'
-import { authorizationDirectionColor, authorizationDirectionText, formatDateTime, quotaLimitSummaryText } from './authorizationFormatters'
+import { authorizationColumns, type AuthorizationDirectionFilter } from './authorizationTableColumns'
+import { activeTeamSources, authorizationDirectionColor, authorizationDirectionText, formatDateTime, hasManualSource, quotaLimitSummaryText } from './authorizationFormatters'
 
 const props = defineProps<{
   authorizations: ResourceAuthorizationSummary[]
   currentSystemAccountId?: string
   emptyDescription: string
+  direction: AuthorizationDirectionFilter
   isManagementView: boolean
   loading: boolean
+  usageColumnLabel: string
 }>()
 
 defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }, authorization: ResourceAuthorizationSummary): void
   (event: 'refresh'): void
-  (event: 'usage-detail', authorization: ResourceAuthorizationSummary): void
 }>()
 
-const columns = computed(() => props.isManagementView
-  ? authorizationColumns.filter((column) => column.key !== 'direction')
-  : authorizationColumns)
+const showActions = computed(() => props.isManagementView || props.direction === 'outbound')
+const showLastUsedAt = computed(() => props.direction === 'outbound')
+const actionColumnWidth = computed(() => {
+  if (!showActions.value) return 0
+  const maxActionCount = props.authorizations.reduce((maxCount, authorization) => {
+    if (!canManageAuthorization(authorization)) return maxCount
+    return Math.max(maxCount, authorizationActionCount(authorization))
+  }, 0)
+  return Math.max(84, 24 + maxActionCount * 30)
+})
+const columns = computed(() => authorizationColumns.filter((column) => {
+  if (props.isManagementView && column.key === 'direction') return false
+  if (!showLastUsedAt.value && column.key === 'lastUsedAt') return false
+  if (!showActions.value && column.key === 'actions') return false
+  return true
+}).map((column) => {
+  if (column.key === 'usageTotal') return { ...column, title: props.usageColumnLabel }
+  if (column.key === 'actions') return { ...column, width: actionColumnWidth.value }
+  return column
+}))
+
+function canManageAuthorization(authorization: ResourceAuthorizationSummary): boolean {
+  return props.isManagementView || authorization.permissions?.canEdit === true
+}
+
+function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
+  let count = 1
+  if (authorization.status === 'active' || authorization.status === 'paused') count += 1
+  if (authorization.status === 'active' && hasManualSource(authorization)) count += 1
+  count += activeTeamSources(authorization).length
+  return count
+}
 </script>
 
 <style scoped>

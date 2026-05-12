@@ -7,7 +7,7 @@ import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.j
 import { loadSystemAccountNameMap } from './repository-lookups.js'
 import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
-import type { UsageStatsRecordRow } from './usage-stats-types.js'
+import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
 import { subtractUsageStatsRecord } from './usage-stats-writers.js'
 import { loadApiKeyUsageSummariesForScopes } from './usage-summary-loaders.js'
 import { optionalNullableString, optionalServerDateTimeIso, optionalString } from './value-utils.js'
@@ -287,14 +287,34 @@ export function deleteApiKey(id: string, access?: AccessScope): boolean {
 function deleteApiKeyRelatedData(database: ReturnType<typeof getDatabase>, row: ApiKeyDeleteRow): void {
   const updatedAt = nowIso()
   const cursor = usageStatsAggregationCursor(database)
-  const usageRows = database.prepare('SELECT * FROM usage_records WHERE api_key_id = ? ORDER BY created_at ASC, id ASC').all(row.id) as unknown as UsageStatsRecordRow[]
-  for (const usageRow of usageRows) {
-    if (!isUsageRecordAlreadyAggregated(usageRow, cursor)) {
-      continue
+  let cursorCreatedAt = ''
+  let cursorId = ''
+  const batchLimit = 1000
+  while (true) {
+    const usageRows = database.prepare(`
+      SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
+      FROM usage_records
+      WHERE api_key_id = ?
+        AND (created_at > ? OR (created_at = ? AND id > ?))
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `).all(row.id, cursorCreatedAt, cursorCreatedAt, cursorId, batchLimit) as unknown as UsageStatsRecordRow[]
+    if (usageRows.length === 0) {
+      break
     }
-    subtractUsageStatsRecord(database, usageRow, updatedAt)
+    for (const usageRow of usageRows) {
+      if (isUsageRecordAlreadyAggregated(usageRow, cursor)) {
+        subtractUsageStatsRecord(database, usageRow, updatedAt)
+      }
+    }
+    const last = usageRows[usageRows.length - 1]
+    cursorCreatedAt = last.created_at
+    cursorId = last.id
+    if (usageRows.length < batchLimit) {
+      break
+    }
   }
-  for (const tableName of ['usage_stats_totals', 'usage_stats_daily', 'usage_stats_hourly']) {
+  for (const tableName of ['usage_stats_totals', 'usage_stats_minute', 'usage_stats_hourly', 'usage_stats_daily', 'usage_stats_weekly', 'usage_stats_monthly']) {
     database.prepare(`DELETE FROM ${tableName} WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`).run(row.system_account_id, row.id)
   }
   database.prepare('DELETE FROM usage_records WHERE api_key_id = ?').run(row.id)

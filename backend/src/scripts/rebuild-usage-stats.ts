@@ -25,17 +25,48 @@ function main(): void {
 
 function resetUsageStatsCache(database: ReturnType<typeof getDatabase>): void {
   const updatedAt = nowIso()
+  const usageStatsTables = [
+    'usage_stats_totals',
+    'usage_stats_minute',
+    'usage_stats_hourly',
+    'usage_stats_daily',
+    'usage_stats_weekly',
+    'usage_stats_monthly',
+    'usage_model_minute',
+    'usage_model_hourly',
+    'usage_model_daily',
+    'usage_model_weekly',
+    'usage_model_monthly',
+    'usage_error_minute',
+    'usage_error_hourly',
+    'usage_error_daily',
+    'usage_error_weekly',
+    'usage_error_monthly',
+    'usage_latency_minute',
+    'usage_latency_hourly',
+    'usage_latency_daily',
+    'usage_latency_weekly',
+    'usage_latency_monthly',
+    'usage_rank_snapshots',
+    'account_quality_minute_stats'
+  ]
+  const statsJobNames = [
+    'usage_stats_aggregation',
+    'caller_account_usage_stats_backfill',
+    'account_quality_minute_stats_backfill',
+    'usage_stats_extended_buckets_migration',
+    'usage_model_error_extended_buckets_migration',
+    'usage_latency_buckets_migration'
+  ]
   database.exec('BEGIN')
   try {
-    database.prepare('DELETE FROM usage_stats_totals').run()
-    database.prepare('DELETE FROM usage_stats_daily').run()
-    database.prepare('DELETE FROM usage_stats_hourly').run()
-    database.prepare('DELETE FROM usage_model_daily').run()
-    database.prepare('DELETE FROM usage_model_hourly').run()
-    database.prepare('DELETE FROM usage_error_daily').run()
-    database.prepare('DELETE FROM usage_error_hourly').run()
-    database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'").run()
-    database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'caller_account_usage_stats_backfill'").run()
+    for (const tableName of usageStatsTables) {
+      database.prepare(`DELETE FROM ${tableName}`).run()
+    }
+    const deleteState = database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
+    for (const jobName of statsJobNames) {
+      deleteState.run(jobName)
+    }
     database.prepare(`
       INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
       VALUES ('global', '', 'usage_stats_aggregation', '', '', NULL, NULL, 0, ?)

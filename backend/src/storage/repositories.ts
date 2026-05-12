@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageDailyPoint, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageBucket, ResourceAuthorizationUsageDetail, ResourceAuthorizationUsageGroupBy, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
@@ -28,8 +28,8 @@ import { getSettings } from './settings.repository.js'
 import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
-import { addUsageSummaries, dateKeysInRange, emptyAccountUsageSummary, normalizeAccountUsageStatsRange, numberFromUnknown, todayDateKey, usageSummaryFromAggregate } from './usage-stats-helpers.js'
-import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
+import { addUsageSummaries, emptyAccountUsageSummary, normalizeAccountUsageStatsRange, numberFromUnknown, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
+import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
 import {
   jsonObjectOrNull,
@@ -44,6 +44,10 @@ const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 const manualTrafficMigrationReason = '手动迁移流量'
 
 export type { AccountListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
+
+interface ResourceAuthorizationListOptions {
+  usageRange?: AccountUsageStatsRange
+}
 
 export class DuplicateAccountCredentialError extends Error {
   constructor() {
@@ -61,7 +65,6 @@ export class DefaultGroupReadonlyError extends Error {
 
 export interface ResourceAuthorizationUsageOptions {
   range?: AccountUsageStatsRange
-  groupBy?: ResourceAuthorizationUsageGroupBy
 }
 
 export type { AccountUsageSummary, SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
@@ -661,17 +664,18 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
 }
 
 function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountSummary[] {
+  const timezone = usageStatsTimezone(getDatabase())
   const accountIds = rows.map((row) => row.id)
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
   const usageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes)
-  const todayUsageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey())
+  const todayUsageByAccount = loadAccountUsageSummariesForScopes(accountUsageScopes, todayDateKey(timezone))
   const authorizationStatsByAccount = loadResourceAuthorizationStatsByResourceIds('account', accountIds)
   const authorizationScopes = rows
     .filter((row) => row.authorization_id)
     .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
   const usageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationScopes)
-  const todayUsageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey())
+  const todayUsageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone))
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => row.id))
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
@@ -760,7 +764,7 @@ export function getAccountUsageStatsOverview(access?: AccessScope, range?: Accou
   return buildAccountUsageStatsOverview({
     access,
     accounts: accountRows,
-    range: range ?? normalizeAccountUsageStatsRange(),
+    range: range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone(getDatabase())),
     loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
   })
 }
@@ -771,7 +775,7 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
   const overview = buildAccountUsageStatsOverview({
     access,
     accounts,
-    range: options?.range ?? normalizeAccountUsageStatsRange(),
+    range: options?.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone(getDatabase())),
     loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
   })
   const sortedRows = [...overview.rows].sort(compareAccountUsageStatsRows)
@@ -1620,6 +1624,7 @@ export function recordAccountStreamFailure(input: {
 }
 
 export function listGroups(access?: AccessScope): GroupSummary[] {
+  const timezone = usageStatsTimezone(getDatabase())
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const rows = listGroupRowsForAccess(access)
   const groupIds = rows.map((row) => row.id)
@@ -1630,9 +1635,9 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
   const groupAuthorizationScopes = rows
     .filter((row) => row.authorization_id)
     .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
-  const todayUsageByGroup = loadGroupUsageSummariesForScopes(groupUsageScopes, todayDateKey())
+  const todayUsageByGroup = loadGroupUsageSummariesForScopes(groupUsageScopes, todayDateKey(timezone))
   const totalUsageByGroup = loadGroupUsageSummariesForScopes(groupUsageScopes)
-  const todayUsageByAuthorization = loadGroupAuthorizationUsageSummaries(groupAuthorizationScopes, todayDateKey())
+  const todayUsageByAuthorization = loadGroupAuthorizationUsageSummaries(groupAuthorizationScopes, todayDateKey(timezone))
   const totalUsageByAuthorization = loadGroupAuthorizationUsageSummaries(groupAuthorizationScopes)
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const accountNames = loadSystemAccountNameMap()
@@ -1979,7 +1984,7 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
   return listSystemTeams(access).find((item) => item.id === teamId)
 }
 
-export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary[] {
+export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   expireDueResourceAuthorizations()
   const clauses: string[] = []
   const params: Array<string | number | null> = []
@@ -2032,7 +2037,7 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY CASE ra.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, ra.updated_at DESC, ra.created_at DESC, ra.id DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
-  return resourceAuthorizationSummaries(rows).map((summary) => withResourceAuthorizationPermissions(
+  return resourceAuthorizationSummaries(rows, options.usageRange).map((summary) => withResourceAuthorizationPermissions(
     sanitizeResourceAuthorizationSummaryForAccess(summary, access),
     viewerSystemAccountId,
     access
@@ -2186,16 +2191,13 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
 export function getResourceAuthorizationUsage(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): ResourceAuthorizationSummary | undefined {
   const authorization = listResourceAuthorizations({ id: authorizationId, status: 'all' }, access)[0]
   if (!authorization) return undefined
-  const range = options.range ?? normalizeAccountUsageStatsRange()
-  const groupBy = options.groupBy ?? 'day'
-  const detail = loadResourceAuthorizationUsageDetail(authorization, range, groupBy)
+  const range = options.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone(getDatabase()))
+  const detail = loadResourceAuthorizationUsageDetail(authorization, range)
   return {
     ...authorization,
     usage: detail.usage,
     usageBySystemAccount: detail.usageBySystemAccount,
-    usageRange: range,
-    usageGroupBy: groupBy,
-    usageBuckets: detail.usageBuckets
+    usageRange: range
   }
 }
 
@@ -2565,13 +2567,14 @@ function deactivateAuthorizationIfNoActiveSources(authorizationId: string, actor
   refreshResourceAuthorizationEffectiveSource(authorizationId, actor, now, database)
 }
 
-function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[]): ResourceAuthorizationSummary[] {
+function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[], usageRange?: AccountUsageStatsRange): ResourceAuthorizationSummary[] {
   const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
   const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
   const systemAccounts = loadSystemAccountsByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id]))
   const teamNames = loadSystemTeamNameMap(rows.map((row) => row.effective_source_team_id ?? ''))
   const sources = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.id))
-  const usage = loadResourceAuthorizationUsageSummaries(rows, todayDateKey())
+  const usage = loadResourceAuthorizationUsageSummaries(rows, usageRange ?? todayDateKey(usageStatsTimezone(getDatabase())))
+  const totalUsage = loadResourceAuthorizationUsageSummaries(rows)
   return rows.map((row) => {
     const owner = systemAccounts.get(row.resource_owner_system_account_id)
     const grantee = systemAccounts.get(row.grantee_system_account_id)
@@ -2600,6 +2603,7 @@ function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[]): Resou
       sources: authorizationSources,
       authorizationSources,
       usage: usage.get(row.id) ?? emptyAccountUsageSummary(),
+      lastUsedAt: totalUsage.get(row.id)?.lastUsedAt,
       createdBy: row.created_by,
       createdAt: row.created_at,
       revokedBy: row.revoked_by ?? undefined,
@@ -2637,7 +2641,7 @@ function withResourceAuthorizationPermissions(summary: ResourceAuthorizationSumm
   }
 }
 
-function loadResourceAuthorizationUsageSummaries(rows: ResourceAuthorizationRow[], statDate?: string): Map<string, AccountUsageSummary> {
+function loadResourceAuthorizationUsageSummaries(rows: ResourceAuthorizationRow[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
   const accountScopes = rows
     .filter((row) => row.resource_type === 'account')
     .map((row) => usageScope(row.id, row.resource_owner_system_account_id, row.id))
@@ -2645,41 +2649,32 @@ function loadResourceAuthorizationUsageSummaries(rows: ResourceAuthorizationRow[
     .filter((row) => row.resource_type === 'group')
     .map((row) => usageScope(row.id, row.resource_owner_system_account_id, row.id))
   return new Map([
-    ...loadAccountAuthorizationUsageSummaries(accountScopes, statDate),
-    ...loadGroupAuthorizationUsageSummaries(groupScopes, statDate)
+    ...loadAccountAuthorizationUsageSummaries(accountScopes, statDateOrRange),
+    ...loadGroupAuthorizationUsageSummaries(groupScopes, statDateOrRange)
   ])
 }
 
 function loadResourceAuthorizationUsageDetail(
   authorization: ResourceAuthorizationSummary,
-  range: AccountUsageStatsRange,
-  groupBy: ResourceAuthorizationUsageGroupBy
+  range: AccountUsageStatsRange
 ): {
   usage: AccountUsageSummary
   usageBySystemAccount: ResourceAuthorizationUsageDetail[]
-  usageBuckets: ResourceAuthorizationUsageBucket[]
 } {
   const scopeType = authorization.resourceType === 'account' ? 'account_authorization' : 'group_authorization'
-  const series = loadUsageDailySeriesForScopeRequests([
-    {
-      rowKey: authorization.id,
-      systemAccountId: authorization.resourceOwnerSystemAccountId,
-      scopeType,
-      scopeId: authorization.id
-    }
-  ], range).get(authorization.id)
-  const dailyUsage = series?.dailyUsage ?? dateKeysInRange(range).map((statDate) => ({ statDate, ...emptyAccountUsageSummary() }))
-  const rangeUsage = series?.rangeUsage ?? emptyAccountUsageSummary()
-  const usageBuckets = usageBucketsFromDailyUsage(dailyUsage, groupBy)
+  const rangeUsage = loadUsageRangeSummaryForScope({
+    systemAccountId: authorization.resourceOwnerSystemAccountId,
+    scopeType,
+    scopeId: authorization.id,
+    range
+  })
   const account = loadSystemAccountsByIds([authorization.granteeSystemAccountId]).get(authorization.granteeSystemAccountId)
   const usageBySystemAccount: ResourceAuthorizationUsageDetail[] = [{
     systemAccountId: authorization.granteeSystemAccountId,
     systemAccountName: account?.displayName ?? account?.username ?? authorization.granteeSystemAccountName,
     username: account?.username ?? authorization.granteeUsername,
     ...rangeUsage,
-    rangeUsage,
-    dailyUsage,
-    usageBuckets
+    rangeUsage
   }]
 
   return {
@@ -2691,62 +2686,6 @@ function loadResourceAuthorizationUsageDetail(
         return rightTime - leftTime
       }
       return left.systemAccountId.localeCompare(right.systemAccountId)
-    }),
-    usageBuckets
-  }
-}
-
-function usageBucketsFromDailyUsage(dailyUsage: AccountUsageDailyPoint[], groupBy: ResourceAuthorizationUsageGroupBy): ResourceAuthorizationUsageBucket[] {
-  if (groupBy === 'day') {
-    return dailyUsage.map((point) => ({
-      bucketKey: point.statDate,
-      startDate: point.statDate,
-      endDate: point.statDate,
-      requestCount: point.requestCount,
-      inputTokens: point.inputTokens,
-      outputTokens: point.outputTokens,
-      cacheReadTokens: point.cacheReadTokens,
-      totalTokens: point.totalTokens,
-      totalCost: point.totalCost,
-      lastUsedAt: point.lastUsedAt
-    }))
-  }
-
-  const buckets = new Map<string, ResourceAuthorizationUsageBucket>()
-  for (const point of dailyUsage) {
-    const bucketRange = weekBucketRange(point.statDate)
-    const current = buckets.get(bucketRange.bucketKey)
-    const nextUsage = addUsageSummaries(current, point)
-    buckets.set(bucketRange.bucketKey, {
-      bucketKey: bucketRange.bucketKey,
-      startDate: current?.startDate ?? point.statDate,
-      endDate: point.statDate,
-      ...nextUsage
     })
   }
-  return [...buckets.values()]
-}
-
-function weekBucketRange(statDate: string): { bucketKey: string; startDate: string; endDate: string } {
-  const [year, month, day] = statDate.split('-').map((part) => Number(part))
-  const date = new Date(year, (month || 1) - 1, day || 1)
-  const dayOfWeek = date.getDay() || 7
-  const start = new Date(date)
-  start.setDate(date.getDate() - dayOfWeek + 1)
-  const end = new Date(start)
-  end.setDate(start.getDate() + 6)
-  const startDate = localDateKey(start)
-  const endDate = localDateKey(end)
-  return {
-    bucketKey: `${startDate}/${endDate}`,
-    startDate,
-    endDate
-  }
-}
-
-function localDateKey(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
 }

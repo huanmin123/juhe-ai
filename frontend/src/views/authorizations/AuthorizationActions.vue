@@ -17,7 +17,6 @@ import { activeTeamSources, hasManualSource } from './authorizationFormatters'
 
 const emit = defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }): void
-  (event: 'usage-detail'): void
 }>()
 
 const props = defineProps<{
@@ -27,10 +26,7 @@ const props = defineProps<{
 }>()
 
 const canManageAuthorization = computed(() => props.isManagementView || props.authorization.permissions?.canEdit === true)
-const actions = computed<RowActionItem[]>(() => [
-  { key: 'usage-detail', label: '用量明细', icon: 'detail', tone: 'info' }
-])
-const moreActions = computed<RowActionItem[]>(() => {
+const actions = computed<RowActionItem[]>(() => {
   if (!canManageAuthorization.value) return []
   const items: RowActionItem[] = [
     { key: 'edit-expire', label: '修改配置', icon: 'settings', tone: 'primary' }
@@ -45,28 +41,19 @@ const moreActions = computed<RowActionItem[]>(() => {
     items.push({ key: 'revoke-manual', label: '回收', icon: 'revoke', tone: 'danger' })
   }
   const teamSources = activeTeamSources(props.authorization)
-  if (teamSources.length) {
+  for (const teamSource of teamSources) {
     items.push({
-      key: 'revoke-team',
-      label: '回收团队授权',
+      key: `team:${teamSource.sourceTeamId}`,
+      label: teamSource.sourceTeamName ? `回收${teamSource.sourceTeamName}` : '回收团队',
       icon: 'revoke',
-      tone: 'danger',
-      children: teamSources.map((teamSource) => ({
-        key: `team:${teamSource.sourceTeamId}`,
-        label: teamSource.sourceTeamName || teamSource.sourceTeamId || '未知团队',
-        icon: 'revoke',
-        tone: 'danger'
-      }))
+      tone: 'danger'
     })
   }
   return items
 })
+const moreActions = computed<RowActionItem[]>(() => [])
 
 function handleActionClick(key: string) {
-  if (key === 'usage-detail') {
-    emit('usage-detail')
-    return
-  }
   emit('menu-click', { key })
 }
 </script>

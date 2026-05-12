@@ -1,4 +1,5 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
 
 export type AccountQualityState = 'fresh' | 'stale' | 'failed' | 'unknown'
 
@@ -38,43 +39,47 @@ const stalePenaltyMs = 5_000
 export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQualityRealtimeRefreshResult {
   const database = getDatabase()
   const now = new Date()
+  const timezone = usageStatsTimezone(database)
   const windowMs = Math.max(1, Math.min(Math.trunc(windowMinutes), 24 * 60)) * 60 * 1000
   const windowStartedAt = new Date(now.getTime() - windowMs).toISOString()
   const windowEndedAt = now.toISOString()
+  const windowStartedMinute = minuteKey(new Date(now.getTime() - windowMs), timezone)
+  const retentionCutoffMinute = minuteKey(new Date(now.getTime() - 24 * 60 * 60 * 1000), timezone)
   const updatedAt = nowIso()
 
   const rows = database
     .prepare(`
       SELECT
-        usage_records.account_id,
+        quality_stats.account_id,
         accounts.system_account_id,
         accounts.provider_code,
-        COUNT(*) AS recent_request_count,
-        SUM(CASE WHEN usage_records.success = 1 THEN 1 ELSE 0 END) AS recent_success_count,
-        SUM(CASE WHEN usage_records.success = 1 THEN 0 ELSE 1 END) AS recent_error_count,
-        SUM(CASE WHEN usage_records.success = 1 AND usage_records.first_token_ms IS NOT NULL AND usage_records.first_token_ms >= 0 THEN 1 ELSE 0 END) AS recent_first_token_sample_count,
-        AVG(CASE WHEN usage_records.success = 1 AND usage_records.first_token_ms IS NOT NULL AND usage_records.first_token_ms >= 0 THEN usage_records.first_token_ms ELSE NULL END) AS recent_avg_first_token_ms,
-        MAX(usage_records.created_at) AS last_sample_at,
-        MAX(CASE WHEN usage_records.success = 1 THEN usage_records.created_at ELSE NULL END) AS last_success_at,
-        MAX(CASE WHEN usage_records.success = 0 THEN usage_records.created_at ELSE NULL END) AS last_error_at,
+        SUM(quality_stats.request_count) AS recent_request_count,
+        SUM(quality_stats.success_count) AS recent_success_count,
+        SUM(quality_stats.error_count) AS recent_error_count,
+        SUM(quality_stats.first_token_ms_count) AS recent_first_token_sample_count,
+        CASE
+          WHEN SUM(quality_stats.first_token_ms_count) > 0
+          THEN SUM(quality_stats.first_token_ms_sum) * 1.0 / SUM(quality_stats.first_token_ms_count)
+          ELSE NULL
+        END AS recent_avg_first_token_ms,
+        MAX(quality_stats.last_sample_at) AS last_sample_at,
+        MAX(quality_stats.last_success_at) AS last_success_at,
+        MAX(quality_stats.last_error_at) AS last_error_at,
         (
           SELECT latest_error.error_message
-          FROM usage_records latest_error
-          WHERE latest_error.account_id = usage_records.account_id
-            AND latest_error.api_key_id IS NOT NULL
-            AND latest_error.success = 0
-            AND latest_error.created_at >= ?
-          ORDER BY latest_error.created_at DESC, latest_error.id DESC
+          FROM account_quality_minute_stats latest_error
+          WHERE latest_error.account_id = quality_stats.account_id
+            AND latest_error.stat_minute >= ?
+            AND latest_error.last_error_at IS NOT NULL
+          ORDER BY latest_error.last_error_at DESC, latest_error.stat_minute DESC
           LIMIT 1
         ) AS last_error_message
-      FROM usage_records
-      INNER JOIN accounts ON accounts.id = usage_records.account_id
-      WHERE usage_records.account_id IS NOT NULL
-        AND usage_records.api_key_id IS NOT NULL
-        AND usage_records.created_at >= ?
-      GROUP BY usage_records.account_id, accounts.system_account_id, accounts.provider_code
+      FROM account_quality_minute_stats quality_stats
+      INNER JOIN accounts ON accounts.id = quality_stats.account_id
+      WHERE quality_stats.stat_minute >= ?
+      GROUP BY quality_stats.account_id, accounts.system_account_id, accounts.provider_code
     `)
-    .all(windowStartedAt, windowStartedAt) as unknown as Array<{
+    .all(windowStartedMinute, windowStartedMinute) as unknown as Array<{
       account_id: string
       system_account_id: string
       provider_code: string
@@ -95,6 +100,8 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
     const deleteResult = database
       .prepare('DELETE FROM account_quality_scores WHERE account_id NOT IN (SELECT id FROM accounts)')
       .run()
+    database.prepare('DELETE FROM account_quality_minute_stats WHERE account_id NOT IN (SELECT id FROM accounts)').run()
+    database.prepare('DELETE FROM account_quality_minute_stats WHERE stat_minute < ?').run(retentionCutoffMinute)
     for (const row of rows) {
       const previous = accountQualityRow(row.account_id)
       const recentAvg = integerOrNull(row.recent_avg_first_token_ms)

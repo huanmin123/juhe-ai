@@ -34,6 +34,8 @@ export function shouldAggregateUsageStatsRecord(row: UsageStatsRecordRow): boole
 
 export function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): UsageStatsAccumulator {
   const success = row.success === 1
+  const durationMs = row.duration_ms === null ? 0 : Math.max(0, Number(row.duration_ms ?? 0))
+  const firstTokenMs = row.first_token_ms === null ? 0 : Math.max(0, Number(row.first_token_ms ?? 0))
   return {
     requestCount: 1,
     successCount: success ? 1 : 0,
@@ -42,10 +44,12 @@ export function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): Usage
     outputTokens: Math.max(0, Number(row.output_tokens ?? 0)),
     cacheReadTokens: Math.max(0, Number(row.cache_read_tokens ?? 0)),
     totalCostUsd: Math.max(0, Number(row.cost_usd ?? 0)),
-    durationMsSum: row.duration_ms === null ? 0 : Math.max(0, Number(row.duration_ms ?? 0)),
+    durationMsSum: durationMs,
     durationMsCount: row.duration_ms === null ? 0 : 1,
-    firstTokenMsSum: row.first_token_ms === null ? 0 : Math.max(0, Number(row.first_token_ms ?? 0)),
+    durationMsMax: row.duration_ms === null ? 0 : durationMs,
+    firstTokenMsSum: firstTokenMs,
     firstTokenMsCount: row.first_token_ms === null ? 0 : 1,
+    firstTokenMsMax: row.first_token_ms === null ? 0 : firstTokenMs,
     lastUsedAt: row.created_at,
     lastErrorAt: success ? undefined : row.created_at
   }

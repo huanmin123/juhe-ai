@@ -58,16 +58,6 @@ export interface AuthorizationUserUsageDetail {
   totalCost: number
   lastUsedAt?: string
   rangeUsage?: AccountUsageSummary
-  dailyUsage?: AccountUsageDailyPoint[]
-  usageBuckets?: AuthorizationUsageBucket[]
-}
-
-export type AuthorizationUsageGroupBy = 'day' | 'week'
-
-export interface AuthorizationUsageBucket extends AccountUsageSummary {
-  bucketKey: string
-  startDate: string
-  endDate: string
 }
 
 export interface ResourceAuthorizationSummary {
@@ -100,10 +90,9 @@ export interface ResourceAuthorizationSummary {
   sources?: AuthorizationSourceSummary[]
   authorizationSources: AuthorizationSourceSummary[]
   usage: AccountUsageSummary
+  lastUsedAt?: string
   usageBySystemAccount?: AuthorizationUserUsageDetail[]
   usageRange?: AccountUsageStatsRange
-  usageGroupBy?: AuthorizationUsageGroupBy
-  usageBuckets?: AuthorizationUsageBucket[]
   permissions?: {
     canEdit: boolean
     canAuthorize: boolean

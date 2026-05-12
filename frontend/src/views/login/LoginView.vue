@@ -1,5 +1,5 @@
 <template>
-  <div class="login-page" :style="mouseStyle" @pointermove="handlePointerMove">
+  <div ref="pageRef" class="login-page" @pointerenter="handlePointerEnter" @pointerleave="handlePointerLeave" @pointermove="handlePointerMove">
     <LoginBackground />
     <LoginBrandPanel
       :app-icon="appBrand.appIcon"
@@ -11,9 +11,7 @@
 
     <a-card class="login-card" :bordered="false">
       <div class="login-card-heading">
-        <div>
-          <h2>安全登录</h2>
-        </div>
+        <h2>用户登录</h2>
       </div>
       <a-form layout="vertical" @submit.prevent="handleLogin">
         <a-form-item label="系统账户">
@@ -40,7 +38,7 @@
 <script setup lang="ts">
 import axios from 'axios'
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref, type CSSProperties } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { loadCaptcha, login } from '@/composables/useAuth'
@@ -62,16 +60,49 @@ const loginTitle = computed(() => `${appBrand.appName} 管理平台`)
 const loginSubtitle = '统一接入、统一调度、统一可观测。'
 const loginBadge = '统一接入平台'
 
-const mouse = reactive({ x: 50, y: 50 })
-const mouseStyle = computed<CSSProperties>(() => ({
-  '--mouse-x': `${mouse.x}%`,
-  '--mouse-y': `${mouse.y}%`
-} as CSSProperties))
+const cursorLightOffset = 160
+const pageRef = ref<HTMLElement | null>(null)
+let pageRect: DOMRect | undefined
+let cursorLightElement: HTMLElement | null = null
+let pointerFrame = 0
+let pendingPointer: { x: number; y: number } | undefined
 
 function handlePointerMove(event: PointerEvent): void {
-  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect()
-  mouse.x = Math.round(((event.clientX - rect.left) / rect.width) * 100)
-  mouse.y = Math.round(((event.clientY - rect.top) / rect.height) * 100)
+  if (event.pointerType === 'touch') return
+  if (!pageRect) updatePageRect()
+  if (!pageRect) return
+  pendingPointer = {
+    x: event.clientX - pageRect.left,
+    y: event.clientY - pageRect.top
+  }
+  if (pointerFrame) return
+  pointerFrame = window.requestAnimationFrame(applyPointerPosition)
+}
+
+function handlePointerEnter(): void {
+  updatePageRect()
+  updateCursorLightElement()
+  pageRef.value?.classList.add('login-page-pointer-active')
+}
+
+function handlePointerLeave(): void {
+  pageRef.value?.classList.remove('login-page-pointer-active')
+}
+
+function updatePageRect(): void {
+  pageRect = pageRef.value?.getBoundingClientRect()
+}
+
+function updateCursorLightElement(): void {
+  cursorLightElement = pageRef.value?.querySelector<HTMLElement>('.login-cursor-light') ?? null
+}
+
+function applyPointerPosition(): void {
+  pointerFrame = 0
+  const element = cursorLightElement
+  const point = pendingPointer
+  if (!element || !point) return
+  element.style.transform = `translate3d(${Math.round(point.x - cursorLightOffset)}px, ${Math.round(point.y - cursorLightOffset)}px, 0)`
 }
 
 async function handleLogin() {
@@ -126,7 +157,15 @@ function getLoginErrorMessage(error: unknown): string {
 }
 
 onMounted(async () => {
+  updatePageRect()
+  updateCursorLightElement()
+  window.addEventListener('resize', updatePageRect, { passive: true })
   await Promise.all([loadBrandSettings(), refreshCaptcha()])
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', updatePageRect)
+  if (pointerFrame) window.cancelAnimationFrame(pointerFrame)
 })
 
 async function loadBrandSettings(): Promise<void> {
@@ -143,40 +182,118 @@ async function loadBrandSettings(): Promise<void> {
   position: relative;
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(0, 1.1fr) 430px;
-  gap: 44px;
+  grid-template-columns: minmax(0, 1.12fr) 430px;
+  gap: min(7vw, 96px);
   align-items: center;
   overflow: hidden;
-  padding: 64px min(7vw, 92px);
-  background: #03111f;
+  padding: 60px min(7vw, 92px);
+  background: #020617;
   color: #fff;
-  --mouse-x: 50%;
-  --mouse-y: 50%;
 }
 
 .login-card {
   position: relative;
   z-index: 1;
-  padding: 12px;
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid rgba(255, 255, 255, 0.5);
-  border-radius: 24px;
-  box-shadow: 0 28px 70px rgba(2, 8, 23, 0.38);
-  backdrop-filter: blur(18px);
+  width: 100%;
+  max-width: 430px;
+  justify-self: center;
+  overflow: hidden;
+  color: #0f172a;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(241, 246, 255, 0.96)),
+    radial-gradient(circle at 0% 0%, rgba(96, 165, 250, 0.16), transparent 38%);
+  border: 1px solid rgba(219, 234, 254, 0.86);
+  border-radius: 8px;
+  box-shadow: 0 34px 96px rgba(0, 0, 0, 0.46), 0 0 0 1px rgba(255, 255, 255, 0.72) inset;
+  animation: cardFloat 7.5s ease-in-out infinite;
+  will-change: transform;
 }
 
-.login-card-heading h2 {
-  margin: 0 0 30px;
+.login-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, #2563eb, #38bdf8 58%, #818cf8);
+}
+
+.login-card::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(191, 219, 254, 0.28), transparent 26%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.38), transparent 22%);
+  opacity: 0.78;
+  pointer-events: none;
+}
+
+.login-card :deep(.ant-card-body) {
+  padding: 30px 36px 34px;
+}
+
+.login-card :deep(.ant-form-item-label > label) {
+  color: #253349;
+  font-weight: 700;
+}
+
+.login-card :deep(.ant-input),
+.login-card :deep(.ant-input-affix-wrapper) {
   color: #0f172a;
-  font-size: 24px;
-  font-weight: 900;
+  background: rgba(248, 250, 252, 0.98);
+  border-color: rgba(191, 219, 254, 0.92);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.78);
+  transition: border-color 0.18s ease, box-shadow 0.18s ease, background 0.18s ease;
+}
+
+.login-card :deep(.ant-input::placeholder),
+.login-card :deep(.ant-input-affix-wrapper input::placeholder) {
+  color: #94a3b8;
+}
+
+.login-card :deep(.ant-input:hover),
+.login-card :deep(.ant-input-affix-wrapper:hover) {
+  border-color: rgba(96, 165, 250, 0.72);
+}
+
+.login-card :deep(.ant-input:focus),
+.login-card :deep(.ant-input-affix-wrapper-focused) {
+  border-color: #60a5fa;
+  box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.16);
+}
+
+.login-card :deep(.ant-btn) {
+  height: 44px;
+  border-radius: 8px;
+  font-weight: 800;
+  box-shadow: 0 14px 34px rgba(37, 99, 235, 0.28);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
+}
+
+.login-card :deep(.ant-btn-primary) {
+  background: linear-gradient(90deg, #2563eb, #0ea5e9);
+  border-color: transparent;
+}
+
+.login-card :deep(.ant-btn-primary:hover) {
+  transform: translateY(-1px);
+  box-shadow: 0 18px 38px rgba(37, 99, 235, 0.34);
+}
+
+.login-card-heading {
+  margin-bottom: 24px;
   text-align: center;
 }
 
-.login-card-heading p {
-  margin: 8px 0 24px;
-  color: #64748b;
-  line-height: 1.6;
+.login-card-heading h2 {
+  margin: 0;
+  color: #0f172a;
+  font-size: 28px;
+  font-weight: 900;
+  line-height: 1.2;
 }
 
 .captcha-row {
@@ -196,9 +313,9 @@ async function loadBrandSettings(): Promise<void> {
   overflow: hidden;
   color: #2563eb;
   font-weight: 700;
-  background: #eff6ff;
-  border: 1px solid #bfdbfe;
-  border-radius: 10px;
+  background: rgba(239, 246, 255, 0.92);
+  border: 1px solid rgba(191, 219, 254, 0.94);
+  border-radius: 8px;
   cursor: pointer;
   transition: border-color 0.18s ease, box-shadow 0.18s ease;
 }
@@ -219,14 +336,36 @@ async function loadBrandSettings(): Promise<void> {
   height: 46px;
 }
 
-@media (max-width: 980px) {
+@keyframes cardFloat {
+  0%, 100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -4px, 0);
+  }
+}
+
+@media (max-width: 1200px) {
   .login-page {
-    grid-template-columns: 1fr;
-    padding: 32px 18px;
+    gap: min(4vw, 52px);
+    padding: 44px min(4vw, 36px);
   }
 
   .login-card {
-    width: 100%;
+    max-width: 408px;
+  }
+}
+
+@media (max-width: 1080px) {
+  .login-page {
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 34px;
+    padding: 36px 24px;
+  }
+
+  .login-card {
+    justify-self: center;
   }
 }
 
@@ -242,8 +381,11 @@ async function loadBrandSettings(): Promise<void> {
   .login-card {
     width: 100%;
     max-width: 430px;
-    padding: 8px;
-    border-radius: 22px;
+    border-radius: 8px;
+  }
+
+  .login-card :deep(.ant-card-body) {
+    padding: 24px;
   }
 
   .login-card:hover {
@@ -252,11 +394,6 @@ async function loadBrandSettings(): Promise<void> {
 
   .login-card-heading h2 {
     font-size: 22px;
-  }
-
-  .login-card-heading p {
-    margin-bottom: 20px;
-    font-size: 13px;
   }
 
   .captcha-row {
@@ -268,4 +405,5 @@ async function loadBrandSettings(): Promise<void> {
     width: 100%;
   }
 }
+
 </style>

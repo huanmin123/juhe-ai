@@ -275,6 +275,25 @@ export function applySchema(database: DatabaseSync): void {
       FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
     );
 
+    CREATE TABLE IF NOT EXISTS account_quality_minute_stats (
+      account_id TEXT NOT NULL,
+      system_account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      stat_minute TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      last_sample_at TEXT,
+      last_success_at TEXT,
+      last_error_at TEXT,
+      last_error_message TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, stat_minute),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS api_keys (
       id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
@@ -564,12 +583,38 @@ export function applySchema(database: DatabaseSync): void {
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
       first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
       first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
       last_used_at TEXT,
       last_error_at TEXT,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, scope_type, scope_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_stats_minute (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      stat_minute TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, stat_minute)
     );
 
     CREATE TABLE IF NOT EXISTS usage_stats_daily (
@@ -586,8 +631,10 @@ export function applySchema(database: DatabaseSync): void {
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
       first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
       first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
       last_used_at TEXT,
       last_error_at TEXT,
       updated_at TEXT NOT NULL,
@@ -608,10 +655,78 @@ export function applySchema(database: DatabaseSync): void {
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
       first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
       first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, scope_type, scope_id, stat_hour)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_stats_weekly (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      stat_week TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, stat_week)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_stats_monthly (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      stat_month TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, stat_month)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_model_minute (
+      system_account_id TEXT NOT NULL,
+      stat_minute TEXT NOT NULL,
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      model TEXT NOT NULL DEFAULT 'unknown',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_minute, provider_code, model)
     );
 
     CREATE TABLE IF NOT EXISTS usage_model_daily (
@@ -646,6 +761,52 @@ export function applySchema(database: DatabaseSync): void {
       PRIMARY KEY (system_account_id, stat_hour, provider_code, model)
     );
 
+    CREATE TABLE IF NOT EXISTS usage_model_weekly (
+      system_account_id TEXT NOT NULL,
+      stat_week TEXT NOT NULL,
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      model TEXT NOT NULL DEFAULT 'unknown',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_week, provider_code, model)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_model_monthly (
+      system_account_id TEXT NOT NULL,
+      stat_month TEXT NOT NULL,
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      model TEXT NOT NULL DEFAULT 'unknown',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_month, provider_code, model)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_error_minute (
+      system_account_id TEXT NOT NULL,
+      stat_minute TEXT NOT NULL,
+      error_group TEXT NOT NULL DEFAULT 'unknown',
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      error_code TEXT NOT NULL DEFAULT 'unknown',
+      status_code INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_minute, error_group, provider_code, error_code, status_code)
+    );
+
     CREATE TABLE IF NOT EXISTS usage_error_daily (
       system_account_id TEXT NOT NULL,
       stat_date TEXT NOT NULL,
@@ -657,7 +818,7 @@ export function applySchema(database: DatabaseSync): void {
       request_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, stat_date, error_group, error_code)
+      PRIMARY KEY (system_account_id, stat_date, error_group, provider_code, error_code, status_code)
     );
 
     CREATE TABLE IF NOT EXISTS usage_error_hourly (
@@ -671,7 +832,108 @@ export function applySchema(database: DatabaseSync): void {
       request_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, stat_hour, error_group, error_code)
+      PRIMARY KEY (system_account_id, stat_hour, error_group, provider_code, error_code, status_code)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_error_weekly (
+      system_account_id TEXT NOT NULL,
+      stat_week TEXT NOT NULL,
+      error_group TEXT NOT NULL DEFAULT 'unknown',
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      error_code TEXT NOT NULL DEFAULT 'unknown',
+      status_code INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_week, error_group, provider_code, error_code, status_code)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_error_monthly (
+      system_account_id TEXT NOT NULL,
+      stat_month TEXT NOT NULL,
+      error_group TEXT NOT NULL DEFAULT 'unknown',
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      error_code TEXT NOT NULL DEFAULT 'unknown',
+      status_code INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_month, error_group, provider_code, error_code, status_code)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_latency_minute (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      metric_type TEXT NOT NULL,
+      stat_minute TEXT NOT NULL,
+      bucket_upper_bound_ms INTEGER NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_minute, bucket_upper_bound_ms)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_latency_hourly (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      metric_type TEXT NOT NULL,
+      stat_hour TEXT NOT NULL,
+      bucket_upper_bound_ms INTEGER NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_hour, bucket_upper_bound_ms)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_latency_daily (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      metric_type TEXT NOT NULL,
+      stat_date TEXT NOT NULL,
+      bucket_upper_bound_ms INTEGER NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_date, bucket_upper_bound_ms)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_latency_weekly (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      metric_type TEXT NOT NULL,
+      stat_week TEXT NOT NULL,
+      bucket_upper_bound_ms INTEGER NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_week, bucket_upper_bound_ms)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_latency_monthly (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      metric_type TEXT NOT NULL,
+      stat_month TEXT NOT NULL,
+      bucket_upper_bound_ms INTEGER NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, metric_type, stat_month, bucket_upper_bound_ms)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_rank_snapshots (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      window_key TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      snapshot_at TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      scope_id TEXT NOT NULL,
+      metric_value REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id)
     );
 
     CREATE TABLE IF NOT EXISTS stats_job_state (
@@ -854,21 +1116,49 @@ export function applySchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_created_at ON runtime_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);
     CREATE INDEX IF NOT EXISTS idx_account_quality_scores_sort ON account_quality_scores(provider_code, quality_score, quality_state);
+    CREATE INDEX IF NOT EXISTS idx_account_quality_minute_stats_minute ON account_quality_minute_stats(stat_minute, account_id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_stats_cursor ON usage_records(created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_api_key_created_sort ON usage_records(api_key_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_usage_records_account_created_sort ON usage_records(account_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_minute_scope_minute ON usage_stats_minute(system_account_id, scope_type, scope_id, stat_minute);
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_minute_minute ON usage_stats_minute(stat_minute);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_scope_date ON usage_stats_daily(system_account_id, scope_type, scope_id, stat_date);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_daily_date ON usage_stats_daily(stat_date);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_scope_hour ON usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_scope_stat_hour ON usage_stats_hourly(system_account_id, scope_type, stat_hour, scope_id);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_hourly_hour ON usage_stats_hourly(stat_hour);
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_weekly_scope_week ON usage_stats_weekly(system_account_id, scope_type, scope_id, stat_week);
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_weekly_week ON usage_stats_weekly(stat_week);
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_monthly_scope_month ON usage_stats_monthly(system_account_id, scope_type, scope_id, stat_month);
+    CREATE INDEX IF NOT EXISTS idx_usage_stats_monthly_month ON usage_stats_monthly(stat_month);
+    CREATE INDEX IF NOT EXISTS idx_usage_model_minute_minute ON usage_model_minute(system_account_id, stat_minute, model);
+    CREATE INDEX IF NOT EXISTS idx_usage_model_minute_stat_minute ON usage_model_minute(stat_minute);
     CREATE INDEX IF NOT EXISTS idx_usage_model_daily_date ON usage_model_daily(system_account_id, stat_date, model);
     CREATE INDEX IF NOT EXISTS idx_usage_model_daily_stat_date ON usage_model_daily(stat_date);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_usage_model_daily_account_date_provider_model ON usage_model_daily(system_account_id, stat_date, provider_code, model);
     CREATE INDEX IF NOT EXISTS idx_usage_model_hourly_hour ON usage_model_hourly(system_account_id, stat_hour, model);
     CREATE INDEX IF NOT EXISTS idx_usage_model_hourly_stat_hour ON usage_model_hourly(stat_hour);
+    CREATE INDEX IF NOT EXISTS idx_usage_model_weekly_week ON usage_model_weekly(system_account_id, stat_week, model);
+    CREATE INDEX IF NOT EXISTS idx_usage_model_weekly_stat_week ON usage_model_weekly(stat_week);
+    CREATE INDEX IF NOT EXISTS idx_usage_model_monthly_month ON usage_model_monthly(system_account_id, stat_month, model);
+    CREATE INDEX IF NOT EXISTS idx_usage_model_monthly_stat_month ON usage_model_monthly(stat_month);
+    CREATE INDEX IF NOT EXISTS idx_usage_error_minute_minute ON usage_error_minute(system_account_id, stat_minute, error_code);
+    CREATE INDEX IF NOT EXISTS idx_usage_error_minute_stat_minute ON usage_error_minute(stat_minute);
     CREATE INDEX IF NOT EXISTS idx_usage_error_daily_date ON usage_error_daily(system_account_id, stat_date, error_code);
     CREATE INDEX IF NOT EXISTS idx_usage_error_daily_stat_date ON usage_error_daily(stat_date);
     CREATE INDEX IF NOT EXISTS idx_usage_error_hourly_hour ON usage_error_hourly(system_account_id, stat_hour, error_code);
     CREATE INDEX IF NOT EXISTS idx_usage_error_hourly_stat_hour ON usage_error_hourly(stat_hour);
+    CREATE INDEX IF NOT EXISTS idx_usage_error_weekly_week ON usage_error_weekly(system_account_id, stat_week, error_code);
+    CREATE INDEX IF NOT EXISTS idx_usage_error_weekly_stat_week ON usage_error_weekly(stat_week);
+    CREATE INDEX IF NOT EXISTS idx_usage_error_monthly_month ON usage_error_monthly(system_account_id, stat_month, error_code);
+    CREATE INDEX IF NOT EXISTS idx_usage_error_monthly_stat_month ON usage_error_monthly(stat_month);
+    CREATE INDEX IF NOT EXISTS idx_usage_latency_minute_minute ON usage_latency_minute(stat_minute);
+    CREATE INDEX IF NOT EXISTS idx_usage_latency_hourly_hour ON usage_latency_hourly(stat_hour);
+    CREATE INDEX IF NOT EXISTS idx_usage_latency_daily_date ON usage_latency_daily(stat_date);
+    CREATE INDEX IF NOT EXISTS idx_usage_latency_weekly_week ON usage_latency_weekly(stat_week);
+    CREATE INDEX IF NOT EXISTS idx_usage_latency_monthly_month ON usage_latency_monthly(stat_month);
+    CREATE INDEX IF NOT EXISTS idx_usage_rank_snapshots_lookup ON usage_rank_snapshots(system_account_id, scope_type, window_key, metric, snapshot_at DESC, rank);
+    CREATE INDEX IF NOT EXISTS idx_usage_rank_snapshots_snapshot ON usage_rank_snapshots(snapshot_at);
     CREATE INDEX IF NOT EXISTS idx_system_metrics_samples_sampled_at ON system_metrics_samples(sampled_at);
     CREATE INDEX IF NOT EXISTS idx_announcements_public ON announcements(status, published_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
@@ -883,6 +1173,8 @@ export function applySchema(database: DatabaseSync): void {
   ensureColumn(database, 'group_accounts', 'local_last_error_message', 'TEXT')
   ensureColumn(database, 'group_accounts', 'local_super_priority_enabled', 'INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'group_accounts', 'local_fallback_enabled', 'INTEGER NOT NULL DEFAULT 0')
+  ensureUsageStatsColumns(database)
+  ensureUsageStatsSchemaVersion(database)
 }
 
 function ensureColumn(database: DatabaseSync, table: string, column: string, definition: string): void {
@@ -891,6 +1183,86 @@ function ensureColumn(database: DatabaseSync, table: string, column: string, def
     return
   }
   database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`)
+}
+
+function ensureUsageStatsColumns(database: DatabaseSync): void {
+  for (const tableName of ['usage_stats_totals', 'usage_stats_minute', 'usage_stats_hourly', 'usage_stats_daily', 'usage_stats_weekly', 'usage_stats_monthly']) {
+    ensureColumn(database, tableName, 'duration_ms_max', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'first_token_ms_max', 'INTEGER NOT NULL DEFAULT 0')
+    ensureColumn(database, tableName, 'last_used_at', 'TEXT')
+    ensureColumn(database, tableName, 'last_error_at', 'TEXT')
+  }
+}
+
+function ensureUsageStatsSchemaVersion(database: DatabaseSync): void {
+  const versionKey = 'usageStatsSchemaVersion'
+  const targetVersion = '2'
+  const adminExists = database.prepare("SELECT 1 FROM system_accounts WHERE id = 'sys_admin'").get() as unknown
+  if (!adminExists) {
+    return
+  }
+  const current = database.prepare('SELECT value_json FROM system_settings WHERE system_account_id = ? AND key = ?').get('sys_admin', versionKey) as unknown as { value_json?: string } | undefined
+  if (current?.value_json === JSON.stringify(targetVersion)) {
+    return
+  }
+  const hasUsageStatsState = database
+    .prepare("SELECT 1 FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation' LIMIT 1")
+    .get() as unknown
+  if (hasUsageStatsState) {
+    resetUsageStatsCacheForSchemaUpgrade(database)
+  }
+  const now = new Date().toISOString()
+  database.prepare(`
+    INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+    VALUES ('sys_admin', ?, ?, ?)
+    ON CONFLICT(system_account_id, key) DO UPDATE SET
+      value_json = excluded.value_json,
+      updated_at = excluded.updated_at
+  `).run(versionKey, JSON.stringify(targetVersion), now)
+}
+
+function resetUsageStatsCacheForSchemaUpgrade(database: DatabaseSync): void {
+  const tableNames = [
+    'usage_stats_totals',
+    'usage_stats_minute',
+    'usage_stats_hourly',
+    'usage_stats_daily',
+    'usage_stats_weekly',
+    'usage_stats_monthly',
+    'usage_model_minute',
+    'usage_model_hourly',
+    'usage_model_daily',
+    'usage_model_weekly',
+    'usage_model_monthly',
+    'usage_error_minute',
+    'usage_error_hourly',
+    'usage_error_daily',
+    'usage_error_weekly',
+    'usage_error_monthly',
+    'usage_latency_minute',
+    'usage_latency_hourly',
+    'usage_latency_daily',
+    'usage_latency_weekly',
+    'usage_latency_monthly',
+    'usage_rank_snapshots',
+    'account_quality_minute_stats'
+  ]
+  for (const tableName of tableNames) {
+    database.prepare(`DELETE FROM ${tableName}`).run()
+  }
+  database.prepare(`
+    DELETE FROM stats_job_state
+    WHERE scope_type = 'global'
+      AND scope_id = ''
+      AND job_name IN (
+        'usage_stats_aggregation',
+        'caller_account_usage_stats_backfill',
+        'account_quality_minute_stats_backfill',
+        'usage_stats_extended_buckets_migration',
+        'usage_model_error_extended_buckets_migration',
+        'usage_latency_buckets_migration'
+      )
+  `).run()
 }
 
 export function seedDefaults(database: DatabaseSync): void {
@@ -954,6 +1326,10 @@ export function seedDefaults(database: DatabaseSync): void {
   for (const [key, value] of DEFAULT_SYSTEM_SETTINGS) {
     statement.run('sys_admin', key, JSON.stringify(value), now)
   }
+  database.prepare(`
+    INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at)
+    VALUES ('sys_admin', 'usageStatsSchemaVersion', ?, ?)
+  `).run(JSON.stringify('2'), now)
 
 }
 

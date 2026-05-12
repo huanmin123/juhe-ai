@@ -1,4 +1,5 @@
 import { getDatabase, nowIso } from './database.js'
+import { normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
 
 interface GlobalSettingRow {
   key: string
@@ -35,8 +36,13 @@ export const systemSettingKeys = [
   'oauthAccessTokenRefreshBatchSize',
   'oauthAccessTokenRefreshRetryBackoffSeconds',
   'usageRecordRetentionDays',
-  'usageStatsDailyRetentionDays',
+  'usageStatsTimezone',
+  'usageStatsMinuteRetentionHours',
   'usageStatsHourlyRetentionDays',
+  'usageStatsDailyRetentionDays',
+  'usageStatsWeeklyRetentionWeeks',
+  'usageStatsMonthlyRetentionMonths',
+  'usageRankSnapshotRetentionDays',
   'systemMetricsRetentionDays',
   'systemMetricsHourlyRetentionDays',
   'dataRetentionCleanupBatchSize',
@@ -76,6 +82,7 @@ export function getSettings(): Record<string, unknown> {
 
 export function updateSettings(input: Record<string, unknown>): Record<string, unknown> {
   const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
+  assertUsageStatsTimezoneUpdateAllowed(input)
   const statement = getDatabase().prepare(`
     INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
     VALUES (?, ?, ?, ?)
@@ -93,4 +100,35 @@ export function updateSettings(input: Record<string, unknown>): Record<string, u
 
 function isSystemSettingKey(key: string): boolean {
   return SYSTEM_SETTING_KEYS.has(key)
+}
+
+function assertUsageStatsTimezoneUpdateAllowed(input: Record<string, unknown>): void {
+  if (!Object.prototype.hasOwnProperty.call(input, 'usageStatsTimezone')) {
+    return
+  }
+  const database = getDatabase()
+  const current = usageStatsTimezone(database)
+  const next = normalizeUsageStatsTimezone(input.usageStatsTimezone)
+  if (next === current) {
+    return
+  }
+  if (!usageStatsDataExists(database)) {
+    return
+  }
+  throw new Error('已有统计数据后不能直接修改统计时区，请先备份并重建统计缓存')
+}
+
+function usageStatsDataExists(database: ReturnType<typeof getDatabase>): boolean {
+  const tables = [
+    'usage_stats_totals',
+    'usage_stats_minute',
+    'usage_stats_hourly',
+    'usage_stats_daily',
+    'usage_stats_weekly',
+    'usage_stats_monthly'
+  ]
+  return tables.some((tableName) => {
+    const row = database.prepare(`SELECT 1 FROM ${tableName} LIMIT 1`).get() as unknown
+    return Boolean(row)
+  })
 }

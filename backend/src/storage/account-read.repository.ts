@@ -1,10 +1,10 @@
-import type { AccountUsageSummary } from '../domain/types.js'
+import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
 import { buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, nowIso } from './database.js'
 import type { AccountListRow } from './repository-row-types.js'
-import { loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
+import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
 export interface AccountRowsPage {
   rows: AccountListRow[]
@@ -149,8 +149,11 @@ export function accountCredentialsForList(row: AccountListRow): Record<string, u
   return typeof credentials.base_url === 'string' && credentials.base_url ? { base_url: credentials.base_url } : {}
 }
 
-export function loadAccountAuthorizationUsageSummaries(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
-  return loadAuthorizationUsageSummariesForScopes(scopes, 'account_authorization', statDate)
+export function loadAccountAuthorizationUsageSummaries(scopes: UsageSummaryScopeRequest[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
+  if (statDateOrRange && typeof statDateOrRange !== 'string') {
+    return loadAuthorizationUsageRangeSummariesForScopes(scopes, 'account_authorization', statDateOrRange)
+  }
+  return loadAuthorizationUsageSummariesForScopes(scopes, 'account_authorization', statDateOrRange)
 }
 
 function groupBindingSelectColumns(): string {

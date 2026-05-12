@@ -4,6 +4,7 @@
       :filters="filters"
       :is-management-view="isManagementView"
       :direction-options="directionOptions"
+      :source-options="sourceOptions"
       :resource-type-options="resourceTypeOptions"
       :resource-options="resourceOptions"
       :teams="teams"
@@ -20,11 +21,12 @@
     <AuthorizationList
       :authorizations="authorizations"
       :current-system-account-id="currentSystemAccountId"
+      :direction="filters.direction"
       :empty-description="authorizationEmptyDescription"
       :is-management-view="isManagementView"
       :loading="loading"
+      :usage-column-label="usageColumnLabel"
       @refresh="loadData"
-      @usage-detail="openUsageDetail"
       @menu-click="handleActionMenuClick"
     />
 
@@ -48,19 +50,6 @@
       @ok="confirmExpireChange"
     />
 
-    <AuthorizationUsageDetailModal
-      v-model:open="usageDetailOpen"
-      :authorization="selectedAuthorization"
-      :group-by="usageDetailGroupBy"
-      :loading="usageDetailLoading"
-      :range="usageDetailRange"
-      :team-usage-columns="teamUsageColumns"
-      :team-usage-rows="selectedTeamUsageRows"
-      :team-usage-summaries="selectedTeamUsageSummaries"
-      :usage-detail-columns="usageDetailColumns"
-      :usage-details="selectedAuthorizationUsageDetails"
-      @range-change="handleUsageRangeChange"
-    />
   </a-card>
 </template>
 
@@ -70,35 +59,31 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
-import { api, type AuthorizationUsageParams } from '@/api/client'
+import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
-import type { AccountSummary, AuthorizationUsageGroupBy, AuthorizationUserUsageDetail, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
+import type { AccountSummary, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
 import AuthorizationFilterToolbar from './AuthorizationFilterToolbar.vue'
 import AuthorizationHelpModal from './AuthorizationHelpModal.vue'
 import AuthorizationList from './AuthorizationList.vue'
-import AuthorizationUsageDetailModal from './AuthorizationUsageDetailModal.vue'
 import type { AuthorizationCreateFormModel, AuthorizationExpireFormModel } from './authorizationFormTypes'
 import { createQuotaLimitForm, quotaLimitsPayload } from '../shared/requestQuotaForm'
 import {
-  buildTeamUsageSummaries,
   extractApiErrorMessage,
   formatServerDateTimeInput,
-  normalizeAuthorizationUsageResponse,
-  parseDatePickerValue,
-  type TeamUsageSummary
+  parseDatePickerValue
 } from './authorizationFormatters'
 import {
   type AuthorizationDirectionFilter,
   type AuthorizationFilterResourceType,
+  type AuthorizationSourceFilter,
   authorizationDirectionOptions,
   authorizationResourceTypeOptions,
-  authorizationTeamUsageColumns,
-  authorizationUsageDetailColumns,
+  authorizationSourceOptions,
   createAuthorizationResourceTypeOptions
 } from './authorizationTableColumns'
 
@@ -106,7 +91,6 @@ const loading = ref(false)
 const { submitAction, submittingRef } = useSubmitAction('authorizations')
 const authorizationCreating = submittingRef('authorizations.create')
 const createModalOpen = ref(false)
-const usageDetailOpen = ref(false)
 const helpOpen = ref(false)
 const expireModalOpen = ref(false)
 const route = useRoute()
@@ -118,39 +102,49 @@ const groups = ref<GroupSummary[]>([])
 const teams = ref<SystemTeamSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
 
-const selectedAuthorization = ref<ResourceAuthorizationSummary>()
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
-const selectedAuthorizationUsageDetails = ref<AuthorizationUserUsageDetail[]>([])
-const selectedResourceAuthorizations = ref<ResourceAuthorizationSummary[]>([])
-const usageDetailLoading = ref(false)
-
-const defaultUsageDetailRange = (): [Dayjs, Dayjs] => {
-  const end = dayjs().startOf('day')
-  return [end.subtract(30, 'day'), end]
-}
-const usageDetailRange = ref<[Dayjs, Dayjs]>(defaultUsageDetailRange())
-const usageDetailGroupBy = ref<AuthorizationUsageGroupBy>('day')
 
 type AuthorizationFilters = {
   direction: AuthorizationDirectionFilter
+  sourceType: AuthorizationSourceFilter
   resourceType: AuthorizationFilterResourceType
   resourceId?: string
   teamId?: string
   granteeSystemAccountId?: string
+  usageDateRange: [string, string]
 }
 type AuthorizationsPageState = {
   filters: AuthorizationFilters
 }
 const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
   filters: {
-    direction: 'all',
+    direction: 'outbound',
+    sourceType: 'all',
     resourceType: 'all',
     resourceId: undefined,
     teamId: undefined,
-    granteeSystemAccountId: undefined
+    granteeSystemAccountId: undefined,
+    usageDateRange: todayDateRange()
   }
 })
-const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState)
+const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
+  version: 4,
+  sanitize: (value, fallback) => {
+    const state = value as Partial<AuthorizationsPageState>
+    const filters = state.filters && typeof state.filters === 'object'
+      ? state.filters as Partial<AuthorizationFilters> & { direction?: unknown; sourceType?: unknown }
+      : {}
+    return {
+      filters: {
+        ...fallback.filters,
+        ...filters,
+        direction: filters.direction === 'inbound' ? 'inbound' : 'outbound',
+        sourceType: filters.sourceType === 'manual' || filters.sourceType === 'team' ? filters.sourceType : 'all',
+        usageDateRange: normalizeCachedDateRange((filters as Partial<AuthorizationFilters>).usageDateRange, fallback.filters.usageDateRange)
+      }
+    }
+  }
+})
 const initialPageState = pageStateCache.read()
 
 const filters = reactive<AuthorizationFilters>({ ...initialPageState.filters })
@@ -170,9 +164,8 @@ const expireForm = reactive<AuthorizationExpireFormModel>({
   quotaLimits: createQuotaLimitForm()
 })
 
-const usageDetailColumns = authorizationUsageDetailColumns
-const teamUsageColumns = authorizationTeamUsageColumns
 const directionOptions = authorizationDirectionOptions
+const sourceOptions = authorizationSourceOptions
 const resourceTypeOptions = authorizationResourceTypeOptions
 const createResourceTypeOptions = createAuthorizationResourceTypeOptions
 const currentSystemAccountId = computed(() => authState.currentUser.value?.id)
@@ -199,11 +192,12 @@ const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'syste
   : teams.value.some((team) => team.status === 'active'))
 const activeFilterCount = computed(() => {
   let count = 0
-  if (!isManagementView.value && filters.direction !== 'all') count += 1
+  if (!isManagementView.value && filters.sourceType !== 'all') count += 1
   if (filters.resourceType !== 'all') count += 1
   if (filters.resourceId) count += 1
   if (isManagementView.value && filters.teamId) count += 1
   if (isManagementView.value && filters.granteeSystemAccountId) count += 1
+  if (!isTodayRange(filters.usageDateRange)) count += 1
   return count
 })
 const authorizationEmptyDescription = computed(() => {
@@ -211,21 +205,11 @@ const authorizationEmptyDescription = computed(() => {
     return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无授权记录。'
   }
   if (filters.direction === 'inbound') {
-    return '暂无授权给我的记录。'
+    return '暂无授权给我的记录；获得授权后的资源会在对应使用菜单中显示。'
   }
-  if (filters.direction === 'outbound') {
-    return '暂无我授权出去的记录，可新增授权给其他用户或团队。'
-  }
-  return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无授权记录，可先新增授权。'
+  return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无我授权出去的记录，可新增授权给其他用户或团队。'
 })
-const selectedTeamUsageSummaries = computed<TeamUsageSummary[]>(() => {
-  const authorization = selectedAuthorization.value
-  if (!authorization) {
-    return []
-  }
-  return buildTeamUsageSummaries(authorization, selectedResourceAuthorizations.value, teams.value, filters.teamId)
-})
-const selectedTeamUsageRows = computed(() => selectedTeamUsageSummaries.value.flatMap((summary) => summary.members))
+const usageColumnLabel = computed(() => isTodayRange(filters.usageDateRange) ? '今日' : '范围用量')
 const authorizationScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId()
   return systemAccountId ? { systemAccountId } : undefined
@@ -281,12 +265,14 @@ async function loadData() {
       teamId: isManagementView.value ? filters.teamId : undefined,
       granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
       direction: isManagementView.value ? undefined : filters.direction,
+      startDate: filters.usageDateRange[0],
+      endDate: filters.usageDateRange[1],
       status: 'all' as const
     }
     const authorizationList = isManagementView.value
       ? await api.authorizations.list(systemAccountId ? { ...params, systemAccountId } : params)
       : await api.myAuthorizations.list(params)
-    authorizations.value = authorizationList
+    authorizations.value = isManagementView.value ? authorizationList : filterAuthorizationsBySourceType(authorizationList)
   } catch (error) {
     console.error(error)
     message.error('加载授权列表失败')
@@ -315,6 +301,11 @@ function resetFilters() {
   Object.assign(filters, defaultAuthorizationsPageState().filters)
   pageStateCache.clear()
   void loadData()
+}
+
+function filterAuthorizationsBySourceType(items: ResourceAuthorizationSummary[]): ResourceAuthorizationSummary[] {
+  if (filters.sourceType === 'all') return items
+  return items.filter((item) => item.authorizationSources?.some((source) => source.sourceType === filters.sourceType && source.status === 'active'))
 }
 
 const createAuthorization = submitAction('authorizations.create', async () => {
@@ -470,54 +461,32 @@ async function confirmExpireChange() {
   }
 }
 
-async function openUsageDetail(item: ResourceAuthorizationSummary) {
-  selectedAuthorization.value = item
-  selectedAuthorizationUsageDetails.value = item.usageBySystemAccount ?? []
-  selectedResourceAuthorizations.value = [item]
-  usageDetailRange.value = defaultUsageDetailRange()
-  usageDetailGroupBy.value = 'day'
-  usageDetailOpen.value = true
-  await loadUsageDetail(item)
+function todayDateRange(): [string, string] {
+  const today = dayjs().format('YYYY-MM-DD')
+  return [today, today]
 }
 
-async function handleUsageRangeChange(payload: { range: [Dayjs, Dayjs]; groupBy: AuthorizationUsageGroupBy }) {
-  usageDetailRange.value = payload.range
-  usageDetailGroupBy.value = payload.groupBy
-  if (selectedAuthorization.value) {
-    await loadUsageDetail(selectedAuthorization.value)
+function normalizeCachedDateRange(value: unknown, fallback: [string, string]): [string, string] {
+  if (!Array.isArray(value) || value.length !== 2) return fallback
+  const start = typeof value[0] === 'string' ? value[0] : undefined
+  const end = typeof value[1] === 'string' ? value[1] : undefined
+  if (!isDateKey(start) || !isDateKey(end)) return fallback
+  const startDate = dayjs(start)
+  const endDate = dayjs(end)
+  if (!startDate.isValid() || !endDate.isValid() || startDate.isAfter(endDate, 'day')) return fallback
+  if (endDate.diff(startDate, 'day') > 30) {
+    return [endDate.subtract(30, 'day').format('YYYY-MM-DD'), endDate.format('YYYY-MM-DD')]
   }
+  return [start, end]
 }
 
-async function loadUsageDetail(item: ResourceAuthorizationSummary) {
-  usageDetailLoading.value = true
-  try {
-    const [startDate, endDate] = usageDetailRange.value
-    const usageParams: AuthorizationUsageParams = {
-      startDate: formatDateKey(startDate),
-      endDate: formatDateKey(endDate),
-      groupBy: usageDetailGroupBy.value
-    }
-    const usagePayload = isManagementView.value
-      ? await api.authorizations.usage(item.id, { ...usageParams, ...authorizationScopeParams.value })
-      : await api.myAuthorizations.usage(item.id, usageParams)
-    const detail = normalizeAuthorizationUsageResponse(usagePayload, item)
-    selectedResourceAuthorizations.value = [detail]
-    selectedAuthorization.value = detail
-    selectedAuthorizationUsageDetails.value = detail.usageBySystemAccount ?? []
-    if (detail.usageRange) {
-      usageDetailRange.value = [dayjs(detail.usageRange.startDate), dayjs(detail.usageRange.endDate)]
-    }
-    usageDetailGroupBy.value = detail.usageGroupBy ?? usageDetailGroupBy.value
-  } catch (error) {
-    console.error(error)
-    message.error('加载用量明细失败')
-  } finally {
-    usageDetailLoading.value = false
-  }
+function isDateKey(value?: string): value is string {
+  return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value))
 }
 
-function formatDateKey(value: Dayjs): string {
-  return value.format('YYYY-MM-DD')
+function isTodayRange(value: [string, string]): boolean {
+  const today = dayjs().format('YYYY-MM-DD')
+  return value[0] === today && value[1] === today
 }
 
 onMounted(async () => {

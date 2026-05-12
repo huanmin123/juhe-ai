@@ -10,13 +10,20 @@ import {
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import { cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
-import { dateKey, hourKey } from '../../storage/usage-stats-helpers.js'
+import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
+import { getDatabase } from '../../storage/database.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 const usageRecordRetentionMaxDays = 7
-const statsRetentionMaxDays = 30
+const statsMinuteRetentionMaxHours = 24 * 14
+const statsHourlyRetentionMaxDays = 180
+const statsDailyRetentionMaxDays = 800
+const statsWeeklyRetentionMaxWeeks = 260
+const statsMonthlyRetentionMaxMonths = 60
+const rankSnapshotRetentionMaxDays = 365
 const systemMetricsRawRetentionMaxDays = 7
+const statsRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
 const defaultCleanupBatchSize = 10000
 const defaultCleanupMaxBatchesPerRun = 10
@@ -28,12 +35,27 @@ export interface DataRetentionCleanupResult {
   auditLogs: number
   runtimeLogs: number
   usageRecords: number
+  usageStatsMinute: number
+  usageModelMinute: number
+  usageErrorMinute: number
+  usageLatencyMinute: number
   usageStatsDaily: number
   usageModelDaily: number
   usageErrorDaily: number
+  usageLatencyDaily: number
   usageStatsHourly: number
   usageModelHourly: number
   usageErrorHourly: number
+  usageLatencyHourly: number
+  usageStatsWeekly: number
+  usageModelWeekly: number
+  usageErrorWeekly: number
+  usageLatencyWeekly: number
+  usageStatsMonthly: number
+  usageModelMonthly: number
+  usageErrorMonthly: number
+  usageLatencyMonthly: number
+  usageRankSnapshots: number
   systemMetricsSamples: number
   systemMetricsHourly: number
   systemSessions: number
@@ -50,6 +72,7 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
   cleanupRunning = true
   try {
     const settings = getSettings()
+    const timezone = usageStatsTimezone(getDatabase())
     const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', defaultCleanupBatchSize, 100, 50000)
     const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', defaultCleanupMaxBatchesPerRun, 1, 100)
     const now = Date.now()
@@ -60,8 +83,12 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 365, 1, operationLogRetentionMaxDays),
       runtimeLogDays: runtimeLogIndexRetentionDays,
       usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 7, 1, usageRecordRetentionMaxDays),
-      statsDailyDays: settingNumber(settings, 'usageStatsDailyRetentionDays', 30, 1, statsRetentionMaxDays),
-      statsHourlyDays: settingNumber(settings, 'usageStatsHourlyRetentionDays', 30, 1, statsRetentionMaxDays),
+      statsMinuteHours: settingNumber(settings, 'usageStatsMinuteRetentionHours', 48, 1, statsMinuteRetentionMaxHours),
+      statsHourlyDays: settingNumber(settings, 'usageStatsHourlyRetentionDays', 60, 1, statsHourlyRetentionMaxDays),
+      statsDailyDays: settingNumber(settings, 'usageStatsDailyRetentionDays', 400, 1, statsDailyRetentionMaxDays),
+      statsWeeklyWeeks: settingNumber(settings, 'usageStatsWeeklyRetentionWeeks', 104, 1, statsWeeklyRetentionMaxWeeks),
+      statsMonthlyMonths: settingNumber(settings, 'usageStatsMonthlyRetentionMonths', 24, 1, statsMonthlyRetentionMaxMonths),
+      rankSnapshotDays: settingNumber(settings, 'usageRankSnapshotRetentionDays', 30, 1, rankSnapshotRetentionMaxDays),
       systemMetricsSampleDays: settingNumber(settings, 'systemMetricsRetentionDays', 7, 1, systemMetricsRawRetentionMaxDays),
       systemMetricsHourlyDays: settingNumber(settings, 'systemMetricsHourlyRetentionDays', 30, 1, statsRetentionMaxDays)
     }
@@ -78,14 +105,18 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
     result.usageRecords = cleanupInBatches(() => cleanupProcessedUsageRecordsBefore(cutoffIso(now, retention.usageRecordDays), batchSize), batchSize, maxBatches)
 
     const stats = cleanupUsageStatsBucketsBefore({
-      dailyCutoffDate: cutoffDateKey(now, retention.statsDailyDays),
-      hourlyCutoffHour: cutoffHourKey(now, retention.statsHourlyDays)
+      minuteCutoffMinute: cutoffMinuteKey(now, retention.statsMinuteHours, timezone),
+      hourlyCutoffHour: cutoffHourKey(now, retention.statsHourlyDays, timezone),
+      dailyCutoffDate: cutoffDateKey(now, retention.statsDailyDays, timezone),
+      weeklyCutoffWeek: cutoffWeekKey(now, retention.statsWeeklyWeeks, timezone),
+      monthlyCutoffMonth: cutoffMonthKey(now, retention.statsMonthlyMonths, timezone),
+      rankSnapshotCutoffIso: cutoffIso(now, retention.rankSnapshotDays)
     })
     Object.assign(result, stats)
 
     const metrics = cleanupSystemMetricsBefore({
       samplesCutoffIso: cutoffIso(now, retention.systemMetricsSampleDays),
-      hourlyCutoffHour: cutoffHourKey(now, retention.systemMetricsHourlyDays)
+      hourlyCutoffHour: cutoffHourKey(now, retention.systemMetricsHourlyDays, timezone)
     })
     Object.assign(result, metrics)
 
@@ -124,12 +155,26 @@ function cutoffIso(now: number, retentionDays: number): string {
   return new Date(now - retentionDays * dayMs).toISOString()
 }
 
-function cutoffDateKey(now: number, retentionDays: number): string {
-  return dateKey(new Date(now - retentionDays * dayMs))
+function cutoffDateKey(now: number, retentionDays: number, timezone: string): string {
+  return dateKey(new Date(now - retentionDays * dayMs), timezone)
 }
 
-function cutoffHourKey(now: number, retentionDays: number): string {
-  return hourKey(new Date(now - retentionDays * dayMs))
+function cutoffHourKey(now: number, retentionDays: number, timezone: string): string {
+  return hourKey(new Date(now - retentionDays * dayMs), timezone)
+}
+
+function cutoffMinuteKey(now: number, retentionHours: number, timezone: string): string {
+  return minuteKey(new Date(now - retentionHours * 60 * 60 * 1000), timezone)
+}
+
+function cutoffWeekKey(now: number, retentionWeeks: number, timezone: string): string {
+  return weekKey(new Date(now - retentionWeeks * 7 * dayMs), timezone)
+}
+
+function cutoffMonthKey(now: number, retentionMonths: number, timezone: string): string {
+  const date = new Date(now)
+  date.setMonth(date.getMonth() - retentionMonths)
+  return monthKey(date, timezone)
 }
 
 function settingNumber(settings: Record<string, unknown>, key: string, fallback: number, min: number, max: number): number {
@@ -144,12 +189,27 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     auditLogs: 0,
     runtimeLogs: 0,
     usageRecords: 0,
+    usageStatsMinute: 0,
+    usageModelMinute: 0,
+    usageErrorMinute: 0,
+    usageLatencyMinute: 0,
     usageStatsDaily: 0,
     usageModelDaily: 0,
     usageErrorDaily: 0,
+    usageLatencyDaily: 0,
     usageStatsHourly: 0,
     usageModelHourly: 0,
     usageErrorHourly: 0,
+    usageLatencyHourly: 0,
+    usageStatsWeekly: 0,
+    usageModelWeekly: 0,
+    usageErrorWeekly: 0,
+    usageLatencyWeekly: 0,
+    usageStatsMonthly: 0,
+    usageModelMonthly: 0,
+    usageErrorMonthly: 0,
+    usageLatencyMonthly: 0,
+    usageRankSnapshots: 0,
     systemMetricsSamples: 0,
     systemMetricsHourly: 0,
     systemSessions: 0

@@ -189,6 +189,8 @@ export interface AuthorizationListParams extends ListParams {
   teamId?: string
   status?: 'active' | 'paused' | 'expired' | 'revoked' | 'all'
   direction?: 'all' | 'outbound' | 'inbound'
+  startDate?: string
+  endDate?: string
 }
 
 export type AuthorizationScopeParams = ListParams
@@ -196,7 +198,6 @@ export type AuthorizationScopeParams = ListParams
 export interface AuthorizationUsageParams extends AuthorizationScopeParams {
   startDate?: string
   endDate?: string
-  groupBy?: 'day' | 'week'
 }
 
 export interface AnnouncementListParams {

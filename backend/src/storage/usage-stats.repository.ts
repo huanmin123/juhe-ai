@@ -12,12 +12,13 @@ import type {
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
-import { averageFromSum, hourKey } from './usage-stats-helpers.js'
+import { averageFromSum, dateKey, hourKey, monthKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
-import { aggregateCallerAccountUsageStatsRecord, aggregateUsageStatsRecord } from './usage-stats-writers.js'
+import { aggregateAccountQualityMinuteStatsRecord, aggregateCallerAccountUsageStatsRecord, aggregateUsageStatsRecord } from './usage-stats-writers.js'
 import {
   GLOBAL_STATS_SCOPE_ID,
   GLOBAL_STATS_SYSTEM_ACCOUNT_ID,
+  USAGE_STATS_RECORD_SELECT_COLUMNS,
   type AccountUsageAggregateRow,
   type StatsAggregateMathRow,
   type StatsJobStateRow,
@@ -32,10 +33,12 @@ export type { AiPerformanceWindowKey, UsageOverviewWindowKey } from '../domain/t
 
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
 const CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME = 'caller_account_usage_stats_backfill'
+const ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME = 'account_quality_minute_stats_backfill'
 const AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT = 20
 const AI_PERFORMANCE_ACCOUNT_OPTION_DEFAULT_LIMIT = 30
 const AI_PERFORMANCE_ACCOUNT_OPTION_MAX_LIMIT = 50
 const HOUR_MS = 60 * 60 * 1000
+const DAY_MS = 24 * HOUR_MS
 
 const USAGE_OVERVIEW_WINDOWS: UsageOverviewWindowDefinition[] = [
   { key: 'last1d', label: '近一天', hours: 24 },
@@ -59,19 +62,27 @@ const AI_PERFORMANCE_WINDOWS: AiPerformanceWindowDefinition[] = [
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
   const database = getDatabase()
-  ensureCallerAccountUsageStatsBackfill(database)
+  const batchLimit = Math.max(1, limit)
+  const callerAccountBackfill = ensureCallerAccountUsageStatsBackfill(database, batchLimit)
+  if (!callerAccountBackfill.complete || callerAccountBackfill.processed > 0) {
+    return callerAccountBackfill.processed
+  }
+  const accountQualityBackfill = ensureAccountQualityMinuteStatsBackfill(database, batchLimit)
+  if (!accountQualityBackfill.complete || accountQualityBackfill.processed > 0) {
+    return accountQualityBackfill.processed
+  }
   const state = usageStatsJobState(database)
   const safeCreatedBefore = usageStatsSafeCreatedBefore()
   const rows = database
     .prepare(`
-      SELECT *
+      SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
       FROM usage_records
       WHERE created_at <= ?
         AND (created_at > ? OR (created_at = ? AND id > ?))
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
-    .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, Math.max(1, limit)) as unknown as UsageStatsRecordRow[]
+    .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, batchLimit) as unknown as UsageStatsRecordRow[]
 
   if (!rows.length) {
     updateStatsJobState(database, {
@@ -107,50 +118,67 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
   return rows.length
 }
 
-function ensureCallerAccountUsageStatsBackfill(database: DatabaseSync): void {
+function ensureCallerAccountUsageStatsBackfill(database: DatabaseSync, limit: number): { complete: boolean; processed: number } {
   const backfillState = database
-    .prepare("SELECT last_success_at FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
-    .get(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME) as unknown as { last_success_at?: string | null } | undefined
+    .prepare("SELECT cursor_created_at, cursor_id, last_success_at FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
+    .get(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null; last_success_at?: string | null } | undefined
   if (backfillState?.last_success_at) {
-    return
+    return { complete: true, processed: 0 }
   }
 
   const usageStatsState = usageStatsJobState(database)
   if (!usageStatsState.cursorCreatedAt) {
     recordCallerAccountUsageStatsBackfill(database, 'skipped')
-    return
+    return { complete: true, processed: 0 }
   }
 
-  const existing = database
-    .prepare("SELECT 1 AS found FROM usage_stats_totals WHERE scope_type = 'caller_account' LIMIT 1")
-    .get() as unknown as { found?: number } | undefined
-  if (existing?.found) {
-    recordCallerAccountUsageStatsBackfill(database, 'existing')
-    return
-  }
-
+  const cursorCreatedAt = backfillState?.cursor_created_at ?? ''
+  const cursorId = backfillState?.cursor_id ?? ''
   const rows = database
     .prepare(`
-      SELECT *
+      SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
       FROM usage_records
       WHERE account_id IS NOT NULL
+        AND (created_at > ? OR (created_at = ? AND id > ?))
         AND (created_at < ? OR (created_at = ? AND id <= ?))
       ORDER BY created_at ASC, id ASC
+      LIMIT ?
     `)
-    .all(usageStatsState.cursorCreatedAt, usageStatsState.cursorCreatedAt, usageStatsState.cursorId) as unknown as UsageStatsRecordRow[]
+    .all(cursorCreatedAt, cursorCreatedAt, cursorId, usageStatsState.cursorCreatedAt, usageStatsState.cursorCreatedAt, usageStatsState.cursorId, limit) as unknown as UsageStatsRecordRow[]
   const updatedAt = nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const row of rows) {
       aggregateCallerAccountUsageStatsRecord(database, row, updatedAt)
     }
-    recordCallerAccountUsageStatsBackfill(database, `processed:${rows.length}`, updatedAt)
+    const last = rows[rows.length - 1]
+    const complete = !last || rows.length < limit || last.created_at > usageStatsState.cursorCreatedAt || (last.created_at === usageStatsState.cursorCreatedAt && last.id >= usageStatsState.cursorId)
+    if (complete) {
+      recordCallerAccountUsageStatsBackfill(database, `processed:${rows.length}`, updatedAt)
+    } else {
+      recordCallerAccountUsageStatsBackfillProgress(database, last.created_at, last.id, updatedAt)
+    }
     commitDatabaseTransaction(database, transactionStarted)
+    return { complete, processed: rows.length }
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
     recordCallerAccountUsageStatsBackfillFailure(database, error)
     throw error
   }
+}
+
+function recordCallerAccountUsageStatsBackfillProgress(database: DatabaseSync, cursorCreatedAt: string, cursorId: string, updatedAt = nowIso()): void {
+  database.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES ('global', '', ?, ?, ?, NULL, NULL, 0, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
+      cursor_id = excluded.cursor_id,
+      last_success_at = NULL,
+      last_error_message = NULL,
+      lag_seconds = 0,
+      updated_at = excluded.updated_at
+  `).run(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME, cursorCreatedAt, cursorId, updatedAt)
 }
 
 function recordCallerAccountUsageStatsBackfill(database: DatabaseSync, cursorId: string, updatedAt = nowIso()): void {
@@ -179,6 +207,98 @@ function recordCallerAccountUsageStatsBackfillFailure(database: DatabaseSync, er
       lag_seconds = 0,
       updated_at = excluded.updated_at
   `).run(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME, message, updatedAt)
+}
+
+function ensureAccountQualityMinuteStatsBackfill(database: DatabaseSync, limit: number): { complete: boolean; processed: number } {
+  const backfillState = database
+    .prepare("SELECT cursor_created_at, cursor_id, last_success_at FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
+    .get(ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null; last_success_at?: string | null } | undefined
+  if (backfillState?.last_success_at) {
+    return { complete: true, processed: 0 }
+  }
+
+  const usageStatsState = usageStatsJobState(database)
+  if (!usageStatsState.cursorCreatedAt) {
+    recordAccountQualityMinuteStatsBackfill(database, 'skipped')
+    return { complete: true, processed: 0 }
+  }
+
+  const cursorCreatedAt = backfillState?.cursor_created_at ?? ''
+  const cursorId = backfillState?.cursor_id ?? ''
+  const rows = database
+    .prepare(`
+      SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
+      FROM usage_records
+      WHERE account_id IS NOT NULL
+        AND api_key_id IS NOT NULL
+        AND (created_at > ? OR (created_at = ? AND id > ?))
+        AND (created_at < ? OR (created_at = ? AND id <= ?))
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(cursorCreatedAt, cursorCreatedAt, cursorId, usageStatsState.cursorCreatedAt, usageStatsState.cursorCreatedAt, usageStatsState.cursorId, limit) as unknown as UsageStatsRecordRow[]
+  const updatedAt = nowIso()
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    for (const row of rows) {
+      aggregateAccountQualityMinuteStatsRecord(database, row, updatedAt)
+    }
+    const last = rows[rows.length - 1]
+    const complete = !last || rows.length < limit || last.created_at > usageStatsState.cursorCreatedAt || (last.created_at === usageStatsState.cursorCreatedAt && last.id >= usageStatsState.cursorId)
+    if (complete) {
+      recordAccountQualityMinuteStatsBackfill(database, `processed:${rows.length}`, updatedAt)
+    } else {
+      recordAccountQualityMinuteStatsBackfillProgress(database, last.created_at, last.id, updatedAt)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+    return { complete, processed: rows.length }
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    recordAccountQualityMinuteStatsBackfillFailure(database, error)
+    throw error
+  }
+}
+
+function recordAccountQualityMinuteStatsBackfillProgress(database: DatabaseSync, cursorCreatedAt: string, cursorId: string, updatedAt = nowIso()): void {
+  database.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES ('global', '', ?, ?, ?, NULL, NULL, 0, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
+      cursor_id = excluded.cursor_id,
+      last_success_at = NULL,
+      last_error_message = NULL,
+      lag_seconds = 0,
+      updated_at = excluded.updated_at
+  `).run(ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME, cursorCreatedAt, cursorId, updatedAt)
+}
+
+function recordAccountQualityMinuteStatsBackfill(database: DatabaseSync, cursorId: string, updatedAt = nowIso()): void {
+  database.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES ('global', '', ?, '', ?, ?, NULL, 0, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_id = excluded.cursor_id,
+      last_success_at = excluded.last_success_at,
+      last_error_message = NULL,
+      lag_seconds = 0,
+      updated_at = excluded.updated_at
+  `).run(ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME, cursorId, updatedAt, updatedAt)
+}
+
+function recordAccountQualityMinuteStatsBackfillFailure(database: DatabaseSync, error: unknown): void {
+  const updatedAt = nowIso()
+  const message = error instanceof Error ? error.message : '账号质量分钟缓存回填失败'
+  database.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES ('global', '', ?, '', 'failed', NULL, ?, 0, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_id = excluded.cursor_id,
+      last_success_at = NULL,
+      last_error_message = excluded.last_error_message,
+      lag_seconds = 0,
+      updated_at = excluded.updated_at
+  `).run(ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME, message, updatedAt)
 }
 
 export function refreshGroupAccountStatsCache(): void {
@@ -310,10 +430,79 @@ export function refreshGroupAccountStatsCache(): void {
   }
 }
 
+export function refreshUsageRankSnapshots(): void {
+  const database = getDatabase()
+  const timezone = usageStatsTimezone(database)
+  const updatedAt = nowIso()
+  const snapshotAt = updatedAt
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    refreshAccountLast7dRequestRankSnapshot(database, snapshotAt, updatedAt, timezone)
+    refreshCallerAccountLast30dCostRankSnapshot(database, snapshotAt, updatedAt, timezone)
+    refreshApiKeyCurrentMonthCostRankSnapshot(database, snapshotAt, updatedAt, timezone)
+    refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'account_authorization', snapshotAt, updatedAt, timezone)
+    refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'group_authorization', snapshotAt, updatedAt, timezone)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+export interface UsageStatsConsistencyIssue {
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+  statDate: string
+  metric: 'request_count' | 'success_count' | 'error_count' | 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'total_cost_usd'
+  dailyValue: number
+  hourlyValue: number
+}
+
+export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsistencyIssue[] {
+  const database = getDatabase()
+  const samples = database.prepare(`
+    SELECT system_account_id, scope_type, scope_id, stat_date,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd
+    FROM usage_stats_daily
+    WHERE stat_date < ?
+    ORDER BY updated_at DESC, stat_date DESC, system_account_id ASC, scope_type ASC, scope_id ASC
+    LIMIT ?
+  `).all(dateKey(new Date(), usageStatsTimezone(database)), boundedConsistencySampleLimit(sampleLimit)) as unknown as Array<Record<string, unknown>>
+  const issues: UsageStatsConsistencyIssue[] = []
+  for (const sample of samples) {
+    const daily = consistencyStatsRow(sample)
+    const hourly = database.prepare(`
+      SELECT
+        COALESCE(SUM(request_count), 0) AS request_count,
+        COALESCE(SUM(success_count), 0) AS success_count,
+        COALESCE(SUM(error_count), 0) AS error_count,
+        COALESCE(SUM(input_tokens), 0) AS input_tokens,
+        COALESCE(SUM(output_tokens), 0) AS output_tokens,
+        COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+        COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd
+      FROM usage_stats_hourly
+      WHERE system_account_id = ?
+        AND scope_type = ?
+        AND scope_id = ?
+        AND stat_hour >= ?
+        AND stat_hour < ?
+    `).get(
+      daily.systemAccountId,
+      daily.scopeType,
+      daily.scopeId,
+      `${daily.statDate}T00`,
+      `${nextDateKey(daily.statDate)}T00`
+    ) as unknown as Record<string, unknown> | undefined
+    issues.push(...compareConsistencyRows(daily, consistencyStatsRow(hourly ?? {})))
+  }
+  return issues
+}
+
 export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void {
   const database = getDatabase()
   const sampledAt = nowIso()
-  const statHour = hourKey(new Date(sampledAt))
+  const statHour = hourKey(new Date(sampledAt), usageStatsTimezone(database))
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
@@ -361,9 +550,10 @@ export function latestUsageStatsLagSeconds(): number {
 
 export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOverviewWindowKey = 'last1d'): UsageStatsOverview {
   const database = getDatabase()
+  const timezone = usageStatsTimezone(database)
   const statsScope = usageOverviewStatsScope(access)
   const window = usageOverviewWindow(windowKey)
-  const sinceHour = hourKey(new Date(Date.now() - window.hours * 60 * 60 * 1000))
+  const sinceHour = hourKey(new Date(Date.now() - window.hours * 60 * 60 * 1000), timezone)
 
   const summaryRow = database.prepare(`
     SELECT ? AS account_id, request_count, success_count, error_count,
@@ -425,7 +615,7 @@ export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOver
       providerCode: row.provider_code,
       model: row.model,
       requestCount: Number(row.request_count ?? 0),
-      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0) + Number(row.cache_read_tokens ?? 0),
+      totalTokens: Number(row.input_tokens ?? 0) + Number(row.output_tokens ?? 0),
       totalCost: Number(row.total_cost ?? 0)
     })),
     errors: errorRows.map((row) => ({
@@ -441,12 +631,13 @@ export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOver
 
 export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerformanceWindowKey = 'last1d', accountIds: string[] = []): AiPerformanceOverview {
   const database = getDatabase()
+  const timezone = usageStatsTimezone(database)
   const systemAccountId = currentSystemAccountId(access)
   const window = aiPerformanceWindow(windowKey)
   const now = Date.now()
-  const hourBuckets = hourBucketsUntilNow(window.hours, now)
-  const windowSinceHour = hourBuckets[0] ?? hourKey(new Date(now))
-  const activeSinceHour = hourKey(new Date(now - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS))
+  const hourBuckets = hourBucketsUntilNow(window.hours, now, timezone)
+  const windowSinceHour = hourBuckets[0] ?? hourKey(new Date(now), timezone)
+  const activeSinceHour = hourKey(new Date(now - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(accountIds).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
 
   const defaultRows = loadDefaultAiPerformanceAccounts(database, systemAccountId, activeSinceHour)
@@ -510,8 +701,9 @@ export function listAiPerformanceAccountOptions(
   options: { keyword?: string; accountIds?: string[]; limit?: number } = {}
 ): AiPerformanceAccountOption[] {
   const database = getDatabase()
+  const timezone = usageStatsTimezone(database)
   const systemAccountId = currentSystemAccountId(access)
-  const activeSinceHour = hourKey(new Date(Date.now() - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS))
+  const activeSinceHour = hourKey(new Date(Date.now() - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(options.accountIds ?? []).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
   const searchLimit = boundedAccountOptionLimit(options.limit)
   const searchRows = loadAiPerformanceAccountOptionRows(database, systemAccountId, activeSinceHour, {
@@ -534,9 +726,10 @@ export function listAiPerformanceAccountOptions(
 
 export function getSystemMetricsOverview(windowKey: UsageOverviewWindowKey = 'last1d'): SystemMetricsOverview {
   const database = getDatabase()
+  const timezone = usageStatsTimezone(database)
   const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC, id DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
   const window = usageOverviewWindow(windowKey)
-  const sinceHour = hourKey(new Date(Date.now() - window.hours * 60 * 60 * 1000))
+  const sinceHour = hourKey(new Date(Date.now() - window.hours * 60 * 60 * 1000), timezone)
   const rows = database.prepare('SELECT * FROM system_metrics_hourly WHERE stat_hour >= ? ORDER BY stat_hour ASC').all(sinceHour) as unknown as Array<Record<string, unknown>>
   return {
     latest: latest ? mapSystemMetricsLatest(latest) : undefined,
@@ -546,6 +739,124 @@ export function getSystemMetricsOverview(windowKey: UsageOverviewWindowKey = 'la
 
 function usageOverviewWindow(windowKey: UsageOverviewWindowKey): UsageOverviewWindowDefinition {
   return USAGE_OVERVIEW_WINDOWS.find((window) => window.key === windowKey) ?? USAGE_OVERVIEW_WINDOWS[0]
+}
+
+function refreshAccountLast7dRequestRankSnapshot(database: DatabaseSync, snapshotAt: string, updatedAt: string, timezone: string): void {
+  refreshUsageRankSnapshotFromStats(database, {
+    scopeType: 'account',
+    windowKey: 'last7d',
+    metric: 'request_count',
+    metricColumn: 'request_count',
+    sourceTable: 'usage_stats_daily',
+    timeWhere: 'stat_date >= ?',
+    timeParams: [dateKey(new Date(Date.now() - 6 * DAY_MS), timezone)],
+    snapshotAt,
+    updatedAt,
+    limit: 50
+  })
+}
+
+function refreshCallerAccountLast30dCostRankSnapshot(database: DatabaseSync, snapshotAt: string, updatedAt: string, timezone: string): void {
+  refreshUsageRankSnapshotFromStats(database, {
+    scopeType: 'caller_account',
+    windowKey: 'last30d',
+    metric: 'total_cost_usd',
+    metricColumn: 'total_cost_usd',
+    sourceTable: 'usage_stats_daily',
+    timeWhere: 'stat_date >= ?',
+    timeParams: [dateKey(new Date(Date.now() - 29 * DAY_MS), timezone)],
+    snapshotAt,
+    updatedAt,
+    limit: 50
+  })
+}
+
+function refreshApiKeyCurrentMonthCostRankSnapshot(database: DatabaseSync, snapshotAt: string, updatedAt: string, timezone: string): void {
+  refreshUsageRankSnapshotFromStats(database, {
+    scopeType: 'api_key',
+    windowKey: 'current_month',
+    metric: 'total_cost_usd',
+    metricColumn: 'total_cost_usd',
+    sourceTable: 'usage_stats_monthly',
+    timeWhere: 'stat_month = ?',
+    timeParams: [monthKey(new Date(), timezone)],
+    snapshotAt,
+    updatedAt,
+    limit: 50
+  })
+}
+
+function refreshAuthorizationCurrentMonthCostRankSnapshot(
+  database: DatabaseSync,
+  scopeType: 'account_authorization' | 'group_authorization',
+  snapshotAt: string,
+  updatedAt: string,
+  timezone: string
+): void {
+  refreshUsageRankSnapshotFromStats(database, {
+    scopeType,
+    windowKey: 'current_month',
+    metric: 'total_cost_usd',
+    metricColumn: 'total_cost_usd',
+    sourceTable: 'usage_stats_monthly',
+    timeWhere: 'stat_month = ?',
+    timeParams: [monthKey(new Date(), timezone)],
+    snapshotAt,
+    updatedAt,
+    limit: 50
+  })
+}
+
+function refreshUsageRankSnapshotFromStats(database: DatabaseSync, input: {
+  scopeType: string
+  windowKey: string
+  metric: string
+  metricColumn: 'request_count' | 'total_cost_usd'
+  sourceTable: 'usage_stats_daily' | 'usage_stats_monthly'
+  timeWhere: string
+  timeParams: string[]
+  snapshotAt: string
+  updatedAt: string
+  limit: number
+}): void {
+  database.prepare(`
+    DELETE FROM usage_rank_snapshots
+    WHERE scope_type = ?
+      AND window_key = ?
+      AND metric = ?
+  `).run(input.scopeType, input.windowKey, input.metric)
+  database.prepare(`
+    INSERT INTO usage_rank_snapshots (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value, updated_at)
+    SELECT system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id, metric_value, updated_at
+    FROM (
+      SELECT
+        system_account_id,
+        ? AS scope_type,
+        ? AS window_key,
+        ? AS metric,
+        ? AS snapshot_at,
+        ROW_NUMBER() OVER (
+          PARTITION BY system_account_id
+          ORDER BY metric_value DESC, last_used_at DESC, scope_id ASC
+        ) AS rank,
+        scope_id,
+        metric_value,
+        ? AS updated_at
+      FROM (
+        SELECT
+          system_account_id,
+          scope_id,
+          SUM(${input.metricColumn}) AS metric_value,
+          MAX(last_used_at) AS last_used_at
+        FROM ${input.sourceTable}
+        WHERE scope_type = ?
+          AND ${input.timeWhere}
+        GROUP BY system_account_id, scope_id
+        HAVING SUM(${input.metricColumn}) > 0
+      )
+    )
+    WHERE rank <= ?
+  `).run(input.scopeType, input.windowKey, input.metric, input.snapshotAt, input.updatedAt, input.scopeType, ...input.timeParams, input.limit)
 }
 
 function aiPerformanceWindow(windowKey: AiPerformanceWindowKey): AiPerformanceWindowDefinition {
@@ -574,6 +885,10 @@ interface AiPerformanceHourlyRow {
 }
 
 function loadDefaultAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, activeSinceHour: string, limit = 10): AiPerformanceAccountRow[] {
+  const snapshotRows = loadDefaultAiPerformanceAccountsFromRankSnapshot(database, systemAccountId, limit)
+  if (snapshotRows.length > 0) {
+    return snapshotRows
+  }
   return database.prepare(`
     SELECT
       accounts.id,
@@ -597,6 +912,43 @@ function loadDefaultAiPerformanceAccounts(database: DatabaseSync, systemAccountI
     ORDER BY request_count_last_7d DESC, last_stat_hour DESC, lower(accounts.name) ASC, accounts.id ASC
     LIMIT ?
   `).all(systemAccountId, activeSinceHour, limit) as unknown as AiPerformanceAccountRow[]
+}
+
+function loadDefaultAiPerformanceAccountsFromRankSnapshot(database: DatabaseSync, systemAccountId: string, limit: number): AiPerformanceAccountRow[] {
+  return database.prepare(`
+    SELECT
+      accounts.id,
+      accounts.name,
+      accounts.status,
+      accounts.provider_code,
+      accounts.system_account_id,
+      system_accounts.display_name AS system_account_name,
+      snapshots.metric_value AS request_count_last_7d,
+      snapshots.snapshot_at AS last_stat_hour
+    FROM (
+      SELECT *
+      FROM usage_rank_snapshots
+      WHERE system_account_id = ?
+        AND scope_type = 'account'
+        AND window_key = 'last7d'
+        AND metric = 'request_count'
+        AND snapshot_at = (
+          SELECT MAX(snapshot_at)
+          FROM usage_rank_snapshots
+          WHERE system_account_id = ?
+            AND scope_type = 'account'
+            AND window_key = 'last7d'
+            AND metric = 'request_count'
+        )
+      ORDER BY rank ASC
+      LIMIT ?
+    ) snapshots
+    INNER JOIN accounts
+      ON accounts.id = snapshots.scope_id
+      AND accounts.system_account_id = snapshots.system_account_id
+    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
+    ORDER BY snapshots.rank ASC, lower(accounts.name) ASC, accounts.id ASC
+  `).all(systemAccountId, systemAccountId, limit) as unknown as AiPerformanceAccountRow[]
 }
 
 function loadSelectedAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, activeSinceHour: string, accountIds: string[]): AiPerformanceAccountRow[] {
@@ -717,9 +1069,9 @@ function mapAiPerformanceAccount(row: AiPerformanceAccountRow, defaultIds: Set<s
   }
 }
 
-function hourBucketsUntilNow(hours: number, now = Date.now()): string[] {
+function hourBucketsUntilNow(hours: number, now = Date.now(), timezone?: string): string[] {
   const size = Math.max(1, Math.trunc(hours))
-  return Array.from({ length: size }, (_, index) => hourKey(new Date(now - (size - 1 - index) * HOUR_MS)))
+  return Array.from({ length: size }, (_, index) => hourKey(new Date(now - (size - 1 - index) * HOUR_MS), timezone))
 }
 
 function uniqueNonEmpty(values: string[]): string[] {
@@ -766,7 +1118,7 @@ function aggregateUsageTrendRows(
   return [...buckets.values()].map((bucket) => ({
     statHour: bucket.statHour,
     requestCount: bucket.requestCount,
-    totalTokens: bucket.inputTokens + bucket.outputTokens + bucket.cacheReadTokens,
+    totalTokens: bucket.inputTokens + bucket.outputTokens,
     totalCost: bucket.totalCost,
     averageDurationMs: averageFromSum(bucket.durationMsSum, bucket.durationMsCount),
     errorCount: bucket.errorCount
@@ -896,6 +1248,70 @@ function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: 
     `)
     .get(safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorId) as unknown as { created_at?: string } | undefined
   return latest?.created_at ? statsLagSecondsFromCursor(latest.created_at) : 0
+}
+
+interface ConsistencyStatsRow {
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+  statDate: string
+  request_count: number
+  success_count: number
+  error_count: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  total_cost_usd: number
+}
+
+function consistencyStatsRow(row: Record<string, unknown>): ConsistencyStatsRow {
+  return {
+    systemAccountId: String(row.system_account_id ?? ''),
+    scopeType: String(row.scope_type ?? ''),
+    scopeId: String(row.scope_id ?? ''),
+    statDate: String(row.stat_date ?? ''),
+    request_count: Number(row.request_count ?? 0),
+    success_count: Number(row.success_count ?? 0),
+    error_count: Number(row.error_count ?? 0),
+    input_tokens: Number(row.input_tokens ?? 0),
+    output_tokens: Number(row.output_tokens ?? 0),
+    cache_read_tokens: Number(row.cache_read_tokens ?? 0),
+    total_cost_usd: Number(row.total_cost_usd ?? 0)
+  }
+}
+
+function compareConsistencyRows(daily: ConsistencyStatsRow, hourly: ConsistencyStatsRow): UsageStatsConsistencyIssue[] {
+  const metrics: UsageStatsConsistencyIssue['metric'][] = ['request_count', 'success_count', 'error_count', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'total_cost_usd']
+  const issues: UsageStatsConsistencyIssue[] = []
+  for (const metric of metrics) {
+    const dailyValue = daily[metric]
+    const hourlyValue = hourly[metric]
+    const tolerance = metric === 'total_cost_usd' ? 0.000001 : 0
+    if (Math.abs(dailyValue - hourlyValue) <= tolerance) continue
+    issues.push({
+      systemAccountId: daily.systemAccountId,
+      scopeType: daily.scopeType,
+      scopeId: daily.scopeId,
+      statDate: daily.statDate,
+      metric,
+      dailyValue,
+      hourlyValue
+    })
+  }
+  return issues
+}
+
+function nextDateKey(statDate: string): string {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(statDate)
+  if (!match) return statDate
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+  date.setDate(date.getDate() + 1)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function boundedConsistencySampleLimit(value: number): number {
+  const number = Number(value)
+  return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), 1), 100) : 20
 }
 
 function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, input: SystemMetricsSampleInput, updatedAt: string): void {

@@ -43,6 +43,36 @@ export interface UsageStatsRecordRow {
   created_at: string
 }
 
+export const USAGE_STATS_RECORD_SELECT_COLUMNS = `
+  id,
+  system_account_id,
+  trace_id,
+  client_ip,
+  api_key_id,
+  group_id,
+  account_id,
+  endpoint,
+  provider_code,
+  model,
+  status_code,
+  success,
+  first_token_ms,
+  duration_ms,
+  input_tokens,
+  output_tokens,
+  cache_read_tokens,
+  cost_usd,
+  error_code,
+  error_message,
+  account_owner_system_account_id,
+  group_owner_system_account_id,
+  account_access_type,
+  group_access_type,
+  account_authorization_id,
+  group_authorization_id,
+  created_at
+`
+
 export interface StatsJobStateRow {
   cursor_created_at: string | null
   cursor_id: string | null
@@ -59,8 +89,10 @@ export interface UsageStatsAccumulator {
   totalCostUsd: number
   durationMsSum: number
   durationMsCount: number
+  durationMsMax: number
   firstTokenMsSum: number
   firstTokenMsCount: number
+  firstTokenMsMax: number
   lastUsedAt?: string
   lastErrorAt?: string
 }
@@ -82,9 +114,12 @@ export interface StatsAggregateMathRow {
   total_cost: number
   duration_ms_sum: number
   duration_ms_count: number
+  duration_ms_max?: number
   first_token_ms_sum: number
   first_token_ms_count: number
+  first_token_ms_max?: number
   last_used_at: string | null
+  last_error_at?: string | null
 }
 
 export interface SystemMetricsSampleInput {

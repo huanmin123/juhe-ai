@@ -71,6 +71,9 @@ importers:
       '@vitejs/plugin-vue':
         specifier: ^5.2.0
         version: 5.2.4(vite@5.4.21(@types/node@22.19.17))(vue@3.5.33(typescript@5.9.3))
+      animejs:
+        specifier: ^4.4.1
+        version: 4.4.1
       ant-design-vue:
         specifier: ^4.2.6
         version: 4.2.6(vue@3.5.33(typescript@5.9.3))
@@ -744,6 +747,9 @@ packages:
 
   alien-signals@1.0.13:
     resolution: {integrity: sha512-OGj9yyTnJEttvzhTUWuscOvtqxq5vrhF7vL9oS0xJ2mK0ItPYP1/y+vCFebfxoEyAz0++1AIwJ5CMr+Fk3nDmg==}
+
+  animejs@4.4.1:
+    resolution: {integrity: sha512-XimhJw4vPb6tAd6Zaoa6BaspJ8UteQMKvL7Pvrt6MW/6u2UvJs0TB/LLqR1sigaiYvpVPC3Tokr9emcCMhWFhw==}
 
   ant-design-vue@4.2.6:
     resolution: {integrity: sha512-t7eX13Yj3i9+i5g9lqFyYneoIb3OzTvQjq9Tts1i+eiOd3Eva/6GagxBSXM1fOCjqemIu0FYVE1ByZ/38epR3Q==}
@@ -1936,6 +1942,8 @@ snapshots:
   agent-base@9.0.0: {}
 
   alien-signals@1.0.13: {}
+
+  animejs@4.4.1: {}
 
   ant-design-vue@4.2.6(vue@3.5.33(typescript@5.9.3)):
     dependencies:

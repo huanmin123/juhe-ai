@@ -9,7 +9,8 @@ import {
   revokeResourceAuthorization,
   updateResourceAuthorization
 } from '../../storage/repositories.js'
-import { normalizeAccountUsageStatsRange } from '../../storage/usage-stats-helpers.js'
+import { getDatabase } from '../../storage/database.js'
+import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
@@ -30,14 +31,15 @@ const authorizationsQuerySchema = z.object({
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
   status: z.enum(['active', 'paused', 'expired', 'revoked', 'all']).optional(),
   direction: z.enum(['all', 'outbound', 'inbound']).optional(),
-  systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional()
+  systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
+  startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
+  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
 })
 
 const authorizationUsageQuerySchema = z.object({
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
-  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional(),
-  groupBy: z.enum(['day', 'week']).optional()
+  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
 })
 
 const createAuthorizationSchema = z.object({
@@ -93,11 +95,12 @@ authorizationsRouter.get('/', (req, res) => {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, direction, ...filters } = parsed.data
+  const { systemAccountId, direction, startDate, endDate, ...filters } = parsed.data
+  const usageRange = normalizeAuthorizationListUsageRange({ startDate, endDate })
   const routeFilters = req.baseUrl.endsWith('/my-authorizations') && direction && direction !== 'all'
     ? { ...filters, direction }
     : filters
-  res.json(ok(listResourceAuthorizations(routeFilters, getRequestAccessScope(systemAccountId))))
+  res.json(ok(listResourceAuthorizations(routeFilters, getRequestAccessScope(systemAccountId), { usageRange })))
 })
 
 authorizationsRouter.post('/', mutationGuard({
@@ -355,8 +358,7 @@ authorizationsRouter.get('/:id/usage', (req, res) => {
       range: normalizeAccountUsageStatsRange({
         startDate: queryParsed.data.startDate,
         endDate: queryParsed.data.endDate
-      }),
-      groupBy: queryParsed.data.groupBy ?? 'day'
+      }, usageStatsTimezone(getDatabase()))
     }
   )
   if (!authorization) {
@@ -395,4 +397,12 @@ function authorizationViewers(authorization: ReturnType<typeof listResourceAutho
 function clearAuthorizationRuntimeCaches(): void {
   clearGatewayRuntimeCache()
   clearAuthorizationQuotaCache()
+}
+
+function normalizeAuthorizationListUsageRange(input: { startDate?: string; endDate?: string }) {
+  const timezone = usageStatsTimezone(getDatabase())
+  const today = todayDateKey(timezone)
+  const startDate = input.startDate ?? input.endDate ?? today
+  const endDate = input.endDate ?? input.startDate ?? today
+  return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
 }

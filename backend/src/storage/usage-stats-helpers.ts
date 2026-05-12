@@ -1,7 +1,24 @@
+import type { DatabaseSync } from 'node:sqlite'
+
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 export const ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS = 31
+export const DEFAULT_USAGE_STATS_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+
+interface DateParts {
+  year: number
+  month: number
+  day: number
+  hour: number
+  minute: number
+}
+
+export interface UsageStatsBucketPlan {
+  monthly: string[]
+  weekly: string[]
+  daily: string[]
+}
 
 export function emptyAccountUsageSummary(): AccountUsageSummary {
   return {
@@ -37,7 +54,7 @@ export function usageSummaryFromAggregate(row: {
     inputTokens,
     outputTokens,
     cacheReadTokens,
-    totalTokens: inputTokens + outputTokens + cacheReadTokens,
+    totalTokens: inputTokens + outputTokens,
     totalCost: Number(row.total_cost ?? 0),
     lastUsedAt: row.last_used_at ?? undefined
   }
@@ -70,19 +87,18 @@ export function mergeUsageSummaryMaps(...maps: Array<Map<string, AccountUsageSum
   return result
 }
 
-export function todayDateKey(): string {
-  return dateKey()
+export function todayDateKey(timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {
+  return dateKey(undefined, timezone)
 }
 
-export function dateKey(date = new Date()): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  return `${year}-${month}-${day}`
+export function dateKey(date = new Date(), timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {
+  const { year, month, day } = zonedDateParts(date, timezone)
+  return `${year}-${two(month)}-${two(day)}`
 }
 
-export function normalizeAccountUsageStatsRange(input: { startDate?: string; endDate?: string } = {}): AccountUsageStatsRange {
-  const today = startOfLocalDay(new Date())
+export function normalizeAccountUsageStatsRange(input: { startDate?: string; endDate?: string } = {}, timezone = DEFAULT_USAGE_STATS_TIMEZONE): AccountUsageStatsRange {
+  const todayKey = dateKey(undefined, timezone)
+  const today = parseDateKey(todayKey) ?? startOfLocalDay(new Date())
   const defaultStart = addDays(today, -(ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS - 1))
   let end = parseDateKey(input.endDate) ?? today
   if (end > today) {
@@ -97,8 +113,8 @@ export function normalizeAccountUsageStatsRange(input: { startDate?: string; end
     start = earliestStart
   }
   return {
-    startDate: dateKey(start),
-    endDate: dateKey(end),
+    startDate: localDateKey(start),
+    endDate: localDateKey(end),
     days: daysBetweenInclusive(start, end),
     maxDays: ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS
   }
@@ -112,12 +128,74 @@ export function dateKeysInRange(range: Pick<AccountUsageStatsRange, 'startDate' 
   return Array.from({ length: days }, (_, index) => dateKey(addDays(start, index)))
 }
 
-export function hourKey(date: Date): string {
-  const year = date.getFullYear()
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hour = String(date.getHours()).padStart(2, '0')
-  return `${year}-${month}-${day}T${hour}`
+export function hourKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {
+  const { year, month, day, hour } = zonedDateParts(date, timezone)
+  return `${year}-${two(month)}-${two(day)}T${two(hour)}`
+}
+
+export function minuteKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {
+  const { year, month, day, hour, minute } = zonedDateParts(date, timezone)
+  return `${year}-${two(month)}-${two(day)}T${two(hour)}:${two(minute)}`
+}
+
+export function weekKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {
+  const { year, month, day } = zonedDateParts(date, timezone)
+  return localDateKey(startOfWeekMonday(new Date(year, month - 1, day)))
+}
+
+export function monthKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): string {
+  const { year, month } = zonedDateParts(date, timezone)
+  return `${year}-${two(month)}`
+}
+
+export function usageStatsTimezone(database: DatabaseSync): string {
+  const row = database.prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
+  if (!row?.value_json) return DEFAULT_USAGE_STATS_TIMEZONE
+  try {
+    const value = JSON.parse(row.value_json) as unknown
+    return normalizeUsageStatsTimezone(value)
+  } catch {
+    return DEFAULT_USAGE_STATS_TIMEZONE
+  }
+}
+
+export function normalizeUsageStatsTimezone(value: unknown): string {
+  const timezone = typeof value === 'string' && value.trim() ? value.trim() : DEFAULT_USAGE_STATS_TIMEZONE
+  try {
+    new Intl.DateTimeFormat('en-CA', { timeZone: timezone }).format(new Date())
+    return timezone
+  } catch {
+    return DEFAULT_USAGE_STATS_TIMEZONE
+  }
+}
+
+export function usageStatsBucketPlan(range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): UsageStatsBucketPlan {
+  const start = parseDateKey(range.startDate)
+  const end = parseDateKey(range.endDate)
+  const plan: UsageStatsBucketPlan = { monthly: [], weekly: [], daily: [] }
+  if (!start || !end || start > end) return plan
+
+  let cursor = start
+  while (cursor <= end) {
+    if (isFirstDayOfMonth(cursor)) {
+      const monthEnd = endOfMonth(cursor)
+      if (monthEnd <= end) {
+        plan.monthly.push(`${cursor.getFullYear()}-${two(cursor.getMonth() + 1)}`)
+        cursor = addDays(monthEnd, 1)
+        continue
+      }
+    }
+    const weekStart = startOfWeekMonday(cursor)
+    const weekEnd = addDays(weekStart, 6)
+    if (cursor.getTime() === weekStart.getTime() && weekEnd <= end) {
+      plan.weekly.push(localDateKey(weekStart))
+      cursor = addDays(weekEnd, 1)
+      continue
+    }
+    plan.daily.push(localDateKey(cursor))
+    cursor = addDays(cursor, 1)
+  }
+  return plan
 }
 
 export function numberFromUnknown(value: unknown): number | undefined {
@@ -145,6 +223,36 @@ function parseDateKey(value?: string): Date | undefined {
   return startOfLocalDay(date)
 }
 
+function zonedDateParts(date: Date, timezone: string): DateParts {
+  try {
+    const parts = new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone || DEFAULT_USAGE_STATS_TIMEZONE,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23'
+    }).formatToParts(date)
+    const value = (type: string) => parts.find((part) => part.type === type)?.value ?? '00'
+    return {
+      year: Number(value('year')),
+      month: Number(value('month')),
+      day: Number(value('day')),
+      hour: Number(value('hour')),
+      minute: Number(value('minute'))
+    }
+  } catch {
+    return {
+      year: date.getFullYear(),
+      month: date.getMonth() + 1,
+      day: date.getDate(),
+      hour: date.getHours(),
+      minute: date.getMinutes()
+    }
+  }
+}
+
 function startOfLocalDay(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth(), date.getDate())
 }
@@ -153,6 +261,29 @@ function addDays(date: Date, days: number): Date {
   const next = new Date(date)
   next.setDate(next.getDate() + days)
   return next
+}
+
+function startOfWeekMonday(date: Date): Date {
+  const start = startOfLocalDay(date)
+  const dayOfWeek = start.getDay()
+  start.setDate(start.getDate() - (dayOfWeek === 0 ? 6 : dayOfWeek - 1))
+  return start
+}
+
+function isFirstDayOfMonth(date: Date): boolean {
+  return date.getDate() === 1
+}
+
+function endOfMonth(date: Date): Date {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0)
+}
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}`
+}
+
+function two(value: number): string {
+  return String(value).padStart(2, '0')
 }
 
 function daysBetweenInclusive(start: Date, end: Date): number {

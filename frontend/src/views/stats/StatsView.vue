@@ -156,7 +156,7 @@ const usageTrendEmptyDescription = computed(() => hasWindowUsage.value ? `${curr
 const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.value}暂无模型调用`)
 const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无失败请求` : `${currentWindowLabel.value}暂无失败请求`)
 const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
-const usageTrendDescription = computed(() => `${currentWindowLabel.value} Token 消耗 = 输入 Token + 输出 Token + 缓存读取 Token；失败 = 失败请求次数；平均总耗时 = 网关记录的请求总耗时平均值。`)
+const usageTrendDescription = computed(() => `${currentWindowLabel.value} Token 消耗 = 输入 Token + 输出 Token；缓存读取已包含在输入 Token 中，仅作为拆分指标展示。失败 = 失败请求次数；平均总耗时 = 网关记录的请求总耗时平均值。`)
 
 const summaryCards = computed(() => {
   const summary = usageOverview.value?.summary

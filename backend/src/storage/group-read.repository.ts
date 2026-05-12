@@ -1,8 +1,8 @@
-import type { AccountUsageSummary } from '../domain/types.js'
+import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, nowIso } from './database.js'
 import type { GroupListRow } from './repository-row-types.js'
-import { loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
+import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
 export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
@@ -38,6 +38,9 @@ export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
     .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
 }
 
-export function loadGroupAuthorizationUsageSummaries(scopes: UsageSummaryScopeRequest[], statDate?: string): Map<string, AccountUsageSummary> {
-  return loadAuthorizationUsageSummariesForScopes(scopes, 'group_authorization', statDate)
+export function loadGroupAuthorizationUsageSummaries(scopes: UsageSummaryScopeRequest[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
+  if (statDateOrRange && typeof statDateOrRange !== 'string') {
+    return loadAuthorizationUsageRangeSummariesForScopes(scopes, 'group_authorization', statDateOrRange)
+  }
+  return loadAuthorizationUsageSummariesForScopes(scopes, 'group_authorization', statDateOrRange)
 }

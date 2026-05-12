@@ -9,8 +9,21 @@
     >
     <template #inline-filters>
       <a-segmented v-if="!isManagementView" v-model:value="filters.direction" class="direction-filter responsive-list-inline-filter" :options="directionOptions" @change="$emit('refresh')" />
-      <a-select v-model:value="filters.resourceType" class="filter-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
+      <a-range-picker
+        v-model:value="usageDateRangeValue"
+        :allow-clear="false"
+        :disabled="loading"
+        :disabled-date="disabledUsageDate"
+        class="usage-range-picker responsive-list-inline-filter"
+        format="YYYY-MM-DD"
+        @calendar-change="handleUsageCalendarChange"
+        @change="handleUsageDateRangeChange"
+        @open-change="handleUsageDateRangeOpenChange"
+      />
+      <a-select v-if="!isManagementView" v-model:value="filters.sourceType" class="filter-select responsive-list-inline-filter" :options="sourceOptions" @change="$emit('refresh')" />
+      <a-select v-if="isManagementView" v-model:value="filters.resourceType" class="filter-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
       <a-select
+        v-if="isManagementView"
         v-model:value="filters.resourceId"
         show-search
         allow-clear
@@ -56,10 +69,27 @@
         <a-segmented v-model:value="filters.direction" :options="directionOptions" @change="$emit('refresh')" />
       </label>
       <label class="mobile-filter-field">
+        <span>用量时间</span>
+        <a-range-picker
+          v-model:value="usageDateRangeValue"
+          :allow-clear="false"
+          :disabled="loading"
+          :disabled-date="disabledUsageDate"
+          format="YYYY-MM-DD"
+          @calendar-change="handleUsageCalendarChange"
+          @change="handleUsageDateRangeChange"
+          @open-change="handleUsageDateRangeOpenChange"
+        />
+      </label>
+      <label v-if="!isManagementView" class="mobile-filter-field">
+        <span>授权对象</span>
+        <a-select v-model:value="filters.sourceType" :options="sourceOptions" @change="$emit('refresh')" />
+      </label>
+      <label v-if="isManagementView" class="mobile-filter-field">
         <span>资源类型</span>
         <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
       </label>
-      <label class="mobile-filter-field">
+      <label v-if="isManagementView" class="mobile-filter-field">
         <span>资源</span>
         <a-select
           v-model:value="filters.resourceId"
@@ -86,22 +116,30 @@
 
 <script setup lang="ts">
 import { QuestionCircleOutlined } from '@ant-design/icons-vue'
+import dayjs, { type Dayjs } from 'dayjs'
+import { computed, ref } from 'vue'
 
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
-import type { AuthorizationDirectionFilter, AuthorizationFilterResourceType } from './authorizationTableColumns'
+import type { AuthorizationDirectionFilter, AuthorizationFilterResourceType, AuthorizationSourceFilter } from './authorizationTableColumns'
 
-defineProps<{
+type DateRangeValue = [Dayjs, Dayjs]
+const MAX_USAGE_RANGE_DAYS = 31
+
+const props = defineProps<{
   filters: {
     direction: AuthorizationDirectionFilter
+    sourceType: AuthorizationSourceFilter
     resourceType: AuthorizationFilterResourceType
     resourceId?: string
     teamId?: string
     granteeSystemAccountId?: string
+    usageDateRange: [string, string]
   }
   isManagementView: boolean
   directionOptions: Array<{ label: string; value: AuthorizationDirectionFilter }>
+  sourceOptions: Array<{ label: string; value: AuthorizationSourceFilter }>
   resourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }>
   resourceOptions: Array<{ label: string; value: string }>
   teams: SystemTeamSummary[]
@@ -110,13 +148,63 @@ defineProps<{
   loading: boolean
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   (event: 'create'): void
   (event: 'help'): void
   (event: 'refresh'): void
   (event: 'reset'): void
   (event: 'resource-type-change'): void
 }>()
+
+const usageCalendarRange = ref<Array<Dayjs | null>>([])
+const usageDateRangeValue = computed<DateRangeValue>({
+  get() {
+    const [start, end] = props.filters.usageDateRange
+    return [dayjs(start).startOf('day'), dayjs(end).startOf('day')]
+  },
+  set(value) {
+    props.filters.usageDateRange = normalizeUsageDateRange(value).map((date) => date.format('YYYY-MM-DD')) as [string, string]
+  }
+})
+
+function handleUsageCalendarChange(value: Array<Dayjs | null>) {
+  usageCalendarRange.value = value
+}
+
+function handleUsageDateRangeOpenChange(opened: boolean) {
+  if (!opened) {
+    usageCalendarRange.value = []
+  }
+}
+
+function handleUsageDateRangeChange() {
+  usageDateRangeValue.value = usageDateRangeValue.value
+  emit('refresh')
+}
+
+function disabledUsageDate(current: Dayjs) {
+  if (!current) return false
+  if (current.isAfter(dayjs(), 'day')) return true
+  const anchor = usageCalendarRange.value[0] ?? usageCalendarRange.value[1]
+  if (!anchor) return false
+  return Math.abs(current.startOf('day').diff(anchor.startOf('day'), 'day')) > MAX_USAGE_RANGE_DAYS - 1
+}
+
+function normalizeUsageDateRange(value: DateRangeValue): DateRangeValue {
+  const today = dayjs().startOf('day')
+  let start = value[0].startOf('day')
+  let end = value[1].startOf('day')
+  if (end.isAfter(today, 'day')) {
+    end = today
+  }
+  if (start.isAfter(end, 'day')) {
+    start = end
+  }
+  if (end.diff(start, 'day') > MAX_USAGE_RANGE_DAYS - 1) {
+    start = end.subtract(MAX_USAGE_RANGE_DAYS - 1, 'day')
+  }
+  return [start, end]
+}
 </script>
 
 <style scoped>
@@ -125,12 +213,16 @@ defineEmits<{
 }
 
 .direction-filter {
-  min-width: 240px;
+  width: max-content;
 }
 
 .filter-resource,
 .filter-user {
   min-width: 220px;
+}
+
+.usage-range-picker {
+  width: 240px;
 }
 
 .mobile-filter-field {

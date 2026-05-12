@@ -11,55 +11,10 @@ import {
 import type {
   AccountUsageSummary,
   AuthorizationSourceSummary,
-  AuthorizationUsageBucket,
   AuthorizationStatus,
-  AuthorizationUserUsageDetail,
-  ResourceAuthorizationSummary,
-  SystemTeamSummary
+  ResourceAuthorizationSummary
 } from '@/types/domain'
 export { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
-
-export interface AuthorizationUsageResponseDetail {
-  systemAccountId?: string
-  systemAccountName?: string
-  username?: string
-  usage?: Partial<AccountUsageSummary>
-  rangeUsage?: Partial<AccountUsageSummary>
-  dailyUsage?: Array<Partial<AccountUsageSummary> & { statDate?: string }>
-  usageBuckets?: Array<Partial<AccountUsageSummary> & { bucketKey?: string; startDate?: string; endDate?: string }>
-  requestCount?: number
-  inputTokens?: number
-  outputTokens?: number
-  cacheReadTokens?: number
-  totalTokens?: number
-  totalCost?: number
-  lastUsedAt?: string
-}
-
-export interface AuthorizationUsageResponseShape {
-  authorization?: ResourceAuthorizationSummary
-  usage?: Partial<AccountUsageSummary>
-  details?: AuthorizationUsageResponseDetail[]
-  usageBySystemAccount?: AuthorizationUsageResponseDetail[]
-  usageRange?: ResourceAuthorizationSummary['usageRange']
-  usageGroupBy?: ResourceAuthorizationSummary['usageGroupBy']
-  usageBuckets?: AuthorizationUsageResponseDetail['usageBuckets']
-}
-
-export interface TeamUsageSummary {
-  teamId: string
-  teamName: string
-  usage: AccountUsageSummary
-  memberCount: number
-  members: Array<{
-    key: string
-    teamId: string
-    teamName: string
-    systemAccountId: string
-    systemAccountName: string
-    usage: AccountUsageSummary
-  }>
-}
 
 export function statusLabel(status: AuthorizationStatus): string {
   if (status === 'active') return '生效中'
@@ -134,56 +89,6 @@ export function activeTeamSources(item: ResourceAuthorizationSummary): Authoriza
   return item.authorizationSources?.filter((source) => source.sourceType === 'team' && source.status === 'active' && source.sourceTeamId) ?? []
 }
 
-export function hasTeamSource(item: ResourceAuthorizationSummary, teamId: string): boolean {
-  return item.authorizationSources?.some((source) => source.sourceType === 'team' && source.sourceTeamId === teamId && source.status === 'active') ?? false
-}
-
-export function relatedTeamSources(
-  item: ResourceAuthorizationSummary,
-  teams: SystemTeamSummary[],
-  filteredTeamId?: string
-): Array<{ teamId: string; teamName: string }> {
-  const sourceMap = new Map<string, string>()
-  for (const source of item.authorizationSources ?? []) {
-    if (source.sourceType !== 'team' || !source.sourceTeamId) {
-      continue
-    }
-    sourceMap.set(source.sourceTeamId, source.sourceTeamName || teams.find((team) => team.id === source.sourceTeamId)?.name || source.sourceTeamId)
-  }
-  if (filteredTeamId && !sourceMap.has(filteredTeamId)) {
-    sourceMap.set(filteredTeamId, teams.find((team) => team.id === filteredTeamId)?.name || filteredTeamId)
-  }
-  return [...sourceMap.entries()].map(([teamId, teamName]) => ({ teamId, teamName }))
-}
-
-export function buildTeamUsageSummaries(
-  authorization: ResourceAuthorizationSummary,
-  resourceAuthorizations: ResourceAuthorizationSummary[],
-  teams: SystemTeamSummary[],
-  filteredTeamId?: string
-): TeamUsageSummary[] {
-  return relatedTeamSources(authorization, teams, filteredTeamId).map((teamSource) => {
-    const members = resourceAuthorizations
-      .filter((item) => item.resourceType === authorization.resourceType && item.resourceId === authorization.resourceId && hasTeamSource(item, teamSource.teamId))
-      .map((item) => ({
-        key: `${teamSource.teamId}:${item.granteeSystemAccountId}`,
-        teamId: teamSource.teamId,
-        teamName: teamSource.teamName,
-        systemAccountId: item.granteeSystemAccountId,
-        systemAccountName: item.granteeSystemAccountName || item.granteeUsername || '未命名成员',
-        usage: normalizeUsageSummary(item.usage)
-      }))
-      .sort((left, right) => left.systemAccountName.localeCompare(right.systemAccountName, 'zh-CN'))
-    return {
-      teamId: teamSource.teamId,
-      teamName: teamSource.teamName,
-      usage: sumUsageSummaries(members.map((member) => member.usage)),
-      memberCount: members.length,
-      members
-    }
-  }).filter((summary) => summary.memberCount > 0)
-}
-
 export function usageSummaryText(usage?: {
   requestCount?: number
   totalTokens?: number
@@ -246,100 +151,6 @@ export function extractApiErrorMessage(error: unknown, fallback: string): string
     return error.response?.data?.message ?? fallback
   }
   return error instanceof Error ? error.message : fallback
-}
-
-export function normalizeUsageDetail(detail: AuthorizationUsageResponseDetail): AuthorizationUserUsageDetail | undefined {
-  if (!detail.systemAccountId) {
-    return undefined
-  }
-  const usage = normalizeUsageSummary(detail.rangeUsage ?? detail.usage ?? detail)
-  return {
-    systemAccountId: detail.systemAccountId,
-    systemAccountName: detail.systemAccountName || detail.username || '未知账户',
-    username: detail.username,
-    requestCount: usage.requestCount,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    cacheReadTokens: usage.cacheReadTokens,
-    totalTokens: usage.totalTokens,
-    totalCost: usage.totalCost,
-    lastUsedAt: usage.lastUsedAt,
-    rangeUsage: usage,
-    dailyUsage: Array.isArray(detail.dailyUsage)
-      ? detail.dailyUsage
-        .filter((point): point is Partial<AccountUsageSummary> & { statDate: string } => typeof point.statDate === 'string')
-        .map((point) => ({ ...normalizeUsageSummary(point), statDate: point.statDate }))
-      : undefined,
-    usageBuckets: normalizeUsageBuckets(detail.usageBuckets)
-  }
-}
-
-export function normalizeUsageBuckets(buckets?: AuthorizationUsageResponseDetail['usageBuckets']): AuthorizationUsageBucket[] | undefined {
-  if (!Array.isArray(buckets)) return undefined
-  return buckets
-    .filter((bucket): bucket is Partial<AccountUsageSummary> & { bucketKey: string; startDate: string; endDate: string } => (
-      typeof bucket.bucketKey === 'string' && typeof bucket.startDate === 'string' && typeof bucket.endDate === 'string'
-    ))
-    .map((bucket) => ({
-      ...normalizeUsageSummary(bucket),
-      bucketKey: bucket.bucketKey,
-      startDate: bucket.startDate,
-      endDate: bucket.endDate
-    }))
-}
-
-export function normalizeAuthorizationUsageResponse(payload: unknown, fallback: ResourceAuthorizationSummary): ResourceAuthorizationSummary {
-  if (payload && typeof payload === 'object' && 'authorization' in payload) {
-    const response = payload as AuthorizationUsageResponseShape
-    const authorization = response.authorization ?? fallback
-    const responseDetails = Array.isArray(response.details) ? response.details : response.usageBySystemAccount
-    const usageBySystemAccount = Array.isArray(responseDetails)
-      ? responseDetails.map(normalizeUsageDetail).filter((detail): detail is AuthorizationUserUsageDetail => Boolean(detail))
-      : authorization.usageBySystemAccount ?? []
-    return {
-      ...fallback,
-      ...authorization,
-      usage: normalizeUsageSummary(response.usage ?? authorization.usage ?? fallback.usage),
-      usageBySystemAccount,
-      usageRange: response.usageRange ?? authorization.usageRange ?? fallback.usageRange,
-      usageGroupBy: response.usageGroupBy ?? authorization.usageGroupBy ?? fallback.usageGroupBy,
-      usageBuckets: normalizeUsageBuckets(response.usageBuckets) ?? authorization.usageBuckets ?? fallback.usageBuckets
-    }
-  }
-  const authorization = (payload as Partial<ResourceAuthorizationSummary>) ?? {}
-  return {
-    ...fallback,
-    ...authorization,
-    usage: normalizeUsageSummary(authorization.usage ?? fallback.usage),
-    usageBySystemAccount: Array.isArray(authorization.usageBySystemAccount) ? authorization.usageBySystemAccount : fallback.usageBySystemAccount ?? [],
-    usageRange: authorization.usageRange ?? fallback.usageRange,
-    usageGroupBy: authorization.usageGroupBy ?? fallback.usageGroupBy,
-    usageBuckets: authorization.usageBuckets ?? fallback.usageBuckets
-  }
-}
-
-export function aggregateUsageBySystemAccount(items: ResourceAuthorizationSummary[]): AuthorizationUserUsageDetail[] {
-  const summaryMap = new Map<string, AuthorizationUserUsageDetail>()
-  for (const item of items) {
-    const current = summaryMap.get(item.granteeSystemAccountId)
-    const mergedUsage = sumUsageSummaries([current, item.usage])
-    summaryMap.set(item.granteeSystemAccountId, {
-      systemAccountId: item.granteeSystemAccountId,
-      systemAccountName: item.granteeSystemAccountName || item.granteeUsername || '未知账户',
-      requestCount: mergedUsage.requestCount,
-      inputTokens: mergedUsage.inputTokens,
-      outputTokens: mergedUsage.outputTokens,
-      cacheReadTokens: mergedUsage.cacheReadTokens,
-      totalTokens: mergedUsage.totalTokens,
-      totalCost: mergedUsage.totalCost,
-      lastUsedAt: mergedUsage.lastUsedAt
-    })
-  }
-  return [...summaryMap.values()].sort((left, right) => {
-    const leftName = left.systemAccountName || '未知账户'
-    const rightName = right.systemAccountName || '未知账户'
-    return leftName.localeCompare(rightName, 'zh-CN')
-  })
 }
 
 export { formatDateTime, formatNumber, formatServerDateTimeInput, parseDatePickerValue }
