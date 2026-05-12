@@ -640,7 +640,7 @@ export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerf
   const activeSinceHour = hourKey(new Date(now - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(accountIds).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
 
-  const defaultRows = loadDefaultAiPerformanceAccounts(database, systemAccountId, activeSinceHour)
+  const defaultRows = loadDefaultAiPerformanceAccounts(database, systemAccountId)
   const selectedRows = selectedAccountIds.length
     ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, selectedAccountIds)
     : []
@@ -884,34 +884,8 @@ interface AiPerformanceHourlyRow {
   first_token_ms_count: number
 }
 
-function loadDefaultAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, activeSinceHour: string, limit = 10): AiPerformanceAccountRow[] {
-  const snapshotRows = loadDefaultAiPerformanceAccountsFromRankSnapshot(database, systemAccountId, limit)
-  if (snapshotRows.length > 0) {
-    return snapshotRows
-  }
-  return database.prepare(`
-    SELECT
-      accounts.id,
-      accounts.name,
-      accounts.status,
-      accounts.provider_code,
-      accounts.system_account_id,
-      system_accounts.display_name AS system_account_name,
-      COALESCE(SUM(usage_stats_hourly.request_count), 0) AS request_count_last_7d,
-      MAX(usage_stats_hourly.stat_hour) AS last_stat_hour
-    FROM usage_stats_hourly
-    INNER JOIN accounts
-      ON accounts.id = usage_stats_hourly.scope_id
-      AND accounts.system_account_id = usage_stats_hourly.system_account_id
-    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
-    WHERE usage_stats_hourly.system_account_id = ?
-      AND usage_stats_hourly.scope_type = 'account'
-      AND usage_stats_hourly.stat_hour >= ?
-    GROUP BY accounts.id
-    HAVING SUM(usage_stats_hourly.request_count) > 0
-    ORDER BY request_count_last_7d DESC, last_stat_hour DESC, lower(accounts.name) ASC, accounts.id ASC
-    LIMIT ?
-  `).all(systemAccountId, activeSinceHour, limit) as unknown as AiPerformanceAccountRow[]
+function loadDefaultAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, limit = 10): AiPerformanceAccountRow[] {
+  return loadDefaultAiPerformanceAccountsFromRankSnapshot(database, systemAccountId, limit)
 }
 
 function loadDefaultAiPerformanceAccountsFromRankSnapshot(database: DatabaseSync, systemAccountId: string, limit: number): AiPerformanceAccountRow[] {
@@ -1006,7 +980,7 @@ function loadAiPerformanceAccountOptionRows(
 ): AiPerformanceAccountRow[] {
   const keyword = options.keyword?.trim()
   if (!keyword) {
-    return loadDefaultAiPerformanceAccounts(database, systemAccountId, activeSinceHour, options.limit)
+    return loadDefaultAiPerformanceAccounts(database, systemAccountId, options.limit)
   }
 
   const clauses = ['accounts.system_account_id = ?']

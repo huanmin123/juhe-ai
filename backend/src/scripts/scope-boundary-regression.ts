@@ -445,6 +445,7 @@ function seedData(): SeedState {
     usageRecord('scope_usage_b_3', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-c', 200, true, usageAt(6))
   ])
   while (usageStatsRepository.aggregateUsageStatsBatch(1000) > 0) {}
+  usageStatsRepository.refreshUsageRankSnapshots()
 
   return {
     adminId: admin.id,

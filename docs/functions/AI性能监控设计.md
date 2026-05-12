@@ -64,12 +64,12 @@
 
 默认账户池规则：
 
-- 数据来源：`usage_stats_hourly`。
+- 数据来源：`usage_rank_snapshots` 中 `account + last7d + request_count` 的最新快照。
 - 作用域：`scope_type = 'account'`，即账户所有者的真实账户总量。
 - 活跃窗口：最近 7 天。
-- 活跃条件：`SUM(request_count) > 0`。
-- 活跃度排序：`SUM(request_count) DESC`。
-- 稳定兜底排序：最近有数据的小时倒序、账户名称升序、账户 ID 升序。
+- 活跃条件：快照 `metric_value > 0`。
+- 活跃度排序：按快照 `rank` 升序。
+- 快照缺失时默认账户池为空，接口不能临时聚合 `usage_stats_hourly` 降级。
 - 默认数量：前 10 个。
 
 默认账户池和图表窗口解耦：
@@ -193,14 +193,14 @@ interface AiPerformanceAccountSeries {
 默认账户查询：
 
 ```sql
-SELECT scope_id AS account_id, SUM(request_count) AS request_count_last_7d
-FROM usage_stats_hourly
-WHERE scope_type = 'account'
-  AND stat_hour >= :activeSinceHour
-  AND system_account_id = :systemAccountId
-GROUP BY scope_id
-HAVING SUM(request_count) > 0
-ORDER BY request_count_last_7d DESC, MAX(stat_hour) DESC, scope_id ASC
+SELECT scope_id AS account_id, metric_value AS request_count_last_7d
+FROM usage_rank_snapshots
+WHERE system_account_id = :systemAccountId
+  AND scope_type = 'account'
+  AND window_key = 'last7d'
+  AND metric = 'request_count'
+  AND snapshot_at = :latestSnapshotAt
+ORDER BY rank ASC
 LIMIT 10
 ```
 

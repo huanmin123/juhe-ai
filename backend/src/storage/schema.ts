@@ -965,7 +965,8 @@ export function applySchema(database: DatabaseSync): void {
       network_rx_total_bytes INTEGER,
       network_tx_total_bytes INTEGER,
       db_file_bytes INTEGER,
-      stats_lag_seconds INTEGER
+      stats_lag_seconds INTEGER,
+      created_at TEXT NOT NULL
     );
 
     CREATE TABLE IF NOT EXISTS system_metrics_hourly (

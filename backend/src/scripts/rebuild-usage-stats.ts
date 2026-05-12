@@ -1,4 +1,4 @@
-import { aggregateUsageStatsBatch } from '../storage/usage-stats.repository.js'
+import { aggregateUsageStatsBatch, refreshUsageRankSnapshots } from '../storage/usage-stats.repository.js'
 import { getDatabase, nowIso } from '../storage/database.js'
 import { runtimeConfig } from '../config/runtime.js'
 
@@ -17,6 +17,7 @@ function main(): void {
       break
     }
   }
+  refreshUsageRankSnapshots()
 
   const durationMs = Date.now() - startedAt
   console.log(`用量统计已重建：扫描 ${totalProcessed} 条记录，耗时 ${durationMs}ms`)
