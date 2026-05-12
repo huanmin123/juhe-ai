@@ -123,7 +123,8 @@ onBeforeUnmount(() => {
 .hero-panel {
   position: relative;
   z-index: 1;
-  max-width: 760px;
+  width: 100%;
+  max-width: 720px;
 }
 
 .brand-row {
@@ -522,6 +523,209 @@ onBeforeUnmount(() => {
   color: #a9b9d2;
   font-size: 12px;
   line-height: 1.55;
+}
+
+@media (min-width: 1600px) {
+  .hero-panel {
+    max-width: 800px;
+    padding-top: 6px;
+  }
+
+  .brand-row {
+    gap: 16px;
+  }
+
+  .brand-icon {
+    width: 70px;
+    height: 70px;
+  }
+
+  .hero-panel h1 {
+    max-width: 800px;
+    font-size: 72px;
+  }
+
+  .hero-subtitle {
+    max-width: 620px;
+    font-size: 18px;
+  }
+
+  .hero-stage {
+    max-width: 760px;
+    margin-top: 52px;
+    margin-left: 8px;
+  }
+
+  .hero-stage::after {
+    top: 176px;
+    left: 42px;
+    width: 700px;
+  }
+
+  .hero-showcase {
+    grid-template-columns: minmax(0, 1fr) 248px;
+    gap: 38px;
+    min-height: 270px;
+    align-items: start;
+  }
+
+  .hero-showcase::before {
+    top: 34px;
+    height: 196px;
+    transform: translateX(20px);
+  }
+
+  .showcase-core-panel {
+    min-height: 264px;
+  }
+
+  .showcase-core-panel::before {
+    width: 336px;
+    height: 336px;
+    left: 22px;
+  }
+
+  .orbital-core {
+    width: 336px;
+    height: 252px;
+    font-size: 42px;
+    transform: translate3d(0, 10px, 0);
+  }
+
+  .orbit-a {
+    width: 244px;
+    height: 244px;
+  }
+
+  .orbit-b {
+    width: 196px;
+    height: 196px;
+  }
+
+  .orbit-c {
+    width: 148px;
+    height: 148px;
+  }
+
+  .core-glow {
+    width: 96px;
+    height: 96px;
+  }
+
+  .orbital-core::before {
+    width: 268px;
+    height: 268px;
+  }
+
+  .particle-orbit-a {
+    width: 280px;
+    height: 280px;
+  }
+
+  .particle-orbit-b {
+    width: 228px;
+    height: 228px;
+  }
+
+  .particle-orbit-c {
+    width: 176px;
+    height: 176px;
+  }
+
+  .dot-a {
+    top: 20px;
+    left: 164px;
+  }
+
+  .dot-b {
+    right: 46px;
+    bottom: 42px;
+  }
+
+  .dot-c {
+    left: 54px;
+    bottom: 72px;
+  }
+
+  .signal-panel {
+    min-height: 182px;
+    margin-top: 34px;
+    padding-top: 20px;
+    padding-left: 28px;
+  }
+
+  .signal-header {
+    margin-bottom: 26px;
+    font-size: 15px;
+  }
+
+  .signal-row {
+    font-size: 13px;
+  }
+
+  .capability-grid {
+    margin-top: 30px;
+    padding-top: 26px;
+  }
+
+  .capability-card strong {
+    font-size: 20px;
+  }
+
+  .capability-card p {
+    font-size: 13px;
+  }
+
+  .capability-card:nth-child(2) {
+    margin-top: 12px;
+  }
+
+  .capability-card:nth-child(3) {
+    margin-top: 24px;
+  }
+}
+
+@media (min-width: 1920px) {
+  .hero-panel {
+    max-width: 860px;
+  }
+
+  .hero-panel h1 {
+    max-width: 860px;
+    font-size: 78px;
+  }
+
+  .hero-stage {
+    max-width: 820px;
+    margin-top: 58px;
+  }
+
+  .hero-showcase {
+    grid-template-columns: minmax(0, 1fr) 264px;
+    gap: 44px;
+  }
+
+  .hero-stage::after {
+    top: 184px;
+    width: 760px;
+  }
+
+  .signal-panel {
+    margin-top: 40px;
+  }
+
+  .capability-grid {
+    margin-top: 36px;
+    padding-top: 28px;
+  }
+
+  .capability-card:nth-child(2) {
+    margin-top: 14px;
+  }
+
+  .capability-card:nth-child(3) {
+    margin-top: 28px;
+  }
 }
 
 @media (max-width: 1160px) {

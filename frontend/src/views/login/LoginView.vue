@@ -179,14 +179,17 @@ async function loadBrandSettings(): Promise<void> {
 
 <style scoped>
 .login-page {
+  box-sizing: border-box;
   position: relative;
+  width: 100%;
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(0, 1.12fr) 430px;
-  gap: min(7vw, 96px);
+  grid-template-columns: minmax(540px, 720px) minmax(360px, 430px);
+  justify-content: center;
+  gap: clamp(36px, 3.6vw, 68px);
   align-items: center;
   overflow: hidden;
-  padding: 60px min(7vw, 92px);
+  padding: 60px clamp(28px, 4vw, 56px);
   background: #020617;
   color: #fff;
 }
@@ -196,6 +199,7 @@ async function loadBrandSettings(): Promise<void> {
   z-index: 1;
   width: 100%;
   max-width: 430px;
+  margin-top: 0;
   justify-self: center;
   overflow: hidden;
   color: #0f172a;
@@ -345,10 +349,51 @@ async function loadBrandSettings(): Promise<void> {
   }
 }
 
+@media (min-width: 1600px) {
+  .login-page {
+    align-items: start;
+    grid-template-columns: minmax(620px, 800px) minmax(392px, 452px);
+    gap: clamp(52px, 4vw, 88px);
+    padding: clamp(72px, 8vh, 108px) clamp(40px, 4vw, 72px) 72px;
+  }
+
+  .login-card {
+    max-width: 452px;
+    margin-top: 56px;
+  }
+
+  .login-card :deep(.ant-card-body) {
+    padding: 34px 40px 38px;
+  }
+
+  .login-card-heading {
+    margin-bottom: 28px;
+  }
+
+  .login-card-heading h2 {
+    font-size: 30px;
+  }
+}
+
+@media (min-width: 1920px) {
+  .login-page {
+    align-items: start;
+    grid-template-columns: minmax(680px, 860px) minmax(404px, 468px);
+    gap: clamp(64px, 4.6vw, 112px);
+    padding: clamp(86px, 10vh, 132px) clamp(48px, 4.8vw, 92px) 84px;
+  }
+
+  .login-card {
+    max-width: 468px;
+    margin-top: 72px;
+  }
+}
+
 @media (max-width: 1200px) {
   .login-page {
-    gap: min(4vw, 52px);
-    padding: 44px min(4vw, 36px);
+    grid-template-columns: minmax(480px, 620px) minmax(340px, 408px);
+    gap: clamp(28px, 3vw, 44px);
+    padding: 44px clamp(20px, 3vw, 36px);
   }
 
   .login-card {
@@ -367,6 +412,7 @@ async function loadBrandSettings(): Promise<void> {
   }
 
   .login-card {
+    margin-top: 0;
     justify-self: center;
   }
 }
