@@ -217,7 +217,6 @@ type UsageStatsPageState = {
 }
 
 const MAX_RANGE_DAYS = 31
-const TREND_DEFAULT_ACCOUNT_LIMIT = 10
 const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
   code: 'openai',
@@ -277,12 +276,14 @@ const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const rangeLabel = computed(() => `${formatDateLabel(selectedRange.value[0])} 至 ${formatDateLabel(selectedRange.value[1])}`)
-const defaultTrendRows = computed(() => rows.value.slice(0, TREND_DEFAULT_ACCOUNT_LIMIT))
-const defaultTrendAccountIds = computed(() => new Set(defaultTrendRows.value.map((account) => account.id)))
+const rowsById = computed(() => new Map(rows.value.map((row) => [row.id, row])))
+const defaultTrendRows = computed(() => (overview.value?.defaultTrendAccountIds ?? [])
+  .map((id) => rowsById.value.get(id))
+  .filter((row): row is AccountUsageStatsRow => Boolean(row)))
+const defaultTrendAccountIdSet = computed(() => new Set(defaultTrendRows.value.map((account) => account.id)))
 const addedTrendRows = computed(() => {
-  const rowsById = new Map(rows.value.map((row) => [row.id, row]))
   return addedTrendAccountIds.value
-    .map((id) => rowsById.get(id))
+    .map((id) => rowsById.value.get(id))
     .filter((row): row is AccountUsageStatsRow => Boolean(row))
 })
 const trendAccountRows = computed(() => dedupeRowsById([...defaultTrendRows.value, ...addedTrendRows.value]))
@@ -455,7 +456,7 @@ function handleAccountSelect(value: unknown) {
   accountPickerValue.value = []
   const id = String(value ?? '').trim()
   if (!rows.value.some((row) => row.id === id)) return
-  if (!defaultTrendAccountIds.value.has(id) && !addedTrendAccountIds.value.includes(id)) {
+  if (!defaultTrendAccountIdSet.value.has(id) && !addedTrendAccountIds.value.includes(id)) {
     addedTrendAccountIds.value = [...addedTrendAccountIds.value, id]
   }
   if (selectedTrendAccountIds.value.length && !selectedTrendAccountIds.value.includes(id)) {
@@ -607,7 +608,7 @@ function dedupeRowsById(items: AccountUsageStatsRow[]): AccountUsageStatsRow[] {
 function pruneSelectedTrendAccounts(currentRows: AccountUsageStatsRow[]) {
   const currentIds = new Set(currentRows.map((row) => row.id))
   addedTrendAccountIds.value = addedTrendAccountIds.value.filter((id) => currentIds.has(id))
-  const defaultIds = new Set(orderedUsageRows(currentRows).slice(0, TREND_DEFAULT_ACCOUNT_LIMIT).map((row) => row.id))
+  const defaultIds = new Set((overview.value?.defaultTrendAccountIds ?? []).filter((id) => currentIds.has(id)))
   const visibleIds = new Set([...defaultIds, ...addedTrendAccountIds.value])
   selectedTrendAccountIds.value = selectedTrendAccountIds.value.filter((id) => visibleIds.has(id))
 }

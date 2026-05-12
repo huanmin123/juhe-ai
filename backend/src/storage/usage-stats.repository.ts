@@ -438,7 +438,7 @@ export function refreshUsageRankSnapshots(): void {
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     refreshAccountLast7dRequestRankSnapshot(database, snapshotAt, updatedAt, timezone)
-    refreshCallerAccountLast30dCostRankSnapshot(database, snapshotAt, updatedAt, timezone)
+    refreshCallerAccountLast7dRequestRankSnapshot(database, snapshotAt, updatedAt, timezone)
     refreshApiKeyCurrentMonthCostRankSnapshot(database, snapshotAt, updatedAt, timezone)
     refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'account_authorization', snapshotAt, updatedAt, timezone)
     refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'group_authorization', snapshotAt, updatedAt, timezone)
@@ -756,15 +756,15 @@ function refreshAccountLast7dRequestRankSnapshot(database: DatabaseSync, snapsho
   })
 }
 
-function refreshCallerAccountLast30dCostRankSnapshot(database: DatabaseSync, snapshotAt: string, updatedAt: string, timezone: string): void {
+function refreshCallerAccountLast7dRequestRankSnapshot(database: DatabaseSync, snapshotAt: string, updatedAt: string, timezone: string): void {
   refreshUsageRankSnapshotFromStats(database, {
     scopeType: 'caller_account',
-    windowKey: 'last30d',
-    metric: 'total_cost_usd',
-    metricColumn: 'total_cost_usd',
+    windowKey: 'last7d',
+    metric: 'request_count',
+    metricColumn: 'request_count',
     sourceTable: 'usage_stats_daily',
     timeWhere: 'stat_date >= ?',
-    timeParams: [dateKey(new Date(Date.now() - 29 * DAY_MS), timezone)],
+    timeParams: [dateKey(new Date(Date.now() - 6 * DAY_MS), timezone)],
     snapshotAt,
     updatedAt,
     limit: 50

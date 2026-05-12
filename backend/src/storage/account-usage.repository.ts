@@ -16,6 +16,7 @@ export function getAccountUsageStatsOverview(input: {
   page?: number
   pageSize?: number
   range: AccountUsageStatsRange
+  defaultTrendAccountIds?: string[]
   loadUsageDailySeries: (scopes: UsageScopeRequest[], range: AccountUsageStatsRange) => Map<string, UsageStatsDailySeries>
 }): AccountUsageStatsOverview {
   const scopes = input.accounts.map((account) => accountUsageScope(account, input.access))
@@ -47,6 +48,7 @@ export function getAccountUsageStatsOverview(input: {
     range: input.range,
     summary,
     rows,
+    defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
     total: input.total ?? input.accounts.length,
     page: input.page ?? 1,
     pageSize: input.pageSize ?? input.accounts.length,

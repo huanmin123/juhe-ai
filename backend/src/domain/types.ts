@@ -361,6 +361,7 @@ export interface AccountUsageStatsOverview {
   range: AccountUsageStatsRange
   summary: AccountUsageSummary
   rows: AccountUsageStatsRow[]
+  defaultTrendAccountIds: string[]
   total: number
   page: number
   pageSize: number

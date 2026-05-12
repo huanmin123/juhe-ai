@@ -761,10 +761,12 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
 
 export function getAccountUsageStatsOverview(access?: AccessScope, range?: AccountUsageStatsRange): AccountUsageStatsOverview {
   const accountRows = listAccounts(access)
+  const defaultTrendAccountIds = loadAccountUsageDefaultTrendAccountIds(access)
   return buildAccountUsageStatsOverview({
     access,
     accounts: accountRows,
     range: range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone(getDatabase())),
+    defaultTrendAccountIds,
     loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
   })
 }
@@ -772,10 +774,12 @@ export function getAccountUsageStatsOverview(access?: AccessScope, range?: Accou
 export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange }): AccountUsageStatsOverview {
   const listOptions = normalizeAccountListOptions(options)
   const accounts = listAccounts(access, options)
+  const defaultTrendAccountIds = loadAccountUsageDefaultTrendAccountIds(access)
   const overview = buildAccountUsageStatsOverview({
     access,
     accounts,
     range: options?.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone(getDatabase())),
+    defaultTrendAccountIds,
     loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
   })
   const sortedRows = [...overview.rows].sort(compareAccountUsageStatsRows)
@@ -812,6 +816,31 @@ function compareAccountUsageStatsRows(left: AccountUsageStatsOverview['rows'][nu
   const leftLastUsed = left.rangeUsage.lastUsedAt ? Date.parse(left.rangeUsage.lastUsedAt) : 0
   if (rightLastUsed !== leftLastUsed) return rightLastUsed - leftLastUsed
   return left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id)
+}
+
+function loadAccountUsageDefaultTrendAccountIds(access?: AccessScope): string[] {
+  const systemAccountId = scopedSystemAccountId(access)
+  if (!systemAccountId) return []
+  const database = getDatabase()
+  const rows = database.prepare(`
+    SELECT scope_id
+    FROM usage_rank_snapshots
+    WHERE system_account_id = ?
+      AND scope_type = 'caller_account'
+      AND window_key = 'last7d'
+      AND metric = 'request_count'
+      AND snapshot_at = (
+        SELECT MAX(snapshot_at)
+        FROM usage_rank_snapshots
+        WHERE system_account_id = ?
+          AND scope_type = 'caller_account'
+          AND window_key = 'last7d'
+          AND metric = 'request_count'
+      )
+    ORDER BY rank ASC
+    LIMIT 10
+  `).all(systemAccountId, systemAccountId) as unknown as Array<{ scope_id?: string }>
+  return rows.map((row) => row.scope_id).filter((id): id is string => Boolean(id))
 }
 
 export function findAccountForTest(accountId: string, access?: AccessScope): AccountSummary | undefined {
