@@ -12,6 +12,7 @@ import type { AuditLogInput } from '../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-audit-log-retention-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'audit-log-retention.sqlite3')
+runtimeConfig.recordDatabasePath = join(tempRoot, 'audit-log-retention-records.sqlite3')
 runtimeConfig.secret = 'audit-log-retention-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -126,8 +127,8 @@ try {
     auditLog('audit_retention_2', 'trace-retention-2', repeatedBody)
   ])
 
-  const database = databaseModule.getDatabase()
-  const blobRows = database
+  const recordDatabase = databaseModule.getRecordDatabase()
+  const blobRows = recordDatabase
     .prepare('SELECT id, sha256, raw_size_bytes, compressed_size_bytes, compression, storage_key, ref_count FROM audit_payload_blobs ORDER BY created_at ASC')
     .all() as Array<{
       id: string
@@ -176,7 +177,7 @@ try {
   assert(deleted >= 1, '清理应删除过期事件、错误组和无引用 blob')
   assert.equal(repositories.listAuditLogs({ pageSize: 10 }).total, 0, '过期审计事件应被清理')
   assert.equal(repositories.listAuditErrorGroups({ pageSize: 10 }).total, 0, '过期错误聚合组应被清理')
-  const remainingBlobRow = database.prepare('SELECT COUNT(*) AS total FROM audit_payload_blobs').get() as { total: number }
+  const remainingBlobRow = recordDatabase.prepare('SELECT COUNT(*) AS total FROM audit_payload_blobs').get() as { total: number }
   assert.equal(remainingBlobRow.total, 0, '无引用 blob 元数据应被清理')
   assert(!existsSync(blobPath), '无引用 blob 文件应被删除')
 
@@ -185,6 +186,7 @@ try {
   try {
     cleanupTemporaryAuditBlobs()
     databaseModule.getDatabase().close()
+    databaseModule.getRecordDatabase().close()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -192,7 +194,7 @@ try {
 
 function cleanupTemporaryAuditBlobs(): void {
   try {
-    const rows = databaseModule.getDatabase()
+    const rows = databaseModule.getRecordDatabase()
       .prepare('SELECT storage_key FROM audit_payload_blobs')
       .all() as Array<{ storage_key?: string }>
     for (const row of rows) {

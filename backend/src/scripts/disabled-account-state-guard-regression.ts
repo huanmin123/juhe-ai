@@ -12,6 +12,7 @@ import { logger } from '../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-disabled-account-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'disabled-account-guard.sqlite3')
+runtimeConfig.recordDatabasePath = join(tempRoot, 'disabled-account-guard-records.sqlite3')
 runtimeConfig.secret = 'disabled-account-guard-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -181,6 +182,7 @@ async function main(): Promise<void> {
     await closeServer(appServer)
     try {
       databaseModule.getDatabase().close()
+      databaseModule.getRecordDatabase().close()
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })

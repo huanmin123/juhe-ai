@@ -1,7 +1,7 @@
 import type { AccountStatus, AccountType } from '../domain/types.js'
 import { buildSystemAccountScopeClause, currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
-import { getDatabase, nowIso } from './database.js'
+import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile } from './proxy.repository.js'
 import { getSettings } from './settings.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
@@ -174,6 +174,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
         group_accounts.account_id ASC
     `)
     .all(groupId) as unknown as GroupAccountRow[]
+  const qualityByAccountId = loadFreshAccountQualityRows(groupAccountRows.map((row) => row.account_id), qualityFreshAfter)
 
   const accounts: OpenAIAccountSecret[] = []
   for (const groupAccount of groupAccountRows) {
@@ -181,13 +182,10 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
       .prepare(`
         SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
           accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-          account_quality.quality_score,
-          account_quality.quality_state,
-          account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms
+          NULL AS quality_score,
+          NULL AS quality_state,
+          NULL AS quality_ewma_first_token_ms
         FROM accounts
-        LEFT JOIN account_quality_scores account_quality
-          ON account_quality.account_id = accounts.id
-          AND account_quality.last_sample_at >= ?
         WHERE accounts.id = ?
           AND accounts.provider_code = 'openai'
           AND type IN ('api_key', 'oauth')
@@ -196,9 +194,15 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
           AND status = 'active'
           AND (cooldown_until IS NULL OR cooldown_until <= ?)
       `)
-      .get(qualityFreshAfter, groupAccount.account_id, now, now) as unknown as OpenAIAccountRow | undefined
+      .get(groupAccount.account_id, now, now) as unknown as OpenAIAccountRow | undefined
     if (!row) {
       continue
+    }
+    const quality = qualityByAccountId.get(row.id)
+    if (quality) {
+      row.quality_score = quality.quality_score
+      row.quality_state = quality.quality_state
+      row.quality_ewma_first_token_ms = quality.quality_ewma_first_token_ms
     }
     const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
     const apiKey = row.type === 'oauth'
@@ -378,6 +382,25 @@ function isGroupAccountLocallyAvailable(groupAccount: GroupAccountRow, now: stri
 
 function qualityFreshAfterIso(): string {
   return new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString()
+}
+
+function loadFreshAccountQualityRows(accountIds: string[], freshAfter: string): Map<string, Pick<OpenAIAccountRow, 'quality_score' | 'quality_state' | 'quality_ewma_first_token_ms'>> {
+  const ids = [...new Set(accountIds.filter(Boolean))]
+  if (!ids.length) return new Map()
+  const rows = getRecordDatabase()
+    .prepare(`
+      SELECT account_id, quality_score, quality_state, ewma_first_token_ms AS quality_ewma_first_token_ms
+      FROM account_quality_scores
+      WHERE account_id IN (${ids.map(() => '?').join(',')})
+        AND last_sample_at >= ?
+    `)
+    .all(...ids, freshAfter) as unknown as Array<{
+      account_id: string
+      quality_score: number | null
+      quality_state: string | null
+      quality_ewma_first_token_ms: number | null
+    }>
+  return new Map(rows.map((row) => [row.account_id, row]))
 }
 
 function resolveOpenAIAccountProxyUrl(proxyProfileId: string | null): { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } {

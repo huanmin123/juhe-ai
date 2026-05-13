@@ -1,4 +1,4 @@
-import { getDatabase, nowIso } from './database.js'
+import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 
 type CleanupRow = Record<string, unknown>
@@ -33,7 +33,7 @@ export interface SystemMetricsRetentionCleanupResult {
 }
 
 export function cleanupProcessedUsageRecordsBefore(cutoffCreatedAt: string, limit = 10000): number {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const cursor = usageRecordsCleanupCursor(database)
   const cursorCreatedAt = cursor?.cursorCreatedAt
   const cursorId = cursor?.cursorId
@@ -54,7 +54,7 @@ export function cleanupProcessedUsageRecordsBefore(cutoffCreatedAt: string, limi
   return deleteRowsById('usage_records', rows)
 }
 
-function usageRecordsCleanupCursor(database: ReturnType<typeof getDatabase>): { cursorCreatedAt: string; cursorId: string } | undefined {
+function usageRecordsCleanupCursor(database: ReturnType<typeof getRecordDatabase>): { cursorCreatedAt: string; cursorId: string } | undefined {
   const aggregationCursor = requiredJobCursor(database, 'usage_stats_aggregation')
   if (!aggregationCursor) return undefined
 
@@ -79,14 +79,14 @@ function usageRecordsCleanupCursor(database: ReturnType<typeof getDatabase>): { 
   return cleanupCursor
 }
 
-function requiredJobCursor(database: ReturnType<typeof getDatabase>, jobName: string): { cursorCreatedAt: string; cursorId: string } | undefined {
+function requiredJobCursor(database: ReturnType<typeof getRecordDatabase>, jobName: string): { cursorCreatedAt: string; cursorId: string } | undefined {
   const state = jobState(database, jobName)
   const cursorCreatedAt = state?.cursor_created_at?.trim()
   const cursorId = state?.cursor_id?.trim()
   return cursorCreatedAt && cursorId ? { cursorCreatedAt, cursorId } : undefined
 }
 
-function jobState(database: ReturnType<typeof getDatabase>, jobName: string): { cursor_created_at?: string | null; cursor_id?: string | null; last_success_at?: string | null } | undefined {
+function jobState(database: ReturnType<typeof getRecordDatabase>, jobName: string): { cursor_created_at?: string | null; cursor_id?: string | null; last_success_at?: string | null } | undefined {
   return database
     .prepare("SELECT cursor_created_at, cursor_id, last_success_at FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
     .get(jobName) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null; last_success_at?: string | null } | undefined
@@ -109,7 +109,7 @@ export function cleanupUsageStatsBucketsBefore(input: {
   monthlyCutoffMonth: string
   rankSnapshotCutoffIso: string
 }): UsageStatsRetentionCleanupResult {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   return {
     usageStatsMinute: changed(database.prepare('DELETE FROM usage_stats_minute WHERE stat_minute < ?').run(input.minuteCutoffMinute)),
     usageModelMinute: changed(database.prepare('DELETE FROM usage_model_minute WHERE stat_minute < ?').run(input.minuteCutoffMinute)),
@@ -136,7 +136,7 @@ export function cleanupUsageStatsBucketsBefore(input: {
 }
 
 export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; hourlyCutoffHour: string }): SystemMetricsRetentionCleanupResult {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   return {
     systemMetricsSamples: changed(database.prepare('DELETE FROM system_metrics_samples WHERE sampled_at < ?').run(input.samplesCutoffIso)),
     systemMetricsHourly: changed(database.prepare('DELETE FROM system_metrics_hourly WHERE stat_hour < ?').run(input.hourlyCutoffHour))
@@ -153,7 +153,7 @@ function deleteRowsById(tableName: 'usage_records', rows: CleanupRow[]): number 
     return 0
   }
 
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const placeholders = sqlPlaceholders(ids.length)
   const result = database.prepare(`DELETE FROM ${tableName} WHERE id IN (${placeholders})`).run(...ids)
   return changed(result)

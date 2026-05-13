@@ -33,15 +33,15 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
   priority: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.priority END",
   superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.super_priority_enabled END",
   fallback: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.fallback_enabled END",
-  qualityScore: 'account_quality.quality_score',
+  qualityScore: 'quality_score',
   name: 'account_rows.name COLLATE NOCASE',
   type: 'account_rows.type COLLATE NOCASE',
   providerCode: 'account_rows.provider_code COLLATE NOCASE',
-  systemAccount: "COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) COLLATE NOCASE",
+  systemAccount: 'system_account_sort_name COLLATE NOCASE',
   concurrency: 'account_rows.concurrency_limit',
   status: 'account_rows.status COLLATE NOCASE',
   accountExpiresAt: 'account_rows.account_expires_at',
-  lastUsedAt: "COALESCE(CASE WHEN account_rows.access_type = 'authorized' AND account_rows.authorization_id IS NOT NULL THEN authorization_usage.last_used_at ELSE account_rows.last_used_at END, account_usage.last_used_at)",
+  lastUsedAt: 'account_rows.last_used_at',
   notes: 'account_rows.notes COLLATE NOCASE'
 }
 
@@ -79,11 +79,15 @@ export function buildAccountListOrderClause(options: Pick<NormalizedAccountListO
   const orderParts = options.sorts.map((sort) => {
     const direction = sort.order === 'desc' ? 'DESC' : 'ASC'
     if (sort.field === 'qualityScore') {
-      return `CASE WHEN account_quality.quality_score IS NULL THEN 1 ELSE 0 END ASC, account_quality.quality_score ${direction}`
+      return `CASE WHEN quality_score IS NULL THEN 1 ELSE 0 END ASC, quality_score ${direction}`
     }
     return `${accountListSortColumns[sort.field]} ${direction}`
   })
   return `ORDER BY ${[...orderParts, 'account_rows.created_at ASC', 'account_rows.id ASC'].join(', ')}`
+}
+
+export function hasAccountQualityScoreSort(options: Pick<NormalizedAccountListOptions, 'sorts'>): boolean {
+  return options.sorts.some((sort) => sort.field === 'qualityScore')
 }
 
 function normalizeTextFilter(value: unknown): string | undefined {

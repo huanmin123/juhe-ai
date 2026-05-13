@@ -17,7 +17,7 @@ import {
   getUsageRecordQueueRuntime,
   installUsageRecordQueueShutdownHooks
 } from './modules/gateway/usage-record-queue.service.js'
-import { getDatabase } from './storage/database.js'
+import { getBusinessDatabase, getRecordDatabase } from './storage/database.js'
 import { installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 
@@ -27,7 +27,8 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_runtime_log_line'; line: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
 
-getDatabase()
+getBusinessDatabase()
+getRecordDatabase()
 installProcessLogHandlers()
 startLogMaintenance()
 installUsageRecordQueueShutdownHooks()

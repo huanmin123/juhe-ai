@@ -1,7 +1,9 @@
+import type { DatabaseSync } from 'node:sqlite'
+
 import type { ApiKeySummary, ProviderCode } from '../domain/types.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { createApiKey, decryptJson, encryptJson, hashSecret } from './crypto.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { defaultOpenAIGroupIdForSystemAccount } from './default-group.repository.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { loadSystemAccountNameMap } from './repository-lookups.js'
@@ -258,23 +260,34 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   return next
 }
 
+export interface ApiKeyDeleteResult {
+  deleted: boolean
+  cleanupRelatedData: () => void
+}
+
 export function deleteApiKey(id: string, access?: AccessScope): boolean {
+  return deleteApiKeyWithRelatedCleanup(id, access).deleted
+}
+
+export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope): ApiKeyDeleteResult {
   const scope = buildSystemAccountScopeClause(access)
   const database = getDatabase()
   const row = database.prepare(`SELECT id, system_account_id FROM api_keys WHERE id = ?${scope.clause}`).get(id, ...scope.params) as unknown as ApiKeyDeleteRow | undefined
   if (!row) {
-    return false
+    return { deleted: false, cleanupRelatedData: () => {} }
   }
 
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    deleteApiKeyRelatedData(database, row)
     const result = database.prepare('DELETE FROM api_keys WHERE id = ? AND system_account_id = ?').run(row.id, row.system_account_id)
     commitDatabaseTransaction(database, transactionStarted)
     if (result.changes > 0) {
       invalidateGatewayApiKeyCacheById(row.id)
     }
-    return result.changes > 0
+    return {
+      deleted: result.changes > 0,
+      cleanupRelatedData: result.changes > 0 ? () => deleteApiKeyRelatedData(row) : () => {}
+    }
   } catch (error) {
     try {
       rollbackDatabaseTransaction(database, transactionStarted)
@@ -284,7 +297,8 @@ export function deleteApiKey(id: string, access?: AccessScope): boolean {
   }
 }
 
-function deleteApiKeyRelatedData(database: ReturnType<typeof getDatabase>, row: ApiKeyDeleteRow): void {
+function deleteApiKeyRelatedData(row: ApiKeyDeleteRow): void {
+  const database = getRecordDatabase()
   const updatedAt = nowIso()
   const cursor = usageStatsAggregationCursor(database)
   let cursorCreatedAt = ''
@@ -320,7 +334,7 @@ function deleteApiKeyRelatedData(database: ReturnType<typeof getDatabase>, row: 
   database.prepare('DELETE FROM usage_records WHERE api_key_id = ?').run(row.id)
 }
 
-function usageStatsAggregationCursor(database: ReturnType<typeof getDatabase>): UsageStatsAggregationCursor {
+function usageStatsAggregationCursor(database: DatabaseSync): UsageStatsAggregationCursor {
   const row = database
     .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
     .get() as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined

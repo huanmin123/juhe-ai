@@ -1,4 +1,4 @@
-import { getDatabase, nowIso } from './database.js'
+import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 
 export type GroupAccountStatsRow = {
@@ -52,7 +52,7 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
 export function loadGroupAccountStatsByGroupIds(groupIds: string[]): Map<string, GroupAccountStatsRow> {
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
-  const rows = getDatabase()
+  const rows = getRecordDatabase()
     .prepare(`
       SELECT *
       FROM group_account_stats

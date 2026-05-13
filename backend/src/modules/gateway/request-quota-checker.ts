@@ -18,7 +18,7 @@ export function loadRequestQuotaCosts(database: DatabaseSync, input: {
   now: Date
   hourlyWindowHours?: number
 }): RequestQuotaCosts {
-  const timezone = usageStatsTimezone(database)
+  const timezone = usageStatsTimezone()
   const hourlySince = input.hourlyWindowHours
     ? hourKey(new Date(input.now.getTime() - Math.max(1, input.hourlyWindowHours) * 60 * 60 * 1000), timezone)
     : undefined

@@ -1,5 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
-import { getDatabase } from '../../storage/database.js'
+import { getRecordDatabase } from '../../storage/database.js'
 import type { GatewayApiKeyRow } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
@@ -36,7 +36,7 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
     return cached
   }
 
-  const quotaCosts = loadRequestQuotaCosts(getDatabase(), {
+  const quotaCosts = loadRequestQuotaCosts(getRecordDatabase(), {
     systemAccountId: apiKey.system_account_id,
     scopeType: 'api_key',
     scopeId: apiKey.id,

@@ -39,6 +39,15 @@ export function loadGroupNameMap(groupIds: string[]): Map<string, string> {
   return new Map(rows.map((row) => [row.id, row.name]))
 }
 
+export function loadApiKeyNameMap(apiKeyIds: string[]): Map<string, string> {
+  const ids = uniqueIds(apiKeyIds)
+  if (!ids.length) return new Map()
+  const rows = getDatabase()
+    .prepare(`SELECT id, name FROM api_keys WHERE id IN (${sqlPlaceholders(ids.length)})`)
+    .all(...ids) as unknown as Array<{ id: string; name: string }>
+  return new Map(rows.map((row) => [row.id, row.name]))
+}
+
 export function loadSystemTeamNameMap(teamIds: string[]): Map<string, string> {
   const ids = uniqueIds(teamIds)
   if (!ids.length) return new Map()

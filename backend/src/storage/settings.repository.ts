@@ -1,4 +1,4 @@
-import { getDatabase, nowIso } from './database.js'
+import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
 
 interface GlobalSettingRow {
@@ -106,19 +106,19 @@ function assertUsageStatsTimezoneUpdateAllowed(input: Record<string, unknown>): 
   if (!Object.prototype.hasOwnProperty.call(input, 'usageStatsTimezone')) {
     return
   }
-  const database = getDatabase()
-  const current = usageStatsTimezone(database)
+  const current = usageStatsTimezone()
   const next = normalizeUsageStatsTimezone(input.usageStatsTimezone)
   if (next === current) {
     return
   }
-  if (!usageStatsDataExists(database)) {
+  if (!usageStatsDataExists()) {
     return
   }
   throw new Error('已有统计数据后不能直接修改统计时区，请先备份并重建统计缓存')
 }
 
-function usageStatsDataExists(database: ReturnType<typeof getDatabase>): boolean {
+function usageStatsDataExists(): boolean {
+  const database = getRecordDatabase()
   const tables = [
     'usage_stats_totals',
     'usage_stats_minute',

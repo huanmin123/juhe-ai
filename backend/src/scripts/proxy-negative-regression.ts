@@ -12,6 +12,7 @@ import { logger } from '../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-proxy-negative-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'proxy-negative.sqlite3')
+runtimeConfig.recordDatabasePath = join(tempRoot, 'proxy-negative-records.sqlite3')
 runtimeConfig.secret = 'proxy-negative-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -213,6 +214,7 @@ async function main(): Promise<void> {
     await closeServer(upstreamServer)
     try {
       databaseModule.getDatabase().close()
+      databaseModule.getRecordDatabase().close()
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })

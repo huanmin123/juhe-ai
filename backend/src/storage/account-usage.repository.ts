@@ -63,7 +63,7 @@ export interface UsageScopeRequest {
   scopeId: string
 }
 
-function accountUsageStatsRowKey(account: AccountSummary): string {
+export function accountUsageStatsRowKey(account: Pick<AccountSummary, 'id' | 'accountAuthorizationId'>): string {
   return `${account.id}:${account.accountAuthorizationId ?? 'owner'}`
 }
 

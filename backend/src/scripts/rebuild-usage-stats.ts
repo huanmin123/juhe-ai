@@ -1,11 +1,11 @@
 import { aggregateUsageStatsBatch, refreshUsageRankSnapshots } from '../storage/usage-stats.repository.js'
-import { getDatabase, nowIso } from '../storage/database.js'
+import { getRecordDatabase, nowIso } from '../storage/database.js'
 import { runtimeConfig } from '../config/runtime.js'
 
 const batchSize = normalizeBatchSize(process.argv[2])
 
 function main(): void {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const startedAt = Date.now()
   resetUsageStatsCache(database)
 
@@ -21,10 +21,10 @@ function main(): void {
 
   const durationMs = Date.now() - startedAt
   console.log(`用量统计已重建：扫描 ${totalProcessed} 条记录，耗时 ${durationMs}ms`)
-  console.log(`数据库：${runtimeConfig.databasePath}`)
+  console.log(`记录库：${runtimeConfig.recordDatabasePath}`)
 }
 
-function resetUsageStatsCache(database: ReturnType<typeof getDatabase>): void {
+function resetUsageStatsCache(database: ReturnType<typeof getRecordDatabase>): void {
   const updatedAt = nowIso()
   const usageStatsTables = [
     'usage_stats_totals',

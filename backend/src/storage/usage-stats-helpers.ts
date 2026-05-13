@@ -1,6 +1,5 @@
-import type { DatabaseSync } from 'node:sqlite'
-
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
+import { getDatabase } from './database.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 export const ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS = 31
@@ -148,8 +147,8 @@ export function monthKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): s
   return `${year}-${two(month)}`
 }
 
-export function usageStatsTimezone(database: DatabaseSync): string {
-  const row = database.prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
+export function usageStatsTimezone(): string {
+  const row = getDatabase().prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
   if (!row?.value_json) return DEFAULT_USAGE_STATS_TIMEZONE
   try {
     const value = JSON.parse(row.value_json) as unknown

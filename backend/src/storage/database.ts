@@ -3,24 +3,43 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { applySchema, seedDefaults } from './schema.js'
+import { applyBusinessSchema, applyRecordSchema, seedDefaults } from './schema.js'
 
-let database: DatabaseSync | undefined
+let businessDatabase: DatabaseSync | undefined
+let recordDatabase: DatabaseSync | undefined
 const sqliteBusyTimeoutMs = 5000
 
 export function getDatabase(): DatabaseSync {
-  if (database) {
-    return database
+  return getBusinessDatabase()
+}
+
+export function getBusinessDatabase(): DatabaseSync {
+  if (businessDatabase) {
+    return businessDatabase
   }
 
   const databasePath = runtimeConfig.databasePath
   mkdirSync(dirname(databasePath), { recursive: true })
 
-  database = new DatabaseSync(databasePath)
-  configureDatabase(database)
-  applySchema(database)
-  seedDefaults(database)
-  return database
+  businessDatabase = new DatabaseSync(databasePath)
+  configureDatabase(businessDatabase)
+  applyBusinessSchema(businessDatabase)
+  seedDefaults(businessDatabase)
+  return businessDatabase
+}
+
+export function getRecordDatabase(): DatabaseSync {
+  if (recordDatabase) {
+    return recordDatabase
+  }
+
+  const databasePath = runtimeConfig.recordDatabasePath
+  mkdirSync(dirname(databasePath), { recursive: true })
+
+  recordDatabase = new DatabaseSync(databasePath)
+  configureDatabase(recordDatabase)
+  applyRecordSchema(recordDatabase)
+  return recordDatabase
 }
 
 export function beginDatabaseTransaction(target = getDatabase()): boolean {

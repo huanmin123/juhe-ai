@@ -9,6 +9,7 @@ export interface RuntimeConfig {
   host: string
   port: number
   databasePath: string
+  recordDatabasePath: string
   secret: string
   oauthProxyUrl?: string
   log: {
@@ -44,6 +45,7 @@ export const runtimeConfig: RuntimeConfig = {
   host: stringConfig('JUHE_AI_HOST', '127.0.0.1'),
   port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai.sqlite3')),
+  recordDatabasePath: pathConfig('JUHE_AI_RECORD_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai-records.sqlite3')),
   secret: stringConfig('JUHE_AI_SECRET', 'juhe-ai-dev-secret-change-me'),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   log: {

@@ -1,6 +1,6 @@
 import type { AccountOAuthUsageSnapshot, AccountOAuthUsageWindow } from '../domain/types.js'
 import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
-import { getDatabase } from './database.js'
+import { getRecordDatabase } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { numberFromUnknown } from './usage-stats-helpers.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
@@ -25,7 +25,7 @@ function uniqueIds(values: string[]): string[] {
 
 export function loadOpenAICodexUsageSnapshots(access?: AccessScope): Map<string, AccountOAuthUsageSnapshot> {
   const scope = buildSystemAccountScopeClause(access)
-  const rows = getDatabase().prepare(`
+  const rows = getRecordDatabase().prepare(`
     SELECT
       account_id, kind, source, snapshot_json, refresh_status,
       last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at
@@ -38,7 +38,7 @@ export function loadOpenAICodexUsageSnapshots(access?: AccessScope): Map<string,
 export function loadOpenAICodexUsageSnapshotsByAccountIds(accountIds: string[]): Map<string, AccountOAuthUsageSnapshot> {
   const ids = uniqueIds(accountIds)
   if (!ids.length) return new Map()
-  const rows = getDatabase().prepare(`
+  const rows = getRecordDatabase().prepare(`
     SELECT
       account_id, kind, source, snapshot_json, refresh_status,
       last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at

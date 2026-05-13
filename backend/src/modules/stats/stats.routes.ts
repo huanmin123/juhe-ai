@@ -81,7 +81,7 @@ statsRouter.get('/account-usage', (req, res) => {
 })
 
 function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOptions & { range: ReturnType<typeof normalizeAccountUsageStatsRange> } {
-  const timezone = usageStatsTimezone(getDatabase())
+  const timezone = usageStatsTimezone()
   return {
     page: integerQueryValue(query.page),
     pageSize: integerQueryValue(query.pageSize),

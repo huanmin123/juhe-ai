@@ -8,6 +8,7 @@ import { logger } from '../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-db-service-worker-local-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'worker-local.sqlite3')
+runtimeConfig.recordDatabasePath = join(tempRoot, 'worker-local-records.sqlite3')
 runtimeConfig.secret = 'db-service-worker-local-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -35,6 +36,7 @@ async function main(): Promise<void> {
   } finally {
     try {
       databaseModule.getDatabase().close()
+      databaseModule.getRecordDatabase().close()
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })

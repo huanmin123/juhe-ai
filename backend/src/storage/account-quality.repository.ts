@@ -1,4 +1,4 @@
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
 
 export type AccountQualityState = 'fresh' | 'stale' | 'failed' | 'unknown'
@@ -37,22 +37,21 @@ const failurePenaltyMs = 60_000
 const stalePenaltyMs = 5_000
 
 export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQualityRealtimeRefreshResult {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const now = new Date()
-  const timezone = usageStatsTimezone(database)
+  const timezone = usageStatsTimezone()
   const windowMs = Math.max(1, Math.min(Math.trunc(windowMinutes), 24 * 60)) * 60 * 1000
   const windowStartedAt = new Date(now.getTime() - windowMs).toISOString()
   const windowEndedAt = now.toISOString()
   const windowStartedMinute = minuteKey(new Date(now.getTime() - windowMs), timezone)
   const retentionCutoffMinute = minuteKey(new Date(now.getTime() - 24 * 60 * 60 * 1000), timezone)
   const updatedAt = nowIso()
+  const activeAccounts = loadQualityAccountMetadata()
 
   const rows = database
     .prepare(`
       SELECT
         quality_stats.account_id,
-        accounts.system_account_id,
-        accounts.provider_code,
         SUM(quality_stats.request_count) AS recent_request_count,
         SUM(quality_stats.success_count) AS recent_success_count,
         SUM(quality_stats.error_count) AS recent_error_count,
@@ -66,7 +65,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
         MAX(quality_stats.last_success_at) AS last_success_at,
         MAX(quality_stats.last_error_at) AS last_error_at,
         (
-          SELECT latest_error.error_message
+          SELECT latest_error.last_error_message
           FROM account_quality_minute_stats latest_error
           WHERE latest_error.account_id = quality_stats.account_id
             AND latest_error.stat_minute >= ?
@@ -75,14 +74,11 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
           LIMIT 1
         ) AS last_error_message
       FROM account_quality_minute_stats quality_stats
-      INNER JOIN accounts ON accounts.id = quality_stats.account_id
       WHERE quality_stats.stat_minute >= ?
-      GROUP BY quality_stats.account_id, accounts.system_account_id, accounts.provider_code
+      GROUP BY quality_stats.account_id
     `)
     .all(windowStartedMinute, windowStartedMinute) as unknown as Array<{
       account_id: string
-      system_account_id: string
-      provider_code: string
       recent_request_count: number
       recent_success_count: number
       recent_error_count: number
@@ -94,15 +90,24 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       last_error_message: string | null
     }>
 
-  const activeAccountIds = new Set(rows.map((row) => row.account_id))
+  const activeAccountIds = new Set(activeAccounts.keys())
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    const deleteResult = database
-      .prepare('DELETE FROM account_quality_scores WHERE account_id NOT IN (SELECT id FROM accounts)')
-      .run()
-    database.prepare('DELETE FROM account_quality_minute_stats WHERE account_id NOT IN (SELECT id FROM accounts)').run()
+    const activeIds = [...activeAccountIds]
+    const deleteResult = activeIds.length > 0
+      ? database
+        .prepare(`DELETE FROM account_quality_scores WHERE account_id NOT IN (${sqlPlaceholders(activeIds.length)})`)
+        .run(...activeIds)
+      : database.prepare('DELETE FROM account_quality_scores').run()
+    if (activeIds.length > 0) {
+      database.prepare(`DELETE FROM account_quality_minute_stats WHERE account_id NOT IN (${sqlPlaceholders(activeIds.length)})`).run(...activeIds)
+    } else {
+      database.prepare('DELETE FROM account_quality_minute_stats').run()
+    }
     database.prepare('DELETE FROM account_quality_minute_stats WHERE stat_minute < ?').run(retentionCutoffMinute)
     for (const row of rows) {
+      const metadata = activeAccounts.get(row.account_id)
+      if (!metadata) continue
       const previous = accountQualityRow(row.account_id)
       const recentAvg = integerOrNull(row.recent_avg_first_token_ms)
       const previousEwma = previous?.ewma_first_token_ms ?? null
@@ -123,8 +128,8 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       })
       upsertAccountQuality({
         accountId: row.account_id,
-        systemAccountId: row.system_account_id,
-        providerCode: row.provider_code,
+        systemAccountId: metadata.systemAccountId,
+        providerCode: metadata.providerCode,
         qualityScore,
         qualityState,
         recentRequestCount: row.recent_request_count,
@@ -163,8 +168,19 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
   }
 }
 
+function loadQualityAccountMetadata(): Map<string, { systemAccountId: string; providerCode: string }> {
+  const rows = getDatabase()
+    .prepare('SELECT id, system_account_id, provider_code FROM accounts')
+    .all() as unknown as Array<{ id: string; system_account_id: string; provider_code: string }>
+  return new Map(rows.map((row) => [row.id, { systemAccountId: row.system_account_id, providerCode: row.provider_code }]))
+}
+
+function sqlPlaceholders(count: number): string {
+  return Array.from({ length: Math.max(1, count) }, () => '?').join(',')
+}
+
 function accountQualityRow(accountId: string): AccountQualityRow | undefined {
-  return getDatabase()
+  return getRecordDatabase()
     .prepare('SELECT * FROM account_quality_scores WHERE account_id = ?')
     .get(accountId) as unknown as AccountQualityRow | undefined
 }
@@ -225,7 +241,7 @@ function upsertAccountQuality(input: {
   lastErrorMessage?: string
   updatedAt: string
 }): void {
-  getDatabase()
+  getRecordDatabase()
     .prepare(`
       INSERT INTO account_quality_scores (
         account_id, system_account_id, provider_code, quality_score, quality_state,

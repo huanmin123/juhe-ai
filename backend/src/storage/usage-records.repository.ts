@@ -1,6 +1,6 @@
 import { buildSystemAccountScopeClause, currentSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { loadSystemAccountNameMap } from './repository-lookups.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { loadAccountNameMap, loadApiKeyNameMap, loadGroupNameMap, loadSystemAccountNameMap } from './repository-lookups.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
 export interface UsageRecordLogSnapshot {
@@ -137,13 +137,11 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   const orderClause = buildUsageRecordOrderClause(listOptions)
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
-  const database = getDatabase()
-  const countAccountJoin = filters.needsAccountJoin ? 'LEFT JOIN accounts a ON a.id = ur.account_id' : ''
+  const database = getRecordDatabase()
   const totalRow = database
     .prepare(`
       SELECT COUNT(*) AS total
       FROM usage_records ur
-      ${countAccountJoin}
       ${filters.clause}
     `)
     .get(...filters.params) as Record<string, unknown> | undefined
@@ -173,21 +171,16 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
         ur.cost_usd,
         ur.error_code,
         ur.error_message,
-        ur.created_at,
-        ak.name AS api_key_name,
-        g.name AS group_name,
-        a.name AS account_name
+        ur.created_at
       FROM usage_records ur
-      LEFT JOIN api_keys ak ON ak.id = ur.api_key_id
-      LEFT JOIN groups g ON g.id = ur.group_id
-      LEFT JOIN accounts a ON a.id = ur.account_id
       ${filters.clause}
       ${orderClause}
       LIMIT ? OFFSET ?
     `)
     .all(...filters.params, listOptions.pageSize, (listOptions.page - 1) * listOptions.pageSize) as Array<Record<string, unknown>>
+  const rowsWithNames = hydrateUsageRecordNames(rows)
   return {
-    items: rows.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames)),
+    items: rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames)),
     total: Number(totalRow?.total ?? 0),
     page: listOptions.page,
     pageSize: listOptions.pageSize
@@ -200,23 +193,18 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
   const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
-  const row = getDatabase()
+  const row = getRecordDatabase()
     .prepare(`
       SELECT
-        ur.*,
-        ak.name AS api_key_name,
-        g.name AS group_name,
-        a.name AS account_name
+        ur.*
       FROM usage_records ur
-      LEFT JOIN api_keys ak ON ak.id = ur.api_key_id
-      LEFT JOIN groups g ON g.id = ur.group_id
-      LEFT JOIN accounts a ON a.id = ur.account_id
       WHERE ur.id = ?
       ${scope.clause}
       LIMIT 1
     `)
     .get(recordId, ...scope.params) as Record<string, unknown> | undefined
-  return row ? usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames, true) : undefined
+  const namedRow = row ? hydrateUsageRecordNames([row])[0] : undefined
+  return namedRow ? usageRecordSummaryFromRow(namedRow, shouldIncludeSystemAccountFields, accountNames, true) : undefined
 }
 
 export function findRecentOpenAIRequestShapeForAccount(accountId: string, groupId?: string): RecentOpenAIRequestShape | undefined {
@@ -239,7 +227,7 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
     params.push(input.groupId)
   }
   if (clauses.length === 0) return undefined
-  const row = getDatabase()
+  const row = getRecordDatabase()
     .prepare(`
       SELECT endpoint, model, stream, created_at
       FROM usage_records
@@ -276,7 +264,8 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     return
   }
 
-  const database = getDatabase()
+  const database = getRecordDatabase()
+  const businessDatabase = getDatabase()
   const insertStatement = database.prepare(`
     INSERT INTO usage_records (
       id, system_account_id, trace_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
@@ -287,13 +276,13 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
-  const updateAccountStatement = database.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
+  const updateAccountStatement = businessDatabase.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
   const accountLastUsedAt = new Map<string, string>()
 
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const input of inputs) {
-      if (input.apiKeyId && !apiKeyExists(database, input.apiKeyId)) {
+      if (input.apiKeyId && !apiKeyExists(input.apiKeyId)) {
         continue
       }
       const now = input.createdAt ?? nowIso()
@@ -360,9 +349,22 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   }
 }
 
-function apiKeyExists(database: ReturnType<typeof getDatabase>, apiKeyId: string): boolean {
-  const row = database.prepare('SELECT id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { id?: string } | undefined
+function apiKeyExists(apiKeyId: string): boolean {
+  const row = getDatabase().prepare('SELECT id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { id?: string } | undefined
   return Boolean(row?.id)
+}
+
+function hydrateUsageRecordNames(rows: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  if (!rows.length) return rows
+  const apiKeyNames = loadApiKeyNameMap(rows.map((row) => optionalString(row.api_key_id) ?? ''))
+  const groupNames = loadGroupNameMap(rows.map((row) => optionalString(row.group_id) ?? ''))
+  const recordAccountNames = loadAccountNameMap(rows.map((row) => optionalString(row.account_id) ?? ''))
+  return rows.map((row) => ({
+    ...row,
+    api_key_name: optionalString(row.api_key_name) ?? (row.api_key_id ? apiKeyNames.get(String(row.api_key_id)) : undefined),
+    group_name: optionalString(row.group_name) ?? (row.group_id ? groupNames.get(String(row.group_id)) : undefined),
+    account_name: optionalString(row.account_name) ?? (row.account_id ? recordAccountNames.get(String(row.account_id)) : undefined)
+  }))
 }
 
 function usageRecordSummaryFromRow(
@@ -440,7 +442,6 @@ function buildUsageRecordOrderClause(options: Required<Pick<UsageRecordListOptio
 function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordListOptions): { clause: string; params: UsageRecordFilterValue[]; needsAccountJoin: boolean } {
   const clauses: string[] = []
   const params: UsageRecordFilterValue[] = []
-  let needsAccountJoin = false
   const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
   if (scope.clause) {
     clauses.push(scope.clause.replace(/^ AND /, ''))
@@ -448,9 +449,14 @@ function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordList
   }
   const accountKeyword = options?.accountKeyword?.trim()
   if (accountKeyword) {
-    needsAccountJoin = true
-    clauses.push('(a.name LIKE ? OR ur.account_id LIKE ?)')
-    params.push(`%${accountKeyword}%`, `%${accountKeyword}%`)
+    const matchedAccountIds = accountIdsForKeyword(accountKeyword)
+    if (matchedAccountIds.length > 0) {
+      clauses.push(`(ur.account_id LIKE ? OR ur.account_id IN (${matchedAccountIds.map(() => '?').join(', ')}))`)
+      params.push(`%${accountKeyword}%`, ...matchedAccountIds)
+    } else {
+      clauses.push('ur.account_id LIKE ?')
+      params.push(`%${accountKeyword}%`)
+    }
   }
   if (options?.result === 'success') {
     clauses.push('ur.success = 1')
@@ -469,8 +475,16 @@ function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordList
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params,
-    needsAccountJoin
+    needsAccountJoin: false
   }
+}
+
+function accountIdsForKeyword(keyword: string): string[] {
+  const pattern = `%${keyword}%`
+  const rows = getDatabase()
+    .prepare('SELECT id FROM accounts WHERE name LIKE ? OR id LIKE ? LIMIT 200')
+    .all(pattern, pattern) as unknown as Array<{ id?: string }>
+  return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
 }
 
 function isHttpStatusCode(value: unknown): value is number {

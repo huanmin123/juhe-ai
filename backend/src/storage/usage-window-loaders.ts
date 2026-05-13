@@ -1,5 +1,5 @@
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
-import { getDatabase } from './database.js'
+import { getRecordDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import {
   addUsageSummaries,
@@ -51,7 +51,7 @@ export function loadUsageDailySeriesForScopeRequests(scopes: UsageStatsScopeRequ
   const normalizedScopes = [...scopeRowsByMapKey.values()]
   if (!normalizedScopes.length || !dateKeys.length) return result
 
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const rows: UsageStatsScopeAggregateRow[] = []
   const scopesBySystemAccountId = new Map<string, UsageStatsScopeRequest[]>()
   for (const scope of normalizedScopes) {

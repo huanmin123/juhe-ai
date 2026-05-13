@@ -1,4 +1,4 @@
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { optionalString } from './value-utils.js'
 
@@ -67,7 +67,7 @@ export const runtimeLogIndexRetentionDays = 3
 export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
   if (inputs.length === 0) return
 
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const insertLog = database.prepare(`
     INSERT OR IGNORE INTO runtime_logs (
       id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at
@@ -126,7 +126,7 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
   const page = normalizeRuntimeLogPage(options.page)
   const offset = (page - 1) * pageSize
   const keywordFilter = buildRuntimeLogKeywordFilter(options.keyword)
-  const database = getDatabase()
+  const database = getRecordDatabase()
 
   const totalRow = keywordFilter
     ? database
@@ -178,7 +178,7 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
 
 export function getRuntimeLogFacets(): RuntimeLogFacets {
   const cutoff = retentionCutoffIso()
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const range = database
     .prepare(`
       SELECT MIN(time) AS earliest_indexed_at, MAX(time) AS latest_indexed_at, COUNT(*) AS total_indexed
@@ -216,7 +216,7 @@ export function getRuntimeLogFacets(): RuntimeLogFacets {
 }
 
 export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit = 10000): number {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const rows = database
     .prepare('SELECT id FROM runtime_logs WHERE time < ? ORDER BY time ASC, id ASC LIMIT ?')
     .all(cutoffIso, Math.max(1, Math.trunc(limit))) as RuntimeLogRow[]

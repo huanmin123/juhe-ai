@@ -10,7 +10,7 @@ import type {
   UsageOverviewWindowKey
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { averageFromSum, dateKey, hourKey, monthKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
@@ -61,7 +61,7 @@ const AI_PERFORMANCE_WINDOWS: AiPerformanceWindowDefinition[] = [
 ]
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const batchLimit = Math.max(1, limit)
   const callerAccountBackfill = ensureCallerAccountUsageStatsBackfill(database, batchLimit)
   if (!callerAccountBackfill.complete || callerAccountBackfill.processed > 0) {
@@ -302,127 +302,92 @@ function recordAccountQualityMinuteStatsBackfillFailure(database: DatabaseSync, 
 }
 
 export function refreshGroupAccountStatsCache(): void {
-  const database = getDatabase()
+  const database = getRecordDatabase()
+  const businessDatabase = getDatabase()
   const updatedAt = nowIso()
+  const groups = businessDatabase.prepare('SELECT id, system_account_id FROM groups').all() as unknown as Array<{ id: string; system_account_id: string }>
+  const groupAccountRows = businessDatabase.prepare(`
+    SELECT
+      group_accounts.group_id,
+      group_accounts.account_id,
+      group_accounts.account_authorization_id,
+      groups.system_account_id AS group_system_account_id,
+      accounts.system_account_id AS account_system_account_id,
+      accounts.status,
+      accounts.schedulable,
+      accounts.cooldown_until,
+      accounts.concurrency_limit,
+      account_authorizations.status AS authorization_status,
+      account_authorizations.expires_at AS authorization_expires_at
+    FROM group_accounts
+    INNER JOIN groups ON groups.id = group_accounts.group_id
+    LEFT JOIN accounts ON accounts.id = group_accounts.account_id
+    LEFT JOIN resource_authorizations account_authorizations
+      ON account_authorizations.id = group_accounts.account_authorization_id
+    WHERE group_accounts.enabled = 1
+  `).all() as unknown as Array<{
+    group_id: string
+    account_id: string | null
+    account_authorization_id: string | null
+    group_system_account_id: string
+    account_system_account_id: string | null
+    status: string | null
+    schedulable: number | null
+    cooldown_until: string | null
+    concurrency_limit: number | null
+    authorization_status: string | null
+    authorization_expires_at: string | null
+  }>
+  const statsByGroup = new Map<string, GroupAccountStatsAccumulator>()
+  for (const group of groups) {
+    statsByGroup.set(group.id, emptyGroupAccountStatsAccumulator(group.id, group.system_account_id))
+  }
+  for (const row of groupAccountRows) {
+    const stats = statsByGroup.get(row.group_id) ?? emptyGroupAccountStatsAccumulator(row.group_id, row.group_system_account_id)
+    statsByGroup.set(row.group_id, stats)
+    if (!row.account_id || !row.account_system_account_id) continue
+    const authorized = row.account_system_account_id === row.group_system_account_id
+      || (row.authorization_status === 'active' && (!row.authorization_expires_at || row.authorization_expires_at > updatedAt))
+    if (!authorized) continue
+    stats.total += 1
+    stats.concurrencyLimit += Number(row.concurrency_limit ?? 0)
+    if (row.status === 'active') {
+      stats.active += 1
+      if (row.schedulable === 1 && (!row.cooldown_until || row.cooldown_until <= updatedAt)) {
+        stats.available += 1
+      }
+    } else if (row.status === 'disabled') {
+      stats.disabled += 1
+    } else {
+      stats.error += 1
+    }
+    if (row.status === 'rate_limited') {
+      stats.rateLimited += 1
+    }
+  }
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     database.prepare('DELETE FROM group_account_stats').run()
-    const activeAuthorizationUntil = updatedAt
-    database.prepare(`
+    const insert = database.prepare(`
       INSERT INTO group_account_stats (
         system_account_id, group_id, total, available, active, disabled, error,
         rate_limited, current_concurrency, concurrency_limit, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+    `)
+    for (const stats of statsByGroup.values()) {
+      insert.run(
+        stats.systemAccountId,
+        stats.groupId,
+        stats.total,
+        stats.available,
+        stats.active,
+        stats.disabled,
+        stats.error,
+        stats.rateLimited,
+        stats.concurrencyLimit,
+        updatedAt
       )
-      SELECT
-        groups.system_account_id,
-        groups.id,
-        SUM(CASE
-          WHEN accounts.id IS NOT NULL
-            AND (
-              accounts.system_account_id = groups.system_account_id
-              OR (
-                account_authorizations.status = 'active'
-                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
-              )
-            )
-          THEN 1 ELSE 0
-        END) AS total,
-        SUM(CASE
-          WHEN accounts.id IS NOT NULL
-            AND (
-              accounts.system_account_id = groups.system_account_id
-              OR (
-                account_authorizations.status = 'active'
-                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
-              )
-            )
-            AND accounts.status = 'active'
-            AND accounts.schedulable = 1
-            AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
-          THEN 1 ELSE 0
-        END) AS available,
-        SUM(CASE
-          WHEN accounts.id IS NOT NULL
-            AND (
-              accounts.system_account_id = groups.system_account_id
-              OR (
-                account_authorizations.status = 'active'
-                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
-              )
-            )
-            AND accounts.status = 'active'
-          THEN 1 ELSE 0
-        END) AS active,
-        SUM(CASE
-          WHEN accounts.id IS NOT NULL
-            AND (
-              accounts.system_account_id = groups.system_account_id
-              OR (
-                account_authorizations.status = 'active'
-                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
-              )
-            )
-            AND accounts.status = 'disabled'
-          THEN 1 ELSE 0
-        END) AS disabled,
-        SUM(CASE
-          WHEN accounts.id IS NOT NULL
-            AND (
-              accounts.system_account_id = groups.system_account_id
-              OR (
-                account_authorizations.status = 'active'
-                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
-              )
-            )
-            AND accounts.status NOT IN ('active', 'disabled')
-          THEN 1 ELSE 0
-        END) AS error,
-        SUM(CASE
-          WHEN accounts.id IS NOT NULL
-            AND (
-              accounts.system_account_id = groups.system_account_id
-              OR (
-                account_authorizations.status = 'active'
-                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
-              )
-            )
-            AND accounts.status = 'rate_limited'
-          THEN 1 ELSE 0
-        END) AS rate_limited,
-        0 AS current_concurrency,
-        COALESCE(SUM(CASE
-          WHEN accounts.id IS NOT NULL
-            AND (
-              accounts.system_account_id = groups.system_account_id
-              OR (
-                account_authorizations.status = 'active'
-                AND (account_authorizations.expires_at IS NULL OR account_authorizations.expires_at > ?)
-              )
-            )
-          THEN accounts.concurrency_limit ELSE 0
-        END), 0) AS concurrency_limit,
-        ? AS updated_at
-      FROM groups
-      LEFT JOIN group_accounts
-        ON group_accounts.group_id = groups.id
-        AND group_accounts.system_account_id = groups.system_account_id
-        AND group_accounts.enabled = 1
-      LEFT JOIN accounts
-        ON accounts.id = group_accounts.account_id
-      LEFT JOIN resource_authorizations account_authorizations
-        ON account_authorizations.id = group_accounts.account_authorization_id
-      GROUP BY groups.system_account_id, groups.id
-    `).run(
-      activeAuthorizationUntil,
-      activeAuthorizationUntil,
-      updatedAt,
-      activeAuthorizationUntil,
-      activeAuthorizationUntil,
-      activeAuthorizationUntil,
-      activeAuthorizationUntil,
-      activeAuthorizationUntil,
-      updatedAt
-    )
+    }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -430,9 +395,35 @@ export function refreshGroupAccountStatsCache(): void {
   }
 }
 
+interface GroupAccountStatsAccumulator {
+  groupId: string
+  systemAccountId: string
+  total: number
+  available: number
+  active: number
+  disabled: number
+  error: number
+  rateLimited: number
+  concurrencyLimit: number
+}
+
+function emptyGroupAccountStatsAccumulator(groupId: string, systemAccountId: string): GroupAccountStatsAccumulator {
+  return {
+    groupId,
+    systemAccountId,
+    total: 0,
+    available: 0,
+    active: 0,
+    disabled: 0,
+    error: 0,
+    rateLimited: 0,
+    concurrencyLimit: 0
+  }
+}
+
 export function refreshUsageRankSnapshots(): void {
-  const database = getDatabase()
-  const timezone = usageStatsTimezone(database)
+  const database = getRecordDatabase()
+  const timezone = usageStatsTimezone()
   const updatedAt = nowIso()
   const snapshotAt = updatedAt
   const transactionStarted = beginDatabaseTransaction(database)
@@ -460,7 +451,7 @@ export interface UsageStatsConsistencyIssue {
 }
 
 export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsistencyIssue[] {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const samples = database.prepare(`
     SELECT system_account_id, scope_type, scope_id, stat_date,
       request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd
@@ -468,7 +459,7 @@ export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsiste
     WHERE stat_date < ?
     ORDER BY updated_at DESC, stat_date DESC, system_account_id ASC, scope_type ASC, scope_id ASC
     LIMIT ?
-  `).all(dateKey(new Date(), usageStatsTimezone(database)), boundedConsistencySampleLimit(sampleLimit)) as unknown as Array<Record<string, unknown>>
+  `).all(dateKey(new Date(), usageStatsTimezone()), boundedConsistencySampleLimit(sampleLimit)) as unknown as Array<Record<string, unknown>>
   const issues: UsageStatsConsistencyIssue[] = []
   for (const sample of samples) {
     const daily = consistencyStatsRow(sample)
@@ -500,9 +491,9 @@ export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsiste
 }
 
 export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const sampledAt = nowIso()
-  const statHour = hourKey(new Date(sampledAt), usageStatsTimezone(database))
+  const statHour = hourKey(new Date(sampledAt), usageStatsTimezone())
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     database
@@ -542,15 +533,15 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
 }
 
 export function latestUsageStatsLagSeconds(): number {
-  const row = getDatabase()
+  const row = getRecordDatabase()
     .prepare("SELECT lag_seconds FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
     .get() as unknown as { lag_seconds?: number } | undefined
   return Number(row?.lag_seconds ?? 0)
 }
 
 export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOverviewWindowKey = 'last1d'): UsageStatsOverview {
-  const database = getDatabase()
-  const timezone = usageStatsTimezone(database)
+  const database = getRecordDatabase()
+  const timezone = usageStatsTimezone()
   const statsScope = usageOverviewStatsScope(access)
   const window = usageOverviewWindow(windowKey)
   const sinceHour = hourKey(new Date(Date.now() - window.hours * 60 * 60 * 1000), timezone)
@@ -630,8 +621,8 @@ export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOver
 }
 
 export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerformanceWindowKey = 'last1d', accountIds: string[] = []): AiPerformanceOverview {
-  const database = getDatabase()
-  const timezone = usageStatsTimezone(database)
+  const database = getRecordDatabase()
+  const timezone = usageStatsTimezone()
   const systemAccountId = currentSystemAccountId(access)
   const window = aiPerformanceWindow(windowKey)
   const now = Date.now()
@@ -700,8 +691,8 @@ export function listAiPerformanceAccountOptions(
   access?: AccessScope,
   options: { keyword?: string; accountIds?: string[]; limit?: number } = {}
 ): AiPerformanceAccountOption[] {
-  const database = getDatabase()
-  const timezone = usageStatsTimezone(database)
+  const database = getRecordDatabase()
+  const timezone = usageStatsTimezone()
   const systemAccountId = currentSystemAccountId(access)
   const activeSinceHour = hourKey(new Date(Date.now() - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(options.accountIds ?? []).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
@@ -725,8 +716,8 @@ export function listAiPerformanceAccountOptions(
 }
 
 export function getSystemMetricsOverview(windowKey: UsageOverviewWindowKey = 'last1d'): SystemMetricsOverview {
-  const database = getDatabase()
-  const timezone = usageStatsTimezone(database)
+  const database = getRecordDatabase()
+  const timezone = usageStatsTimezone()
   const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC, id DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
   const window = usageOverviewWindow(windowKey)
   const sinceHour = hourKey(new Date(Date.now() - window.hours * 60 * 60 * 1000), timezone)
@@ -889,67 +880,56 @@ function loadDefaultAiPerformanceAccounts(database: DatabaseSync, systemAccountI
 }
 
 function loadDefaultAiPerformanceAccountsFromRankSnapshot(database: DatabaseSync, systemAccountId: string, limit: number): AiPerformanceAccountRow[] {
-  return database.prepare(`
-    SELECT
-      accounts.id,
-      accounts.name,
-      accounts.status,
-      accounts.provider_code,
-      accounts.system_account_id,
-      system_accounts.display_name AS system_account_name,
-      snapshots.metric_value AS request_count_last_7d,
-      snapshots.snapshot_at AS last_stat_hour
-    FROM (
-      SELECT *
-      FROM usage_rank_snapshots
-      WHERE system_account_id = ?
-        AND scope_type = 'account'
-        AND window_key = 'last7d'
-        AND metric = 'request_count'
-        AND snapshot_at = (
-          SELECT MAX(snapshot_at)
-          FROM usage_rank_snapshots
-          WHERE system_account_id = ?
-            AND scope_type = 'account'
-            AND window_key = 'last7d'
-            AND metric = 'request_count'
-        )
-      ORDER BY rank ASC
-      LIMIT ?
-    ) snapshots
-    INNER JOIN accounts
-      ON accounts.id = snapshots.scope_id
-      AND accounts.system_account_id = snapshots.system_account_id
-    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
-    ORDER BY snapshots.rank ASC, lower(accounts.name) ASC, accounts.id ASC
-  `).all(systemAccountId, systemAccountId, limit) as unknown as AiPerformanceAccountRow[]
+  const rows = database.prepare(`
+    SELECT scope_id, metric_value AS request_count_last_7d, snapshot_at AS last_stat_hour, rank
+    FROM usage_rank_snapshots
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND window_key = 'last7d'
+      AND metric = 'request_count'
+      AND snapshot_at = (
+        SELECT MAX(snapshot_at)
+        FROM usage_rank_snapshots
+        WHERE system_account_id = ?
+          AND scope_type = 'account'
+          AND window_key = 'last7d'
+          AND metric = 'request_count'
+      )
+    ORDER BY rank ASC
+    LIMIT ?
+  `).all(systemAccountId, systemAccountId, limit) as unknown as Array<{ scope_id: string; request_count_last_7d: number; last_stat_hour: string | null; rank: number }>
+  return mergeAiPerformanceStatsWithAccounts(rows.map((row) => ({
+    id: row.scope_id,
+    requestCountLast7d: Number(row.request_count_last_7d ?? 0),
+    lastStatHour: row.last_stat_hour ?? null,
+    rank: Number(row.rank ?? 0)
+  })), systemAccountId)
 }
 
 function loadSelectedAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, activeSinceHour: string, accountIds: string[]): AiPerformanceAccountRow[] {
   const placeholders = sqlPlaceholders(accountIds.length)
   const rows = database.prepare(`
     SELECT
-      accounts.id,
-      accounts.name,
-      accounts.status,
-      accounts.provider_code,
-      accounts.system_account_id,
-      system_accounts.display_name AS system_account_name,
-      COALESCE(SUM(usage_stats_hourly.request_count), 0) AS request_count_last_7d,
-      MAX(usage_stats_hourly.stat_hour) AS last_stat_hour
-    FROM accounts
-    LEFT JOIN usage_stats_hourly
-      ON usage_stats_hourly.system_account_id = accounts.system_account_id
-      AND usage_stats_hourly.scope_type = 'account'
-      AND usage_stats_hourly.scope_id = accounts.id
-      AND usage_stats_hourly.stat_hour >= ?
-    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
-    WHERE accounts.system_account_id = ?
-      AND accounts.id IN (${placeholders})
-    GROUP BY accounts.id
-  `).all(activeSinceHour, systemAccountId, ...accountIds) as unknown as AiPerformanceAccountRow[]
+      scope_id,
+      COALESCE(SUM(request_count), 0) AS request_count_last_7d,
+      MAX(stat_hour) AS last_stat_hour
+    FROM usage_stats_hourly
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND stat_hour >= ?
+      AND scope_id IN (${placeholders})
+    GROUP BY scope_id
+  `).all(systemAccountId, activeSinceHour, ...accountIds) as unknown as Array<{ scope_id: string; request_count_last_7d: number; last_stat_hour: string | null }>
+  const merged = mergeAiPerformanceStatsWithAccounts(accountIds.map((id) => {
+    const row = rows.find((candidate) => candidate.scope_id === id)
+    return {
+      id,
+      requestCountLast7d: Number(row?.request_count_last_7d ?? 0),
+      lastStatHour: row?.last_stat_hour ?? null
+    }
+  }), systemAccountId)
   const order = new Map(accountIds.map((id, index) => [id, index]))
-  return rows.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
+  return merged.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
 }
 
 function loadAiPerformanceHourlyRows(database: DatabaseSync, systemAccountId: string, accountIds: string[], sinceHour: string): AiPerformanceHourlyRow[] {
@@ -983,41 +963,65 @@ function loadAiPerformanceAccountOptionRows(
     return loadDefaultAiPerformanceAccounts(database, systemAccountId, options.limit)
   }
 
-  const clauses = ['accounts.system_account_id = ?']
-  const params: Array<string | number> = [activeSinceHour, systemAccountId]
   const likeKeyword = `%${keyword}%`
-  clauses.push('(accounts.name LIKE ? OR accounts.id LIKE ? OR accounts.provider_code LIKE ?)')
-  params.push(likeKeyword, likeKeyword, likeKeyword)
+  const accountRows = getDatabase().prepare(`
+    SELECT accounts.id
+    FROM accounts
+    WHERE accounts.system_account_id = ?
+      AND (accounts.name LIKE ? OR accounts.id LIKE ? OR accounts.provider_code LIKE ?)
+    ORDER BY lower(accounts.name) ASC, accounts.id ASC
+    LIMIT ?
+  `).all(systemAccountId, likeKeyword, likeKeyword, likeKeyword, options.limit) as unknown as Array<{ id: string }>
+  const accountIds = accountRows.map((row) => row.id)
+  return accountIds.length
+    ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, accountIds)
+    : []
+}
 
-  return database.prepare(`
-    SELECT *
-    FROM (
-      SELECT
-        accounts.id,
-        accounts.name,
-        accounts.status,
-        accounts.provider_code,
-        accounts.system_account_id,
-        NULL AS system_account_name,
-        COALESCE(SUM(usage_stats_hourly.request_count), 0) AS request_count_last_7d,
-        MAX(usage_stats_hourly.stat_hour) AS last_stat_hour
-      FROM accounts
-      LEFT JOIN usage_stats_hourly
-        ON usage_stats_hourly.system_account_id = accounts.system_account_id
-        AND usage_stats_hourly.scope_type = 'account'
-        AND usage_stats_hourly.scope_id = accounts.id
-        AND usage_stats_hourly.stat_hour >= ?
-      WHERE ${clauses.join(' AND ')}
-      GROUP BY accounts.id
-      ORDER BY
-        CASE WHEN request_count_last_7d > 0 THEN 0 ELSE 1 END ASC,
-        request_count_last_7d DESC,
-        last_stat_hour DESC,
-        lower(accounts.name) ASC,
-        accounts.id ASC
-      LIMIT ?
-    )
-  `).all(...params, options.limit) as unknown as AiPerformanceAccountRow[]
+function mergeAiPerformanceStatsWithAccounts(
+  statsRows: Array<{ id: string; requestCountLast7d: number; lastStatHour: string | null; rank?: number }>,
+  systemAccountId: string
+): AiPerformanceAccountRow[] {
+  const ids = [...new Set(statsRows.map((row) => row.id).filter(Boolean))]
+  if (!ids.length) return []
+  const placeholders = sqlPlaceholders(ids.length)
+  const accounts = getDatabase().prepare(`
+    SELECT
+      accounts.id,
+      accounts.name,
+      accounts.status,
+      accounts.provider_code,
+      accounts.system_account_id,
+      system_accounts.display_name AS system_account_name
+    FROM accounts
+    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
+    WHERE accounts.system_account_id = ?
+      AND accounts.id IN (${placeholders})
+  `).all(systemAccountId, ...ids) as unknown as Array<{
+    id: string
+    name: string
+    status: AiPerformanceAccount['status']
+    provider_code: string
+    system_account_id: string
+    system_account_name: string | null
+  }>
+  const statsById = new Map(statsRows.map((row, index) => [row.id, { ...row, index }]))
+  return accounts.map((account) => {
+    const stats = statsById.get(account.id)
+    return {
+      ...account,
+      request_count_last_7d: stats?.requestCountLast7d ?? 0,
+      last_stat_hour: stats?.lastStatHour ?? null
+    }
+  }).sort((left, right) => {
+    const leftStats = statsById.get(left.id)
+    const rightStats = statsById.get(right.id)
+    const leftRank = leftStats?.rank ?? Number.POSITIVE_INFINITY
+    const rightRank = rightStats?.rank ?? Number.POSITIVE_INFINITY
+    if (leftRank !== rightRank) return leftRank - rightRank
+    if (right.request_count_last_7d !== left.request_count_last_7d) return right.request_count_last_7d - left.request_count_last_7d
+    return left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id)
+  })
 }
 
 function dedupeAiPerformanceAccountRows(rows: AiPerformanceAccountRow[]): AiPerformanceAccountRow[] {

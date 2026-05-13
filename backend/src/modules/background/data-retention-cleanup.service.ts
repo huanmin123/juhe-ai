@@ -72,7 +72,7 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
   cleanupRunning = true
   try {
     const settings = getSettings()
-    const timezone = usageStatsTimezone(getDatabase())
+    const timezone = usageStatsTimezone()
     const batchSize = settingNumber(settings, 'dataRetentionCleanupBatchSize', defaultCleanupBatchSize, 100, 50000)
     const maxBatches = settingNumber(settings, 'dataRetentionCleanupMaxBatchesPerRun', defaultCleanupMaxBatchesPerRun, 1, 100)
     const now = Date.now()

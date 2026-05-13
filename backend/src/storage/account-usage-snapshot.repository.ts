@@ -1,5 +1,5 @@
 import { currentSystemAccountId } from './access-scope.js'
-import { getDatabase, nowIso } from './database.js'
+import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 
 export function upsertAccountUsageSnapshot(input: {
   accountId: string
@@ -11,7 +11,7 @@ export function upsertAccountUsageSnapshot(input: {
   const now = nowIso()
   const updatedAt = input.updatedAt ?? now
   const systemAccountId = accountSystemAccountId(input.accountId) ?? currentSystemAccountId()
-  getDatabase()
+  getRecordDatabase()
     .prepare(`
       INSERT INTO account_usage_snapshots (
         system_account_id, account_id, kind, source, snapshot_json, refresh_status,
@@ -50,7 +50,7 @@ export function updateAccountUsageSnapshotRefreshState(input: {
 }): void {
   const now = nowIso()
   const systemAccountId = accountSystemAccountId(input.accountId) ?? currentSystemAccountId()
-  getDatabase()
+  getRecordDatabase()
     .prepare(`
       INSERT INTO account_usage_snapshots (
         system_account_id, account_id, kind, source, snapshot_json, refresh_status,

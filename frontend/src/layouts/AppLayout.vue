@@ -50,6 +50,7 @@ import {
   BellOutlined,
   GlobalOutlined,
   BarChartOutlined,
+  DatabaseOutlined,
   FundOutlined,
   HistoryOutlined,
   SearchOutlined,
@@ -170,6 +171,7 @@ const menuIconMap = {
   '/operation-logs': ProfileOutlined,
   '/audit-logs': FileSearchOutlined,
   '/runtime-logs': SearchOutlined,
+  '/table-monitor': DatabaseOutlined,
   '/announcements': BellOutlined,
   '/settings': SettingOutlined,
   '/system-accounts': TeamOutlined

@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createApiKeyRecord, deleteApiKey, listApiKeysPage, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
+import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, listApiKeysPage, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -173,12 +173,14 @@ apiKeysRouter.delete('/:id', (req, res) => {
   const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
   try {
     runLoggedOperation(() => {
-      if (!deleteApiKey(req.params.id, requestAccess)) {
+      const deleteResult = deleteApiKeyWithRelatedCleanup(req.params.id, requestAccess)
+      if (!deleteResult.deleted) {
         throw new Error('API Key 不存在')
       }
       return {
         result: true,
         afterCommit: () => {
+          deleteResult.cleanupRelatedData()
           clearGatewayRuntimeCache()
           invalidateApiKeyQuotaCacheById(req.params.id)
         },

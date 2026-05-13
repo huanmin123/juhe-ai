@@ -1,4 +1,4 @@
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { loadSystemAccountsByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
@@ -156,7 +156,7 @@ const operationLogDefaultPageSize = 100
 const operationLogMaxPageSize = 100
 
 export function createOperationLog(input: OperationLogInput): OperationLogSummary {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const id = input.id ?? newId('oplog')
   const createdAt = input.createdAt ?? nowIso()
   const visibilityScope = input.visibilityScope ?? 'targeted'
@@ -310,7 +310,7 @@ export function getOperationLogDetailForViewer(id: string, systemAccountId: stri
 }
 
 export function cleanupOperationLogsBefore(cutoffCreatedAt: string, limit?: number): number {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   if (!limit) {
     const result = database
       .prepare('DELETE FROM operation_logs WHERE created_at < ?')
@@ -333,7 +333,7 @@ function listOperationLogsWithFilters(filters: { clause: string; params: Operati
   const pageSize = normalizeOperationLogPageSize(options.pageSize ?? options.limit)
   const page = normalizeOperationLogPage(options.page)
   const offset = (page - 1) * pageSize
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const totalRow = database
     .prepare(`
       SELECT COUNT(*) AS total
@@ -373,7 +373,7 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
   const pageSize = normalizeOperationLogPageSize(options.pageSize ?? options.limit)
   const page = normalizeOperationLogPage(options.page)
   const offset = (page - 1) * pageSize
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const commonFilters = buildCommonOperationLogFilters(options)
   const targetedClause = ['ol.visibility_scope = \'targeted\'', ...commonFilters.clauses].join(' AND ')
   const allUsersClause = ['ol.visibility_scope = \'all_users\'', ...commonFilters.clauses].join(' AND ')
@@ -436,7 +436,7 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
 }
 
 function getOperationLogDetailWithClause(whereClause: string, params: OperationLogFilterValue[]): OperationLogDetail | undefined {
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const row = database
     .prepare(`SELECT ol.* FROM operation_logs ol WHERE ${whereClause} LIMIT 1`)
     .get(...params) as OperationLogRow | undefined
@@ -594,7 +594,7 @@ function loadViewerDetailLevels(operationLogIds: string[], systemAccountId: stri
   const ids = [...new Set(operationLogIds.filter((id) => id.trim()))]
   if (ids.length === 0) return new Map()
 
-  const rows = getDatabase()
+  const rows = getRecordDatabase()
     .prepare(`
       SELECT operation_log_id, detail_level
       FROM operation_log_viewers

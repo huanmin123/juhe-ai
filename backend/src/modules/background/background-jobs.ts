@@ -19,6 +19,7 @@ import {
   refreshGroupAccountStatsCache,
   refreshUsageRankSnapshots
 } from '../../storage/usage-stats.repository.js'
+import { collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
@@ -46,6 +47,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'usage-stats-consistency-check', intervalMs: 60 * 60 * 1000, task: runUsageStatsConsistencyCheck })
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: 60 * 1000, task: runResourceAuthorizationExpirySweep })
   scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000, task: runSystemMetricsSample })
+  scheduler.schedule({ name: 'table-storage-monitor', intervalMs: 5 * 60 * 1000, task: runTableStorageMonitor })
   scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: proxyLatencyRefreshIntervalSeconds * 1000, task: runProxyLatencyRefresh })
   scheduler.schedule({ name: 'account-quality-refresh', intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 600, 60, 3600) * 1000, task: runAccountQualityRefresh })
   scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runOpenAIOAuthAccessTokenRefresh })
@@ -305,9 +307,19 @@ function settingsString(key: string, fallback: string): string {
 
 function databaseFileBytes(): number | undefined {
   try {
-    return existsSync(runtimeConfig.databasePath) ? statSync(runtimeConfig.databasePath).size : undefined
+    const businessBytes = existsSync(runtimeConfig.databasePath) ? statSync(runtimeConfig.databasePath).size : 0
+    const recordBytes = existsSync(runtimeConfig.recordDatabasePath) ? statSync(runtimeConfig.recordDatabasePath).size : 0
+    return businessBytes + recordBytes || undefined
   } catch {
     return undefined
+  }
+}
+
+async function runTableStorageMonitor(): Promise<void> {
+  try {
+    collectTableStorageSnapshot()
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_table_storage_monitor_failed' }), '表数据监控采样失败')
   }
 }
 

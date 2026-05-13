@@ -23,13 +23,14 @@ import { settingsRouter } from './modules/settings/settings.routes.js'
 import { statsRouter } from './modules/stats/stats.routes.js'
 import { systemAccountsRouter } from './modules/system-accounts/system-accounts.routes.js'
 import { myTeamsRouter, systemTeamsRouter } from './modules/system-teams/system-teams.routes.js'
+import { tableMonitorRouter } from './modules/table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from './modules/usage-records/usage-records.routes.js'
 import { openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from './modules/operation-logs/operation-logs.routes.js'
 import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
 import { openAIOAuthRouter } from './modules/openai-oauth/openai-oauth.routes.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
-import { getDatabase } from './storage/database.js'
+import { getBusinessDatabase, getRecordDatabase } from './storage/database.js'
 import { listPublicGlobalSettings } from './storage/repositories.js'
 import { ok } from './shared/http.js'
 import { installProcessLogHandlers, logger } from './shared/logger.js'
@@ -112,7 +113,8 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
   })
 }
 
-getDatabase()
+getBusinessDatabase()
+getRecordDatabase()
 installProcessLogHandlers()
 setRuntimeLogLineSink((line) => sendRuntimeLogLineToWorker(line))
 
@@ -164,6 +166,7 @@ app.use('/api/operation-logs', requireAdmin, operationLogsRouter)
 app.use('/api/audit-logs', requireAdmin, auditLogsRouter)
 app.use('/api/runtime-logs', requireAdmin, runtimeLogsRouter)
 app.use('/api/stats', requireAdmin, statsRouter)
+app.use('/api/table-monitor', requireAdmin, tableMonitorRouter)
 app.use('/api/settings', settingsRouter)
 app.use('/api/system-accounts', systemAccountsRouter)
 app.use('/api/my-teams', forceSelfAccessScope, myTeamsRouter)

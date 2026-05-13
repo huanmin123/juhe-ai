@@ -11,6 +11,7 @@ import { logger } from '../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-stream-first-output-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'stream-first-output.sqlite3')
+runtimeConfig.recordDatabasePath = join(tempRoot, 'stream-first-output-records.sqlite3')
 runtimeConfig.secret = 'stream-first-output-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -147,6 +148,7 @@ async function main(): Promise<void> {
     await closeServer(upstreamServer)
     try {
       databaseModule.getDatabase().close()
+      databaseModule.getRecordDatabase().close()
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })

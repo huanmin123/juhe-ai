@@ -48,6 +48,9 @@ import type {
   SystemAccountPrincipalSummary,
   SystemAccountSummary,
   SystemMetricsOverview,
+  MonitoredDatabaseRole,
+  TableStorageOverview,
+  TableStorageSnapshotSummary,
   UsageOverviewWindowKey,
   UsageStatsOverview,
   UsageRecordListResult,
@@ -179,6 +182,12 @@ export interface OperationLogListParams {
   actorSystemAccountId?: string
   affectedSystemAccountId?: string
   operationScopeSystemAccountId?: string
+  limit?: number
+}
+
+interface TableMonitorHistoryParams {
+  databaseRole: MonitoredDatabaseRole
+  tableName: string
   limit?: number
 }
 
@@ -412,6 +421,11 @@ export const api = {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
     accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
     systemMetrics: (params?: Pick<UsageOverviewParams, 'window'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params }))
+  },
+  tableMonitor: {
+    overview: () => unwrap<TableStorageOverview>(http.get('/table-monitor/overview')),
+    history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params })),
+    sample: () => unwrap<TableStorageOverview>(http.post('/table-monitor/sample'))
   },
   myStats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),

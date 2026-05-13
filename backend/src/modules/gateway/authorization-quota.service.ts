@@ -1,5 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
-import { getDatabase } from '../../storage/database.js'
+import { getDatabase, getRecordDatabase } from '../../storage/database.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
@@ -163,7 +163,7 @@ function authorizationQuotaChecks(authorizationId: string, scopeType: 'account_a
 function quotaCheckForAuthorizationRow(row: AuthorizationQuotaRow, scopeType: 'account_authorization' | 'group_authorization', now: Date): AuthorizationQuotaCheck[] {
   const limits = parseRequestQuotaLimitsJson(row.limits_json)
   if (!hasEnabledRequestQuotaLimit(limits)) return []
-  const costs = loadRequestQuotaCosts(getDatabase(), {
+  const costs = loadRequestQuotaCosts(getRecordDatabase(), {
     systemAccountId: row.resource_owner_system_account_id,
     scopeType,
     scopeId: row.id,
@@ -211,7 +211,7 @@ function teamAuthorizationMemberScopeIds(teamGrantId: string, scopeType: 'accoun
 
 function sumMemberQuotaCosts(systemAccountId: string, scopeType: string, scopeIds: string[], now: Date, hourlyWindowHours?: number) {
   return scopeIds.reduce((summary, scopeId) => {
-    const costs = loadRequestQuotaCosts(getDatabase(), {
+    const costs = loadRequestQuotaCosts(getRecordDatabase(), {
       systemAccountId,
       scopeType,
       scopeId,

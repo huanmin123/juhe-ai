@@ -30,7 +30,7 @@
 - 运行时：`Node.js 22+`。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
-- 存储：Node 22 内置 `node:sqlite`，默认 SQLite 文件位于 `backend/data/juhe-ai.sqlite3`。
+- 存储：Node 22 内置 `node:sqlite`，默认拆为业务库 `backend/data/juhe-ai.sqlite3` 和记录库 `backend/data/juhe-ai-records.sqlite3`。
 - 配置：只读取 `backend/.env`，相对路径按 `backend/` 目录解析。
 - 网关协议：对外统一兼容 OpenAI `/v1/*`，当前只启用 OpenAI 供应商适配。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
@@ -123,9 +123,10 @@ flowchart LR
 ### 6.1 存储原则
 
 - SQLite 是当前唯一持久化存储；不引入 Redis、ClickHouse 或独立任务队列。
+- 运行时必须明确区分业务库和记录库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；记录库保存使用记录、审计、操作日志、运行日志索引、统计缓存、账号质量缓存、系统监控和表监控历史。
 - `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。
 - `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
-- 启动时通过 `applySchema()` 创建当前版本需要的表和索引，不承载一次性旧库修复逻辑。
+- 启动时通过 `applyBusinessSchema()` 和 `applyRecordSchema()` 创建当前版本需要的表和索引，不承载一次性旧库修复逻辑。
 - 启动时通过 `seedDefaults()` 写入默认管理员、OpenAI 供应商、默认 OpenAI 分组、全局设置和系统设置。
 - 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
 - 当前项目未正式上线，本地 SQLite 可以备份后直接清洗或重建；源码只保留当前完整 schema、repository 和 API 逻辑。
@@ -202,7 +203,7 @@ erDiagram
 - 预上线阶段的 `backend/src/storage/schema.ts` 只描述当前完整结构：表、索引、默认约束和外键。
 - 新表和索引可以使用 `CREATE ... IF NOT EXISTS` 保持重复启动安全，但不能夹带旧表、旧字段或临时对象处理分支。
 - 不写 `ensureColumn()`、启动补列、迁移标记、旧字段适配、临时表改名、一次性清洗分支或“同步旧数据”逻辑到运行时代码。
-- 本地库结构变化时，先备份 `backend/data/juhe-ai.sqlite3`，再通过直接 SQL、临时离线脚本或重建库处理数据。
+- 本地库结构变化时，先备份业务库 `backend/data/juhe-ai.sqlite3` 和 `backend/.env`，再通过直接 SQL、临时离线脚本或重建库处理数据；记录库默认不纳入业务备份。
 - 需要保留少量本地数据时，按当前模型导出、清洗、导入，不在源码里模拟多个历史版本。
 - 正式上线前若要支持外部用户升级，必须先形成独立升级方案和验证计划，再调整本节规则。
 
@@ -210,7 +211,8 @@ erDiagram
 
 - `JUHE_AI_HOST`：后端监听地址，默认 `127.0.0.1`。
 - `JUHE_AI_PORT`：后端监听端口，默认 `3000`。
-- `JUHE_AI_DATABASE_PATH`：SQLite 文件路径，默认 `./data/juhe-ai.sqlite3`。
+- `JUHE_AI_DATABASE_PATH`：SQLite 业务库路径，默认 `./data/juhe-ai.sqlite3`。
+- `JUHE_AI_RECORD_DATABASE_PATH`：SQLite 记录库路径，默认 `./data/juhe-ai-records.sqlite3`。
 - `JUHE_AI_SECRET`：本地敏感数据加密和签名相关密钥，复用旧数据库时必须保持稳定。
 - `JUHE_AI_OAUTH_PROXY_URL`：OpenAI OAuth 相关请求可选代理。
 - `JUHE_AI_BACKEND_URL`、`JUHE_AI_SMOKE_ACCOUNT_NAME`、`JUHE_AI_SMOKE_MODEL`、`JUHE_AI_SMOKE_PROMPT`：烟测配置。

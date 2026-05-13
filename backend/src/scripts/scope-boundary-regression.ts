@@ -9,6 +9,7 @@ import { runtimeConfig } from '../config/runtime.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-scope-regression-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'scope-regression.sqlite3')
+runtimeConfig.recordDatabasePath = join(tempRoot, 'scope-regression-records.sqlite3')
 runtimeConfig.secret = 'scope-regression-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -359,6 +360,7 @@ async function main(): Promise<void> {
   } finally {
     try {
       databaseModule.getDatabase().close()
+      databaseModule.getRecordDatabase().close()
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })

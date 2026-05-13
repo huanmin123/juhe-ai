@@ -2,7 +2,7 @@ import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/type
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
 import { buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
 import { decryptJson } from './crypto.js'
-import { getDatabase, nowIso } from './database.js'
+import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import type { AccountListRow } from './repository-row-types.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
@@ -44,13 +44,14 @@ function queryAccountRowsForAccess(
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return queryRows(`
         SELECT account_rows.*, ${groupBindingSelectColumns()},
-          account_quality.quality_score,
-          account_quality.quality_state,
-          account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms,
-          account_quality.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
-          account_quality.recent_request_count AS quality_recent_request_count,
-          account_quality.success_rate AS quality_recent_success_rate,
-          account_quality.updated_at AS quality_updated_at
+          COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
+          NULL AS quality_score,
+          NULL AS quality_state,
+          NULL AS quality_ewma_first_token_ms,
+          NULL AS quality_recent_avg_first_token_ms,
+          NULL AS quality_recent_request_count,
+          NULL AS quality_recent_success_rate,
+          NULL AS quality_updated_at
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
@@ -59,28 +60,19 @@ function queryAccountRowsForAccess(
           ON group_bindings.account_id = account_rows.id
           AND group_bindings.system_account_id = account_rows.system_account_id
         LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
-        LEFT JOIN usage_stats_totals account_usage
-          ON account_usage.system_account_id = account_rows.system_account_id
-          AND account_usage.scope_type = 'account'
-          AND account_usage.scope_id = account_rows.id
-        LEFT JOIN usage_stats_totals authorization_usage
-          ON authorization_usage.system_account_id = account_rows.system_account_id
-          AND authorization_usage.scope_type = 'account_authorization'
-          AND authorization_usage.scope_id = account_rows.authorization_id
-        LEFT JOIN account_quality_scores account_quality
-          ON account_quality.account_id = account_rows.id
       `)
   }
   if (!viewerSystemAccountId) {
     return queryRows(`
         SELECT account_rows.*, ${groupBindingSelectColumns()},
-          account_quality.quality_score,
-          account_quality.quality_state,
-          account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms,
-          account_quality.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
-          account_quality.recent_request_count AS quality_recent_request_count,
-          account_quality.success_rate AS quality_recent_success_rate,
-          account_quality.updated_at AS quality_updated_at
+          COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
+          NULL AS quality_score,
+          NULL AS quality_state,
+          NULL AS quality_ewma_first_token_ms,
+          NULL AS quality_recent_avg_first_token_ms,
+          NULL AS quality_recent_request_count,
+          NULL AS quality_recent_success_rate,
+          NULL AS quality_updated_at
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
@@ -89,27 +81,18 @@ function queryAccountRowsForAccess(
           ON group_bindings.account_id = account_rows.id
           AND group_bindings.system_account_id = account_rows.system_account_id
         LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
-        LEFT JOIN usage_stats_totals account_usage
-          ON account_usage.system_account_id = account_rows.system_account_id
-          AND account_usage.scope_type = 'account'
-          AND account_usage.scope_id = account_rows.id
-        LEFT JOIN usage_stats_totals authorization_usage
-          ON authorization_usage.system_account_id = account_rows.system_account_id
-          AND authorization_usage.scope_type = 'account_authorization'
-          AND authorization_usage.scope_id = account_rows.authorization_id
-        LEFT JOIN account_quality_scores account_quality
-          ON account_quality.account_id = account_rows.id
       `)
   }
   return queryRows(`
       SELECT account_rows.*, ${groupBindingSelectColumns()},
-        account_quality.quality_score,
-        account_quality.quality_state,
-        account_quality.ewma_first_token_ms AS quality_ewma_first_token_ms,
-        account_quality.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
-        account_quality.recent_request_count AS quality_recent_request_count,
-        account_quality.success_rate AS quality_recent_success_rate,
-        account_quality.updated_at AS quality_updated_at
+        COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
+        NULL AS quality_score,
+        NULL AS quality_state,
+        NULL AS quality_ewma_first_token_ms,
+        NULL AS quality_recent_avg_first_token_ms,
+        NULL AS quality_recent_request_count,
+        NULL AS quality_recent_success_rate,
+        NULL AS quality_updated_at
       FROM (
         SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM accounts
@@ -128,17 +111,45 @@ function queryAccountRowsForAccess(
         ON group_bindings.account_id = account_rows.id
         AND group_bindings.system_account_id = CASE WHEN account_rows.access_type = 'authorized' THEN ? ELSE account_rows.system_account_id END
       LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
-      LEFT JOIN usage_stats_totals account_usage
-        ON account_usage.system_account_id = account_rows.system_account_id
-        AND account_usage.scope_type = 'account'
-        AND account_usage.scope_id = account_rows.id
-      LEFT JOIN usage_stats_totals authorization_usage
-        ON authorization_usage.system_account_id = account_rows.system_account_id
-        AND authorization_usage.scope_type = 'account_authorization'
-        AND authorization_usage.scope_id = account_rows.authorization_id
-      LEFT JOIN account_quality_scores account_quality
-        ON account_quality.account_id = account_rows.id
     `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId])
+}
+
+export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): AccountListRow[] {
+  if (rows.length === 0) return rows
+  const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))]
+  if (ids.length === 0) return rows
+  const qualityRows = getRecordDatabase()
+    .prepare(`
+      SELECT account_id, quality_score, quality_state, ewma_first_token_ms, recent_avg_first_token_ms,
+        recent_request_count, success_rate, updated_at
+      FROM account_quality_scores
+      WHERE account_id IN (${ids.map(() => '?').join(',')})
+    `)
+    .all(...ids) as unknown as Array<{
+      account_id: string
+      quality_score: number | null
+      quality_state: string | null
+      ewma_first_token_ms: number | null
+      recent_avg_first_token_ms: number | null
+      recent_request_count: number | null
+      success_rate: number | null
+      updated_at: string | null
+    }>
+  const qualityByAccount = new Map(qualityRows.map((row) => [row.account_id, row]))
+  return rows.map((row) => {
+    const quality = qualityByAccount.get(row.id)
+    if (!quality) return row
+    return {
+      ...row,
+      quality_score: quality.quality_score,
+      quality_state: quality.quality_state,
+      quality_ewma_first_token_ms: quality.ewma_first_token_ms,
+      quality_recent_avg_first_token_ms: quality.recent_avg_first_token_ms,
+      quality_recent_request_count: quality.recent_request_count,
+      quality_recent_success_rate: quality.success_rate,
+      quality_updated_at: quality.updated_at
+    }
+  })
 }
 
 export function accountCredentialsForList(row: AccountListRow): Record<string, unknown> {

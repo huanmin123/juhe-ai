@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { getDatabase } from './database.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
 import {
@@ -120,7 +121,7 @@ export function subtractUsageStatsRecord(database: DatabaseSync, row: UsageStats
 
 function usageStatsTimeKeys(database: DatabaseSync, row: UsageStatsRecordRow): UsageStatsTimeKeys {
   const createdAt = new Date(row.created_at)
-  const timezone = usageStatsTimezone(database)
+  const timezone = usageStatsTimezone()
   return {
     statMinute: minuteKey(createdAt, timezone),
     statHour: hourKey(createdAt, timezone),
@@ -288,8 +289,9 @@ function statsSubtractParams(stats: UsageStatsAccumulator): number[] {
 }
 
 function isDeletedApiKeyRecord(database: DatabaseSync, row: UsageStatsRecordRow): boolean {
+  void database
   if (!row.api_key_id) return false
-  const apiKey = database.prepare('SELECT id FROM api_keys WHERE id = ?').get(row.api_key_id) as unknown as { id?: string } | undefined
+  const apiKey = getDatabase().prepare('SELECT id FROM api_keys WHERE id = ?').get(row.api_key_id) as unknown as { id?: string } | undefined
   return !apiKey?.id
 }
 
@@ -316,7 +318,7 @@ function upsertAccountQualityMinuteStats(database: DatabaseSync, row: UsageStats
     return
   }
   const createdAt = new Date(row.created_at)
-  const statMinute = minuteKey(createdAt, usageStatsTimezone(database))
+  const statMinute = minuteKey(createdAt, usageStatsTimezone())
   const success = row.success === 1
   const firstTokenMsValue = Number(row.first_token_ms ?? NaN)
   const hasFirstTokenSample = success && Number.isFinite(firstTokenMsValue) && firstTokenMsValue >= 0
@@ -364,7 +366,7 @@ function subtractAccountQualityMinuteStats(database: DatabaseSync, row: UsageSta
     return
   }
   const createdAt = new Date(row.created_at)
-  const statMinute = minuteKey(createdAt, usageStatsTimezone(database))
+  const statMinute = minuteKey(createdAt, usageStatsTimezone())
   const success = row.success === 1
   const firstTokenMsValue = Number(row.first_token_ms ?? NaN)
   const hasFirstTokenSample = success && Number.isFinite(firstTokenMsValue) && firstTokenMsValue >= 0

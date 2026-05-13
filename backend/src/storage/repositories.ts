@@ -3,14 +3,14 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
-import { accountCredentialsForList, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
+import { hasAccountQualityScoreSort, normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
+import { accountCredentialsForList, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries, type AccountRowsPage } from './account-read.repository.js'
 import { getAccountUsageStatsOverview as buildAccountUsageStatsOverview } from './account-usage.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
 import { createApiKeyRecord, deleteApiKey, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
@@ -83,6 +83,7 @@ export {
 export {
   createApiKeyRecord,
   deleteApiKey,
+  deleteApiKeyWithRelatedCleanup,
   listApiKeys,
   listApiKeysPage,
   updateApiKey
@@ -646,7 +647,7 @@ export function listAccounts(access?: AccessScope, options?: AccountListOptions)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
-  const rows = listAccountRowsForAccess(access, listOptions)
+  const rows = sortHydratedAccountRows(hydrateAccountRowsFromRecordDatabase(listAccountRowsForAccess(access, listOptions)), listOptions)
   return accountSummariesFromRows(rows, access, viewerSystemAccountId)
 }
 
@@ -654,17 +655,103 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
-  const page = listAccountRowsPageForAccess(access, listOptions)
+  const page = hasAccountQualityScoreSort(listOptions)
+    ? sortedHydratedAccountRowsPage(access, listOptions)
+    : (() => {
+      const databasePage = listAccountRowsPageForAccess(access, listOptions)
+      return {
+        rows: sortHydratedAccountRows(hydrateAccountRowsFromRecordDatabase(databasePage.rows), listOptions),
+        total: databasePage.total
+      }
+    })()
+  const rows = page.rows
   return {
-    items: accountSummariesFromRows(page.rows, access, viewerSystemAccountId),
+    items: accountSummariesFromRows(rows, access, viewerSystemAccountId),
     total: page.total,
     page: listOptions.page,
     pageSize: listOptions.pageSize
   }
 }
 
+function sortedHydratedAccountRowsPage(access: AccessScope | undefined, options: ReturnType<typeof normalizeAccountListOptions>): AccountRowsPage {
+  const rows = sortHydratedAccountRows(hydrateAccountRowsFromRecordDatabase(listAccountRowsForAccess(access, options)), options)
+  const start = (options.page - 1) * options.pageSize
+  return {
+    rows: rows.slice(start, start + options.pageSize),
+    total: rows.length
+  }
+}
+
+function sortHydratedAccountRows(rows: AccountListRow[], options: ReturnType<typeof normalizeAccountListOptions>): AccountListRow[] {
+  if (!options.sorts.some((sort) => sort.field === 'qualityScore')) {
+    return rows
+  }
+  return [...rows].sort((left, right) => {
+    for (const sort of options.sorts) {
+      const diff = compareAccountRowsBySort(left, right, sort)
+      if (diff !== 0) {
+        return diff
+      }
+    }
+    return left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)
+  })
+}
+
+function compareAccountRowsBySort(left: AccountListRow, right: AccountListRow, sort: ReturnType<typeof normalizeAccountListOptions>['sorts'][number]): number {
+  const direction = sort.order === 'desc' ? -1 : 1
+  if (sort.field === 'qualityScore') {
+    const leftHasQuality = typeof left.quality_score === 'number'
+    const rightHasQuality = typeof right.quality_score === 'number'
+    if (leftHasQuality !== rightHasQuality) return leftHasQuality ? -1 : 1
+    if (!leftHasQuality || !rightHasQuality) return 0
+    return ((left.quality_score ?? 0) - (right.quality_score ?? 0)) * direction
+  }
+  return compareAccountRowsByValue(accountRowSortValue(left, sort.field), accountRowSortValue(right, sort.field)) * direction
+}
+
+function accountRowSortValue(row: AccountListRow, field: string): string | number | undefined {
+  switch (field) {
+    case 'priority':
+      return row.access_type === 'authorized' ? 0 : row.priority
+    case 'superPriority':
+      return row.access_type === 'authorized' ? 0 : row.super_priority_enabled
+    case 'fallback':
+      return row.access_type === 'authorized' ? 0 : row.fallback_enabled
+    case 'name':
+      return row.name
+    case 'type':
+      return row.type
+    case 'providerCode':
+      return row.provider_code
+    case 'systemAccount':
+      return row.system_account_sort_name ?? row.system_account_id
+    case 'concurrency':
+      return row.concurrency_limit
+    case 'status':
+      return row.status
+    case 'accountExpiresAt':
+      return row.account_expires_at ?? undefined
+    case 'lastUsedAt':
+      return row.last_used_at ?? undefined
+    case 'notes':
+      return row.notes ?? undefined
+    default:
+      return undefined
+  }
+}
+
+function compareAccountRowsByValue(left: string | number | undefined, right: string | number | undefined): number {
+  if (left === undefined && right === undefined) return 0
+  if (left === undefined) return 1
+  if (right === undefined) return -1
+  if (typeof left === 'number' || typeof right === 'number') {
+    return Number(left) - Number(right)
+  }
+  return String(left).localeCompare(String(right), 'zh-CN')
+}
+
 function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountSummary[] {
-  const timezone = usageStatsTimezone(getDatabase())
+  const timezone = usageStatsTimezone()
   const accountIds = rows.map((row) => row.id)
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)
   const accountUsageScopes = rows.map((row) => usageScope(row.id, row.system_account_id, row.id))
@@ -765,7 +852,7 @@ export function getAccountUsageStatsOverview(access?: AccessScope, range?: Accou
   const overview = buildAccountUsageStatsOverview({
     access,
     accounts: accountRows,
-    range: range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone(getDatabase())),
+    range: range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone()),
     defaultTrendAccountIds,
     loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
   })
@@ -776,10 +863,11 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
   const listOptions = normalizeAccountListOptions(options)
   const accounts = listAccounts(access, options)
   const defaultTrendAccountIds = loadAccountUsageDefaultTrendAccountIds(access)
+  const range = options?.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
   const overview = buildAccountUsageStatsOverview({
     access,
     accounts,
-    range: options?.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone(getDatabase())),
+    range,
     defaultTrendAccountIds,
     loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
   })
@@ -838,7 +926,7 @@ function compareAccountUsageStatsRows(left: AccountUsageStatsOverview['rows'][nu
 function loadAccountUsageDefaultTrendAccountIds(access?: AccessScope): string[] {
   const systemAccountId = scopedSystemAccountId(access)
   if (!systemAccountId) return []
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const rows = database.prepare(`
     SELECT scope_id
     FROM usage_rank_snapshots
@@ -1670,7 +1758,7 @@ export function recordAccountStreamFailure(input: {
 }
 
 export function listGroups(access?: AccessScope): GroupSummary[] {
-  const timezone = usageStatsTimezone(getDatabase())
+  const timezone = usageStatsTimezone()
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const rows = listGroupRowsForAccess(access)
   const groupIds = rows.map((row) => row.id)
@@ -2237,7 +2325,7 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
 export function getResourceAuthorizationUsage(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): ResourceAuthorizationSummary | undefined {
   const authorization = listResourceAuthorizations({ id: authorizationId, status: 'all' }, access)[0]
   if (!authorization) return undefined
-  const range = options.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone(getDatabase()))
+  const range = options.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
   const detail = loadResourceAuthorizationUsageDetail(authorization, range)
   return {
     ...authorization,
@@ -2619,7 +2707,7 @@ function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[], usageR
   const systemAccounts = loadSystemAccountsByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id]))
   const teamNames = loadSystemTeamNameMap(rows.map((row) => row.effective_source_team_id ?? ''))
   const sources = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.id))
-  const usage = loadResourceAuthorizationUsageSummaries(rows, usageRange ?? todayDateKey(usageStatsTimezone(getDatabase())))
+  const usage = loadResourceAuthorizationUsageSummaries(rows, usageRange ?? todayDateKey(usageStatsTimezone()))
   const totalUsage = loadResourceAuthorizationUsageSummaries(rows)
   return rows.map((row) => {
     const owner = systemAccounts.get(row.resource_owner_system_account_id)

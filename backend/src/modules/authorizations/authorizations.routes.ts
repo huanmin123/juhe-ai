@@ -358,7 +358,7 @@ authorizationsRouter.get('/:id/usage', (req, res) => {
       range: normalizeAccountUsageStatsRange({
         startDate: queryParsed.data.startDate,
         endDate: queryParsed.data.endDate
-      }, usageStatsTimezone(getDatabase()))
+      }, usageStatsTimezone())
     }
   )
   if (!authorization) {
@@ -400,7 +400,7 @@ function clearAuthorizationRuntimeCaches(): void {
 }
 
 function normalizeAuthorizationListUsageRange(input: { startDate?: string; endDate?: string }) {
-  const timezone = usageStatsTimezone(getDatabase())
+  const timezone = usageStatsTimezone()
   const today = todayDateKey(timezone)
   const startDate = input.startDate ?? input.endDate ?? today
   const endDate = input.endDate ?? input.startDate ?? today

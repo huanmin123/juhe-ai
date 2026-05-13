@@ -6,21 +6,49 @@
 
 ## 默认位置
 
-后端默认数据库文件：
+后端默认使用两个 SQLite 文件：
 
 ```text
-backend/data/juhe-ai.sqlite3
+业务库：backend/data/juhe-ai.sqlite3
+记录库：backend/data/juhe-ai-records.sqlite3
 ```
 
 如需调整位置，编辑项目内本地配置文件 `backend/.env`，不设置系统环境变量：
 
 ```dotenv
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
+JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 ```
 
-相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3` 这类项目内相对路径；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
+相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3` 和 `./data/juhe-ai-records.sqlite3` 这类项目内相对路径；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
 
 迁移到其他电脑或服务器时，保留 `backend/.env` 和 `backend/data/` 即可带走配置与数据。
+
+## 业务库与记录库边界
+
+业务库只保存可恢复的核心业务数据：
+
+- `system_accounts`、`system_sessions`
+- `global_settings`、`system_settings`
+- `providers`、`proxy_profiles`、`error_policies`
+- `accounts`、`groups`、`group_accounts`、`api_keys`
+- `system_teams`、`system_team_members`
+- `resource_authorizations`、`resource_authorization_sources`、`team_resource_authorization_grants`
+- `announcements`、`announcement_reads`
+
+记录库保存可丢失、可重建、可过期或排障类数据：
+
+- `usage_records`
+- `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、`usage_rank_snapshots`、`stats_job_state`
+- `group_account_stats`、`account_quality_scores`、`account_quality_minute_stats`
+- `audit_logs`、`audit_log_attempts`、`audit_payload_blobs`、`audit_payload_refs`、`audit_error_groups`
+- `operation_logs`、`operation_log_targets`、`operation_log_viewers`
+- `runtime_logs`、`runtime_log_search`
+- `account_usage_snapshots`
+- `system_metrics_samples`、`system_metrics_hourly`
+- `database_storage_snapshots`、`table_storage_snapshots`
+
+运行时代码不通过 `ATTACH` 跨库查询，也不在业务库里兼容读取旧记录表。旧整库需要拆分或清理时，只能使用停机后的显式脚本。
 
 ## 当前实现
 
@@ -31,11 +59,12 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免主进程和 background worker 短事务重叠时立即返回 `database is locked`
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 客户请求链路中的高频 SQLite 读写优先通过独立本地 DB service 进程异步完成，降低 Web/API/网关主进程被同步 `DatabaseSync` 调用短暂阻塞的风险；DB service 不改变 SQLite 单写者模型。
-- 使用记录按每次上游尝试写入；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
+- 业务库通过 `JUHE_AI_DATABASE_PATH` 打开，记录库通过 `JUHE_AI_RECORD_DATABASE_PATH` 打开；两者都使用 WAL。
+- 使用记录按每次上游尝试写入记录库；失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
 - 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志。
 - 原始审计日志使用独立表保存完全成功请求的 10% 稳定样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，网关请求链路只能终态入队，后台批量写库，不能同步写审计表。
-- 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；搜索能力使用 SQLite 索引表 `runtime_logs` 和 FTS5 表 `runtime_log_search`，不在查询时扫描日志文件。
+- 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；搜索能力使用记录库索引表 `runtime_logs` 和 FTS5 表 `runtime_log_search`，不在查询时扫描日志文件。
 - 系统团队、团队成员和统一资源授权使用独立表记录；授权不复制账户凭据，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
 - 登录验证码挑战暂不写入 SQLite，使用后端进程内存保存短时一次性验证码；过期和已提交的挑战会被清理。
@@ -43,7 +72,7 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 
 ## 统计缓存与监控存储
 
-个人或几个人使用时，统计缓存也优先放在 SQLite 内，不额外引入 Redis、ClickHouse 或 Prometheus。`usage_records` 仍是事实源，但账户列表、分组列表、用户统计概览、管理员统计概览和监控图都应读取缓存表。缓存表属于业务数据缓存，必须按 `system_account_id` 隔离；用户统计概览只读取当前用户缓存，管理员统计概览默认读取全局缓存并支持筛选指定系统账户，主机级系统监控只给管理员看。
+个人或几个人使用时，统计缓存也优先放在记录库内，不额外引入 Redis、ClickHouse 或 Prometheus。`usage_records` 仍是事实源，但账户列表、分组列表、用户统计概览、管理员统计概览和监控图都应读取缓存表。缓存表属于记录库数据，必须按 `system_account_id` 隔离；用户统计概览只读取当前用户缓存，管理员统计概览默认读取全局缓存并支持筛选指定系统账户，主机级系统监控只给管理员看。
 
 建议新增表：
 
@@ -57,6 +86,8 @@ JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 - `group_account_stats`：按 `system_account_id + group_id` 保存分组绑定账户数量、可用数、状态数量和并发上限，供分组列表直接读取。
 - `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、事件循环延迟、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
+- `database_storage_snapshots`：按采样时间保存业务库 / 记录库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量。
+- `table_storage_snapshots`：按采样时间保存每张表的行数、表大小、索引大小、总大小和 1 小时 / 24 小时增长。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。
 - `operation_logs`：保存业务操作主事件，包括操作人、业务作用域、模块、动作、主资源、安全差异和 trace ID。
 - `operation_log_targets`：保存一次操作涉及或影响的资源，支持按资源反查历史操作。

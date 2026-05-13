@@ -1,5 +1,5 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
-import { getDatabase } from './database.js'
+import { getRecordDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { addUsageSummaries, emptyAccountUsageSummary, usageStatsBucketPlan, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 
@@ -59,7 +59,7 @@ function loadUsageSummariesForScopeRequests(scopes: UsageSummaryScopeRequest[], 
   if (!normalizedScopes.length) return result
 
   const source = usageStatsSource(statDate)
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const rows: UsageSummaryAggregateRow[] = []
   const scopesBySystemAccountId = new Map<string, UsageSummaryScopeRequest[]>()
   for (const scope of normalizedScopes) {
@@ -119,7 +119,7 @@ function loadUsageRangeSummariesForScopeRequests(scopes: UsageSummaryScopeReques
   const bucketSources = usageRangeBucketSources(range)
   if (!bucketSources.length) return result
 
-  const database = getDatabase()
+  const database = getRecordDatabase()
   const scopesBySystemAccountId = new Map<string, UsageSummaryScopeRequest[]>()
   for (const scope of normalizedScopes) {
     scopesBySystemAccountId.set(scope.systemAccountId, [...(scopesBySystemAccountId.get(scope.systemAccountId) ?? []), scope])
