@@ -762,13 +762,14 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
 export function getAccountUsageStatsOverview(access?: AccessScope, range?: AccountUsageStatsRange): AccountUsageStatsOverview {
   const accountRows = listAccounts(access)
   const defaultTrendAccountIds = loadAccountUsageDefaultTrendAccountIds(access)
-  return buildAccountUsageStatsOverview({
+  const overview = buildAccountUsageStatsOverview({
     access,
     accounts: accountRows,
     range: range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone(getDatabase())),
     defaultTrendAccountIds,
     loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
   })
+  return withAllAccountsDefaultTrendIds(access, overview)
 }
 
 export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange }): AccountUsageStatsOverview {
@@ -783,10 +784,12 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
     loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
   })
   const sortedRows = [...overview.rows].sort(compareAccountUsageStatsRows)
+  const defaultTrendAccountIdsForScope = allAccountsDefaultTrendAccountIds(access, sortedRows) ?? defaultTrendAccountIds
   if (options?.page === undefined && options?.pageSize === undefined && options?.limit === undefined) {
     return {
       ...overview,
       rows: sortedRows,
+      defaultTrendAccountIds: defaultTrendAccountIdsForScope,
       total: sortedRows.length,
       page: 1,
       pageSize: sortedRows.length,
@@ -798,11 +801,25 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
   return {
     ...overview,
     rows,
+    defaultTrendAccountIds: defaultTrendAccountIdsForScope,
     total: sortedRows.length,
     page: listOptions.page,
     pageSize: listOptions.pageSize,
     summary: rows.reduce((summary, row) => addUsageSummaries(summary, row.rangeUsage), emptyAccountUsageSummary())
   }
+}
+
+function withAllAccountsDefaultTrendIds(access: AccessScope | undefined, overview: AccountUsageStatsOverview): AccountUsageStatsOverview {
+  const defaultTrendAccountIds = allAccountsDefaultTrendAccountIds(access, [...overview.rows].sort(compareAccountUsageStatsRows))
+  return defaultTrendAccountIds ? { ...overview, defaultTrendAccountIds } : overview
+}
+
+function allAccountsDefaultTrendAccountIds(access: AccessScope | undefined, rows: AccountUsageStatsOverview['rows']): string[] | undefined {
+  if (scopedSystemAccountId(access) || !canAccessAll(access)) return undefined
+  return rows
+    .filter((row) => row.rangeUsage.requestCount > 0 || row.rangeUsage.totalTokens > 0 || row.rangeUsage.totalCost > 0)
+    .slice(0, 10)
+    .map((row) => row.id)
 }
 
 function compareAccountUsageStatsRows(left: AccountUsageStatsOverview['rows'][number], right: AccountUsageStatsOverview['rows'][number]): number {

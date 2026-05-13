@@ -138,6 +138,7 @@ interface AccountUsageStatsRow {
 
 interface AccountUsageStatsOverview {
   rows: AccountUsageStatsRow[]
+  defaultTrendAccountIds: string[]
   total: number
   page: number
   pageSize: number
@@ -308,6 +309,9 @@ async function main(): Promise<void> {
     assert(userBAccountUsageKeyword.rows[0]?.rangeUsage.requestCount === 3, `用户 B 我的用量不应混入被授权人调用，实际 ${userBAccountUsageKeyword.rows[0]?.rangeUsage.requestCount}`)
     const userBOAuthUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/api/stats/account-usage?systemAccountId=${seed.userBId}&type=oauth&page=1&pageSize=10`, seed.adminCookie)
     assert(userBOAuthUsage.total === 1 && userBOAuthUsage.rows[0]?.type === 'oauth', '管理账号用量统计类型筛选异常')
+    const adminAllAccountUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, '/api/stats/account-usage', seed.adminCookie)
+    assert(adminAllAccountUsage.defaultTrendAccountIds.length === 2, `管理员全部用户默认趋势账户数量异常：${adminAllAccountUsage.defaultTrendAccountIds.length}`)
+    assert(adminAllAccountUsage.defaultTrendAccountIds[0] === seed.userBAccountId && adminAllAccountUsage.defaultTrendAccountIds[1] === seed.userAAccountId, '管理员全部用户默认趋势账户应按全局可见账户用量排序')
     summary.push('账号用量统计分页筛选检查通过')
 
     const userAAiPerformanceAccounts = await getEnvelope<AiPerformanceAccountOption[]>(baseUrl, `/api/my-stats/ai-performance/accounts?keyword=${encodeURIComponent('用户 B')}`, seed.userACookie)
