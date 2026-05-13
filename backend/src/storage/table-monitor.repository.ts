@@ -4,6 +4,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { sqlPlaceholders } from './query-utils.js'
 
 export type MonitoredDatabaseRole = 'business' | 'records'
 
@@ -95,7 +96,7 @@ interface LatestDatabaseSnapshotRow {
   index_count: number | null
 }
 
-const monitorSampleRetentionDays = 30
+export const tableMonitorSampleRetentionDays = 30
 
 export function collectTableStorageSnapshot(sampledAt = nowIso()): void {
   const recordDatabase = getRecordDatabase()
@@ -118,8 +119,9 @@ export function collectTableStorageSnapshot(sampledAt = nowIso()): void {
   }
 }
 
-export function getTableStorageOverview(limit = 200): TableStorageOverview {
+export function getTableStorageOverview(input: { startAt?: string; endAt?: string; limit?: number } = {}): TableStorageOverview {
   const database = getRecordDatabase()
+  const range = normalizeDateRange(input.startAt, input.endAt)
   const databases = database
     .prepare(`
       SELECT d.*
@@ -127,30 +129,34 @@ export function getTableStorageOverview(limit = 200): TableStorageOverview {
       INNER JOIN (
         SELECT database_role, MAX(sampled_at) AS sampled_at
         FROM database_storage_snapshots
+        WHERE sampled_at >= ?
+          AND sampled_at <= ?
         GROUP BY database_role
       ) latest
         ON latest.database_role = d.database_role
         AND latest.sampled_at = d.sampled_at
       ORDER BY d.database_role ASC
     `)
-    .all() as unknown as LatestDatabaseSnapshotRow[]
+    .all(range.startAt, range.endAt) as unknown as LatestDatabaseSnapshotRow[]
   const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
   const tables = database
     .prepare(`
+      WITH latest_database_samples AS (
+        SELECT database_role, MAX(sampled_at) AS sampled_at
+        FROM database_storage_snapshots
+        WHERE sampled_at >= ?
+          AND sampled_at <= ?
+        GROUP BY database_role
+      )
       SELECT t.*
       FROM table_storage_snapshots t
-      INNER JOIN (
-        SELECT database_role, table_name, MAX(sampled_at) AS sampled_at
-        FROM table_storage_snapshots
-        GROUP BY database_role, table_name
-      ) latest
+      INNER JOIN latest_database_samples latest
         ON latest.database_role = t.database_role
-        AND latest.table_name = t.table_name
         AND latest.sampled_at = t.sampled_at
       ORDER BY t.total_bytes DESC, t.row_count DESC, t.table_name ASC
       LIMIT ?
     `)
-    .all(normalizeLimit(limit)) as unknown as LatestTableSnapshotRow[]
+    .all(range.startAt, range.endAt, normalizeLimit(input.limit ?? 200)) as unknown as LatestTableSnapshotRow[]
   return {
     sampledAt,
     databases: databases.map(databaseSnapshotFromRow),
@@ -161,19 +167,36 @@ export function getTableStorageOverview(limit = 200): TableStorageOverview {
 export function listTableStorageHistory(input: {
   databaseRole: MonitoredDatabaseRole
   tableName: string
+  startAt?: string
+  endAt?: string
   limit?: number
 }): TableStorageSnapshotSummary[] {
+  const range = normalizeDateRange(input.startAt, input.endAt)
   const rows = getRecordDatabase()
     .prepare(`
       SELECT *
       FROM table_storage_snapshots
       WHERE database_role = ?
         AND table_name = ?
+        AND sampled_at >= ?
+        AND sampled_at <= ?
       ORDER BY sampled_at DESC
       LIMIT ?
     `)
-    .all(input.databaseRole, input.tableName, normalizeLimit(input.limit ?? 288)) as unknown as LatestTableSnapshotRow[]
+    .all(
+      input.databaseRole,
+      input.tableName,
+      range.startAt,
+      range.endAt,
+      normalizeLimit(input.limit ?? 10000)
+    ) as unknown as LatestTableSnapshotRow[]
   return rows.reverse().map(tableSnapshotFromRow)
+}
+
+export function cleanupTableStorageSnapshotsBefore(cutoffIso: string, limit = 10000): number {
+  const database = getRecordDatabase()
+  return deleteSnapshotRowsById(database, 'table_storage_snapshots', cutoffIso, limit)
+    + deleteSnapshotRowsById(database, 'database_storage_snapshots', cutoffIso, limit)
 }
 
 function collectTargetTableRows(target: MonitoredDatabaseTarget, sampledAt: string): TableStorageSnapshotSummary[] {
@@ -350,7 +373,7 @@ function findPreviousTableSnapshot(databaseRole: MonitoredDatabaseRole, tableNam
 }
 
 function cleanupOldTableStorageSnapshots(database: DatabaseSync, sampledAt: string): void {
-  const cutoff = new Date(Date.parse(sampledAt) - monitorSampleRetentionDays * 24 * 60 * 60 * 1000).toISOString()
+  const cutoff = new Date(Date.parse(sampledAt) - tableMonitorSampleRetentionDays * 24 * 60 * 60 * 1000).toISOString()
   database.prepare('DELETE FROM table_storage_snapshots WHERE sampled_at < ?').run(cutoff)
   database.prepare('DELETE FROM database_storage_snapshots WHERE sampled_at < ?').run(cutoff)
 }
@@ -370,7 +393,40 @@ function fileSize(path: string): number | undefined {
 }
 
 function normalizeLimit(value: number): number {
-  return Number.isFinite(value) ? Math.min(Math.max(Math.trunc(value), 1), 1000) : 200
+  return Number.isFinite(value) ? Math.min(Math.max(Math.trunc(value), 1), 10000) : 200
+}
+
+function normalizeDateTime(value: string | undefined, fallback: string): string {
+  if (!value) return fallback
+  const time = Date.parse(value)
+  return Number.isNaN(time) ? fallback : new Date(time).toISOString()
+}
+
+function normalizeDateRange(startAt?: string, endAt?: string): { startAt: string; endAt: string } {
+  const defaultEndAt = nowIso()
+  const defaultStartAt = new Date(Date.parse(defaultEndAt) - tableMonitorSampleRetentionDays * 24 * 60 * 60 * 1000).toISOString()
+  const normalizedStartAt = normalizeDateTime(startAt, defaultStartAt)
+  const normalizedEndAt = normalizeDateTime(endAt, defaultEndAt)
+  return normalizedStartAt <= normalizedEndAt
+    ? { startAt: normalizedStartAt, endAt: normalizedEndAt }
+    : { startAt: normalizedEndAt, endAt: normalizedStartAt }
+}
+
+function deleteSnapshotRowsById(
+  database: DatabaseSync,
+  tableName: 'database_storage_snapshots' | 'table_storage_snapshots',
+  cutoffIso: string,
+  limit: number
+): number {
+  const rows = database
+    .prepare(`SELECT id FROM ${tableName} WHERE sampled_at < ? ORDER BY sampled_at ASC, id ASC LIMIT ?`)
+    .all(cutoffIso, normalizeLimit(limit)) as Array<{ id?: string | null }>
+  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
+  if (ids.length === 0) return 0
+
+  const placeholders = sqlPlaceholders(ids.length)
+  const result = database.prepare(`DELETE FROM ${tableName} WHERE id IN (${placeholders})`).run(...ids)
+  return Number(result.changes ?? 0)
 }
 
 function escapeSqlIdentifier(value: string): string {

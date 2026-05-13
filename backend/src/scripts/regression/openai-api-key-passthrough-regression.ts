@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert'
 import type { Request } from 'express'
 
-import { buildUpstreamHeaders, buildUpstreamRequestBody } from '../modules/gateway/openai-gateway-upstream.js'
+import { buildUpstreamHeaders, buildUpstreamRequestBody } from '../../modules/gateway/openai-gateway-upstream.js'
 
 type TestRequest = Request & { rawBody?: Buffer }
 

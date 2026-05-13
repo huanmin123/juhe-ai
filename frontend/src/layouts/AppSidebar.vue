@@ -13,7 +13,7 @@
       <img class="brand-icon" :src="appIcon" :alt="`${appName} 图标`" />
       <span class="brand-text">{{ appName }}</span>
     </div>
-    <a-menu :selectedKeys="selectedKeys" theme="dark" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" />
+    <a-menu :openKeys="menuOpenKeys" :selectedKeys="selectedKeys" theme="dark" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @openChange="handleOpenChange" />
     <button class="collapse-toggle" type="button" @click="collapsed = !collapsed">
       <MenuUnfoldOutlined v-if="collapsed" />
       <MenuFoldOutlined v-else />
@@ -33,28 +33,45 @@
       <img class="brand-icon" :src="appIcon" :alt="`${appName} 图标`" />
       <span class="brand-text">{{ appName }}</span>
     </div>
-    <a-menu :selectedKeys="selectedKeys" theme="dark" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" />
+    <a-menu :openKeys="menuOpenKeys" :selectedKeys="selectedKeys" theme="dark" mode="inline" :items="menuItems" @click="emit('menu-click', $event)" @openChange="handleOpenChange" />
   </a-drawer>
 </template>
 
 <script setup lang="ts">
 import { MenuFoldOutlined, MenuUnfoldOutlined } from '@ant-design/icons-vue'
 import type { ItemType } from 'ant-design-vue'
+import { ref, watch } from 'vue'
 
 const open = defineModel<boolean>('open', { required: true })
 const collapsed = defineModel<boolean>('collapsed', { required: true })
 
-defineProps<{
+const props = defineProps<{
   appIcon: string
   appName: string
   isMobile: boolean
   menuItems: ItemType[]
+  openKeys: string[]
   selectedKeys: string[]
 }>()
 
 const emit = defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }): void
 }>()
+
+const menuOpenKeys = ref<string[]>([])
+
+function handleOpenChange(keys: Array<string | number>) {
+  menuOpenKeys.value = keys.map((key) => String(key))
+}
+
+watch(
+  () => props.openKeys,
+  (keys) => {
+    if (!keys.length) return
+    menuOpenKeys.value = [...new Set([...menuOpenKeys.value, ...keys])]
+  },
+  { immediate: true }
+)
 </script>
 
 <style scoped>

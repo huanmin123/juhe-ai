@@ -36,11 +36,16 @@
       v-model:open="createModalOpen"
       :form="createForm"
       :has-grantee-options="hasCreateGranteeOptions"
+      :is-management-view="isManagementView"
+      :owner-users="users"
       :resource-options="createResourceOptions"
+      :resource-placeholder="createResourcePlaceholder"
+      :resource-select-disabled="createResourceSelectDisabled"
       :resource-type-options="createResourceTypeOptions"
       :saving="authorizationCreating"
       :teams="teams"
       :users="users"
+      @owner-change="handleCreateOwnerChange"
       @ok="createAuthorization"
     />
 
@@ -99,6 +104,8 @@ const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const authorizations = ref<ResourceAuthorizationSummary[]>([])
 const accounts = ref<AccountSummary[]>([])
 const groups = ref<GroupSummary[]>([])
+const createAccounts = ref<AccountSummary[]>([])
+const createGroups = ref<GroupSummary[]>([])
 const teams = ref<SystemTeamSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
 
@@ -150,6 +157,7 @@ const initialPageState = pageStateCache.read()
 const filters = reactive<AuthorizationFilters>({ ...initialPageState.filters })
 
 const createForm = reactive<AuthorizationCreateFormModel>({
+  ownerSystemAccountId: undefined,
   resourceType: 'account' as 'account' | 'group',
   resourceId: '' as string,
   granteeType: 'system_account' as 'system_account' | 'team',
@@ -182,9 +190,18 @@ const resourceOptions = computed(() => {
 
 const createResourceOptions = computed(() => {
   if (createForm.resourceType === 'account') {
-    return ownedAccounts.value.map((account) => ({ label: account.name, value: account.id }))
+    return createOwnedAccounts.value.map((account) => ({ label: account.name, value: account.id }))
   }
-  return ownedGroups.value.map((group) => ({ label: group.name, value: group.id }))
+  return createOwnedGroups.value.map((group) => ({ label: group.name, value: group.id }))
+})
+const createResourceSelectDisabled = computed(() => {
+  if (isManagementView.value && !createForm.ownerSystemAccountId) return true
+  return createResourceOptions.value.length === 0
+})
+const createResourcePlaceholder = computed(() => {
+  if (isManagementView.value && !createForm.ownerSystemAccountId) return '请先选择授权人'
+  if (createForm.resourceType === 'account') return createResourceOptions.value.length ? '请选择单个 AI 账户' : '该授权人暂无可授权 AI 账户'
+  return createResourceOptions.value.length ? '请选择整个分组账号池' : '该授权人暂无可授权分组'
 })
 
 const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'system_account'
@@ -214,11 +231,15 @@ const authorizationScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId()
   return systemAccountId ? { systemAccountId } : undefined
 })
-const ownedAccounts = computed(() => accounts.value.filter((account) => account.permissions?.canAuthorize !== false))
-const ownedGroups = computed(() => groups.value.filter((group) => group.permissions?.canAuthorize !== false))
+const createOwnedAccounts = computed(() => createAccounts.value.filter((account) => account.permissions?.canAuthorize !== false))
+const createOwnedGroups = computed(() => createGroups.value.filter((group) => group.permissions?.canAuthorize !== false))
 
 watch(() => createForm.granteeType, () => {
   createForm.granteeId = ''
+})
+
+watch(() => createForm.resourceType, () => {
+  createForm.resourceId = ''
 })
 
 async function loadMetaData() {
@@ -265,13 +286,16 @@ async function loadData() {
       teamId: isManagementView.value ? filters.teamId : undefined,
       granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
       direction: isManagementView.value ? undefined : filters.direction,
-      startDate: filters.usageDateRange[0],
-      endDate: filters.usageDateRange[1],
       status: 'all' as const
     }
+    const paramsWithUsageRange = isManagementView.value ? params : {
+      ...params,
+      startDate: filters.usageDateRange[0],
+      endDate: filters.usageDateRange[1]
+    }
     const authorizationList = isManagementView.value
-      ? await api.authorizations.list(systemAccountId ? { ...params, systemAccountId } : params)
-      : await api.myAuthorizations.list(params)
+      ? await api.authorizations.list(systemAccountId ? { ...paramsWithUsageRange, systemAccountId } : paramsWithUsageRange)
+      : await api.myAuthorizations.list(paramsWithUsageRange)
     authorizations.value = isManagementView.value ? authorizationList : filterAuthorizationsBySourceType(authorizationList)
   } catch (error) {
     console.error(error)
@@ -282,6 +306,7 @@ async function loadData() {
 }
 
 function openCreateModal() {
+  createForm.ownerSystemAccountId = isManagementView.value ? authorizationScopeParams.value?.systemAccountId : currentSystemAccountId.value
   createForm.resourceType = filters.resourceType === 'group' ? 'group' : 'account'
   createForm.resourceId = ''
   createForm.granteeType = 'system_account'
@@ -290,6 +315,36 @@ function openCreateModal() {
   createForm.expiresAt = undefined
   createForm.quotaLimits = createQuotaLimitForm()
   createModalOpen.value = true
+  void loadCreateOwnerResources()
+}
+
+function handleCreateOwnerChange() {
+  createForm.resourceId = ''
+  void loadCreateOwnerResources()
+}
+
+async function loadCreateOwnerResources() {
+  if (!isManagementView.value) return
+  const systemAccountId = createForm.ownerSystemAccountId
+  createAccounts.value = []
+  createGroups.value = []
+  if (!systemAccountId) return
+  const [accountResult, groupResult] = await Promise.allSettled([
+    api.accounts.list({ systemAccountId, limit: 200 }),
+    api.groups.list({ systemAccountId })
+  ])
+  if (accountResult.status === 'fulfilled') {
+    createAccounts.value = accountResult.value.items
+  } else {
+    console.error(accountResult.reason)
+    message.error('加载授权人的 AI 账户失败')
+  }
+  if (groupResult.status === 'fulfilled') {
+    createGroups.value = groupResult.value
+  } else {
+    console.error(groupResult.reason)
+    message.error('加载授权人的分组失败')
+  }
 }
 
 function handleResourceTypeChange() {
@@ -309,8 +364,12 @@ function filterAuthorizationsBySourceType(items: ResourceAuthorizationSummary[])
 }
 
 const createAuthorization = submitAction('authorizations.create', async () => {
+  if (isManagementView.value && !createForm.ownerSystemAccountId) {
+    message.warning('请先选择授权人')
+    return
+  }
   if (!createForm.resourceId) {
-    message.warning('请选择资源')
+    message.warning(createForm.resourceType === 'account' ? '请选择要授权的 AI 账户' : '请选择要授权的分组')
     return
   }
   if (!createForm.granteeId) {
@@ -326,8 +385,8 @@ const createAuthorization = submitAction('authorizations.create', async () => {
     return
   }
   const selectedResource = createForm.resourceType === 'account'
-    ? ownedAccounts.value.find((account) => account.id === createForm.resourceId)
-    : ownedGroups.value.find((group) => group.id === createForm.resourceId)
+    ? createOwnedAccounts.value.find((account) => account.id === createForm.resourceId)
+    : createOwnedGroups.value.find((group) => group.id === createForm.resourceId)
   if (!selectedResource) {
     message.warning('只能授权自己拥有的资源')
     return
@@ -344,7 +403,7 @@ const createAuthorization = submitAction('authorizations.create', async () => {
       limits: quotaLimitsPayload(createForm.quotaLimits)
     }
     if (isManagementView.value) {
-      await api.authorizations.create(payload, authorizationScopeParams.value)
+      await api.authorizations.create(payload, createForm.ownerSystemAccountId ? { systemAccountId: createForm.ownerSystemAccountId } : undefined)
     } else {
       await api.myAuthorizations.create(payload)
     }

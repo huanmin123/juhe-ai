@@ -54,8 +54,8 @@ export const runtimeConfig: RuntimeConfig = {
     fileEnabled: booleanConfig('JUHE_AI_LOG_FILE_ENABLED', true),
     consoleEnabled: booleanConfig('JUHE_AI_LOG_CONSOLE_ENABLED', true),
     maxFileBytes: numberConfig('JUHE_AI_LOG_MAX_FILE_MB', 100, 1, 1024) * 1024 * 1024,
-    retentionDays: numberConfig('JUHE_AI_LOG_RETENTION_DAYS', 14, 1, 3650),
-    maxFiles: numberConfig('JUHE_AI_LOG_MAX_FILES', 30, 1, 10000),
+    retentionDays: numberConfig('JUHE_AI_LOG_RETENTION_DAYS', 30, 1, 30),
+    maxFiles: numberConfig('JUHE_AI_LOG_MAX_FILES', 500, 1, 500),
     cleanupIntervalMinutes: numberConfig('JUHE_AI_LOG_CLEANUP_INTERVAL_MINUTES', 60, 1, 1440)
   },
   smokeTest: {

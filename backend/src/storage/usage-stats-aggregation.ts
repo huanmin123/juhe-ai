@@ -19,8 +19,15 @@ export function usageStatsEntries(row: UsageStatsRecordRow): UsageStatsEntry[] {
   if (row.group_id) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group', scopeId: row.group_id, accumulator })
   if (row.account_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'caller_account', scopeId: row.account_id, accumulator })
   if (row.account_id) entries.push({ systemAccountId: accountOwnerSystemAccountId, scopeType: 'account', scopeId: row.account_id, accumulator })
+  if (row.account_id) entries.push({ systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeType: 'account', scopeId: row.account_id, accumulator })
   if (row.account_authorization_id && accountOwnerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: accountOwnerSystemAccountId, scopeType: 'account_authorization', scopeId: row.account_authorization_id, accumulator })
+  if (row.account_id && row.account_authorization_source_team_id && accountOwnerSystemAccountId !== callerSystemAccountId) {
+    entries.push({ systemAccountId: accountOwnerSystemAccountId, scopeType: 'account_authorization_team', scopeId: `${row.account_id}:${row.account_authorization_source_team_id}`, accumulator })
+  }
   if (row.group_authorization_id && groupOwnerSystemAccountId !== callerSystemAccountId) entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group_authorization', scopeId: row.group_authorization_id, accumulator })
+  if (row.group_id && row.group_authorization_source_team_id && groupOwnerSystemAccountId !== callerSystemAccountId) {
+    entries.push({ systemAccountId: groupOwnerSystemAccountId, scopeType: 'group_authorization_team', scopeId: `${row.group_id}:${row.group_authorization_source_team_id}`, accumulator })
+  }
   if (row.api_key_id) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'api_key', scopeId: row.api_key_id, accumulator })
   if (row.model) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'model', scopeId: row.model, accumulator })
   if (row.endpoint) entries.push({ systemAccountId: callerSystemAccountId, scopeType: 'endpoint', scopeId: row.endpoint, accumulator })

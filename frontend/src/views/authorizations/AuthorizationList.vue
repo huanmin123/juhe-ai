@@ -5,7 +5,7 @@
     :data-source="authorizations"
     row-key="id"
     :loading="loading"
-    :scroll-x="1540"
+    :scroll-x="tableScrollX"
     pull-refresh-enabled
     :refreshing="loading"
     @mobile-refresh="$emit('refresh')"
@@ -29,7 +29,7 @@
       </template>
       <template v-else-if="column.key === 'grantee'">
         <div class="grantee-cell">
-          <span>{{ record.granteeSystemAccountName || record.granteeSystemAccountId }}</span>
+          <span>{{ granteeTargetName(record) }}</span>
           <AuthorizationSourceTag :authorization="record" />
         </div>
       </template>
@@ -73,13 +73,13 @@
             <strong>{{ record.resourceOwnerSystemAccountName || record.resourceOwnerSystemAccountId }}</strong>
           </div>
           <div class="mobile-list-meta-item">
-            <span>被授权用户</span>
+            <span>被授权的目标</span>
             <strong class="mobile-user-tag-line">
-              <span>{{ record.granteeSystemAccountName || record.granteeSystemAccountId }}</span>
+              <span>{{ granteeTargetName(record) }}</span>
               <AuthorizationSourceTag :authorization="record" />
             </strong>
           </div>
-          <div class="mobile-list-meta-item mobile-list-meta-wide">
+          <div v-if="showUsageMetrics" class="mobile-list-meta-item mobile-list-meta-wide">
             <span>{{ usageColumnLabel }}</span>
             <strong><UsageSummaryTags :usage="record.usage" /></strong>
           </div>
@@ -87,7 +87,7 @@
             <span>最后使用</span>
             <strong>{{ formatDateTime(record.lastUsedAt ?? record.usage?.lastUsedAt) }}</strong>
           </div>
-          <div class="mobile-list-meta-item mobile-list-meta-wide">
+          <div v-if="showQuotaLimits" class="mobile-list-meta-item mobile-list-meta-wide">
             <span>额度限制</span>
             <strong>{{ quotaLimitSummaryText(record.limits) }}</strong>
           </div>
@@ -112,7 +112,7 @@ import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
 import { authorizationColumns, type AuthorizationDirectionFilter } from './authorizationTableColumns'
-import { activeTeamSources, authorizationDirectionColor, authorizationDirectionText, formatDateTime, hasManualSource, quotaLimitSummaryText } from './authorizationFormatters'
+import { activeTeamSources, authorizationDirectionColor, authorizationDirectionText, formatDateTime, granteeTargetName, hasManualSource, quotaLimitSummaryText } from './authorizationFormatters'
 
 const props = defineProps<{
   authorizations: ResourceAuthorizationSummary[]
@@ -130,7 +130,9 @@ defineEmits<{
 }>()
 
 const showActions = computed(() => props.isManagementView || props.direction === 'outbound')
-const showLastUsedAt = computed(() => props.direction === 'outbound')
+const showUsageMetrics = computed(() => !props.isManagementView)
+const showLastUsedAt = computed(() => !props.isManagementView && props.direction === 'outbound')
+const showQuotaLimits = computed(() => !props.isManagementView)
 const actionColumnWidth = computed(() => {
   if (!showActions.value) return 0
   const maxActionCount = props.authorizations.reduce((maxCount, authorization) => {
@@ -141,6 +143,7 @@ const actionColumnWidth = computed(() => {
 })
 const columns = computed(() => authorizationColumns.filter((column) => {
   if (props.isManagementView && column.key === 'direction') return false
+  if (props.isManagementView && ['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
   if (!showLastUsedAt.value && column.key === 'lastUsedAt') return false
   if (!showActions.value && column.key === 'actions') return false
   return true
@@ -149,6 +152,7 @@ const columns = computed(() => authorizationColumns.filter((column) => {
   if (column.key === 'actions') return { ...column, width: actionColumnWidth.value }
   return column
 }))
+const tableScrollX = computed(() => props.isManagementView ? 1240 : 1540)
 
 function canManageAuthorization(authorization: ResourceAuthorizationSummary): boolean {
   return props.isManagementView || authorization.permissions?.canEdit === true

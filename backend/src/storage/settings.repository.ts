@@ -125,7 +125,19 @@ function usageStatsDataExists(): boolean {
     'usage_stats_hourly',
     'usage_stats_daily',
     'usage_stats_weekly',
-    'usage_stats_monthly'
+    'usage_stats_monthly',
+    'authorization_team_usage_monthly',
+    'authorization_team_usage_summary_monthly',
+    'authorization_user_usage_monthly',
+    'authorization_user_usage_summary_monthly',
+    'usage_overview_summary_windows',
+    'usage_overview_trend_windows',
+    'usage_model_rank_windows',
+    'usage_error_rank_windows',
+    'ai_performance_summary_windows',
+    'usage_quota_hourly_windows',
+    'usage_scope_range_windows',
+    'system_metrics_trend_windows'
   ]
   return tables.some((tableName) => {
     const row = database.prepare(`SELECT 1 FROM ${tableName} LIMIT 1`).get() as unknown

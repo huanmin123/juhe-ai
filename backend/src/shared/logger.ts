@@ -27,6 +27,11 @@ interface RotatingFileLogStreamOptions {
 class RotatingFileLogStream extends Writable {
   private readonly currentPath: string
   private currentSize = 0
+  private readonly protectedCurrentFileNames = new Set([
+    'juhe-ai.log',
+    'juhe-ai.worker.log',
+    'juhe-ai.db-service.log'
+  ])
 
   constructor(private readonly options: RotatingFileLogStreamOptions) {
     super()
@@ -38,12 +43,14 @@ class RotatingFileLogStream extends Writable {
 
   cleanup(): void {
     const rotatedFiles = this.listRotatedFiles()
+    const currentFileCount = this.listCurrentLogFiles().length
+    const maxRotatedFiles = Math.max(0, this.options.maxFiles - currentFileCount)
     const expiresBefore = Date.now() - this.options.retentionDays * 24 * 60 * 60 * 1000
     const expiredFiles = rotatedFiles.filter((file) => file.mtimeMs < expiresBefore)
     const overflowFiles = rotatedFiles
       .filter((file) => file.mtimeMs >= expiresBefore)
       .sort((left, right) => right.mtimeMs - left.mtimeMs)
-      .slice(this.options.maxFiles)
+      .slice(maxRotatedFiles)
 
     for (const file of [...expiredFiles, ...overflowFiles]) {
       try {
@@ -104,6 +111,19 @@ class RotatingFileLogStream extends Writable {
     try {
       return readdirSync(this.options.directory)
         .filter((fileName) => /^juhe-ai\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$/i.test(fileName))
+        .map((fileName) => {
+          const path = join(this.options.directory, fileName)
+          return { path, mtimeMs: statSync(path).mtimeMs }
+        })
+    } catch {
+      return []
+    }
+  }
+
+  private listCurrentLogFiles(): Array<{ path: string; mtimeMs: number }> {
+    try {
+      return readdirSync(this.options.directory)
+        .filter((fileName) => this.protectedCurrentFileNames.has(fileName))
         .map((fileName) => {
           const path = join(this.options.directory, fileName)
           return { path, mtimeMs: statSync(path).mtimeMs }

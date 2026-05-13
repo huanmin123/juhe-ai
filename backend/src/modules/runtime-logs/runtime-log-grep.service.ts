@@ -1,15 +1,14 @@
 import { spawn } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'
-import { open } from 'node:fs/promises'
-import { basename, join } from 'node:path'
+import { join } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
-
-export type RuntimeLogGrepMode = 'rg'
 
 export interface RuntimeLogGrepOptions {
   keywords: string[]
   limit?: number
+  startAt?: string
+  endAt?: string
 }
 
 export interface RuntimeLogGrepItem {
@@ -17,7 +16,6 @@ export interface RuntimeLogGrepItem {
   file: string
   fileName: string
   lineNumber?: number
-  lineNumberFromEnd: number
   time: string
   level: string
   traceId?: string
@@ -30,44 +28,84 @@ export interface RuntimeLogGrepItem {
 
 export interface RuntimeLogGrepResult {
   available: boolean
-  mode?: RuntimeLogGrepMode
   elapsedMs: number
   keywords: string[]
+  startAt: string
+  endAt: string
+  defaultRangeDays: number
+  maxRangeDays: number
   items: RuntimeLogGrepItem[]
   limit: number
   truncated: boolean
   scannedFileCount: number
   message?: string
-  installSteps?: string[]
+}
+
+export interface RuntimeLogGrepRuntime {
+  earliestFileTime?: string
+  defaultStartAt: string
+  defaultEndAt: string
+  defaultRangeDays: number
+  maxRangeDays: number
+  fileRetentionDays: number
 }
 
 interface LogFile {
   path: string
   fileName: string
   size: number
+  birthtimeMs: number
   mtimeMs: number
   order: number
 }
 
-type OrderedRuntimeLogGrepItem = RuntimeLogGrepItem & {
-  fileOrder: number
-  fileMtimeMs: number
+interface RuntimeLogGrepTimeRange {
+  startMs: number
+  endMs: number
+  startAt: string
+  endAt: string
+  adjusted: boolean
 }
 
-const maxKeywords = 8
+interface RgMatchEvent {
+  type?: string
+  data?: {
+    path?: { text?: string }
+    lines?: { text?: string }
+    line_number?: number
+  }
+}
+
+type RgExitState = 'matched' | 'no-match'
+
+type OrderedRuntimeLogGrepItem = RuntimeLogGrepItem & {
+  fileOrder: number
+  sortTimeMs: number
+}
+
+const maxKeywords = 10
 const maxKeywordLength = 128
 const defaultLimit = 100
 const maxLimit = 100
 const maxLineLength = 20_000
-const reverseReadChunkBytes = 64 * 1024
-const fileSearchConcurrency = 8
+const maxRgStderrLength = 2_000
+const maxRgCommandChars = 24_000
+const dayMs = 24 * 60 * 60 * 1000
+const defaultGrepRangeDays = 3
+const maxGrepRangeDays = 7
 
 export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promise<RuntimeLogGrepResult> {
   const startedAt = performance.now()
   const keywords = normalizeGrepKeywords(options.keywords)
   const limit = normalizeLimit(options.limit)
+  const files = runtimeConfig.log.fileEnabled ? listLogFiles() : []
+  const timeRange = normalizeGrepTimeRange(options, files)
   const baseResult = (): Omit<RuntimeLogGrepResult, 'available' | 'items' | 'truncated' | 'elapsedMs' | 'scannedFileCount'> => ({
     keywords,
+    startAt: timeRange.startAt,
+    endAt: timeRange.endAt,
+    defaultRangeDays: defaultGrepRangeDays,
+    maxRangeDays: maxGrepRangeDays,
     limit
   })
 
@@ -79,7 +117,7 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
       items: [],
       truncated: false,
       scannedFileCount: 0,
-      message: '请输入 grep 关键字'
+      message: '请输入要搜索的关键字'
     }
   }
 
@@ -87,21 +125,10 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
     return unavailableResult(baseResult(), startedAt, '文件日志未启用，无法使用 grep 模式。')
   }
 
-  if (!await ripgrepAvailable()) {
-    return unavailableResult(
-      baseResult(),
-      startedAt,
-      '当前环境未安装 ripgrep（rg），无法使用 grep 模式。',
-      ripgrepInstallSteps()
-    )
-  }
-
-  const files = listLogFiles()
   if (!files.length) {
     return {
       ...baseResult(),
       available: true,
-      mode: 'rg',
       elapsedMs: Math.round(performance.now() - startedAt),
       items: [],
       truncated: false,
@@ -110,11 +137,61 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
     }
   }
 
-  return searchLogFilesFromEnd({
-    ...baseResult(),
-    files,
-    startedAt
-  })
+  const searchableFiles = filterLogFilesByTimeRange(files, timeRange)
+  if (!searchableFiles.length) {
+    return {
+      ...baseResult(),
+      available: true,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      items: [],
+      truncated: false,
+      scannedFileCount: 0,
+      message: timeRange.adjusted
+        ? `grep 文件时间范围已自动调整，单次最多 ${maxGrepRangeDays} 天；当前时间范围内没有可搜索的日志文件。`
+        : '当前文件时间范围内没有可搜索的日志文件'
+    }
+  }
+
+  const rgExecutable = await resolveRgExecutable()
+  if (!rgExecutable) {
+    return unavailableResult(
+      baseResult(),
+      startedAt,
+      '当前运行环境未找到 rg，grep 模式不可用。请确认部署时已成功安装后端生产依赖 @vscode/ripgrep。'
+    )
+  }
+
+  try {
+    const result = await searchLogFilesWithRg({
+      ...baseResult(),
+      files: searchableFiles,
+      rgExecutable,
+      timeRange,
+      rangeAdjustedMessage: timeRange.adjusted ? `grep 文件时间范围已自动调整，单次最多 ${maxGrepRangeDays} 天` : undefined,
+      startedAt
+    })
+    return result
+  } catch (error) {
+    return unavailableResult(
+      baseResult(),
+      startedAt,
+      error instanceof Error && error.message ? error.message : 'rg 执行失败，grep 模式暂不可用。'
+    )
+  }
+}
+
+export function getRuntimeLogGrepRuntime(): RuntimeLogGrepRuntime {
+  const files = runtimeConfig.log.fileEnabled ? listLogFiles() : []
+  const range = normalizeGrepTimeRange({}, files)
+  const earliestFileMs = earliestLogFileMs(files)
+  return {
+    earliestFileTime: earliestFileMs === undefined ? undefined : new Date(earliestFileMs).toISOString(),
+    defaultStartAt: range.startAt,
+    defaultEndAt: range.endAt,
+    defaultRangeDays: defaultGrepRangeDays,
+    maxRangeDays: maxGrepRangeDays,
+    fileRetentionDays: runtimeConfig.log.retentionDays
+  }
 }
 
 function normalizeGrepKeywords(values: string[]): string[] {
@@ -140,28 +217,54 @@ function normalizeLimit(value: number | undefined): number {
   return Math.min(Math.max(Math.trunc(value ?? defaultLimit), 1), maxLimit)
 }
 
-function ripgrepAvailable(): Promise<boolean> {
-  return commandAvailable('rg', ['--version'])
+function normalizeGrepTimeRange(options: Pick<RuntimeLogGrepOptions, 'startAt' | 'endAt'>, files: LogFile[]): RuntimeLogGrepTimeRange {
+  const nowMs = Date.now()
+  const earliestFileMs = earliestLogFileMs(files)
+  let adjusted = false
+  let endMs = parseTimeMs(options.endAt) ?? nowMs
+  if (endMs > nowMs) {
+    endMs = nowMs
+    adjusted = true
+  }
+
+  if (earliestFileMs !== undefined && endMs < earliestFileMs) {
+    endMs = earliestFileMs
+    adjusted = true
+  }
+
+  let startMs = parseTimeMs(options.startAt) ?? endMs - defaultGrepRangeDays * dayMs
+  if (earliestFileMs !== undefined && startMs < earliestFileMs) {
+    startMs = earliestFileMs
+    adjusted = true
+  }
+
+  if (startMs > endMs) {
+    startMs = Math.max(endMs - defaultGrepRangeDays * dayMs, earliestFileMs ?? Number.NEGATIVE_INFINITY)
+    adjusted = true
+  }
+
+  if (endMs - startMs > maxGrepRangeDays * dayMs) {
+    startMs = endMs - maxGrepRangeDays * dayMs
+    adjusted = true
+  }
+
+  if (earliestFileMs !== undefined && startMs < earliestFileMs) {
+    startMs = earliestFileMs
+  }
+
+  return {
+    startMs,
+    endMs,
+    startAt: new Date(startMs).toISOString(),
+    endAt: new Date(endMs).toISOString(),
+    adjusted
+  }
 }
 
-function commandAvailable(command: string, args: string[]): Promise<boolean> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: 'ignore', windowsHide: true })
-    const timer = setTimeout(() => {
-      child.kill()
-      resolve(false)
-    }, 1500)
-
-    child.once('error', () => {
-      clearTimeout(timer)
-      resolve(false)
-    })
-
-    child.once('exit', (code) => {
-      clearTimeout(timer)
-      resolve(code === 0)
-    })
-  })
+function parseTimeMs(value: string | undefined): number | undefined {
+  if (!value) return undefined
+  const time = Date.parse(value)
+  return Number.isFinite(time) ? time : undefined
 }
 
 function listLogFiles(): LogFile[] {
@@ -183,6 +286,7 @@ function listLogFiles(): LogFile[] {
         path: file.path,
         fileName: file.fileName,
         size: file.stats.size,
+        birthtimeMs: file.stats.birthtimeMs,
         mtimeMs: file.stats.mtimeMs,
         order
       }))
@@ -191,136 +295,241 @@ function listLogFiles(): LogFile[] {
   }
 }
 
-async function searchLogFilesFromEnd(options: {
+function earliestLogFileMs(files: LogFile[]): number | undefined {
+  const values = files.map((file) => fileStartMs(file)).filter(Number.isFinite)
+  return values.length ? Math.min(...values) : undefined
+}
+
+function fileStartMs(file: LogFile): number {
+  const birthtimeMs = Number.isFinite(file.birthtimeMs) && file.birthtimeMs > 0 ? file.birthtimeMs : file.mtimeMs
+  return Math.min(birthtimeMs, file.mtimeMs)
+}
+
+function filterLogFilesByTimeRange(files: LogFile[], timeRange: RuntimeLogGrepTimeRange): LogFile[] {
+  return files.filter((file) => {
+    if (file.size <= 0) return false
+    return file.mtimeMs >= timeRange.startMs && fileStartMs(file) <= timeRange.endMs
+  })
+}
+
+async function resolveRgExecutable(): Promise<string | undefined> {
+  try {
+    const ripgrep = await import('@vscode/ripgrep')
+    return existsSync(ripgrep.rgPath) ? ripgrep.rgPath : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function searchLogFilesWithRg(options: {
   files: LogFile[]
   keywords: string[]
   limit: number
+  rgExecutable: string
+  timeRange: RuntimeLogGrepTimeRange
+  rangeAdjustedMessage?: string
   startedAt: number
 }): Promise<RuntimeLogGrepResult> {
-  const items: OrderedRuntimeLogGrepItem[] = []
   const normalizedKeywords = options.keywords.map((keyword) => keyword.toLowerCase())
-  let scannedFileCount = 0
-  let truncated = false
-  let lastMessage: string | undefined
+  const primaryKeyword = selectPrimaryKeyword(options.keywords)
+  const filesByPath = new Map(options.files.map((file) => [file.path, file]))
+  const filesByLowerPath = new Map(options.files.map((file) => [file.path.toLowerCase(), file]))
+  const items: OrderedRuntimeLogGrepItem[] = []
+  let matchedCount = 0
+  let noMatchBatches = 0
+  const batches = batchLogFilesForRg(options.files, primaryKeyword)
 
-  for (let index = 0; index < options.files.length && items.length < options.limit; index += fileSearchConcurrency) {
-    const batch = options.files.slice(index, index + fileSearchConcurrency)
-    const batchResults = await Promise.all(batch.map(async (file) => {
-      try {
-        return await searchLogFileFromEnd(file, normalizedKeywords, options.limit)
-      } catch (error) {
-        lastMessage = error instanceof Error ? error.message : String(error)
-        return []
+  for (const files of batches) {
+    const exitState = await runRgSearch({
+      executable: options.rgExecutable,
+      pattern: primaryKeyword,
+      files,
+      onMatch: (event) => {
+        const filePath = event.data?.path?.text
+        const line = event.data?.lines?.text?.replace(/\r?\n$/, '')
+        if (!filePath || line === undefined) return
+        const file = filesByPath.get(filePath) ?? filesByLowerPath.get(filePath.toLowerCase())
+        if (!file) return
+        if (!lineMatchesKeywords(line, normalizedKeywords)) return
+        if (isRuntimeLogSearchRequestLine(line)) return
+
+        matchedCount += 1
+        insertLatestGrepItem(items, buildGrepItem({
+          file,
+          line,
+          lineNumber: event.data?.line_number,
+          sequence: matchedCount
+        }), options.limit)
       }
-    }))
-    scannedFileCount += batch.length
-
-    const batchItems = batchResults.flat().sort(compareGrepItems)
-    const remaining = options.limit - items.length
-    if (batchItems.length > remaining) {
-      truncated = true
-    }
-
-    for (const item of batchItems) {
-      if (items.length >= options.limit) break
-      items.push(item)
-    }
-
-    if (items.length >= options.limit && index + batch.length < options.files.length) {
-      truncated = true
+    })
+    if (exitState === 'no-match') {
+      noMatchBatches += 1
     }
   }
 
+  const truncated = matchedCount > options.limit
   return {
     available: true,
-    mode: 'rg',
     elapsedMs: Math.round(performance.now() - options.startedAt),
     keywords: options.keywords,
-    items: items.map(stripOrderFields),
+    startAt: options.timeRange.startAt,
+    endAt: options.timeRange.endAt,
+    defaultRangeDays: defaultGrepRangeDays,
+    maxRangeDays: maxGrepRangeDays,
+    items: items.sort(compareGrepItems).map(stripOrderFields),
     limit: options.limit,
     truncated,
-    scannedFileCount,
-    message: truncated ? `结果超过 ${options.limit} 行，已按最新优先截断显示` : lastMessage
+    scannedFileCount: options.files.length,
+    message: [
+      options.rangeAdjustedMessage,
+      truncated ? `结果超过 ${options.limit} 行，已按最新优先截断显示` : undefined,
+      noMatchBatches === batches.length ? '没有匹配的日志行' : undefined
+    ].filter(Boolean).join('；') || undefined
   }
 }
 
-async function searchLogFileFromEnd(file: LogFile, normalizedKeywords: string[], limit: number): Promise<OrderedRuntimeLogGrepItem[]> {
-  if (file.size <= 0) return []
+function selectPrimaryKeyword(keywords: string[]): string {
+  return [...keywords].sort((left, right) => right.length - left.length)[0] ?? ''
+}
 
-  const items: OrderedRuntimeLogGrepItem[] = []
-  const handle = await open(file.path, 'r')
-  let position = file.size
-  let pending = Buffer.alloc(0)
-  let lineNumberFromEnd = 0
-  let skippedTrailingNewline = false
+function batchLogFilesForRg(files: LogFile[], pattern: string): LogFile[][] {
+  const batches: LogFile[][] = []
+  let batch: LogFile[] = []
+  let currentChars = baseRgArgs(pattern).reduce((total, value) => total + value.length + 3, 0)
 
-  try {
-    while (position > 0 && items.length < limit) {
-      const chunkSize = Math.min(reverseReadChunkBytes, position)
-      position -= chunkSize
-      const buffer = Buffer.allocUnsafe(chunkSize)
-      const { bytesRead } = await handle.read(buffer, 0, chunkSize, position)
-      if (bytesRead <= 0) break
+  for (const file of files) {
+    const nextChars = file.path.length + 3
+    if (batch.length && currentChars + nextChars > maxRgCommandChars) {
+      batches.push(batch)
+      batch = []
+      currentChars = baseRgArgs(pattern).reduce((total, value) => total + value.length + 3, 0)
+    }
+    batch.push(file)
+    currentChars += nextChars
+  }
 
-      const chunk = buffer.subarray(0, bytesRead)
-      const combined = pending.length ? Buffer.concat([chunk, pending]) : chunk
-      let end = combined.length
+  if (batch.length) {
+    batches.push(batch)
+  }
+  return batches
+}
 
-      for (let index = combined.length - 1; index >= 0; index -= 1) {
-        if (combined[index] !== 10) continue
+function baseRgArgs(pattern: string): string[] {
+  return [
+    '--json',
+    '--fixed-strings',
+    '--ignore-case',
+    '--no-heading',
+    '--color=never',
+    '--',
+    pattern
+  ]
+}
 
-        const lineBuffer = combined.subarray(index + 1, end)
-        const isTrailingNewline = !skippedTrailingNewline
-          && position + bytesRead === file.size
-          && end === combined.length
-          && lineBuffer.length === 0
+function runRgSearch(options: {
+  executable: string
+  pattern: string
+  files: LogFile[]
+  onMatch: (event: RgMatchEvent) => void
+}): Promise<RgExitState> {
+  return new Promise((resolve, reject) => {
+    const args = [...baseRgArgs(options.pattern), ...options.files.map((file) => file.path)]
+    const child = spawn(options.executable, args, { windowsHide: true })
+    let stdoutPending = ''
+    let stderrText = ''
+    let matched = false
 
-        if (isTrailingNewline) {
-          skippedTrailingNewline = true
-        } else {
-          lineNumberFromEnd += 1
-          pushMatchedLine(items, file, lineNumberFromEnd, lineBuffer, normalizedKeywords)
+    child.stdout.setEncoding('utf8')
+    child.stdout.on('data', (chunk: string) => {
+      stdoutPending += chunk
+      let newlineIndex = stdoutPending.indexOf('\n')
+      while (newlineIndex >= 0) {
+        const line = stdoutPending.slice(0, newlineIndex)
+        stdoutPending = stdoutPending.slice(newlineIndex + 1)
+        const event = parseRgJsonLine(line)
+        if (event?.type === 'match') {
+          matched = true
+          options.onMatch(event)
         }
+        newlineIndex = stdoutPending.indexOf('\n')
+      }
+    })
 
-        end = index
-        if (items.length >= limit) break
+    child.stderr.setEncoding('utf8')
+    child.stderr.on('data', (chunk: string) => {
+      stderrText = trimLine(stderrText + chunk, maxRgStderrLength)
+    })
+
+    child.on('error', (error) => {
+      reject(rgExecutionError(error))
+    })
+
+    child.on('close', (code) => {
+      if (stdoutPending.trim()) {
+        const event = parseRgJsonLine(stdoutPending)
+        if (event?.type === 'match') {
+          matched = true
+          options.onMatch(event)
+        }
       }
 
-      pending = combined.subarray(0, end)
-    }
-
-    if (pending.length > 0 && items.length < limit) {
-      lineNumberFromEnd += 1
-      pushMatchedLine(items, file, lineNumberFromEnd, pending, normalizedKeywords)
-    }
-  } finally {
-    await handle.close()
-  }
-
-  return items
+      if (code === 0) {
+        resolve('matched')
+        return
+      }
+      if (code === 1 && !matched) {
+        resolve('no-match')
+        return
+      }
+      reject(new Error(`rg 执行失败，grep 模式暂不可用。${stderrText ? `错误信息：${stderrText.trim()}` : ''}`))
+    })
+  })
 }
 
-function pushMatchedLine(
-  items: OrderedRuntimeLogGrepItem[],
-  file: LogFile,
-  lineNumberFromEnd: number,
-  lineBuffer: Buffer,
-  normalizedKeywords: string[]
-): void {
-  const line = lineBuffer.toString('utf8').replace(/\r$/, '')
-  if (!line.trim()) return
-  if (!lineMatchesKeywords(line, normalizedKeywords)) return
-  if (isRuntimeLogSearchRequestLine(line)) return
+function parseRgJsonLine(value: string): RgMatchEvent | undefined {
+  const line = value.trim()
+  if (!line) return undefined
+  try {
+    const event = JSON.parse(line) as unknown
+    return event && typeof event === 'object' && !Array.isArray(event) ? event as RgMatchEvent : undefined
+  } catch {
+    return undefined
+  }
+}
 
-  items.push({
-    id: `${file.path}:tail-${lineNumberFromEnd}:${items.length}`,
-    file: file.path,
-    fileName: file.fileName,
-    lineNumberFromEnd,
-    fileOrder: file.order,
-    fileMtimeMs: file.mtimeMs,
-    ...runtimeLogFieldsFromLine(line)
-  })
+function rgExecutionError(error: Error): Error {
+  const code = (error as NodeJS.ErrnoException).code
+  if (code === 'ENOENT') {
+    return new Error('当前运行环境未找到 rg，grep 模式不可用。请确认部署时已成功安装后端生产依赖 @vscode/ripgrep。')
+  }
+  return new Error(`rg 启动失败，grep 模式暂不可用。${error.message}`)
+}
+
+function buildGrepItem(input: {
+  file: LogFile
+  line: string
+  lineNumber?: number
+  sequence: number
+}): OrderedRuntimeLogGrepItem {
+  const fields = runtimeLogFieldsFromLine(input.line)
+  const parsedTime = parseRuntimeLogTimeMs(fields.time)
+  return {
+    id: `${input.file.path}:${input.lineNumber ?? input.sequence}:${input.sequence}`,
+    file: input.file.path,
+    fileName: input.file.fileName,
+    lineNumber: input.lineNumber,
+    fileOrder: input.file.order,
+    sortTimeMs: Number.isFinite(parsedTime) ? parsedTime : input.file.mtimeMs,
+    ...fields
+  }
+}
+
+function insertLatestGrepItem(items: OrderedRuntimeLogGrepItem[], item: OrderedRuntimeLogGrepItem, limit: number): void {
+  items.push(item)
+  items.sort(compareGrepItems)
+  if (items.length > limit) {
+    items.length = limit
+  }
 }
 
 function lineMatchesKeywords(line: string, normalizedKeywords: string[]): boolean {
@@ -348,15 +557,13 @@ function isRuntimeLogSearchPath(value: string | undefined): boolean {
 }
 
 function compareGrepItems(left: OrderedRuntimeLogGrepItem, right: OrderedRuntimeLogGrepItem): number {
-  const leftTime = Date.parse(left.time)
-  const rightTime = Date.parse(right.time)
-  if (Number.isFinite(leftTime) && Number.isFinite(rightTime) && leftTime !== rightTime) {
-    return rightTime - leftTime
+  if (left.sortTimeMs !== right.sortTimeMs) {
+    return right.sortTimeMs - left.sortTimeMs
   }
   if (left.fileOrder !== right.fileOrder) {
     return left.fileOrder - right.fileOrder
   }
-  return left.lineNumberFromEnd - right.lineNumberFromEnd
+  return (right.lineNumber ?? 0) - (left.lineNumber ?? 0)
 }
 
 function stripOrderFields(item: OrderedRuntimeLogGrepItem): RuntimeLogGrepItem {
@@ -365,7 +572,6 @@ function stripOrderFields(item: OrderedRuntimeLogGrepItem): RuntimeLogGrepItem {
     file: item.file,
     fileName: item.fileName,
     lineNumber: item.lineNumber,
-    lineNumberFromEnd: item.lineNumberFromEnd,
     time: item.time,
     level: item.level,
     traceId: item.traceId,
@@ -380,8 +586,7 @@ function stripOrderFields(item: OrderedRuntimeLogGrepItem): RuntimeLogGrepItem {
 function unavailableResult(
   base: Omit<RuntimeLogGrepResult, 'available' | 'items' | 'truncated' | 'elapsedMs' | 'scannedFileCount'>,
   startedAt: number,
-  message: string,
-  installSteps?: string[]
+  message: string
 ): RuntimeLogGrepResult {
   return {
     ...base,
@@ -390,28 +595,8 @@ function unavailableResult(
     items: [],
     truncated: false,
     scannedFileCount: 0,
-    message,
-    installSteps
+    message
   }
-}
-
-function ripgrepInstallSteps(): string[] {
-  if (process.platform === 'win32') {
-    return [
-      'winget install BurntSushi.ripgrep.MSVC',
-      'scoop install ripgrep',
-      'choco install ripgrep',
-      '安装完成后重启后端服务，并确认 rg --version 可以执行。'
-    ]
-  }
-
-  return [
-    'macOS: brew install ripgrep',
-    'Debian / Ubuntu: sudo apt install ripgrep',
-    'Fedora / RHEL: sudo dnf install ripgrep',
-    'Arch Linux: sudo pacman -S ripgrep',
-    '安装完成后重启后端服务，并确认 rg --version 可以执行。'
-  ]
 }
 
 function trimLine(value: string, length = maxLineLength): string {
@@ -427,7 +612,7 @@ function runtimeLogFieldsFromLine(line: string): Pick<RuntimeLogGrepItem, 'time'
     }
     const record = parsed as Record<string, unknown>
     return {
-      time: stringValue(record.time) ?? '',
+      time: runtimeLogTimeValue(record.time),
       level: normalizeLevel(record.level),
       traceId: stringValue(record.traceId),
       event: stringValue(record.event),
@@ -448,6 +633,19 @@ function fallbackRuntimeLogFields(rawJson: string): Pick<RuntimeLogGrepItem, 'ti
     rawJson,
     line: rawJson
   }
+}
+
+function runtimeLogTimeValue(value: unknown): string {
+  if (typeof value === 'string' && value.trim()) return value.trim()
+  if (typeof value === 'number' && Number.isFinite(value)) return new Date(value).toISOString()
+  return ''
+}
+
+function parseRuntimeLogTimeMs(value: string): number {
+  if (!value) return Number.NaN
+  const numeric = Number(value)
+  if (Number.isFinite(numeric)) return numeric
+  return Date.parse(value)
 }
 
 function normalizeLevel(value: unknown): string {

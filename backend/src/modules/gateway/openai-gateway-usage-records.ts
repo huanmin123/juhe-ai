@@ -23,7 +23,11 @@ export type UsageAccessFields = Pick<OpenAIAccountSecret,
   | 'accountAccessType'
   | 'groupAccessType'
   | 'accountAuthorizationId'
+  | 'accountAuthorizationSourceType'
+  | 'accountAuthorizationSourceTeamId'
   | 'groupAuthorizationId'
+  | 'groupAuthorizationSourceType'
+  | 'groupAuthorizationSourceTeamId'
 >
 
 export interface GatewayUsageContext {
@@ -40,6 +44,8 @@ export interface GatewayFailureUsageContext extends GatewayUsageContext {
   groupOwnerSystemAccountId?: string
   groupAccessType?: GroupUsageAccessMetadata['groupAccessType']
   groupAuthorizationId?: string
+  groupAuthorizationSourceType?: GroupUsageAccessMetadata['groupAuthorizationSourceType']
+  groupAuthorizationSourceTeamId?: string
 }
 
 export function accountUsageMetadata(account: UpstreamAccount): UsageAccessFields {
@@ -49,15 +55,21 @@ export function accountUsageMetadata(account: UpstreamAccount): UsageAccessField
     accountAccessType: account.accountAccessType,
     groupAccessType: account.groupAccessType,
     accountAuthorizationId: account.accountAuthorizationId,
-    groupAuthorizationId: account.groupAuthorizationId
+    accountAuthorizationSourceType: account.accountAuthorizationSourceType,
+    accountAuthorizationSourceTeamId: account.accountAuthorizationSourceTeamId,
+    groupAuthorizationId: account.groupAuthorizationId,
+    groupAuthorizationSourceType: account.groupAuthorizationSourceType,
+    groupAuthorizationSourceTeamId: account.groupAuthorizationSourceTeamId
   }
 }
 
-export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<UsageAccessFields, 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId'> {
+export function groupUsageMetadata(groupAccess: GroupUsageAccessMetadata): Pick<UsageAccessFields, 'groupOwnerSystemAccountId' | 'groupAccessType' | 'groupAuthorizationId' | 'groupAuthorizationSourceType' | 'groupAuthorizationSourceTeamId'> {
   return {
     groupOwnerSystemAccountId: groupAccess.groupOwnerSystemAccountId,
     groupAccessType: groupAccess.groupAccessType,
-    groupAuthorizationId: groupAccess.groupAuthorizationId
+    groupAuthorizationId: groupAccess.groupAuthorizationId,
+    groupAuthorizationSourceType: groupAccess.groupAuthorizationSourceType,
+    groupAuthorizationSourceTeamId: groupAccess.groupAuthorizationSourceTeamId
   }
 }
 
@@ -152,6 +164,8 @@ export function recordGatewayFailure(
     groupOwnerSystemAccountId: usageContext.groupOwnerSystemAccountId,
     groupAccessType: usageContext.groupAccessType,
     groupAuthorizationId: usageContext.groupAuthorizationId,
+    groupAuthorizationSourceType: usageContext.groupAuthorizationSourceType,
+    groupAuthorizationSourceTeamId: usageContext.groupAuthorizationSourceTeamId,
     endpoint: usageContext.endpoint,
     providerCode: 'openai',
     model: requestModel(req),

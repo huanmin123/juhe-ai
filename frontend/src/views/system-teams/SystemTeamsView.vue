@@ -2,7 +2,7 @@
   <a-card class="page-card system-teams-page-card responsive-page-card">
     <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="refreshTeams">
       <template #actions>
-        <a-button v-if="isManagementView" type="primary" @click="openCreateTeam">新建团队</a-button>
+        <a-button v-if="isManagementView" type="primary" @click="openCreateTeam">新建授权团队</a-button>
       </template>
     </ResponsiveListToolbar>
 
@@ -62,13 +62,13 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="teamModalOpen" :title="editingTeamId ? '编辑团队' : '新建团队'" width="620px" :confirm-loading="teamSaving" :ok-button-props="{ disabled: teamSaving }" @ok="saveTeam">
+    <a-modal v-model:open="teamModalOpen" :title="editingTeamId ? '编辑授权团队' : '新建授权团队'" width="620px" :confirm-loading="teamSaving" :ok-button-props="{ disabled: teamSaving }" @ok="saveTeam">
       <a-form layout="vertical">
-        <a-form-item label="团队名称" required>
+        <a-form-item label="授权团队名称" required>
           <a-input v-model:value="teamForm.name" placeholder="例如：产品运营团队" />
         </a-form-item>
         <a-form-item label="说明">
-          <a-textarea v-model:value="teamForm.description" :rows="3" placeholder="可选，描述团队职责与授权范围" />
+          <a-textarea v-model:value="teamForm.description" :rows="3" placeholder="可选，描述授权团队职责与授权范围" />
         </a-form-item>
         <a-form-item label="状态">
           <a-switch v-model:checked="teamForm.statusActive" checked-children="启用" un-checked-children="停用" />
@@ -76,7 +76,7 @@
       </a-form>
     </a-modal>
 
-    <a-modal v-model:open="memberModalOpen" :title="selectedTeam ? `团队成员：${selectedTeam.name}` : '团队成员'" width="720px" :footer="null">
+    <a-modal v-model:open="memberModalOpen" :title="selectedTeam ? `授权团队成员：${selectedTeam.name}` : '授权团队成员'" width="720px" :footer="null">
       <div class="team-members-modal">
         <div v-if="isManagementView" class="team-members-create-row">
           <SystemPrincipalSelect
@@ -94,7 +94,7 @@
           v-if="isManagementView && selectedTeam?.status !== 'active'"
           type="warning"
           show-icon
-          message="团队已停用，暂时不能添加新成员；如需继续维护，请先把团队状态改为启用。"
+          message="授权团队已停用，暂时不能添加新成员；如需继续维护，请先把授权团队状态改为启用。"
         />
         <ResponsiveDataList
           size="small"
@@ -177,7 +177,7 @@ const memberForm = reactive({
 })
 
 const columns = [
-  { title: '团队名称', key: 'name', width: 180 },
+  { title: '授权团队名称', key: 'name', width: 180 },
   { title: '状态', key: 'status', width: 90 },
   { title: '成员数', key: 'memberCount', width: 90 },
   { title: '创建时间', key: 'createdAt', width: 170 },
@@ -199,7 +199,7 @@ const memberColumns = computed(() => {
 const selectedTeam = computed(() => teams.value.find((team) => team.id === selectedTeamId.value))
 const activeTeamMembers = computed(() => selectedTeam.value ? activeMembers(selectedTeam.value) : [])
 const usedMemberIds = computed(() => activeTeamMembers.value.map((item) => item.systemAccountId))
-const emptyTeamDescription = computed(() => isManagementView.value ? '还没有团队，先创建一个团队并添加成员。' : '你还没有加入任何团队。')
+const emptyTeamDescription = computed(() => isManagementView.value ? '还没有授权团队，先创建一个授权团队并添加成员。' : '你还没有加入任何授权团队。')
 const teamActions = computed<RowActionItem[]>(() => isManagementView.value
   ? [
       { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
@@ -244,7 +244,7 @@ async function loadData(options: { forceOptions?: boolean } = {}) {
     teams.value = teamList
   } catch (error) {
     console.error(error)
-    message.error('加载团队数据失败')
+    message.error('加载授权团队数据失败')
   } finally {
     loading.value = false
   }
@@ -289,11 +289,11 @@ function openEditTeam(team: SystemTeamSummary) {
 const saveTeam = submitAction('system_teams.save', async () => {
   const teamName = teamForm.name.trim()
   if (!teamName) {
-    message.warning('请填写团队名称')
+    message.warning('请填写授权团队名称')
     return
   }
   if (hasDuplicateTeamName(teamName, editingTeamId.value)) {
-    message.warning('团队名称已存在')
+    message.warning('授权团队名称已存在')
     return
   }
   const payload = {
@@ -304,16 +304,16 @@ const saveTeam = submitAction('system_teams.save', async () => {
   try {
     if (editingTeamId.value) {
       await api.systemTeams.update(editingTeamId.value, payload)
-      message.success('团队已更新')
+      message.success('授权团队已更新')
     } else {
       await api.systemTeams.create(payload)
-      message.success('团队已创建')
+      message.success('授权团队已创建')
     }
     teamModalOpen.value = false
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '保存团队失败'))
+    message.error(extractApiErrorMessage(error, '保存授权团队失败'))
   }
 })
 

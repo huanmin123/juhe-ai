@@ -1,17 +1,34 @@
 <template>
   <a-modal v-model:open="open" title="新增授权" width="680px" :confirm-loading="saving" :ok-button-props="{ disabled: saving }" @ok="$emit('ok')">
     <a-form layout="vertical">
-      <a-form-item label="资源类型" required>
+      <a-alert
+        v-if="isManagementView"
+        class="form-alert"
+        type="info"
+        show-icon
+        message="管理端需要先指定授权人，再从该用户自己的资源中选择授权内容。"
+      />
+      <a-form-item v-if="isManagementView" label="授权人" required>
+        <SystemPrincipalSelect
+          v-model:value="form.ownerSystemAccountId"
+          :accounts="ownerUsers"
+          :active-only="false"
+          placeholder="选择资源归属用户"
+          @change="$emit('owner-change')"
+        />
+        <div class="form-help">授权人就是资源归属人；管理员可选择自己，等同于代自己授权。</div>
+      </a-form-item>
+      <a-form-item label="授权内容" required>
         <a-select v-model:value="form.resourceType" :options="resourceTypeOptions" />
       </a-form-item>
-      <a-form-item label="资源" required>
+      <a-form-item label="授权资源" required>
         <a-select
           v-model:value="form.resourceId"
           show-search
           option-filter-prop="label"
           :options="resourceOptions"
-          :disabled="!resourceOptions.length"
-          :placeholder="form.resourceType === 'account' ? '请选择 AI 账户' : '请选择分组'"
+          :disabled="resourceSelectDisabled"
+          :placeholder="resourcePlaceholder"
         />
       </a-form-item>
       <a-form-item label="授权对象类型" required>
@@ -59,7 +76,11 @@ const open = defineModel<boolean>('open', { required: true })
 defineProps<{
   form: AuthorizationCreateFormModel
   hasGranteeOptions: boolean
+  isManagementView: boolean
+  ownerUsers: SystemAccountPrincipalSummary[]
   resourceOptions: Array<{ label: string; value: string }>
+  resourcePlaceholder: string
+  resourceSelectDisabled: boolean
   resourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }>
   saving?: boolean
   teams: SystemTeamSummary[]
@@ -68,5 +89,12 @@ defineProps<{
 
 defineEmits<{
   (event: 'ok'): void
+  (event: 'owner-change'): void
 }>()
 </script>
+
+<style scoped>
+.form-alert {
+  margin-bottom: 16px;
+}
+</style>

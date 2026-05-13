@@ -99,6 +99,39 @@ export interface ResourceAuthorizationSummary {
   }
 }
 
+export interface AuthorizationTeamUsageRow {
+  id: string
+  teamId: string
+  teamName: string
+  status: TeamStatus
+  usage: AccountUsageSummary
+  lastUsedAt?: string
+}
+
+export interface AuthorizationTeamUsageOverview {
+  range: AccountUsageStatsRange
+  summary: AccountUsageSummary
+  rows: AuthorizationTeamUsageRow[]
+  teamCount: number
+}
+
+export interface AuthorizationUserUsageRow {
+  id: string
+  systemAccountId: string
+  userName: string
+  username?: string
+  sourceLabels: string[]
+  usage: AccountUsageSummary
+  lastUsedAt?: string
+}
+
+export interface AuthorizationUserUsageOverview {
+  range: AccountUsageStatsRange
+  summary: AccountUsageSummary
+  rows: AuthorizationUserUsageRow[]
+  userCount: number
+}
+
 export interface AccountUsageStatsRow {
   id: string
   systemAccountId?: string

@@ -64,6 +64,11 @@ interface CompleteAttemptInput {
   errorMessage?: string
 }
 
+interface AddGatewayMetadataInput {
+  metadata: Record<string, unknown>
+  label?: string
+}
+
 interface AuditAttemptState {
   tempId: string
   attempt: AuditLogAttemptInput
@@ -130,6 +135,19 @@ export class AuditCaptureContext {
 
   markClientAborted(): void {
     this.clientAborted = true
+  }
+
+  addGatewayMetadata(input: AddGatewayMetadataInput): void {
+    if (!this.enabled) return
+    this.addPayload({
+      partType: 'gateway_metadata',
+      body: JSON.stringify({
+        type: 'gateway_metadata',
+        label: input.label,
+        metadata: input.metadata
+      }),
+      contentType: 'application/json; audit=gateway-metadata'
+    })
   }
 
   startAttempt(input: StartAttemptInput): string {

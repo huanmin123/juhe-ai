@@ -23,7 +23,7 @@
 | API Key 上游 body | `backend/src/modules/gateway/openai-gateway-upstream.ts` | 透传开启时优先返回 `req.rawBody`；关闭时才 `JSON.stringify(req.body)` |
 | API Key 上游 header | `backend/src/modules/gateway/openai-gateway-upstream.ts` | 复制客户端语义头，过滤危险头、代理链路头、SDK / tracing 噪声，替换认证，不从账号凭据写入 OpenAI 组织 / 项目 / Beta |
 | API Key 表单 | `frontend/src/views/accounts/AccountApiKeySection.vue` | 只配置 API Key 和 Base URL，不暴露 OpenAI 组织、项目和 Beta 字段 |
-| 回归验证 | `backend/src/scripts/openai-api-key-passthrough-regression.ts` | 覆盖 raw body、Header 过滤、残留账号凭据不生效和非透传 JSON fallback |
+| 回归验证 | `backend/src/scripts/regression/openai-api-key-passthrough-regression.ts` | 覆盖 raw body、Header 过滤、残留账号凭据不生效和非透传 JSON fallback |
 
 ### 本地参考项目
 

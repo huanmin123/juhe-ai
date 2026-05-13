@@ -64,16 +64,44 @@
     <template v-else>
       <ResponsiveListToolbar
         v-model:keyword="grepKeywordFilter"
-        search-placeholder="输入关键字，空格分隔多个关键字"
-        :active-filter-count="0"
+        search-placeholder="后端 rg 搜索任意关键字，空格分隔表示同时命中"
+        filter-title="grep 文件范围"
+        :active-filter-count="grepActiveFilterCount"
         :refresh-loading="loading"
-        :show-filters="false"
         @refresh="searchGrepLogs"
         @reset="resetGrepSearch"
         @search="searchGrepLogs"
       >
+        <template #inline-filters>
+          <a-range-picker
+            v-model:value="grepTimeRange"
+            :allow-clear="false"
+            class="toolbar-select grep-time-range responsive-list-inline-filter"
+            show-time
+            :title="grepRangeLimitText"
+            :disabled-date="disabledGrepDate"
+            :placeholder="['文件开始时间', '文件结束时间']"
+            @change="handleGrepRangeChange"
+          />
+        </template>
         <template #actions>
           <a-segmented v-model:value="viewMode" class="log-mode-segmented" :options="viewModeOptions" @change="handleModeChange" />
+        </template>
+        <template #filters>
+          <a-form layout="vertical">
+            <a-form-item label="文件时间范围">
+              <a-range-picker
+                v-model:value="grepTimeRange"
+                :allow-clear="false"
+                show-time
+                class="drawer-range-picker"
+                :title="grepRangeLimitText"
+                :disabled-date="disabledGrepDate"
+                :placeholder="['文件开始时间', '文件结束时间']"
+                @change="handleGrepRangeChange"
+              />
+            </a-form-item>
+          </a-form>
         </template>
       </ResponsiveListToolbar>
 
@@ -83,19 +111,13 @@
         show-icon
         :message="grepResult.message"
         class="grep-alert"
-      >
-        <template v-if="grepResult.installSteps?.length" #description>
-          <ul class="install-list">
-            <li v-for="step in grepResult.installSteps" :key="step">{{ step }}</li>
-          </ul>
-        </template>
-      </a-alert>
+      />
 
       <RuntimeLogDataList
         table-class="page-table grep-table"
         :records="grepRecords"
         :loading="loading"
-        :empty-description="grepKeywordFilter.trim() ? '没有匹配的日志行。' : '输入关键字后刷新文件日志。'"
+        :empty-description="grepKeywordFilter.trim() ? '没有匹配的日志行。' : '输入任意关键字后搜索文件日志。'"
         action-label="查看"
         message-mode="grep"
         :refreshing="loading"
@@ -141,6 +163,7 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
 import type { RuntimeLogFacets, RuntimeLogGrepItem, RuntimeLogGrepResult, RuntimeLogLevel, RuntimeLogSummary } from '@/types/domain'
@@ -165,6 +188,7 @@ type RuntimeLogListRecord = RuntimeLogSummary | RuntimeLogGrepItem
 type RuntimeLogsPageState = {
   eventFilter?: string
   grepKeywordFilter: string
+  grepTimeRange?: [string, string]
   keywordFilter: string
   levelFilter: RuntimeLogLevel | 'all'
   pagination: { current: number; pageSize: number }
@@ -176,6 +200,7 @@ const defaultRuntimeLogsPageState = (): RuntimeLogsPageState => {
   return {
     eventFilter: undefined,
     grepKeywordFilter: '',
+    grepTimeRange: undefined,
     keywordFilter: '',
     levelFilter: 'all',
     pagination: { current: 1, pageSize },
@@ -183,7 +208,7 @@ const defaultRuntimeLogsPageState = (): RuntimeLogsPageState => {
     viewMode: 'index'
   }
 }
-const pageStateCache = usePageStateCache<RuntimeLogsPageState>(undefined, defaultRuntimeLogsPageState, { version: 3 })
+const pageStateCache = usePageStateCache<RuntimeLogsPageState>(undefined, defaultRuntimeLogsPageState, { version: 4 })
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
@@ -192,6 +217,7 @@ const records = ref<RuntimeLogSummary[]>([])
 const grepRecords = ref<RuntimeLogGrepItem[]>([])
 const grepResult = ref<RuntimeLogGrepResult>()
 const facets = ref<RuntimeLogFacets>()
+const grepTimeRange = ref<[Dayjs, Dayjs] | undefined>(parseStoredGrepRangeWithoutRuntime(initialPageState.grepTimeRange))
 const selectedLog = ref<RuntimeLogSummary>()
 const selectedGrepItem = ref<RuntimeLogGrepItem>()
 const detailOpen = ref(false)
@@ -218,6 +244,12 @@ const tablePagination = computed(() => ({
   showTotal: (total: number) => `共 ${total} 条运行日志`
 }))
 const mobileHasMore = computed(() => records.value.length < pagination.total)
+const grepRuntime = computed(() => facets.value?.grep)
+const grepRangeLimitText = computed(() => {
+  const runtime = grepRuntime.value
+  if (!runtime) return '按文件时间筛选，默认最近 3 天，单次最多 7 天'
+  return `按文件时间筛选，默认最近 ${runtime.defaultRangeDays} 天，单次最多 ${runtime.maxRangeDays} 天`
+})
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -227,6 +259,64 @@ const activeFilterCount = computed(() => {
   if (keywordFilter.value.trim()) count += 1
   return count
 })
+const grepActiveFilterCount = computed(() => isDefaultGrepRange() ? 0 : 1)
+
+function parseStoredGrepRangeWithoutRuntime(value?: [string, string]): [Dayjs, Dayjs] | undefined {
+  if (!value) return undefined
+  const start = dayjs(value[0])
+  const end = dayjs(value[1])
+  return start.isValid() && end.isValid() ? [start, end] : undefined
+}
+
+function defaultGrepRange(): [Dayjs, Dayjs] {
+  const runtime = grepRuntime.value
+  const end = dayjs(runtime?.defaultEndAt ?? new Date())
+  const start = dayjs(runtime?.defaultStartAt ?? end.subtract(3, 'day'))
+  return normalizeGrepRange([start, end])
+}
+
+function normalizeGrepRange(value?: [Dayjs, Dayjs]): [Dayjs, Dayjs] {
+  const runtime = grepRuntime.value
+  const now = dayjs()
+  const earliest = runtime?.earliestFileTime ? dayjs(runtime.earliestFileTime) : now.subtract(runtime?.fileRetentionDays ?? 30, 'day')
+  const maxRangeDays = runtime?.maxRangeDays ?? 7
+  let end = value?.[1]?.isValid() ? value[1] : now
+  if (end.isAfter(now)) end = now
+  if (end.isBefore(earliest)) end = earliest
+
+  let start = value?.[0]?.isValid() ? value[0] : end.subtract(runtime?.defaultRangeDays ?? 3, 'day')
+  if (start.isBefore(earliest)) start = earliest
+  if (start.isAfter(end)) start = end.subtract(runtime?.defaultRangeDays ?? 3, 'day')
+  if (end.diff(start, 'millisecond') > maxRangeDays * 24 * 60 * 60 * 1000) {
+    start = end.subtract(maxRangeDays, 'day')
+  }
+  if (start.isBefore(earliest)) start = earliest
+  return [start, end]
+}
+
+function ensureGrepTimeRange(): [Dayjs, Dayjs] {
+  const normalized = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
+  grepTimeRange.value = normalized
+  return normalized
+}
+
+function isDefaultGrepRange(): boolean {
+  const range = grepTimeRange.value
+  if (!range) return true
+  const defaults = defaultGrepRange()
+  return Math.abs(range[0].diff(defaults[0], 'minute')) <= 1
+    && Math.abs(range[1].diff(defaults[1], 'minute')) <= 1
+}
+
+function disabledGrepDate(current: Dayjs): boolean {
+  const runtime = grepRuntime.value
+  const earliest = runtime?.earliestFileTime ? dayjs(runtime.earliestFileTime).startOf('day') : dayjs().subtract(runtime?.fileRetentionDays ?? 30, 'day').startOf('day')
+  return current.isBefore(earliest, 'day') || current.isAfter(dayjs(), 'day')
+}
+
+function handleGrepRangeChange(): void {
+  grepTimeRange.value = ensureGrepTimeRange()
+}
 
 function handleModeChange(value: string | number): void {
   const nextMode: RuntimeLogViewMode = value === 'grep' ? 'grep' : 'index'
@@ -261,6 +351,7 @@ function resetFilters(): void {
 
 function resetGrepSearch(): void {
   grepKeywordFilter.value = ''
+  grepTimeRange.value = defaultGrepRange()
   grepRecords.value = []
   grepResult.value = undefined
   pageStateCache.scheduleWrite(snapshotPageState)
@@ -335,17 +426,21 @@ async function searchGrepLogs(): Promise<void> {
   if (!keywords.length) {
     grepRecords.value = []
     grepResult.value = undefined
-    message.warning('请输入 grep 关键字')
+    message.warning('请输入要搜索的关键字')
     return
   }
 
+  const range = ensureGrepTimeRange()
   loading.value = true
   try {
     const result = await api.runtimeLogs.grep({
       keywords: keywords.join(' '),
+      startAt: range[0].toISOString(),
+      endAt: range[1].toISOString(),
       limit: 100
     })
     grepResult.value = result
+    grepTimeRange.value = normalizeGrepRange([dayjs(result.startAt), dayjs(result.endAt)])
     grepRecords.value = result.items
     if (!result.available) {
       message.warning(result.message || 'grep 模式不可用')
@@ -388,6 +483,7 @@ function snapshotPageState(): RuntimeLogsPageState {
   return {
     eventFilter: eventFilter.value,
     grepKeywordFilter: grepKeywordFilter.value,
+    grepTimeRange: grepTimeRange.value ? [grepTimeRange.value[0].toISOString(), grepTimeRange.value[1].toISOString()] : undefined,
     keywordFilter: keywordFilter.value,
     levelFilter: levelFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
@@ -399,13 +495,15 @@ function snapshotPageState(): RuntimeLogsPageState {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(() => {
+  void loadData({ quiet: viewMode.value === 'grep' }).then(() => {
+    grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
+  })
   if (viewMode.value === 'grep') {
     if (grepKeywordFilter.value.trim()) {
       void searchGrepLogs()
     }
     return
   }
-  void loadData()
 })
 </script>
 
@@ -426,13 +524,16 @@ onMounted(() => {
   width: 240px;
 }
 
-.grep-alert {
-  margin-bottom: 14px;
+.grep-time-range {
+  width: 380px;
 }
 
-.install-list {
-  margin: 6px 0 0;
-  padding-left: 18px;
+.drawer-range-picker {
+  width: 100%;
+}
+
+.grep-alert {
+  margin-bottom: 14px;
 }
 
 .detail-descriptions {

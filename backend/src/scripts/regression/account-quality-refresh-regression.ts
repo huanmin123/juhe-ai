@@ -3,9 +3,9 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { runtimeConfig } from '../config/runtime.js'
-import { logger } from '../shared/logger.js'
-import { minuteKey, usageStatsTimezone } from '../storage/usage-stats-helpers.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
+import { minuteKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-quality-refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'account-quality-refresh.sqlite3')
@@ -18,9 +18,9 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const [databaseModule, repositories, accountQualityRepository] = await Promise.all([
-  import('../storage/database.js'),
-  import('../storage/repositories.js'),
-  import('../storage/account-quality.repository.js')
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
+  import('../../storage/account-quality.repository.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }

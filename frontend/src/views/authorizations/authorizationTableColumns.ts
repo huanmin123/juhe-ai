@@ -6,7 +6,7 @@ export const authorizationColumns = [
   { title: 'AI账户名称', key: 'resource', width: 260 },
   { title: '方向', key: 'direction', width: 120 },
   { title: '归属人', key: 'owner', width: 180 },
-  { title: '被授权用户', key: 'grantee', width: 180 },
+  { title: '被授权的目标', key: 'grantee', width: 180 },
   { title: '今日', key: 'usageTotal', width: 180 },
   { title: '最后使用', key: 'lastUsedAt', width: 170 },
   { title: '额度限制', key: 'limits', width: 220 },
@@ -17,9 +17,9 @@ export const authorizationColumns = [
 ]
 
 export const authorizationResourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }> = [
-  { label: '全部资源', value: 'all' },
-  { label: 'AI账户', value: 'account' },
-  { label: '分组', value: 'group' }
+  { label: '全部内容', value: 'all' },
+  { label: '单个 AI 账户', value: 'account' },
+  { label: '整个分组账号池', value: 'group' }
 ]
 
 export const authorizationDirectionOptions: Array<{ label: string; value: AuthorizationDirectionFilter }> = [
@@ -28,12 +28,12 @@ export const authorizationDirectionOptions: Array<{ label: string; value: Author
 ]
 
 export const authorizationSourceOptions: Array<{ label: string; value: AuthorizationSourceFilter }> = [
-  { label: '全部对象', value: 'all' },
-  { label: '个人', value: 'manual' },
-  { label: '团队', value: 'team' }
+  { label: '全部方式', value: 'all' },
+  { label: '直接授权', value: 'manual' },
+  { label: '团队授权', value: 'team' }
 ]
 
 export const createAuthorizationResourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }> = [
-  { label: 'AI账户', value: 'account' },
-  { label: '分组', value: 'group' }
+  { label: '单个 AI 账户', value: 'account' },
+  { label: '整个分组账号池', value: 'group' }
 ]

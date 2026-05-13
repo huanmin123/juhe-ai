@@ -8,6 +8,8 @@ declare module 'vue-router' {
     title: string
     description: string
     keepAlive?: boolean
+    menuGroup?: string
+    menuGroupTitle?: string
     public?: boolean
     viewScope?: 'admin' | 'self'
     roles?: Array<'admin' | 'user'>
@@ -46,8 +48,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     path: '/my-teams',
     component: () => import('@/views/system-teams/SystemTeamsView.vue'),
     meta: {
-      title: '我的团队',
-      description: '查看自己加入的团队和团队成员。',
+      title: '我的授权团队',
+      description: '查看自己加入的授权团队和团队成员。',
       viewScope: 'self'
     }
   },
@@ -147,21 +149,49 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/system-teams',
-    component: () => import('@/views/system-teams/SystemTeamsView.vue'),
+    path: '/authorizations',
+    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
     meta: {
-      title: '系统团队管理',
-      description: '管理团队和成员，支持把多个系统账户归纳到一个团队内。',
+      title: '统一授权',
+      description: '管理谁把哪些 AI 账户或分组授权给个人或团队，不在这里展示消耗统计。',
+      menuGroup: 'authorization',
+      menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
       roles: ['admin']
     }
   },
   {
-    path: '/authorizations',
-    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
+    path: '/authorization-team-usage',
+    component: () => import('@/views/authorizations/AuthorizationTeamUsageView.vue'),
     meta: {
-      title: '统一授权管理',
-      description: '按系统账户统一管理账户、分组、团队授权，并查看授权用量范围汇总。',
+      title: '团队消耗明细',
+      description: '按授权团队查看一个月内的团队总消耗，并可跳转到团队成员用户消耗。',
+      menuGroup: 'authorization',
+      menuGroupTitle: '统一授权管理',
+      viewScope: 'admin',
+      roles: ['admin']
+    }
+  },
+  {
+    path: '/authorization-user-usage',
+    component: () => import('@/views/authorizations/AuthorizationUserUsageView.vue'),
+    meta: {
+      title: '用户消耗明细',
+      description: '按被授权用户查看一个月内的授权消耗，包含授权团队里的成员用户。',
+      menuGroup: 'authorization',
+      menuGroupTitle: '统一授权管理',
+      viewScope: 'admin',
+      roles: ['admin']
+    }
+  },
+  {
+    path: '/authorization-teams',
+    component: () => import('@/views/system-teams/SystemTeamsView.vue'),
+    meta: {
+      title: '授权团队',
+      description: '管理授权团队和成员，支持把多个系统账户归纳到一个团队内承接授权。',
+      menuGroup: 'authorization',
+      menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -231,7 +261,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/runtime-logs/RuntimeLogsView.vue'),
     meta: {
       title: '日志搜索',
-      description: '索引查询检索最近 3 天运行日志，grep 模式按关键字扫描日志文件，结果默认展示最新记录。',
+      description: '索引查询检索最近 3 天运行日志；grep 模式由后端 rg 按任意关键字扫描文件日志，多关键字同时命中。',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -300,7 +330,17 @@ export const router = createRouter({
         public: true
       }
     },
-    ...menuRoutes
+    ...menuRoutes,
+    {
+      path: '/system-teams',
+      redirect: '/authorization-teams',
+      meta: {
+        title: '授权团队',
+        description: '旧系统团队管理入口已迁移到授权团队。',
+        keepAlive: false,
+        roles: ['admin']
+      }
+    }
   ]
 })
 

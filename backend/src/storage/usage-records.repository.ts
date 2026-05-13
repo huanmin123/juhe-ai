@@ -2,6 +2,7 @@ import { buildSystemAccountScopeClause, currentSystemAccountId, includeSystemAcc
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { loadAccountNameMap, loadApiKeyNameMap, loadGroupNameMap, loadSystemAccountNameMap } from './repository-lookups.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
+import type { ResourceAuthorizationSourceType } from '../domain/types.js'
 
 export interface UsageRecordLogSnapshot {
   [key: string]: unknown
@@ -82,7 +83,11 @@ export interface UsageRecordInput {
   accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
   groupAccessType?: 'owner' | 'authorized'
   accountAuthorizationId?: string
+  accountAuthorizationSourceType?: ResourceAuthorizationSourceType
+  accountAuthorizationSourceTeamId?: string
   groupAuthorizationId?: string
+  groupAuthorizationSourceType?: ResourceAuthorizationSourceType
+  groupAuthorizationSourceTeamId?: string
   endpoint?: string
   providerCode?: string
   model?: string
@@ -110,13 +115,19 @@ type UsageAccessMetadata = {
   accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
   groupAccessType?: 'owner' | 'authorized'
   accountAuthorizationId?: string
+  accountAuthorizationSourceType?: ResourceAuthorizationSourceType
+  accountAuthorizationSourceTeamId?: string
   groupAuthorizationId?: string
+  groupAuthorizationSourceType?: ResourceAuthorizationSourceType
+  groupAuthorizationSourceTeamId?: string
 }
 
 type ResourceAuthorizationRow = {
   id: string
   status: string
   expires_at: string | null
+  effective_source_type: ResourceAuthorizationSourceType | null
+  effective_source_team_id: string | null
 }
 
 const usageRecordSortColumns: Record<UsageRecordSortField, string> = {
@@ -271,9 +282,11 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
       id, system_account_id, trace_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
       status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
       request_snapshot_json, response_snapshot_json,
-      account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type, account_authorization_id, group_authorization_id,
+      account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
+      account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
+      group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const updateAccountStatement = businessDatabase.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
@@ -319,7 +332,11 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
         accessMetadata.accountAccessType ?? null,
         accessMetadata.groupAccessType ?? null,
         accessMetadata.accountAuthorizationId ?? null,
+        accessMetadata.accountAuthorizationSourceType ?? null,
+        accessMetadata.accountAuthorizationSourceTeamId ?? null,
         accessMetadata.groupAuthorizationId ?? null,
+        accessMetadata.groupAuthorizationSourceType ?? null,
+        accessMetadata.groupAuthorizationSourceTeamId ?? null,
         now
       )
 
@@ -525,7 +542,11 @@ function usageAccessMetadata(input: {
   accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
   groupAccessType?: 'owner' | 'authorized'
   accountAuthorizationId?: string
+  accountAuthorizationSourceType?: ResourceAuthorizationSourceType
+  accountAuthorizationSourceTeamId?: string
   groupAuthorizationId?: string
+  groupAuthorizationSourceType?: ResourceAuthorizationSourceType
+  groupAuthorizationSourceTeamId?: string
 }): UsageAccessMetadata {
   const groupOwnerSystemAccountId = input.groupOwnerSystemAccountId ?? (input.groupId ? groupOwnerSystemAccountIdForUsage(input.groupId) : undefined)
   const groupAuthorization = input.groupAuthorizationId
@@ -534,6 +555,11 @@ function usageAccessMetadata(input: {
       ? activeResourceAuthorization('group', input.groupId, input.systemAccountId)
       : undefined
   const groupAuthorizationId = input.groupAuthorizationId ?? groupAuthorization?.id
+  const groupAuthorizationSnapshot = groupAuthorizationId
+    ? input.groupAuthorizationId === groupAuthorization?.id
+      ? groupAuthorization
+      : resourceAuthorizationSnapshot(groupAuthorizationId)
+    : undefined
   const groupAccessType = input.groupAccessType
     ?? (groupOwnerSystemAccountId
       ? groupOwnerSystemAccountId === input.systemAccountId
@@ -548,6 +574,12 @@ function usageAccessMetadata(input: {
     : input.accountId && accountOwnerSystemAccountId !== input.systemAccountId && groupAccessType !== 'authorized'
       ? activeResourceAuthorization('account', input.accountId, input.systemAccountId)
       : undefined
+  const accountAuthorizationId = accountAccessTypeCandidate(input, accountOwnerSystemAccountId, groupAccessType, groupOwnerSystemAccountId, accountAuthorization)
+  const accountAuthorizationSnapshot = accountAuthorizationId
+    ? input.accountAuthorizationId === accountAuthorization?.id
+      ? accountAuthorization
+      : resourceAuthorizationSnapshot(accountAuthorizationId)
+    : undefined
   const accountAccessType = input.accountAccessType
     ?? (accountOwnerSystemAccountId
       ? accountOwnerSystemAccountId === input.systemAccountId
@@ -563,9 +595,45 @@ function usageAccessMetadata(input: {
     groupOwnerSystemAccountId,
     accountAccessType,
     groupAccessType,
-    accountAuthorizationId: accountAccessType === 'account_authorized' ? input.accountAuthorizationId ?? accountAuthorization?.id : undefined,
-    groupAuthorizationId
+    accountAuthorizationId: accountAccessType === 'account_authorized' ? accountAuthorizationId : undefined,
+    accountAuthorizationSourceType: accountAccessType === 'account_authorized'
+      ? input.accountAuthorizationSourceType ?? accountAuthorizationSnapshot?.effective_source_type ?? undefined
+      : undefined,
+    accountAuthorizationSourceTeamId: accountAccessType === 'account_authorized'
+      ? input.accountAuthorizationSourceTeamId ?? accountAuthorizationSnapshot?.effective_source_team_id ?? undefined
+      : undefined,
+    groupAuthorizationId,
+    groupAuthorizationSourceType: groupAuthorizationId
+      ? input.groupAuthorizationSourceType ?? groupAuthorizationSnapshot?.effective_source_type ?? undefined
+      : undefined,
+    groupAuthorizationSourceTeamId: groupAuthorizationId
+      ? input.groupAuthorizationSourceTeamId ?? groupAuthorizationSnapshot?.effective_source_team_id ?? undefined
+      : undefined
   }
+}
+
+function accountAccessTypeCandidate(
+  input: {
+    systemAccountId: string
+    accountAccessType?: 'owner' | 'account_authorized' | 'group_authorized'
+    accountAuthorizationId?: string
+  },
+  accountOwnerSystemAccountId: string | undefined,
+  groupAccessType: 'owner' | 'authorized' | undefined,
+  groupOwnerSystemAccountId: string | undefined,
+  accountAuthorization: ResourceAuthorizationRow | undefined
+): string | undefined {
+  const accountAccessType = input.accountAccessType
+    ?? (accountOwnerSystemAccountId
+      ? accountOwnerSystemAccountId === input.systemAccountId
+        ? 'owner'
+        : groupAccessType === 'authorized' && groupOwnerSystemAccountId === accountOwnerSystemAccountId
+          ? 'group_authorized'
+          : accountAuthorization
+            ? 'account_authorized'
+            : undefined
+      : undefined)
+  return accountAccessType === 'account_authorized' ? input.accountAuthorizationId ?? accountAuthorization?.id : undefined
 }
 
 function accountSystemAccountIdForUsage(accountId: string): string | undefined {
@@ -581,6 +649,12 @@ function groupOwnerSystemAccountIdForUsage(groupId: string): string | undefined 
 function activeResourceAuthorization(resourceType: 'account' | 'group', resourceId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
   const now = nowIso()
   return getDatabase()
-    .prepare("SELECT id, status, expires_at FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
+    .prepare("SELECT id, status, expires_at, effective_source_type, effective_source_team_id FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
     .get(resourceType, resourceId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
+}
+
+function resourceAuthorizationSnapshot(authorizationId: string): ResourceAuthorizationRow | undefined {
+  return getDatabase()
+    .prepare('SELECT id, status, expires_at, effective_source_type, effective_source_team_id FROM resource_authorizations WHERE id = ? LIMIT 1')
+    .get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
 }

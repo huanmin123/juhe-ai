@@ -24,6 +24,10 @@ if ! command -v pnpm >/dev/null 2>&1; then
   fi
 fi
 
+ripgrep_dependency_ready() {
+  (cd backend && node --input-type=module -e "import('@vscode/ripgrep').then(({ rgPath }) => import('node:fs').then(({ existsSync }) => process.exit(existsSync(rgPath) ? 0 : 1))).catch(() => process.exit(1))" >/dev/null 2>&1)
+}
+
 if [ ! -f backend/.env ]; then
   if [ -f backend/.env.example.local ]; then
     cp backend/.env.example.local backend/.env
@@ -36,8 +40,7 @@ if [ ! -f backend/.env ]; then
 fi
 
 mkdir -p backend/data
-
-if [ ! -d node_modules ] || [ ! -d backend/node_modules ]; then
+if [ ! -d node_modules ] || [ ! -d backend/node_modules ] || ! ripgrep_dependency_ready; then
   echo "Installing production dependencies..."
   pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
 else

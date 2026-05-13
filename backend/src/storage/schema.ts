@@ -428,7 +428,11 @@ export function applyRecordSchema(database: DatabaseSync): void {
       account_access_type TEXT,
       group_access_type TEXT,
       account_authorization_id TEXT,
+      account_authorization_source_type TEXT,
+      account_authorization_source_team_id TEXT,
       group_authorization_id TEXT,
+      group_authorization_source_type TEXT,
+      group_authorization_source_team_id TEXT,
       created_at TEXT NOT NULL
     );
 
@@ -791,6 +795,110 @@ export function applyRecordSchema(database: DatabaseSync): void {
       PRIMARY KEY (system_account_id, scope_type, scope_id, stat_month)
     );
 
+    CREATE TABLE IF NOT EXISTS authorization_team_usage_monthly (
+      system_account_id TEXT NOT NULL,
+      stat_month TEXT NOT NULL,
+      team_id TEXT NOT NULL,
+      resource_filter_type TEXT NOT NULL DEFAULT 'all',
+      resource_filter_id TEXT NOT NULL DEFAULT '',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_month, team_id, resource_filter_type, resource_filter_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS authorization_team_usage_summary_monthly (
+      system_account_id TEXT NOT NULL,
+      stat_month TEXT NOT NULL,
+      team_filter_id TEXT NOT NULL DEFAULT '',
+      resource_filter_type TEXT NOT NULL DEFAULT 'all',
+      resource_filter_id TEXT NOT NULL DEFAULT '',
+      row_count INTEGER NOT NULL DEFAULT 0,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_month, team_filter_id, resource_filter_type, resource_filter_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS authorization_user_usage_monthly (
+      system_account_id TEXT NOT NULL,
+      stat_month TEXT NOT NULL,
+      team_filter_id TEXT NOT NULL DEFAULT '',
+      grantee_system_account_id TEXT NOT NULL,
+      resource_filter_type TEXT NOT NULL DEFAULT 'all',
+      resource_filter_id TEXT NOT NULL DEFAULT '',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_month, team_filter_id, grantee_system_account_id, resource_filter_type, resource_filter_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS authorization_user_usage_summary_monthly (
+      system_account_id TEXT NOT NULL,
+      stat_month TEXT NOT NULL,
+      team_filter_id TEXT NOT NULL DEFAULT '',
+      grantee_filter_system_account_id TEXT NOT NULL DEFAULT '',
+      resource_filter_type TEXT NOT NULL DEFAULT 'all',
+      resource_filter_id TEXT NOT NULL DEFAULT '',
+      row_count INTEGER NOT NULL DEFAULT 0,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      last_error_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, stat_month, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
+    );
+
     CREATE TABLE IF NOT EXISTS usage_model_minute (
       system_account_id TEXT NOT NULL,
       stat_minute TEXT NOT NULL,
@@ -1014,6 +1122,107 @@ export function applyRecordSchema(database: DatabaseSync): void {
       PRIMARY KEY (system_account_id, scope_type, window_key, metric, snapshot_at, rank, scope_id)
     );
 
+    CREATE TABLE IF NOT EXISTS usage_overview_summary_windows (
+      system_account_id TEXT NOT NULL,
+      window_key TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      success_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, window_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_overview_trend_windows (
+      system_account_id TEXT NOT NULL,
+      window_key TEXT NOT NULL,
+      bucket_key TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, window_key, bucket_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_model_rank_windows (
+      system_account_id TEXT NOT NULL,
+      window_key TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      model TEXT NOT NULL DEFAULT 'unknown',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, window_key, rank, provider_code, model)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_error_rank_windows (
+      system_account_id TEXT NOT NULL,
+      window_key TEXT NOT NULL,
+      rank INTEGER NOT NULL,
+      provider_code TEXT NOT NULL DEFAULT 'unknown',
+      error_code TEXT NOT NULL DEFAULT 'unknown',
+      status_code INTEGER NOT NULL DEFAULT 0,
+      error_message TEXT,
+      error_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, window_key, rank, provider_code, error_code, status_code)
+    );
+
+    CREATE TABLE IF NOT EXISTS ai_performance_summary_windows (
+      system_account_id TEXT NOT NULL,
+      window_key TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
+      duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, window_key)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_quota_hourly_windows (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      window_hours INTEGER NOT NULL,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, window_hours)
+    );
+
+    CREATE TABLE IF NOT EXISTS usage_scope_range_windows (
+      system_account_id TEXT NOT NULL,
+      scope_type TEXT NOT NULL,
+      scope_id TEXT NOT NULL DEFAULT '',
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, scope_type, scope_id, start_date, end_date)
+    );
+
     CREATE TABLE IF NOT EXISTS stats_job_state (
       scope_type TEXT NOT NULL,
       scope_id TEXT NOT NULL DEFAULT '',
@@ -1071,6 +1280,34 @@ export function applyRecordSchema(database: DatabaseSync): void {
       db_file_bytes_max INTEGER,
       stats_lag_seconds_max INTEGER,
       updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS system_metrics_trend_windows (
+      window_key TEXT NOT NULL,
+      bucket_key TEXT NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      cpu_percent_sum REAL NOT NULL DEFAULT 0,
+      cpu_percent_max REAL,
+      memory_used_percent_sum REAL NOT NULL DEFAULT 0,
+      memory_used_percent_max REAL,
+      process_rss_bytes_sum INTEGER NOT NULL DEFAULT 0,
+      process_rss_bytes_max INTEGER,
+      process_heap_used_bytes_sum INTEGER NOT NULL DEFAULT 0,
+      process_heap_used_bytes_max INTEGER,
+      event_loop_lag_ms_sum REAL NOT NULL DEFAULT 0,
+      event_loop_lag_ms_max REAL,
+      network_rx_bytes_per_sec_sum REAL NOT NULL DEFAULT 0,
+      network_rx_bytes_per_sec_max REAL,
+      network_rx_bytes_per_sec_count INTEGER NOT NULL DEFAULT 0,
+      network_tx_bytes_per_sec_sum REAL NOT NULL DEFAULT 0,
+      network_tx_bytes_per_sec_max REAL,
+      network_tx_bytes_per_sec_count INTEGER NOT NULL DEFAULT 0,
+      network_rx_total_bytes_max INTEGER,
+      network_tx_total_bytes_max INTEGER,
+      db_file_bytes_max INTEGER,
+      stats_lag_seconds_max INTEGER,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (window_key, bucket_key)
     );
 
     CREATE TABLE IF NOT EXISTS database_storage_snapshots (
@@ -1176,6 +1413,10 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_stats_weekly_week ON usage_stats_weekly(stat_week);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_monthly_scope_month ON usage_stats_monthly(system_account_id, scope_type, scope_id, stat_month);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_monthly_month ON usage_stats_monthly(stat_month);
+    CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_monthly_lookup ON authorization_team_usage_monthly(system_account_id, stat_month, resource_filter_type, resource_filter_id, team_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_summary_monthly_lookup ON authorization_team_usage_summary_monthly(system_account_id, stat_month, team_filter_id, resource_filter_type, resource_filter_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_monthly_lookup ON authorization_user_usage_monthly(system_account_id, stat_month, team_filter_id, resource_filter_type, resource_filter_id, grantee_system_account_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_monthly_lookup ON authorization_user_usage_summary_monthly(system_account_id, stat_month, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id);
     CREATE INDEX IF NOT EXISTS idx_usage_model_minute_minute ON usage_model_minute(system_account_id, stat_minute, model);
     CREATE INDEX IF NOT EXISTS idx_usage_model_minute_stat_minute ON usage_model_minute(stat_minute);
     CREATE INDEX IF NOT EXISTS idx_usage_model_daily_date ON usage_model_daily(system_account_id, stat_date, model);
@@ -1204,11 +1445,42 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_latency_monthly_month ON usage_latency_monthly(stat_month);
     CREATE INDEX IF NOT EXISTS idx_usage_rank_snapshots_lookup ON usage_rank_snapshots(system_account_id, scope_type, window_key, metric, snapshot_at DESC, rank);
     CREATE INDEX IF NOT EXISTS idx_usage_rank_snapshots_snapshot ON usage_rank_snapshots(snapshot_at);
+    CREATE INDEX IF NOT EXISTS idx_usage_overview_trend_windows_lookup ON usage_overview_trend_windows(system_account_id, window_key, bucket_key);
+    CREATE INDEX IF NOT EXISTS idx_usage_model_rank_windows_lookup ON usage_model_rank_windows(system_account_id, window_key, rank);
+    CREATE INDEX IF NOT EXISTS idx_usage_error_rank_windows_lookup ON usage_error_rank_windows(system_account_id, window_key, rank);
+    CREATE INDEX IF NOT EXISTS idx_ai_performance_summary_windows_lookup ON ai_performance_summary_windows(system_account_id, window_key);
+    CREATE INDEX IF NOT EXISTS idx_usage_quota_hourly_windows_lookup ON usage_quota_hourly_windows(system_account_id, scope_type, scope_id, window_hours);
+    CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_lookup ON usage_scope_range_windows(system_account_id, scope_type, scope_id, start_date, end_date);
+    CREATE INDEX IF NOT EXISTS idx_system_metrics_trend_windows_lookup ON system_metrics_trend_windows(window_key, bucket_key);
     CREATE INDEX IF NOT EXISTS idx_system_metrics_samples_sampled_at ON system_metrics_samples(sampled_at);
     CREATE INDEX IF NOT EXISTS idx_database_storage_snapshots_role_time ON database_storage_snapshots(database_role, sampled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest ON table_storage_snapshots(database_role, table_name, sampled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)
+
+  ensureRecordTableColumns(database, 'usage_records', {
+    account_authorization_source_type: 'TEXT',
+    account_authorization_source_team_id: 'TEXT',
+    group_authorization_source_type: 'TEXT',
+    group_authorization_source_team_id: 'TEXT'
+  })
+}
+
+function ensureRecordTableColumns(database: DatabaseSync, tableName: string, columns: Record<string, string>): void {
+  const table = quotedIdentifier(tableName)
+  const existingRows = database.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name?: string }>
+  const existing = new Set(existingRows.map((row) => row.name).filter((name): name is string => Boolean(name)))
+  for (const [columnName, columnDefinition] of Object.entries(columns)) {
+    if (existing.has(columnName)) continue
+    database.exec(`ALTER TABLE ${table} ADD COLUMN ${quotedIdentifier(columnName)} ${columnDefinition}`)
+  }
+}
+
+function quotedIdentifier(value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
+    throw new Error(`非法 SQLite 标识符：${value}`)
+  }
+  return `"${value}"`
 }
 
 export function seedDefaults(database: DatabaseSync): void {

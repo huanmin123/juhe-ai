@@ -3,8 +3,8 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { runtimeConfig } from '../config/runtime.js'
-import { logger } from '../shared/logger.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-db-service-worker-local-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'worker-local.sqlite3')
@@ -20,8 +20,8 @@ const [
   { requestDbService },
   databaseModule
 ] = await Promise.all([
-  import('../modules/db-service/db-service-ipc.js'),
-  import('../storage/database.js')
+  import('../../modules/db-service/db-service-ipc.js'),
+  import('../../storage/database.js')
 ])
 
 async function main(): Promise<void> {

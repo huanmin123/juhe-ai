@@ -10,6 +10,7 @@
     <template #inline-filters>
       <a-segmented v-if="!isManagementView" v-model:value="filters.direction" class="direction-filter responsive-list-inline-filter" :options="directionOptions" @change="$emit('refresh')" />
       <a-range-picker
+        v-if="!isManagementView"
         v-model:value="usageDateRangeValue"
         :allow-clear="false"
         :disabled="loading"
@@ -31,7 +32,7 @@
         class="filter-select filter-resource responsive-list-inline-filter"
         :options="resourceOptions"
         :disabled="filters.resourceType === 'all'"
-        :placeholder="filters.resourceType === 'all' ? '先选择资源类型' : '筛选资源'"
+        :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
         @change="$emit('refresh')"
       />
       <SystemPrincipalSelect
@@ -41,7 +42,7 @@
         :active-only="false"
         allow-clear
         class="filter-select responsive-list-inline-filter"
-        placeholder="筛选授权来源"
+        placeholder="筛选授权团队"
         scope="team"
         @change="$emit('refresh')"
       />
@@ -68,7 +69,7 @@
         <span>授权方向</span>
         <a-segmented v-model:value="filters.direction" :options="directionOptions" @change="$emit('refresh')" />
       </label>
-      <label class="mobile-filter-field">
+      <label v-if="!isManagementView" class="mobile-filter-field">
         <span>用量时间</span>
         <a-range-picker
           v-model:value="usageDateRangeValue"
@@ -82,15 +83,15 @@
         />
       </label>
       <label v-if="!isManagementView" class="mobile-filter-field">
-        <span>授权对象</span>
+        <span>授权方式</span>
         <a-select v-model:value="filters.sourceType" :options="sourceOptions" @change="$emit('refresh')" />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
-        <span>资源类型</span>
+        <span>授权内容</span>
         <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="$emit('resource-type-change')" />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
-        <span>资源</span>
+        <span>授权资源</span>
         <a-select
           v-model:value="filters.resourceId"
           show-search
@@ -98,13 +99,13 @@
           option-filter-prop="label"
           :options="resourceOptions"
           :disabled="filters.resourceType === 'all'"
-          :placeholder="filters.resourceType === 'all' ? '先选择资源类型' : '筛选资源'"
+          :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
           @change="$emit('refresh')"
         />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
-        <span>授权来源</span>
-        <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选授权来源" @change="$emit('refresh')" />
+        <span>授权团队</span>
+        <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选授权团队" @change="$emit('refresh')" />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
         <span>被授权用户</span>

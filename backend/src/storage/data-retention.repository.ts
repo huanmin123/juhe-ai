@@ -24,7 +24,18 @@ export interface UsageStatsRetentionCleanupResult {
   usageModelMonthly: number
   usageErrorMonthly: number
   usageLatencyMonthly: number
+  authorizationTeamUsageMonthly: number
+  authorizationTeamUsageSummaryMonthly: number
+  authorizationUserUsageMonthly: number
+  authorizationUserUsageSummaryMonthly: number
   usageRankSnapshots: number
+  usageOverviewSummaryWindows: number
+  usageOverviewTrendWindows: number
+  usageModelRankWindows: number
+  usageErrorRankWindows: number
+  aiPerformanceSummaryWindows: number
+  usageQuotaHourlyWindows: number
+  usageScopeRangeWindows: number
 }
 
 export interface SystemMetricsRetentionCleanupResult {
@@ -131,7 +142,18 @@ export function cleanupUsageStatsBucketsBefore(input: {
     usageModelMonthly: changed(database.prepare('DELETE FROM usage_model_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
     usageErrorMonthly: changed(database.prepare('DELETE FROM usage_error_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
     usageLatencyMonthly: changed(database.prepare('DELETE FROM usage_latency_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
-    usageRankSnapshots: changed(database.prepare('DELETE FROM usage_rank_snapshots WHERE snapshot_at < ?').run(input.rankSnapshotCutoffIso))
+    authorizationTeamUsageMonthly: changed(database.prepare('DELETE FROM authorization_team_usage_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
+    authorizationTeamUsageSummaryMonthly: changed(database.prepare('DELETE FROM authorization_team_usage_summary_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
+    authorizationUserUsageMonthly: changed(database.prepare('DELETE FROM authorization_user_usage_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
+    authorizationUserUsageSummaryMonthly: changed(database.prepare('DELETE FROM authorization_user_usage_summary_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
+    usageRankSnapshots: changed(database.prepare('DELETE FROM usage_rank_snapshots WHERE snapshot_at < ?').run(input.rankSnapshotCutoffIso)),
+    usageOverviewSummaryWindows: 0,
+    usageOverviewTrendWindows: 0,
+    usageModelRankWindows: 0,
+    usageErrorRankWindows: 0,
+    aiPerformanceSummaryWindows: 0,
+    usageQuotaHourlyWindows: 0,
+    usageScopeRangeWindows: changed(database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date < ?').run(input.dailyCutoffDate))
   }
 }
 

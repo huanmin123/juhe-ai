@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { RequestQuotaLimits } from '../../domain/types.js'
-import { dateKey, hourKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
+import { dateKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
 
 export interface RequestQuotaCosts {
   hourly: number
@@ -19,22 +19,18 @@ export function loadRequestQuotaCosts(database: DatabaseSync, input: {
   hourlyWindowHours?: number
 }): RequestQuotaCosts {
   const timezone = usageStatsTimezone()
-  const hourlySince = input.hourlyWindowHours
-    ? hourKey(new Date(input.now.getTime() - Math.max(1, input.hourlyWindowHours) * 60 * 60 * 1000), timezone)
-    : undefined
-
   const totalRow = database.prepare(`
     SELECT COALESCE(total_cost_usd, 0) AS total_cost
     FROM usage_stats_totals
     WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
   `).get(input.systemAccountId, input.scopeType, input.scopeId) as unknown as { total_cost?: number } | undefined
 
-  const hourlyRow = hourlySince
+  const hourlyRow = input.hourlyWindowHours
     ? database.prepare(`
-      SELECT COALESCE(SUM(total_cost_usd), 0) AS total_cost
-      FROM usage_stats_hourly
-      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND stat_hour >= ?
-    `).get(input.systemAccountId, input.scopeType, input.scopeId, hourlySince) as unknown as { total_cost?: number } | undefined
+      SELECT COALESCE(total_cost_usd, 0) AS total_cost
+      FROM usage_quota_hourly_windows
+      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND window_hours = ?
+    `).get(input.systemAccountId, input.scopeType, input.scopeId, Math.max(1, Math.trunc(input.hourlyWindowHours ?? 1))) as unknown as { total_cost?: number } | undefined
     : undefined
 
   const dailyRow = database.prepare(`

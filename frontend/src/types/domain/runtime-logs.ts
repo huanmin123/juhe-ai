@@ -26,7 +26,6 @@ export interface RuntimeLogGrepItem {
   file: string
   fileName: string
   lineNumber?: number
-  lineNumberFromEnd: number
   time: string
   level: RuntimeLogLevel | string
   traceId?: string
@@ -39,15 +38,17 @@ export interface RuntimeLogGrepItem {
 
 export interface RuntimeLogGrepResult {
   available: boolean
-  mode?: 'rg'
   elapsedMs: number
   keywords: string[]
+  startAt: string
+  endAt: string
+  defaultRangeDays: number
+  maxRangeDays: number
   items: RuntimeLogGrepItem[]
   limit: number
   truncated: boolean
   scannedFileCount: number
   message?: string
-  installSteps?: string[]
 }
 
 export interface RuntimeLogIndexRuntime {
@@ -58,6 +59,15 @@ export interface RuntimeLogIndexRuntime {
   retentionDays: number
 }
 
+export interface RuntimeLogGrepRuntime {
+  earliestFileTime?: string
+  defaultStartAt: string
+  defaultEndAt: string
+  defaultRangeDays: number
+  maxRangeDays: number
+  fileRetentionDays: number
+}
+
 export interface RuntimeLogFacets {
   retentionDays: number
   earliestIndexedAt?: string
@@ -66,4 +76,5 @@ export interface RuntimeLogFacets {
   levels: Array<{ value: string; count: number }>
   events: string[]
   runtime: RuntimeLogIndexRuntime
+  grep: RuntimeLogGrepRuntime
 }

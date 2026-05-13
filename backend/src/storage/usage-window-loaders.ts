@@ -2,7 +2,6 @@ import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummar
 import { getRecordDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import {
-  addUsageSummaries,
   dateKeysInRange,
   emptyAccountUsageDailyPoint,
   usageSummaryFromAggregate
@@ -82,21 +81,44 @@ export function loadUsageDailySeriesForScopeRequests(scopes: UsageStatsScopeRequ
           AND stat_date >= ?
           AND stat_date <= ?
       `).all(systemAccountId, ...scopeTypes, ...scopeIdChunk, range.startDate, range.endDate) as unknown as UsageStatsScopeAggregateRow[])
+      rows.push(...database.prepare(`
+        SELECT
+          system_account_id,
+          scope_type,
+          scope_id,
+          scope_id AS account_id,
+          NULL AS stat_date,
+          request_count,
+          input_tokens,
+          output_tokens,
+          cache_read_tokens,
+          total_cost_usd AS total_cost,
+          last_used_at
+        FROM usage_scope_range_windows
+        WHERE system_account_id = ?
+          AND scope_type IN (${sqlPlaceholders(scopeTypes.length)})
+          AND scope_id IN (${sqlPlaceholders(scopeIdChunk.length)})
+          AND start_date = ?
+          AND end_date = ?
+      `).all(systemAccountId, ...scopeTypes, ...scopeIdChunk, range.startDate, range.endDate) as unknown as UsageStatsScopeAggregateRow[])
     }
   }
 
   const dateIndex = new Map(dateKeys.map((statDate, index) => [statDate, index]))
   for (const row of rows) {
     const rowKeys = rowKeysByScopeMapKey.get(usageStatsRowMapKey(row))
-    if (!rowKeys || !row.stat_date) continue
-    const index = dateIndex.get(row.stat_date)
-    if (index === undefined) continue
+    if (!rowKeys) continue
     const rowUsage = usageSummaryFromAggregate(row)
     for (const rowKey of rowKeys) {
       const series = result.get(rowKey)
       if (!series) continue
+      if (!row.stat_date) {
+        series.rangeUsage = rowUsage
+        continue
+      }
+      const index = dateIndex.get(row.stat_date)
+      if (index === undefined) continue
       series.dailyUsage[index] = { statDate: row.stat_date, ...rowUsage }
-      series.rangeUsage = addUsageSummaries(series.rangeUsage, rowUsage)
     }
   }
 

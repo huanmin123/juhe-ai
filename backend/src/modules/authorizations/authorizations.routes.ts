@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from '../../shared/http.js'
+import { getAuthorizationTeamUsageOverview, getAuthorizationUserUsageOverview } from '../../storage/authorization-usage.repository.js'
 import {
   createResourceAuthorization,
   getResourceAuthorizationUsage,
@@ -11,7 +12,7 @@ import {
 } from '../../storage/repositories.js'
 import { getDatabase } from '../../storage/database.js'
 import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
-import { getRequestAccessScope } from '../auth/request-context.js'
+import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
 import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
@@ -38,6 +39,17 @@ const authorizationsQuerySchema = z.object({
 
 const authorizationUsageQuerySchema = z.object({
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
+  startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
+  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
+})
+
+const authorizationUsageOverviewQuerySchema = z.object({
+  systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
+  resourceType: z.enum(['account', 'group']).optional(),
+  resourceId: z.string().trim().min(1, '授权资源 ID 不能为空').optional(),
+  granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
+  teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
+  statMonth: z.string().trim().regex(/^\d{4}-\d{2}$/, '统计月份格式应为 YYYY-MM').optional(),
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
   endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
 })
@@ -103,6 +115,36 @@ authorizationsRouter.get('/', (req, res) => {
   res.json(ok(listResourceAuthorizations(routeFilters, getRequestAccessScope(systemAccountId), { usageRange })))
 })
 
+authorizationsRouter.get('/usage/team-details', (req, res) => {
+  if (req.baseUrl.endsWith('/my-authorizations')) {
+    sendNotFound(res, '资源不存在')
+    return
+  }
+  const parsed = parseOrBadRequest(authorizationUsageOverviewQuerySchema, req.query, '查询参数不合法')
+  if (!parsed.success) {
+    sendBadRequest(res, parsed.message)
+    return
+  }
+  const { systemAccountId, statMonth, startDate, endDate, ...filters } = parsed.data
+  const month = normalizeAuthorizationUsageMonth({ statMonth, startDate, endDate })
+  res.json(ok(getAuthorizationTeamUsageOverview(filters, getRequestAccessScope(systemAccountId), month)))
+})
+
+authorizationsRouter.get('/usage/user-details', (req, res) => {
+  if (req.baseUrl.endsWith('/my-authorizations')) {
+    sendNotFound(res, '资源不存在')
+    return
+  }
+  const parsed = parseOrBadRequest(authorizationUsageOverviewQuerySchema, req.query, '查询参数不合法')
+  if (!parsed.success) {
+    sendBadRequest(res, parsed.message)
+    return
+  }
+  const { systemAccountId, statMonth, startDate, endDate, ...filters } = parsed.data
+  const month = normalizeAuthorizationUsageMonth({ statMonth, startDate, endDate })
+  res.json(ok(getAuthorizationUserUsageOverview(filters, getRequestAccessScope(systemAccountId), month)))
+})
+
 authorizationsRouter.post('/', mutationGuard({
   operationKey: 'authorizations.create',
   scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
@@ -122,6 +164,11 @@ authorizationsRouter.post('/', mutationGuard({
   const parsed = parseOrBadRequest(createAuthorizationSchema, req.body, '授权参数不合法')
   if (!parsed.success) {
     sendBadRequest(res, parsed.message)
+    return
+  }
+  const authContext = getRequestAuthContext()
+  if (authContext?.role === 'admin' && req.baseUrl.endsWith('/authorizations') && !scopeQuery.data.systemAccountId) {
+    sendBadRequest(res, '管理员新增授权时必须指定授权人')
     return
   }
   try {
@@ -405,4 +452,18 @@ function normalizeAuthorizationListUsageRange(input: { startDate?: string; endDa
   const startDate = input.startDate ?? input.endDate ?? today
   const endDate = input.endDate ?? input.startDate ?? today
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
+}
+
+function normalizeAuthorizationUsageMonth(input: { statMonth?: string; startDate?: string; endDate?: string }) {
+  const timezone = usageStatsTimezone()
+  const today = todayDateKey(timezone)
+  const requestedMonth = input.statMonth ?? input.startDate?.slice(0, 7) ?? input.endDate?.slice(0, 7) ?? today.slice(0, 7)
+  const statMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : today.slice(0, 7)
+  const [year, month] = statMonth.split('-').map(Number)
+  const days = Number.isFinite(year) && Number.isFinite(month) ? new Date(year, month, 0).getDate() : 31
+  return {
+    statMonth,
+    startDate: `${statMonth}-01`,
+    endDate: `${statMonth}-${String(days).padStart(2, '0')}`
+  }
 }

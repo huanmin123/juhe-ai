@@ -47,7 +47,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'usage-stats-consistency-check', intervalMs: 60 * 60 * 1000, task: runUsageStatsConsistencyCheck })
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: 60 * 1000, task: runResourceAuthorizationExpirySweep })
   scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000, task: runSystemMetricsSample })
-  scheduler.schedule({ name: 'table-storage-monitor', intervalMs: 5 * 60 * 1000, task: runTableStorageMonitor })
+  scheduler.schedule({ name: 'table-storage-monitor', intervalMs: 10 * 60 * 1000, task: runTableStorageMonitor })
   scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: proxyLatencyRefreshIntervalSeconds * 1000, task: runProxyLatencyRefresh })
   scheduler.schedule({ name: 'account-quality-refresh', intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 600, 60, 3600) * 1000, task: runAccountQualityRefresh })
   scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runOpenAIOAuthAccessTokenRefresh })
@@ -67,6 +67,7 @@ async function runUsageStatsAggregation(): Promise<void> {
       const processed = aggregateUsageStatsBatch(batchSize)
       if (processed < batchSize) break
     }
+    refreshUsageRankSnapshots()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
   } finally {

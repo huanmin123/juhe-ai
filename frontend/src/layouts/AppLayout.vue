@@ -7,6 +7,7 @@
       :app-name="appBrand.appName"
       :is-mobile="isMobile"
       :menu-items="menuItems"
+      :open-keys="openMenuKeys"
       :selected-keys="selectedKeys"
       @menu-click="handleMenuClick"
     />
@@ -101,6 +102,10 @@ const announcements = ref<AnnouncementSummary[]>([])
 let announcementsRefreshTimer: number | undefined
 
 const selectedKeys = computed(() => [route.path])
+const openMenuKeys = computed(() => {
+  const currentRoute = visibleMenuRoutes.value.find((item) => item.path === route.path)
+  return currentRoute?.meta?.menuGroup ? [`group:${currentRoute.meta.menuGroup}`] : []
+})
 const currentPageTitle = computed(() => route.meta.title || '轻量中转管理')
 const currentPageDescription = computed(() => route.meta.description || 'OpenAI OAuth + API Key')
 const currentUser = authState.currentUser
@@ -154,9 +159,12 @@ const menuIconMap = {
   '/my-groups': ApartmentOutlined,
   '/groups': ApartmentOutlined,
   '/system-teams': TeamOutlined,
+  '/authorization-teams': TeamOutlined,
   '/my-teams': TeamOutlined,
   '/my-authorizations': SafetyCertificateOutlined,
   '/authorizations': SafetyCertificateOutlined,
+  '/authorization-team-usage': FundOutlined,
+  '/authorization-user-usage': HistoryOutlined,
   '/my-api-keys': ApiKeyMenuIcon,
   '/api-keys': ApiKeyMenuIcon,
   '/proxies': NodeIndexOutlined,
@@ -177,6 +185,10 @@ const menuIconMap = {
   '/system-accounts': TeamOutlined
 }
 
+const menuGroupIconMap = {
+  authorization: SafetyCertificateOutlined
+}
+
 function canAccessRoute(item: typeof menuRoutes[number]): boolean {
   return !item.meta?.roles?.length || Boolean(currentUser.value && item.meta.roles.includes(currentUser.value.role))
 }
@@ -195,11 +207,35 @@ const visibleMenuRoutes = computed(() =>
 )
 
 const menuItems = computed<ItemType[]>(() => {
-  return visibleMenuRoutes.value.map(routeToMenuItem)
+  const items: ItemType[] = []
+  const groupItems = new Map<string, ItemType & { children: ItemType[] }>()
+  for (const item of visibleMenuRoutes.value) {
+    const groupKey = item.meta?.menuGroup
+    if (!groupKey) {
+      items.push(routeToMenuItem(item))
+      continue
+    }
+    let group = groupItems.get(groupKey)
+    if (!group) {
+      const groupIcon = menuGroupIconMap[groupKey as keyof typeof menuGroupIconMap]
+      group = {
+        key: `group:${groupKey}`,
+        label: item.meta?.menuGroupTitle ?? item.meta?.title ?? '',
+        children: [],
+        ...(groupIcon ? { icon: () => h(groupIcon) } : {})
+      }
+      groupItems.set(groupKey, group)
+      items.push(group)
+    }
+    group.children.push(routeToMenuItem(item))
+  }
+  return items
 })
 
 function handleMenuClick(event: { key: string | number }) {
-  router.push(String(event.key))
+  const key = String(event.key)
+  if (key.startsWith('group:')) return
+  router.push(key)
   sidebarOpen.value = false
 }
 

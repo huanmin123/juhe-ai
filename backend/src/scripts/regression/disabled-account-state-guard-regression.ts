@@ -6,9 +6,9 @@ import http from 'node:http'
 import cors from 'cors'
 import express from 'express'
 
-import { runtimeConfig } from '../config/runtime.js'
-import { ok } from '../shared/http.js'
-import { logger } from '../shared/logger.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { ok } from '../../shared/http.js'
+import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-disabled-account-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'disabled-account-guard.sqlite3')
@@ -31,15 +31,15 @@ const [
   { applyAccountErrorHandling },
   { handleDbServiceOperation }
 ] = await Promise.all([
-  import('../modules/accounts/accounts.routes.js'),
-  import('../modules/auth/auth.routes.js'),
-  import('../modules/auth/auth.middleware.js'),
-  import('../shared/request-context.js'),
-  import('../storage/database.js'),
-  import('../storage/repositories.js'),
-  import('../modules/accounts/account-test.service.js'),
-  import('../modules/gateway/account-error-policy.service.js'),
-  import('../modules/db-service/db-service-handlers.js')
+  import('../../modules/accounts/accounts.routes.js'),
+  import('../../modules/auth/auth.routes.js'),
+  import('../../modules/auth/auth.middleware.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
+  import('../../modules/accounts/account-test.service.js'),
+  import('../../modules/gateway/account-error-policy.service.js'),
+  import('../../modules/db-service/db-service-handlers.js')
 ])
 
 const app = express()

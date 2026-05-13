@@ -38,7 +38,7 @@ OpenAI 官方 OpenAPI spec 当前公开 base URL 是 `https://api.openai.com/v1`
 | OAuth Header | `backend/src/modules/gateway/openai-oauth-codex-adapter.ts` | 使用 allowlist + 默认值，强制 `content-type: application/json`，按 stream/compact 设置 `accept`，重写认证与 `chatgpt-account-id` |
 | OAuth 会话隔离 | `backend/src/modules/gateway/openai-oauth-codex-adapter.ts` | 对 `session_id`、`conversation_id`、`prompt_cache_key` 混入系统账户、本地 API Key、分组、上游账号后生成隔离值 |
 | API Key 链路 | `backend/src/modules/gateway/openai-gateway-upstream.ts` | 保留 raw body 真透传；Header 过滤危险头、代理链路、SDK/tracing 噪声和组织/项目头 |
-| 回归脚本 | `backend/src/scripts/openai-oauth-codex-adapter-regression.ts` | 覆盖 body normalize、Header allowlist、session isolation、compact、非法 body、缺 `model`/`input` |
+| 回归脚本 | `backend/src/scripts/regression/openai-oauth-codex-adapter-regression.ts` | 覆盖 body normalize、Header allowlist、session isolation、compact、非法 body、缺 `model`/`input` |
 
 ## 参考项目统计
 

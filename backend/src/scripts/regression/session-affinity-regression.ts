@@ -5,8 +5,8 @@ import {
   migrateOpenAIAccountSessionAffinity,
   orderOpenAIAccountsBySessionAffinity,
   rememberOpenAIAccountForSession
-} from '../modules/gateway/openai-gateway-session-affinity.service.js'
-import type { OpenAIAccountSecret } from '../storage/repositories.js'
+} from '../../modules/gateway/openai-gateway-session-affinity.service.js'
+import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 
 function main(): void {
   testMissingBoundAccountDoesNotAffectCandidates()

@@ -1,4 +1,4 @@
-import type { AccountStatus, AccountType } from '../domain/types.js'
+import type { AccountStatus, AccountType, ResourceAuthorizationSourceType } from '../domain/types.js'
 import { buildSystemAccountScopeClause, currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
@@ -14,7 +14,11 @@ export interface OpenAIAccountSecret {
   accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'
   groupAccessType: 'owner' | 'authorized'
   accountAuthorizationId?: string
+  accountAuthorizationSourceType?: ResourceAuthorizationSourceType
+  accountAuthorizationSourceTeamId?: string
   groupAuthorizationId?: string
+  groupAuthorizationSourceType?: ResourceAuthorizationSourceType
+  groupAuthorizationSourceTeamId?: string
   name: string
   type: AccountType
   status: AccountStatus
@@ -47,6 +51,8 @@ export interface GroupUsageAccessMetadata {
   groupOwnerSystemAccountId: string
   groupAccessType: 'owner' | 'authorized'
   groupAuthorizationId?: string
+  groupAuthorizationSourceType?: ResourceAuthorizationSourceType
+  groupAuthorizationSourceTeamId?: string
 }
 
 interface GroupAccountRow {
@@ -61,6 +67,8 @@ interface GroupAccountRow {
 
 type ResourceAuthorizationRow = {
   id: string
+  effective_source_type: ResourceAuthorizationSourceType | null
+  effective_source_team_id: string | null
 }
 
 export function selectOpenAIAccountForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret | undefined {
@@ -144,7 +152,9 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
   return {
     groupOwnerSystemAccountId: group.systemAccountId,
     groupAccessType: 'authorized',
-    groupAuthorizationId: authorization.id
+    groupAuthorizationId: authorization.id,
+    groupAuthorizationSourceType: authorization.effective_source_type ?? undefined,
+    groupAuthorizationSourceTeamId: authorization.effective_source_team_id ?? undefined
   }
 }
 
@@ -297,7 +307,11 @@ function openAIAccountSecretFromRow(
     accountAccessType: accountAccess.accountAccessType,
     groupAccessType: groupAccess.groupAccessType,
     accountAuthorizationId: accountAccess.accountAuthorizationId,
+    accountAuthorizationSourceType: accountAccess.accountAuthorizationSourceType,
+    accountAuthorizationSourceTeamId: accountAccess.accountAuthorizationSourceTeamId,
     groupAuthorizationId: groupAccess.groupAuthorizationId,
+    groupAuthorizationSourceType: groupAccess.groupAuthorizationSourceType,
+    groupAuthorizationSourceTeamId: groupAccess.groupAuthorizationSourceTeamId,
     name: row.name,
     type: row.type,
     status: row.status,
@@ -420,7 +434,7 @@ function resolveOpenAIAccountAccess(
   callerSystemAccountId: string,
   groupAccess: GroupUsageAccessMetadata,
   boundAccountAuthorizationId?: string
-): { accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'; accountAuthorizationId?: string } | undefined {
+): { accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'; accountAuthorizationId?: string; accountAuthorizationSourceType?: ResourceAuthorizationSourceType; accountAuthorizationSourceTeamId?: string } | undefined {
   if (accountOwnerSystemAccountId === callerSystemAccountId) {
     return { accountAccessType: 'owner' }
   }
@@ -433,7 +447,14 @@ function resolveOpenAIAccountAccess(
   if (boundAccountAuthorizationId && authorization?.id !== boundAccountAuthorizationId) {
     return undefined
   }
-  return authorization ? { accountAccessType: 'account_authorized', accountAuthorizationId: authorization.id } : undefined
+  return authorization
+    ? {
+        accountAccessType: 'account_authorized',
+        accountAuthorizationId: authorization.id,
+        accountAuthorizationSourceType: authorization.effective_source_type ?? undefined,
+        accountAuthorizationSourceTeamId: authorization.effective_source_team_id ?? undefined
+      }
+    : undefined
 }
 
 function canScheduleAuthorizedAccount(input: {
@@ -460,7 +481,7 @@ function groupOwnerAndProvider(groupId: string): { systemAccountId: string } | u
 function activeResourceAuthorization(resourceType: 'account' | 'group', resourceId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
   const now = nowIso()
   return getDatabase()
-    .prepare("SELECT id FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
+    .prepare("SELECT id, effective_source_type, effective_source_team_id FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
     .get(resourceType, resourceId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
 }
 

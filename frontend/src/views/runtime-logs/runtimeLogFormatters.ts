@@ -117,5 +117,5 @@ export function splitGrepKeywords(value: string): string[] {
 }
 
 export function grepLinePositionText(record: RuntimeLogGrepItem): string {
-  return record.lineNumber ? `第 ${record.lineNumber} 行` : `倒数第 ${record.lineNumberFromEnd} 行`
+  return record.lineNumber ? `第 ${record.lineNumber} 行` : '-'
 }

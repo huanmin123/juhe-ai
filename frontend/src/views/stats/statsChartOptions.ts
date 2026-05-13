@@ -29,7 +29,7 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
     },
     grid: {
       left: 48,
-      right: 58,
+      right: 112,
       top: 28,
       bottom: 56
     },
@@ -43,13 +43,23 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
     yAxis: [
       {
         type: 'value',
-        name: '次数 / Token',
+        name: '次数',
+        position: 'left',
         axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
         splitLine: { lineStyle: { color: '#edf2f7' } }
       },
       {
         type: 'value',
+        name: 'Token',
+        position: 'right',
+        axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
+        splitLine: { show: false }
+      },
+      {
+        type: 'value',
         name: '响应',
+        position: 'right',
+        offset: 56,
         axisLabel: { formatter: durationAxisLabel, color: '#64748b' },
         splitLine: { show: false }
       }
@@ -57,10 +67,11 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
     series: [
       {
         name: '请求数',
-        type: 'bar',
-        barMaxWidth: 18,
+        type: 'line',
+        smooth: true,
+        symbol: 'circle',
+        symbolSize: 6,
         data: trend.map((item) => item.requestCount),
-        itemStyle: { borderRadius: [4, 4, 0, 0] }
       },
       {
         name: '失败请求',
@@ -73,6 +84,7 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
       {
         name: 'Token 消耗',
         type: 'line',
+        yAxisIndex: 1,
         smooth: true,
         symbol: 'circle',
         symbolSize: 6,
@@ -82,7 +94,7 @@ export function buildUsageTrendOption(trend: UsageStatsOverview['hourlyTrend']):
       {
         name: '平均总耗时',
         type: 'line',
-        yAxisIndex: 1,
+        yAxisIndex: 2,
         smooth: true,
         symbol: 'circle',
         symbolSize: 6,

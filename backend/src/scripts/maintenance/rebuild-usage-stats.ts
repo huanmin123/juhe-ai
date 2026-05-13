@@ -1,6 +1,6 @@
-import { aggregateUsageStatsBatch, refreshUsageRankSnapshots } from '../storage/usage-stats.repository.js'
-import { getRecordDatabase, nowIso } from '../storage/database.js'
-import { runtimeConfig } from '../config/runtime.js'
+import { aggregateUsageStatsBatch, refreshUsageRankSnapshots } from '../../storage/usage-stats.repository.js'
+import { getRecordDatabase, nowIso } from '../../storage/database.js'
+import { runtimeConfig } from '../../config/runtime.js'
 
 const batchSize = normalizeBatchSize(process.argv[2])
 
@@ -48,7 +48,19 @@ function resetUsageStatsCache(database: ReturnType<typeof getRecordDatabase>): v
     'usage_latency_daily',
     'usage_latency_weekly',
     'usage_latency_monthly',
+    'authorization_team_usage_monthly',
+    'authorization_team_usage_summary_monthly',
+    'authorization_user_usage_monthly',
+    'authorization_user_usage_summary_monthly',
     'usage_rank_snapshots',
+    'usage_overview_summary_windows',
+    'usage_overview_trend_windows',
+    'usage_model_rank_windows',
+    'usage_error_rank_windows',
+    'ai_performance_summary_windows',
+    'usage_quota_hourly_windows',
+    'usage_scope_range_windows',
+    'system_metrics_trend_windows',
     'account_quality_minute_stats'
   ]
   const statsJobNames = [

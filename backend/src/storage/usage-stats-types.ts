@@ -39,7 +39,11 @@ export interface UsageStatsRecordRow {
   account_access_type: string | null
   group_access_type: string | null
   account_authorization_id: string | null
+  account_authorization_source_type: string | null
+  account_authorization_source_team_id: string | null
   group_authorization_id: string | null
+  group_authorization_source_type: string | null
+  group_authorization_source_team_id: string | null
   created_at: string
 }
 
@@ -69,7 +73,11 @@ export const USAGE_STATS_RECORD_SELECT_COLUMNS = `
   account_access_type,
   group_access_type,
   account_authorization_id,
+  account_authorization_source_type,
+  account_authorization_source_team_id,
   group_authorization_id,
+  group_authorization_source_type,
+  group_authorization_source_team_id,
   created_at
 `
 

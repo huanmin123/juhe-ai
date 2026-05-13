@@ -28,7 +28,7 @@ import { getSettings } from './settings.repository.js'
 import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
-import { addUsageSummaries, emptyAccountUsageSummary, normalizeAccountUsageStatsRange, numberFromUnknown, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
+import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, numberFromUnknown, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
 import {
@@ -504,6 +504,7 @@ function sanitizeAuthorizationSourcesForViewer(sources: ResourceAuthorizationSum
     id: source.id,
     authorizationId: source.authorizationId,
     sourceType: source.sourceType,
+    sourceTeamName: source.sourceTeamName,
     status: source.status,
     activatedAt: source.activatedAt,
     endedReason: source.endedReason,
@@ -880,8 +881,7 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
       defaultTrendAccountIds: defaultTrendAccountIdsForScope,
       total: sortedRows.length,
       page: 1,
-      pageSize: sortedRows.length,
-      summary: sortedRows.reduce((summary, row) => addUsageSummaries(summary, row.rangeUsage), emptyAccountUsageSummary())
+      pageSize: sortedRows.length
     }
   }
   const start = (listOptions.page - 1) * listOptions.pageSize
@@ -892,8 +892,7 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
     defaultTrendAccountIds: defaultTrendAccountIdsForScope,
     total: sortedRows.length,
     page: listOptions.page,
-    pageSize: listOptions.pageSize,
-    summary: rows.reduce((summary, row) => addUsageSummaries(summary, row.rangeUsage), emptyAccountUsageSummary())
+    pageSize: listOptions.pageSize
   }
 }
 

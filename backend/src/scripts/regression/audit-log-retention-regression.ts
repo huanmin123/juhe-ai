@@ -6,9 +6,9 @@ import { join, resolve } from 'node:path'
 import { gunzipSync } from 'node:zlib'
 import type { Request } from 'express'
 
-import { backendRoot, runtimeConfig } from '../config/runtime.js'
-import { logger } from '../shared/logger.js'
-import type { AuditLogInput } from '../storage/repositories.js'
+import { backendRoot, runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
+import type { AuditLogInput } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-audit-log-retention-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'audit-log-retention.sqlite3')
@@ -21,11 +21,11 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const [databaseModule, repositories] = await Promise.all([
-  import('../storage/database.js'),
-  import('../storage/repositories.js')
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js')
 ])
-const auditCapture = await import('../modules/gateway/audit-capture.service.js')
-const auditQueue = await import('../modules/audit-logs/audit-log-queue.service.js')
+const auditCapture = await import('../../modules/gateway/audit-capture.service.js')
+const auditQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
 
 const now = '2026-05-11T00:00:00.000Z'
 const repeatedBody = JSON.stringify({

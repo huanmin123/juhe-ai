@@ -9,9 +9,11 @@ import {
 } from '../../storage/repositories.js'
 import { getDatabase } from '../../storage/database.js'
 import {
+  fixedUsageStatsRangeWindow,
   getAiPerformanceOverview,
   getSystemMetricsOverview,
   getUsageStatsOverview,
+  isFixedUsageStatsRangeWindow,
   listAiPerformanceAccountOptions,
   type AiPerformanceWindowKey,
   type UsageOverviewWindowKey
@@ -82,6 +84,10 @@ statsRouter.get('/account-usage', (req, res) => {
 
 function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOptions & { range: ReturnType<typeof normalizeAccountUsageStatsRange> } {
   const timezone = usageStatsTimezone()
+  const range = normalizeAccountUsageStatsRange({
+    startDate: optionalQueryText(query.startDate),
+    endDate: optionalQueryText(query.endDate)
+  }, timezone)
   return {
     page: integerQueryValue(query.page),
     pageSize: integerQueryValue(query.pageSize),
@@ -89,10 +95,7 @@ function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOp
     keyword: optionalQueryText(query.keyword),
     type: optionalQueryText(query.type),
     schedulable: schedulableQueryValue(query.schedulable),
-    range: normalizeAccountUsageStatsRange({
-      startDate: optionalQueryText(query.startDate),
-      endDate: optionalQueryText(query.endDate)
-    }, timezone)
+    range: isFixedUsageStatsRangeWindow(range, timezone) ? range : fixedUsageStatsRangeWindow(timezone)
   }
 }
 

@@ -5,8 +5,8 @@
       <div class="mobile-list-card-tags">
         <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
         <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
-        <a-tag :color="statusCodeColor(record)">{{ statusCodeText(record) }}</a-tag>
         <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
+        <a-tag v-if="typeof record.statusCode === 'number'" :color="statusCodeColor(record)">状态码 {{ statusCodeText(record) }}</a-tag>
       </div>
     </div>
     <div class="mobile-list-meta-grid">

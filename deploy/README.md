@@ -10,7 +10,7 @@
 | macOS | `bash ./start.sh` |
 | Linux | `bash ./start.sh` |
 
-发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；首次启动会安装目标平台自己的生产依赖。
+发布包可以来自 Windows、macOS 或 Linux 任一打包平台。不要跨系统复制 `node_modules`；日志搜索 `grep 模式` 只使用后端生产依赖 `@vscode/ripgrep` 安装的 `rg`，目标机器启动时会按当前平台和架构安装对应二进制。
 
 ## 部署前检查
 
@@ -70,3 +70,19 @@ backend/data/juhe-ai.sqlite3
 ```
 
 常驻运行、反向代理、端口开放、数据迁移和常见排障请继续查看 `docs/deploy/部署指南.md`。
+
+## 统计重建
+
+统计重建不是每次上线动作。只有统计表、统计口径、授权消耗规则或额度窗口规则变化时，才在停掉 Web 和 background worker 后执行：
+
+Windows：
+
+```powershell
+node .\backend\dist\scripts\maintenance\rebuild-usage-stats.js
+```
+
+macOS/Linux：
+
+```bash
+node ./backend/dist/scripts/maintenance/rebuild-usage-stats.js
+```

@@ -18,7 +18,7 @@
           <a-range-picker
             v-model:value="dateRange"
             :allow-clear="false"
-            :disabled="loading"
+            :disabled="true"
             :disabled-date="disabledDate"
             class="usage-stats-range-picker"
             format="YYYY-MM-DD"

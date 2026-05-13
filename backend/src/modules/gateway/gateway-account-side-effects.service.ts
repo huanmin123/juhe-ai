@@ -104,6 +104,24 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
   }
 }
 
+export async function flushGatewayAccountSideEffectsForTest(): Promise<void> {
+  if (drainTimer) {
+    clearTimeout(drainTimer)
+    drainTimer = undefined
+    drainTimerDueAtMs = undefined
+  }
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (!processingSideEffects) {
+      await drainSideEffectQueue()
+    }
+    if (!processingSideEffects && sideEffectQueue.length === 0) {
+      return
+    }
+    await delay(10)
+  }
+}
+
 function enqueueAccountSideEffect(operation: AccountSideEffectOperation): void {
   const now = Date.now()
   if (sideEffectQueue.length >= maxQueuedSideEffects) {
@@ -277,4 +295,10 @@ function operationAccountId(operation: AccountSideEffectOperation): string {
   return operation.type === 'apply_account_error_handling'
     ? operation.account.id
     : operation.input.accountId
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms)
+  })
 }

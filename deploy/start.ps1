@@ -30,6 +30,16 @@ function Read-DotEnvValue {
   return $Fallback
 }
 
+function Test-RipgrepDependency {
+  Push-Location 'backend'
+  try {
+    node --input-type=module -e "import('@vscode/ripgrep').then(({ rgPath }) => import('node:fs').then(({ existsSync }) => process.exit(existsSync(rgPath) ? 0 : 1))).catch(() => process.exit(1))" *> $null
+    return $LASTEXITCODE -eq 0
+  } finally {
+    Pop-Location
+  }
+}
+
 if (-not (Test-CommandExists 'node')) {
   throw 'Node.js is required. Install Node.js 22.5+ before running this script.'
 }
@@ -62,7 +72,7 @@ if (-not (Test-Path -LiteralPath 'backend/.env')) {
 
 New-Item -ItemType Directory -Force 'backend/data' | Out-Null
 
-if (-not (Test-Path -LiteralPath 'node_modules') -or -not (Test-Path -LiteralPath 'backend/node_modules')) {
+if (-not (Test-Path -LiteralPath 'node_modules') -or -not (Test-Path -LiteralPath 'backend/node_modules') -or -not (Test-RipgrepDependency)) {
   Write-Host 'Installing production dependencies...'
   pnpm install --prod --frozen-lockfile --filter juhe-ai-backend...
 } else {

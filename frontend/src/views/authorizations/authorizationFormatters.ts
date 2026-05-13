@@ -66,6 +66,20 @@ export function granteeSourceTagColor(item: ResourceAuthorizationSummary): strin
   return activeTeamSources(item).length > 0 ? 'gold' : 'cyan'
 }
 
+export function granteeTargetName(item: ResourceAuthorizationSummary): string {
+  if (item.effectiveSourceType === 'team') {
+    const teamSource = item.authorizationSources?.find((source) => source.sourceType === 'team' && source.status === 'active')
+    return item.effectiveSourceTeamName
+      ?? teamSource?.sourceTeamName
+      ?? item.effectiveSourceTeamId
+      ?? teamSource?.sourceTeamId
+      ?? item.granteeSystemAccountName
+      ?? item.granteeUsername
+      ?? item.granteeSystemAccountId
+  }
+  return item.granteeSystemAccountName ?? item.granteeUsername ?? item.granteeSystemAccountId
+}
+
 export function authorizationDirection(item: ResourceAuthorizationSummary, currentSystemAccountId?: string): 'outbound' | 'inbound' {
   if (currentSystemAccountId && item.resourceOwnerSystemAccountId !== currentSystemAccountId) {
     return 'inbound'

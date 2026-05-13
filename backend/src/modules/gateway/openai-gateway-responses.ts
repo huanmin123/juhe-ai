@@ -21,12 +21,16 @@ export function isOpenAIStreamContentType(contentType: string): boolean {
 }
 
 export function writeGatewayStreamFailureEvent(res: Response, message: string): Buffer | undefined {
+  return buildGatewayStreamFailureEvent(message)
+}
+
+export function buildGatewayStreamFailureEvent(message: string, code = gatewayStreamFailureCode(message)): Buffer {
   const payload = {
     type: 'response.failed',
     response: {
       status: 'failed',
       error: {
-        code: gatewayStreamFailureCode(message),
+        code,
         message
       }
     }

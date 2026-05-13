@@ -74,11 +74,24 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 
 个人或几个人使用时，统计缓存也优先放在记录库内，不额外引入 Redis、ClickHouse 或 Prometheus。`usage_records` 仍是事实源，但账户列表、分组列表、用户统计概览、管理员统计概览和监控图都应读取缓存表。缓存表属于记录库数据，必须按 `system_account_id` 隔离；用户统计概览只读取当前用户缓存，管理员统计概览默认读取全局缓存并支持筛选指定系统账户，主机级系统监控只给管理员看。
 
+统计底线：所有汇总都只能由后台 worker 或离线重建脚本增量计算；管理 API、前端页面、详情接口和下拉接口只能直读已经预聚合好的行。请求路径不得为了展示临时 `SUM/GROUP BY`，也不得把多个缓存行再相加成页面汇总。统计缓存是可丢弃数据，表结构不匹配时优先重建和改造，不能牺牲请求性能兼容旧口径。
+
 建议新增表：
 
 - `usage_stats_totals`：按 `system_account_id + scope_type + scope_id` 保存累计请求、成功、错误、token、成本、平均总耗时所需的求和字段。
-- `usage_stats_daily`：按 `system_account_id + scope_type + scope_id + stat_date` 保存业务统计，用于个人账户按日消耗趋势、账户 / 分组 / API Key 今日口径和授权用量自然日口径。
-- `usage_stats_hourly`：按 `system_account_id + scope_type + scope_id + stat_hour` 保存业务统计，用于统计概览近一天、近三天、近一周和近一月监控窗口趋势，也用于 `AI性能监控` 的账户级首 token 和总耗时小时趋势。
+- `usage_stats_daily`：按 `system_account_id + scope_type + scope_id + stat_date` 保存业务统计，用于个人账户按日消耗趋势、账户 / 分组 / API Key 今日口径和授权额度自然日口径；管理侧授权团队 / 用户明细不读此表做报表汇总。
+- `usage_stats_hourly`：按 `system_account_id + scope_type + scope_id + stat_hour` 保存业务统计，用于 worker 刷新统计概览、排行、额度和 AI 性能摘要窗口，也用于 `AI性能监控` 的账户级首 token 和总耗时小时趋势；页面摘要和额度不能在请求时聚合小时桶。
+- `authorization_team_usage_monthly`：按 `system_account_id + stat_month + team_id + resource_filter_type + resource_filter_id` 保存授权团队月度明细行，接口按月、团队和资源筛选直读。
+- `authorization_team_usage_summary_monthly`：按 `system_account_id + stat_month + team_filter_id + resource_filter_type + resource_filter_id` 保存团队消耗页摘要行，接口不再合计团队行。
+- `authorization_user_usage_monthly`：按 `system_account_id + stat_month + team_filter_id + grantee_system_account_id + resource_filter_type + resource_filter_id` 保存授权用户月度明细行，接口按月、团队、用户和资源筛选直读。
+- `authorization_user_usage_summary_monthly`：按 `system_account_id + stat_month + team_filter_id + grantee_filter_system_account_id + resource_filter_type + resource_filter_id` 保存用户消耗页摘要行，接口不再合计用户行。
+- `usage_overview_summary_windows`：按 `system_account_id + window_key` 保存统计概览固定窗口摘要，接口不再按小时桶临时汇总。
+- `usage_overview_trend_windows`：按 `system_account_id + window_key + bucket_key` 保存统计概览趋势点，近三天 / 近一周 / 近一月的分桶在 worker 内完成。
+- `usage_model_rank_windows`：按 `system_account_id + window_key + rank` 保存统计概览模型 TopN，接口只按窗口读取排名行。
+- `usage_error_rank_windows`：按 `system_account_id + window_key + rank` 保存统计概览错误 TopN，接口只按窗口读取排名行。
+- `ai_performance_summary_windows`：按 `system_account_id + window_key` 保存 AI 性能监控摘要，前端账户筛选只影响图表显隐，不重新计算摘要。
+- `usage_quota_hourly_windows`：按 `system_account_id + scope_type + scope_id + window_hours` 保存 n 小时额度成本，网关额度判断不再 `SUM usage_stats_hourly`。
+- `usage_scope_range_windows`：按 `system_account_id + scope_type + scope_id + start_date + end_date` 保存最近 31 天范围内的范围总量，用量统计和授权详情只按范围 key 直读。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 保存请求数、Token 和成本，用于自然日模型分布。
 - `usage_model_hourly`：按 `system_account_id + stat_hour + model` 保存小时级模型分布，用于统计概览监控窗口。
 - `usage_error_daily`：按 `system_account_id + stat_date + error_group + error_code` 保存错误数量，用于自然日错误情况。
@@ -86,8 +99,10 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `group_account_stats`：按 `system_account_id + group_id` 保存分组绑定账户数量、可用数、状态数量和并发上限，供分组列表直接读取。
 - `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、事件循环延迟、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
+- `system_metrics_trend_windows`：按统计概览窗口预生成系统性能 / 网络吞吐趋势，接口只按窗口直读。
 - `database_storage_snapshots`：按采样时间保存业务库 / 记录库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量。
 - `table_storage_snapshots`：按采样时间保存每张表的行数、表大小、索引大小、总大小和 1 小时 / 24 小时增长。
+- 表监控采样由后台 worker 每 10 分钟执行一次，历史默认保留最近一月。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。
 - `operation_logs`：保存业务操作主事件，包括操作人、业务作用域、模块、动作、主资源、安全差异和 trace ID。
 - `operation_log_targets`：保存一次操作涉及或影响的资源，支持按资源反查历史操作。
@@ -118,8 +133,8 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `usage_records(account_owner_system_account_id, account_id, created_at, id)`：账户所有者查看真实账户统一用量。
 - `usage_records(group_owner_system_account_id, group_id, created_at, id)`：分组所有者查看真实分组统一用量。
 - `usage_records(group_id, created_at, api_key_id)`：账号质量 worker 判断分组近 24 小时是否有真实网关请求，账号测试和后台探测不计入客户活跃。
-- `usage_records(account_owner_system_account_id, account_authorization_id, created_at, id)`：授权管理按账户授权关系聚合用量。
-- `usage_records(group_owner_system_account_id, group_authorization_id, created_at, id)`：授权管理按分组授权关系聚合用量。
+- `usage_records(account_owner_system_account_id, account_authorization_id, created_at, id)`：统计 worker 增量写账户授权缓存和授权月报表。
+- `usage_records(group_owner_system_account_id, group_authorization_id, created_at, id)`：统计 worker 增量写分组授权缓存和授权月报表。
 - `system_teams(name)`：保证团队名称唯一。
 - `system_teams(status, name)`：团队列表和授权对象选择器读取。
 - `system_team_members(team_id, system_account_id, status)`：校验团队成员有效性。
@@ -136,6 +151,14 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `usage_stats_totals(system_account_id, scope_type, scope_id)`：列表读取累计值。
 - `usage_stats_daily(system_account_id, scope_type, scope_id, stat_date)`：今日和天级趋势读取。
 - `usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour)`：小时趋势读取。
+- `usage_overview_summary_windows(system_account_id, window_key)`：统计概览摘要读取。
+- `usage_overview_trend_windows(system_account_id, window_key, bucket_key)`：统计概览趋势读取。
+- `usage_model_rank_windows(system_account_id, window_key, rank)`：模型 TopN 读取。
+- `usage_error_rank_windows(system_account_id, window_key, rank)`：错误 TopN 读取。
+- `ai_performance_summary_windows(system_account_id, window_key)`：AI 性能监控摘要读取。
+- `usage_quota_hourly_windows(system_account_id, scope_type, scope_id, window_hours)`：n 小时额度读取。
+- `usage_scope_range_windows(system_account_id, scope_type, scope_id, start_date, end_date)`：最近 31 天范围总量读取。
+- `system_metrics_trend_windows(window_key, bucket_key)`：系统性能 / 网络吞吐趋势读取。
 - `usage_model_daily(system_account_id, stat_date, model)`：模型分布读取。
 - `usage_error_daily(system_account_id, stat_date, error_group, error_code)`：错误分布读取。
 - `usage_model_hourly(system_account_id, stat_hour, model)`：监控窗口模型分布读取。
@@ -179,19 +202,19 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 主进程可以把请求链路产生的待处理数据投递给 worker，但 IPC 或等价通道必须有上限，满载时按任务安全等级丢弃或降级，不能阻塞正常请求。
 - DB service 只负责数据库请求隔离，不负责后台定时调度；后台 worker 仍负责统计、审计、运行日志索引、数据保留、代理检测和 OAuth 后台刷新。Web 主进程、background worker 和 DB service 都必须使用短事务和 `busy_timeout` 控制 SQLite 写锁等待。
 - 统计 worker 每 1 分钟按 `system_account_id` 和 `(created_at, id)` 游标增量读取 `usage_records` 并 upsert 到聚合表。
-- 用量统计菜单只读取统计缓存，且口径是当前调用方自己的账户消耗：前端传入 `startDate` / `endDate` 日期范围，最大 1 个月；筛选区下方趋势账户列表在普通用户和管理员指定用户时，默认从 `usage_rank_snapshots` 读取 `caller_account + last7d + request_count` 的最近 7 天活跃前 10；管理员未指定用户查看全部用户时，从本次范围统计缓存结果中选出全局可见账户 Top 10；用户可通过搜索追加更多当前响应内账户；未点选账户时趋势图展示该列表全部账户，点选后只展示选中账户，账户统计明细展示全部可见账户。范围累计值由 `scope_type = caller_account` 天级缓存行相加得到；管理员全部用户视图按账户归属读取账户统计缓存，不回扫 `usage_records`。趋势按每天独立消耗返回，缺失日期补 0。前端不能把日期范围作为条件实时回扫 `usage_records`。
-- 统计概览属于监控窗口，不使用 0 点重置的今日口径；默认展示近一天，并支持近一天、近三天、近一周和近一月筛选。概览摘要、请求 / 失败 / Token / 平均总耗时趋势、模型分布和错误 Top 10 均从小时级缓存表按窗口相加，不读取 `usage_stats_totals`，也不临时回扫 `usage_records`；用户侧展示自己的错误 Top 10，系统性能 / 网络吞吐趋势只在管理侧展示。
-- `AI性能监控` 的默认账户池只读取 `usage_rank_snapshots` 中 `account + last7d + request_count` 的最近 7 天活跃前 10，快照缺失时默认列表为空，不能在接口请求时临时聚合降级；图表序列只读取 `usage_stats_hourly` 的 `scope_type = account` 数据。接口只接受当前登录用户自有 AI 账户，别人授权给当前用户使用的账户不能作为默认账户、搜索结果或临时追加账户返回；但拥有者看到的是账户真实总量，自用和被授权人调用都会进入同一账户曲线。图表窗口固定为近 1 天、近 3 天或近 7 天，按小时返回首 token 平均值和总耗时平均值。搜索追加到账户列表的账户只作为查询参数参与本次响应，不持久化；点击账户列表筛选只在前端基于已返回小时序列计算，不额外回查。接口不得实时 `GROUP BY usage_records`。
+- 用量统计菜单只读取统计缓存，且口径是当前调用方自己的账户消耗：页面固定展示最近 31 天窗口；筛选区下方趋势账户列表在普通用户和管理员指定用户时，默认从 `usage_rank_snapshots` 读取 `caller_account + last7d + request_count` 的最近 7 天活跃前 10。趋势点读取 `usage_stats_daily` 的日行，范围累计读取 `usage_scope_range_windows` 的范围行；管理员全部用户视图的顶部摘要读取 `system_account = global` 的范围行。接口不能把每日行再相加生成范围汇总，前端也不能把行汇总成摘要。
+- 统计概览属于监控窗口，不使用 0 点重置的今日口径；默认展示近一天，并支持近一天、近三天、近一周和近一月筛选。概览摘要、请求 / 失败 / Token / 平均总耗时趋势、模型分布和错误 Top 10 均读取 worker 写入的 `usage_overview_*_windows`、`usage_model_rank_windows` 和 `usage_error_rank_windows`，不在接口中按小时缓存临时相加；用户侧展示自己的错误 Top 10，系统性能 / 网络吞吐趋势只在管理侧展示。
+- `AI性能监控` 的默认账户池只读取 `usage_rank_snapshots` 中 `account + last7d + request_count` 的最近 7 天活跃前 10，快照缺失时默认列表为空，不能在接口请求时临时聚合降级；图表序列只读取 `usage_stats_hourly` 的 `scope_type = account` 数据。接口只接受当前登录用户自有 AI 账户，别人授权给当前用户使用的账户不能作为默认账户、搜索结果或临时追加账户返回；但拥有者看到的是账户真实总量，自用和被授权人调用都会进入同一账户曲线。图表窗口固定为近 1 天、近 3 天或近 7 天，按小时返回首 token 平均值和总耗时平均值；页面顶部摘要由后端返回，前端账户筛选只影响图表显隐，不重新计算业务摘要。接口不得实时 `GROUP BY usage_records`。
 - 分组账户统计 worker 定时重建 `group_account_stats`，分组列表不得在查询时临时 `COUNT/SUM group_accounts + accounts`。
 - 账号质量刷新 worker 默认每 10 分钟执行一次：先 flush 使用记录队列，再从 `account_quality_minute_stats` 汇总近 10 分钟真实网关请求刷新 `account_quality_scores`。分钟桶由用量统计 worker 随主游标增量写入，升级补齐使用 `account_quality_minute_stats_backfill` 独立游标分批推进；刷新 worker 不回扫 `usage_records`。主动探测能力已删除，worker 只处理真实请求样本，源码和预上线本地库都不再保留 `last_probe_at`。超过 24 小时未更新的质量分不参与网关调度。
 - 冷却账号恢复性复测只处理冷却到期的 `rate_limited`、`temporary_unavailable` 账号；复测前优先从最近真实 `usage_records` 学习 `endpoint/model/stream` 元信息，但不读取 `request_snapshot_json`，也不重放用户 prompt、工具参数或文件内容。没有可用形态样本时才回退到最小 Responses 探活。
 - 代理延迟刷新 worker 固定每 1 分钟检测最多 20 个启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新，不提供系统设置项调整。
-- 授权账户调用需要同时写入调用方统计、调用方命中账户统计、真实账户统计和授权消耗统计：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；`我的用量` 按 `system_account_id + scope_type = caller_account + account_id` 读取本人对该账户的消耗；账户所有者的账户总用量按 `account_owner_system_account_id + scope_type = account + account_id` 聚合；授权管理按 `account_owner_system_account_id + account_authorization_id` 聚合，并过滤资源归属人自用消耗。
-- 授权分组调用需要同时写入调用方统计、真实分组统计和授权消耗统计：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权管理按 `group_owner_system_account_id + group_authorization_id` 聚合，并过滤资源归属人自用消耗。
-- 授权管理列表和用量明细只读取 `usage_stats_daily` / `usage_stats_totals` 缓存；前端查询和详情接口不能临时 `SUM usage_records`，否则会把高频统计压力转移到页面请求。
-- 统一授权可选美元成本额度保存在 `resource_authorizations.limits_json` 和团队授权来源 `team_resource_authorization_grants.limits_json`；JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily` 和 `usage_stats_hourly` 的 `account_authorization` / `group_authorization` 维度读取 `total_cost_usd` 缓存，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`。
-- 团队授权美元额度按成员用户授权的 `total_cost_usd` 缓存求和判断，既保留成员展开后的用户级限制，也用团队授权来源的 `limits_json` 控制团队合计美元成本；统计 worker 默认每 1 分钟增量推进，网关额度判断带短 TTL 内存缓存，因此允许轻微超额，统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
-- API Key 列表展示累计用量，读取 `usage_stats_totals` 中 `scope_type = api_key` 的缓存，不使用今日 `usage_stats_daily` 口径；API Key 可选美元成本额度保存在 `api_keys.quota_limits_json`，JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily` 和 `usage_stats_hourly` 的 API Key 维度读取 `total_cost_usd` 缓存，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`。
+- 授权账户调用需要同时写入调用方统计、调用方命中账户统计、真实账户统计、授权额度统计和授权月报表：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；`我的用量` 按 `system_account_id + scope_type = caller_account + account_id` 读取本人对该账户的消耗；账户所有者的账户总用量按 `account_owner_system_account_id + scope_type = account + account_id` 聚合；授权额度按 `account_owner_system_account_id + account_authorization_id` 聚合；管理侧团队 / 用户消耗按授权月报表直读，并过滤资源归属人自用消耗。
+- 授权分组调用需要同时写入调用方统计、真实分组统计、授权额度统计和授权月报表：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权额度按 `group_owner_system_account_id + group_authorization_id` 聚合；管理侧团队 / 用户消耗按授权月报表直读，并过滤资源归属人自用消耗。
+- 授权管理列表不展示额度和用量统计；团队 / 用户授权消耗明细只读取 `authorization_team_usage_monthly`、`authorization_team_usage_summary_monthly`、`authorization_user_usage_monthly` 和 `authorization_user_usage_summary_monthly`。这些表由统计 worker 随 `usage_records` 游标增量写入，并预先写好 `all`、资源类型汇总和指定资源三种资源筛选行；接口只能按自然月和筛选条件直读一组行，不能临时 `SUM usage_records`，也不能把 `usage_stats_daily/weekly/monthly` 或报表缓存再二次聚合。
+- 统一授权可选美元成本额度保存在 `resource_authorizations.limits_json` 和团队授权来源 `team_resource_authorization_grants.limits_json`；JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily`、`usage_stats_weekly`、`usage_stats_monthly` 和 `usage_quota_hourly_windows` 的 `account_authorization` / `group_authorization` 维度直读成本，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`，也不在请求内按小时桶求和。
+- 团队授权美元额度读取 `account_authorization_team` / `group_authorization_team` 作用域缓存，`scope_id = resource_id + ':' + team_id`，由统计 worker 随使用记录增量写入；网关不再枚举成员授权并求和。统计 worker 默认每 1 分钟增量推进并刷新额度小时窗口，网关额度判断带短 TTL 内存缓存，因此允许轻微超额，统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
+- API Key 列表展示累计用量，读取 `usage_stats_totals` 中 `scope_type = api_key` 的缓存，不使用今日 `usage_stats_daily` 口径；API Key 可选美元成本额度保存在 `api_keys.quota_limits_json`，JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily`、`usage_stats_weekly`、`usage_stats_monthly` 和 `usage_quota_hourly_windows` 的 API Key 维度直读成本，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`，也不在请求内按小时桶求和。
 - API Key 额度是轻量异步统计口径：统计 worker 默认每 1 分钟增量推进，网关额度判断带短 TTL 内存缓存，因此允许轻微超额；统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
 - 删除 API Key 时同步删除该 Key 的使用记录、审计日志和 API Key 维度缓存，并基于该 Key 的历史使用记录从调用方、账户、分组、授权、模型和错误等相关聚合缓存中反向扣减。
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
@@ -201,10 +224,10 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
 - 运行日志索引 worker 从 Pino JSONL 输出流旁路接收日志行，按 worker 队列批量写入 `runtime_logs` 和 `runtime_log_search`；索引失败只能写 `stderr`，不能再通过普通 logger 递归打日志。
 - “日志搜索”索引查询读取当前 SQLite 索引表，使用 `traceId`、级别和事件等通用索引条件缩小结果，关键字走 FTS5 `trigram` 虚表；列表默认展示最近 100 条并通过后端分页继续翻页。索引表保留周期由后台清理任务控制，查询接口不再提供时间范围筛选。
-- “日志搜索”的 `grep 模式` 直接扫描后端日志目录中当前保留的全部 `.log` 文件，不受索引表 3 天保留期限制，不设置查询超时，最多展示 100 行；全平台统一要求安装 `ripgrep`（`rg`），后端按文件更新时间从近到远、按文件末尾到开头的顺序返回最新匹配。
+- “日志搜索”的 `grep 模式` 通过后端 `rg` 直接扫描日志目录中当前保留的 `.log` 文件，不受索引表 3 天保留期限制；文件日志默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制。该模式默认按文件时间搜索最近 3 天，单次文件时间范围最多 7 天，时间范围只用于筛选参与扫描的文件，不读取文件内容判断行时间；不设置查询超时，最多展示 100 行；多关键字必须在同一行同时命中，后端按日志时间或文件时间返回最新匹配。运行环境缺少 `rg` 时直接返回错误提示，不回退到慢速文件扫描。
 - 审计队列是 best-effort 队列，系统重启、进程崩溃或队列溢出导致审计记录丢失可以接受；队列丢弃计数应进入运维监控。
 - 账户、分组、API Key 等列表接口只读 `usage_stats_totals` / `usage_stats_daily`，不要在列表查询里 `SUM usage_records`。
-- 概览图表接口优先读 `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly` 和 `system_metrics_hourly`；`AI性能监控` 图表只读 `usage_stats_hourly` 和账户元数据。
+- 概览图表接口读取 `usage_overview_*_windows`、`usage_model_rank_windows`、`usage_error_rank_windows` 和 `system_metrics_trend_windows`；`AI性能监控` 图表只读 `usage_stats_hourly` 和账户元数据，摘要只读 `ai_performance_summary_windows`。
 - 全局规则：除独立 background worker、离线清洗脚本、使用记录分页明细外，任何前端列表、概览、详情和下拉元数据接口都不能在请求时做统计聚合。
 
 表数据保留与统一清理：
@@ -218,9 +241,10 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 | `audit_error_groups` | 重复错误聚合 | 默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只做展示和排障聚合，不替代事件记录 |
 | `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只删除超过保留期且已被统计游标处理过的记录，避免破坏统计聚合 |
 | `usage_stats_daily`、`usage_model_daily`、`usage_error_daily` | 日级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 用量统计页面最大窗口为近 1 个月，不再保留 180 天日缓存 |
-| `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly` | 小时级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 统计概览近 1 天到近 1 月均从小时缓存聚合 |
+| `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly` | 小时级统计缓存 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 供 worker 刷新概览、排行、额度和 AI 性能窗口快照；API 不在请求时聚合这些小时桶 |
 | `system_metrics_samples` | 主机监控原始采样 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只用于最新状态和短期排障 |
-| `system_metrics_hourly` | 主机监控小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 作为监控图表的 1 个月汇总缓存 |
+| `system_metrics_hourly` | 主机监控小时汇总 | 默认 30 天，最多 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 供 worker 刷新 `system_metrics_trend_windows`；API 不在请求时聚合这些小时桶 |
+| `database_storage_snapshots`、`table_storage_snapshots` | 表监控采样历史 | 默认最近一月，最多最近一月 | 是，`data-retention-cleanup` 每天在 worker 内清理，采样写入时也会轻量兜底清理 | 用于管理员表监控页面容量趋势，不纳入默认业务备份 |
 | `system_sessions` | 后台登录会话 | 到期即清理 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 查询时也会校验过期时间，定时清理用于回收表数据；`last_seen_at` 只允许按短间隔节流刷新，不应在每个鉴权请求中无条件写入 |
 
 不按保留期物理清理：
@@ -229,14 +253,14 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `stats_job_state` 长期保留，作为统计游标和任务状态；它是删除 `usage_records` 的安全边界。
 - `account_usage_snapshots` 是每个账号最新额度快照，按主键 upsert，不按时间批量删除。
 - `group_account_stats` 是当前分组账户状态缓存，由刷新任务整表重建，不属于历史日志。
-- 普通日志文件由文件日志滚动配置清理，不属于 SQLite 表清理；`grep 模式` 扫描当前保留的 `.log` 文件。
+- 普通日志文件由文件日志滚动配置清理，不属于 SQLite 表清理；当前默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制；`grep 模式` 扫描当前保留的 `.log` 文件，但单次文件时间范围最多 7 天。
 
 统一清理规则：
 
 - 表数据保留期统一由 `data-retention-cleanup` 每天在独立 background worker 进程内执行；页面不提供手动清理入口。
 - 清理任务按批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 10000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 10` 批，避免长时间占用 SQLite 写锁。
 - 统计聚合、系统指标采样、审计日志落库和运行日志索引队列只负责写入或聚合，不再在各自流程里顺手删除历史表数据。
-- 如果统计缓存损坏，可以运行 `pnpm --filter juhe-ai-backend stats:rebuild` 从尚未清理的 `usage_records` 重新构建缓存。该命令会清空并重建当前 `.env` 指向数据库里的统计缓存，执行前应确认数据库路径并先备份。
+- 如果统计缓存损坏或统计口径升级，可以停服务后在发布包根目录运行 `node backend/dist/scripts/maintenance/rebuild-usage-stats.js`，从尚未清理的 `usage_records` 重新构建缓存。该命令会清空并重建当前 `backend/.env` 指向数据库里的统计缓存，执行前应确认数据库路径并先备份。
 
 ## 操作日志存储
 
@@ -535,19 +559,22 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `account_access_type`：`owner`、`authorized`。
 - `group_access_type`：`owner`、`authorized`。
 - `account_authorization_id`：命中授权 AI 账户时写入统一授权 ID，自有账户或仅通过授权分组访问时为空。
+- `account_authorization_source_type`：命中授权 AI 账户时的生效来源快照，取 `manual` 或 `team`。
+- `account_authorization_source_team_id`：命中授权 AI 账户且来源为团队时的团队 ID 快照。
 - `group_authorization_id`：命中授权分组时写入统一授权 ID，自有分组为空。
-- `authorization_source_summary`：可选快照，记录当时用户授权来自个人、团队或两者合并。
+- `group_authorization_source_type`：命中授权分组时的生效来源快照，取 `manual` 或 `team`。
+- `group_authorization_source_team_id`：命中授权分组且来源为团队时的团队 ID 快照。
 
 日志隔离和统计口径：
 
 - 使用记录页按 `usage_records.system_account_id` 查询，所以被授权用户只看自己的调用明细。
-- 资源所有者不按明细读取被授权用户的 `usage_records`，授权管理只读取后台 worker 按统一授权 ID 写入的统计缓存。
+- 资源所有者不按明细读取被授权用户的 `usage_records`，授权管理只读取后台 worker 按统一授权 ID、团队快照、用户和资源筛选写入的月报表。
 - 授权消耗统计必须过滤自用记录：账户授权按 `usage_records.system_account_id != account_owner_system_account_id`，分组授权按 `usage_records.system_account_id != group_owner_system_account_id`。
 - 账户真实总用量按 `account_owner_system_account_id + account_id` 聚合，所以自用和所有用户授权都会累计到同一个真实账户维度。
 - 分组真实总用量按 `group_owner_system_account_id + group_id` 聚合，所以自用和所有用户授权都会累计到同一个真实分组维度。
-- 授权统计主口径是“资源 × 用户”：按用户级统一授权 ID 聚合，不再把个人来源和团队来源拆成两份。
-- 个人授权详情需要按实际调用方 `system_account_id` 聚合，所以 A 授权给 B 时，A 能看到 B 对该资源的消耗。
-- 团队授权详情从用户级授权集合聚合：团队总量是成员用户消耗去重汇总，成员明细按 `system_account_id` 展示每个用户在该资源上的消耗。
+- 授权统计主口径是“资源 × 用户”：按用户级统一授权 ID 进入统计，worker 同步写入团队报表行和用户报表行，不再把个人来源和团队来源拆成两份。
+- 个人授权详情需要按实际调用方 `system_account_id` 写入用户报表，所以 A 授权给 B 时，A 能看到 B 对该资源的消耗。
+- 团队授权详情基于使用记录里的团队来源快照写入团队报表；团队总量和用户筛选结果在 worker 中预先生成，页面请求不能现场按成员或授权关系聚合。
 - 团队来源变更只影响用户级授权来源摘要；成员移除后，如果该用户没有其他来源则授权失效，但历史用户消耗仍按该用户保留。
 - 分组授权共享的是动态分组集合，但只共享分组所有者自有账户；如果分组里包含别人授权来的账户，调度时必须过滤，不能通过分组授权继续共享给第三方。
 - `usage_records` 按每次实际上游请求 / 上游尝试写入；同一个客户端请求如果发生重试或切号，可以产生多条记录。`usage_records` 是排障和重建统计的事实源，不等同于业务消耗统计。

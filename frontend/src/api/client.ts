@@ -20,6 +20,8 @@ import type {
   AuditLogSummary,
   AuditOutcome,
   AuthorizationResourceType,
+  AuthorizationTeamUsageOverview,
+  AuthorizationUserUsageOverview,
   RequestQuotaLimits,
   ResourceAuthorizationSummary,
   ApiKeySummary,
@@ -155,6 +157,8 @@ export interface AuditLogListParams extends ListParams {
 export interface RuntimeLogGrepParams {
   keyword?: string[]
   keywords?: string
+  startAt?: string
+  endAt?: string
   limit?: number
 }
 
@@ -188,6 +192,14 @@ export interface OperationLogListParams {
 interface TableMonitorHistoryParams {
   databaseRole: MonitoredDatabaseRole
   tableName: string
+  startAt?: string
+  endAt?: string
+  limit?: number
+}
+
+interface TableMonitorOverviewParams {
+  startAt?: string
+  endAt?: string
   limit?: number
 }
 
@@ -207,6 +219,14 @@ export type AuthorizationScopeParams = ListParams
 export interface AuthorizationUsageParams extends AuthorizationScopeParams {
   startDate?: string
   endDate?: string
+}
+
+export interface AuthorizationUsageOverviewParams extends AuthorizationScopeParams {
+  resourceType?: AuthorizationResourceType
+  resourceId?: string
+  granteeSystemAccountId?: string
+  teamId?: string
+  statMonth?: string
 }
 
 export interface AnnouncementListParams {
@@ -336,7 +356,9 @@ export const api = {
     update: (id: string, payload: { status?: 'active' | 'paused'; expiresAt?: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}`, payload, { params })),
     updateExpire: (id: string, payload: { expiresAt: string | null; limits?: RequestQuotaLimits | null }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.patch(`/authorizations/${id}/expire`, payload, { params })),
     revoke: (id: string, payload?: { sourceType?: 'manual' | 'team'; sourceTeamId?: string }, params?: AuthorizationScopeParams) => unwrap<ResourceAuthorizationSummary>(http.delete(`/authorizations/${id}`, { data: payload, params })),
-    usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`, { params }))
+    usage: (id: string, params?: AuthorizationUsageParams) => unwrap<ResourceAuthorizationSummary>(http.get(`/authorizations/${id}/usage`, { params })),
+    teamUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationTeamUsageOverview>(http.get('/authorizations/usage/team-details', { params })),
+    userUsage: (params?: AuthorizationUsageOverviewParams) => unwrap<AuthorizationUserUsageOverview>(http.get('/authorizations/usage/user-details', { params }))
   },
   myAuthorizations: {
     list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/my-authorizations', { params: stripSystemAccountParam(params) })),
@@ -423,9 +445,8 @@ export const api = {
     systemMetrics: (params?: Pick<UsageOverviewParams, 'window'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params }))
   },
   tableMonitor: {
-    overview: () => unwrap<TableStorageOverview>(http.get('/table-monitor/overview')),
-    history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params })),
-    sample: () => unwrap<TableStorageOverview>(http.post('/table-monitor/sample'))
+    overview: (params?: TableMonitorOverviewParams) => unwrap<TableStorageOverview>(http.get('/table-monitor/overview', { params })),
+    history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params }))
   },
   myStats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),

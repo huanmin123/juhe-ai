@@ -3,8 +3,8 @@ import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { runtimeConfig } from '../config/runtime.js'
-import { logger } from '../shared/logger.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-dispatch-flags-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorized-account-dispatch-flags.sqlite3')
@@ -17,8 +17,8 @@ mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
 const [databaseModule, repositories] = await Promise.all([
-  import('../storage/database.js'),
-  import('../storage/repositories.js')
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js')
 ])
 
 try {

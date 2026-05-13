@@ -6,8 +6,8 @@ import { join, resolve } from 'node:path'
 
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
-import { runtimeConfig } from '../config/runtime.js'
-import { logger } from '../shared/logger.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-upstream-request-failure-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'upstream-request-failure.sqlite3')
@@ -31,16 +31,16 @@ const [
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
-  import('../modules/gateway/openai-gateway.routes.js'),
-  import('../shared/request-context.js'),
-  import('../storage/database.js'),
-  import('../storage/crypto.js'),
-  import('../storage/repositories.js'),
-  import('../storage/settings.repository.js'),
-  import('../modules/gateway/gateway-runtime-cache.service.js'),
-  import('../modules/gateway/gateway-account-side-effects.service.js'),
-  import('../modules/gateway/usage-record-queue.service.js'),
-  import('../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/gateway/openai-gateway.routes.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../storage/crypto.js'),
+  import('../../storage/repositories.js'),
+  import('../../storage/settings.repository.js'),
+  import('../../modules/gateway/gateway-runtime-cache.service.js'),
+  import('../../modules/gateway/gateway-account-side-effects.service.js'),
+  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
 
 type RawBodyRequest = Request & { rawBody?: Buffer }

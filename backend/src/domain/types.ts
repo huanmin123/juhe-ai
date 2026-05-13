@@ -473,6 +473,39 @@ export interface ResourceAuthorizationSummary {
 
 export type ResourceAuthorizationUsageSummary = ResourceAuthorizationSummary
 
+export interface AuthorizationTeamUsageRow {
+  id: string
+  teamId: string
+  teamName: string
+  status: SystemTeamStatus
+  usage: AccountUsageSummary
+  lastUsedAt?: string
+}
+
+export interface AuthorizationTeamUsageOverview {
+  range: AccountUsageStatsRange
+  summary: AccountUsageSummary
+  rows: AuthorizationTeamUsageRow[]
+  teamCount: number
+}
+
+export interface AuthorizationUserUsageRow {
+  id: string
+  systemAccountId: string
+  userName: string
+  username?: string
+  sourceLabels: string[]
+  usage: AccountUsageSummary
+  lastUsedAt?: string
+}
+
+export interface AuthorizationUserUsageOverview {
+  range: AccountUsageStatsRange
+  summary: AccountUsageSummary
+  rows: AuthorizationUserUsageRow[]
+  userCount: number
+}
+
 export interface ApiKeySummary {
   id: string
   systemAccountId?: string

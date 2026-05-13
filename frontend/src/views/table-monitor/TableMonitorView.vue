@@ -3,17 +3,24 @@
     <a-card class="page-card table-monitor-toolbar-card">
       <div class="page-toolbar table-monitor-toolbar">
         <div class="table-monitor-filters">
-          <a-segmented v-model:value="selectedRole" :options="roleOptions" :disabled="loading || sampling" @change="handleFilterChange" />
           <a-input-search
             v-model:value="keyword"
             allow-clear
             class="table-search"
             placeholder="搜索表名"
-            :disabled="loading || sampling"
+            :disabled="loading"
             @change="handleFilterChange"
             @search="handleFilterChange"
           />
-          <a-segmented v-model:value="historyLimit" :options="historyLimitOptions" :disabled="loading || sampling" @change="loadHistoryForCurrent" />
+          <a-range-picker
+            v-model:value="historyRange"
+            allow-clear
+            class="table-history-range"
+            show-time
+            :disabled="loading"
+            :placeholder="['开始时间', '结束时间']"
+            @change="loadData"
+          />
         </div>
         <div class="page-toolbar-actions">
           <a-button :loading="loading" @click="loadData">
@@ -22,29 +29,34 @@
             </template>
             刷新
           </a-button>
-          <a-button type="primary" :loading="sampling" @click="sampleNow">
-            <template #icon>
-              <DatabaseOutlined />
-            </template>
-            立即采样
-          </a-button>
         </div>
       </div>
     </a-card>
 
     <a-row :gutter="[16, 16]" class="database-summary-grid">
-      <a-col v-for="database in overview?.databases ?? []" :key="database.databaseRole" :xs="24" :lg="12">
+      <a-col v-for="item in databaseSummaryRows" :key="item.role" :xs="24" :lg="12">
         <a-card class="database-summary-card">
           <div class="database-summary-head">
-            <a-tag :color="databaseRoleColor(database.databaseRole)">{{ databaseRoleLabel(database.databaseRole) }}</a-tag>
-            <span class="database-path">{{ database.databasePath }}</span>
+            <a-tag :color="databaseRoleColor(item.role)">{{ databaseRoleLabel(item.role) }}</a-tag>
+            <span class="database-path">{{ item.database?.databasePath ?? '等待采样后显示数据库路径' }}</span>
           </div>
-          <div class="database-summary-value">{{ formatBytes(totalDatabaseBytes(database)) }}</div>
+          <div class="database-summary-value">{{ formatBytes(totalDatabaseBytes(item.database)) }}</div>
           <div class="database-summary-meta">
-            <span>主库 {{ formatBytes(database.fileBytes) }}</span>
-            <span>WAL {{ formatBytes(database.walBytes) }}</span>
-            <span>空闲 {{ formatBytes(database.freeBytes) }}</span>
-            <span>表 {{ formatInteger(database.tableCount) }}</span>
+            <span>主库 {{ formatBytes(item.database?.fileBytes) }}</span>
+            <span>WAL {{ formatBytes(item.database?.walBytes) }}</span>
+            <span>空闲 {{ formatBytes(item.database?.freeBytes) }}</span>
+            <span>表 {{ formatInteger(item.database?.tableCount) }}</span>
+          </div>
+        </a-card>
+      </a-col>
+    </a-row>
+
+    <a-row :gutter="[16, 16]" class="history-grid">
+      <a-col v-for="item in historyCards" :key="item.role" :xs="24" :xl="12">
+        <a-card class="page-card history-card" :title="item.title">
+          <div v-if="item.rows.length > 0" :ref="item.setChartRef" class="history-chart" />
+          <div v-else class="page-empty-card">
+            <a-empty :description="`${databaseRoleLabel(item.role)}暂无增长历史`" />
           </div>
         </a-card>
       </a-col>
@@ -55,8 +67,8 @@
         :columns="columns"
         :custom-row="customTableRow"
         :data-source="filteredTables"
-        :loading="loading || sampling"
-        :pagination="{ pageSize: 50, showSizeChanger: true }"
+        :loading="loading"
+        :pagination="tablePagination"
         :row-class-name="rowClassName"
         :row-key="tableKey"
         :scroll="{ x: 1180 }"
@@ -96,38 +108,22 @@
         </template>
       </a-table>
     </a-card>
-
-    <a-card class="page-card history-card" :title="historyTitle">
-      <div v-if="historyRows.length > 0" ref="historyChartRef" class="history-chart" />
-      <div v-else class="page-empty-card">
-        <a-empty description="暂无增长历史" />
-      </div>
-    </a-card>
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
-import type { Ref, ShallowRef } from 'vue'
-import { DatabaseOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import type { ShallowRef } from 'vue'
+import type { Dayjs } from 'dayjs'
+import dayjs from 'dayjs'
+import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import { init, type ECharts } from '@/lib/echarts'
-import { formatDateTime } from '@/shared/formatters'
+import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
 import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverview, TableStorageSnapshotSummary } from '@/types/domain'
 
-type RoleFilter = 'all' | MonitoredDatabaseRole
-
-const roleOptions: Array<{ label: string; value: RoleFilter }> = [
-  { label: '全部', value: 'all' },
-  { label: '业务库', value: 'business' },
-  { label: '记录库', value: 'records' }
-]
-const historyLimitOptions = [
-  { label: '近 24 小时', value: 288 },
-  { label: '近 3 天', value: 864 }
-]
 const columns = [
   { title: '库', key: 'databaseRole', width: 92, fixed: 'left' },
   { title: '表名', key: 'tableName', width: 240, fixed: 'left' },
@@ -141,39 +137,74 @@ const columns = [
 ]
 
 const loading = ref(false)
-const sampling = ref(false)
-const selectedRole = ref<RoleFilter>('all')
 const keyword = ref('')
-const historyLimit = ref(288)
+const historyRange = ref<[Dayjs, Dayjs] | undefined>([dayjs().subtract(1, 'month'), dayjs()])
 const overview = ref<TableStorageOverview>()
-const selectedTableKey = ref<string>()
-const historyRows = ref<TableStorageSnapshotSummary[]>([])
-const historyChartRef = ref<HTMLDivElement>()
-const historyChart = shallowRef<ECharts>()
+const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'records']
+const selectedTableKeys = ref<Record<MonitoredDatabaseRole, string | undefined>>({
+  business: undefined,
+  records: undefined
+})
+const historyRowsByRole = ref<Record<MonitoredDatabaseRole, TableStorageSnapshotSummary[]>>({
+  business: [],
+  records: []
+})
+const historyChartElements: Record<MonitoredDatabaseRole, HTMLDivElement | undefined> = {
+  business: undefined,
+  records: undefined
+}
+const historyCharts: Record<MonitoredDatabaseRole, ShallowRef<ECharts | undefined>> = {
+  business: shallowRef<ECharts>(),
+  records: shallowRef<ECharts>()
+}
+
+const tablePagination = {
+  pageSize: 20,
+  showSizeChanger: true,
+  pageSizeOptions: ['20', '50', '100']
+}
+
+const databaseSummaryRows = computed(() => {
+  const databasesByRole = new Map((overview.value?.databases ?? []).map((database) => [database.databaseRole, database]))
+  return databaseSummaryRoles.map((role) => ({
+    role,
+    database: databasesByRole.get(role)
+  }))
+})
 
 const filteredTables = computed(() => {
   const text = keyword.value.trim().toLowerCase()
   return (overview.value?.tables ?? [])
-    .filter((row) => selectedRole.value === 'all' || row.databaseRole === selectedRole.value)
     .filter((row) => !text || row.tableName.toLowerCase().includes(text))
 })
 
 const selectedTable = computed(() => {
-  const current = selectedTableKey.value
-  return filteredTables.value.find((row) => tableKey(row) === current) ?? filteredTables.value[0]
+  return {
+    business: selectedTableForRole('business'),
+    records: selectedTableForRole('records')
+  }
 })
 
-const historyTitle = computed(() => {
-  const table = selectedTable.value
-  return table ? `${databaseRoleLabel(table.databaseRole)} · ${table.tableName} 增长趋势` : '增长趋势'
+const historyCards = computed(() => {
+  return databaseSummaryRoles.map((role) => {
+    const table = selectedTable.value[role]
+    return {
+      role,
+      rows: historyRowsByRole.value[role],
+      title: table ? `${databaseRoleLabel(role)} · ${table.tableName} 增长趋势` : `${databaseRoleLabel(role)}增长趋势`,
+      setChartRef: (element: unknown) => {
+        historyChartElements[role] = element instanceof HTMLDivElement ? element : undefined
+      }
+    }
+  })
 })
 
 async function loadData() {
   loading.value = true
   try {
-    overview.value = await api.tableMonitor.overview()
+    overview.value = await api.tableMonitor.overview(historyRangeParams())
     ensureSelectedTable()
-    await loadHistoryForCurrent()
+    await loadAllHistory()
   } catch (error) {
     console.error(error)
     message.error('表监控加载失败')
@@ -182,75 +213,85 @@ async function loadData() {
   }
 }
 
-async function sampleNow() {
-  sampling.value = true
-  try {
-    overview.value = await api.tableMonitor.sample()
-    ensureSelectedTable()
-    await loadHistoryForCurrent()
-    message.success('表监控采样完成')
-  } catch (error) {
-    console.error(error)
-    message.error('表监控采样失败')
-  } finally {
-    sampling.value = false
-  }
-}
-
 function handleFilterChange() {
   ensureSelectedTable(true)
-  void loadHistoryForCurrent()
+  void loadAllHistory()
 }
 
-async function loadHistoryForCurrent() {
-  const table = selectedTable.value
+async function loadAllHistory() {
+  await Promise.all(databaseSummaryRoles.map((role) => loadHistoryForRole(role)))
+}
+
+async function loadHistoryForRole(role: MonitoredDatabaseRole) {
+  const table = selectedTable.value[role]
   if (!table) {
-    historyRows.value = []
-    renderHistoryChart()
+    historyRowsByRole.value[role] = []
+    renderHistoryChart(role)
     return
   }
-  selectedTableKey.value = tableKey(table)
+  selectedTableKeys.value[role] = tableKey(table)
   try {
-    historyRows.value = await api.tableMonitor.history({
+    historyRowsByRole.value[role] = await api.tableMonitor.history({
       databaseRole: table.databaseRole,
       tableName: table.tableName,
-      limit: historyLimit.value
+      ...historyRangeParams(),
+      limit: 10000
     })
   } catch (error) {
     console.error(error)
-    message.error('增长历史加载失败')
-    historyRows.value = []
+    message.error(`${databaseRoleLabel(role)}增长历史加载失败`)
+    historyRowsByRole.value[role] = []
   } finally {
-    renderHistoryChart()
+    renderHistoryChart(role)
   }
 }
 
 function ensureSelectedTable(reset = false) {
-  if (reset || !selectedTable.value) {
-    selectedTableKey.value = filteredTables.value[0] ? tableKey(filteredTables.value[0]) : undefined
+  for (const role of databaseSummaryRoles) {
+    if (reset || !selectedTableForRole(role)) {
+      const firstTable = firstTableForRole(role)
+      selectedTableKeys.value[role] = firstTable ? tableKey(firstTable) : undefined
+    }
+  }
+}
+
+function selectedTableForRole(role: MonitoredDatabaseRole): TableStorageSnapshotSummary | undefined {
+  const current = selectedTableKeys.value[role]
+  return filteredTables.value.find((row) => row.databaseRole === role && tableKey(row) === current) ?? firstTableForRole(role)
+}
+
+function firstTableForRole(role: MonitoredDatabaseRole): TableStorageSnapshotSummary | undefined {
+  return filteredTables.value.find((row) => row.databaseRole === role)
+}
+
+function historyRangeParams() {
+  return {
+    startAt: formatServerDateTimeInput(historyRange.value?.[0]) ?? undefined,
+    endAt: formatServerDateTimeInput(historyRange.value?.[1]) ?? undefined
   }
 }
 
 function customTableRow(record: TableStorageSnapshotSummary) {
   return {
     onClick: () => {
-      selectedTableKey.value = tableKey(record)
-      void loadHistoryForCurrent()
+      selectedTableKeys.value[record.databaseRole] = tableKey(record)
+      void loadHistoryForRole(record.databaseRole)
     }
   }
 }
 
 function rowClassName(record: TableStorageSnapshotSummary) {
-  return tableKey(record) === selectedTableKey.value ? 'selected-monitor-row' : ''
+  return tableKey(record) === selectedTableKeys.value[record.databaseRole] ? 'selected-monitor-row' : ''
 }
 
-function renderHistoryChart() {
+function renderHistoryChart(role: MonitoredDatabaseRole) {
   void nextTick(() => {
-    if (!historyRows.value.length) {
-      disposeChart(historyChart)
+    const rows = historyRowsByRole.value[role]
+    if (!rows.length) {
+      disposeChart(historyCharts[role])
       return
     }
-    const chart = ensureChart(historyChartRef, historyChart)
+    const chart = ensureChart(historyChartElements[role], historyCharts[role])
     if (!chart) return
     chart.setOption({
       tooltip: { trigger: 'axis' },
@@ -259,7 +300,7 @@ function renderHistoryChart() {
       xAxis: {
         type: 'category',
         boundaryGap: false,
-        data: historyRows.value.map((row) => formatSampleTime(row.sampledAt))
+        data: rows.map((row) => formatSampleTime(row.sampledAt))
       },
       yAxis: [
         {
@@ -279,7 +320,7 @@ function renderHistoryChart() {
           type: 'line',
           smooth: true,
           showSymbol: false,
-          data: historyRows.value.map((row) => row.totalBytes)
+          data: rows.map((row) => row.totalBytes)
         },
         {
           name: '行数',
@@ -287,15 +328,14 @@ function renderHistoryChart() {
           yAxisIndex: 1,
           smooth: true,
           showSymbol: false,
-          data: historyRows.value.map((row) => row.rowCount ?? null)
+          data: rows.map((row) => row.rowCount ?? null)
         }
       ]
     }, { notMerge: true })
   })
 }
 
-function ensureChart(elementRef: Ref<HTMLDivElement | undefined>, chartRef: ShallowRef<ECharts | undefined>) {
-  const element = elementRef.value
+function ensureChart(element: HTMLDivElement | undefined, chartRef: ShallowRef<ECharts | undefined>) {
   if (!element) return undefined
   if (!chartRef.value || chartRef.value.isDisposed()) {
     chartRef.value = init(element)
@@ -322,7 +362,8 @@ function databaseRoleColor(role: MonitoredDatabaseRole) {
   return role === 'business' ? 'blue' : 'purple'
 }
 
-function totalDatabaseBytes(database: DatabaseStorageSnapshotSummary): number | undefined {
+function totalDatabaseBytes(database?: DatabaseStorageSnapshotSummary): number | undefined {
+  if (!database) return undefined
   const total = (database.fileBytes ?? 0) + (database.walBytes ?? 0) + (database.shmBytes ?? 0)
   return total > 0 ? total : undefined
 }
@@ -380,12 +421,17 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeHistoryChart)
-  disposeChart(historyChart)
+  for (const role of databaseSummaryRoles) {
+    disposeChart(historyCharts[role])
+  }
 })
 
 function resizeHistoryChart() {
-  if (historyChart.value && !historyChart.value.isDisposed()) {
-    historyChart.value.resize()
+  for (const role of databaseSummaryRoles) {
+    const chart = historyCharts[role].value
+    if (chart && !chart.isDisposed()) {
+      chart.resize()
+    }
   }
 }
 </script>
@@ -417,7 +463,15 @@ function resizeHistoryChart() {
   width: 240px;
 }
 
+.table-history-range {
+  width: 380px;
+}
+
 .database-summary-grid :deep(.ant-col) {
+  display: flex;
+}
+
+.history-grid :deep(.ant-col) {
   display: flex;
 }
 
@@ -480,6 +534,10 @@ function resizeHistoryChart() {
   padding: 18px 20px 20px;
 }
 
+.history-card {
+  width: 100%;
+}
+
 .history-chart {
   width: 100%;
   height: 320px;
@@ -487,7 +545,8 @@ function resizeHistoryChart() {
 
 @media (max-width: 768px) {
   .table-monitor-filters,
-  .table-search {
+  .table-search,
+  .table-history-range {
     width: 100%;
   }
 

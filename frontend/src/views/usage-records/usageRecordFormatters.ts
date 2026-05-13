@@ -51,7 +51,7 @@ export function statusCodeColor(record: UsageRecordSummary): string {
 
 export function statusCodeText(record: UsageRecordSummary): string {
   if (typeof record.statusCode === 'number') return String(record.statusCode)
-  return record.success ? '-' : '网络异常'
+  return '-'
 }
 
 export function errorText(record: UsageRecordSummary): string {

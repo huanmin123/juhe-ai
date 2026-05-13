@@ -24,7 +24,8 @@ export function payloadPartText(value: AuditPayloadPartType): string {
     upstream_request: '上游请求',
     upstream_response: '上游响应',
     gateway_response: '返回客户端',
-    gateway_error: '网关错误'
+    gateway_error: '网关错误',
+    gateway_metadata: '网关元信息'
   }[value]
 }
 

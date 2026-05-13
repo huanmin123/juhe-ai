@@ -15,7 +15,7 @@
       </div>
       <div class="authorization-help-section">
         <span class="authorization-help-title">用量口径</span>
-        <p>授权用量不包含资源归属人自己的消耗；团队视图只是团队成员用户消耗的汇总，真实资源总量仍归资源所有者。</p>
+        <p>授权用量不包含资源归属人自己的消耗；管理端在团队消耗明细和用户消耗明细里查看统计，统一授权列表只维护授权关系。</p>
       </div>
     </div>
   </a-modal>

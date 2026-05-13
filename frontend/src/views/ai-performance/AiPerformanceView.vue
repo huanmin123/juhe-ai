@@ -113,7 +113,6 @@ const visibleAccounts = computed(() => {
 })
 const visibleAccountIdSet = computed(() => new Set(visibleAccounts.value.map((account) => account.id)))
 const visibleHourlySeries = computed(() => (overview.value?.hourlySeries ?? []).filter((series) => visibleAccountIdSet.value.has(series.accountId)))
-const visibleSummary = computed(() => computeAiPerformanceSummary(visibleHourlySeries.value))
 const visibleOverview = computed<AiPerformanceOverview | undefined>(() => {
   const currentOverview = overview.value
   if (!currentOverview) return undefined
@@ -123,8 +122,7 @@ const visibleOverview = computed<AiPerformanceOverview | undefined>(() => {
     accounts: visibleAccounts.value,
     defaultAccounts: currentOverview.defaultAccounts.filter((account) => visibleIds.has(account.id)),
     selectedAccounts: currentOverview.selectedAccounts.filter((account) => visibleIds.has(account.id)),
-    hourlySeries: visibleHourlySeries.value,
-    summary: visibleSummary.value
+    hourlySeries: visibleHourlySeries.value
   }
 })
 const hasAccounts = computed(() => visibleAccounts.value.length > 0)
@@ -174,7 +172,7 @@ const accountFilterItems = computed(() => {
 const seriesColorByAccountId = computed(() => new Map(accountFilterItems.value.map((item) => [item.account.id, item.color])))
 
 const summaryCards = computed(() => {
-  const summary = visibleSummary.value
+  const summary = overview.value?.summary
   return [
     { key: 'accounts', label: '统计账户', value: formatInteger(visibleAccounts.value.length), extra: hasActiveAccountFilter.value ? `已筛选 ${formatInteger(visibleAccounts.value.length)} 个` : `当前列表 ${formatInteger(visibleAccounts.value.length)} 个` },
     { key: 'requests', label: `${currentWindowLabel.value}请求`, value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
@@ -348,36 +346,6 @@ function accountStatusText(status: AccountStatus) {
     temporary_unavailable: '临时不可用'
   }
   return labels[status] ?? status
-}
-
-function computeAiPerformanceSummary(seriesList: AiPerformanceOverview['hourlySeries']): AiPerformanceOverview['summary'] {
-  const summary = {
-    requestCount: 0,
-    firstTokenCount: 0,
-    firstTokenMsWeightedSum: 0,
-    durationCount: 0,
-    durationMsWeightedSum: 0
-  }
-  for (const series of seriesList) {
-    for (const point of series.points) {
-      summary.requestCount += point.requestCount
-      summary.firstTokenCount += point.firstTokenCount
-      summary.durationCount += point.durationCount
-      if (point.averageFirstTokenMs !== undefined) {
-        summary.firstTokenMsWeightedSum += point.averageFirstTokenMs * point.firstTokenCount
-      }
-      if (point.averageDurationMs !== undefined) {
-        summary.durationMsWeightedSum += point.averageDurationMs * point.durationCount
-      }
-    }
-  }
-  return {
-    requestCount: summary.requestCount,
-    firstTokenCount: summary.firstTokenCount,
-    averageFirstTokenMs: summary.firstTokenCount ? summary.firstTokenMsWeightedSum / summary.firstTokenCount : undefined,
-    durationCount: summary.durationCount,
-    averageDurationMs: summary.durationCount ? summary.durationMsWeightedSum / summary.durationCount : undefined
-  }
 }
 
 function pruneAccountState() {

@@ -36,6 +36,7 @@ import {
   requestEndpoint,
   requestModel,
   extractBearerToken,
+  isOpenAIStreamServerOverloadedErrorCode,
   type ParsedUsage,
   type UpstreamAttempt
 } from './openai-gateway-usage.js'
@@ -66,6 +67,7 @@ import {
 } from './openai-gateway-responses.js'
 import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
+import type { StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
 import { pipeNonStreamUpstreamResponse, readUpstreamBodyLimited } from './openai-gateway-body.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from './api-key-quota.service.js'
@@ -458,8 +460,12 @@ export async function handleOpenAIGatewayRequest(
             res,
             activeGatewaySettings,
             startedAt,
-            (message) => handleStreamFailure(account, message, activeGatewaySettings),
-            abortController.signal
+            (message, errorCode) => handleStreamFailure(account, message, activeGatewaySettings, errorCode),
+            abortController.signal,
+            {
+              endpoint,
+              onStreamIntercept: (decision) => handleStreamIntercept(account, decision, activeGatewaySettings)
+            }
           )
         } catch (error) {
           if (isUpstreamRequestAbortedError(error) || abortController.signal.aborted) {
@@ -496,6 +502,12 @@ export async function handleOpenAIGatewayRequest(
         }
         firstTokenMs = streamResult.firstTokenMs
         responseBodyText = streamResult.responseBodyText
+        if (streamResult.streamIntercept) {
+          auditCapture.addGatewayMetadata({
+            label: 'stream_intercept',
+            metadata: streamInterceptAuditMetadata(streamResult.streamIntercept)
+          })
+        }
         auditCapture.completeAttempt(auditAttemptId, {
           statusCode: upstreamResponse.status,
           responseHeaders: upstreamResponse.headers,
@@ -521,7 +533,7 @@ export async function handleOpenAIGatewayRequest(
             firstTokenMs: streamResult.firstTokenMs,
             startedAt,
             usage: streamResult.usage,
-            errorCode: streamResult.errorCode,
+            errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
             requestSnapshot,
             responseSnapshot: buildUsageResponseSnapshot({
               upstreamUrl,
@@ -540,7 +552,7 @@ export async function handleOpenAIGatewayRequest(
             responseBody: streamResult.auditResponseBody,
             responsePartType: 'gateway_response',
             errorPhase: 'stream',
-            errorCode: streamResult.errorCode,
+            errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
             errorMessage: streamResult.message,
             accountId: account.id,
             firstTokenMs: streamResult.firstTokenMs
@@ -1546,8 +1558,11 @@ function applyAccountErrorHandlingWithCacheInvalidation(
   })
 }
 
-function handleStreamFailure(account: UpstreamAccount, reason: string, settings: GatewaySettings): void {
+function handleStreamFailure(account: UpstreamAccount, reason: string, settings: GatewaySettings, errorCode?: string): void {
   if (!settings.streamCircuitBreakerEnabled) {
+    return
+  }
+  if (isOpenAIStreamServerOverloadedErrorCode(errorCode)) {
     return
   }
 
@@ -1562,6 +1577,45 @@ function handleStreamFailure(account: UpstreamAccount, reason: string, settings:
       reason
     }
   })
+}
+
+function handleStreamIntercept(account: UpstreamAccount, decision: StreamInterceptDecision, settings: GatewaySettings): void {
+  if (decision.accountPolicy === 'none') {
+    return
+  }
+
+  const cooldownMinutes = decision.cooldownMinutes ?? settings.defaultTemporaryUnschedulableMinutes
+  enqueueGatewayStreamFailureSideEffect({
+    type: 'record_account_stream_failure',
+    input: {
+      accountId: account.id,
+      thresholdCount: 1,
+      thresholdWindowMinutes: Math.max(1, settings.streamFailureThresholdWindowMinutes),
+      action: 'cooldown',
+      cooldownMinutes,
+      reason: decision.upstreamErrorMessage
+        ? `命中流式特征规则 ${decision.ruleName}：${decision.upstreamErrorMessage}`
+        : `命中流式特征规则 ${decision.ruleName}`
+    }
+  })
+}
+
+function streamInterceptAuditMetadata(decision: StreamInterceptDecision): Record<string, unknown> {
+  return {
+    streamIntercepted: true,
+    interceptRuleId: decision.ruleId,
+    interceptRuleName: decision.ruleName,
+    interceptAction: decision.action,
+    triggerPhase: decision.triggerPhase,
+    upstreamEventType: decision.upstreamEventType,
+    upstreamErrorCode: decision.upstreamErrorCode,
+    upstreamErrorMessage: decision.upstreamErrorMessage,
+    rewriteErrorCode: decision.rewriteErrorCode,
+    rewriteMessage: decision.rewriteMessage,
+    outputSeen: decision.outputSeen,
+    accountPolicy: decision.accountPolicy,
+    cooldownMinutes: decision.cooldownMinutes
+  }
 }
 
 function clearAccountStreamFailureStateWithCacheInvalidation(accountId: string): void {

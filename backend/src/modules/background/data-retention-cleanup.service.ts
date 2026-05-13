@@ -10,6 +10,7 @@ import {
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
 import { cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
+import { cleanupTableStorageSnapshotsBefore, tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
 import { getDatabase } from '../../storage/database.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
@@ -56,8 +57,16 @@ export interface DataRetentionCleanupResult {
   usageErrorMonthly: number
   usageLatencyMonthly: number
   usageRankSnapshots: number
+  usageOverviewSummaryWindows: number
+  usageOverviewTrendWindows: number
+  usageModelRankWindows: number
+  usageErrorRankWindows: number
+  aiPerformanceSummaryWindows: number
+  usageQuotaHourlyWindows: number
+  usageScopeRangeWindows: number
   systemMetricsSamples: number
   systemMetricsHourly: number
+  tableStorageSnapshots: number
   systemSessions: number
 }
 
@@ -90,7 +99,8 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       statsMonthlyMonths: settingNumber(settings, 'usageStatsMonthlyRetentionMonths', 24, 1, statsMonthlyRetentionMaxMonths),
       rankSnapshotDays: settingNumber(settings, 'usageRankSnapshotRetentionDays', 30, 1, rankSnapshotRetentionMaxDays),
       systemMetricsSampleDays: settingNumber(settings, 'systemMetricsRetentionDays', 7, 1, systemMetricsRawRetentionMaxDays),
-      systemMetricsHourlyDays: settingNumber(settings, 'systemMetricsHourlyRetentionDays', 30, 1, statsRetentionMaxDays)
+      systemMetricsHourlyDays: settingNumber(settings, 'systemMetricsHourlyRetentionDays', 30, 1, statsRetentionMaxDays),
+      tableStorageSnapshotDays: tableMonitorSampleRetentionDays
     }
 
     const result = emptyCleanupResult()
@@ -119,6 +129,12 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       hourlyCutoffHour: cutoffHourKey(now, retention.systemMetricsHourlyDays, timezone)
     })
     Object.assign(result, metrics)
+
+    result.tableStorageSnapshots = cleanupInBatches(
+      () => cleanupTableStorageSnapshotsBefore(cutoffIso(now, retention.tableStorageSnapshotDays), batchSize),
+      batchSize,
+      maxBatches
+    )
 
     result.systemSessions = cleanupExpiredSystemSessions(new Date(now).toISOString())
 
@@ -210,8 +226,16 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     usageErrorMonthly: 0,
     usageLatencyMonthly: 0,
     usageRankSnapshots: 0,
+    usageOverviewSummaryWindows: 0,
+    usageOverviewTrendWindows: 0,
+    usageModelRankWindows: 0,
+    usageErrorRankWindows: 0,
+    aiPerformanceSummaryWindows: 0,
+    usageQuotaHourlyWindows: 0,
+    usageScopeRangeWindows: 0,
     systemMetricsSamples: 0,
     systemMetricsHourly: 0,
+    tableStorageSnapshots: 0,
     systemSessions: 0
   }
 }

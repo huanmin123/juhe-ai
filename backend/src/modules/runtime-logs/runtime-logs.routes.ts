@@ -10,7 +10,7 @@ import {
 import { getBackgroundWorkerState, requestBackgroundWorkerSnapshot } from '../background/background-ipc.js'
 import { getDbServiceState, requestDbService } from '../db-service/db-service-ipc.js'
 import { getGatewayAccountSideEffectState } from '../gateway/gateway-account-side-effects.service.js'
-import { grepRuntimeLogFiles } from './runtime-log-grep.service.js'
+import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 
 export const runtimeLogsRouter = Router()
 
@@ -66,6 +66,7 @@ runtimeLogsRouter.get('/facets', async (_req, res) => {
       lastRequestAt: dbServiceSnapshot?.lastRequestAt,
       lastError: dbServiceSnapshot?.lastError
     },
+    grep: getRuntimeLogGrepRuntime(),
     gatewayAccountSideEffects: {
       queueLength: gatewayAccountSideEffects.queueLength,
       processing: gatewayAccountSideEffects.processing,
@@ -117,10 +118,12 @@ function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogL
   }
 }
 
-function parseRuntimeLogGrepOptions(query: Record<string, unknown>): { keywords: string[]; limit?: number } {
+function parseRuntimeLogGrepOptions(query: Record<string, unknown>): { keywords: string[]; limit?: number; startAt?: string; endAt?: string } {
   return {
     keywords: stringArrayQueryValues(query.keyword).concat(stringArrayQueryValues(query.keywords)),
-    limit: numberQueryValue(query.limit)
+    limit: numberQueryValue(query.limit),
+    startAt: optionalQueryText(query.startAt),
+    endAt: optionalQueryText(query.endAt)
   }
 }
 

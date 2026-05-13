@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import cors from 'cors'
 import express from 'express'
 
-import { runtimeConfig } from '../config/runtime.js'
+import { runtimeConfig } from '../../config/runtime.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-scope-regression-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'scope-regression.sqlite3')
@@ -29,18 +29,18 @@ const [
   repositories,
   usageStatsRepository
 ] = await Promise.all([
-  import('../modules/accounts/accounts.routes.js'),
-  import('../modules/api-keys/api-keys.routes.js'),
-  import('../modules/authorizations/authorizations.routes.js'),
-  import('../modules/groups/groups.routes.js'),
-  import('../modules/stats/stats.routes.js'),
-  import('../modules/system-teams/system-teams.routes.js'),
-  import('../modules/usage-records/usage-records.routes.js'),
-  import('../modules/auth/auth.middleware.js'),
-  import('../shared/request-context.js'),
-  import('../storage/database.js'),
-  import('../storage/repositories.js'),
-  import('../storage/usage-stats.repository.js')
+  import('../../modules/accounts/accounts.routes.js'),
+  import('../../modules/api-keys/api-keys.routes.js'),
+  import('../../modules/authorizations/authorizations.routes.js'),
+  import('../../modules/groups/groups.routes.js'),
+  import('../../modules/stats/stats.routes.js'),
+  import('../../modules/system-teams/system-teams.routes.js'),
+  import('../../modules/usage-records/usage-records.routes.js'),
+  import('../../modules/auth/auth.middleware.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
+  import('../../storage/usage-stats.repository.js')
 ])
 
 const app = express()

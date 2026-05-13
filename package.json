@@ -25,5 +25,18 @@
   "engines": {
     "node": ">=22.5.0",
     "pnpm": ">=9.0.0"
-  }
+  },
+  "description": "聚合 AI（`juhe-ai`）是一个轻量级 OpenAI 兼容中转、账号调度与 API Key 管理系统。",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "devDependencies": {},
+  "repository": {
+    "type": "git",
+    "url": "git@gitee.com:huanminabc/juhe-ai.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC"
 }

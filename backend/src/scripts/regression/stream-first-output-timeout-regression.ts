@@ -6,8 +6,8 @@ import { join, resolve } from 'node:path'
 
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
-import { runtimeConfig } from '../config/runtime.js'
-import { logger } from '../shared/logger.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-stream-first-output-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'stream-first-output.sqlite3')
@@ -27,18 +27,20 @@ const [
   apiKeyRepository,
   settingsRepository,
   gatewayCache,
+  accountSideEffects,
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
-  import('../modules/gateway/openai-gateway.routes.js'),
-  import('../shared/request-context.js'),
-  import('../storage/database.js'),
-  import('../storage/repositories.js'),
-  import('../storage/api-key.repository.js'),
-  import('../storage/settings.repository.js'),
-  import('../modules/gateway/gateway-runtime-cache.service.js'),
-  import('../modules/gateway/usage-record-queue.service.js'),
-  import('../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/gateway/openai-gateway.routes.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
+  import('../../storage/api-key.repository.js'),
+  import('../../storage/settings.repository.js'),
+  import('../../modules/gateway/gateway-runtime-cache.service.js'),
+  import('../../modules/gateway/gateway-account-side-effects.service.js'),
+  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
@@ -70,6 +72,10 @@ async function main(): Promise<void> {
     const parserSkippedCredential = createScenarioCredential(upstreamBaseUrl, '解析跳过后原样转发')
     const missingTerminalCredential = createScenarioCredential(upstreamBaseUrl, '缺少终止事件')
     const heartbeatCredential = createScenarioCredential(upstreamBaseUrl, '心跳刷新')
+    const overloadedNoAccountPolicyCredential = createScenarioCredential(upstreamBaseUrl, '容量错误默认不冷却')
+    const slowDownCredential = createScenarioCredential(upstreamBaseUrl, 'slow_down 默认不冷却')
+    const overloadedNoBoundaryCredential = createScenarioCredential(upstreamBaseUrl, '容量错误缺少收尾边界')
+    const overloadedAfterOutputCredential = createScenarioCredential(upstreamBaseUrl, '输出后容量错误不拦截')
 
     appServer = http.createServer(app)
     await listen(appServer)
@@ -140,9 +146,48 @@ async function main(): Promise<void> {
     assert(!heartbeatThenCompletedResult.streamText.includes('response.failed'), `上游持续心跳时不应触发失败事件：${heartbeatThenCompletedResult.streamText}`)
     assert(heartbeatThenCompletedResult.durationMs < 5000, `持续心跳后完成没有及时结束，耗时 ${heartbeatThenCompletedResult.durationMs}ms`)
 
-    console.log('流式超时回归通过：首段等待、首段后无新数据、完整 SSE 事件等待、解析跳过后原样转发、缺少终止事件、心跳刷新空闲计时场景符合预期')
+    const overloadedNoAccountPolicyResult = await requestServerOverloadedBeforeOutput(baseUrl, overloadedNoAccountPolicyCredential.apiKey.key)
+    assert(!overloadedNoAccountPolicyResult.streamText.includes('server_is_overloaded'), `默认拦截后不应把原始容量错误发给客户端：${overloadedNoAccountPolicyResult.streamText}`)
+    assert(overloadedNoAccountPolicyResult.streamText.includes('upstream_retryable_error'), `默认拦截后应改写为可重试错误：${overloadedNoAccountPolicyResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    const overloadedNoPolicyAccount = repositories.listAccounts().find((item) => item.id === overloadedNoAccountPolicyCredential.account.id)
+    assert.equal(overloadedNoPolicyAccount?.status, 'active', '默认容量错误拦截不应把账号置为临时不可调用')
+    assert.equal(overloadedNoPolicyAccount?.cooldownUntil, undefined, '默认容量错误拦截不应写入冷却截止时间')
+    auditLogQueue.flushAllAuditLogQueue()
+    assertStreamInterceptAuditMetadata(overloadedNoAccountPolicyCredential.account.id, {
+      upstreamErrorCode: 'server_is_overloaded',
+      rewriteErrorCode: 'upstream_retryable_error',
+      accountPolicy: 'none',
+      outputSeen: false
+    })
+
+    const slowDownResult = await requestStreamFailureBeforeOutput(baseUrl, slowDownCredential.apiKey.key, 'slow-down-before-output')
+    assert(!slowDownResult.streamText.includes('slow_down'), `slow_down 拦截后不应把原始错误发给客户端：${slowDownResult.streamText}`)
+    assert(slowDownResult.streamText.includes('upstream_retryable_error'), `slow_down 拦截后应改写为可重试错误：${slowDownResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    const slowDownAccount = repositories.listAccounts().find((item) => item.id === slowDownCredential.account.id)
+    assert.equal(slowDownAccount?.status, 'active', '默认 slow_down 拦截不应把账号置为临时不可调用')
+
+    const overloadedNoBoundaryResult = await requestStreamFailureBeforeOutput(baseUrl, overloadedNoBoundaryCredential.apiKey.key, 'server-overloaded-before-output-no-boundary')
+    assert(!overloadedNoBoundaryResult.streamText.includes('server_is_overloaded'), `EOF 尾包拦截后不应把原始容量错误发给客户端：${overloadedNoBoundaryResult.streamText}`)
+    assert(overloadedNoBoundaryResult.streamText.includes('upstream_retryable_error'), `EOF 尾包拦截后应改写为可重试错误：${overloadedNoBoundaryResult.streamText}`)
+
+    const overloadedAfterOutputResult = await requestServerOverloadedAfterOutput(baseUrl, overloadedAfterOutputCredential.apiKey.key)
+    assert(overloadedAfterOutputResult.streamText.includes('hello'), `输出后容量错误场景应保留已输出内容：${overloadedAfterOutputResult.streamText}`)
+    assert(overloadedAfterOutputResult.streamText.includes('server_is_overloaded'), `输出后不应改写原始容量错误：${overloadedAfterOutputResult.streamText}`)
+    assert(!overloadedAfterOutputResult.streamText.includes('upstream_retryable_error'), `输出后不应伪造可重试错误：${overloadedAfterOutputResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    const overloadedAfterOutputAccount = repositories.listAccounts().find((item) => item.id === overloadedAfterOutputCredential.account.id)
+    assert.equal(overloadedAfterOutputAccount?.status, 'active', '输出后服务商容量错误不应把账号置为临时不可调用')
+    assert.equal(overloadedAfterOutputAccount?.cooldownUntil, undefined, '输出后服务商容量错误不应写入冷却截止时间')
+
+    console.log('流式超时回归通过：首段等待、首段后无新数据、完整 SSE 事件等待、解析跳过后原样转发、缺少终止事件、心跳刷新空闲计时、容量错误拦截、slow_down 拦截和 EOF 尾包拦截场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     auditLogQueue.flushAllAuditLogQueue()
     await closeServer(appServer)
     await closeServer(upstreamServer)
@@ -267,6 +312,36 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
           clearInterval(interval)
           clearTimeout(doneTimer)
         })
+        return
+      }
+      if (scenario === 'server-overloaded-before-output') {
+        res.write('event: error\n')
+        res.write('data: {"type":"error","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}\n\n')
+        setTimeout(() => {
+          res.write('event: response.failed\n')
+          res.write('data: {"type":"response.failed","response":{"id":"resp_overloaded","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}\n\n')
+          res.end()
+        }, 100)
+        return
+      }
+      if (scenario === 'slow-down-before-output') {
+        res.write('event: response.failed\n')
+        res.write('data: {"type":"response.failed","response":{"id":"resp_slow_down","status":"failed","error":{"code":"slow_down","message":"Please slow down and try again later."}}}\n\n')
+        res.end()
+        return
+      }
+      if (scenario === 'server-overloaded-before-output-no-boundary') {
+        res.write('event: response.failed\n')
+        res.write('data: {"type":"response.failed","response":{"id":"resp_overloaded_no_boundary","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}')
+        res.end()
+        return
+      }
+      if (scenario === 'server-overloaded-after-output') {
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"hello"}\n\n')
+        res.write('event: response.failed\n')
+        res.write('data: {"type":"response.failed","response":{"id":"resp_overloaded_after_output","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}\n\n')
+        res.end()
       }
     })
   })
@@ -458,11 +533,111 @@ function captureGatewayRawBody(req: RawBodyRequest, _res: ExpressResponse, next:
   next()
 }
 
+async function requestStreamFailureBeforeOutput(
+  baseUrl: string,
+  apiKey: string,
+  scenario: string
+): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 10,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: scenario,
+      stream: true
+    })
+  })
+  assert.equal(response.status, 200)
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  return {
+    streamText: await response.text(),
+    durationMs: Date.now() - startedAt
+  }
+}
+
+async function requestServerOverloadedBeforeOutput(
+  baseUrl: string,
+  apiKey: string
+): Promise<{ streamText: string; durationMs: number }> {
+  return requestStreamFailureBeforeOutput(baseUrl, apiKey, 'server-overloaded-before-output')
+}
+
+async function requestServerOverloadedAfterOutput(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 10,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${apiKey}`,
+      'content-type': 'application/json',
+      accept: 'text/event-stream'
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'server-overloaded-after-output',
+      stream: true
+    })
+  })
+  assert.equal(response.status, 200)
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  return {
+    streamText: await response.text(),
+    durationMs: Date.now() - startedAt
+  }
+}
+
 function assertFailedUsageRecordErrorCode(accountId: string, errorCode: string): void {
   const records = repositories.listUsageRecords(undefined, { result: 'failed', page: 1, pageSize: 50 })
   const record = records.items.find((item) => item.accountId === accountId && item.success === false)
   assert(record, `未找到账号 ${accountId} 的失败使用记录`)
   assert.equal(record.errorCode, errorCode, `失败使用记录错误码不正确：${record.errorCode}`)
+}
+
+function assertStreamInterceptAuditMetadata(
+  accountId: string,
+  expected: {
+    upstreamErrorCode: string
+    rewriteErrorCode: string
+    accountPolicy: string
+    outputSeen: boolean
+  }
+): void {
+  const logs = repositories.listAuditLogs({ accountId, outcome: 'stream_failed', page: 1, pageSize: 20 })
+  const detail = logs.items
+    .map((item) => repositories.getAuditLogDetail(item.id))
+    .find((item) => item?.payloads.some((payload) => payload.partType === 'gateway_metadata'))
+  assert(detail, `未找到账号 ${accountId} 的流式拦截审计日志`)
+  const metadataPayload = detail.payloads.find((payload) => payload.partType === 'gateway_metadata')
+  assert(metadataPayload, '流式拦截审计日志缺少 gateway_metadata')
+  const payloadDetail = repositories.getAuditLogPayload(detail.id, metadataPayload.id)
+  assert(payloadDetail?.bodyText, '流式拦截审计元信息缺少正文')
+  const body = JSON.parse(payloadDetail.bodyText) as { metadata?: Record<string, unknown> }
+  const metadata = body.metadata ?? {}
+  assert.equal(metadata.streamIntercepted, true, '审计元信息应标记 streamIntercepted')
+  assert.equal(metadata.upstreamErrorCode, expected.upstreamErrorCode, '审计元信息上游错误码不正确')
+  assert.equal(metadata.rewriteErrorCode, expected.rewriteErrorCode, '审计元信息改写错误码不正确')
+  assert.equal(metadata.accountPolicy, expected.accountPolicy, '审计元信息账号策略不正确')
+  assert.equal(metadata.outputSeen, expected.outputSeen, '审计元信息 outputSeen 不正确')
 }
 
 function listen(server: http.Server): Promise<void> {

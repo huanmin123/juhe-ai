@@ -6,9 +6,9 @@ import http from 'node:http'
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
 
-import { runtimeConfig } from '../config/runtime.js'
-import { ok } from '../shared/http.js'
-import { logger } from '../shared/logger.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { ok } from '../../shared/http.js'
+import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-proxy-negative-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'proxy-negative.sqlite3')
@@ -36,20 +36,20 @@ const [
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
-  import('../modules/accounts/accounts.routes.js'),
-  import('../modules/api-keys/api-keys.routes.js'),
-  import('../modules/auth/auth.routes.js'),
-  import('../modules/groups/groups.routes.js'),
-  import('../modules/gateway/openai-gateway.routes.js'),
-  import('../modules/proxies/proxies.routes.js'),
-  import('../modules/usage-records/usage-records.routes.js'),
-  import('../modules/auth/auth.middleware.js'),
-  import('../shared/request-context.js'),
-  import('../storage/database.js'),
-  import('../storage/repositories.js'),
-  import('../modules/gateway/gateway-runtime-cache.service.js'),
-  import('../modules/gateway/usage-record-queue.service.js'),
-  import('../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/accounts/accounts.routes.js'),
+  import('../../modules/api-keys/api-keys.routes.js'),
+  import('../../modules/auth/auth.routes.js'),
+  import('../../modules/groups/groups.routes.js'),
+  import('../../modules/gateway/openai-gateway.routes.js'),
+  import('../../modules/proxies/proxies.routes.js'),
+  import('../../modules/usage-records/usage-records.routes.js'),
+  import('../../modules/auth/auth.middleware.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js'),
+  import('../../modules/gateway/gateway-runtime-cache.service.js'),
+  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
 
 const gatewayRawBodyLimit = '8mb'

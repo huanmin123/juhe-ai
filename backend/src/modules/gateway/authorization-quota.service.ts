@@ -28,6 +28,7 @@ interface TeamAuthorizationQuotaRow {
   id: string
   resource_owner_system_account_id: string
   resource_type: 'account' | 'group'
+  resource_id: string
   limits_json: string | null
 }
 
@@ -144,7 +145,7 @@ function authorizationQuotaChecks(authorizationId: string, scopeType: 'account_a
   const checks = quotaCheckForAuthorizationRow(row, scopeType, now)
   if (row.effective_source_team_id) {
     const teamRow = database.prepare(`
-      SELECT id, resource_owner_system_account_id, resource_type, limits_json
+      SELECT id, resource_owner_system_account_id, resource_type, resource_id, limits_json
       FROM team_resource_authorization_grants
       WHERE resource_type = ? AND resource_id = (
           SELECT resource_id FROM resource_authorizations WHERE id = ?
@@ -179,51 +180,23 @@ function quotaCheckForAuthorizationRow(row: AuthorizationQuotaRow, scopeType: 'a
 function quotaCheckForTeamRow(row: TeamAuthorizationQuotaRow, scopeType: 'account_authorization' | 'group_authorization', teamId: string, now: Date): AuthorizationQuotaCheck[] {
   const limits = parseRequestQuotaLimitsJson(row.limits_json)
   if (!hasEnabledRequestQuotaLimit(limits)) return []
-  const memberScopeIds = teamAuthorizationMemberScopeIds(row.id, scopeType)
-  if (!memberScopeIds.length) return []
-  const costs = sumMemberQuotaCosts(row.resource_owner_system_account_id, scopeType, memberScopeIds, now, limits.hourly?.hours)
+  const costs = loadRequestQuotaCosts(getRecordDatabase(), {
+    systemAccountId: row.resource_owner_system_account_id,
+    scopeType: teamAuthorizationScopeType(scopeType),
+    scopeId: `${teamAuthorizationResourceId(row)}:${teamId}`,
+    now,
+    hourlyWindowHours: limits.hourly?.hours
+  })
   return [{
     cacheKey: `team_authorization\u0000${row.resource_owner_system_account_id}\u0000${scopeType}\u0000${teamId}\u0000${row.id}\u0000${row.limits_json ?? ''}`,
     exceeded: isRequestQuotaExceeded(limits, costs)
   }]
 }
 
-function teamAuthorizationMemberScopeIds(teamGrantId: string, scopeType: 'account_authorization' | 'group_authorization'): string[] {
-  const resourceType = scopeType === 'account_authorization' ? 'account' : 'group'
-  const rows = getDatabase().prepare(`
-    SELECT ra.id
-    FROM team_resource_authorization_grants grant
-    INNER JOIN resource_authorizations ra
-      ON ra.resource_type = grant.resource_type
-      AND ra.resource_id = grant.resource_id
-    INNER JOIN resource_authorization_sources source
-      ON source.authorization_id = ra.id
-      AND source.source_type = 'team'
-      AND source.source_team_id = grant.team_id
-      AND source.status = 'active'
-    WHERE grant.id = ?
-      AND grant.resource_type = ?
-      AND grant.status = 'active'
-      AND ra.status = 'active'
-  `).all(teamGrantId, resourceType) as unknown as Array<{ id?: string }>
-  return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
+function teamAuthorizationScopeType(scopeType: 'account_authorization' | 'group_authorization'): 'account_authorization_team' | 'group_authorization_team' {
+  return scopeType === 'account_authorization' ? 'account_authorization_team' : 'group_authorization_team'
 }
 
-function sumMemberQuotaCosts(systemAccountId: string, scopeType: string, scopeIds: string[], now: Date, hourlyWindowHours?: number) {
-  return scopeIds.reduce((summary, scopeId) => {
-    const costs = loadRequestQuotaCosts(getRecordDatabase(), {
-      systemAccountId,
-      scopeType,
-      scopeId,
-      now,
-      hourlyWindowHours
-    })
-    return {
-      hourly: summary.hourly + costs.hourly,
-      daily: summary.daily + costs.daily,
-      weekly: summary.weekly + costs.weekly,
-      monthly: summary.monthly + costs.monthly,
-      total: summary.total + costs.total
-    }
-  }, { hourly: 0, daily: 0, weekly: 0, monthly: 0, total: 0 })
+function teamAuthorizationResourceId(row: TeamAuthorizationQuotaRow): string {
+  return row.resource_id
 }

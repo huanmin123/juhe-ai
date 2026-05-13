@@ -358,11 +358,6 @@ onMounted(loadSettings)
   grid-column: 1 / -1;
 }
 
-.setting-switch-item {
-  display: flex;
-  align-items: center;
-}
-
 .settings-actions {
   display: flex;
   justify-content: flex-end;

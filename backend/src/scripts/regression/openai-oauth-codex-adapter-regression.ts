@@ -5,12 +5,12 @@ import {
   buildOpenAIOAuthCodexRequestParts,
   isolateOpenAIOAuthCodexSessionId,
   OpenAIOAuthCodexAdapterError
-} from '../modules/gateway/openai-oauth-codex-adapter.js'
+} from '../../modules/gateway/openai-oauth-codex-adapter.js'
 import {
   buildUpstreamRequestBody,
   buildUpstreamHeaders,
   isEffectiveOpenAIStreamRequest
-} from '../modules/gateway/openai-gateway-upstream.js'
+} from '../../modules/gateway/openai-gateway-upstream.js'
 
 type TestRequest = Request & { rawBody?: Buffer }
 

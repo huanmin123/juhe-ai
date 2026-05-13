@@ -1,5 +1,5 @@
-import { runtimeConfig } from '../config/runtime.js'
-import { systemSettingKeys } from '../storage/settings.repository.js'
+import { runtimeConfig } from '../../config/runtime.js'
+import { systemSettingKeys } from '../../storage/settings.repository.js'
 
 const backendUrl = trimTrailingSlash(runtimeConfig.smokeTest.backendUrl)
 const accountName = runtimeConfig.smokeTest.accountName

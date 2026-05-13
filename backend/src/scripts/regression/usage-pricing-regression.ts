@@ -6,9 +6,9 @@ import { dirname, resolve } from 'node:path'
 import {
   inspectOpenAIStreamText,
   parseOpenAIUsageFromJsonBuffer
-} from '../modules/gateway/openai-gateway-usage.js'
-import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
-import { usageSummaryFromAggregate } from '../storage/usage-stats-helpers.js'
+} from '../../modules/gateway/openai-gateway-usage.js'
+import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
+import { usageSummaryFromAggregate } from '../../storage/usage-stats-helpers.js'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
 const backendSrcDirectory = resolve(scriptDirectory, '..')

@@ -47,7 +47,9 @@
 | `backend/src/modules/background/` | 统计聚合、系统采样、账号质量缓存、冷却账号复测、运行日志索引、审计批量落库和数据清理等后台任务 | 任务注册和执行只允许在独立 background worker 进程内发生，不引入重型分布式队列；新增或调整任务先看 [后台任务使用说明](后台任务使用说明.md) |
 | `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
 | `backend/src/shared/` | 通用响应、跨模块小工具 | 只放稳定复用能力，不堆业务逻辑 |
-| `backend/src/scripts/` | 烟测、导入导出、一次性维护脚本 | 脚本应可独立运行，并说明安全边界 |
+| `backend/src/scripts/maintenance/` | 生产或上线可用维护脚本 | 发布包统一调用 `backend/dist/scripts/maintenance/*.js`，脚本必须说明会改哪些数据 |
+| `backend/src/scripts/regression/` | 本地回归脚本 | 只通过 `pnpm test:*` 调用，不作为生产运维入口 |
+| `backend/src/scripts/smoke/` | 真实链路烟测脚本 | 用于发布前验证，不承担迁移或维护职责 |
 | `backend/src/types/` | 第三方或运行时类型补充 | 只补缺失类型，不放业务模型 |
 
 ### 4.1 模块目录约定
@@ -146,9 +148,9 @@ flowchart LR
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
 | 原始审计 | `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs`、`audit_error_groups` | 审计事件、上游尝试、payload 引用、压缩 blob 元数据和重复错误聚合 |
 | 账号快照 | `account_usage_snapshots` | OpenAI OAuth / Codex 等账号额度快照和刷新状态 |
-| 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_model_hourly`、`usage_error_daily`、`usage_error_hourly`、`group_account_stats` | 列表统计、趋势图、模型分布、错误聚合和分组账户状态缓存 |
+| 业务统计 | `usage_stats_totals`、`usage_stats_daily`、`usage_stats_hourly`、`usage_model_daily`、`usage_model_hourly`、`usage_error_daily`、`usage_error_hourly`、`usage_scope_range_windows`、`usage_quota_hourly_windows`、`usage_overview_summary_windows`、`usage_overview_trend_windows`、`usage_model_rank_windows`、`usage_error_rank_windows`、`ai_performance_summary_windows`、`group_account_stats` | 列表统计、趋势图、模型分布、错误聚合、额度窗口、范围快照和分组账户状态缓存 |
 | 后台任务 | `stats_job_state` | 聚合游标、任务状态、统计滞后和错误信息 |
-| 运维监控 | `system_metrics_samples`、`system_metrics_hourly` | CPU、内存、进程、事件循环、网络、数据库体积和统计滞后 |
+| 运维监控 | `system_metrics_samples`、`system_metrics_hourly`、`system_metrics_trend_windows` | CPU、内存、进程、事件循环、网络、数据库体积、统计滞后和监控窗口趋势 |
 
 ### 6.3 核心关系
 
