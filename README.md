@@ -43,7 +43,7 @@
 
 环境要求：
 
-- Node.js `>= 22.5.0`
+- Node.js `>= 22.13.0`（22.x）或 `>= 23.4.0`
 - pnpm `>= 9.0.0`
 - Windows 推荐使用 PowerShell 7
 

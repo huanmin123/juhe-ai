@@ -14,7 +14,7 @@
 
 ## 部署前检查
 
-- Node.js 支持 `node:sqlite`，建议 Node.js 22.5+ 或更新 LTS。
+- Node.js 支持 `node:sqlite`，建议 Node.js 22.13.0+（22.x）或 23.4.0+，或更新 LTS。
 - `pnpm` 可用，或 `corepack` 可用且能启用 `pnpm`。
 - 默认端口 `3000` 没有冲突；冲突时修改 `backend/.env` 的 `JUHE_AI_PORT`。
 - 当前目录有写入权限和足够磁盘空间。

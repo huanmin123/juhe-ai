@@ -23,7 +23,7 @@
     "test:session-affinity": "pnpm --filter juhe-ai-backend test:session-affinity"
   },
   "engines": {
-    "node": ">=22.5.0",
+    "node": ">=22.13.0 <23 || >=23.4.0",
     "pnpm": ">=9.0.0"
   },
   "description": "聚合 AI（`juhe-ai`）是一个轻量级 OpenAI 兼容中转、账号调度与 API Key 管理系统。",

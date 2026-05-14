@@ -52,7 +52,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 
 ## 当前实现
 
-- 使用 Node 22 内置 `node:sqlite`
+- 使用 Node 内置 `node:sqlite`，要求 Node.js 22.13.0+（22.x）或 23.4.0+
 - 启动时自动建表
 - 启动时自动写入默认管理员账号、OpenAI 供应商、默认分组、默认全局设置和默认系统设置
 - 使用 `PRAGMA journal_mode = WAL`

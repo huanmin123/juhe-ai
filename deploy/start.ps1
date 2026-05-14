@@ -41,13 +41,13 @@ function Test-RipgrepDependency {
 }
 
 if (-not (Test-CommandExists 'node')) {
-  throw 'Node.js is required. Install Node.js 22.5+ before running this script.'
+  throw 'Node.js is required. Install Node.js 22.13.0+ (22.x) or 23.4.0+ before running this script.'
 }
 
 node --input-type=module -e "import 'node:sqlite'" *> $null
 if ($LASTEXITCODE -ne 0) {
   $nodeVersion = (& node -v) -join ''
-  throw "Node.js with node:sqlite support is required. Install Node.js 22.5+ or a newer LTS release. Current: $nodeVersion"
+  throw "Node.js with node:sqlite support is required. Install Node.js 22.13.0+ (22.x) or 23.4.0+ / a newer LTS release. Current: $nodeVersion"
 }
 
 if (-not (Test-CommandExists 'pnpm')) {

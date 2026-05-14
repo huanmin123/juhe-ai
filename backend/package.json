@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "dev": "tsx watch src/server.ts",
+    "check:runtime": "tsx src/scripts/preflight/check-node-sqlite.ts",
+    "dev": "tsx src/scripts/preflight/check-node-sqlite.ts && tsx watch src/server.ts",
     "test:smoke": "tsx src/scripts/smoke/smoke-test.ts",
     "test:scope": "tsx src/scripts/regression/scope-boundary-regression.ts",
     "test:proxy-negative": "tsx src/scripts/regression/proxy-negative-regression.ts",
@@ -22,9 +23,12 @@
     "test:openai-api-key-passthrough": "tsx src/scripts/regression/openai-api-key-passthrough-regression.ts",
     "clean:dist": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
     "build": "pnpm run clean:dist && tsc -p tsconfig.json",
-    "start": "node dist/server.js",
+    "start": "node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22.13.0 <23 || >=23.4.0"
   },
   "dependencies": {
     "@vscode/ripgrep": "1.18.0",

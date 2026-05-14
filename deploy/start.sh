@@ -5,12 +5,12 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$APP_DIR"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js is required. Install Node.js 22.5+ before running this script." >&2
+  echo "Node.js is required. Install Node.js 22.13.0+ (22.x) or 23.4.0+ before running this script." >&2
   exit 1
 fi
 
 if ! node --input-type=module -e "import 'node:sqlite'" >/dev/null 2>&1; then
-  echo "Node.js with node:sqlite support is required. Install Node.js 22.5+ or a newer LTS release. Current: $(node -v)" >&2
+  echo "Node.js with node:sqlite support is required. Install Node.js 22.13.0+ (22.x) or 23.4.0+ / a newer LTS release. Current: $(node -v)" >&2
   exit 1
 fi
 

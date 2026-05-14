@@ -27,10 +27,10 @@
 
 ## 3. 技术边界
 
-- 运行时：`Node.js 22+`。
+- 运行时：`Node.js 22.13.0+`（22.x）或 `23.4.0+`，且需要支持 `node:sqlite`。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
-- 存储：Node 22 内置 `node:sqlite`，默认拆为业务库 `backend/data/juhe-ai.sqlite3` 和记录库 `backend/data/juhe-ai-records.sqlite3`。
+- 存储：Node 内置 `node:sqlite`，默认拆为业务库 `backend/data/juhe-ai.sqlite3` 和记录库 `backend/data/juhe-ai-records.sqlite3`。
 - 配置：只读取 `backend/.env`，相对路径按 `backend/` 目录解析。
 - 网关协议：对外统一兼容 OpenAI `/v1/*`，当前只启用 OpenAI 供应商适配。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。

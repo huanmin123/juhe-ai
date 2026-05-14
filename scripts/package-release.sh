@@ -110,12 +110,12 @@ create_zip_archive() {
 cd "$REPO_ROOT"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js is required for packaging. Install Node.js 22.5+ first." >&2
+  echo "Node.js is required for packaging. Install Node.js 22.13.0+ (22.x) or 23.4.0+ first." >&2
   exit 1
 fi
 
 if ! node --input-type=module -e "import 'node:sqlite'" >/dev/null 2>&1; then
-  echo "Node.js with node:sqlite support is required for local validation. Install Node.js 22.5+ or newer." >&2
+  echo "Node.js with node:sqlite support is required for local validation. Install Node.js 22.13.0+ (22.x) or 23.4.0+ or newer." >&2
   exit 1
 fi
 
