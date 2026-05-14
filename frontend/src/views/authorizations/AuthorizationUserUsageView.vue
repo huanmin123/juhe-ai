@@ -39,6 +39,17 @@
             @change="loadData"
           />
           <a-select v-model:value="filters.resourceType" class="authorization-usage-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
+          <SystemPrincipalSelect
+            v-if="isManagementView"
+            v-model:value="filters.resourceOwnerSystemAccountId"
+            :accounts="users"
+            :active-only="false"
+            include-all
+            all-label="全部资源归属用户"
+            class="authorization-usage-select responsive-list-inline-filter"
+            placeholder="筛选资源归属用户"
+            @change="handleResourceOwnerChange"
+          />
           <a-select
             v-model:value="filters.resourceId"
             show-search
@@ -75,6 +86,18 @@
             <span>授权内容</span>
             <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
           </label>
+          <label v-if="isManagementView" class="mobile-filter-field">
+            <span>资源归属用户</span>
+            <SystemPrincipalSelect
+              v-model:value="filters.resourceOwnerSystemAccountId"
+              :accounts="users"
+              :active-only="false"
+              include-all
+              all-label="全部资源归属用户"
+              placeholder="筛选资源归属用户"
+              @change="handleResourceOwnerChange"
+            />
+          </label>
           <label class="mobile-filter-field">
             <span>授权资源</span>
             <a-select
@@ -106,7 +129,7 @@
         row-key="id"
         :loading="loading"
         :pagination="false"
-        :scroll-x="1260"
+        :scroll-x="1440"
         pull-refresh-enabled
         :refreshing="loading"
         @mobile-refresh="loadData"
@@ -120,6 +143,9 @@
               <span class="authorization-usage-name">{{ record.userName }}</span>
               <span v-if="record.username && record.username !== record.userName" class="authorization-usage-subtext">{{ record.username }}</span>
             </div>
+          </template>
+          <template v-else-if="column.key === 'teams'">
+            <span class="authorization-usage-name">{{ teamDisplayName(record) }}</span>
           </template>
           <template v-else-if="column.key === 'account'">
             <div class="authorization-usage-resource-cell">
@@ -151,6 +177,10 @@
               <div class="mobile-list-meta-item mobile-list-meta-wide">
                 <span>月度消耗</span>
                 <strong><UsageSummaryTags :usage="record.usage" /></strong>
+              </div>
+              <div class="mobile-list-meta-item">
+                <span>所属团队</span>
+                <strong>{{ teamDisplayName(record) }}</strong>
               </div>
               <div class="mobile-list-meta-item">
                 <span>资源名称</span>
@@ -188,6 +218,7 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { AccountSummary, AuthorizationResourceType, AuthorizationUserUsageOverview, AuthorizationUserUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import {
   emptyUsageSummary,
@@ -201,12 +232,13 @@ import { authorizationResourceTypeOptions, type AuthorizationFilterResourceType 
 type UserUsageFilters = {
   teamId?: string
   granteeSystemAccountId?: string
+  resourceOwnerSystemAccountId: string
   resourceType: AuthorizationFilterResourceType
   resourceId?: string
   statMonth: string
 }
 const route = useRoute()
-const { isManagementView } = useScopedMenuView()
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const loading = ref(false)
 const overview = ref<AuthorizationUserUsageOverview>()
 const teams = ref<SystemTeamSummary[]>([])
@@ -218,6 +250,7 @@ const filters = reactive<UserUsageFilters>(defaultFilters())
 const resourceTypeOptions = authorizationResourceTypeOptions
 const columns = [
   { title: '被授权用户', key: 'user', width: 230 },
+  { title: '所属团队', key: 'teams', width: 180 },
   { title: '资源名称', key: 'account', width: 220 },
   { title: '资源归属人', key: 'accountOwner', width: 180 },
   { title: '月度消耗', key: 'usage', width: 220 },
@@ -230,17 +263,25 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (filters.teamId) count += 1
   if (filters.granteeSystemAccountId) count += 1
+  if (selectedResourceOwnerSystemAccountId.value) count += 1
   if (filters.resourceType !== 'all') count += 1
   if (filters.resourceId) count += 1
   if (filters.statMonth !== defaultMonth.value) count += 1
   return count
 })
+const selectedResourceOwnerSystemAccountId = computed(() => {
+  return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
+})
 const resourceOptions = computed(() => {
   if (filters.resourceType === 'all') return []
   if (filters.resourceType === 'account') {
-    return ownAuthorizableAccounts.value.map((account) => ({ label: account.name, value: account.id }))
+    return ownAuthorizableAccounts.value
+      .filter((account) => matchesSelectedResourceOwner(account))
+      .map((account) => ({ label: account.name, value: account.id }))
   }
-  return ownAuthorizableGroups.value.map((group) => ({ label: group.name, value: group.id }))
+  return ownAuthorizableGroups.value
+    .filter((group) => matchesSelectedResourceOwner(group))
+    .map((group) => ({ label: group.name, value: group.id }))
 })
 const ownAuthorizableAccounts = computed(() => accounts.value.filter((account) => account.permissions?.canAuthorize !== false))
 const ownAuthorizableGroups = computed(() => groups.value.filter((group) => group.permissions?.canAuthorize !== false))
@@ -263,11 +304,12 @@ const usageMonthValue = computed<Dayjs>({
 })
 
 async function loadOptions() {
+  const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
   const [teamResult, userResult, accountResult, groupResult] = await Promise.allSettled([
     isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
     isManagementView.value ? api.systemAccounts.list() : api.myAuthorizationOptions.granteeAccounts(),
-    isManagementView.value ? api.accounts.list({ limit: 500 }) : api.myAccounts.list({ limit: 500 }),
-    isManagementView.value ? api.groups.list() : api.myGroups.list()
+    isManagementView.value ? api.accounts.list({ systemAccountId: ownerSystemAccountId, limit: 500 }) : api.myAccounts.list({ limit: 500 }),
+    isManagementView.value ? api.groups.list({ systemAccountId: ownerSystemAccountId }) : api.myGroups.list()
   ])
   if (teamResult.status === 'fulfilled') {
     teams.value = teamResult.value
@@ -298,7 +340,9 @@ async function loadOptions() {
 async function loadData() {
   loading.value = true
   try {
+    const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
     const params = {
+      systemAccountId: ownerSystemAccountId,
       resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
       resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
       teamId: filters.teamId,
@@ -328,7 +372,16 @@ function resourceDisplayName(row: AuthorizationUserUsageRow): string {
   return row.resourceName || row.resourceId || row.accountName || row.accountId || '-'
 }
 
+function teamDisplayName(row: AuthorizationUserUsageRow): string {
+  return row.teamNames?.filter(Boolean).join('、') ?? ''
+}
+
 function handleResourceTypeChange() {
+  filters.resourceId = undefined
+  void loadData()
+}
+
+function handleResourceOwnerChange() {
   filters.resourceId = undefined
   void loadData()
 }
@@ -341,11 +394,13 @@ function resetFilters() {
 function applyRouteFilters() {
   const teamId = singleQueryValue(route.query.teamId)
   const granteeSystemAccountId = singleQueryValue(route.query.granteeSystemAccountId)
+  const resourceOwnerSystemAccountId = singleQueryValue(route.query.resourceOwnerSystemAccountId)
   const resourceId = singleQueryValue(route.query.resourceId)
   const resourceType = route.query.resourceType === 'account' || route.query.resourceType === 'group' ? route.query.resourceType : undefined
   const statMonth = singleQueryValue(route.query.statMonth)
   if (teamId) filters.teamId = teamId
   if (granteeSystemAccountId) filters.granteeSystemAccountId = granteeSystemAccountId
+  if (isManagementView.value && resourceOwnerSystemAccountId) filters.resourceOwnerSystemAccountId = resourceOwnerSystemAccountId
   if (resourceType) filters.resourceType = resourceType
   if (resourceType && resourceId) filters.resourceId = resourceId
   if (isMonthKey(statMonth)) {
@@ -375,6 +430,7 @@ function defaultUsageMonth(): string {
 
 function defaultFilters(): UserUsageFilters {
   return {
+    resourceOwnerSystemAccountId: allSystemAccountsValue,
     resourceType: 'all',
     resourceId: undefined,
     teamId: undefined,
@@ -390,6 +446,12 @@ function isMonthKey(value?: string): value is string {
 function formatMonthLabel(value: string): string {
   const parsed = dayjs(value)
   return parsed.isValid() ? parsed.format('YYYY年M月') : value
+}
+
+function matchesSelectedResourceOwner(resource: Pick<AccountSummary | GroupSummary, 'ownerSystemAccountId' | 'systemAccountId'>): boolean {
+  const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
+  if (!ownerSystemAccountId) return true
+  return (resource.ownerSystemAccountId ?? resource.systemAccountId) === ownerSystemAccountId
 }
 
 onMounted(() => {

@@ -30,6 +30,17 @@
             @change="loadData"
           />
           <a-select v-model:value="filters.resourceType" class="authorization-usage-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
+          <SystemPrincipalSelect
+            v-if="isManagementView"
+            v-model:value="filters.resourceOwnerSystemAccountId"
+            :accounts="resourceOwners"
+            :active-only="false"
+            include-all
+            all-label="全部资源归属用户"
+            class="authorization-usage-select responsive-list-inline-filter"
+            placeholder="筛选资源归属用户"
+            @change="handleResourceOwnerChange"
+          />
           <a-select
             v-model:value="filters.resourceId"
             show-search
@@ -61,6 +72,18 @@
           <label class="mobile-filter-field">
             <span>授权内容</span>
             <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
+          </label>
+          <label v-if="isManagementView" class="mobile-filter-field">
+            <span>资源归属用户</span>
+            <SystemPrincipalSelect
+              v-model:value="filters.resourceOwnerSystemAccountId"
+              :accounts="resourceOwners"
+              :active-only="false"
+              include-all
+              all-label="全部资源归属用户"
+              placeholder="筛选资源归属用户"
+              @change="handleResourceOwnerChange"
+            />
           </label>
           <label class="mobile-filter-field">
             <span>授权资源</span>
@@ -176,7 +199,8 @@ import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import type { AccountSummary, AuthorizationResourceType, AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, GroupSummary, SystemTeamSummary } from '@/types/domain'
+import type { AccountSummary, AuthorizationResourceType, AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import {
   emptyUsageSummary,
@@ -189,15 +213,17 @@ import { authorizationResourceTypeOptions, type AuthorizationFilterResourceType 
 
 type TeamUsageFilters = {
   teamId?: string
+  resourceOwnerSystemAccountId: string
   resourceType: AuthorizationFilterResourceType
   resourceId?: string
   statMonth: string
 }
 const router = useRouter()
-const { isManagementView } = useScopedMenuView()
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const loading = ref(false)
 const overview = ref<AuthorizationTeamUsageOverview>()
 const teams = ref<SystemTeamSummary[]>([])
+const resourceOwners = ref<SystemAccountPrincipalSummary[]>([])
 const accounts = ref<AccountSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 
@@ -207,7 +233,7 @@ const detailActions: RowActionItem[] = [
   { key: 'users', label: '查询用户明细', icon: 'detail', tone: 'info' }
 ]
 const columns = [
-  { title: '授权团队', key: 'team', width: 240 },
+  { title: '被授权团队', key: 'team', width: 240 },
   { title: '资源名称', key: 'account', width: 220 },
   { title: '资源归属人', key: 'accountOwner', width: 180 },
   { title: '月度消耗', key: 'usage', width: 220 },
@@ -220,17 +246,25 @@ const defaultMonth = computed(() => defaultUsageMonth())
 const activeFilterCount = computed(() => {
   let count = 0
   if (filters.teamId) count += 1
+  if (selectedResourceOwnerSystemAccountId.value) count += 1
   if (filters.resourceType !== 'all') count += 1
   if (filters.resourceId) count += 1
   if (filters.statMonth !== defaultMonth.value) count += 1
   return count
 })
+const selectedResourceOwnerSystemAccountId = computed(() => {
+  return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
+})
 const resourceOptions = computed(() => {
   if (filters.resourceType === 'all') return []
   if (filters.resourceType === 'account') {
-    return ownAuthorizableAccounts.value.map((account) => ({ label: account.name, value: account.id }))
+    return ownAuthorizableAccounts.value
+      .filter((account) => matchesSelectedResourceOwner(account))
+      .map((account) => ({ label: account.name, value: account.id }))
   }
-  return ownAuthorizableGroups.value.map((group) => ({ label: group.name, value: group.id }))
+  return ownAuthorizableGroups.value
+    .filter((group) => matchesSelectedResourceOwner(group))
+    .map((group) => ({ label: group.name, value: group.id }))
 })
 const ownAuthorizableAccounts = computed(() => accounts.value.filter((account) => account.permissions?.canAuthorize !== false))
 const ownAuthorizableGroups = computed(() => groups.value.filter((group) => group.permissions?.canAuthorize !== false))
@@ -253,16 +287,24 @@ const usageMonthValue = computed<Dayjs>({
 })
 
 async function loadOptions() {
-  const [teamResult, accountResult, groupResult] = await Promise.allSettled([
+  const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
+  const [teamResult, ownerResult, accountResult, groupResult] = await Promise.allSettled([
     isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
-    isManagementView.value ? api.accounts.list({ limit: 500 }) : api.myAccounts.list({ limit: 500 }),
-    isManagementView.value ? api.groups.list() : api.myGroups.list()
+    isManagementView.value ? api.systemAccounts.list() : Promise.resolve([]),
+    isManagementView.value ? api.accounts.list({ systemAccountId: ownerSystemAccountId, limit: 500 }) : api.myAccounts.list({ limit: 500 }),
+    isManagementView.value ? api.groups.list({ systemAccountId: ownerSystemAccountId }) : api.myGroups.list()
   ])
   if (teamResult.status === 'fulfilled') {
     teams.value = teamResult.value
   } else {
     console.error(teamResult.reason)
     message.error('加载授权团队失败')
+  }
+  if (ownerResult.status === 'fulfilled') {
+    resourceOwners.value = ownerResult.value
+  } else {
+    console.error(ownerResult.reason)
+    message.error('加载资源归属用户失败')
   }
   if (accountResult.status === 'fulfilled') {
     accounts.value = accountResult.value.items
@@ -281,7 +323,9 @@ async function loadOptions() {
 async function loadData() {
   loading.value = true
   try {
+    const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
     const params = {
+      systemAccountId: ownerSystemAccountId,
       resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
       resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
       teamId: filters.teamId,
@@ -307,8 +351,9 @@ function handleTeamAction(key: string, row: AuthorizationTeamUsageRow) {
     query: {
       teamId: row.teamId,
       statMonth: filters.statMonth,
-      resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
-      resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId
+      resourceType: row.resourceType,
+      resourceId: row.resourceId,
+      resourceOwnerSystemAccountId: row.accountOwnerSystemAccountId ?? selectedResourceOwnerSystemAccountId.value
     }
   })
 }
@@ -324,6 +369,11 @@ function resourceDisplayName(row: AuthorizationTeamUsageRow): string {
 }
 
 function handleResourceTypeChange() {
+  filters.resourceId = undefined
+  void loadData()
+}
+
+function handleResourceOwnerChange() {
   filters.resourceId = undefined
   void loadData()
 }
@@ -350,6 +400,7 @@ function defaultUsageMonth(): string {
 
 function defaultFilters(): TeamUsageFilters {
   return {
+    resourceOwnerSystemAccountId: allSystemAccountsValue,
     resourceType: 'all',
     resourceId: undefined,
     teamId: undefined,
@@ -360,6 +411,12 @@ function defaultFilters(): TeamUsageFilters {
 function formatMonthLabel(value: string): string {
   const parsed = dayjs(value)
   return parsed.isValid() ? parsed.format('YYYY年M月') : value
+}
+
+function matchesSelectedResourceOwner(resource: Pick<AccountSummary | GroupSummary, 'ownerSystemAccountId' | 'systemAccountId'>): boolean {
+  const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
+  if (!ownerSystemAccountId) return true
+  return (resource.ownerSystemAccountId ?? resource.systemAccountId) === ownerSystemAccountId
 }
 
 onMounted(loadData)

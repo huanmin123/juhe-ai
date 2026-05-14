@@ -130,6 +130,7 @@ export interface AuthorizationUserUsageRow {
   systemAccountId: string
   userName: string
   username?: string
+  teamNames?: string[]
   resourceType?: AuthorizationResourceType
   resourceId?: string
   resourceName?: string

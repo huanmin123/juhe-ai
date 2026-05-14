@@ -5,7 +5,10 @@ import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { hasAccountQualityScoreSort, normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
 import { accountCredentialsForList, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries, type AccountRowsPage } from './account-read.repository.js'
-import { getAccountUsageStatsOverview as buildAccountUsageStatsOverview } from './account-usage.repository.js'
+import {
+  getAccountUsageStatsOverview as buildAccountUsageStatsOverview,
+  getAccountUsageStatsOverviewPageFromWindows as buildAccountUsageStatsOverviewPageFromWindows
+} from './account-usage.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
 import { createApiKeyRecord, deleteApiKey, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
@@ -28,6 +31,7 @@ import { getSettings } from './settings.repository.js'
 import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
+import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
 import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, numberFromUnknown, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
@@ -874,43 +878,23 @@ export function getAccountUsageStatsOverview(access?: AccessScope, range?: Accou
 
 export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange }): AccountUsageStatsOverview {
   const listOptions = normalizeAccountListOptions(options)
-  const accounts = listAccounts(access, options)
   const defaultTrendAccountIds = loadAccountUsageDefaultTrendAccountIds(access)
   const range = options?.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
-  const overview = buildAccountUsageStatsOverview({
+  const overview = buildAccountUsageStatsOverviewPageFromWindows({
     access,
-    accounts,
     range,
-    defaultTrendAccountIds,
-    loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
-  })
-  const usageRows = overview.rows.filter(hasAccountUsageInRange)
-  const sortedRows = usageRows.sort(compareAccountUsageStatsRows)
-  const defaultTrendAccountIdsForScope = allAccountsDefaultTrendAccountIds(access, sortedRows) ?? defaultTrendAccountIds
-  if (options?.page === undefined && options?.pageSize === undefined && options?.limit === undefined) {
-    return {
-      ...overview,
-      rows: sortedRows,
-      defaultTrendAccountIds: defaultTrendAccountIdsForScope,
-      total: sortedRows.length,
-      page: 1,
-      pageSize: sortedRows.length
-    }
-  }
-  const start = (listOptions.page - 1) * listOptions.pageSize
-  const rows = sortedRows.slice(start, start + listOptions.pageSize)
-  return {
-    ...overview,
-    rows,
-    defaultTrendAccountIds: defaultTrendAccountIdsForScope,
-    total: sortedRows.length,
     page: listOptions.page,
-    pageSize: listOptions.pageSize
-  }
+    pageSize: listOptions.pageSize,
+    keyword: listOptions.keyword,
+    type: listOptions.type,
+    defaultTrendAccountIds,
+  })
+  return withAllAccountsDefaultTrendIds(access, overview)
 }
 
 function withAllAccountsDefaultTrendIds(access: AccessScope | undefined, overview: AccountUsageStatsOverview): AccountUsageStatsOverview {
-  const defaultTrendAccountIds = allAccountsDefaultTrendAccountIds(access, [...overview.rows].sort(compareAccountUsageStatsRows))
+  if (overview.defaultTrendAccountIds.length > 0) return overview
+  const defaultTrendAccountIds = allAccountsDefaultTrendAccountIds(access, overview.rows)
   return defaultTrendAccountIds ? { ...overview, defaultTrendAccountIds } : overview
 }
 
@@ -922,48 +906,30 @@ function allAccountsDefaultTrendAccountIds(access: AccessScope | undefined, rows
     .map((row) => row.id)
 }
 
-function compareAccountUsageStatsRows(left: AccountUsageStatsOverview['rows'][number], right: AccountUsageStatsOverview['rows'][number]): number {
-  const requestDelta = right.rangeUsage.requestCount - left.rangeUsage.requestCount
-  if (requestDelta !== 0) return requestDelta
-  const costDelta = right.rangeUsage.totalCost - left.rangeUsage.totalCost
-  if (costDelta !== 0) return costDelta
-  const tokenDelta = right.rangeUsage.totalTokens - left.rangeUsage.totalTokens
-  if (tokenDelta !== 0) return tokenDelta
-  const rightLastUsed = right.rangeUsage.lastUsedAt ? Date.parse(right.rangeUsage.lastUsedAt) : 0
-  const leftLastUsed = left.rangeUsage.lastUsedAt ? Date.parse(left.rangeUsage.lastUsedAt) : 0
-  if (rightLastUsed !== leftLastUsed) return rightLastUsed - leftLastUsed
-  return left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id)
-}
-
-function hasAccountUsageInRange(row: AccountUsageStatsOverview['rows'][number]): boolean {
-  return row.rangeUsage.requestCount > 0
-    || row.rangeUsage.totalTokens > 0
-    || row.rangeUsage.totalCost > 0
-    || Boolean(row.rangeUsage.lastUsedAt)
-}
-
 function loadAccountUsageDefaultTrendAccountIds(access?: AccessScope): string[] {
-  const systemAccountId = scopedSystemAccountId(access)
+  const scopedId = scopedSystemAccountId(access)
+  const systemAccountId = scopedId ?? (canAccessAll(access) ? GLOBAL_STATS_SYSTEM_ACCOUNT_ID : undefined)
   if (!systemAccountId) return []
+  const scopeType = scopedId ? 'caller_account' : 'account'
   const database = getRecordDatabase()
   const rows = database.prepare(`
     SELECT scope_id
     FROM usage_rank_snapshots
     WHERE system_account_id = ?
-      AND scope_type = 'caller_account'
+      AND scope_type = ?
       AND window_key = 'last7d'
       AND metric = 'request_count'
       AND snapshot_at = (
         SELECT MAX(snapshot_at)
         FROM usage_rank_snapshots
         WHERE system_account_id = ?
-          AND scope_type = 'caller_account'
+          AND scope_type = ?
           AND window_key = 'last7d'
           AND metric = 'request_count'
       )
     ORDER BY rank ASC
     LIMIT 10
-  `).all(systemAccountId, systemAccountId) as unknown as Array<{ scope_id?: string }>
+  `).all(systemAccountId, scopeType, systemAccountId, scopeType) as unknown as Array<{ scope_id?: string }>
   return rows.map((row) => row.scope_id).filter((id): id is string => Boolean(id))
 }
 
@@ -3190,14 +3156,31 @@ function loadResourceAuthorizationUsageSummaries(rows: ResourceAuthorizationRow[
 }
 
 function loadResourceAuthorizationGrantUsageSummaries(rows: ResourceAuthorizationGrantRow[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
-  const runtimeRowsByGrant = runtimeAuthorizationRowsByGrantIds(rows)
+  const result = new Map<string, AccountUsageSummary>()
+  const userGrantRows = rows.filter((row) => row.grantee_type === 'system_account')
+  const runtimeRowsByGrant = runtimeAuthorizationRowsByGrantIds(userGrantRows)
   const runtimeRows = [...runtimeRowsByGrant.values()].flat()
   const runtimeUsage = loadResourceAuthorizationUsageSummaries(runtimeRows, statDateOrRange)
-  const result = new Map<string, AccountUsageSummary>()
-  for (const row of rows) {
-    const summaries = (runtimeRowsByGrant.get(row.id) ?? []).map((runtimeRow) => runtimeUsage.get(runtimeRow.id) ?? emptyAccountUsageSummary())
-    result.set(row.id, sumAccountUsageSummaries(summaries))
+  for (const row of userGrantRows) {
+    const runtime = runtimeRowsByGrant.get(row.id)?.[0]
+    result.set(row.id, runtime ? runtimeUsage.get(runtime.id) ?? emptyAccountUsageSummary() : emptyAccountUsageSummary())
   }
+
+  const teamGrantRows = rows.filter((row) => row.grantee_type === 'team' && row.grantee_team_id)
+  const accountTeamScopes = teamGrantRows
+    .filter((row) => row.resource_type === 'account')
+    .map((row) => usageScope(row.id, row.resource_owner_system_account_id, authorizationGrantUsageScopeId(row)))
+  const groupTeamScopes = teamGrantRows
+    .filter((row) => row.resource_type === 'group')
+    .map((row) => usageScope(row.id, row.resource_owner_system_account_id, authorizationGrantUsageScopeId(row)))
+  const teamUsage = new Map([
+    ...loadAccountAuthorizationUsageSummaries(accountTeamScopes, statDateOrRange, 'account_authorization_team'),
+    ...loadGroupAuthorizationUsageSummaries(groupTeamScopes, statDateOrRange, 'group_authorization_team')
+  ])
+  for (const row of teamGrantRows) {
+    result.set(row.id, teamUsage.get(row.id) ?? emptyAccountUsageSummary())
+  }
+
   return result
 }
 
@@ -3229,6 +3212,12 @@ function runtimeAuthorizationRowsByGrantIds(rows: ResourceAuthorizationGrantRow[
     result.set(row.id, [])
   }
   return result
+}
+
+function authorizationGrantUsageScopeId(row: ResourceAuthorizationGrantRow): string {
+  return row.grantee_type === 'team' && row.grantee_team_id
+    ? `${row.resource_id}:${row.grantee_team_id}`
+    : row.id
 }
 
 function loadResourceAuthorizationUsageDetail(
@@ -3316,8 +3305,15 @@ function loadResourceAuthorizationGrantUsageDetailForTeam(
     granteeSystemAccountId: row.grantee_system_account_id
   }, range))
   const usageBySystemAccount = details.flatMap((detail) => detail.usageBySystemAccount)
+  const scopeType = authorization.resourceType === 'account' ? 'account_authorization_team' : 'group_authorization_team'
+  const rangeUsage = loadUsageRangeSummaryForScope({
+    systemAccountId: authorization.resourceOwnerSystemAccountId,
+    scopeType,
+    scopeId: `${authorization.resourceId}:${teamId}`,
+    range
+  })
   return {
-    usage: sumAccountUsageSummaries(details.map((detail) => detail.usage)),
+    usage: rangeUsage,
     usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
       const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
       const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
@@ -3327,22 +3323,4 @@ function loadResourceAuthorizationGrantUsageDetailForTeam(
       return left.systemAccountId.localeCompare(right.systemAccountId)
     })
   }
-}
-
-function sumAccountUsageSummaries(items: AccountUsageSummary[]): AccountUsageSummary {
-  return items.reduce<AccountUsageSummary>((summary, item) => ({
-    requestCount: summary.requestCount + item.requestCount,
-    inputTokens: summary.inputTokens + item.inputTokens,
-    outputTokens: summary.outputTokens + item.outputTokens,
-    cacheReadTokens: summary.cacheReadTokens + item.cacheReadTokens,
-    totalTokens: summary.totalTokens + item.totalTokens,
-    totalCost: summary.totalCost + item.totalCost,
-    lastUsedAt: laterUsageTime(summary.lastUsedAt, item.lastUsedAt)
-  }), emptyAccountUsageSummary())
-}
-
-function laterUsageTime(left: string | undefined, right: string | undefined): string | undefined {
-  if (!left) return right
-  if (!right) return left
-  return Date.parse(right) > Date.parse(left) ? right : left
 }

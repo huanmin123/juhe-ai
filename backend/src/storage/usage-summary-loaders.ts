@@ -3,7 +3,7 @@ import { getRecordDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 
-type AuthorizationUsageScopeType = 'account_authorization' | 'group_authorization'
+type AuthorizationUsageScopeType = 'account_authorization' | 'group_authorization' | 'account_authorization_team' | 'group_authorization_team'
 type UsageSummaryScopeType = 'account' | 'group' | 'api_key' | AuthorizationUsageScopeType
 
 export interface UsageSummaryScopeRequest {

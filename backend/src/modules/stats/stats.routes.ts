@@ -88,10 +88,11 @@ function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOp
     startDate: optionalQueryText(query.startDate),
     endDate: optionalQueryText(query.endDate)
   }, timezone)
+  const pageSize = integerQueryValue(query.pageSize)
   return {
     page: integerQueryValue(query.page),
-    pageSize: integerQueryValue(query.pageSize),
-    limit: integerQueryValue(query.limit),
+    pageSize: pageSize ?? integerQueryValue(query.limit) ?? 10,
+    limit: undefined,
     keyword: optionalQueryText(query.keyword),
     type: optionalQueryText(query.type),
     schedulable: schedulableQueryValue(query.schedulable),

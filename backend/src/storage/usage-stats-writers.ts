@@ -507,6 +507,7 @@ function upsertAuthorizationSummaryRows(
     userSummaryKeys.push({ teamFilterId: '', granteeFilterSystemAccountId: '', ...filter })
     userSummaryKeys.push({ teamFilterId: '', granteeFilterSystemAccountId: row.granteeSystemAccountId, ...filter })
     if (row.sourceType === 'team' && row.sourceTeamId) {
+      teamSummaryKeys.push({ teamFilterId: '', ...filter })
       teamSummaryKeys.push({ teamFilterId: row.sourceTeamId, ...filter })
       userSummaryKeys.push({ teamFilterId: row.sourceTeamId, granteeFilterSystemAccountId: '', ...filter })
       userSummaryKeys.push({ teamFilterId: row.sourceTeamId, granteeFilterSystemAccountId: row.granteeSystemAccountId, ...filter })
@@ -534,6 +535,7 @@ function subtractAuthorizationSummaryRows(
     userSummaryKeys.push({ teamFilterId: '', granteeFilterSystemAccountId: '', ...filter })
     userSummaryKeys.push({ teamFilterId: '', granteeFilterSystemAccountId: row.granteeSystemAccountId, ...filter })
     if (row.sourceType === 'team' && row.sourceTeamId) {
+      teamSummaryKeys.push({ teamFilterId: '', ...filter })
       teamSummaryKeys.push({ teamFilterId: row.sourceTeamId, ...filter })
       userSummaryKeys.push({ teamFilterId: row.sourceTeamId, granteeFilterSystemAccountId: '', ...filter })
       userSummaryKeys.push({ teamFilterId: row.sourceTeamId, granteeFilterSystemAccountId: row.granteeSystemAccountId, ...filter })

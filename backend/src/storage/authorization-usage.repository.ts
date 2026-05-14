@@ -11,7 +11,7 @@ import type {
 import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, getRecordDatabase } from './database.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
-import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountsByIds } from './repository-lookups.js'
+import { loadSystemAccountsByIds } from './repository-lookups.js'
 
 interface AuthorizationUsageFilters {
   resourceType?: ResourceAuthorizationResourceType
@@ -50,19 +50,21 @@ type AuthorizationTeamUsageReportRow = UsageReportRow & {
   team_id: string
   resource_filter_type: ResourceAuthorizationResourceType
   resource_filter_id: string
-  hit_account_id: string
-  hit_account_owner_system_account_id: string
 }
 
 type AuthorizationUserUsageReportRow = UsageReportRow & {
+  team_filter_id: string
   grantee_system_account_id: string
   resource_filter_type: ResourceAuthorizationResourceType
   resource_filter_id: string
-  hit_account_id: string
-  hit_account_owner_system_account_id: string
 }
 
 type AuthorizationUsageSummaryRow = UsageReportRow
+
+interface AuthorizationResourceInfo {
+  name: string
+  ownerSystemAccountId: string
+}
 
 export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, month: AuthorizationUsageMonth): AuthorizationTeamUsageOverview {
   const filterKey = authorizationReportFilterKey(filters, access, month)
@@ -73,23 +75,22 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
   const rows = getRecordDatabase().prepare(`
     SELECT
-      report.team_id,
+      report.team_filter_id AS team_id,
       report.resource_filter_type,
       report.resource_filter_id,
-      report.hit_account_id,
-      report.hit_account_owner_system_account_id,
       report.request_count,
       report.input_tokens,
       report.output_tokens,
       report.cache_read_tokens,
       report.total_cost_usd AS total_cost,
       report.last_used_at
-    FROM authorization_team_usage_monthly report
+    FROM authorization_team_usage_summary_monthly report
     WHERE report.system_account_id = ?
       AND report.stat_month = ?
-      AND (? = '' OR report.team_id = ?)
+      AND report.team_filter_id <> ''
+      AND (? = '' OR report.team_filter_id = ?)
       AND ${resourcePredicate.sql}
-    ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.team_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC, report.hit_account_id ASC
+    ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.team_filter_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
   `).all(
     filterKey.systemAccountId,
     filterKey.statMonth,
@@ -98,21 +99,20 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
     ...resourcePredicate.params
   ) as unknown as AuthorizationTeamUsageReportRow[]
   const teams = loadTeamRowsByIds(rows.map((row) => row.team_id))
-  const resourceNames = loadAuthorizationResourceNameMap(rows)
-  const hitAccounts = loadAccountUsageTargetRows(rows.map((row) => row.hit_account_id))
-  const accountOwners = loadHitAccountOwners(rows, hitAccounts)
+  const resources = loadAuthorizationResourceInfoMap(rows)
+  const resourceOwners = loadAuthorizationResourceOwners(resources)
   const summary = loadAuthorizationTeamUsageSummary(filterKey)
   const overviewRows = rows.map((row): AuthorizationTeamUsageRow => {
-    const hitAccount = hitAccountFields(row, hitAccounts, accountOwners)
+    const resource = resources.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id))
     return {
-      id: [row.team_id, row.resource_filter_type, row.resource_filter_id, row.hit_account_id, row.hit_account_owner_system_account_id].filter(Boolean).join(':'),
+      id: [row.team_id, row.resource_filter_type, row.resource_filter_id].filter(Boolean).join(':'),
       teamId: row.team_id,
       teamName: teams.get(row.team_id)?.name ?? row.team_id,
       status: teams.get(row.team_id)?.status ?? 'active',
       resourceType: row.resource_filter_type,
       resourceId: row.resource_filter_id,
-      resourceName: resourceNames.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id)) ?? row.resource_filter_id,
-      ...hitAccount,
+      resourceName: resource?.name ?? row.resource_filter_id,
+      ...resourceOwnerFields(resource, resourceOwners),
       usage: usageSummaryFromAggregate(row),
       lastUsedAt: row.last_used_at ?? undefined
     }
@@ -134,24 +134,24 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
   const rows = getRecordDatabase().prepare(`
     SELECT
-      report.grantee_system_account_id,
+      report.team_filter_id,
+      report.grantee_filter_system_account_id AS grantee_system_account_id,
       report.resource_filter_type,
       report.resource_filter_id,
-      report.hit_account_id,
-      report.hit_account_owner_system_account_id,
       report.request_count,
       report.input_tokens,
       report.output_tokens,
       report.cache_read_tokens,
       report.total_cost_usd AS total_cost,
       report.last_used_at
-    FROM authorization_user_usage_monthly report
+    FROM authorization_user_usage_summary_monthly report
     WHERE report.system_account_id = ?
       AND report.stat_month = ?
       AND report.team_filter_id = ?
-      AND (? = '' OR report.grantee_system_account_id = ?)
+      AND report.grantee_filter_system_account_id <> ''
+      AND (? = '' OR report.grantee_filter_system_account_id = ?)
       AND ${resourcePredicate.sql}
-    ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.grantee_system_account_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC, report.hit_account_id ASC
+    ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.grantee_filter_system_account_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
   `).all(
     filterKey.systemAccountId,
     filterKey.statMonth,
@@ -161,23 +161,25 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     ...resourcePredicate.params
   ) as unknown as AuthorizationUserUsageReportRow[]
   const accounts = loadSystemAccountsByIds(rows.map((row) => row.grantee_system_account_id))
-  const resourceNames = loadAuthorizationResourceNameMap(rows)
-  const hitAccounts = loadAccountUsageTargetRows(rows.map((row) => row.hit_account_id))
-  const accountOwners = loadHitAccountOwners(rows, hitAccounts)
+  const teams = loadTeamRowsByIds(rows.map((row) => row.team_filter_id))
+  const teamMemberships = loadActiveTeamMembershipsBySystemAccountIds(rows.map((row) => row.grantee_system_account_id))
+  const resources = loadAuthorizationResourceInfoMap(rows)
+  const resourceOwners = loadAuthorizationResourceOwners(resources)
   const summary = loadAuthorizationUserUsageSummary(filterKey)
   const sourceLabels = userUsageSourceLabels(filterKey.teamFilterId)
   const overviewRows = rows.map((row): AuthorizationUserUsageRow => {
     const user = accounts.get(row.grantee_system_account_id)
-    const hitAccount = hitAccountFields(row, hitAccounts, accountOwners)
+    const resource = resources.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id))
     return {
-      id: [row.grantee_system_account_id, row.resource_filter_type, row.resource_filter_id, row.hit_account_id, row.hit_account_owner_system_account_id].filter(Boolean).join(':'),
+      id: [row.grantee_system_account_id, row.resource_filter_type, row.resource_filter_id].filter(Boolean).join(':'),
       systemAccountId: row.grantee_system_account_id,
       userName: user?.displayName ?? user?.username ?? row.grantee_system_account_id,
       username: user?.username,
+      teamNames: userUsageTeamNames(row, teams, teamMemberships),
       resourceType: row.resource_filter_type,
       resourceId: row.resource_filter_id,
-      resourceName: resourceNames.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id)) ?? row.resource_filter_id,
-      ...hitAccount,
+      resourceName: resource?.name ?? row.resource_filter_id,
+      ...resourceOwnerFields(resource, resourceOwners),
       sourceLabels,
       usage: usageSummaryFromAggregate(row),
       lastUsedAt: row.last_used_at ?? undefined
@@ -325,55 +327,74 @@ function loadTeamRowsByIds(teamIds: string[]): Map<string, { name: string; statu
   return new Map(rows.map((row) => [row.id, { name: row.name, status: row.status }]))
 }
 
-function loadAccountUsageTargetRows(accountIds: string[]): Map<string, { name: string; systemAccountId: string }> {
-  const ids = [...new Set(accountIds.filter(Boolean))]
+function loadActiveTeamMembershipsBySystemAccountIds(systemAccountIds: string[]): Map<string, string[]> {
+  const ids = [...new Set(systemAccountIds.filter(Boolean))]
   if (!ids.length) return new Map()
   const rows = getDatabase()
-    .prepare(`SELECT id, name, system_account_id FROM accounts WHERE id IN (${ids.map(() => '?').join(',')})`)
-    .all(...ids) as unknown as Array<{ id: string; name: string; system_account_id: string }>
-  return new Map(rows.map((row) => [row.id, { name: row.name, systemAccountId: row.system_account_id }]))
+    .prepare(`
+      SELECT members.system_account_id, teams.name
+      FROM system_team_members members
+      INNER JOIN system_teams teams ON teams.id = members.team_id
+      WHERE members.status = 'active'
+        AND members.system_account_id IN (${ids.map(() => '?').join(',')})
+      ORDER BY teams.name COLLATE NOCASE ASC, teams.id ASC
+    `)
+    .all(...ids) as unknown as Array<{ system_account_id: string; name: string }>
+  const result = new Map<string, string[]>()
+  for (const row of rows) {
+    const names = result.get(row.system_account_id) ?? []
+    names.push(row.name)
+    result.set(row.system_account_id, names)
+  }
+  return result
 }
 
-function loadAuthorizationResourceNameMap(rows: Array<{ resource_filter_type: ResourceAuthorizationResourceType; resource_filter_id: string }>): Map<string, string> {
-  const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_filter_type === 'account').map((row) => row.resource_filter_id))
-  const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_filter_type === 'group').map((row) => row.resource_filter_id))
-  const resourceNames = new Map<string, string>()
-  for (const [id, name] of accountNames) {
-    resourceNames.set(authorizationResourceKey('account', id), name)
+function userUsageTeamNames(
+  row: Pick<AuthorizationUserUsageReportRow, 'team_filter_id' | 'grantee_system_account_id'>,
+  teams: ReturnType<typeof loadTeamRowsByIds>,
+  memberships: ReturnType<typeof loadActiveTeamMembershipsBySystemAccountIds>
+): string[] {
+  if (row.team_filter_id) {
+    return [teams.get(row.team_filter_id)?.name ?? row.team_filter_id]
   }
-  for (const [id, name] of groupNames) {
-    resourceNames.set(authorizationResourceKey('group', id), name)
+  return memberships.get(row.grantee_system_account_id) ?? []
+}
+
+function loadAuthorizationResourceInfoMap(rows: Array<{ resource_filter_type: ResourceAuthorizationResourceType; resource_filter_id: string }>): Map<string, AuthorizationResourceInfo> {
+  const accountIds = [...new Set(rows.filter((row) => row.resource_filter_type === 'account').map((row) => row.resource_filter_id).filter(Boolean))]
+  const groupIds = [...new Set(rows.filter((row) => row.resource_filter_type === 'group').map((row) => row.resource_filter_id).filter(Boolean))]
+  const resources = new Map<string, AuthorizationResourceInfo>()
+  if (accountIds.length) {
+    const accountRows = getDatabase()
+      .prepare(`SELECT id, name, system_account_id FROM accounts WHERE id IN (${accountIds.map(() => '?').join(',')})`)
+      .all(...accountIds) as unknown as Array<{ id: string; name: string; system_account_id: string }>
+    for (const row of accountRows) {
+      resources.set(authorizationResourceKey('account', row.id), { name: row.name, ownerSystemAccountId: row.system_account_id })
+    }
   }
-  return resourceNames
+  if (groupIds.length) {
+    const groupRows = getDatabase()
+      .prepare(`SELECT id, name, system_account_id FROM groups WHERE id IN (${groupIds.map(() => '?').join(',')})`)
+      .all(...groupIds) as unknown as Array<{ id: string; name: string; system_account_id: string }>
+    for (const row of groupRows) {
+      resources.set(authorizationResourceKey('group', row.id), { name: row.name, ownerSystemAccountId: row.system_account_id })
+    }
+  }
+  return resources
 }
 
 function authorizationResourceKey(resourceType: ResourceAuthorizationResourceType, resourceId: string): string {
   return `${resourceType}:${resourceId}`
 }
 
-function loadHitAccountOwners(
-  rows: Array<{ hit_account_id: string; hit_account_owner_system_account_id: string }>,
-  hitAccounts: Map<string, { name: string; systemAccountId: string }>
-) {
-  return loadSystemAccountsByIds(rows.map((row) => {
-    const ownerFromRecord = row.hit_account_owner_system_account_id
-    if (ownerFromRecord) return ownerFromRecord
-    return row.hit_account_id ? hitAccounts.get(row.hit_account_id)?.systemAccountId ?? '' : ''
-  }))
+function loadAuthorizationResourceOwners(resources: Map<string, AuthorizationResourceInfo>) {
+  return loadSystemAccountsByIds([...resources.values()].map((resource) => resource.ownerSystemAccountId))
 }
 
-function hitAccountFields(
-  row: { hit_account_id: string; hit_account_owner_system_account_id: string },
-  hitAccounts: Map<string, { name: string; systemAccountId: string }>,
-  accountOwners: ReturnType<typeof loadSystemAccountsByIds>
-) {
-  const hitAccountId = row.hit_account_id
-  const hitAccount = hitAccountId ? hitAccounts.get(hitAccountId) : undefined
-  const ownerSystemAccountId = row.hit_account_owner_system_account_id || hitAccount?.systemAccountId
-  const owner = ownerSystemAccountId ? accountOwners.get(ownerSystemAccountId) : undefined
+function resourceOwnerFields(resource: AuthorizationResourceInfo | undefined, owners: ReturnType<typeof loadSystemAccountsByIds>) {
+  const ownerSystemAccountId = resource?.ownerSystemAccountId
+  const owner = ownerSystemAccountId ? owners.get(ownerSystemAccountId) : undefined
   return {
-    accountId: hitAccountId || undefined,
-    accountName: hitAccountId ? hitAccount?.name ?? hitAccountId : undefined,
     accountOwnerSystemAccountId: ownerSystemAccountId || undefined,
     accountOwnerSystemAccountName: ownerSystemAccountId ? owner?.displayName ?? owner?.username ?? ownerSystemAccountId : undefined
   }

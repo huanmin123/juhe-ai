@@ -38,9 +38,13 @@ export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
     .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
 }
 
-export function loadGroupAuthorizationUsageSummaries(scopes: UsageSummaryScopeRequest[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
+export function loadGroupAuthorizationUsageSummaries(
+  scopes: UsageSummaryScopeRequest[],
+  statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>,
+  scopeType: 'group_authorization' | 'group_authorization_team' = 'group_authorization'
+): Map<string, AccountUsageSummary> {
   if (statDateOrRange && typeof statDateOrRange !== 'string') {
-    return loadAuthorizationUsageRangeSummariesForScopes(scopes, 'group_authorization', statDateOrRange)
+    return loadAuthorizationUsageRangeSummariesForScopes(scopes, scopeType, statDateOrRange)
   }
-  return loadAuthorizationUsageSummariesForScopes(scopes, 'group_authorization', statDateOrRange)
+  return loadAuthorizationUsageSummariesForScopes(scopes, scopeType, statDateOrRange)
 }

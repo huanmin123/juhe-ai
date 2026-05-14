@@ -160,11 +160,15 @@ export function accountCredentialsForList(row: AccountListRow): Record<string, u
   return typeof credentials.base_url === 'string' && credentials.base_url ? { base_url: credentials.base_url } : {}
 }
 
-export function loadAccountAuthorizationUsageSummaries(scopes: UsageSummaryScopeRequest[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
+export function loadAccountAuthorizationUsageSummaries(
+  scopes: UsageSummaryScopeRequest[],
+  statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>,
+  scopeType: 'account_authorization' | 'account_authorization_team' = 'account_authorization'
+): Map<string, AccountUsageSummary> {
   if (statDateOrRange && typeof statDateOrRange !== 'string') {
-    return loadAuthorizationUsageRangeSummariesForScopes(scopes, 'account_authorization', statDateOrRange)
+    return loadAuthorizationUsageRangeSummariesForScopes(scopes, scopeType, statDateOrRange)
   }
-  return loadAuthorizationUsageSummariesForScopes(scopes, 'account_authorization', statDateOrRange)
+  return loadAuthorizationUsageSummariesForScopes(scopes, scopeType, statDateOrRange)
 }
 
 function groupBindingSelectColumns(): string {
