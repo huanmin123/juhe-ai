@@ -105,15 +105,15 @@
           <template v-if="column.key === 'team'">
             <div class="authorization-usage-name-cell">
               <span class="authorization-usage-name">{{ record.teamName }}</span>
-              <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
             </div>
           </template>
           <template v-else-if="column.key === 'usage'">
             <UsageSummaryTags :usage="record.usage" />
           </template>
           <template v-else-if="column.key === 'account'">
-            <div class="authorization-usage-user-cell">
-              <span class="authorization-usage-name">{{ record.accountName || record.accountId || '-' }}</span>
+            <div class="authorization-usage-resource-cell">
+              <span class="authorization-usage-name">{{ resourceDisplayName(record) }}</span>
+              <a-tag v-if="record.resourceType" :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
             </div>
           </template>
           <template v-else-if="column.key === 'accountOwner'">
@@ -132,9 +132,6 @@
           <article class="mobile-list-card">
             <div class="mobile-list-card-head">
               <div class="mobile-list-card-title">{{ record.teamName }}</div>
-              <div class="mobile-list-card-tags">
-                <a-tag :color="record.status === 'active' ? 'green' : 'default'">{{ record.status === 'active' ? '启用' : '停用' }}</a-tag>
-              </div>
             </div>
             <div class="mobile-list-meta-grid">
               <div class="mobile-list-meta-item mobile-list-meta-wide">
@@ -143,7 +140,10 @@
               </div>
               <div class="mobile-list-meta-item">
                 <span>资源名称</span>
-                <strong>{{ record.accountName || record.accountId || '-' }}</strong>
+                <strong class="authorization-usage-resource-cell">
+                  <span>{{ resourceDisplayName(record) }}</span>
+                  <a-tag v-if="record.resourceType" :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
+                </strong>
               </div>
               <div class="mobile-list-meta-item">
                 <span>资源归属人</span>
@@ -176,7 +176,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import type { AccountSummary, AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, GroupSummary, SystemTeamSummary } from '@/types/domain'
+import type { AccountSummary, AuthorizationResourceType, AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, GroupSummary, SystemTeamSummary } from '@/types/domain'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import {
   emptyUsageSummary,
@@ -313,6 +313,16 @@ function handleTeamAction(key: string, row: AuthorizationTeamUsageRow) {
   })
 }
 
+function resourceTypeTag(resourceType: AuthorizationResourceType) {
+  return resourceType === 'group'
+    ? { text: '分组', color: 'purple' }
+    : { text: 'AI账户', color: 'blue' }
+}
+
+function resourceDisplayName(row: AuthorizationTeamUsageRow): string {
+  return row.resourceName || row.resourceId || row.accountName || row.accountId || '-'
+}
+
 function handleResourceTypeChange() {
   filters.resourceId = undefined
   void loadData()
@@ -427,6 +437,19 @@ onMounted(loadData)
   align-items: center;
   max-width: 100%;
   gap: 8px;
+}
+
+.authorization-usage-resource-cell {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 8px;
+  min-width: 0;
+}
+
+.authorization-usage-resource-cell :deep(.ant-tag) {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
 }
 
 .authorization-usage-name {

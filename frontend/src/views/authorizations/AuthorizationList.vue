@@ -16,8 +16,8 @@
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'resource'">
         <div class="resource-cell">
-          <a-tag :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
           <span class="resource-name">{{ record.resourceName || record.resourceId }}</span>
+          <a-tag :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
         </div>
       </template>
       <template v-else-if="column.key === 'direction'">

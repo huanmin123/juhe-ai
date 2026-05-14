@@ -107,6 +107,9 @@ export interface AuthorizationTeamUsageRow {
   teamId: string
   teamName: string
   status: TeamStatus
+  resourceType?: AuthorizationResourceType
+  resourceId?: string
+  resourceName?: string
   accountId?: string
   accountName?: string
   accountOwnerSystemAccountId?: string
@@ -127,6 +130,9 @@ export interface AuthorizationUserUsageRow {
   systemAccountId: string
   userName: string
   username?: string
+  resourceType?: AuthorizationResourceType
+  resourceId?: string
+  resourceName?: string
   accountId?: string
   accountName?: string
   accountOwnerSystemAccountId?: string

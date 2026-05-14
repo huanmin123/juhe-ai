@@ -66,7 +66,7 @@
       </div>
     </a-card>
 
-    <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" />
+    <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" compact />
 
     <StatsChartCard
       :title="`账户每日消耗趋势（${rangeLabel}）`"
@@ -91,12 +91,13 @@
         :mobile-data-source="rows"
         row-key="id"
         :loading="loading"
-        :pagination="false"
+        :pagination="tablePagination"
         :scroll-x="tableScrollX"
         :table-scroll-enabled="false"
         :lock-body-scroll="false"
         pull-refresh-enabled
         :refreshing="mobileRefreshing"
+        @change="handleTableChange"
         @mobile-refresh="refreshMobileRows"
       >
         <template #emptyText>
@@ -217,6 +218,7 @@ type UsageStatsPageState = {
 }
 
 const MAX_RANGE_DAYS = 31
+const accountUsagePageSize = 10
 const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
   code: 'openai',
@@ -266,6 +268,11 @@ const selectedTrendAccountIds = ref<string[]>([])
 const addedTrendAccountIds = ref<string[]>([])
 const accountPickerValue = ref<string[]>([])
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const accountUsagePagination = reactive({
+  current: 1,
+  pageSize: accountUsagePageSize,
+  total: 0
+})
 
 const trendChartRef = ref<HTMLDivElement>()
 const trendChart = shallowRef<ECharts>()
@@ -296,6 +303,14 @@ const hasSelectedTrendAccounts = computed(() => selectedTrendAccountIds.value.le
 const trendEmptyDescription = computed(() => visibleTrendRows.value.length ? `${rangeLabel.value} 暂无${metricText(selectedMetric.value)}消耗趋势` : '暂无可展示账户')
 const hasTrendData = computed(() => visibleTrendRows.value.some((row) => row.dailyUsage.some((point) => metricValue(point, selectedMetric.value) > 0)))
 const tableScrollX = computed(() => isManagementView.value ? 1180 : 1040)
+const tablePagination = computed(() => ({
+  current: accountUsagePagination.current,
+  pageSize: accountUsagePagination.pageSize,
+  total: accountUsagePagination.total,
+  hideOnSinglePage: false,
+  showSizeChanger: false,
+  showTotal: (total: number) => `共 ${formatInteger(total)} 条`
+}))
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '排名', key: 'rank', width: 76 },
@@ -348,6 +363,9 @@ async function loadData(options: { quiet?: boolean; forceOptions?: boolean } = {
       loadUsageStatsOptions(options.forceOptions === true)
     ])
     overview.value = usageOverview
+    accountUsagePagination.current = usageOverview.page
+    accountUsagePagination.pageSize = usageOverview.pageSize || accountUsagePageSize
+    accountUsagePagination.total = usageOverview.total
     pruneSelectedTrendAccounts(usageOverview.rows)
   } catch (error) {
     console.error(error)
@@ -384,6 +402,7 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
 }
 
 function refreshUsageStats() {
+  accountUsagePagination.current = 1
   void loadData({ forceOptions: true })
 }
 
@@ -395,11 +414,15 @@ function resetFilters() {
   selectedTrendAccountIds.value = []
   addedTrendAccountIds.value = []
   accountPickerValue.value = []
+  accountUsagePagination.current = 1
+  accountUsagePagination.pageSize = accountUsagePageSize
+  accountUsagePagination.total = 0
   pageStateCache.clear()
   void loadData({ forceOptions: true })
 }
 
 function handleSystemAccountFilterChange() {
+  accountUsagePagination.current = 1
   void loadData()
 }
 
@@ -417,7 +440,9 @@ function accountUsageParams(systemAccountId?: string) {
   return {
     systemAccountId,
     startDate,
-    endDate
+    endDate,
+    page: accountUsagePagination.current,
+    pageSize: accountUsagePagination.pageSize
   }
 }
 
@@ -426,7 +451,17 @@ function handleDateRangeChange() {
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
+  accountUsagePagination.current = 1
   void loadData()
+}
+
+function handleTableChange(paginationInfo: unknown) {
+  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
+  const nextCurrent = Number(next.current)
+  const nextPageSize = Number(next.pageSize)
+  accountUsagePagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
+  accountUsagePagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : accountUsagePageSize
+  void loadData({ quiet: true })
 }
 
 function handleCalendarChange(value: Array<Dayjs | null> | null) {

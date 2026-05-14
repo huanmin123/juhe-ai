@@ -884,7 +884,8 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
     defaultTrendAccountIds,
     loadUsageDailySeries: loadUsageDailySeriesForScopeRequests
   })
-  const sortedRows = [...overview.rows].sort(compareAccountUsageStatsRows)
+  const usageRows = overview.rows.filter(hasAccountUsageInRange)
+  const sortedRows = usageRows.sort(compareAccountUsageStatsRows)
   const defaultTrendAccountIdsForScope = allAccountsDefaultTrendAccountIds(access, sortedRows) ?? defaultTrendAccountIds
   if (options?.page === undefined && options?.pageSize === undefined && options?.limit === undefined) {
     return {
@@ -932,6 +933,13 @@ function compareAccountUsageStatsRows(left: AccountUsageStatsOverview['rows'][nu
   const leftLastUsed = left.rangeUsage.lastUsedAt ? Date.parse(left.rangeUsage.lastUsedAt) : 0
   if (rightLastUsed !== leftLastUsed) return rightLastUsed - leftLastUsed
   return left.name.localeCompare(right.name, 'zh-CN') || left.id.localeCompare(right.id)
+}
+
+function hasAccountUsageInRange(row: AccountUsageStatsOverview['rows'][number]): boolean {
+  return row.rangeUsage.requestCount > 0
+    || row.rangeUsage.totalTokens > 0
+    || row.rangeUsage.totalCost > 0
+    || Boolean(row.rangeUsage.lastUsedAt)
 }
 
 function loadAccountUsageDefaultTrendAccountIds(access?: AccessScope): string[] {

@@ -122,8 +122,9 @@
             </div>
           </template>
           <template v-else-if="column.key === 'account'">
-            <div class="authorization-usage-user-cell">
-              <span class="authorization-usage-name">{{ record.accountName || record.accountId || '-' }}</span>
+            <div class="authorization-usage-resource-cell">
+              <span class="authorization-usage-name">{{ resourceDisplayName(record) }}</span>
+              <a-tag v-if="record.resourceType" :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
             </div>
           </template>
           <template v-else-if="column.key === 'accountOwner'">
@@ -153,7 +154,10 @@
               </div>
               <div class="mobile-list-meta-item">
                 <span>资源名称</span>
-                <strong>{{ record.accountName || record.accountId || '-' }}</strong>
+                <strong class="authorization-usage-resource-cell">
+                  <span>{{ resourceDisplayName(record) }}</span>
+                  <a-tag v-if="record.resourceType" :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
+                </strong>
               </div>
               <div class="mobile-list-meta-item">
                 <span>资源归属人</span>
@@ -183,7 +187,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import type { AccountSummary, AuthorizationUserUsageOverview, AuthorizationUserUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
+import type { AccountSummary, AuthorizationResourceType, AuthorizationUserUsageOverview, AuthorizationUserUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import {
   emptyUsageSummary,
@@ -312,6 +316,16 @@ async function loadData() {
   } finally {
     loading.value = false
   }
+}
+
+function resourceTypeTag(resourceType: AuthorizationResourceType) {
+  return resourceType === 'group'
+    ? { text: '分组', color: 'purple' }
+    : { text: 'AI账户', color: 'blue' }
+}
+
+function resourceDisplayName(row: AuthorizationUserUsageRow): string {
+  return row.resourceName || row.resourceId || row.accountName || row.accountId || '-'
 }
 
 function handleResourceTypeChange() {
@@ -455,6 +469,19 @@ onMounted(() => {
   display: grid;
   gap: 3px;
   min-width: 0;
+}
+
+.authorization-usage-resource-cell {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  gap: 8px;
+  min-width: 0;
+}
+
+.authorization-usage-resource-cell :deep(.ant-tag) {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
 }
 
 .authorization-usage-name {
