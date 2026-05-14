@@ -313,14 +313,22 @@ function handleCreateOwnerChange() {
 }
 
 async function loadCreateOwnerResources() {
-  if (!isManagementView.value) return
-  const systemAccountId = createForm.ownerSystemAccountId
   createAccounts.value = []
   createGroups.value = []
-  if (!systemAccountId) return
+  const accountRequest = isManagementView.value
+    ? createForm.ownerSystemAccountId
+      ? api.accounts.list({ systemAccountId: createForm.ownerSystemAccountId, limit: 200 })
+      : undefined
+    : api.myAccounts.list({ limit: 200 })
+  const groupRequest = isManagementView.value
+    ? createForm.ownerSystemAccountId
+      ? api.groups.list({ systemAccountId: createForm.ownerSystemAccountId })
+      : undefined
+    : api.myGroups.list()
+  if (!accountRequest || !groupRequest) return
   const [accountResult, groupResult] = await Promise.allSettled([
-    api.accounts.list({ systemAccountId, limit: 200 }),
-    api.groups.list({ systemAccountId })
+    accountRequest,
+    groupRequest
   ])
   if (accountResult.status === 'fulfilled') {
     createAccounts.value = accountResult.value.items
@@ -397,7 +405,7 @@ const createAuthorization = submitAction('authorizations.create', async () => {
       await api.myAuthorizations.create(payload)
     }
     createModalOpen.value = false
-    message.success(createForm.granteeType === 'team' ? '团队授权已创建，成员会自动展开为用户授权' : '授权已创建')
+    message.success(createForm.granteeType === 'team' ? '团队授权已创建' : '授权已创建')
     await loadData()
   } catch (error) {
     console.error(error)
@@ -435,6 +443,21 @@ async function revokeTeamSource(item: ResourceAuthorizationSummary, sourceTeamId
   }
 }
 
+async function revokeAuthorization(item: ResourceAuthorizationSummary) {
+  try {
+    if (isManagementView.value) {
+      await api.authorizations.revoke(item.id, undefined, authorizationScopeParams.value)
+    } else {
+      await api.myAuthorizations.revoke(item.id)
+    }
+    message.success(item.granteeType === 'team' ? '团队授权已收回' : '授权已收回')
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, item.granteeType === 'team' ? '收回团队授权失败' : '收回授权失败'))
+  }
+}
+
 function handleActionMenuClick(event: { key: string | number }, item: ResourceAuthorizationSummary) {
   const key = String(event.key)
   if (key === 'edit-expire') {
@@ -451,6 +474,10 @@ function handleActionMenuClick(event: { key: string | number }, item: ResourceAu
   }
   if (key === 'revoke-manual') {
     void revokeManualSource(item)
+    return
+  }
+  if (key === 'revoke-team-grant') {
+    void revokeAuthorization(item)
     return
   }
   if (key.startsWith('team:')) {

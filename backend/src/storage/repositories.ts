@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { hasAccountQualityScoreSort, normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
@@ -23,7 +23,7 @@ import { resolveEnabledProxyProfileId } from './proxy.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap, loadSystemAccountsByIds, loadSystemTeamNameMap } from './repository-lookups.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
-import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow, TeamResourceAuthorizationGrantRow } from './repository-row-types.js'
+import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
@@ -440,19 +440,24 @@ function disableExpiredAccounts(access?: AccessScope): void {
 export function expireDueResourceAuthorizations(): number {
   const now = nowIso()
   const database = getDatabase()
-  const result = database
+  const dueGrants = database
+    .prepare("SELECT * FROM resource_authorization_grants WHERE status IN ('active', 'paused') AND expires_at IS NOT NULL AND expires_at <= ?")
+    .all(now) as unknown as ResourceAuthorizationGrantRow[]
+  const grantResult = database
     .prepare(`
-      UPDATE resource_authorizations
+      UPDATE resource_authorization_grants
       SET status = 'expired',
           revoked_at = COALESCE(revoked_at, ?),
-          revoked_reason = 'authorization_expired',
           updated_at = ?
       WHERE status IN ('active', 'paused')
         AND expires_at IS NOT NULL
         AND expires_at <= ?
     `)
     .run(now, now, now)
-  const changed = Number(result.changes ?? 0)
+  for (const grant of dueGrants) {
+    syncResourceAuthorizationGrantRuntime({ ...grant, status: 'expired', revoked_at: grant.revoked_at ?? now, updated_at: now }, grant.revoked_by ?? grant.created_by, database, now)
+  }
+  const changed = Number(grantResult.changes ?? 0)
   if (changed > 0) {
     cleanupInactiveAuthorizationBindings(database)
   }
@@ -470,6 +475,10 @@ function normalizeAccountStatus(value: unknown, fallback: AccountStatus): Accoun
 
 function isCoolingAccountStatus(status: AccountStatus): boolean {
   return coolingAccountStatusValues.includes(status)
+}
+
+function isHardUnavailableAccountStatus(status: AccountStatus): boolean {
+  return status === 'disabled' || status === 'error'
 }
 
 function boolInt(value: unknown, fallback: boolean): number {
@@ -1085,7 +1094,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     proxyProfileId,
     passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
-    schedulable: expiredByPackage ? false : input.schedulable !== false,
+    schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus) ? false : input.schedulable !== false,
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
     lastErrorCode: undefined,
@@ -1193,6 +1202,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
   const requestedStatus = hasStatusInput ? normalizeAccountStatus(input.status, current.status) : current.status
+  if (hasStatusInput && current.status === 'error' && requestedStatus !== 'error') {
+    throw new Error('异常账户不能通过编辑切换状态，请使用恢复异常')
+  }
   if (hasStatusInput && requestedStatus === 'active' && (isCoolingAccountStatus(current.status) || current.status === 'error')) {
     throw new Error('临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用恢复正常或恢复异常')
   }
@@ -1266,10 +1278,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       : current.proxyProfileId,
     passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: rawErrorPolicyId === undefined ? current.errorPolicyId : optionalString(rawErrorPolicyId),
-    schedulable: expiredByPackage
+    schedulable: expiredByPackage || isHardUnavailableAccountStatus(nextStatus)
       ? false
       : hasStatusInput
-        ? !['disabled', 'error'].includes(nextStatus)
+        ? true
         : typeof input.schedulable === 'boolean'
           ? input.schedulable
           : current.schedulable,
@@ -1415,7 +1427,7 @@ export function clearAccountStreamFailureState(id: string): boolean {
           END,
           updated_at = ?
       WHERE id = ?
-        AND status <> 'disabled'
+        AND status NOT IN ('disabled', 'error')
         AND (
           stream_failure_count > 0
           OR stream_failure_window_started_at IS NOT NULL
@@ -1432,7 +1444,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
   if (!current) {
     return undefined
   }
-  if (current.status === 'disabled') {
+  if (isHardUnavailableAccountStatus(current.status)) {
     return undefined
   }
 
@@ -1728,6 +1740,10 @@ export function markAccountException(
 }
 
 export function markAccountDisabledByFailure(id: string, reason: string): AccountSummary | undefined {
+  const current = listAccounts().find((account) => account.id === id)
+  if (!current || current.status === 'error') {
+    return undefined
+  }
   return markAccountException(id, 'upstream_failure', reason)
 }
 
@@ -1743,7 +1759,7 @@ export function recordAccountStreamFailure(input: {
   if (!row) {
     return { count: 0, triggered: false }
   }
-  if (row.status === 'disabled') {
+  if (isHardUnavailableAccountStatus(row.status)) {
     return { count: Math.max(0, row.stream_failure_count), triggered: false, account: listAccounts().find((item) => item.id === input.accountId) }
   }
 
@@ -2155,58 +2171,11 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
 
 export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   expireDueResourceAuthorizations()
-  const clauses: string[] = []
-  const params: Array<string | number | null> = []
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const authorizationId = optionalString(filters.id ?? filters.authorizationId ?? filters.authorization_id)
-  if (authorizationId) { clauses.push('ra.id = ?'); params.push(authorizationId) }
-  const resourceType = normalizeResourceType(filters.resourceType ?? filters.resource_type)
-  if (resourceType) { clauses.push('ra.resource_type = ?'); params.push(resourceType) }
-  const resourceId = optionalString(filters.resourceId ?? filters.resource_id)
-  if (resourceId) { clauses.push('ra.resource_id = ?'); params.push(resourceId) }
-  const granteeSystemAccountId = optionalString(filters.granteeSystemAccountId ?? filters.grantee_system_account_id)
-  if (granteeSystemAccountId) { clauses.push('ra.grantee_system_account_id = ?'); params.push(granteeSystemAccountId) }
-  const status = filters.status === 'active'
-    ? 'active'
-    : filters.status === 'paused'
-      ? 'paused'
-      : filters.status === 'expired'
-        ? 'expired'
-        : filters.status === 'revoked'
-          ? 'revoked'
-          : undefined
-  if (status) { clauses.push('ra.status = ?'); params.push(status) }
-  const teamId = optionalString(filters.teamId ?? filters.team_id)
-  if (teamId) {
-    if (!canAccessAll(access)) {
-      clauses.push('EXISTS (SELECT 1 FROM system_team_members stm WHERE stm.team_id = ? AND stm.system_account_id = ? AND stm.status = \'active\')')
-      params.push(teamId, currentSystemAccountId(access))
-    }
-    clauses.push("EXISTS (SELECT 1 FROM resource_authorization_sources ras WHERE ras.authorization_id = ra.id AND ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active')")
-    params.push(teamId)
-  }
-  const ownerSystemAccountId = optionalString(filters.resourceOwnerSystemAccountId ?? filters.resource_owner_system_account_id)
-  if (ownerSystemAccountId) {
-    clauses.push('ra.resource_owner_system_account_id = ?')
-    params.push(ownerSystemAccountId)
-  }
-  const scopeSystemAccountId = scopedSystemAccountId(access)
-  if (scopeSystemAccountId) {
-    clauses.push('(ra.resource_owner_system_account_id = ? OR ra.grantee_system_account_id = ?)')
-    params.push(scopeSystemAccountId, scopeSystemAccountId)
-  } else if (!canAccessAll(access)) {
-    clauses.push('(ra.resource_owner_system_account_id = ? OR ra.grantee_system_account_id = ?)')
-    params.push(currentSystemAccountId(access), currentSystemAccountId(access))
-  }
-  const direction = authorizationDirectionFilter(filters.direction)
-  const directionSystemAccountId = scopeSystemAccountId ?? (!canAccessAll(access) ? currentSystemAccountId(access) : undefined)
-  if (direction && directionSystemAccountId) {
-    clauses.push(direction === 'outbound' ? 'ra.resource_owner_system_account_id = ?' : 'ra.grantee_system_account_id = ?')
-    params.push(directionSystemAccountId)
-  }
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
-  const rows = getDatabase().prepare(`SELECT ra.* FROM resource_authorizations ra ${where} ORDER BY CASE ra.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, ra.updated_at DESC, ra.created_at DESC, ra.id DESC`).all(...params) as unknown as ResourceAuthorizationRow[]
-  return resourceAuthorizationSummaries(rows, options.usageRange).map((summary) => withResourceAuthorizationPermissions(
+  const grantRows = listResourceAuthorizationGrantOperationRows(filters, access)
+  const summaries = resourceAuthorizationGrantSummaries(grantRows, options.usageRange)
+    .sort(compareResourceAuthorizationOperations)
+  return summaries.map((summary) => withResourceAuthorizationPermissions(
     sanitizeResourceAuthorizationSummaryForAccess(summary, access),
     viewerSystemAccountId,
     access
@@ -2225,7 +2194,7 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
   const database = getDatabase()
   const now = nowIso()
   const actor = currentSystemAccountId(access)
-  const createdIds: string[] = []
+  let createdGrantId: string | undefined
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     if (granteeType === 'team') {
@@ -2233,17 +2202,18 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
       if (!team) throw new Error('团队不存在或已停用')
       const members = activeTeamMemberRows(granteeId, database).filter((member) => member.system_account_id !== ownerSystemAccountId)
       if (!members.length) throw new Error('团队暂无可授权成员，请先添加非归属人成员后再授权')
-      upsertTeamResourceGrant({ resourceType, resourceId, ownerSystemAccountId, teamId: granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      createdGrantId = grant.id
       for (const member of members) {
-        const authorization = upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
-        createdIds.push(authorization.id)
+        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
       }
     } else {
       const grantee = findSystemAccountById(granteeId)
       if (!grantee || grantee.status !== 'active') throw new Error('被授权用户不存在或已停用')
       if (granteeId === ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
-      const authorization = upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
-      createdIds.push(authorization.id)
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      createdGrantId = grant.id
+      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -2251,110 +2221,91 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
-  const ids = [...new Set(createdIds)]
-  const created = ids.length ? listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === ids[0]) : undefined
+  const created = createdGrantId ? listResourceAuthorizations({ id: createdGrantId, status: 'all' }, access)[0] : undefined
   if (created) return created
-  const fallback = listResourceAuthorizations({ resourceType, resourceId, teamId: granteeType === 'team' ? granteeId : undefined, status: 'all' }, access)[0]
+  const fallback = listResourceAuthorizations({ resourceType, resourceId, granteeSystemAccountId: granteeType === 'system_account' ? granteeId : undefined, teamId: granteeType === 'team' ? granteeId : undefined, status: 'all' }, access)[0]
   if (!fallback) throw new Error('创建资源授权失败')
   return fallback
 }
 
 export function revokeResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {
   const database = getDatabase()
-  const row = database.prepare('SELECT * FROM resource_authorizations WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
-  if (!row || !canManageResourceOwner(row.resource_owner_system_account_id, access)) return undefined
+  const grant = database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationGrantRow | undefined
+  if (!grant || !canManageResourceOwner(grant.resource_owner_system_account_id, access)) return undefined
   const now = nowIso()
   const actor = currentSystemAccountId(access)
-  const revokeAll = input.revokeAll === true || input.revoke_all === true
-  const sourceType = normalizeSourceType(input.sourceType ?? input.source_type)
-  const sourceTeamId = optionalString(input.sourceTeamId ?? input.source_team_id ?? input.teamId ?? input.team_id)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    if (revokeAll || !sourceType) {
-      database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'authorization_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND status IN ('active', 'superseded')").run(now, actor, now, now, authorizationId)
-      database.prepare("UPDATE resource_authorizations SET status = 'revoked', effective_source_type = NULL, effective_source_team_id = NULL, revoked_by = ?, revoked_at = ?, revoked_reason = 'authorization_revoked', last_source_changed_at = ?, updated_at = ? WHERE id = ?").run(actor, now, now, now, authorizationId)
-      cleanupInactiveAuthorizationBindings(database)
-    } else {
-      const params: Array<string | number | null> = [actor, now, now, authorizationId, sourceType]
-      let sql = "UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'source_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = ? AND status = 'active'"
-      params.unshift(now)
-      if (sourceType === 'team') { sql += ' AND source_team_id = ?'; params.push(sourceTeamId ?? '') }
-      database.prepare(sql).run(...params)
-      if (sourceType === 'team' && sourceTeamId) {
-        database
-          .prepare("UPDATE team_resource_authorization_grants SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE resource_type = ? AND resource_id = ? AND team_id = ? AND status = 'active'")
-          .run(actor, now, now, row.resource_type, row.resource_id, sourceTeamId)
-        revokeTeamGrantSources(row.resource_type, row.resource_id, sourceTeamId, actor, database, now)
-      }
-      refreshResourceAuthorizationEffectiveSource(authorizationId, actor, now, database)
-    }
+    revokeResourceAuthorizationGrant(grant, actor, database, now)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
-  return listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
+  return listResourceAuthorizations({ id: authorizationId, status: 'all' }, access)[0]
 }
 
 export function updateResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {
   expireDueResourceAuthorizations()
   const database = getDatabase()
-  const row = database.prepare('SELECT * FROM resource_authorizations WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
-  if (!row || !canManageResourceOwner(row.resource_owner_system_account_id, access)) return undefined
+  const grant = database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationGrantRow | undefined
+  if (!grant || !canManageResourceOwner(grant.resource_owner_system_account_id, access)) return undefined
   const now = nowIso()
   const hasExpiresAtInput = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
     || Object.prototype.hasOwnProperty.call(input, 'expires_at')
   const hasLimitsInput = Object.prototype.hasOwnProperty.call(input, 'limits')
   const nextExpiresAt = hasExpiresAtInput
     ? optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at)
-    : row.expires_at
+    : grant.expires_at
   const nextLimits = hasLimitsInput
     ? requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
-    : row.limits_json
+    : grant.limits_json
   const rawStatus = optionalString(input.status)
   const requestedStatus = rawStatus === 'active' || rawStatus === 'paused' || rawStatus === 'expired' || rawStatus === 'revoked'
     ? rawStatus
     : undefined
-  if (row.status === 'revoked' && requestedStatus === 'active') {
+  if (grant.status === 'revoked' && requestedStatus === 'active') {
     throw new Error('已回收授权不能直接恢复，请重新新增授权')
+  }
+  if (grant.status === 'expired' && requestedStatus === 'active' && !hasExpiresAtInput) {
+    throw new Error('到期授权恢复时请同时调整过期时间')
   }
   const expiredByTime = isResourceAuthorizationExpired(nextExpiresAt)
   const nextStatus: AuthorizationStatus = expiredByTime
     ? 'expired'
     : requestedStatus === 'active' || requestedStatus === 'paused'
       ? requestedStatus
-      : row.status === 'expired' && hasExpiresAtInput
+      : grant.status === 'expired' && hasExpiresAtInput
         ? 'active'
-        : row.status === 'paused'
+        : grant.status === 'paused'
           ? 'paused'
-        : row.status
-  const nextRevokedReason = nextStatus === 'expired'
-    ? 'authorization_expired'
-    : nextStatus === 'paused'
-      ? 'authorization_paused'
-      : nextStatus === 'revoked'
-        ? row.revoked_reason ?? 'authorization_revoked'
-        : null
-  const nextRevokedAt = nextStatus === 'active' || nextStatus === 'paused' ? null : row.revoked_at ?? now
-  const nextRevokedBy = nextStatus === 'active' || nextStatus === 'paused' ? null : row.revoked_by ?? currentSystemAccountId(access)
+        : grant.status
+  const nextRevokedAt = nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_at ?? now
+  const nextRevokedBy = nextStatus === 'active' || nextStatus === 'paused' ? null : grant.revoked_by ?? currentSystemAccountId(access)
 
-  database
-    .prepare(`
-      UPDATE resource_authorizations
-      SET status = ?,
-          expires_at = ?,
-          revoked_by = ?,
-          revoked_at = ?,
-          revoked_reason = ?,
-          limits_json = ?,
-          updated_at = ?
-      WHERE id = ?
-    `)
-    .run(nextStatus, nextExpiresAt, nextRevokedBy, nextRevokedAt, nextRevokedReason, nextLimits, now, authorizationId)
-  updateEffectiveTeamGrantLimits(row, nextLimits, database, now)
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    database
+      .prepare(`
+        UPDATE resource_authorization_grants
+        SET status = ?,
+            expires_at = ?,
+            revoked_by = ?,
+            revoked_at = ?,
+            limits_json = ?,
+            updated_at = ?
+        WHERE id = ?
+      `)
+      .run(nextStatus, nextExpiresAt, nextRevokedBy, nextRevokedAt, nextLimits, now, authorizationId)
+    syncResourceAuthorizationGrantRuntime({ ...grant, status: nextStatus, expires_at: nextExpiresAt, limits_json: nextLimits, revoked_by: nextRevokedBy, revoked_at: nextRevokedAt, updated_at: now }, currentSystemAccountId(access), database, now)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
   cleanupInactiveAuthorizationBindings(database)
-  return listResourceAuthorizations({ status: 'all' }, access).find((item) => item.id === authorizationId)
+  return listResourceAuthorizations({ id: authorizationId, status: 'all' }, access)[0]
 }
 
 export function getResourceAuthorizationUsage(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): ResourceAuthorizationSummary | undefined {
@@ -2420,6 +2371,12 @@ function authorizationDirectionFilter(value: unknown): 'outbound' | 'inbound' | 
   return value === 'outbound' || value === 'inbound' ? value : undefined
 }
 
+function authorizationStatusFilter(value: unknown): AuthorizationStatus | undefined {
+  return value === 'active' || value === 'paused' || value === 'expired' || value === 'revoked'
+    ? value
+    : undefined
+}
+
 function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourceType, resourceId: string): string | undefined {
   return resourceType === 'account' ? accountSystemAccountId(resourceId) : groupOwnerAndProvider(resourceId)?.systemAccountId
 }
@@ -2436,6 +2393,93 @@ function activeTeamMemberRows(teamId: string, database = getDatabase()): SystemT
   `).all(teamId) as unknown as SystemTeamMemberRow[]
 }
 
+function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationGrantRow[] {
+  const clauses: string[] = []
+  const params: Array<string | number | null> = []
+  const grantId = optionalString(filters.id ?? filters.authorizationId ?? filters.authorization_id)
+  if (grantId) { clauses.push('rag.id = ?'); params.push(grantId) }
+  const resourceType = normalizeResourceType(filters.resourceType ?? filters.resource_type)
+  if (resourceType) { clauses.push('rag.resource_type = ?'); params.push(resourceType) }
+  const resourceId = optionalString(filters.resourceId ?? filters.resource_id)
+  if (resourceId) { clauses.push('rag.resource_id = ?'); params.push(resourceId) }
+  const granteeSystemAccountId = optionalString(filters.granteeSystemAccountId ?? filters.grantee_system_account_id)
+  if (granteeSystemAccountId) {
+    clauses.push('rag.grantee_type = ?')
+    params.push('system_account')
+    clauses.push('rag.grantee_system_account_id = ?')
+    params.push(granteeSystemAccountId)
+  }
+  const status = authorizationStatusFilter(filters.status)
+  if (status) { clauses.push('rag.status = ?'); params.push(status) }
+  const teamId = optionalString(filters.teamId ?? filters.team_id)
+  if (teamId) {
+    if (!canAccessAll(access)) {
+      clauses.push('EXISTS (SELECT 1 FROM system_team_members stm_scope WHERE stm_scope.team_id = ? AND stm_scope.system_account_id = ? AND stm_scope.status = \'active\')')
+      params.push(teamId, currentSystemAccountId(access))
+    }
+    clauses.push('rag.grantee_type = ?')
+    params.push('team')
+    clauses.push('rag.grantee_team_id = ?')
+    params.push(teamId)
+  }
+  const ownerSystemAccountId = optionalString(filters.resourceOwnerSystemAccountId ?? filters.resource_owner_system_account_id)
+  if (ownerSystemAccountId) {
+    clauses.push('rag.resource_owner_system_account_id = ?')
+    params.push(ownerSystemAccountId)
+  }
+  const scopeSystemAccountId = scopedSystemAccountId(access)
+  if (scopeSystemAccountId) {
+    clauses.push(`(rag.resource_owner_system_account_id = ? OR rag.grantee_system_account_id = ? OR EXISTS (
+      SELECT 1
+      FROM system_team_members stm_scope
+      WHERE stm_scope.team_id = rag.grantee_team_id
+        AND stm_scope.system_account_id = ?
+        AND stm_scope.status = 'active'
+    ))`)
+    params.push(scopeSystemAccountId, scopeSystemAccountId, scopeSystemAccountId)
+  } else if (!canAccessAll(access)) {
+    clauses.push(`(rag.resource_owner_system_account_id = ? OR rag.grantee_system_account_id = ? OR EXISTS (
+      SELECT 1
+      FROM system_team_members stm_scope
+      WHERE stm_scope.team_id = rag.grantee_team_id
+        AND stm_scope.system_account_id = ?
+        AND stm_scope.status = 'active'
+    ))`)
+    params.push(currentSystemAccountId(access), currentSystemAccountId(access), currentSystemAccountId(access))
+  }
+  const direction = authorizationDirectionFilter(filters.direction)
+  const directionSystemAccountId = scopeSystemAccountId ?? (!canAccessAll(access) ? currentSystemAccountId(access) : undefined)
+  if (direction && directionSystemAccountId) {
+    if (direction === 'outbound') {
+      clauses.push('rag.resource_owner_system_account_id = ?')
+      params.push(directionSystemAccountId)
+    } else {
+      clauses.push(`(rag.grantee_system_account_id = ? OR EXISTS (
+        SELECT 1
+        FROM system_team_members stm_direction
+        WHERE stm_direction.team_id = rag.grantee_team_id
+          AND stm_direction.system_account_id = ?
+          AND stm_direction.status = 'active'
+      ))`)
+      params.push(directionSystemAccountId, directionSystemAccountId)
+    }
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
+  return getDatabase().prepare(`SELECT rag.* FROM resource_authorization_grants rag ${where} ORDER BY CASE rag.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, rag.updated_at DESC, rag.created_at DESC, rag.id DESC`).all(...params) as unknown as ResourceAuthorizationGrantRow[]
+}
+
+function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationGrantRow, database = getDatabase()): ResourceAuthorizationRow | undefined {
+  if (!row.grantee_system_account_id) return undefined
+  return database.prepare(`
+    SELECT *
+    FROM resource_authorizations
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND grantee_system_account_id = ?
+    LIMIT 1
+  `).get(row.resource_type, row.resource_id, row.grantee_system_account_id) as unknown as ResourceAuthorizationRow | undefined
+}
+
 function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
   if (input.granteeSystemAccountId === input.ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
   const existing = input.database.prepare('SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1').get(input.resourceType, input.resourceId, input.granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
@@ -2448,7 +2492,7 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
   const existingStatus = existing?.status
   const nextStatus: AuthorizationStatus = isResourceAuthorizationExpired(nextExpiresAt)
     ? 'expired'
-    : existingStatus === 'paused'
+    : existingStatus === 'paused' && !isTeamSource
       ? 'paused'
       : 'active'
   const nextLimitsJson = !isTeamSource && hasActiveTeamSource
@@ -2505,22 +2549,46 @@ function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAutho
 
 function hasActiveTeamAuthorizationSource(database: DatabaseSync, authorizationId: string): boolean {
   const row = database
-    .prepare("SELECT id FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = 'team' AND status = 'active' LIMIT 1")
-    .get(authorizationId) as unknown as { id?: string } | undefined
-  return Boolean(row?.id)
-}
-
-function hasAnyActiveAuthorizationSource(database: DatabaseSync, authorizationId: string): boolean {
-  const row = database
-    .prepare("SELECT id FROM resource_authorization_sources WHERE authorization_id = ? AND status = 'active' LIMIT 1")
-    .get(authorizationId) as unknown as { id?: string } | undefined
+    .prepare(`
+      SELECT ras.id
+      FROM resource_authorization_sources ras
+      INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
+      INNER JOIN resource_authorization_grants trg
+        ON trg.resource_type = ra.resource_type
+        AND trg.resource_id = ra.resource_id
+        AND trg.grantee_type = 'team'
+        AND trg.grantee_team_id = ras.source_team_id
+        AND trg.status = 'active'
+        AND (trg.expires_at IS NULL OR trg.expires_at > ?)
+      WHERE ras.authorization_id = ?
+        AND ras.source_type = 'team'
+        AND ras.status = 'active'
+      LIMIT 1
+    `)
+    .get(nowIso(), authorizationId) as unknown as { id?: string } | undefined
   return Boolean(row?.id)
 }
 
 function firstActiveTeamSourceId(database: DatabaseSync, authorizationId: string): string | null {
   const row = database
-    .prepare("SELECT source_team_id FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = 'team' AND status = 'active' ORDER BY activated_at ASC, created_at ASC, id ASC LIMIT 1")
-    .get(authorizationId) as unknown as { source_team_id?: string | null } | undefined
+    .prepare(`
+      SELECT ras.source_team_id
+      FROM resource_authorization_sources ras
+      INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
+      INNER JOIN resource_authorization_grants trg
+        ON trg.resource_type = ra.resource_type
+        AND trg.resource_id = ra.resource_id
+        AND trg.grantee_type = 'team'
+        AND trg.grantee_team_id = ras.source_team_id
+        AND trg.status = 'active'
+        AND (trg.expires_at IS NULL OR trg.expires_at > ?)
+      WHERE ras.authorization_id = ?
+        AND ras.source_type = 'team'
+        AND ras.status = 'active'
+      ORDER BY ras.activated_at ASC, ras.created_at ASC, ras.id ASC
+      LIMIT 1
+    `)
+    .get(nowIso(), authorizationId) as unknown as { source_team_id?: string | null } | undefined
   return row?.source_team_id ?? null
 }
 
@@ -2549,29 +2617,23 @@ function upsertResourceAuthorizationSource(database: DatabaseSync, authorization
 }
 
 function refreshResourceAuthorizationEffectiveSource(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
-  if (!hasAnyActiveAuthorizationSource(database, authorizationId)) {
-    database.prepare(`
-      UPDATE resource_authorizations
-      SET status = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired' ELSE 'revoked' END,
-          effective_source_type = NULL,
-          effective_source_team_id = NULL,
-          revoked_by = COALESCE(revoked_by, ?),
-          revoked_at = COALESCE(revoked_at, ?),
-          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE 'authorization_revoked' END,
-          last_source_changed_at = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(now, actor, now, now, now, now, authorizationId)
-    cleanupInactiveAuthorizationBindings(database, [authorizationId])
-    return
-  }
   const activeTeamSource = database.prepare(`
-    SELECT source_team_id
-    FROM resource_authorization_sources
-    WHERE authorization_id = ? AND source_type = 'team' AND status = 'active'
-    ORDER BY activated_at ASC, created_at ASC, id ASC
+    SELECT ras.source_team_id
+    FROM resource_authorization_sources ras
+    INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
+    INNER JOIN resource_authorization_grants trg
+      ON trg.resource_type = ra.resource_type
+      AND trg.resource_id = ra.resource_id
+      AND trg.grantee_type = 'team'
+      AND trg.grantee_team_id = ras.source_team_id
+      AND trg.status = 'active'
+      AND (trg.expires_at IS NULL OR trg.expires_at > ?)
+    WHERE ras.authorization_id = ?
+      AND ras.source_type = 'team'
+      AND ras.status = 'active'
+    ORDER BY ras.activated_at ASC, ras.created_at ASC, ras.id ASC
     LIMIT 1
-  `).get(authorizationId) as unknown as { source_team_id?: string | null } | undefined
+  `).get(now, authorizationId) as unknown as { source_team_id?: string | null } | undefined
 
   if (activeTeamSource?.source_team_id) {
     database.prepare(`
@@ -2590,6 +2652,43 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
           updated_at = ?
       WHERE id = ?
     `).run(now, activeTeamSource.source_team_id, now, actor, now, now, now, now, now, authorizationId)
+    return
+  }
+
+  const pausedTeamSource = database.prepare(`
+    SELECT ras.source_team_id
+    FROM resource_authorization_sources ras
+    INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
+    INNER JOIN resource_authorization_grants trg
+      ON trg.resource_type = ra.resource_type
+      AND trg.resource_id = ra.resource_id
+      AND trg.grantee_type = 'team'
+      AND trg.grantee_team_id = ras.source_team_id
+      AND trg.status = 'paused'
+    WHERE ras.authorization_id = ?
+      AND ras.source_type = 'team'
+      AND ras.status = 'active'
+    ORDER BY ras.activated_at ASC, ras.created_at ASC, ras.id ASC
+    LIMIT 1
+  `).get(authorizationId) as unknown as { source_team_id?: string | null } | undefined
+
+  if (pausedTeamSource?.source_team_id) {
+    database.prepare(`
+      UPDATE resource_authorizations
+      SET status = CASE
+            WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired'
+            ELSE 'paused'
+          END,
+          effective_source_type = 'team',
+          effective_source_team_id = ?,
+          revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_by, ?) ELSE NULL END,
+          revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_at, ?) ELSE NULL END,
+          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE 'authorization_paused' END,
+          last_source_changed_at = ?,
+          updated_at = ?
+      WHERE id = ?
+    `).run(now, pausedTeamSource.source_team_id, now, actor, now, now, now, now, now, authorizationId)
+    cleanupInactiveAuthorizationBindings(database, [authorizationId])
     return
   }
 
@@ -2623,16 +2722,16 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
 
   database.prepare(`
     UPDATE resource_authorizations
-    SET status = 'revoked',
+    SET status = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired' ELSE 'revoked' END,
         effective_source_type = NULL,
         effective_source_team_id = NULL,
         revoked_by = COALESCE(revoked_by, ?),
         revoked_at = COALESCE(revoked_at, ?),
-        revoked_reason = COALESCE(revoked_reason, 'no_active_source'),
+        revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE COALESCE(revoked_reason, 'no_active_source') END,
         last_source_changed_at = ?,
         updated_at = ?
     WHERE id = ?
-  `).run(actor, now, now, now, authorizationId)
+  `).run(now, actor, now, now, now, now, authorizationId)
   cleanupInactiveAuthorizationBindings(database, [authorizationId])
 }
 
@@ -2643,48 +2742,218 @@ function cleanupInactiveAuthorizationBindings(database = getDatabase(), authoriz
   refreshGroupAccountStatsAfterWrite()
 }
 
-function upsertTeamResourceGrant(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; teamId: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): TeamResourceAuthorizationGrantRow {
-  const existing = input.database.prepare("SELECT * FROM team_resource_authorization_grants WHERE resource_type = ? AND resource_id = ? AND team_id = ? AND status = 'active' LIMIT 1").get(input.resourceType, input.resourceId, input.teamId) as unknown as TeamResourceAuthorizationGrantRow | undefined
-  const id = existing?.id ?? newId('teamgrant')
-  if (existing) {
-    input.database.prepare('UPDATE team_resource_authorization_grants SET remark = COALESCE(?, remark), expires_at = COALESCE(?, expires_at), limits_json = ?, model_policy_json = COALESCE(?, model_policy_json), updated_at = ? WHERE id = ?')
-      .run(input.remark ?? null, input.expiresAt ?? null, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.now, id)
-  } else {
-    input.database.prepare("INSERT INTO team_resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, team_id, scope, status, remark, expires_at, limits_json, model_policy_json, created_by, created_at, revoked_by, revoked_at, updated_at) VALUES (?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)")
-      .run(id, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.teamId, input.remark ?? null, input.expiresAt ?? null, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.actor, input.now, input.now)
+function upsertResourceAuthorizationGrant(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeType: 'system_account' | 'team'; granteeId: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationGrantRow {
+  if (input.granteeType === 'system_account' && input.granteeId === input.ownerSystemAccountId) {
+    throw new Error('不能授权给资源所有者自己')
   }
-  const row = input.database.prepare('SELECT * FROM team_resource_authorization_grants WHERE id = ?').get(id) as unknown as TeamResourceAuthorizationGrantRow | undefined
-  if (!row) throw new Error('创建团队授权失败')
+  const active = input.database.prepare(`
+    SELECT id
+    FROM resource_authorization_grants
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND grantee_type = ?
+      AND COALESCE(grantee_system_account_id, '') = COALESCE(?, '')
+      AND COALESCE(grantee_team_id, '') = COALESCE(?, '')
+      AND status = 'active'
+    LIMIT 1
+  `).get(
+    input.resourceType,
+    input.resourceId,
+    input.granteeType,
+    input.granteeType === 'system_account' ? input.granteeId : null,
+    input.granteeType === 'team' ? input.granteeId : null
+  ) as unknown as { id?: string } | undefined
+  if (active?.id) {
+    throw new Error(input.granteeType === 'team' ? '该资源已授权给该团队，请勿重复授权' : '该资源已授权给该用户，请勿重复授权')
+  }
+  const existing = input.database.prepare(`
+    SELECT *
+    FROM resource_authorization_grants
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND grantee_type = ?
+      AND COALESCE(grantee_system_account_id, '') = COALESCE(?, '')
+      AND COALESCE(grantee_team_id, '') = COALESCE(?, '')
+      AND status IN ('paused', 'expired', 'revoked')
+    ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END,
+      created_at ASC,
+      id ASC
+    LIMIT 1
+  `).get(
+    input.resourceType,
+    input.resourceId,
+    input.granteeType,
+    input.granteeType === 'system_account' ? input.granteeId : null,
+    input.granteeType === 'team' ? input.granteeId : null
+  ) as unknown as ResourceAuthorizationGrantRow | undefined
+  if (existing?.status === 'paused') {
+    throw new Error(input.granteeType === 'team' ? '该资源已暂停授权给该团队，请先恢复或修改原授权' : '该资源已暂停授权给该用户，请先恢复或修改原授权')
+  }
+  const id = existing?.id ?? newId('rauthgrant')
+  if (existing) {
+    input.database.prepare("UPDATE resource_authorization_grants SET status = 'active', remark = COALESCE(?, remark), expires_at = ?, limits_json = ?, model_policy_json = COALESCE(?, model_policy_json), revoked_by = NULL, revoked_at = NULL, updated_at = ? WHERE id = ?")
+      .run(input.remark ?? null, input.expiresAt ?? existing.expires_at, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.now, id)
+  } else {
+    input.database.prepare("INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at, limits_json, model_policy_json, created_by, created_at, revoked_by, revoked_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)")
+      .run(
+        id,
+        input.resourceType,
+        input.resourceId,
+        input.ownerSystemAccountId,
+        input.granteeType,
+        input.granteeType === 'system_account' ? input.granteeId : null,
+        input.granteeType === 'team' ? input.granteeId : null,
+        input.remark ?? null,
+        input.expiresAt ?? null,
+        requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)),
+        jsonObjectOrNull(input.modelPolicy),
+        input.actor,
+        input.now,
+        input.now
+      )
+  }
+  const row = input.database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(id) as unknown as ResourceAuthorizationGrantRow | undefined
+  if (!row) throw new Error('创建资源授权失败')
   return row
 }
 
-function updateEffectiveTeamGrantLimits(row: ResourceAuthorizationRow, limitsJson: string | null, database: DatabaseSync, now: string): void {
-  if (row.effective_source_type !== 'team' || !row.effective_source_team_id) {
+function revokeResourceAuthorizationGrant(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
+  database
+    .prepare("UPDATE resource_authorization_grants SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
+    .run(actor, now, now, grant.id)
+  syncResourceAuthorizationGrantRuntime({ ...grant, status: 'revoked', revoked_by: actor, revoked_at: now, updated_at: now }, actor, database, now)
+  cleanupInactiveAuthorizationBindings(database)
+}
+
+function syncResourceAuthorizationGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
+  if (grant.grantee_type === 'system_account') {
+    syncUserGrantRuntime(grant, actor, database, now)
     return
   }
+  syncTeamGrantMemberAuthorizations(grant, actor, database, now)
+}
+
+function syncUserGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
+  if (!grant.grantee_system_account_id) return
+  const runtime = loadRuntimeAuthorizationForUserGrant(grant, database)
+  if (grant.status === 'active') {
+    upsertResourceAuthorizationForUser({
+      resourceType: grant.resource_type,
+      resourceId: grant.resource_id,
+      ownerSystemAccountId: grant.resource_owner_system_account_id,
+      granteeSystemAccountId: grant.grantee_system_account_id,
+      sourceType: 'manual',
+      remark: grant.remark ?? undefined,
+      expiresAt: grant.expires_at,
+      limits: parseRequestQuotaLimitsJson(grant.limits_json),
+      modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined),
+      actor,
+      now,
+      database
+    })
+    return
+  }
+  if (!runtime) return
   database.prepare(`
-    UPDATE team_resource_authorization_grants
-    SET limits_json = ?,
+    UPDATE resource_authorization_sources
+    SET status = 'revoked',
+        ended_at = COALESCE(ended_at, ?),
+        ended_reason = COALESCE(ended_reason, ?),
+        revoked_by = ?,
+        revoked_at = ?,
         updated_at = ?
-    WHERE resource_type = ?
-      AND resource_id = ?
-      AND team_id = ?
-      AND status = 'active'
-  `).run(limitsJson, now, row.resource_type, row.resource_id, row.effective_source_team_id)
-  database.prepare(`
-    UPDATE resource_authorizations
-    SET limits_json = ?,
-        updated_at = ?
-    WHERE resource_type = ?
-      AND resource_id = ?
-      AND effective_source_type = 'team'
-      AND effective_source_team_id = ?
-      AND status IN ('active', 'paused')
-  `).run(limitsJson, now, row.resource_type, row.resource_id, row.effective_source_team_id)
+    WHERE authorization_id = ? AND source_type = 'manual' AND status IN ('active', 'superseded')
+  `).run(now, grant.status === 'expired' ? 'authorization_expired' : grant.status === 'paused' ? 'authorization_paused' : 'authorization_revoked', actor, now, now, runtime.id)
+  refreshResourceAuthorizationEffectiveSource(runtime.id, actor, now, database)
+}
+
+function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
+  const teamId = grant.grantee_team_id
+  if (!teamId) return
+  if (grant.status === 'revoked') {
+    revokeTeamGrantSources(grant.resource_type, grant.resource_id, teamId, actor, database, now)
+    return
+  }
+  if (grant.status === 'paused' || grant.status === 'expired') {
+    const sourceRows = database.prepare(`
+      SELECT ras.id AS source_id, ras.authorization_id
+      FROM resource_authorization_sources ras
+      INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
+      WHERE ra.resource_type = ?
+        AND ra.resource_id = ?
+        AND ras.source_type = 'team'
+        AND ras.source_team_id = ?
+        AND ras.status = 'active'
+    `).all(grant.resource_type, grant.resource_id, teamId) as unknown as Array<{ source_id?: string; authorization_id?: string }>
+    for (const sourceRow of sourceRows) {
+      if (!sourceRow.source_id || !sourceRow.authorization_id) continue
+      database.prepare(`
+        UPDATE resource_authorization_sources
+        SET status = 'revoked',
+            ended_at = COALESCE(ended_at, ?),
+            ended_reason = ?,
+            revoked_by = ?,
+            revoked_at = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(now, grant.status === 'paused' ? 'authorization_paused' : 'authorization_expired', actor, now, now, sourceRow.source_id)
+      refreshResourceAuthorizationEffectiveSource(sourceRow.authorization_id, actor, now, database)
+    }
+    return
+  }
+  if (grant.status === 'active') {
+    const members = activeTeamMemberRows(teamId, database).filter((member) => member.system_account_id !== grant.resource_owner_system_account_id)
+    for (const member of members) {
+      upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseRequestQuotaLimitsJson(grant.limits_json), modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined), actor, now, database })
+    }
+  }
+  const rows = database.prepare(`
+    SELECT ra.id
+    FROM resource_authorizations ra
+    INNER JOIN resource_authorization_sources ras ON ras.authorization_id = ra.id
+    WHERE ra.resource_type = ?
+      AND ra.resource_id = ?
+      AND ras.source_type = 'team'
+      AND ras.source_team_id = ?
+      AND ras.status = 'active'
+  `).all(grant.resource_type, grant.resource_id, teamId) as unknown as Array<{ id?: string }>
+  for (const row of rows) {
+    if (!row.id) continue
+    const otherActiveTeam = database.prepare(`
+      SELECT ras.id
+      FROM resource_authorization_sources ras
+      INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
+      INNER JOIN resource_authorization_grants trg
+        ON trg.resource_type = ra.resource_type
+        AND trg.resource_id = ra.resource_id
+        AND trg.grantee_type = 'team'
+        AND trg.grantee_team_id = ras.source_team_id
+        AND trg.id <> ?
+        AND trg.status = 'active'
+        AND (trg.expires_at IS NULL OR trg.expires_at > ?)
+      WHERE ras.authorization_id = ?
+        AND ras.source_type = 'team'
+        AND ras.status = 'active'
+      LIMIT 1
+    `).get(grant.id, now, row.id) as unknown as { id?: string } | undefined
+    if (!otherActiveTeam?.id) {
+      database.prepare(`
+        UPDATE resource_authorizations
+        SET expires_at = ?,
+            revoked_by = CASE WHEN ? IN ('active', 'paused') THEN NULL ELSE ? END,
+            revoked_at = CASE WHEN ? IN ('active', 'paused') THEN NULL ELSE ? END,
+            revoked_reason = CASE WHEN ? = 'expired' THEN 'authorization_expired' WHEN ? = 'paused' THEN 'authorization_paused' ELSE NULL END,
+            limits_json = ?,
+            updated_at = ?
+        WHERE id = ?
+      `).run(grant.expires_at, grant.status, grant.revoked_by, grant.status, grant.revoked_at, grant.status, grant.status, grant.limits_json, now, row.id)
+    }
+    refreshResourceAuthorizationEffectiveSource(row.id, actor, now, database)
+  }
 }
 
 function applyActiveTeamGrantsToMember(teamId: string, systemAccountId: string, access: AccessScope | undefined, database: DatabaseSync, now: string): void {
-  const grants = database.prepare("SELECT * FROM team_resource_authorization_grants WHERE team_id = ? AND status = 'active'").all(teamId) as unknown as TeamResourceAuthorizationGrantRow[]
+  const grants = database.prepare("SELECT * FROM resource_authorization_grants WHERE grantee_type = 'team' AND grantee_team_id = ? AND status = 'active'").all(teamId) as unknown as ResourceAuthorizationGrantRow[]
   const actor = currentSystemAccountId(access)
   for (const grant of grants) {
     if (grant.resource_owner_system_account_id === systemAccountId) continue
@@ -2755,6 +3024,7 @@ function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[], usageR
       resourceName: row.resource_type === 'account' ? accountNames.get(row.resource_id) : groupNames.get(row.resource_id),
       resourceOwnerSystemAccountId: row.resource_owner_system_account_id,
       resourceOwnerSystemAccountName: owner?.displayName ?? owner?.username,
+      granteeType: 'system_account',
       granteeSystemAccountId: row.grantee_system_account_id,
       granteeSystemAccountName: grantee?.displayName ?? grantee?.username,
       granteeUsername: grantee?.username,
@@ -2781,6 +3051,94 @@ function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[], usageR
       updatedAt: row.updated_at
     }
   })
+}
+
+function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow[], usageRange?: AccountUsageStatsRange): ResourceAuthorizationSummary[] {
+  const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
+  const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
+  const systemAccounts = loadSystemAccountsByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
+  const teamNames = loadSystemTeamNameMap(rows.map((row) => row.grantee_team_id ?? ''))
+  const usage = loadResourceAuthorizationGrantUsageSummaries(rows, usageRange ?? todayDateKey(usageStatsTimezone()))
+  const totalUsage = loadResourceAuthorizationGrantUsageSummaries(rows)
+  return rows.map((row) => {
+    const owner = systemAccounts.get(row.resource_owner_system_account_id)
+    const grantee = row.grantee_system_account_id ? systemAccounts.get(row.grantee_system_account_id) : undefined
+    const teamName = row.grantee_team_id ? teamNames.get(row.grantee_team_id) : undefined
+    const source = resourceAuthorizationGrantSourceSummary(row, teamName)
+    return {
+      id: row.id,
+      resourceType: row.resource_type,
+      resourceId: row.resource_id,
+      resourceName: row.resource_type === 'account' ? accountNames.get(row.resource_id) : groupNames.get(row.resource_id),
+      resourceOwnerSystemAccountId: row.resource_owner_system_account_id,
+      resourceOwnerSystemAccountName: owner?.displayName ?? owner?.username,
+      granteeType: row.grantee_type,
+      granteeSystemAccountId: row.grantee_system_account_id ?? undefined,
+      granteeSystemAccountName: grantee?.displayName ?? grantee?.username,
+      granteeUsername: grantee?.username,
+      granteeTeamId: row.grantee_team_id ?? undefined,
+      granteeTeamName: teamName,
+      scope: 'use',
+      status: row.status,
+      remark: row.remark ?? undefined,
+      expiresAt: row.expires_at ?? undefined,
+      limits: parseRequestQuotaLimitsJson(row.limits_json),
+      modelPolicy: parseOptionalJsonObject(row.model_policy_json ?? undefined),
+      effectiveSourceType: row.grantee_type === 'team' ? 'team' : 'manual',
+      effectiveSourceTeamId: row.grantee_team_id ?? undefined,
+      effectiveSourceTeamName: teamName,
+      activatedAt: row.created_at,
+      lastSourceChangedAt: row.updated_at,
+      sources: [source],
+      authorizationSources: [source],
+      usage: usage.get(row.id) ?? emptyAccountUsageSummary(),
+      lastUsedAt: totalUsage.get(row.id)?.lastUsedAt,
+      createdBy: row.created_by,
+      createdAt: row.created_at,
+      revokedBy: row.revoked_by ?? undefined,
+      revokedAt: row.revoked_at ?? undefined,
+      revokedReason: row.status === 'expired' ? 'authorization_expired' : row.status === 'revoked' ? 'authorization_revoked' : undefined,
+      updatedAt: row.updated_at
+    }
+  })
+}
+
+function resourceAuthorizationGrantSourceSummary(row: ResourceAuthorizationGrantRow, teamName: string | undefined): ResourceAuthorizationSourceSummary {
+  const sourceType: ResourceAuthorizationSourceType = row.grantee_type === 'team' ? 'team' : 'manual'
+  return {
+    id: row.id,
+    authorizationId: row.id,
+    sourceType,
+    sourceTeamId: row.grantee_team_id ?? undefined,
+    sourceTeamName: teamName,
+    status: row.status === 'active' || row.status === 'paused' ? 'active' as const : 'revoked' as const,
+    activatedAt: row.created_at,
+    endedAt: row.revoked_at ?? (row.status === 'expired' || row.status === 'revoked' ? row.updated_at : undefined),
+    endedReason: row.status === 'expired' ? 'authorization_expired' : row.status === 'revoked' ? 'authorization_revoked' : undefined,
+    createdBy: row.created_by,
+    createdAt: row.created_at,
+    revokedBy: row.revoked_by ?? undefined,
+    revokedAt: row.revoked_at ?? undefined,
+    updatedAt: row.updated_at
+  }
+}
+
+function compareResourceAuthorizationOperations(left: ResourceAuthorizationSummary, right: ResourceAuthorizationSummary): number {
+  const statusDelta = authorizationStatusSortWeight(left.status) - authorizationStatusSortWeight(right.status)
+  if (statusDelta !== 0) return statusDelta
+  const updatedDelta = Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
+  if (Number.isFinite(updatedDelta) && updatedDelta !== 0) return updatedDelta
+  const createdDelta = Date.parse(right.createdAt) - Date.parse(left.createdAt)
+  if (Number.isFinite(createdDelta) && createdDelta !== 0) return createdDelta
+  return right.id.localeCompare(left.id)
+}
+
+function authorizationStatusSortWeight(status: AuthorizationStatus): number {
+  if (status === 'active') return 0
+  if (status === 'paused') return 1
+  if (status === 'expired') return 2
+  if (status === 'revoked') return 3
+  return 4
 }
 
 function sanitizeResourceAuthorizationSummaryForAccess(summary: ResourceAuthorizationSummary, access?: AccessScope): ResourceAuthorizationSummary {
@@ -2823,6 +3181,48 @@ function loadResourceAuthorizationUsageSummaries(rows: ResourceAuthorizationRow[
   ])
 }
 
+function loadResourceAuthorizationGrantUsageSummaries(rows: ResourceAuthorizationGrantRow[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
+  const runtimeRowsByGrant = runtimeAuthorizationRowsByGrantIds(rows)
+  const runtimeRows = [...runtimeRowsByGrant.values()].flat()
+  const runtimeUsage = loadResourceAuthorizationUsageSummaries(runtimeRows, statDateOrRange)
+  const result = new Map<string, AccountUsageSummary>()
+  for (const row of rows) {
+    const summaries = (runtimeRowsByGrant.get(row.id) ?? []).map((runtimeRow) => runtimeUsage.get(runtimeRow.id) ?? emptyAccountUsageSummary())
+    result.set(row.id, sumAccountUsageSummaries(summaries))
+  }
+  return result
+}
+
+function runtimeAuthorizationRowsByGrantIds(rows: ResourceAuthorizationGrantRow[]): Map<string, ResourceAuthorizationRow[]> {
+  const result = new Map<string, ResourceAuthorizationRow[]>()
+  const database = getDatabase()
+  for (const row of rows) {
+    if (row.grantee_type === 'system_account' && row.grantee_system_account_id) {
+      const runtime = loadRuntimeAuthorizationForUserGrant(row, database)
+      result.set(row.id, runtime ? [runtime] : [])
+      continue
+    }
+    if (row.grantee_type === 'team' && row.grantee_team_id) {
+      const runtimeRows = database.prepare(`
+        SELECT DISTINCT ra.*
+        FROM resource_authorizations ra
+        INNER JOIN resource_authorization_sources ras
+          ON ras.authorization_id = ra.id
+          AND ras.source_type = 'team'
+          AND ras.source_team_id = ?
+        WHERE ra.resource_type = ?
+          AND ra.resource_id = ?
+          AND ra.resource_owner_system_account_id = ?
+        ORDER BY ra.created_at ASC, ra.id ASC
+      `).all(row.grantee_team_id, row.resource_type, row.resource_id, row.resource_owner_system_account_id) as unknown as ResourceAuthorizationRow[]
+      result.set(row.id, runtimeRows)
+      continue
+    }
+    result.set(row.id, [])
+  }
+  return result
+}
+
 function loadResourceAuthorizationUsageDetail(
   authorization: ResourceAuthorizationSummary,
   range: AccountUsageStatsRange
@@ -2830,16 +3230,34 @@ function loadResourceAuthorizationUsageDetail(
   usage: AccountUsageSummary
   usageBySystemAccount: ResourceAuthorizationUsageDetail[]
 } {
+  if (authorization.granteeType === 'team') {
+    return loadResourceAuthorizationGrantUsageDetailForTeam(authorization, range)
+  }
+  const granteeSystemAccountId = authorization.granteeSystemAccountId
+  if (!granteeSystemAccountId) {
+    return { usage: emptyAccountUsageSummary(), usageBySystemAccount: [] }
+  }
+  const runtime = getDatabase().prepare(`
+    SELECT *
+    FROM resource_authorizations
+    WHERE resource_type = ?
+      AND resource_id = ?
+      AND grantee_system_account_id = ?
+    LIMIT 1
+  `).get(authorization.resourceType, authorization.resourceId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
+  if (!runtime) {
+    return { usage: emptyAccountUsageSummary(), usageBySystemAccount: [] }
+  }
   const scopeType = authorization.resourceType === 'account' ? 'account_authorization' : 'group_authorization'
   const rangeUsage = loadUsageRangeSummaryForScope({
     systemAccountId: authorization.resourceOwnerSystemAccountId,
     scopeType,
-    scopeId: authorization.id,
+    scopeId: runtime.id,
     range
   })
-  const account = loadSystemAccountsByIds([authorization.granteeSystemAccountId]).get(authorization.granteeSystemAccountId)
+  const account = loadSystemAccountsByIds([granteeSystemAccountId]).get(granteeSystemAccountId)
   const usageBySystemAccount: ResourceAuthorizationUsageDetail[] = [{
-    systemAccountId: authorization.granteeSystemAccountId,
+    systemAccountId: granteeSystemAccountId,
     systemAccountName: account?.displayName ?? account?.username ?? authorization.granteeSystemAccountName,
     username: account?.username ?? authorization.granteeUsername,
     ...rangeUsage,
@@ -2857,4 +3275,66 @@ function loadResourceAuthorizationUsageDetail(
       return left.systemAccountId.localeCompare(right.systemAccountId)
     })
   }
+}
+
+function loadResourceAuthorizationGrantUsageDetailForTeam(
+  authorization: ResourceAuthorizationSummary,
+  range: AccountUsageStatsRange
+): {
+  usage: AccountUsageSummary
+  usageBySystemAccount: ResourceAuthorizationUsageDetail[]
+} {
+  const teamId = authorization.granteeTeamId
+  if (!teamId) {
+    return { usage: emptyAccountUsageSummary(), usageBySystemAccount: [] }
+  }
+  const database = getDatabase()
+  const rows = database.prepare(`
+    SELECT DISTINCT ra.*
+    FROM resource_authorizations ra
+    INNER JOIN resource_authorization_sources ras
+      ON ras.authorization_id = ra.id
+      AND ras.source_type = 'team'
+      AND ras.source_team_id = ?
+    WHERE ra.resource_type = ?
+      AND ra.resource_id = ?
+      AND ra.resource_owner_system_account_id = ?
+    ORDER BY ra.created_at ASC, ra.id ASC
+  `).all(teamId, authorization.resourceType, authorization.resourceId, authorization.resourceOwnerSystemAccountId) as unknown as ResourceAuthorizationRow[]
+  const details = rows.map((row) => loadResourceAuthorizationUsageDetail({
+    ...authorization,
+    id: row.id,
+    granteeType: 'system_account',
+    granteeSystemAccountId: row.grantee_system_account_id
+  }, range))
+  const usageBySystemAccount = details.flatMap((detail) => detail.usageBySystemAccount)
+  return {
+    usage: sumAccountUsageSummaries(details.map((detail) => detail.usage)),
+    usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
+      const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
+      const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
+      if (rightTime !== leftTime) {
+        return rightTime - leftTime
+      }
+      return left.systemAccountId.localeCompare(right.systemAccountId)
+    })
+  }
+}
+
+function sumAccountUsageSummaries(items: AccountUsageSummary[]): AccountUsageSummary {
+  return items.reduce<AccountUsageSummary>((summary, item) => ({
+    requestCount: summary.requestCount + item.requestCount,
+    inputTokens: summary.inputTokens + item.inputTokens,
+    outputTokens: summary.outputTokens + item.outputTokens,
+    cacheReadTokens: summary.cacheReadTokens + item.cacheReadTokens,
+    totalTokens: summary.totalTokens + item.totalTokens,
+    totalCost: summary.totalCost + item.totalCost,
+    lastUsedAt: laterUsageTime(summary.lastUsedAt, item.lastUsedAt)
+  }), emptyAccountUsageSummary())
+}
+
+function laterUsageTime(left: string | undefined, right: string | undefined): string | undefined {
+  if (!left) return right
+  if (!right) return left
+  return Date.parse(right) > Date.parse(left) ? right : left
 }

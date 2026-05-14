@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { createReadStream, existsSync, mkdirSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, relative, resolve } from 'node:path'
-import { gunzipSync, gzipSync } from 'node:zlib'
+import { createGunzip, gzipSync } from 'node:zlib'
 
 import { backendRoot } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
@@ -169,6 +169,12 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
   headers?: Record<string, string | string[]>
   bodyText?: string
   bodyBase64?: string
+  bodyOffset: number
+  bodyLimit: number
+  bodyBytesReturned: number
+  bodyTotalBytes: number
+  bodyNextOffset?: number
+  bodyTruncated: boolean
 }
 
 export interface AuditLogListOptions {
@@ -186,6 +192,11 @@ export interface AuditLogListOptions {
   accountId?: string
   clientIp?: string
   errorGroupId?: string
+}
+
+export interface AuditLogPayloadReadOptions {
+  offset?: number
+  limit?: number
 }
 
 export interface AuditLogListResult {
@@ -277,12 +288,30 @@ interface PreparedAuditPayload {
   createdAt: string
 }
 
+interface StoredPayloadBlobMeta {
+  storageKey: string
+  compression: StoredCompression
+  rawSizeBytes: number
+  compressedSizeBytes: number
+}
+
+interface PayloadBlobWindow {
+  bytes?: Buffer
+  offset: number
+  limit: number
+  totalBytes: number
+  nextOffset?: number
+  truncated: boolean
+}
+
 const auditLogDefaultPageSize = 100
 const auditLogMaxPageSize = 100
 const errorGroupDefaultPageSize = 100
 const errorGroupMaxPageSize = 100
 const auditBlobRoot = resolve(backendRoot, 'data', 'audit', 'blobs')
 const auditBlobCompressionThresholdBytes = 4 * 1024
+const auditPayloadDefaultReadLimitBytes = 256 * 1024
+const auditPayloadMaxReadLimitBytes = 1024 * 1024
 const auditErrorGroupWindowMs = 5 * 60 * 1000
 const auditHeadersContentType = 'application/json; audit=headers'
 
@@ -553,7 +582,11 @@ function getAuditErrorGroupById(id: string, systemAccountNames: Map<string, stri
   return namedRow ? auditErrorGroupFromRow(namedRow, systemAccountNames) : undefined
 }
 
-export function getAuditLogPayload(auditLogId: string, payloadId: string): AuditLogPayloadDetail | undefined {
+export async function getAuditLogPayload(
+  auditLogId: string,
+  payloadId: string,
+  options: AuditLogPayloadReadOptions = {}
+): Promise<AuditLogPayloadDetail | undefined> {
   const row = getRecordDatabase()
     .prepare(`
       SELECT *
@@ -563,12 +596,18 @@ export function getAuditLogPayload(auditLogId: string, payloadId: string): Audit
     .get(auditLogId, payloadId) as AuditLogRow | undefined
   if (row) {
     const summary = auditLogPayloadSummaryFromRow(row)
-    const headers = readHeadersBlob(optionalString(row.headers_blob_id))
-    const bodyBuffer = readPayloadBlob(optionalString(row.body_blob_id))
+    const headers = await readHeadersBlob(optionalString(row.headers_blob_id))
+    const bodyWindow = await readPayloadBlobWindow(optionalString(row.body_blob_id), options)
     return {
       ...summary,
       headers,
-      ...bodyDetail(bodyBuffer)
+      ...bodyDetail(bodyWindow.bytes),
+      bodyOffset: bodyWindow.offset,
+      bodyLimit: bodyWindow.limit,
+      bodyBytesReturned: bodyWindow.bytes?.byteLength ?? 0,
+      bodyTotalBytes: bodyWindow.totalBytes,
+      bodyNextOffset: bodyWindow.nextOffset,
+      bodyTruncated: bodyWindow.truncated
     }
   }
 }
@@ -1212,31 +1251,178 @@ function cleanupCreatedBlobFiles(storageKeys: string[]): void {
   }
 }
 
-function readPayloadBlob(blobId: string | undefined): Buffer | undefined {
-  if (!blobId) return undefined
+async function readPayloadBlobWindow(
+  blobId: string | undefined,
+  options: AuditLogPayloadReadOptions
+): Promise<PayloadBlobWindow> {
+  const offset = normalizePayloadReadOffset(options.offset)
+  const limit = normalizePayloadReadLimit(options.limit)
+  if (!blobId) {
+    return emptyPayloadBlobWindow(offset, limit)
+  }
+  const meta = loadPayloadBlobMeta(blobId)
+  if (!meta) {
+    return emptyPayloadBlobWindow(offset, limit)
+  }
+  const filePath = blobFilePath(meta.storageKey)
+  if (!existsSync(filePath)) {
+    return emptyPayloadBlobWindow(offset, limit, meta.rawSizeBytes)
+  }
+  const bytes = meta.compression === 'gzip'
+    ? await readGzipPayloadWindow(filePath, offset, limit, meta.rawSizeBytes)
+    : await readPlainPayloadWindow(filePath, offset, limit, meta.rawSizeBytes)
+  const nextOffset = offset + (bytes?.byteLength ?? 0)
+  const truncated = nextOffset < meta.rawSizeBytes
+  return {
+    bytes,
+    offset,
+    limit,
+    totalBytes: meta.rawSizeBytes,
+    nextOffset: truncated ? nextOffset : undefined,
+    truncated
+  }
+}
+
+function loadPayloadBlobMeta(blobId: string): StoredPayloadBlobMeta | undefined {
   const row = getRecordDatabase()
-    .prepare('SELECT storage_key, compression FROM audit_payload_blobs WHERE id = ?')
+    .prepare('SELECT storage_key, compression, raw_size_bytes, compressed_size_bytes FROM audit_payload_blobs WHERE id = ?')
     .get(blobId) as AuditLogRow | undefined
   const storageKey = optionalString(row?.storage_key)
   if (!storageKey) return undefined
-  const filePath = blobFilePath(storageKey)
-  if (!existsSync(filePath)) return undefined
-  const bytes = readFileSync(filePath)
-  const compression = optionalString(row?.compression)
-  if (compression === 'gzip') {
-    return gunzipSync(bytes)
+  return {
+    storageKey,
+    compression: optionalString(row?.compression) === 'gzip' ? 'gzip' : 'none',
+    rawSizeBytes: Math.max(0, Number(row?.raw_size_bytes ?? 0)),
+    compressedSizeBytes: Math.max(0, Number(row?.compressed_size_bytes ?? 0))
   }
-  return bytes
 }
 
-function readHeadersBlob(blobId: string | undefined): Record<string, string | string[]> | undefined {
-  const bytes = readPayloadBlob(blobId)
+async function readHeadersBlob(blobId: string | undefined): Promise<Record<string, string | string[]> | undefined> {
+  const bytes = (await readPayloadBlobWindow(blobId, {
+    offset: 0,
+    limit: auditPayloadMaxReadLimitBytes
+  })).bytes
   if (!bytes) return undefined
   try {
     return JSON.parse(bytes.toString('utf8')) as Record<string, string | string[]>
   } catch {
     return undefined
   }
+}
+
+function normalizePayloadReadOffset(value: unknown): number {
+  const number = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(number) || number <= 0) return 0
+  return Math.trunc(number)
+}
+
+function normalizePayloadReadLimit(value: unknown): number {
+  const number = typeof value === 'number' ? value : Number(value)
+  if (!Number.isFinite(number) || number <= 0) return auditPayloadDefaultReadLimitBytes
+  return Math.min(auditPayloadMaxReadLimitBytes, Math.max(1, Math.trunc(number)))
+}
+
+function emptyPayloadBlobWindow(offset: number, limit: number, totalBytes = 0): PayloadBlobWindow {
+  return {
+    offset,
+    limit,
+    totalBytes,
+    truncated: offset < totalBytes
+  }
+}
+
+async function readPlainPayloadWindow(
+  filePath: string,
+  offset: number,
+  limit: number,
+  totalBytes: number
+): Promise<Buffer | undefined> {
+  if (offset >= totalBytes || limit <= 0) return undefined
+  const end = Math.min(totalBytes - 1, offset + limit - 1)
+  return readStreamWindow(createReadStream(filePath, { start: offset, end }), limit)
+}
+
+async function readGzipPayloadWindow(
+  filePath: string,
+  offset: number,
+  limit: number,
+  totalBytes: number
+): Promise<Buffer | undefined> {
+  if (offset >= totalBytes || limit <= 0) return undefined
+  const source = createReadStream(filePath)
+  return readStreamWindow(source.pipe(createGunzip()), limit, offset, [source])
+}
+
+function readStreamWindow(
+  stream: NodeJS.ReadableStream,
+  limit: number,
+  skipBytes = 0,
+  linkedStreams: NodeJS.ReadableStream[] = []
+): Promise<Buffer | undefined> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = []
+    let skipped = 0
+    let collected = 0
+    let settled = false
+
+    const cleanup = (): void => {
+      stream.off('data', onData)
+      stream.off('end', onEnd)
+      stream.off('error', onError)
+      stream.off('close', onClose)
+    }
+    const finish = (): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      if ('destroy' in stream && typeof stream.destroy === 'function') {
+        stream.destroy()
+      }
+      for (const linkedStream of linkedStreams) {
+        if ('destroy' in linkedStream && typeof linkedStream.destroy === 'function') {
+          linkedStream.destroy()
+        }
+      }
+      resolve(chunks.length > 0 ? Buffer.concat(chunks, collected) : undefined)
+    }
+    const onData = (chunk: Buffer | string): void => {
+      let buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+      if (skipBytes > skipped) {
+        const remainingSkip = skipBytes - skipped
+        if (buffer.byteLength <= remainingSkip) {
+          skipped += buffer.byteLength
+          return
+        }
+        buffer = buffer.subarray(remainingSkip)
+        skipped = skipBytes
+      }
+      if (buffer.byteLength === 0) return
+      const remaining = limit - collected
+      if (remaining <= 0) {
+        finish()
+        return
+      }
+      const slice = buffer.byteLength > remaining ? buffer.subarray(0, remaining) : buffer
+      chunks.push(slice)
+      collected += slice.byteLength
+      if (collected >= limit) {
+        finish()
+      }
+    }
+    const onEnd = (): void => finish()
+    const onClose = (): void => finish()
+    const onError = (error: Error): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
+
+    stream.on('data', onData)
+    stream.once('end', onEnd)
+    stream.once('error', onError)
+    stream.once('close', onClose)
+  })
 }
 
 function bodyDetail(buffer: Buffer | undefined): { bodyText?: string; bodyBase64?: string } {

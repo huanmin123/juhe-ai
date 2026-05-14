@@ -1,4 +1,4 @@
-import type { AccountStatus, AccountType, AuthorizationResourceType, AuthorizationSourceStatus, AuthorizationSourceType, AuthorizationStatus, ProviderCode, ResourceAccessType, TeamMemberStatus, TeamStatus } from './base'
+import type { AccountStatus, AccountType, AuthorizationGranteeType, AuthorizationResourceType, AuthorizationSourceStatus, AuthorizationSourceType, AuthorizationStatus, ProviderCode, ResourceAccessType, TeamMemberStatus, TeamStatus } from './base'
 import type { RequestQuotaLimits } from './access'
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from './usage-stats'
 
@@ -67,9 +67,12 @@ export interface ResourceAuthorizationSummary {
   resourceName?: string
   resourceOwnerSystemAccountId: string
   resourceOwnerSystemAccountName?: string
-  granteeSystemAccountId: string
+  granteeType?: AuthorizationGranteeType
+  granteeSystemAccountId?: string
   granteeSystemAccountName?: string
   granteeUsername?: string
+  granteeTeamId?: string
+  granteeTeamName?: string
   status: AuthorizationStatus
   scope: 'use'
   remark?: string
@@ -104,6 +107,10 @@ export interface AuthorizationTeamUsageRow {
   teamId: string
   teamName: string
   status: TeamStatus
+  accountId?: string
+  accountName?: string
+  accountOwnerSystemAccountId?: string
+  accountOwnerSystemAccountName?: string
   usage: AccountUsageSummary
   lastUsedAt?: string
 }
@@ -120,6 +127,10 @@ export interface AuthorizationUserUsageRow {
   systemAccountId: string
   userName: string
   username?: string
+  accountId?: string
+  accountName?: string
+  accountOwnerSystemAccountId?: string
+  accountOwnerSystemAccountName?: string
   sourceLabels: string[]
   usage: AccountUsageSummary
   lastUsedAt?: string

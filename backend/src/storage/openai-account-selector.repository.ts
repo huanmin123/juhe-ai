@@ -496,6 +496,7 @@ function disableExpiredAccountsForSelection(systemAccountId: string): void {
           super_priority_enabled = 0,
           fallback_enabled = 0,
           cooldown_until = NULL,
+          last_error_code = NULL,
           last_error_message = ?,
           updated_at = ?
       WHERE account_expires_at IS NOT NULL
@@ -504,6 +505,7 @@ function disableExpiredAccountsForSelection(systemAccountId: string): void {
           status <> 'disabled'
           OR schedulable <> 0
           OR cooldown_until IS NOT NULL
+          OR last_error_code IS NOT NULL
           OR last_error_message IS NULL
         )${scope.clause}
     `)

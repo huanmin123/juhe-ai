@@ -128,6 +128,8 @@ flowchart LR
 - 运行时必须明确区分业务库和记录库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；记录库保存使用记录、审计、操作日志、运行日志索引、统计缓存、账号质量缓存、系统监控和表监控历史。
 - `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。
 - `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
+- 日志、审计 payload、导入导出文件和所有可能频繁读取的大文件都必须按 offset / cursor / stream / 分块窗口读取；禁止在运行路径中把完整文件读入内存后再切割、搜索、分页或追增量。
+- 持续追新增内容的文件读取必须持久化游标和文件标识，worker 重启后从游标继续；按行处理时只在完整行落地后推进 offset，轮转、截断或文件标识变化时显式重置。
 - 启动时通过 `applyBusinessSchema()` 和 `applyRecordSchema()` 创建当前版本需要的表和索引，不承载一次性旧库修复逻辑。
 - 启动时通过 `seedDefaults()` 写入默认管理员、OpenAI 供应商、默认 OpenAI 分组、全局设置和系统设置。
 - 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
@@ -198,6 +200,7 @@ erDiagram
 - 使用记录按 `created_at`、`system_account_id + created_at` 和排序字段建索引，支撑分页、详情和统计游标。
 - 授权表按资源、所有者和被授权者建索引，支撑授权列表、撤销和网关调度过滤。
 - 统计表按 `system_account_id + scope_type + scope_id + 时间桶` 查询，避免列表页实时扫描 `usage_records`。
+- 业务统计、额度、趋势、TopN、摘要和授权报表只能读取 worker 写好的 staged / window / summary 行；如果需要新维度，先补后台增量 job 和索引，不在 API 请求里临时 `SUM/GROUP BY`。
 - 新增索引前先确认查询路径和数据规模，避免为低频字段堆积无效索引。
 
 ### 6.6 Schema 演进
@@ -248,7 +251,8 @@ erDiagram
 - 新敏感字段、日志、快照或原始审计变化：先确认 [安全与日志策略](../../functions/安全与日志策略.md) 与 [原始审计日志设计](../../functions/原始审计日志设计.md)。
 - 新增或修改错误返回、日志、脚本输出、使用记录错误摘要时，描述性文案必须使用中文；不要翻译 `API Key`、`OAuth`、`HTTP`、`SSE`、header、错误码、状态枚举、路由路径、SQL 常量、缓存 key、OpenAI 事件名或数据库字段值。
 - 新外部请求：放在 service 层，支持超时、错误摘要和必要代理配置。
-- 新统计需求：优先从 `usage_records` 定义事实，再考虑是否需要统计缓存表。
+- 新大文件或频繁文件读取需求：必须先设计 offset / cursor / stream 读取方式和单次窗口上限，再落 repository 或 service。
+- 新统计需求：优先从 `usage_records` 定义事实，再补后台 worker 增量聚合和预聚合表；禁止在请求路径实时扫明细表或缓存桶做业务汇总。
 - 大文件继续膨胀时，按 [大文件重构指南](../大文件重构指南.md) 拆分，不在业务开发中顺手重构无关范围。
 
 ## 10. 修改入口

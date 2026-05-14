@@ -674,14 +674,16 @@ function refreshAiPerformanceSummaryWindow(database: DatabaseSync, systemAccount
   database.prepare(`
     INSERT INTO ai_performance_summary_windows (
       system_account_id, window_key, request_count, duration_ms_sum, duration_ms_count,
-      first_token_ms_sum, first_token_ms_count, updated_at
+      duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max, updated_at
     )
     SELECT ?, ?,
       COALESCE(SUM(request_count), 0),
       COALESCE(SUM(duration_ms_sum), 0),
       COALESCE(SUM(duration_ms_count), 0),
+      COALESCE(MAX(duration_ms_max), 0),
       COALESCE(SUM(first_token_ms_sum), 0),
       COALESCE(SUM(first_token_ms_count), 0),
+      COALESCE(MAX(first_token_ms_max), 0),
       ?
     FROM usage_stats_hourly
     WHERE system_account_id = ?
@@ -768,7 +770,7 @@ function quotaLimitRows(): Array<{ limits_json: string | null }> {
   return [
     ...database.prepare('SELECT quota_limits_json AS limits_json FROM api_keys WHERE quota_limits_json IS NOT NULL').all(),
     ...database.prepare('SELECT limits_json FROM resource_authorizations WHERE limits_json IS NOT NULL').all(),
-    ...database.prepare('SELECT limits_json FROM team_resource_authorization_grants WHERE limits_json IS NOT NULL').all()
+    ...database.prepare('SELECT limits_json FROM resource_authorization_grants WHERE limits_json IS NOT NULL').all()
   ] as unknown as Array<{ limits_json: string | null }>
 }
 
@@ -1029,8 +1031,10 @@ export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerf
         requestCount,
         firstTokenCount,
         averageFirstTokenMs: averageFromSum(row?.first_token_ms_sum, row?.first_token_ms_count),
+        maxFirstTokenMs: maxFromCountedMetric(row?.first_token_ms_max, firstTokenCount),
         durationCount,
-        averageDurationMs: averageFromSum(row?.duration_ms_sum, row?.duration_ms_count)
+        averageDurationMs: averageFromSum(row?.duration_ms_sum, row?.duration_ms_count),
+        maxDurationMs: maxFromCountedMetric(row?.duration_ms_max, durationCount)
       }
     })
   }))
@@ -1045,8 +1049,10 @@ export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerf
       requestCount: Number(summaryRow?.request_count ?? 0),
       firstTokenCount: Number(summaryRow?.first_token_ms_count ?? 0),
       averageFirstTokenMs: averageFromSum(summaryRow?.first_token_ms_sum, summaryRow?.first_token_ms_count),
+      maxFirstTokenMs: maxFromCountedMetric(summaryRow?.first_token_ms_max, Number(summaryRow?.first_token_ms_count ?? 0)),
       durationCount: Number(summaryRow?.duration_ms_count ?? 0),
-      averageDurationMs: averageFromSum(summaryRow?.duration_ms_sum, summaryRow?.duration_ms_count)
+      averageDurationMs: averageFromSum(summaryRow?.duration_ms_sum, summaryRow?.duration_ms_count),
+      maxDurationMs: maxFromCountedMetric(summaryRow?.duration_ms_max, Number(summaryRow?.duration_ms_count ?? 0))
     },
     statsLagSeconds: latestUsageStatsLagSeconds()
   }
@@ -1056,19 +1062,23 @@ function loadAiPerformanceSummaryRow(database: DatabaseSync, systemAccountId: st
   request_count: number
   first_token_ms_sum: number
   first_token_ms_count: number
+  first_token_ms_max: number
   duration_ms_sum: number
   duration_ms_count: number
+  duration_ms_max: number
 } | undefined {
   return database.prepare(`
-    SELECT request_count, first_token_ms_sum, first_token_ms_count, duration_ms_sum, duration_ms_count
+    SELECT request_count, first_token_ms_sum, first_token_ms_count, first_token_ms_max, duration_ms_sum, duration_ms_count, duration_ms_max
     FROM ai_performance_summary_windows
     WHERE system_account_id = ? AND window_key = ?
   `).get(systemAccountId, windowKey) as unknown as {
     request_count: number
     first_token_ms_sum: number
     first_token_ms_count: number
+    first_token_ms_max: number
     duration_ms_sum: number
     duration_ms_count: number
+    duration_ms_max: number
   } | undefined
 }
 
@@ -1265,8 +1275,10 @@ interface AiPerformanceHourlyRow {
   request_count: number
   duration_ms_sum: number
   duration_ms_count: number
+  duration_ms_max: number
   first_token_ms_sum: number
   first_token_ms_count: number
+  first_token_ms_max: number
 }
 
 function loadDefaultAiPerformanceAccounts(database: DatabaseSync, systemAccountId: string, limit = 10): AiPerformanceAccountRow[] {
@@ -1363,8 +1375,10 @@ function loadAiPerformanceHourlyRows(database: DatabaseSync, systemAccountId: st
       request_count,
       duration_ms_sum,
       duration_ms_count,
+      duration_ms_max,
       first_token_ms_sum,
-      first_token_ms_count
+      first_token_ms_count,
+      first_token_ms_max
     FROM usage_stats_hourly
     WHERE system_account_id = ?
       AND scope_type = 'account'
@@ -1494,6 +1508,11 @@ function boundedAccountOptionLimit(value?: number): number {
 
 function trendBucketHours(windowKey: UsageOverviewWindowKey): number {
   return USAGE_OVERVIEW_TREND_BUCKET_HOURS[windowKey] ?? 1
+}
+
+function maxFromCountedMetric(value: unknown, count: number): number | undefined {
+  const number = Number(value ?? 0)
+  return count > 0 && Number.isFinite(number) ? Math.max(0, Math.round(number)) : undefined
 }
 
 function mapUsageTrendRows(

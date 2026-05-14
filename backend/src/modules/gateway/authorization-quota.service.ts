@@ -146,11 +146,12 @@ function authorizationQuotaChecks(authorizationId: string, scopeType: 'account_a
   if (row.effective_source_team_id) {
     const teamRow = database.prepare(`
       SELECT id, resource_owner_system_account_id, resource_type, resource_id, limits_json
-      FROM team_resource_authorization_grants
+      FROM resource_authorization_grants
       WHERE resource_type = ? AND resource_id = (
           SELECT resource_id FROM resource_authorizations WHERE id = ?
         )
-        AND team_id = ?
+        AND grantee_type = 'team'
+        AND grantee_team_id = ?
         AND status = 'active'
       LIMIT 1
     `).get(row.resource_type, authorizationId, row.effective_source_team_id) as unknown as TeamAuthorizationQuotaRow | undefined

@@ -4,6 +4,7 @@ import { ok } from '../../shared/http.js'
 import { getSettings, listGlobalSettings, listPublicGlobalSettings, updateGlobalSettings, updateSettings } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { listStreamInterceptRuleCatalog } from '../gateway/openai-gateway-stream-rule-catalog.service.js'
 import { diffSafeFields, runLoggedOperation } from '../operation-logs/operation-log.service.js'
 
 export const settingsRouter = Router()
@@ -45,6 +46,10 @@ settingsRouter.patch('/global', requireAdmin, (req, res) => {
 
 settingsRouter.get('/', requireAdmin, (_req, res) => {
   res.json(ok(getSettings()))
+})
+
+settingsRouter.get('/stream-intercept-rules', requireAdmin, (_req, res) => {
+  res.json(ok(listStreamInterceptRuleCatalog()))
 })
 
 settingsRouter.patch('/', requireAdmin, (req, res) => {

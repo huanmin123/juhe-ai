@@ -6,6 +6,7 @@ import type {
   ResourceAuthorizationResourceType,
   ResourceAuthorizationSourceStatus,
   ResourceAuthorizationSourceType,
+  ResourceAuthorizationGranteeType,
   AnnouncementLevel,
   AnnouncementStatus,
   SystemTeamMemberStatus,
@@ -111,12 +112,14 @@ export interface ResourceAuthorizationSourceRow {
   updated_at: string
 }
 
-export interface TeamResourceAuthorizationGrantRow {
+export interface ResourceAuthorizationGrantRow {
   id: string
   resource_type: ResourceAuthorizationResourceType
   resource_id: string
   resource_owner_system_account_id: string
-  team_id: string
+  grantee_type: ResourceAuthorizationGranteeType
+  grantee_system_account_id: string | null
+  grantee_team_id: string | null
   scope: 'use'
   status: AuthorizationStatus
   remark: string | null

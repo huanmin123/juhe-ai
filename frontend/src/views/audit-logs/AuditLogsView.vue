@@ -192,12 +192,18 @@
                   <div class="payload-viewer-main">
                     <strong>{{ payloadPartText(selectedPayload.partType) }}</strong>
                     <span>{{ formatBytes(selectedPayload.sizeBytes) }}</span>
+                    <span v-if="payloadContentTab === 'body' && selectedPayloadBodyWindowText" class="payload-window-range">{{ selectedPayloadBodyWindowText }}</span>
                     <a-tabs v-model:activeKey="payloadContentTab" class="payload-content-tabs" size="small">
                       <a-tab-pane key="headers" tab="Headers" />
                       <a-tab-pane key="body" tab="Body" />
                     </a-tabs>
                   </div>
                   <div class="payload-viewer-actions">
+                    <a-tooltip v-if="selectedPayloadCanLoadMore" title="读取下一段正文">
+                      <a-button size="small" :loading="payloadLoadingId === selectedPayload.id" @click="loadNextPayloadWindow">
+                        <template #icon><arrow-right-outlined /></template>
+                      </a-button>
+                    </a-tooltip>
                     <a-tooltip title="复制当前内容">
                       <a-button size="small" :disabled="!selectedPayloadCurrentText" @click="copySelectedPayloadText">
                         <template #icon><copy-outlined /></template>
@@ -222,7 +228,7 @@
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined } from '@ant-design/icons-vue'
+import { ArrowRightOutlined, CopyOutlined } from '@ant-design/icons-vue'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
@@ -329,6 +335,19 @@ const selectedPayloadCurrentText = computed(() => {
 const selectedPayloadViewerContentType = computed(() => payloadContentTab.value === 'headers'
   ? 'application/json'
   : selectedPayload.value?.contentType)
+const selectedPayloadBodyWindowText = computed(() => {
+  const payload = selectedPayload.value
+  if (!payload || payload.bodyTotalBytes <= 0) return ''
+  const start = payload.bodyOffset
+  const end = Math.min(payload.bodyTotalBytes, payload.bodyOffset + payload.bodyBytesReturned)
+  return `${formatBytes(start)} - ${formatBytes(end)} / ${formatBytes(payload.bodyTotalBytes)}`
+})
+const selectedPayloadCanLoadMore = computed(() => Boolean(
+  selectedPayload.value
+  && payloadContentTab.value === 'body'
+  && selectedPayload.value.bodyTruncated
+  && selectedPayload.value.bodyNextOffset !== undefined
+))
 
 function applyFilters(): void {
   pagination.current = 1
@@ -432,6 +451,24 @@ async function loadPayload(payloadId: string): Promise<void> {
   } catch (error) {
     console.error(error)
     message.error('加载原始内容失败')
+  } finally {
+    payloadLoadingId.value = ''
+  }
+}
+
+async function loadNextPayloadWindow(): Promise<void> {
+  if (!detail.value || !selectedPayload.value?.bodyTruncated || selectedPayload.value.bodyNextOffset === undefined) return
+  const payloadId = selectedPayload.value.id
+  payloadLoadingId.value = payloadId
+  try {
+    selectedPayload.value = await api.auditLogs.payload(detail.value.id, payloadId, {
+      offset: selectedPayload.value.bodyNextOffset,
+      limit: selectedPayload.value.bodyLimit
+    })
+    payloadContentTab.value = 'body'
+  } catch (error) {
+    console.error(error)
+    message.error('加载下一段正文失败')
   } finally {
     payloadLoadingId.value = ''
   }
@@ -575,11 +612,17 @@ onMounted(loadData)
   display: none;
 }
 
+.payload-window-range {
+  max-width: 180px;
+  color: #475569;
+}
+
 .payload-viewer-actions {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   flex: 0 0 auto;
+  gap: 6px;
 }
 
 .hash-cell {

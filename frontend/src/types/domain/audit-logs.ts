@@ -92,6 +92,12 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
   headers?: Record<string, string | string[]>
   bodyText?: string
   bodyBase64?: string
+  bodyOffset: number
+  bodyLimit: number
+  bodyBytesReturned: number
+  bodyTotalBytes: number
+  bodyNextOffset?: number
+  bodyTruncated: boolean
 }
 
 export interface AuditLogRuntime {

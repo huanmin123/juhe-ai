@@ -61,7 +61,7 @@ export function applyAccountErrorHandling(
     settings?: GatewaySettings
   }
 ): AccountErrorHandlingResult {
-  if (account.status === 'disabled') {
+  if (account.status === 'disabled' || account.status === 'error') {
     return { action: 'none', changed: false, accountStatus: account.status }
   }
 

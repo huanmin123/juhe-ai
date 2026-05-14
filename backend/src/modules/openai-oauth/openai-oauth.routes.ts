@@ -234,6 +234,10 @@ openAIOAuthRouter.post('/accounts/:id/refresh-token', async (req, res) => {
     res.status(404).json({ message: 'OpenAI OAuth 账户不存在或无权操作' })
     return
   }
+  if (account.status === 'error') {
+    res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
+    return
+  }
 
   const abortController = new AbortController()
   req.once('aborted', () => abortController.abort())
@@ -278,6 +282,10 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
     res.status(404).json({ message: 'OpenAI OAuth 账户不存在或无权操作' })
     return
   }
+  if (account.status === 'error') {
+    res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
+    return
+  }
 
   try {
     const { code, state } = extractCodeAndState(parsed.data)
@@ -316,6 +324,10 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
   const account = findEditableOpenAIOAuthAccount(req.params.id, requestAccess)
   if (!account) {
     res.status(404).json({ message: 'OpenAI OAuth 账户不存在或无权操作' })
+    return
+  }
+  if (account.status === 'error') {
+    res.status(400).json(badRequest('异常账户请先恢复异常后再操作'))
     return
   }
 
@@ -367,7 +379,7 @@ function updateOpenAIOAuthAccountCredentials(
   if (!updated) {
     throw new Error('OpenAI OAuth 账户不存在或无法更新')
   }
-  if (updated.status !== 'disabled') {
+  if (updated.status !== 'disabled' && updated.status !== 'error') {
     return clearAccountFailureState(account.id, access) ?? updated
   }
   return updated

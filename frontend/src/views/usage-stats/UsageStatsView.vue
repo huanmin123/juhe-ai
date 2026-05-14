@@ -331,7 +331,6 @@ const accountFilterItems = computed(() => {
 const summaryCards = computed(() => {
   const summary = overview.value?.summary
   return [
-    { key: 'accounts', label: '统计账户', value: formatInteger(overview.value?.total ?? rows.value.length), extra: selectedTrendAccountIds.value.length ? `趋势筛选 ${formatInteger(visibleTrendRows.value.length)} 个` : `趋势账户 ${formatInteger(visibleTrendRows.value.length)} 个` },
     { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
     { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读取 ${formatCompactInteger(summary?.cacheReadTokens)}` },
     { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: `最后使用 ${formatDateTime(summary?.lastUsedAt)}` }

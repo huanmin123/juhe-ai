@@ -33,6 +33,8 @@ interface AuthorizationReportRow {
   granteeSystemAccountId: string
   resourceType: 'account' | 'group'
   resourceId: string
+  hitAccountId: string
+  hitAccountOwnerSystemAccountId: string
   sourceType?: string | null
   sourceTeamId?: string | null
 }
@@ -352,6 +354,8 @@ function upsertAuthorizationUsageReportRows(database: DatabaseSync, row: UsageSt
           granteeSystemAccountId: scopedReportRow.granteeSystemAccountId,
           resourceFilterType: filter.resourceFilterType,
           resourceFilterId: filter.resourceFilterId,
+          hitAccountId: scopedReportRow.hitAccountId,
+          hitAccountOwnerSystemAccountId: scopedReportRow.hitAccountOwnerSystemAccountId,
           stats,
           updatedAt
         })
@@ -362,6 +366,8 @@ function upsertAuthorizationUsageReportRows(database: DatabaseSync, row: UsageSt
             teamId: scopedReportRow.sourceTeamId,
             resourceFilterType: filter.resourceFilterType,
             resourceFilterId: filter.resourceFilterId,
+            hitAccountId: scopedReportRow.hitAccountId,
+            hitAccountOwnerSystemAccountId: scopedReportRow.hitAccountOwnerSystemAccountId,
             stats,
             updatedAt
           })
@@ -372,6 +378,8 @@ function upsertAuthorizationUsageReportRows(database: DatabaseSync, row: UsageSt
             granteeSystemAccountId: scopedReportRow.granteeSystemAccountId,
             resourceFilterType: filter.resourceFilterType,
             resourceFilterId: filter.resourceFilterId,
+            hitAccountId: scopedReportRow.hitAccountId,
+            hitAccountOwnerSystemAccountId: scopedReportRow.hitAccountOwnerSystemAccountId,
             stats,
             updatedAt
           })
@@ -396,6 +404,8 @@ function subtractAuthorizationUsageReportRows(database: DatabaseSync, row: Usage
           granteeSystemAccountId: scopedReportRow.granteeSystemAccountId,
           resourceFilterType: filter.resourceFilterType,
           resourceFilterId: filter.resourceFilterId,
+          hitAccountId: scopedReportRow.hitAccountId,
+          hitAccountOwnerSystemAccountId: scopedReportRow.hitAccountOwnerSystemAccountId,
           stats,
           updatedAt
         })
@@ -406,6 +416,8 @@ function subtractAuthorizationUsageReportRows(database: DatabaseSync, row: Usage
             teamId: scopedReportRow.sourceTeamId,
             resourceFilterType: filter.resourceFilterType,
             resourceFilterId: filter.resourceFilterId,
+            hitAccountId: scopedReportRow.hitAccountId,
+            hitAccountOwnerSystemAccountId: scopedReportRow.hitAccountOwnerSystemAccountId,
             stats,
             updatedAt
           })
@@ -416,6 +428,8 @@ function subtractAuthorizationUsageReportRows(database: DatabaseSync, row: Usage
             granteeSystemAccountId: scopedReportRow.granteeSystemAccountId,
             resourceFilterType: filter.resourceFilterType,
             resourceFilterId: filter.resourceFilterId,
+            hitAccountId: scopedReportRow.hitAccountId,
+            hitAccountOwnerSystemAccountId: scopedReportRow.hitAccountOwnerSystemAccountId,
             stats,
             updatedAt
           })
@@ -436,6 +450,8 @@ function authorizationReportRows(row: UsageStatsRecordRow): AuthorizationReportR
       granteeSystemAccountId: row.system_account_id,
       resourceType: 'account',
       resourceId: row.account_id,
+      hitAccountId: row.account_id,
+      hitAccountOwnerSystemAccountId: row.account_owner_system_account_id,
       sourceType: row.account_authorization_source_type,
       sourceTeamId: row.account_authorization_source_team_id
     })
@@ -447,6 +463,8 @@ function authorizationReportRows(row: UsageStatsRecordRow): AuthorizationReportR
       granteeSystemAccountId: row.system_account_id,
       resourceType: 'group',
       resourceId: row.group_id,
+      hitAccountId: row.account_id ?? '',
+      hitAccountOwnerSystemAccountId: row.account_owner_system_account_id ?? row.group_owner_system_account_id,
       sourceType: row.group_authorization_source_type,
       sourceTeamId: row.group_authorization_source_team_id
     })
@@ -535,18 +553,20 @@ function upsertAuthorizationTeamUsageRow(database: DatabaseSync, input: {
   teamId: string
   resourceFilterType: AuthorizationReportResourceType
   resourceFilterId: string
+  hitAccountId: string
+  hitAccountOwnerSystemAccountId: string
   stats: UsageStatsAccumulator
   updatedAt: string
 }): void {
   database.prepare(`
     INSERT INTO authorization_team_usage_monthly (
-      system_account_id, stat_month, team_id, resource_filter_type, resource_filter_id,
+      system_account_id, stat_month, team_id, resource_filter_type, resource_filter_id, hit_account_id, hit_account_owner_system_account_id,
       request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max,
       last_used_at, last_error_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(system_account_id, stat_month, team_id, resource_filter_type, resource_filter_id) DO UPDATE SET
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, stat_month, team_id, resource_filter_type, resource_filter_id, hit_account_id, hit_account_owner_system_account_id) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
       error_count = error_count + excluded.error_count,
@@ -563,7 +583,7 @@ function upsertAuthorizationTeamUsageRow(database: DatabaseSync, input: {
       last_used_at = CASE WHEN excluded.last_used_at IS NULL THEN authorization_team_usage_monthly.last_used_at WHEN authorization_team_usage_monthly.last_used_at IS NULL OR excluded.last_used_at > authorization_team_usage_monthly.last_used_at THEN excluded.last_used_at ELSE authorization_team_usage_monthly.last_used_at END,
       last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN authorization_team_usage_monthly.last_error_at WHEN authorization_team_usage_monthly.last_error_at IS NULL OR excluded.last_error_at > authorization_team_usage_monthly.last_error_at THEN excluded.last_error_at ELSE authorization_team_usage_monthly.last_error_at END,
       updated_at = excluded.updated_at
-  `).run(input.systemAccountId, input.statMonth, input.teamId, input.resourceFilterType, input.resourceFilterId, ...statsParamsTail(input.stats, input.updatedAt))
+  `).run(input.systemAccountId, input.statMonth, input.teamId, input.resourceFilterType, input.resourceFilterId, input.hitAccountId, input.hitAccountOwnerSystemAccountId, ...statsParamsTail(input.stats, input.updatedAt))
 }
 
 function subtractAuthorizationTeamUsageRow(database: DatabaseSync, input: {
@@ -572,6 +592,8 @@ function subtractAuthorizationTeamUsageRow(database: DatabaseSync, input: {
   teamId: string
   resourceFilterType: AuthorizationReportResourceType
   resourceFilterId: string
+  hitAccountId: string
+  hitAccountOwnerSystemAccountId: string
   stats: UsageStatsAccumulator
   updatedAt: string
 }): void {
@@ -593,14 +615,14 @@ function subtractAuthorizationTeamUsageRow(database: DatabaseSync, input: {
         last_used_at = CASE WHEN request_count <= ? THEN NULL ELSE last_used_at END,
         last_error_at = CASE WHEN error_count <= ? THEN NULL ELSE last_error_at END,
         updated_at = ?
-    WHERE system_account_id = ? AND stat_month = ? AND team_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
-  `).run(...statsSubtractParams(input.stats), input.updatedAt, input.systemAccountId, input.statMonth, input.teamId, input.resourceFilterType, input.resourceFilterId)
+    WHERE system_account_id = ? AND stat_month = ? AND team_id = ? AND resource_filter_type = ? AND resource_filter_id = ? AND hit_account_id = ? AND hit_account_owner_system_account_id = ?
+  `).run(...statsSubtractParams(input.stats), input.updatedAt, input.systemAccountId, input.statMonth, input.teamId, input.resourceFilterType, input.resourceFilterId, input.hitAccountId, input.hitAccountOwnerSystemAccountId)
   database.prepare(`
     DELETE FROM authorization_team_usage_monthly
-    WHERE system_account_id = ? AND stat_month = ? AND team_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
+    WHERE system_account_id = ? AND stat_month = ? AND team_id = ? AND resource_filter_type = ? AND resource_filter_id = ? AND hit_account_id = ? AND hit_account_owner_system_account_id = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND total_cost_usd = 0
-  `).run(input.systemAccountId, input.statMonth, input.teamId, input.resourceFilterType, input.resourceFilterId)
+  `).run(input.systemAccountId, input.statMonth, input.teamId, input.resourceFilterType, input.resourceFilterId, input.hitAccountId, input.hitAccountOwnerSystemAccountId)
 }
 
 function upsertAuthorizationUserUsageRow(database: DatabaseSync, input: {
@@ -610,18 +632,20 @@ function upsertAuthorizationUserUsageRow(database: DatabaseSync, input: {
   granteeSystemAccountId: string
   resourceFilterType: AuthorizationReportResourceType
   resourceFilterId: string
+  hitAccountId: string
+  hitAccountOwnerSystemAccountId: string
   stats: UsageStatsAccumulator
   updatedAt: string
 }): void {
   database.prepare(`
     INSERT INTO authorization_user_usage_monthly (
-      system_account_id, stat_month, team_filter_id, grantee_system_account_id, resource_filter_type, resource_filter_id,
+      system_account_id, stat_month, team_filter_id, grantee_system_account_id, resource_filter_type, resource_filter_id, hit_account_id, hit_account_owner_system_account_id,
       request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max,
       last_used_at, last_error_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(system_account_id, stat_month, team_filter_id, grantee_system_account_id, resource_filter_type, resource_filter_id) DO UPDATE SET
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(system_account_id, stat_month, team_filter_id, grantee_system_account_id, resource_filter_type, resource_filter_id, hit_account_id, hit_account_owner_system_account_id) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
       error_count = error_count + excluded.error_count,
@@ -638,7 +662,7 @@ function upsertAuthorizationUserUsageRow(database: DatabaseSync, input: {
       last_used_at = CASE WHEN excluded.last_used_at IS NULL THEN authorization_user_usage_monthly.last_used_at WHEN authorization_user_usage_monthly.last_used_at IS NULL OR excluded.last_used_at > authorization_user_usage_monthly.last_used_at THEN excluded.last_used_at ELSE authorization_user_usage_monthly.last_used_at END,
       last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN authorization_user_usage_monthly.last_error_at WHEN authorization_user_usage_monthly.last_error_at IS NULL OR excluded.last_error_at > authorization_user_usage_monthly.last_error_at THEN excluded.last_error_at ELSE authorization_user_usage_monthly.last_error_at END,
       updated_at = excluded.updated_at
-  `).run(input.systemAccountId, input.statMonth, input.teamFilterId, input.granteeSystemAccountId, input.resourceFilterType, input.resourceFilterId, ...statsParamsTail(input.stats, input.updatedAt))
+  `).run(input.systemAccountId, input.statMonth, input.teamFilterId, input.granteeSystemAccountId, input.resourceFilterType, input.resourceFilterId, input.hitAccountId, input.hitAccountOwnerSystemAccountId, ...statsParamsTail(input.stats, input.updatedAt))
 }
 
 function subtractAuthorizationUserUsageRow(database: DatabaseSync, input: {
@@ -648,6 +672,8 @@ function subtractAuthorizationUserUsageRow(database: DatabaseSync, input: {
   granteeSystemAccountId: string
   resourceFilterType: AuthorizationReportResourceType
   resourceFilterId: string
+  hitAccountId: string
+  hitAccountOwnerSystemAccountId: string
   stats: UsageStatsAccumulator
   updatedAt: string
 }): void {
@@ -669,14 +695,14 @@ function subtractAuthorizationUserUsageRow(database: DatabaseSync, input: {
         last_used_at = CASE WHEN request_count <= ? THEN NULL ELSE last_used_at END,
         last_error_at = CASE WHEN error_count <= ? THEN NULL ELSE last_error_at END,
         updated_at = ?
-    WHERE system_account_id = ? AND stat_month = ? AND team_filter_id = ? AND grantee_system_account_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
-  `).run(...statsSubtractParams(input.stats), input.updatedAt, input.systemAccountId, input.statMonth, input.teamFilterId, input.granteeSystemAccountId, input.resourceFilterType, input.resourceFilterId)
+    WHERE system_account_id = ? AND stat_month = ? AND team_filter_id = ? AND grantee_system_account_id = ? AND resource_filter_type = ? AND resource_filter_id = ? AND hit_account_id = ? AND hit_account_owner_system_account_id = ?
+  `).run(...statsSubtractParams(input.stats), input.updatedAt, input.systemAccountId, input.statMonth, input.teamFilterId, input.granteeSystemAccountId, input.resourceFilterType, input.resourceFilterId, input.hitAccountId, input.hitAccountOwnerSystemAccountId)
   database.prepare(`
     DELETE FROM authorization_user_usage_monthly
-    WHERE system_account_id = ? AND stat_month = ? AND team_filter_id = ? AND grantee_system_account_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
+    WHERE system_account_id = ? AND stat_month = ? AND team_filter_id = ? AND grantee_system_account_id = ? AND resource_filter_type = ? AND resource_filter_id = ? AND hit_account_id = ? AND hit_account_owner_system_account_id = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
       AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND total_cost_usd = 0
-  `).run(input.systemAccountId, input.statMonth, input.teamFilterId, input.granteeSystemAccountId, input.resourceFilterType, input.resourceFilterId)
+  `).run(input.systemAccountId, input.statMonth, input.teamFilterId, input.granteeSystemAccountId, input.resourceFilterType, input.resourceFilterId, input.hitAccountId, input.hitAccountOwnerSystemAccountId)
 }
 
 function upsertAuthorizationTeamUsageSummaryRow(database: DatabaseSync, systemAccountId: string, statMonth: string, key: AuthorizationReportSummaryKey, stats: UsageStatsAccumulator, updatedAt: string): void {

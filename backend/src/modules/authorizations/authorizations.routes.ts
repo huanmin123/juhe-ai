@@ -18,6 +18,7 @@ import { bodyField, mutationGuard, normalizedText, queryField, textValue } from 
 import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
+import type { ResourceAuthorizationSummary } from '../../domain/types.js'
 
 export const authorizationsRouter = Router()
 
@@ -179,11 +180,11 @@ authorizationsRouter.post('/', mutationGuard({
           resourceType: 'authorization',
           resourceId: authorization.id,
           resourceName: authorization.resourceName ?? authorization.resourceId,
-          summary: `创建资源授权：${authorization.resourceName ?? authorization.resourceId} -> ${authorization.granteeSystemAccountName ?? authorization.granteeUsername ?? authorization.granteeSystemAccountId}`,
+          summary: `创建资源授权：${authorization.resourceName ?? authorization.resourceId} -> ${authorizationGranteeName(authorization)}`,
           changes: [
             safeChange('resourceType', '资源类型', undefined, authorization.resourceType),
             safeChange('resourceId', '授权资源', undefined, authorization.resourceName ?? authorization.resourceId),
-            safeChange('granteeSystemAccountId', '被授权用户', undefined, authorization.granteeSystemAccountName ?? authorization.granteeSystemAccountId),
+            safeChange('grantee', '被授权目标', undefined, authorizationGranteeName(authorization)),
             safeChange('status', '状态', undefined, authorization.status),
             safeChange('expiresAt', '过期时间', undefined, authorization.expiresAt),
             safeChange('limits', '额度限制', undefined, authorization.limits),
@@ -241,7 +242,7 @@ authorizationsRouter.delete('/:id', (req, res) => {
           resourceType: 'authorization',
           resourceId: authorization.id,
           resourceName: authorization.resourceName ?? authorization.resourceId,
-          summary: `撤销资源授权：${authorization.resourceName ?? authorization.resourceId} -> ${authorization.granteeSystemAccountName ?? authorization.granteeUsername ?? authorization.granteeSystemAccountId}`,
+          summary: `撤销资源授权：${authorization.resourceName ?? authorization.resourceId} -> ${authorizationGranteeName(authorization)}`,
           changes: [
             ...diffSafeFields(before as unknown as Record<string, unknown> | undefined, authorization as unknown as Record<string, unknown>, {
               status: '状态',
@@ -408,29 +409,46 @@ authorizationsRouter.get('/:id/usage', (req, res) => {
 })
 
 function authorizationTargets(authorization: ReturnType<typeof listResourceAuthorizations>[number]) {
-  return [
+  const targets = [
     ownerTarget({
       targetType: authorization.resourceType,
       targetId: authorization.resourceId,
       targetName: authorization.resourceName,
       ownerSystemAccountId: authorization.resourceOwnerSystemAccountId,
       relation: 'owner'
-    }),
-    ownerTarget({
-      targetType: 'system_account',
-      targetId: authorization.granteeSystemAccountId,
-      targetName: authorization.granteeSystemAccountName ?? authorization.granteeUsername,
-      ownerSystemAccountId: authorization.granteeSystemAccountId,
-      relation: 'grantee'
     })
   ]
+  if (authorization.granteeType === 'team') {
+    targets.push(ownerTarget({
+      targetType: 'system_team',
+      targetId: authorization.granteeTeamId,
+      targetName: authorization.granteeTeamName,
+      relation: 'grantee'
+    }))
+    return targets
+  }
+  targets.push(ownerTarget({
+    targetType: 'system_account',
+    targetId: authorization.granteeSystemAccountId,
+    targetName: authorization.granteeSystemAccountName ?? authorization.granteeUsername,
+    ownerSystemAccountId: authorization.granteeSystemAccountId,
+    relation: 'grantee'
+  }))
+  return targets
 }
 
 function authorizationViewers(authorization: ReturnType<typeof listResourceAuthorizations>[number]) {
   return viewers(
     viewer(authorization.resourceOwnerSystemAccountId, 'authorization_owner'),
-    viewer(authorization.granteeSystemAccountId, 'authorization_grantee')
+    viewer(authorization.granteeType === 'system_account' ? authorization.granteeSystemAccountId : undefined, 'authorization_grantee')
   )
+}
+
+function authorizationGranteeName(authorization: ResourceAuthorizationSummary): string {
+  if (authorization.granteeType === 'team') {
+    return authorization.granteeTeamName ?? authorization.granteeTeamId ?? '团队'
+  }
+  return authorization.granteeSystemAccountName ?? authorization.granteeUsername ?? authorization.granteeSystemAccountId ?? '被授权用户'
 }
 
 function clearAuthorizationRuntimeCaches(): void {

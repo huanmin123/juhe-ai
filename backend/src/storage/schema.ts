@@ -183,12 +183,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (source_team_id) REFERENCES system_teams(id) ON DELETE CASCADE
     );
 
-    CREATE TABLE IF NOT EXISTS team_resource_authorization_grants (
+    CREATE TABLE IF NOT EXISTS resource_authorization_grants (
       id TEXT PRIMARY KEY,
       resource_type TEXT NOT NULL,
       resource_id TEXT NOT NULL,
       resource_owner_system_account_id TEXT NOT NULL,
-      team_id TEXT NOT NULL,
+      grantee_type TEXT NOT NULL,
+      grantee_system_account_id TEXT,
+      grantee_team_id TEXT,
       scope TEXT NOT NULL DEFAULT 'use',
       status TEXT NOT NULL DEFAULT 'active',
       remark TEXT,
@@ -200,7 +202,13 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       revoked_by TEXT,
       revoked_at TEXT,
       updated_at TEXT NOT NULL,
-      FOREIGN KEY (team_id) REFERENCES system_teams(id) ON DELETE CASCADE
+      CHECK (
+        (grantee_type = 'system_account' AND grantee_system_account_id IS NOT NULL AND grantee_team_id IS NULL)
+        OR
+        (grantee_type = 'team' AND grantee_team_id IS NOT NULL AND grantee_system_account_id IS NULL)
+      ),
+      FOREIGN KEY (grantee_system_account_id) REFERENCES system_accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (grantee_team_id) REFERENCES system_teams(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS groups (
@@ -324,10 +332,12 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_group_authorization ON api_keys(group_authorization_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
-    CREATE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_team ON team_resource_authorization_grants(team_id, status);
-    CREATE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_resource ON team_resource_authorization_grants(resource_type, resource_id, status);
-    CREATE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_owner ON team_resource_authorization_grants(resource_owner_system_account_id, status);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_team_resource_authorization_grants_active_unique ON team_resource_authorization_grants(resource_type, resource_id, team_id) WHERE status = 'active';
+    CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_owner ON resource_authorization_grants(resource_owner_system_account_id, status);
+    CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_resource ON resource_authorization_grants(resource_type, resource_id, status);
+    CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_grantee_user ON resource_authorization_grants(grantee_system_account_id, status);
+    CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_grantee_team ON resource_authorization_grants(grantee_team_id, status);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_grants_active_user_unique ON resource_authorization_grants(resource_type, resource_id, grantee_system_account_id) WHERE status = 'active' AND grantee_type = 'system_account';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_grants_active_team_unique ON resource_authorization_grants(resource_type, resource_id, grantee_team_id) WHERE status = 'active' AND grantee_type = 'team';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_sources_active_manual_unique ON resource_authorization_sources(authorization_id, source_type) WHERE status = 'active' AND source_type = 'manual';
     CREATE UNIQUE INDEX IF NOT EXISTS idx_resource_authorization_sources_active_team_unique ON resource_authorization_sources(authorization_id, source_type, source_team_id) WHERE status = 'active' AND source_type = 'team';
     CREATE INDEX IF NOT EXISTS idx_proxy_profiles_system_account ON proxy_profiles(system_account_id);
@@ -631,6 +641,19 @@ export function applyRecordSchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS runtime_log_file_cursors (
+      log_file TEXT PRIMARY KEY,
+      file_identity TEXT,
+      cursor_offset INTEGER NOT NULL DEFAULT 0,
+      line_number INTEGER NOT NULL DEFAULT 0,
+      file_size INTEGER NOT NULL DEFAULT 0,
+      file_mtime_ms INTEGER,
+      last_read_at TEXT,
+      last_error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE VIRTUAL TABLE IF NOT EXISTS runtime_log_search USING fts5(
       log_id UNINDEXED,
       trace_id,
@@ -806,6 +829,8 @@ export function applyRecordSchema(database: DatabaseSync): void {
       team_id TEXT NOT NULL,
       resource_filter_type TEXT NOT NULL DEFAULT 'all',
       resource_filter_id TEXT NOT NULL DEFAULT '',
+      hit_account_id TEXT NOT NULL DEFAULT '',
+      hit_account_owner_system_account_id TEXT NOT NULL DEFAULT '',
       request_count INTEGER NOT NULL DEFAULT 0,
       success_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
@@ -822,7 +847,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       last_used_at TEXT,
       last_error_at TEXT,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, stat_month, team_id, resource_filter_type, resource_filter_id)
+      PRIMARY KEY (system_account_id, stat_month, team_id, resource_filter_type, resource_filter_id, hit_account_id, hit_account_owner_system_account_id)
     );
 
     CREATE TABLE IF NOT EXISTS authorization_team_usage_summary_monthly (
@@ -858,6 +883,8 @@ export function applyRecordSchema(database: DatabaseSync): void {
       grantee_system_account_id TEXT NOT NULL,
       resource_filter_type TEXT NOT NULL DEFAULT 'all',
       resource_filter_id TEXT NOT NULL DEFAULT '',
+      hit_account_id TEXT NOT NULL DEFAULT '',
+      hit_account_owner_system_account_id TEXT NOT NULL DEFAULT '',
       request_count INTEGER NOT NULL DEFAULT 0,
       success_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
@@ -874,7 +901,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       last_used_at TEXT,
       last_error_at TEXT,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, stat_month, team_filter_id, grantee_system_account_id, resource_filter_type, resource_filter_id)
+      PRIMARY KEY (system_account_id, stat_month, team_filter_id, grantee_system_account_id, resource_filter_type, resource_filter_id, hit_account_id, hit_account_owner_system_account_id)
     );
 
     CREATE TABLE IF NOT EXISTS authorization_user_usage_summary_monthly (
@@ -1196,8 +1223,10 @@ export function applyRecordSchema(database: DatabaseSync): void {
       request_count INTEGER NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
+      duration_ms_max INTEGER NOT NULL DEFAULT 0,
       first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
       first_token_ms_count INTEGER NOT NULL DEFAULT 0,
+      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, window_key)
     );
@@ -1406,6 +1435,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_level_time ON runtime_logs(level, time DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_event_time ON runtime_logs(event, time DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_created_at ON runtime_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_runtime_log_file_cursors_updated ON runtime_log_file_cursors(updated_at);
     CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_minute_scope_minute ON usage_stats_minute(system_account_id, scope_type, scope_id, stat_minute);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_minute_minute ON usage_stats_minute(stat_minute);
@@ -1418,9 +1448,9 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_stats_weekly_week ON usage_stats_weekly(stat_week);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_monthly_scope_month ON usage_stats_monthly(system_account_id, scope_type, scope_id, stat_month);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_monthly_month ON usage_stats_monthly(stat_month);
-    CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_monthly_lookup ON authorization_team_usage_monthly(system_account_id, stat_month, resource_filter_type, resource_filter_id, team_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_monthly_lookup ON authorization_team_usage_monthly(system_account_id, stat_month, resource_filter_type, resource_filter_id, team_id, hit_account_id);
     CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_summary_monthly_lookup ON authorization_team_usage_summary_monthly(system_account_id, stat_month, team_filter_id, resource_filter_type, resource_filter_id);
-    CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_monthly_lookup ON authorization_user_usage_monthly(system_account_id, stat_month, team_filter_id, resource_filter_type, resource_filter_id, grantee_system_account_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_monthly_lookup ON authorization_user_usage_monthly(system_account_id, stat_month, team_filter_id, resource_filter_type, resource_filter_id, grantee_system_account_id, hit_account_id);
     CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_monthly_lookup ON authorization_user_usage_summary_monthly(system_account_id, stat_month, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id);
     CREATE INDEX IF NOT EXISTS idx_usage_model_minute_minute ON usage_model_minute(system_account_id, stat_minute, model);
     CREATE INDEX IF NOT EXISTS idx_usage_model_minute_stat_minute ON usage_model_minute(stat_minute);
@@ -1468,6 +1498,10 @@ export function applyRecordSchema(database: DatabaseSync): void {
     account_authorization_source_team_id: 'TEXT',
     group_authorization_source_type: 'TEXT',
     group_authorization_source_team_id: 'TEXT'
+  })
+  ensureRecordTableColumns(database, 'ai_performance_summary_windows', {
+    duration_ms_max: 'INTEGER NOT NULL DEFAULT 0',
+    first_token_ms_max: 'INTEGER NOT NULL DEFAULT 0'
   })
 }
 

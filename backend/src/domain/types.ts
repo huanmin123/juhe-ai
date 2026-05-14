@@ -13,6 +13,7 @@ export type SystemTeamMemberStatus = 'active' | 'removed'
 export type ResourceAuthorizationResourceType = 'account' | 'group'
 export type ResourceAuthorizationSourceType = 'manual' | 'team'
 export type ResourceAuthorizationSourceStatus = 'active' | 'superseded' | 'revoked'
+export type ResourceAuthorizationGranteeType = 'system_account' | 'team'
 export type AccountGroupBindStatus = 'bound' | 'authorization_unavailable'
 export type AnnouncementLevel = 'critical' | 'warning' | 'info' | 'normal'
 export type AnnouncementStatus = 'draft' | 'published' | 'archived'
@@ -198,8 +199,10 @@ export interface AiPerformancePoint {
   requestCount: number
   firstTokenCount: number
   averageFirstTokenMs?: number
+  maxFirstTokenMs?: number
   durationCount: number
   averageDurationMs?: number
+  maxDurationMs?: number
 }
 
 export interface AiPerformanceAccountSeries {
@@ -219,8 +222,10 @@ export interface AiPerformanceOverview {
     requestCount: number
     firstTokenCount: number
     averageFirstTokenMs?: number
+    maxFirstTokenMs?: number
     durationCount: number
     averageDurationMs?: number
+    maxDurationMs?: number
   }
   statsLagSeconds: number
 }
@@ -443,9 +448,12 @@ export interface ResourceAuthorizationSummary {
   resourceName?: string
   resourceOwnerSystemAccountId: string
   resourceOwnerSystemAccountName?: string
-  granteeSystemAccountId: string
+  granteeType?: ResourceAuthorizationGranteeType
+  granteeSystemAccountId?: string
   granteeSystemAccountName?: string
   granteeUsername?: string
+  granteeTeamId?: string
+  granteeTeamName?: string
   scope: 'use'
   status: AuthorizationStatus
   remark?: string
@@ -479,6 +487,10 @@ export interface AuthorizationTeamUsageRow {
   teamId: string
   teamName: string
   status: SystemTeamStatus
+  accountId?: string
+  accountName?: string
+  accountOwnerSystemAccountId?: string
+  accountOwnerSystemAccountName?: string
   usage: AccountUsageSummary
   lastUsedAt?: string
 }
@@ -495,6 +507,10 @@ export interface AuthorizationUserUsageRow {
   systemAccountId: string
   userName: string
   username?: string
+  accountId?: string
+  accountName?: string
+  accountOwnerSystemAccountId?: string
+  accountOwnerSystemAccountName?: string
   sourceLabels: string[]
   usage: AccountUsageSummary
   lastUsedAt?: string

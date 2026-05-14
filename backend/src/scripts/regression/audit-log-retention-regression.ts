@@ -165,7 +165,9 @@ try {
   const detail = repositories.getAuditLogDetail('audit_retention_1')
   const payload = detail?.payloads.find((item) => item.partType === 'gateway_error')
   assert(payload, '事件详情应包含 gateway_error payload 引用')
-  const payloadDetail = repositories.getAuditLogPayload('audit_retention_1', payload.id)
+  const payloadDetail = await repositories.getAuditLogPayload('audit_retention_1', payload.id, {
+    limit: repeatedBody.length
+  })
   assert.equal(payloadDetail?.bodyText, repeatedBody, 'payload 读取接口应透明解压并返回正文')
 
   const deleted = repositories.cleanupAuditLogsByRetention({

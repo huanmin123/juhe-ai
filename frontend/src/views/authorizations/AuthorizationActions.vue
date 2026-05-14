@@ -37,6 +37,10 @@ const actions = computed<RowActionItem[]>(() => {
   if (props.authorization.status === 'paused') {
     items.push({ key: 'resume', label: '恢复授权', icon: 'resume', tone: 'success' })
   }
+  if (props.authorization.granteeType === 'team') {
+    items.push({ key: 'revoke-team-grant', label: '回收', icon: 'revoke', tone: 'danger' })
+    return items
+  }
   if (props.authorization.status === 'active' && hasManualSource(props.authorization)) {
     items.push({ key: 'revoke-manual', label: '回收', icon: 'revoke', tone: 'danger' })
   }

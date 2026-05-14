@@ -15,11 +15,15 @@ const runtimeLogRetryDelayMs = 1000
 const runtimeLogBatchSize = 500
 const runtimeLogMaxPending = 20000
 const runtimeLogMaxRawJsonChars = 128 * 1024
+const runtimeLogOverflowWarningIntervalMs = 5000
 
 let pendingRuntimeLogs: RuntimeLogIndexInput[] = []
 let flushTimer: NodeJS.Timeout | undefined
+let flushTimerDelayMs: number | undefined
 let flushing = false
 let droppedRuntimeLogCount = 0
+let lastOverflowWarningAtMs = 0
+let suppressedOverflowWarningCount = 0
 let flushLastSuccessAt: string | undefined
 let flushLastError: string | undefined
 let shutdownHooksInstalled = false
@@ -53,8 +57,7 @@ export function enqueueRuntimeLogLineLocal(rawLine: string, options: { sourceKey
   if (pendingRuntimeLogs.length > runtimeLogMaxPending) {
     const overflowCount = pendingRuntimeLogs.length - runtimeLogMaxPending
     pendingRuntimeLogs.splice(0, overflowCount)
-    droppedRuntimeLogCount += overflowCount
-    writeRuntimeLogIndexError(`运行日志索引队列已满，丢弃 ${overflowCount} 条`)
+    recordRuntimeLogOverflow(overflowCount)
   }
 
   scheduleRuntimeLogFlush(pendingRuntimeLogs.length >= runtimeLogBatchSize ? 0 : runtimeLogFlushIntervalMs)
@@ -68,10 +71,12 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
   if (flushTimer) {
     clearTimeout(flushTimer)
     flushTimer = undefined
+    flushTimerDelayMs = undefined
   }
 
   flushing = true
   let shouldRetry = false
+  let failed = false
   try {
     do {
       const batch = pendingRuntimeLogs.splice(0, runtimeLogBatchSize)
@@ -84,7 +89,13 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
         flushLastSuccessAt = nowIso()
         flushLastError = undefined
       } catch (error) {
-        pendingRuntimeLogs = [...batch, ...pendingRuntimeLogs].slice(0, runtimeLogMaxPending)
+        failed = true
+        pendingRuntimeLogs = [...batch, ...pendingRuntimeLogs]
+        if (pendingRuntimeLogs.length > runtimeLogMaxPending) {
+          const overflowCount = pendingRuntimeLogs.length - runtimeLogMaxPending
+          pendingRuntimeLogs.splice(runtimeLogMaxPending, overflowCount)
+          recordRuntimeLogOverflow(overflowCount)
+        }
         flushLastError = error instanceof Error ? error.message : String(error)
         writeRuntimeLogIndexError(`运行日志索引写入失败：${flushLastError}`)
         shouldRetry = options.retryOnFailure !== false
@@ -95,7 +106,7 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
     flushing = false
   }
 
-  if (pendingRuntimeLogs.length > 0) {
+  if (pendingRuntimeLogs.length > 0 && (!failed || shouldRetry)) {
     scheduleRuntimeLogFlush(shouldRetry ? runtimeLogRetryDelayMs : 0)
   }
 }
@@ -189,16 +200,41 @@ function truncateRawJson(value: string): string {
 }
 
 function scheduleRuntimeLogFlush(delayMs: number): void {
+  if (delayMs <= 0 && flushTimer && (flushTimerDelayMs ?? 0) > 0) {
+    clearTimeout(flushTimer)
+    flushTimer = undefined
+    flushTimerDelayMs = undefined
+  }
   if (flushTimer || flushing) {
     return
   }
   flushTimer = setTimeout(() => {
     flushTimer = undefined
+    flushTimerDelayMs = undefined
     flushRuntimeLogIndexQueue()
   }, delayMs)
+  flushTimerDelayMs = delayMs
   flushTimer.unref()
 }
 
 function writeRuntimeLogIndexError(message: string): void {
   process.stderr.write(`[runtime-log-index] ${message}\n`)
+}
+
+function recordRuntimeLogOverflow(overflowCount: number): void {
+  droppedRuntimeLogCount += overflowCount
+
+  const nowMs = Date.now()
+  if (nowMs - lastOverflowWarningAtMs < runtimeLogOverflowWarningIntervalMs) {
+    suppressedOverflowWarningCount += overflowCount
+    return
+  }
+
+  const warningCount = overflowCount + suppressedOverflowWarningCount
+  const suppressedText = suppressedOverflowWarningCount > 0
+    ? `，含前序未重复提示 ${suppressedOverflowWarningCount} 条`
+    : ''
+  suppressedOverflowWarningCount = 0
+  lastOverflowWarningAtMs = nowMs
+  writeRuntimeLogIndexError(`运行日志索引队列已满，累计丢弃 ${warningCount} 条${suppressedText}`)
 }

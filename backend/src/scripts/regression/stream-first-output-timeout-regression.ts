@@ -155,7 +155,7 @@ async function main(): Promise<void> {
     assert.equal(overloadedNoPolicyAccount?.status, 'active', '默认容量错误拦截不应把账号置为临时不可调用')
     assert.equal(overloadedNoPolicyAccount?.cooldownUntil, undefined, '默认容量错误拦截不应写入冷却截止时间')
     auditLogQueue.flushAllAuditLogQueue()
-    assertStreamInterceptAuditMetadata(overloadedNoAccountPolicyCredential.account.id, {
+    await assertStreamInterceptAuditMetadata(overloadedNoAccountPolicyCredential.account.id, {
       upstreamErrorCode: 'server_is_overloaded',
       rewriteErrorCode: 'upstream_retryable_error',
       accountPolicy: 'none',
@@ -613,7 +613,7 @@ function assertFailedUsageRecordErrorCode(accountId: string, errorCode: string):
   assert.equal(record.errorCode, errorCode, `失败使用记录错误码不正确：${record.errorCode}`)
 }
 
-function assertStreamInterceptAuditMetadata(
+async function assertStreamInterceptAuditMetadata(
   accountId: string,
   expected: {
     upstreamErrorCode: string
@@ -621,7 +621,7 @@ function assertStreamInterceptAuditMetadata(
     accountPolicy: string
     outputSeen: boolean
   }
-): void {
+): Promise<void> {
   const logs = repositories.listAuditLogs({ accountId, outcome: 'stream_failed', page: 1, pageSize: 20 })
   const detail = logs.items
     .map((item) => repositories.getAuditLogDetail(item.id))
@@ -629,7 +629,7 @@ function assertStreamInterceptAuditMetadata(
   assert(detail, `未找到账号 ${accountId} 的流式拦截审计日志`)
   const metadataPayload = detail.payloads.find((payload) => payload.partType === 'gateway_metadata')
   assert(metadataPayload, '流式拦截审计日志缺少 gateway_metadata')
-  const payloadDetail = repositories.getAuditLogPayload(detail.id, metadataPayload.id)
+  const payloadDetail = await repositories.getAuditLogPayload(detail.id, metadataPayload.id)
   assert(payloadDetail?.bodyText, '流式拦截审计元信息缺少正文')
   const body = JSON.parse(payloadDetail.bodyText) as { metadata?: Record<string, unknown> }
   const metadata = body.metadata ?? {}

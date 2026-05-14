@@ -106,7 +106,7 @@
         row-key="id"
         :loading="loading"
         :pagination="false"
-        :scroll-x="1120"
+        :scroll-x="1260"
         pull-refresh-enabled
         :refreshing="loading"
         @mobile-refresh="loadData"
@@ -121,10 +121,14 @@
               <span v-if="record.username && record.username !== record.userName" class="authorization-usage-subtext">{{ record.username }}</span>
             </div>
           </template>
-          <template v-else-if="column.key === 'sources'">
-            <div class="authorization-usage-tags">
-              <a-tag v-for="label in record.sourceLabels.slice(0, 3)" :key="label" color="blue">{{ label }}</a-tag>
-              <a-tag v-if="record.sourceLabels.length > 3">+{{ record.sourceLabels.length - 3 }}</a-tag>
+          <template v-else-if="column.key === 'account'">
+            <div class="authorization-usage-user-cell">
+              <span class="authorization-usage-name">{{ record.accountName || record.accountId || '-' }}</span>
+            </div>
+          </template>
+          <template v-else-if="column.key === 'accountOwner'">
+            <div class="authorization-usage-user-cell">
+              <span class="authorization-usage-name">{{ record.accountOwnerSystemAccountName || record.accountOwnerSystemAccountId || '-' }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'usage'">
@@ -142,14 +146,18 @@
                 <div v-if="record.username && record.username !== record.userName" class="authorization-usage-subtext">{{ record.username }}</div>
               </div>
             </div>
-            <div class="authorization-usage-tags">
-              <a-tag v-for="label in record.sourceLabels.slice(0, 3)" :key="label" color="blue">{{ label }}</a-tag>
-              <a-tag v-if="record.sourceLabels.length > 3">+{{ record.sourceLabels.length - 3 }}</a-tag>
-            </div>
             <div class="mobile-list-meta-grid">
               <div class="mobile-list-meta-item mobile-list-meta-wide">
                 <span>月度消耗</span>
                 <strong><UsageSummaryTags :usage="record.usage" /></strong>
+              </div>
+              <div class="mobile-list-meta-item">
+                <span>资源名称</span>
+                <strong>{{ record.accountName || record.accountId || '-' }}</strong>
+              </div>
+              <div class="mobile-list-meta-item">
+                <span>资源归属人</span>
+                <strong>{{ record.accountOwnerSystemAccountName || record.accountOwnerSystemAccountId || '-' }}</strong>
               </div>
               <div class="mobile-list-meta-item mobile-list-meta-wide">
                 <span>最后使用</span>
@@ -206,7 +214,8 @@ const filters = reactive<UserUsageFilters>(defaultFilters())
 const resourceTypeOptions = authorizationResourceTypeOptions
 const columns = [
   { title: '被授权用户', key: 'user', width: 230 },
-  { title: '授权来源', key: 'sources', width: 240 },
+  { title: '资源名称', key: 'account', width: 220 },
+  { title: '资源归属人', key: 'accountOwner', width: 180 },
   { title: '月度消耗', key: 'usage', width: 220 },
   { title: '最后使用', key: 'lastUsedAt', width: 180 }
 ]
@@ -452,7 +461,7 @@ onMounted(() => {
   min-width: 0;
   overflow: hidden;
   color: #0f172a;
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -466,23 +475,20 @@ onMounted(() => {
   white-space: nowrap;
 }
 
-.authorization-usage-tags {
-  display: inline-flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-
-.authorization-usage-tags :deep(.ant-tag) {
-  margin-inline-end: 0;
-}
-
 .authorization-usage-number {
   color: #0f172a;
   font-family: Consolas, 'Courier New', monospace;
 }
 
+.authorization-usage-table :deep(.ant-table-thead > tr > th),
 .authorization-usage-table :deep(.ant-table-cell) {
+  font-weight: 400;
   white-space: nowrap;
+}
+
+.authorization-usage-page :deep(.mobile-list-card-title),
+.authorization-usage-page :deep(.mobile-list-meta-item strong) {
+  font-weight: 400;
 }
 
 .authorization-usage-table :deep(.responsive-data-list-flex-column) {

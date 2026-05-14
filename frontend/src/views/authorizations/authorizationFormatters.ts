@@ -47,6 +47,7 @@ export function sourceTagColor(source: AuthorizationSourceSummary): string {
 }
 
 export function granteeSourceLabel(item: ResourceAuthorizationSummary): string | undefined {
+  if (item.granteeType === 'team') return '团队'
   if (item.effectiveSourceType === 'manual') return '个人'
   if (item.effectiveSourceType === 'team') {
     return '团队'
@@ -61,12 +62,20 @@ export function granteeSourceLabel(item: ResourceAuthorizationSummary): string |
 }
 
 export function granteeSourceTagColor(item: ResourceAuthorizationSummary): string {
+  if (item.granteeType === 'team') return 'gold'
   if (item.effectiveSourceType === 'team') return 'gold'
   if (item.effectiveSourceType === 'manual') return 'cyan'
   return activeTeamSources(item).length > 0 ? 'gold' : 'cyan'
 }
 
 export function granteeTargetName(item: ResourceAuthorizationSummary): string {
+  if (item.granteeType === 'team') {
+    return item.granteeTeamName
+      ?? item.granteeTeamId
+      ?? item.effectiveSourceTeamName
+      ?? item.effectiveSourceTeamId
+      ?? '团队'
+  }
   if (item.effectiveSourceType === 'team') {
     const teamSource = item.authorizationSources?.find((source) => source.sourceType === 'team' && source.status === 'active')
     return item.effectiveSourceTeamName
@@ -76,8 +85,9 @@ export function granteeTargetName(item: ResourceAuthorizationSummary): string {
       ?? item.granteeSystemAccountName
       ?? item.granteeUsername
       ?? item.granteeSystemAccountId
+      ?? '-'
   }
-  return item.granteeSystemAccountName ?? item.granteeUsername ?? item.granteeSystemAccountId
+  return item.granteeSystemAccountName ?? item.granteeUsername ?? item.granteeSystemAccountId ?? '-'
 }
 
 export function authorizationDirection(item: ResourceAuthorizationSummary, currentSystemAccountId?: string): 'outbound' | 'inbound' {
@@ -96,10 +106,12 @@ export function authorizationDirectionColor(item: ResourceAuthorizationSummary, 
 }
 
 export function hasManualSource(item: ResourceAuthorizationSummary): boolean {
+  if (item.granteeType === 'team') return false
   return item.authorizationSources?.some((source) => source.sourceType === 'manual' && source.status === 'active') ?? false
 }
 
 export function activeTeamSources(item: ResourceAuthorizationSummary): AuthorizationSourceSummary[] {
+  if (item.granteeType === 'team') return []
   return item.authorizationSources?.filter((source) => source.sourceType === 'team' && source.status === 'active' && source.sourceTeamId) ?? []
 }
 

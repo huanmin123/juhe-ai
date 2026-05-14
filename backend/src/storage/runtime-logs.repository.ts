@@ -57,6 +57,30 @@ export interface RuntimeLogFacets {
   events: string[]
 }
 
+export interface RuntimeLogFileCursor {
+  logFile: string
+  fileIdentity?: string
+  cursorOffset: number
+  lineNumber: number
+  fileSize: number
+  fileMtimeMs?: number
+  lastReadAt?: string
+  lastErrorMessage?: string
+  createdAt: string
+  updatedAt: string
+}
+
+export interface RuntimeLogFileCursorInput {
+  logFile: string
+  fileIdentity?: string
+  cursorOffset: number
+  lineNumber: number
+  fileSize: number
+  fileMtimeMs?: number
+  lastReadAt?: string
+  lastErrorMessage?: string
+}
+
 type RuntimeLogRow = Record<string, unknown>
 type RuntimeLogFilterValue = string | number
 
@@ -239,6 +263,45 @@ export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit =
   }
 }
 
+export function getRuntimeLogFileCursor(logFile: string): RuntimeLogFileCursor | undefined {
+  const row = getRecordDatabase()
+    .prepare('SELECT * FROM runtime_log_file_cursors WHERE log_file = ?')
+    .get(logFile) as RuntimeLogRow | undefined
+  return row ? runtimeLogFileCursorFromRow(row) : undefined
+}
+
+export function upsertRuntimeLogFileCursor(input: RuntimeLogFileCursorInput): void {
+  const now = nowIso()
+  getRecordDatabase()
+    .prepare(`
+      INSERT INTO runtime_log_file_cursors (
+        log_file, file_identity, cursor_offset, line_number, file_size, file_mtime_ms,
+        last_read_at, last_error_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(log_file) DO UPDATE SET
+        file_identity = excluded.file_identity,
+        cursor_offset = excluded.cursor_offset,
+        line_number = excluded.line_number,
+        file_size = excluded.file_size,
+        file_mtime_ms = excluded.file_mtime_ms,
+        last_read_at = excluded.last_read_at,
+        last_error_message = excluded.last_error_message,
+        updated_at = excluded.updated_at
+    `)
+    .run(
+      input.logFile,
+      input.fileIdentity ?? null,
+      positiveInteger(input.cursorOffset),
+      positiveInteger(input.lineNumber),
+      positiveInteger(input.fileSize),
+      integerOrNull(input.fileMtimeMs),
+      input.lastReadAt ?? now,
+      input.lastErrorMessage ?? null,
+      now,
+      now
+    )
+}
+
 function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: string; params: RuntimeLogFilterValue[] } {
   const clauses: string[] = []
   const params: RuntimeLogFilterValue[] = []
@@ -316,6 +379,10 @@ function integerOrNull(value: unknown): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? Math.trunc(value) : null
 }
 
+function positiveInteger(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : 0
+}
+
 function runtimeLogFromRow(row: RuntimeLogRow): RuntimeLogSummary {
   return {
     id: String(row.id),
@@ -327,6 +394,21 @@ function runtimeLogFromRow(row: RuntimeLogRow): RuntimeLogSummary {
     errorMessage: optionalString(row.error_message),
     rawJson: String(row.raw_json),
     createdAt: String(row.created_at)
+  }
+}
+
+function runtimeLogFileCursorFromRow(row: RuntimeLogRow): RuntimeLogFileCursor {
+  return {
+    logFile: String(row.log_file),
+    fileIdentity: optionalString(row.file_identity),
+    cursorOffset: positiveInteger(row.cursor_offset),
+    lineNumber: positiveInteger(row.line_number),
+    fileSize: positiveInteger(row.file_size),
+    fileMtimeMs: integerOrNull(row.file_mtime_ms) ?? undefined,
+    lastReadAt: optionalString(row.last_read_at),
+    lastErrorMessage: optionalString(row.last_error_message),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at)
   }
 }
 

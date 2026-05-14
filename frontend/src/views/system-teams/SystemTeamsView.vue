@@ -401,7 +401,7 @@ onMounted(loadData)
 
 .team-name {
   color: #0f172a;
-  font-weight: 700;
+  font-weight: 400;
 }
 
 .team-members-modal {
@@ -425,8 +425,17 @@ onMounted(loadData)
   font-size: 12px;
 }
 
-.system-teams-table :deep(.ant-table-cell) {
+.system-teams-table :deep(.ant-table-thead > tr > th),
+.system-teams-table :deep(.ant-table-cell),
+.team-members-table :deep(.ant-table-thead > tr > th),
+.team-members-table :deep(.ant-table-cell) {
+  font-weight: 400;
   white-space: nowrap;
+}
+
+.system-teams-page-card :deep(.mobile-list-card-title),
+.system-teams-page-card :deep(.mobile-list-meta-item strong) {
+  font-weight: 400;
 }
 
 .team-member-card {
@@ -445,6 +454,7 @@ onMounted(loadData)
 
 .team-member-card strong {
   color: #0f172a;
+  font-weight: 400;
 }
 
 .team-member-card span {

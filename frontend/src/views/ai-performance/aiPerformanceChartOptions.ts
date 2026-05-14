@@ -5,8 +5,9 @@ import { formatHourLabel, formatInteger } from '@/views/stats/statsFormatters'
 
 export const chartColors = ['#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#2f54eb', '#a0d911', '#fa541c', '#8c8c8c', '#08979c', '#531dab']
 
-export type AiPerformanceMetric = 'firstToken' | 'duration'
+export type AiPerformanceMetric = 'averageFirstToken' | 'maxFirstToken' | 'averageDuration' | 'maxDuration'
 type AiPerformanceSeries = AiPerformanceOverview['hourlySeries'][number]
+type AiPerformancePoint = AiPerformanceSeries['points'][number]
 
 interface AiPerformanceOptionContext {
   colorByAccountId?: Map<string, string>
@@ -68,13 +69,13 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
         itemStyle: { color },
         emphasis: { focus: 'series' },
         data: series.points.map((point) => ({
-          value: metric === 'firstToken' ? point.averageFirstTokenMs ?? null : point.averageDurationMs ?? null,
+          value: metricPointValue(point, metric) ?? null,
           accountId: series.accountId,
           accountName: series.accountName,
           accountDisplayName: seriesName,
           statHour: point.statHour,
           requestCount: point.requestCount,
-          sampleCount: metric === 'firstToken' ? point.firstTokenCount : point.durationCount,
+          sampleCount: metricSampleCount(point, metric),
           defaultVisible: account?.defaultVisible,
           selected: account?.selected
         }))
@@ -113,7 +114,7 @@ function performanceTooltip(params: unknown, overview: AiPerformanceOverview, me
   const points = tooltipParams(params)
   const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
   const visiblePoints = points.filter((point) => pointValue(point) !== undefined)
-  const emptyMessage = metric === 'firstToken' ? '本小时暂无首 token 样本' : '本小时暂无总耗时样本'
+  const emptyMessage = isFirstTokenMetric(metric) ? '本小时暂无首 token 样本' : '本小时暂无总耗时样本'
   if (!visiblePoints.length) {
     return [`<strong>${title}</strong>`, emptyMessage].join('<br/>')
   }
@@ -124,6 +125,27 @@ function performanceTooltip(params: unknown, overview: AiPerformanceOverview, me
     lines.push(`${point.marker ?? ''}${escapeHtml(accountName)}: ${formatDurationSeconds(pointValue(point))}，样本 ${formatInteger(numberFromTooltip(data.sampleCount))}，请求 ${formatInteger(numberFromTooltip(data.requestCount))}`)
   }
   return lines.join('<br/>')
+}
+
+function metricPointValue(point: AiPerformancePoint, metric: AiPerformanceMetric) {
+  switch (metric) {
+    case 'averageFirstToken':
+      return point.averageFirstTokenMs
+    case 'maxFirstToken':
+      return point.maxFirstTokenMs
+    case 'averageDuration':
+      return point.averageDurationMs
+    case 'maxDuration':
+      return point.maxDurationMs
+  }
+}
+
+function metricSampleCount(point: AiPerformancePoint, metric: AiPerformanceMetric) {
+  return isFirstTokenMetric(metric) ? point.firstTokenCount : point.durationCount
+}
+
+function isFirstTokenMetric(metric: AiPerformanceMetric) {
+  return metric === 'averageFirstToken' || metric === 'maxFirstToken'
 }
 
 function tooltipParams(params: unknown): TooltipPoint[] {

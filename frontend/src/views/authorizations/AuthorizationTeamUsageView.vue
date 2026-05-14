@@ -93,7 +93,7 @@
         row-key="id"
         :loading="loading"
         :pagination="false"
-        :scroll-x="980"
+        :scroll-x="1360"
         pull-refresh-enabled
         :refreshing="loading"
         @mobile-refresh="loadData"
@@ -110,6 +110,16 @@
           </template>
           <template v-else-if="column.key === 'usage'">
             <UsageSummaryTags :usage="record.usage" />
+          </template>
+          <template v-else-if="column.key === 'account'">
+            <div class="authorization-usage-user-cell">
+              <span class="authorization-usage-name">{{ record.accountName || record.accountId || '-' }}</span>
+            </div>
+          </template>
+          <template v-else-if="column.key === 'accountOwner'">
+            <div class="authorization-usage-user-cell">
+              <span class="authorization-usage-name">{{ record.accountOwnerSystemAccountName || record.accountOwnerSystemAccountId || '-' }}</span>
+            </div>
           </template>
           <template v-else-if="column.key === 'lastUsedAt'">
             {{ formatDateTime(record.lastUsedAt) }}
@@ -130,6 +140,14 @@
               <div class="mobile-list-meta-item mobile-list-meta-wide">
                 <span>月度消耗</span>
                 <strong><UsageSummaryTags :usage="record.usage" /></strong>
+              </div>
+              <div class="mobile-list-meta-item">
+                <span>资源名称</span>
+                <strong>{{ record.accountName || record.accountId || '-' }}</strong>
+              </div>
+              <div class="mobile-list-meta-item">
+                <span>资源归属人</span>
+                <strong>{{ record.accountOwnerSystemAccountName || record.accountOwnerSystemAccountId || '-' }}</strong>
               </div>
               <div class="mobile-list-meta-item mobile-list-meta-wide">
                 <span>最后使用</span>
@@ -190,6 +208,8 @@ const detailActions: RowActionItem[] = [
 ]
 const columns = [
   { title: '授权团队', key: 'team', width: 240 },
+  { title: '资源名称', key: 'account', width: 220 },
+  { title: '资源归属人', key: 'accountOwner', width: 180 },
   { title: '月度消耗', key: 'usage', width: 220 },
   { title: '最后使用', key: 'lastUsedAt', width: 180 },
   { title: '操作', key: 'actions', width: 96, fixed: 'right' }
@@ -285,7 +305,7 @@ function handleTeamAction(key: string, row: AuthorizationTeamUsageRow) {
   void router.push({
     path: isManagementView.value ? '/authorization-user-usage' : '/my-authorization-user-usage',
     query: {
-      teamId: row.id,
+      teamId: row.teamId,
       statMonth: filters.statMonth,
       resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
       resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId
@@ -413,7 +433,7 @@ onMounted(loadData)
   min-width: 0;
   overflow: hidden;
   color: #0f172a;
-  font-weight: 600;
+  font-weight: 400;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -423,8 +443,15 @@ onMounted(loadData)
   font-family: Consolas, 'Courier New', monospace;
 }
 
+.authorization-usage-table :deep(.ant-table-thead > tr > th),
 .authorization-usage-table :deep(.ant-table-cell) {
+  font-weight: 400;
   white-space: nowrap;
+}
+
+.authorization-usage-page :deep(.mobile-list-card-title),
+.authorization-usage-page :deep(.mobile-list-meta-item strong) {
+  font-weight: 400;
 }
 
 .authorization-usage-table :deep(.responsive-data-list-flex-column) {

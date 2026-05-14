@@ -17,3 +17,18 @@ export interface GlobalSettings {
   appIcon?: string
   [key: string]: unknown
 }
+
+export interface StreamInterceptRuleCatalogItem {
+  id: string
+  enabled: boolean
+  name: string
+  description?: string
+  rationale?: string
+  source?: string
+  provider: string
+  endpoint: string
+  action: string
+  triggerPhase: string
+  accountPolicy: string
+  rule: Record<string, unknown>
+}

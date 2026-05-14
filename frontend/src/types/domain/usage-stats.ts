@@ -63,8 +63,10 @@ export interface AiPerformancePoint {
   requestCount: number
   firstTokenCount: number
   averageFirstTokenMs?: number
+  maxFirstTokenMs?: number
   durationCount: number
   averageDurationMs?: number
+  maxDurationMs?: number
 }
 
 export interface AiPerformanceAccountSeries {
@@ -84,8 +86,10 @@ export interface AiPerformanceOverview {
     requestCount: number
     firstTokenCount: number
     averageFirstTokenMs?: number
+    maxFirstTokenMs?: number
     durationCount: number
     averageDurationMs?: number
+    maxDurationMs?: number
   }
   statsLagSeconds: number
 }

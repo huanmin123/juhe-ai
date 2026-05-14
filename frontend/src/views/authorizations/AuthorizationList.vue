@@ -16,6 +16,7 @@
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'resource'">
         <div class="resource-cell">
+          <a-tag :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
           <span class="resource-name">{{ record.resourceName || record.resourceId }}</span>
         </div>
       </template>
@@ -52,6 +53,7 @@
         <div class="mobile-list-card-head">
           <div class="mobile-list-card-title">{{ record.resourceName || record.resourceId }}</div>
           <div class="mobile-list-card-tags">
+            <a-tag :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
             <a-tag v-if="!isManagementView" :color="authorizationDirectionColor(record, currentSystemAccountId)">
               {{ authorizationDirectionText(record, currentSystemAccountId) }}
             </a-tag>
@@ -91,6 +93,7 @@ import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
 import { authorizationColumns, type AuthorizationDirectionFilter } from './authorizationTableColumns'
 import { activeTeamSources, authorizationDirectionColor, authorizationDirectionText, formatDateTime, granteeTargetName, hasManualSource } from './authorizationFormatters'
+import type { AuthorizationResourceType } from '@/types/domain'
 
 const props = defineProps<{
   authorizations: ResourceAuthorizationSummary[]
@@ -133,9 +136,16 @@ function canManageAuthorization(authorization: ResourceAuthorizationSummary): bo
 function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
   let count = 1
   if (authorization.status === 'active' || authorization.status === 'paused') count += 1
+  if (authorization.granteeType === 'team') return count + 1
   if (authorization.status === 'active' && hasManualSource(authorization)) count += 1
   count += activeTeamSources(authorization).length
   return count
+}
+
+function resourceTypeTag(resourceType: AuthorizationResourceType) {
+  return resourceType === 'group'
+    ? { text: '分组', color: 'purple' }
+    : { text: 'AI账户', color: 'blue' }
 }
 </script>
 
@@ -146,6 +156,11 @@ function authorizationActionCount(authorization: ResourceAuthorizationSummary): 
   align-items: center;
   gap: 8px;
   min-width: 0;
+}
+
+.resource-cell :deep(.ant-tag) {
+  flex: 0 0 auto;
+  margin-inline-end: 0;
 }
 
 .resource-name {

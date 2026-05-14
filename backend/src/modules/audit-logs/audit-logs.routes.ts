@@ -66,13 +66,20 @@ auditLogsRouter.get('/:id', (req, res) => {
   res.json(ok(detail))
 })
 
-auditLogsRouter.get('/:id/payloads/:payloadId', (req, res) => {
-  const payload = getAuditLogPayload(req.params.id, req.params.payloadId)
-  if (!payload) {
-    sendNotFound(res, '审计原文不存在')
-    return
+auditLogsRouter.get('/:id/payloads/:payloadId', async (req, res, next) => {
+  try {
+    const payload = await getAuditLogPayload(req.params.id, req.params.payloadId, {
+      offset: numberQueryValue(req.query.offset),
+      limit: numberQueryValue(req.query.limit)
+    })
+    if (!payload) {
+      sendNotFound(res, '审计原文不存在')
+      return
+    }
+    res.json(ok(payload))
+  } catch (error) {
+    next(error)
   }
-  res.json(ok(payload))
 })
 
 const auditOutcomes = new Set<AuditOutcome | 'all'>([

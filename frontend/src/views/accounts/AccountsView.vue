@@ -275,6 +275,9 @@ const currentEditingAccount = computed(() => editingId.value ? accounts.value.fi
 
 const statusEditOptions = computed(() => {
   const options = statusOptions.filter((item) => item.value !== 'all')
+  if (currentEditingAccount.value?.status === 'error') {
+    return options.filter((item) => item.value === 'error')
+  }
   if (currentEditingAccount.value && isTemporaryAccountStatus(currentEditingAccount.value)) {
     return options.filter((item) => item.value !== 'active')
   }

@@ -48,10 +48,14 @@ type UsageReportRow = {
 
 type AuthorizationTeamUsageReportRow = UsageReportRow & {
   team_id: string
+  hit_account_id: string
+  hit_account_owner_system_account_id: string
 }
 
 type AuthorizationUserUsageReportRow = UsageReportRow & {
   grantee_system_account_id: string
+  hit_account_id: string
+  hit_account_owner_system_account_id: string
 }
 
 type AuthorizationUsageSummaryRow = UsageReportRow
@@ -65,6 +69,8 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
   const rows = getRecordDatabase().prepare(`
     SELECT
       report.team_id,
+      report.hit_account_id,
+      report.hit_account_owner_system_account_id,
       report.request_count,
       report.input_tokens,
       report.output_tokens,
@@ -77,7 +83,7 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
       AND (? = '' OR report.team_id = ?)
       AND report.resource_filter_type = ?
       AND report.resource_filter_id = ?
-    ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.team_id ASC
+    ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.team_id ASC, report.hit_account_id ASC
   `).all(
     filterKey.systemAccountId,
     filterKey.statMonth,
@@ -87,20 +93,26 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
     filterKey.resourceFilterId
   ) as unknown as AuthorizationTeamUsageReportRow[]
   const teams = loadTeamRowsByIds(rows.map((row) => row.team_id))
+  const hitAccounts = loadAccountUsageTargetRows(rows.map((row) => row.hit_account_id))
+  const accountOwners = loadHitAccountOwners(rows, hitAccounts)
   const summary = loadAuthorizationTeamUsageSummary(filterKey)
-  const overviewRows = rows.map((row): AuthorizationTeamUsageRow => ({
-    id: row.team_id,
-    teamId: row.team_id,
-    teamName: teams.get(row.team_id)?.name ?? row.team_id,
-    status: teams.get(row.team_id)?.status ?? 'active',
-    usage: usageSummaryFromAggregate(row),
-    lastUsedAt: row.last_used_at ?? undefined
-  }))
+  const overviewRows = rows.map((row): AuthorizationTeamUsageRow => {
+    const hitAccount = hitAccountFields(row, hitAccounts, accountOwners)
+    return {
+      id: [row.team_id, row.hit_account_id, row.hit_account_owner_system_account_id].filter(Boolean).join(':'),
+      teamId: row.team_id,
+      teamName: teams.get(row.team_id)?.name ?? row.team_id,
+      status: teams.get(row.team_id)?.status ?? 'active',
+      ...hitAccount,
+      usage: usageSummaryFromAggregate(row),
+      lastUsedAt: row.last_used_at ?? undefined
+    }
+  })
   return {
     range: monthRange(month),
     summary,
     rows: overviewRows,
-    teamCount: overviewRows.length
+    teamCount: new Set(overviewRows.map((row) => row.teamId)).size
   }
 }
 
@@ -113,6 +125,8 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
   const rows = getRecordDatabase().prepare(`
     SELECT
       report.grantee_system_account_id,
+      report.hit_account_id,
+      report.hit_account_owner_system_account_id,
       report.request_count,
       report.input_tokens,
       report.output_tokens,
@@ -126,7 +140,7 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
       AND (? = '' OR report.grantee_system_account_id = ?)
       AND report.resource_filter_type = ?
       AND report.resource_filter_id = ?
-    ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.grantee_system_account_id ASC
+    ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.grantee_system_account_id ASC, report.hit_account_id ASC
   `).all(
     filterKey.systemAccountId,
     filterKey.statMonth,
@@ -137,15 +151,19 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     filterKey.resourceFilterId
   ) as unknown as AuthorizationUserUsageReportRow[]
   const accounts = loadSystemAccountsByIds(rows.map((row) => row.grantee_system_account_id))
+  const hitAccounts = loadAccountUsageTargetRows(rows.map((row) => row.hit_account_id))
+  const accountOwners = loadHitAccountOwners(rows, hitAccounts)
   const summary = loadAuthorizationUserUsageSummary(filterKey)
   const sourceLabels = userUsageSourceLabels(filterKey.teamFilterId)
   const overviewRows = rows.map((row): AuthorizationUserUsageRow => {
     const user = accounts.get(row.grantee_system_account_id)
+    const hitAccount = hitAccountFields(row, hitAccounts, accountOwners)
     return {
-      id: row.grantee_system_account_id,
+      id: [row.grantee_system_account_id, row.hit_account_id, row.hit_account_owner_system_account_id].filter(Boolean).join(':'),
       systemAccountId: row.grantee_system_account_id,
       userName: user?.displayName ?? user?.username ?? row.grantee_system_account_id,
       username: user?.username,
+      ...hitAccount,
       sourceLabels,
       usage: usageSummaryFromAggregate(row),
       lastUsedAt: row.last_used_at ?? undefined
@@ -155,7 +173,7 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     range: monthRange(month),
     summary,
     rows: overviewRows,
-    userCount: overviewRows.length
+    userCount: new Set(overviewRows.map((row) => row.systemAccountId)).size
   }
 }
 
@@ -272,4 +290,41 @@ function loadTeamRowsByIds(teamIds: string[]): Map<string, { name: string; statu
     .prepare(`SELECT id, name, status FROM system_teams WHERE id IN (${ids.map(() => '?').join(',')})`)
     .all(...ids) as unknown as Array<{ id: string; name: string; status: SystemTeamStatus }>
   return new Map(rows.map((row) => [row.id, { name: row.name, status: row.status }]))
+}
+
+function loadAccountUsageTargetRows(accountIds: string[]): Map<string, { name: string; systemAccountId: string }> {
+  const ids = [...new Set(accountIds.filter(Boolean))]
+  if (!ids.length) return new Map()
+  const rows = getDatabase()
+    .prepare(`SELECT id, name, system_account_id FROM accounts WHERE id IN (${ids.map(() => '?').join(',')})`)
+    .all(...ids) as unknown as Array<{ id: string; name: string; system_account_id: string }>
+  return new Map(rows.map((row) => [row.id, { name: row.name, systemAccountId: row.system_account_id }]))
+}
+
+function loadHitAccountOwners(
+  rows: Array<{ hit_account_id: string; hit_account_owner_system_account_id: string }>,
+  hitAccounts: Map<string, { name: string; systemAccountId: string }>
+) {
+  return loadSystemAccountsByIds(rows.map((row) => {
+    const ownerFromRecord = row.hit_account_owner_system_account_id
+    if (ownerFromRecord) return ownerFromRecord
+    return row.hit_account_id ? hitAccounts.get(row.hit_account_id)?.systemAccountId ?? '' : ''
+  }))
+}
+
+function hitAccountFields(
+  row: { hit_account_id: string; hit_account_owner_system_account_id: string },
+  hitAccounts: Map<string, { name: string; systemAccountId: string }>,
+  accountOwners: ReturnType<typeof loadSystemAccountsByIds>
+) {
+  const hitAccountId = row.hit_account_id
+  const hitAccount = hitAccountId ? hitAccounts.get(hitAccountId) : undefined
+  const ownerSystemAccountId = row.hit_account_owner_system_account_id || hitAccount?.systemAccountId
+  const owner = ownerSystemAccountId ? accountOwners.get(ownerSystemAccountId) : undefined
+  return {
+    accountId: hitAccountId || undefined,
+    accountName: hitAccountId ? hitAccount?.name ?? hitAccountId : undefined,
+    accountOwnerSystemAccountId: ownerSystemAccountId || undefined,
+    accountOwnerSystemAccountName: ownerSystemAccountId ? owner?.displayName ?? owner?.username ?? ownerSystemAccountId : undefined
+  }
 }

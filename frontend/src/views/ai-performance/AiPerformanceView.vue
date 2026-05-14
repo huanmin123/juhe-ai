@@ -47,17 +47,12 @@
       </div>
     </a-card>
 
-    <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" />
+    <StatsSummaryCards :cards="summaryCards" :loading="initialLoading" compact />
 
     <a-row :gutter="[16, 16]" class="ai-performance-section">
-      <a-col :xs="24">
-        <StatsChartCard :title="`首token 耗时监控图（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasFirstTokenData" :empty-description="firstTokenEmptyDescription">
-          <div ref="firstTokenChartRef" class="chart-panel" />
-        </StatsChartCard>
-      </a-col>
-      <a-col :xs="24">
-        <StatsChartCard :title="`总耗时 监控图（${currentWindowLabel}）`" :loading="initialLoading" :has-data="hasDurationData" :empty-description="durationEmptyDescription">
-          <div ref="durationChartRef" class="chart-panel" />
+      <a-col v-for="chart in performanceCharts" :key="chart.key" :xs="24" :lg="12">
+        <StatsChartCard :title="`${chart.title}（${currentWindowLabel}）`" :loading="initialLoading" :has-data="chart.hasData" :empty-description="chart.emptyDescription">
+          <div :ref="chart.setRef" class="chart-panel" />
         </StatsChartCard>
       </a-col>
     </a-row>
@@ -76,7 +71,7 @@ import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview, 
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDuration, formatInteger, formatSeconds } from '@/views/stats/statsFormatters'
-import { buildAiPerformanceOption, chartColors, orderedAiPerformanceSeries } from './aiPerformanceChartOptions'
+import { buildAiPerformanceOption, chartColors, orderedAiPerformanceSeries, type AiPerformanceMetric } from './aiPerformanceChartOptions'
 
 const windowOptions: Array<{ label: string; value: AiPerformanceWindowKey }> = [
   { label: '近一天', value: 'last1d' },
@@ -96,10 +91,14 @@ const accountSearchKeyword = ref('')
 let accountSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let accountSearchSeq = 0
 
-const firstTokenChartRef = ref<HTMLDivElement>()
-const durationChartRef = ref<HTMLDivElement>()
-const firstTokenChart = shallowRef<ECharts>()
-const durationChart = shallowRef<ECharts>()
+const averageFirstTokenChartRef = ref<HTMLDivElement>()
+const maxFirstTokenChartRef = ref<HTMLDivElement>()
+const averageDurationChartRef = ref<HTMLDivElement>()
+const maxDurationChartRef = ref<HTMLDivElement>()
+const averageFirstTokenChart = shallowRef<ECharts>()
+const maxFirstTokenChart = shallowRef<ECharts>()
+const averageDurationChart = shallowRef<ECharts>()
+const maxDurationChart = shallowRef<ECharts>()
 
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
@@ -126,8 +125,10 @@ const visibleOverview = computed<AiPerformanceOverview | undefined>(() => {
   }
 })
 const hasAccounts = computed(() => visibleAccounts.value.length > 0)
-const hasFirstTokenData = computed(() => visibleHourlySeries.value.some((series) => series.points.some((point) => point.averageFirstTokenMs !== undefined)))
-const hasDurationData = computed(() => visibleHourlySeries.value.some((series) => series.points.some((point) => point.averageDurationMs !== undefined)))
+const hasAverageFirstTokenData = computed(() => hasMetricData('averageFirstTokenMs'))
+const hasMaxFirstTokenData = computed(() => hasMetricData('maxFirstTokenMs'))
+const hasAverageDurationData = computed(() => hasMetricData('averageDurationMs'))
+const hasMaxDurationData = computed(() => hasMetricData('maxDurationMs'))
 const firstTokenEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无首 token 样本` : '最近 7 天暂无活跃 AI 账户')
 const durationEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无总耗时样本` : '最近 7 天暂无活跃 AI 账户')
 
@@ -171,13 +172,53 @@ const accountFilterItems = computed(() => {
 })
 const seriesColorByAccountId = computed(() => new Map(accountFilterItems.value.map((item) => [item.account.id, item.color])))
 
+const performanceCharts = computed(() => [
+  {
+    key: 'averageFirstToken',
+    title: '平均首token耗时监控图',
+    metric: 'averageFirstToken' as AiPerformanceMetric,
+    chartRef: averageFirstTokenChart,
+    hasData: hasAverageFirstTokenData.value,
+    emptyDescription: firstTokenEmptyDescription.value,
+    setRef: setAverageFirstTokenChartRef
+  },
+  {
+    key: 'maxFirstToken',
+    title: '最大首token耗时监控图',
+    metric: 'maxFirstToken' as AiPerformanceMetric,
+    chartRef: maxFirstTokenChart,
+    hasData: hasMaxFirstTokenData.value,
+    emptyDescription: firstTokenEmptyDescription.value,
+    setRef: setMaxFirstTokenChartRef
+  },
+  {
+    key: 'averageDuration',
+    title: '平均总耗时监控图',
+    metric: 'averageDuration' as AiPerformanceMetric,
+    chartRef: averageDurationChart,
+    hasData: hasAverageDurationData.value,
+    emptyDescription: durationEmptyDescription.value,
+    setRef: setAverageDurationChartRef
+  },
+  {
+    key: 'maxDuration',
+    title: '最大总耗时监控图',
+    metric: 'maxDuration' as AiPerformanceMetric,
+    chartRef: maxDurationChart,
+    hasData: hasMaxDurationData.value,
+    emptyDescription: durationEmptyDescription.value,
+    setRef: setMaxDurationChartRef
+  }
+])
+
 const summaryCards = computed(() => {
   const summary = overview.value?.summary
   return [
-    { key: 'accounts', label: '统计账户', value: formatInteger(visibleAccounts.value.length), extra: hasActiveAccountFilter.value ? `已筛选 ${formatInteger(visibleAccounts.value.length)} 个` : `当前列表 ${formatInteger(visibleAccounts.value.length)} 个` },
     { key: 'requests', label: `${currentWindowLabel.value}请求`, value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
     { key: 'firstToken', label: '平均首 token', value: formatDuration(summary?.averageFirstTokenMs), extra: `样本 ${formatInteger(summary?.firstTokenCount)}` },
-    { key: 'duration', label: '平均总耗时', value: formatDuration(summary?.averageDurationMs), extra: `样本 ${formatInteger(summary?.durationCount)}` }
+    { key: 'maxFirstToken', label: '最大首 token', value: formatDuration(summary?.maxFirstTokenMs), extra: `样本 ${formatInteger(summary?.firstTokenCount)}` },
+    { key: 'duration', label: '平均总耗时', value: formatDuration(summary?.averageDurationMs), extra: `样本 ${formatInteger(summary?.durationCount)}` },
+    { key: 'maxDuration', label: '最大总耗时', value: formatDuration(summary?.maxDurationMs), extra: `样本 ${formatInteger(summary?.durationCount)}` }
   ]
 })
 
@@ -284,30 +325,21 @@ function toggleAccountFilter(id: string) {
 
 function renderCharts() {
   void nextTick(() => {
-    renderFirstTokenChart()
-    renderDurationChart()
+    for (const chart of performanceCharts.value) {
+      renderPerformanceChart(chart.metric, chart.chartRef, chart.hasData)
+    }
     resizeCharts()
   })
 }
 
-function renderFirstTokenChart() {
-  if (!visibleOverview.value || !hasFirstTokenData.value) {
-    disposeChart(firstTokenChart)
+function renderPerformanceChart(metric: AiPerformanceMetric, chartRef: ShallowRef<ECharts | undefined>, hasData: boolean) {
+  if (!visibleOverview.value || !hasData) {
+    disposeChart(chartRef)
     return
   }
-  const chart = ensureChart(firstTokenChartRef, firstTokenChart)
+  const chart = ensureChart(metricElementRef(metric), chartRef)
   if (!chart) return
-  chart.setOption(buildAiPerformanceOption(visibleOverview.value, 'firstToken', { colorByAccountId: seriesColorByAccountId.value }), { notMerge: true })
-}
-
-function renderDurationChart() {
-  if (!visibleOverview.value || !hasDurationData.value) {
-    disposeChart(durationChart)
-    return
-  }
-  const chart = ensureChart(durationChartRef, durationChart)
-  if (!chart) return
-  chart.setOption(buildAiPerformanceOption(visibleOverview.value, 'duration', { colorByAccountId: seriesColorByAccountId.value }), { notMerge: true })
+  chart.setOption(buildAiPerformanceOption(visibleOverview.value, metric, { colorByAccountId: seriesColorByAccountId.value }), { notMerge: true })
 }
 
 function ensureChart(elementRef: Ref<HTMLDivElement | undefined>, chartRef: ShallowRef<ECharts | undefined>) {
@@ -327,8 +359,41 @@ function disposeChart(chartRef: ShallowRef<ECharts | undefined>) {
 }
 
 function resizeCharts() {
-  for (const chart of [firstTokenChart.value, durationChart.value]) {
+  for (const chart of performanceCharts.value.map((item) => item.chartRef.value)) {
     if (chart && !chart.isDisposed()) chart.resize()
+  }
+}
+
+function hasMetricData(metricKey: 'averageFirstTokenMs' | 'maxFirstTokenMs' | 'averageDurationMs' | 'maxDurationMs') {
+  return visibleHourlySeries.value.some((series) => series.points.some((point) => point[metricKey] !== undefined))
+}
+
+function setAverageFirstTokenChartRef(element: unknown) {
+  averageFirstTokenChartRef.value = element instanceof HTMLDivElement ? element : undefined
+}
+
+function setMaxFirstTokenChartRef(element: unknown) {
+  maxFirstTokenChartRef.value = element instanceof HTMLDivElement ? element : undefined
+}
+
+function setAverageDurationChartRef(element: unknown) {
+  averageDurationChartRef.value = element instanceof HTMLDivElement ? element : undefined
+}
+
+function setMaxDurationChartRef(element: unknown) {
+  maxDurationChartRef.value = element instanceof HTMLDivElement ? element : undefined
+}
+
+function metricElementRef(metric: AiPerformanceMetric): Ref<HTMLDivElement | undefined> {
+  switch (metric) {
+    case 'averageFirstToken':
+      return averageFirstTokenChartRef
+    case 'maxFirstToken':
+      return maxFirstTokenChartRef
+    case 'averageDuration':
+      return averageDurationChartRef
+    case 'maxDuration':
+      return maxDurationChartRef
   }
 }
 
@@ -366,8 +431,9 @@ onMounted(() => {
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts)
   if (accountSearchTimer) window.clearTimeout(accountSearchTimer)
-  disposeChart(firstTokenChart)
-  disposeChart(durationChart)
+  for (const chart of performanceCharts.value) {
+    disposeChart(chart.chartRef)
+  }
 })
 </script>
 
@@ -459,7 +525,7 @@ onBeforeUnmount(() => {
 
 .chart-panel {
   width: 100%;
-  height: 360px;
+  height: 320px;
 }
 
 @media (max-width: 768px) {

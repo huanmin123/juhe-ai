@@ -44,6 +44,7 @@ import type {
   RuntimeLogLevel,
   RuntimeLogGrepResult,
   RuntimeLogSearchResult,
+  StreamInterceptRuleCatalogItem,
   SystemTeamMemberSummary,
   SystemTeamSummary,
   SystemSettings,
@@ -151,6 +152,11 @@ export interface AuditLogListParams extends ListParams {
   accountId?: string
   clientIp?: string
   errorGroupId?: string
+  limit?: number
+}
+
+export interface AuditLogPayloadParams {
+  offset?: number
   limit?: number
 }
 
@@ -426,7 +432,7 @@ export const api = {
     list: (params?: AuditLogListParams) => unwrap<AuditLogListResult>(http.get('/audit-logs', { params, ...noTimeout })),
     runtime: () => unwrap<AuditLogRuntime>(http.get('/audit-logs/runtime', noTimeout)),
     detail: (id: string) => unwrap<AuditLogDetail>(http.get(`/audit-logs/${id}`, noTimeout)),
-    payload: (id: string, payloadId: string) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, noTimeout))
+    payload: (id: string, payloadId: string, params?: AuditLogPayloadParams) => unwrap<AuditLogPayloadDetail>(http.get(`/audit-logs/${id}/payloads/${payloadId}`, { params, ...noTimeout }))
   },
   runtimeLogs: {
     list: (params?: RuntimeLogListParams) => unwrap<RuntimeLogSearchResult>(http.get('/runtime-logs', { params })),
@@ -461,6 +467,7 @@ export const api = {
     global: () => unwrap<GlobalSettings>(http.get('/settings/global')),
     updateGlobal: (payload: GlobalSettings) => unwrap<GlobalSettings>(http.patch('/settings/global', payload)),
     get: () => unwrap<SystemSettings>(http.get('/settings')),
+    streamInterceptRules: () => unwrap<StreamInterceptRuleCatalogItem[]>(http.get('/settings/stream-intercept-rules')),
     update: (payload: SystemSettings) => unwrap<SystemSettings>(http.patch('/settings', payload))
   }
 }
