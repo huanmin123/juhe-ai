@@ -25,7 +25,6 @@
       :empty-description="authorizationEmptyDescription"
       :is-management-view="isManagementView"
       :loading="loading"
-      :usage-column-label="usageColumnLabel"
       @refresh="loadData"
       @menu-click="handleActionMenuClick"
     />
@@ -60,7 +59,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import dayjs, { type Dayjs } from 'dayjs'
+import type { Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -118,7 +117,6 @@ type AuthorizationFilters = {
   resourceId?: string
   teamId?: string
   granteeSystemAccountId?: string
-  usageDateRange: [string, string]
 }
 type AuthorizationsPageState = {
   filters: AuthorizationFilters
@@ -130,8 +128,7 @@ const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
     resourceType: 'all',
     resourceId: undefined,
     teamId: undefined,
-    granteeSystemAccountId: undefined,
-    usageDateRange: todayDateRange()
+    granteeSystemAccountId: undefined
   }
 })
 const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
@@ -146,8 +143,7 @@ const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, def
         ...fallback.filters,
         ...filters,
         direction: filters.direction === 'inbound' ? 'inbound' : 'outbound',
-        sourceType: filters.sourceType === 'manual' || filters.sourceType === 'team' ? filters.sourceType : 'all',
-        usageDateRange: normalizeCachedDateRange((filters as Partial<AuthorizationFilters>).usageDateRange, fallback.filters.usageDateRange)
+        sourceType: filters.sourceType === 'manual' || filters.sourceType === 'team' ? filters.sourceType : 'all'
       }
     }
   }
@@ -214,7 +210,6 @@ const activeFilterCount = computed(() => {
   if (filters.resourceId) count += 1
   if (isManagementView.value && filters.teamId) count += 1
   if (isManagementView.value && filters.granteeSystemAccountId) count += 1
-  if (!isTodayRange(filters.usageDateRange)) count += 1
   return count
 })
 const authorizationEmptyDescription = computed(() => {
@@ -226,7 +221,6 @@ const authorizationEmptyDescription = computed(() => {
   }
   return activeFilterCount.value > 0 ? '没有符合当前筛选条件的授权记录。' : '暂无我授权出去的记录，可新增授权给其他用户或团队。'
 })
-const usageColumnLabel = computed(() => isTodayRange(filters.usageDateRange) ? '今日' : '范围用量')
 const authorizationScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId()
   return systemAccountId ? { systemAccountId } : undefined
@@ -288,14 +282,9 @@ async function loadData() {
       direction: isManagementView.value ? undefined : filters.direction,
       status: 'all' as const
     }
-    const paramsWithUsageRange = isManagementView.value ? params : {
-      ...params,
-      startDate: filters.usageDateRange[0],
-      endDate: filters.usageDateRange[1]
-    }
     const authorizationList = isManagementView.value
-      ? await api.authorizations.list(systemAccountId ? { ...paramsWithUsageRange, systemAccountId } : paramsWithUsageRange)
-      : await api.myAuthorizations.list(paramsWithUsageRange)
+      ? await api.authorizations.list(systemAccountId ? { ...params, systemAccountId } : params)
+      : await api.myAuthorizations.list(params)
     authorizations.value = isManagementView.value ? authorizationList : filterAuthorizationsBySourceType(authorizationList)
   } catch (error) {
     console.error(error)
@@ -518,34 +507,6 @@ async function confirmExpireChange() {
     console.error(error)
     message.error(extractApiErrorMessage(error, '修改授权配置失败'))
   }
-}
-
-function todayDateRange(): [string, string] {
-  const today = dayjs().format('YYYY-MM-DD')
-  return [today, today]
-}
-
-function normalizeCachedDateRange(value: unknown, fallback: [string, string]): [string, string] {
-  if (!Array.isArray(value) || value.length !== 2) return fallback
-  const start = typeof value[0] === 'string' ? value[0] : undefined
-  const end = typeof value[1] === 'string' ? value[1] : undefined
-  if (!isDateKey(start) || !isDateKey(end)) return fallback
-  const startDate = dayjs(start)
-  const endDate = dayjs(end)
-  if (!startDate.isValid() || !endDate.isValid() || startDate.isAfter(endDate, 'day')) return fallback
-  if (endDate.diff(startDate, 'day') > 30) {
-    return [endDate.subtract(30, 'day').format('YYYY-MM-DD'), endDate.format('YYYY-MM-DD')]
-  }
-  return [start, end]
-}
-
-function isDateKey(value?: string): value is string {
-  return Boolean(value && /^\d{4}-\d{2}-\d{2}$/.test(value))
-}
-
-function isTodayRange(value: [string, string]): boolean {
-  const today = dayjs().format('YYYY-MM-DD')
-  return value[0] === today && value[1] === today
 }
 
 onMounted(async () => {

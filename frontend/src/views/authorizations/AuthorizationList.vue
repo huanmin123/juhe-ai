@@ -33,20 +33,11 @@
           <AuthorizationSourceTag :authorization="record" />
         </div>
       </template>
-      <template v-else-if="column.key === 'usageTotal'">
-        <UsageSummaryTags :usage="record.usage" />
-      </template>
-      <template v-else-if="column.key === 'limits'">
-        <span>{{ quotaLimitSummaryText(record.limits) }}</span>
-      </template>
       <template v-else-if="column.key === 'status'">
         <AuthorizationStatusTag :status="record.status" />
       </template>
       <template v-else-if="column.key === 'createdAt'">
         {{ formatDateTime(record.createdAt) }}
-      </template>
-      <template v-else-if="column.key === 'lastUsedAt'">
-        {{ formatDateTime(record.lastUsedAt ?? record.usage?.lastUsedAt) }}
       </template>
       <template v-else-if="column.key === 'remark'">
         <span>{{ record.remark || '-' }}</span>
@@ -79,18 +70,6 @@
               <AuthorizationSourceTag :authorization="record" />
             </strong>
           </div>
-          <div v-if="showUsageMetrics" class="mobile-list-meta-item mobile-list-meta-wide">
-            <span>{{ usageColumnLabel }}</span>
-            <strong><UsageSummaryTags :usage="record.usage" /></strong>
-          </div>
-          <div v-if="showLastUsedAt" class="mobile-list-meta-item mobile-list-meta-wide">
-            <span>最后使用</span>
-            <strong>{{ formatDateTime(record.lastUsedAt ?? record.usage?.lastUsedAt) }}</strong>
-          </div>
-          <div v-if="showQuotaLimits" class="mobile-list-meta-item mobile-list-meta-wide">
-            <span>额度限制</span>
-            <strong>{{ quotaLimitSummaryText(record.limits) }}</strong>
-          </div>
           <div class="mobile-list-meta-item mobile-list-meta-wide">
             <span>说明</span>
             <strong>{{ record.remark || '-' }}</strong>
@@ -106,13 +85,12 @@
 import { computed } from 'vue'
 
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
-import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import type { ResourceAuthorizationSummary } from '@/types/domain'
 import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
 import { authorizationColumns, type AuthorizationDirectionFilter } from './authorizationTableColumns'
-import { activeTeamSources, authorizationDirectionColor, authorizationDirectionText, formatDateTime, granteeTargetName, hasManualSource, quotaLimitSummaryText } from './authorizationFormatters'
+import { activeTeamSources, authorizationDirectionColor, authorizationDirectionText, formatDateTime, granteeTargetName, hasManualSource } from './authorizationFormatters'
 
 const props = defineProps<{
   authorizations: ResourceAuthorizationSummary[]
@@ -121,7 +99,6 @@ const props = defineProps<{
   direction: AuthorizationDirectionFilter
   isManagementView: boolean
   loading: boolean
-  usageColumnLabel: string
 }>()
 
 defineEmits<{
@@ -130,9 +107,6 @@ defineEmits<{
 }>()
 
 const showActions = computed(() => props.isManagementView || props.direction === 'outbound')
-const showUsageMetrics = computed(() => !props.isManagementView)
-const showLastUsedAt = computed(() => !props.isManagementView && props.direction === 'outbound')
-const showQuotaLimits = computed(() => !props.isManagementView)
 const actionColumnWidth = computed(() => {
   if (!showActions.value) return 0
   const maxActionCount = props.authorizations.reduce((maxCount, authorization) => {
@@ -143,16 +117,14 @@ const actionColumnWidth = computed(() => {
 })
 const columns = computed(() => authorizationColumns.filter((column) => {
   if (props.isManagementView && column.key === 'direction') return false
-  if (props.isManagementView && ['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
-  if (!showLastUsedAt.value && column.key === 'lastUsedAt') return false
+  if (['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
   if (!showActions.value && column.key === 'actions') return false
   return true
 }).map((column) => {
-  if (column.key === 'usageTotal') return { ...column, title: props.usageColumnLabel }
   if (column.key === 'actions') return { ...column, width: actionColumnWidth.value }
   return column
 }))
-const tableScrollX = computed(() => props.isManagementView ? 1240 : 1540)
+const tableScrollX = computed(() => props.isManagementView ? 1240 : 1320)
 
 function canManageAuthorization(authorization: ResourceAuthorizationSummary): boolean {
   return props.isManagementView || authorization.permissions?.canEdit === true

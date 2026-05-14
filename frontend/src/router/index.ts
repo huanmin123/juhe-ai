@@ -45,20 +45,46 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/my-authorizations',
+    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
+    meta: {
+      title: '授权操作',
+      description: '管理自己授权出去或授权给自己的账户、分组和团队授权，不在这里展示消耗统计。',
+      menuGroup: 'my-authorization',
+      menuGroupTitle: '我的授权',
+      viewScope: 'self'
+    }
+  },
+  {
+    path: '/my-authorization-team-usage',
+    component: () => import('@/views/authorizations/AuthorizationTeamUsageView.vue'),
+    meta: {
+      title: '团队消耗明细',
+      description: '按授权团队查看自己授权出去资源的月度团队消耗，并可跳转到成员用户消耗。',
+      menuGroup: 'my-authorization',
+      menuGroupTitle: '我的授权',
+      viewScope: 'self'
+    }
+  },
+  {
+    path: '/my-authorization-user-usage',
+    component: () => import('@/views/authorizations/AuthorizationUserUsageView.vue'),
+    meta: {
+      title: '用户消耗明细',
+      description: '按被授权用户查看自己授权出去资源的月度消耗，包含授权团队里的成员用户。',
+      menuGroup: 'my-authorization',
+      menuGroupTitle: '我的授权',
+      viewScope: 'self'
+    }
+  },
+  {
     path: '/my-teams',
     component: () => import('@/views/system-teams/SystemTeamsView.vue'),
     meta: {
       title: '我的授权团队',
       description: '查看自己加入的授权团队和团队成员。',
-      viewScope: 'self'
-    }
-  },
-  {
-    path: '/my-authorizations',
-    component: () => import('@/views/authorizations/AuthorizationsView.vue'),
-    meta: {
-      title: '我的授权',
-      description: '管理自己授权出去或授权给自己的账户、分组和团队授权，并查看授权用量范围汇总。',
+      menuGroup: 'my-authorization',
+      menuGroupTitle: '我的授权',
       viewScope: 'self'
     }
   },

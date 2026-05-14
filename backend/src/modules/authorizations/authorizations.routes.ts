@@ -116,10 +116,6 @@ authorizationsRouter.get('/', (req, res) => {
 })
 
 authorizationsRouter.get('/usage/team-details', (req, res) => {
-  if (req.baseUrl.endsWith('/my-authorizations')) {
-    sendNotFound(res, '资源不存在')
-    return
-  }
   const parsed = parseOrBadRequest(authorizationUsageOverviewQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
     sendBadRequest(res, parsed.message)
@@ -131,10 +127,6 @@ authorizationsRouter.get('/usage/team-details', (req, res) => {
 })
 
 authorizationsRouter.get('/usage/user-details', (req, res) => {
-  if (req.baseUrl.endsWith('/my-authorizations')) {
-    sendNotFound(res, '资源不存在')
-    return
-  }
   const parsed = parseOrBadRequest(authorizationUsageOverviewQuerySchema, req.query, '查询参数不合法')
   if (!parsed.success) {
     sendBadRequest(res, parsed.message)

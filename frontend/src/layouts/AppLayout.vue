@@ -162,6 +162,8 @@ const menuIconMap = {
   '/authorization-teams': TeamOutlined,
   '/my-teams': TeamOutlined,
   '/my-authorizations': SafetyCertificateOutlined,
+  '/my-authorization-team-usage': FundOutlined,
+  '/my-authorization-user-usage': HistoryOutlined,
   '/authorizations': SafetyCertificateOutlined,
   '/authorization-team-usage': FundOutlined,
   '/authorization-user-usage': HistoryOutlined,
@@ -186,7 +188,8 @@ const menuIconMap = {
 }
 
 const menuGroupIconMap = {
-  authorization: SafetyCertificateOutlined
+  authorization: SafetyCertificateOutlined,
+  'my-authorization': SafetyCertificateOutlined
 }
 
 function canAccessRoute(item: typeof menuRoutes[number]): boolean {

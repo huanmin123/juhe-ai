@@ -173,6 +173,7 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import type { AccountSummary, AuthorizationUserUsageOverview, AuthorizationUserUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import {
@@ -192,6 +193,7 @@ type UserUsageFilters = {
   statMonth: string
 }
 const route = useRoute()
+const { isManagementView } = useScopedMenuView()
 const loading = ref(false)
 const overview = ref<AuthorizationUserUsageOverview>()
 const teams = ref<SystemTeamSummary[]>([])
@@ -222,10 +224,12 @@ const activeFilterCount = computed(() => {
 const resourceOptions = computed(() => {
   if (filters.resourceType === 'all') return []
   if (filters.resourceType === 'account') {
-    return accounts.value.map((account) => ({ label: account.name, value: account.id }))
+    return ownAuthorizableAccounts.value.map((account) => ({ label: account.name, value: account.id }))
   }
-  return groups.value.map((group) => ({ label: group.name, value: group.id }))
+  return ownAuthorizableGroups.value.map((group) => ({ label: group.name, value: group.id }))
 })
+const ownAuthorizableAccounts = computed(() => accounts.value.filter((account) => account.permissions?.canAuthorize !== false))
+const ownAuthorizableGroups = computed(() => groups.value.filter((group) => group.permissions?.canAuthorize !== false))
 const userRows = computed<AuthorizationUserUsageRow[]>(() => overview.value?.rows ?? [])
 const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
 const rangeLabel = computed(() => formatMonthLabel(filters.statMonth))
@@ -246,10 +250,10 @@ const usageMonthValue = computed<Dayjs>({
 
 async function loadOptions() {
   const [teamResult, userResult, accountResult, groupResult] = await Promise.allSettled([
-    api.systemTeams.list(),
-    api.systemAccounts.list(),
-    api.accounts.list({ limit: 500 }),
-    api.groups.list()
+    isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
+    isManagementView.value ? api.systemAccounts.list() : api.myAuthorizationOptions.granteeAccounts(),
+    isManagementView.value ? api.accounts.list({ limit: 500 }) : api.myAccounts.list({ limit: 500 }),
+    isManagementView.value ? api.groups.list() : api.myGroups.list()
   ])
   if (teamResult.status === 'fulfilled') {
     teams.value = teamResult.value
@@ -280,14 +284,15 @@ async function loadOptions() {
 async function loadData() {
   loading.value = true
   try {
+    const params = {
+      resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
+      resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
+      teamId: filters.teamId,
+      granteeSystemAccountId: filters.granteeSystemAccountId,
+      statMonth: filters.statMonth
+    }
     const [usageOverview] = await Promise.all([
-      api.authorizations.userUsage({
-        resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
-        resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
-        teamId: filters.teamId,
-        granteeSystemAccountId: filters.granteeSystemAccountId,
-        statMonth: filters.statMonth
-      }),
+      isManagementView.value ? api.authorizations.userUsage(params) : api.myAuthorizations.userUsage(params),
       loadOptions()
     ])
     overview.value = usageOverview
