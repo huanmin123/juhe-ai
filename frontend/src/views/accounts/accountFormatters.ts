@@ -30,7 +30,7 @@ export function statusColor(status: AccountStatus) {
 
 export function statusText(status: AccountStatus) {
   if (status === 'active') return '正常'
-  if (status === 'error') return '错误'
+  if (status === 'error') return '异常'
   if (status === 'rate_limited') return '限流中'
   if (status === 'temporary_unavailable') return '临时不可调用'
   return '停用'
@@ -39,9 +39,16 @@ export function statusText(status: AccountStatus) {
 export function formatErrorPolicyAction(action: NonNullable<AccountTestResult['errorPolicyAction']>): string {
   if (action === 'retry_next') return '切换下一个账号'
   if (action === 'cooldown') return '账号冷却'
-  if (action === 'disable') return '标记错误'
+  if (action === 'disable') return '标记异常'
   if (action === 'default_cooldown') return '默认临时不可调用'
   return '无'
+}
+
+export function accountErrorCodeText(code?: string): string {
+  if (code === 'oauth_token_refresh_failed') return 'OAuth Token 刷新失败'
+  if (code === 'upstream_failure') return '上游调用失败'
+  if (code === 'account_expired') return '账户过期'
+  return code || '未分类异常'
 }
 
 export function accountStatusColor(account: AccountSummary) {
@@ -72,6 +79,9 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     lines.push('等待后台复测；也可手动测试或在更多菜单恢复正常')
   } else if (account.status === 'disabled') {
     lines.push('停用账户不会被测试或后台任务自动恢复')
+  } else if (account.status === 'error') {
+    lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
+    lines.push('异常账户不会参与调度，仅保留测试和恢复异常')
   }
   if (account.lastErrorMessage) {
     lines.push(`原因：${account.lastErrorMessage}`)

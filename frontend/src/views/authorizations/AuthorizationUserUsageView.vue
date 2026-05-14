@@ -99,6 +99,7 @@
         <h3>用户消耗明细</h3>
       </div>
       <ResponsiveDataList
+        class="authorization-usage-responsive-list"
         table-class="page-table authorization-usage-table"
         :columns="columns"
         :data-source="userRows"
@@ -377,8 +378,15 @@ onMounted(() => {
 <style scoped>
 .authorization-usage-page {
   display: flex;
+  height: calc(100dvh - 154px);
+  min-height: 0;
   flex-direction: column;
   gap: 16px;
+}
+
+.authorization-usage-header-card,
+.authorization-usage-page :deep(.stats-summary-grid) {
+  flex: 0 0 auto;
 }
 
 .authorization-usage-header-card :deep(.ant-card-body) {
@@ -398,16 +406,33 @@ onMounted(() => {
 }
 
 .authorization-usage-table-card {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
   border: 1px solid #e8edf5;
   border-radius: 16px;
   box-shadow: 0 10px 28px rgba(15, 23, 42, 0.04);
 }
 
+.authorization-usage-table-card :deep(.ant-card-body) {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
 .authorization-usage-table-head {
   display: flex;
+  flex: 0 0 auto;
   justify-content: space-between;
   gap: 16px;
   margin-bottom: 12px;
+}
+
+.authorization-usage-responsive-list {
+  min-height: 0;
+  flex: 1 1 auto;
 }
 
 .authorization-usage-table-head h3 {
@@ -460,11 +485,22 @@ onMounted(() => {
   white-space: nowrap;
 }
 
+.authorization-usage-table :deep(.responsive-data-list-flex-column) {
+  min-width: 260px;
+}
+
 .mobile-filter-field {
   display: grid;
   gap: 8px;
   color: #334155;
   font-size: 13px;
   font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .authorization-usage-page {
+    height: auto;
+    min-height: calc(100dvh - 122px);
+  }
 }
 </style>

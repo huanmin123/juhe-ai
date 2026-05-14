@@ -33,6 +33,9 @@ const actions = computed<RowActionItem[]>(() => {
     if (props.account.status !== 'disabled') {
       authorizedList.push({ key: 'test', label: '测试', icon: 'test', tone: 'info' })
     }
+    if (props.account.status === 'error') {
+      return authorizedList
+    }
     authorizedList.push({ key: 'bind-group', label: props.groupName ? '调整分组' : '绑定分组', icon: 'bind', tone: 'purple' })
     return authorizedList
   }

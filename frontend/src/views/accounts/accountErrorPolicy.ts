@@ -60,7 +60,7 @@ export const accountErrorActionValues: AccountErrorAction[] = [
 export const accountErrorActionOptions = [
   { label: '限流', value: 'rate_limited', description: '按恢复策略暂停账号，到期后自动恢复。' },
   { label: '临时不可调用', value: 'temp_unschedulable', description: '短暂避让指定分钟数，到期后自动恢复。' },
-  { label: '错误', value: 'error_disabled', description: '只有显式配置这个动作才会把账号置为错误。' }
+  { label: '异常', value: 'error_disabled', description: '只有显式配置这个动作才会把账号置为异常。' }
 ]
 
 export const accountErrorRecoveryStrategyOptions = [
@@ -240,9 +240,9 @@ export const accountErrorPolicyPresets: AccountErrorPolicyPreset[] = [
   { key: 'quota_403', label: '403 余额不足', rule: newAPIQuotaRule() },
   { key: 'balance_402', label: '402 余额不足', rule: balance402Rule() },
   { key: 'daily_429', label: '429 日额度', rule: dailyLimit429Rule() },
-  { key: 'auth_401', label: '401 认证失败', rule: makeRule({ name: '401 认证失败', priority: 200, status_codes: '401', action: 'error_disabled', description: '非 OAuth 账号认证失败时标记错误；OAuth 账号慎用，避免覆盖刷新逻辑' }) },
-  { key: 'forbidden_403', label: '403 不可访问', rule: makeRule({ name: '403 不可访问', priority: 210, status_codes: '403', action: 'error_disabled', description: '权限不足、账号被禁用或供应商拒绝访问时标记错误' }) },
-  { key: 'method_405', label: '405 不支持', rule: makeRule({ name: '405 方法不支持', priority: 220, status_codes: '405', action: 'error_disabled', description: '上游接口不支持当前请求方法或端点时标记错误' }) },
+  { key: 'auth_401', label: '401 认证失败', rule: makeRule({ name: '401 认证失败', priority: 200, status_codes: '401', action: 'error_disabled', description: '非 OAuth 账号认证失败时标记异常；OAuth 账号慎用，避免覆盖刷新逻辑' }) },
+  { key: 'forbidden_403', label: '403 不可访问', rule: makeRule({ name: '403 不可访问', priority: 210, status_codes: '403', action: 'error_disabled', description: '权限不足、账号被禁用或供应商拒绝访问时标记异常' }) },
+  { key: 'method_405', label: '405 不支持', rule: makeRule({ name: '405 方法不支持', priority: 220, status_codes: '405', action: 'error_disabled', description: '上游接口不支持当前请求方法或端点时标记异常' }) },
   { key: 'temporary_429', label: '429 临时限流', rule: tempRule('429 临时限流', 230, '429', 10, '普通 429 短暂避让；如需保留响应头限流逻辑可不启用此规则') },
   { key: 'temporary_529', label: '529 临时不可调用', rule: temp529Rule() },
   { key: 'server_503', label: '503 维护', rule: tempRule('503 服务不可用', 240, '503', 10, '上游维护或暂不可用，临时避让 10 分钟') },

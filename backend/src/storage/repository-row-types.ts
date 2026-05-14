@@ -33,6 +33,7 @@ export interface AccountRow {
   account_expires_at: string | null
   last_used_at: string | null
   cooldown_until: string | null
+  last_error_code: string | null
   last_error_message: string | null
   stream_failure_count: number
   stream_failure_window_started_at: string | null

@@ -84,6 +84,7 @@ export interface AccountSummary {
   schedulable: boolean
   accountExpiresAt?: string
   cooldownUntil?: string
+  lastErrorCode?: string
   lastErrorMessage?: string
   localStatus?: AccountStatus
   localCooldownUntil?: string

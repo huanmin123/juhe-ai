@@ -325,7 +325,7 @@ const rowSelection = computed(() => ({
   onChange: (selectedRowKeys: Array<string | number>) => {
     selectedAccountIds.value = selectedRowKeys.map((key) => String(key))
   },
-  getCheckboxProps: (account: AccountSummary) => ({ disabled: !canEditAccount(account) })
+  getCheckboxProps: (account: AccountSummary) => ({ disabled: !canBatchManageAccount(account) })
 }))
 
 function isAccountSelected(accountId: string): boolean {
@@ -333,7 +333,7 @@ function isAccountSelected(accountId: string): boolean {
 }
 
 function toggleAccountSelection(account: AccountSummary) {
-  if (!canEditAccount(account)) return
+  if (!canBatchManageAccount(account)) return
   selectedAccountIds.value = isAccountSelected(account.id)
     ? selectedAccountIds.value.filter((id) => id !== account.id)
     : [...selectedAccountIds.value, account.id]
@@ -434,8 +434,12 @@ function authorizedAccountTooltip(account: AccountSummary): string {
   return `授权自 ${ownerName}，仅可使用`
 }
 
-function canEditAccount(account: AccountSummary): boolean {
+function hasAccountEditPermission(account: AccountSummary): boolean {
   return account.permissions?.canEdit !== false
+}
+
+function canEditAccount(account: AccountSummary): boolean {
+  return hasAccountEditPermission(account)
 }
 
 function canDeleteAccount(account: AccountSummary): boolean {
@@ -443,7 +447,15 @@ function canDeleteAccount(account: AccountSummary): boolean {
 }
 
 function canUseAccountActions(account: AccountSummary): boolean {
-  return canEditAccount(account) && account.permissions?.canViewCredentials !== false
+  return account.status !== 'error' && canEditAccount(account) && account.permissions?.canViewCredentials !== false
+}
+
+function canBatchManageAccount(account: AccountSummary): boolean {
+  return canEditAccount(account) && account.status !== 'error'
+}
+
+function canRestoreException(account: AccountSummary): boolean {
+  return account.status === 'error' && hasAccountEditPermission(account)
 }
 
 function canTestAccount(account: AccountSummary): boolean {
@@ -496,6 +508,9 @@ function ensureDefaultGroupSelected(providerCode = form.providerCode) {
 function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
   if (isAuthorizedAccount(account)) {
+    if (account.status === 'error') {
+      return items.map(normalizeAccountMenuItem)
+    }
     if (account.boundGroupId && account.localStatus && account.localStatus !== 'active') {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
@@ -514,6 +529,12 @@ function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   }
   if (canTestAccount(account)) {
     items.push({ key: 'test', label: '测试' })
+  }
+  if (account.status === 'error') {
+    if (canRestoreException(account)) {
+      items.push({ key: 'restore-normal', label: '恢复异常' })
+    }
+    return items.map(normalizeAccountMenuItem)
   }
   if (canUseAccountActions(account)) {
     if (canManageOpenAIOAuth(account)) {
@@ -579,7 +600,7 @@ async function loadData(options: { append?: boolean; quiet?: boolean; forceOptio
     accountPagination.pageSize = accountList.pageSize
     accountPagination.total = accountList.total
     accounts.value = options.append ? [...accounts.value, ...accountList.items] : accountList.items
-    selectedAccountIds.value = selectedAccountIds.value.filter((id) => accounts.value.some((account) => account.id === id && canEditAccount(account)))
+    selectedAccountIds.value = selectedAccountIds.value.filter((id) => accounts.value.some((account) => account.id === id && canBatchManageAccount(account)))
     if (modalOpen.value && !editingId.value) {
       ensureDefaultGroupSelected()
     }
@@ -735,12 +756,20 @@ function openEdit(account: AccountSummary) {
 }
 
 function openBindGroup(account: AccountSummary) {
+  if (account.status === 'error') {
+    message.warning('异常账户除编辑、删除外，只支持测试和恢复异常')
+    return
+  }
   bindingAccount.value = account
   bindGroupForm.groupId = groupIdForAccount(account.id) ?? defaultBindGroupForAccount(account)?.id ?? ''
   bindGroupModalOpen.value = true
 }
 
 function openTrafficMigration(account: AccountSummary) {
+  if (account.status === 'error') {
+    message.warning('异常账户除编辑、删除外，只支持测试和恢复异常')
+    return
+  }
   if (!canUseAccountActions(account) && !isAuthorizedAccount(account)) {
     message.warning('授权账户不能迁移流量')
     return
@@ -1196,7 +1225,7 @@ async function batchUpdateAccounts(
   payloadBuilder: (account: AccountSummary) => Record<string, unknown>,
   loadingLabel: string,
   successLabel: string,
-  selected = selectedAccounts.value.filter(canEditAccount)
+  selected = selectedAccounts.value.filter(canBatchManageAccount)
 ) {
   if (!selected.length) {
     message.warning('请先选择账户')
@@ -1250,7 +1279,7 @@ async function batchTestSelected() {
 }
 
 async function batchSetStatus(status: 'active' | 'disabled') {
-  const selected = selectedAccounts.value.filter(canEditAccount)
+  const selected = selectedAccounts.value.filter(canBatchManageAccount)
   const eligible = status === 'active'
     ? selected.filter((account) => account.status === 'disabled')
     : selected.filter((account) => account.status !== 'disabled')
@@ -1259,7 +1288,7 @@ async function batchSetStatus(status: 'active' | 'disabled') {
     return
   }
   if (eligible.length !== selected.length) {
-    message.warning(status === 'active' ? '已跳过临时状态或错误状态的账户，只启用手动停用的账户' : '已跳过已停用的账户')
+    message.warning(status === 'active' ? '已跳过临时状态或异常状态的账户，只启用手动停用的账户' : '已跳过已停用的账户')
   }
   await batchUpdateAccounts(
     (account) => ({ status: account.status === 'disabled' ? 'active' : 'disabled' }),
@@ -1269,7 +1298,7 @@ async function batchSetStatus(status: 'active' | 'disabled') {
   )
 }
 
-async function updateAccountState(account: AccountSummary, payload: Record<string, unknown>, successText: string) {
+async function updateAccountState(account: AccountSummary, payload: Record<string, unknown>, successText: string, options: { allowExceptionRecovery?: boolean } = {}) {
   if (isAuthorizedAccount(account)) {
     try {
       if (isManagementView.value) {
@@ -1285,8 +1314,8 @@ async function updateAccountState(account: AccountSummary, payload: Record<strin
     }
     return
   }
-  if (!canEditAccount(account)) {
-    message.warning('授权账户不能修改状态')
+  if (!canEditAccount(account) && !(options.allowExceptionRecovery && canRestoreException(account))) {
+    message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试和恢复异常' : '授权账户不能修改状态')
     return
   }
   try {
@@ -1308,9 +1337,29 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
     await testAccount(account)
     return
   }
+  if (key === 'restore-normal') {
+    if (isAuthorizedAccount(account)) {
+      if (!account.localStatus || account.localStatus === 'active') {
+        message.warning('当前授权账户不需要恢复')
+        return
+      }
+      await updateAccountState(account, { clearFailureState: true }, '授权账户已恢复正常')
+      return
+    }
+    if (account.status === 'error') {
+      await updateAccountState(account, { clearFailureState: true }, '账户异常已恢复', { allowExceptionRecovery: true })
+      return
+    }
+    if (!isTemporaryAccountStatus(account)) {
+      message.warning('当前账户不需要恢复')
+      return
+    }
+    await updateAccountState(account, { clearFailureState: true }, '账户已恢复正常')
+    return
+  }
   if (!canUseAccountActions(account)) {
     if (!isAuthorizedAccount(account)) {
-      message.warning('授权账户仅可使用，不能执行管理操作')
+      message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试和恢复异常' : '授权账户仅可使用，不能执行管理操作')
       return
     }
     if (!['restore-normal', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic'].includes(key)) {
@@ -1330,22 +1379,6 @@ async function handleAccountMenu(key: string, account: AccountSummary) {
   if (key === 'toggle-status') {
     const nextStatus = account.status === 'disabled' ? 'active' : 'disabled'
     await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
-    return
-  }
-  if (key === 'restore-normal') {
-    if (isAuthorizedAccount(account)) {
-      if (!account.localStatus || account.localStatus === 'active') {
-        message.warning('当前授权账户不需要恢复')
-        return
-      }
-      await updateAccountState(account, { clearFailureState: true }, '授权账户已恢复正常')
-      return
-    }
-    if (!isTemporaryAccountStatus(account)) {
-      message.warning('当前账户不需要恢复')
-      return
-    }
-    await updateAccountState(account, { clearFailureState: true }, '账户已恢复正常')
     return
   }
   if (key === 'super-priority-on' || key === 'super-priority-off') {

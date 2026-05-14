@@ -5,7 +5,7 @@ import {
   findAccountForTest,
   getSettings,
   listAccounts,
-  markAccountCooldown,
+  markAccountException,
   resolveProxyUrlForProfile,
   updateAccount
 } from '../../storage/repositories.js'
@@ -14,14 +14,14 @@ import { requestDbService } from '../db-service/db-service-ipc.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import {
   buildOpenAIOAuthCredentials,
-  refreshOpenAIOAuthToken
+  refreshOpenAIOAuthToken,
+  type OpenAITokenInfo
 } from './openai-oauth.service.js'
 
 export interface OpenAIOAuthAccessTokenRefreshOptions {
   leadSeconds?: number
   batchSize?: number
   retryBackoffSeconds?: number
-  failureCooldownMinutes?: number
 }
 
 export interface OpenAIOAuthAccessTokenRefreshResult {
@@ -29,6 +29,7 @@ export interface OpenAIOAuthAccessTokenRefreshResult {
   due: number
   refreshed: number
   failed: number
+  exceptioned: number
   cooldowned: number
   skippedBackoff: number
 }
@@ -39,11 +40,26 @@ export interface RefreshedOpenAIOAuthAccount {
   status?: string
 }
 
-const retryBackoffByAccountId = new Map<string, number>()
+const oauthTokenRefreshFailureThreshold = 3
+const oauthTokenRefreshFailedErrorCode = 'oauth_token_refresh_failed'
+const refreshFailureStateByAccountId = new Map<string, { count: number; backoffUntil: number }>()
 const refreshQueueByAccountId = new Map<string, Promise<void>>()
+let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthToken
 
 type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerCode' | 'proxyProfileId' | 'status' | 'name'>>
-type OpenAIOAuthAccountRefreshCallOptions = { access?: AccessScope; signal?: AbortSignal; force?: boolean; leadSeconds?: number; persistMode?: 'sync' | 'db-service' }
+type OpenAIOAuthTokenRefresher = (input: { refreshToken: string; clientId?: string; proxyUrl?: string; signal?: AbortSignal }) => Promise<OpenAITokenInfo>
+type OpenAIOAuthAccountRefreshCallOptions = {
+  access?: AccessScope
+  signal?: AbortSignal
+  force?: boolean
+  leadSeconds?: number
+  persistMode?: 'sync' | 'db-service'
+  restoreFailureState?: boolean
+}
+
+export function setOpenAIOAuthTokenRefresherForTest(refresher?: OpenAIOAuthTokenRefresher): void {
+  openAIOAuthTokenRefresher = refresher ?? refreshOpenAIOAuthToken
+}
 
 export async function refreshOpenAIOAuthAccountAccessToken(
   account: RefreshableOpenAIOAuthAccount,
@@ -83,7 +99,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
     }
 
     try {
-      const tokenInfo = await refreshOpenAIOAuthToken({
+      const tokenInfo = await openAIOAuthTokenRefresher({
         refreshToken,
         clientId: stringCredential(credentials, 'client_id'),
         proxyUrl: current.proxyProfileId ? resolveProxyUrlForProfile(current.proxyProfileId) : undefined,
@@ -154,15 +170,14 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   const settings = getSettings()
   const leadSeconds = boundedNumber(options.leadSeconds ?? settings.oauthAccessTokenRefreshLeadSeconds, 300, 60, 86400)
   const batchSize = boundedNumber(options.batchSize ?? settings.oauthAccessTokenRefreshBatchSize, 20, 1, 200)
-  const retryBackoffSeconds = boundedNumber(options.retryBackoffSeconds ?? settings.oauthAccessTokenRefreshRetryBackoffSeconds, 300, 60, 86400)
-  const failureCooldownMinutes = boundedNumber(options.failureCooldownMinutes ?? settings.defaultTemporaryUnschedulableMinutes, 5, 1, 1440)
+  const retryBackoffSeconds = boundedNumber(options.retryBackoffSeconds ?? settings.oauthAccessTokenRefreshRetryBackoffSeconds, 300, 0, 86400)
   const now = Date.now()
   const leadMs = leadSeconds * 1000
   const retryBackoffMs = retryBackoffSeconds * 1000
-  cleanupRetryBackoff(now)
+  cleanupRefreshFailureBackoff(now)
 
   const eligibleAccounts = listAccounts()
-    .filter(isActiveOpenAIOAuthAccountWithRefreshToken)
+    .filter(isExistingOpenAIOAuthAccountWithRefreshToken)
   const dueAccounts = eligibleAccounts
     .filter((account) => shouldPreRefreshAccessToken(account.credentials, now, leadMs))
 
@@ -171,15 +186,15 @@ export async function refreshDueOpenAIOAuthAccessTokens(
     due: dueAccounts.length,
     refreshed: 0,
     failed: 0,
+    exceptioned: 0,
     cooldowned: 0,
     skippedBackoff: 0
   }
 
   const candidates: AccountSummary[] = []
   for (const account of dueAccounts) {
-    const expiredOrMissing = isAccessTokenExpiredOrMissing(account.credentials, now)
-    const backoffUntil = retryBackoffByAccountId.get(account.id)
-    if (!expiredOrMissing && backoffUntil !== undefined && backoffUntil > now) {
+    const failureState = refreshFailureStateByAccountId.get(account.id)
+    if (failureState?.backoffUntil !== undefined && failureState.backoffUntil > now) {
       result.skippedBackoff += 1
       continue
     }
@@ -190,29 +205,33 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   }
   for (const account of candidates) {
     try {
-      await refreshOpenAIOAuthAccountAccessToken(account, { force: false, leadSeconds })
-      retryBackoffByAccountId.delete(account.id)
+      await refreshOpenAIOAuthAccountAccessToken(account, { force: false, leadSeconds, restoreFailureState: false })
+      refreshFailureStateByAccountId.delete(account.id)
       result.refreshed += 1
     } catch (error) {
       result.failed += 1
       const expiredOrMissing = isAccessTokenExpiredOrMissing(account.credentials, Date.now())
       const message = errorMessage(error)
+      const failureState = recordRefreshFailure(account.id, Date.now() + retryBackoffMs)
       logger.warn(errorLogFields(error, {
         event: 'openai_oauth_access_token_refresh_account_failed',
         accountId: account.id,
         accountName: account.name,
+        failureCount: failureState.count,
         accessTokenExpiredOrMissing: expiredOrMissing
       }), 'OpenAI OAuth Access Token 刷新失败')
 
-      if (expiredOrMissing) {
-        const until = new Date(Date.now() + failureCooldownMinutes * 60_000).toISOString()
-        const updated = markAccountCooldown(account.id, until, `OpenAI OAuth Access Token 刷新失败：${message}`)
+      if (failureState.count >= oauthTokenRefreshFailureThreshold) {
+        const updated = markAccountException(
+          account.id,
+          oauthTokenRefreshFailedErrorCode,
+          `OpenAI OAuth Access Token 连续 ${failureState.count} 次刷新失败：${message}`,
+          { preserveDisabled: false }
+        )
         if (updated) {
           clearGatewayRuntimeCache()
-          result.cooldowned += 1
+          result.exceptioned += 1
         }
-      } else {
-        retryBackoffByAccountId.set(account.id, Date.now() + retryBackoffMs)
       }
     }
   }
@@ -220,11 +239,9 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   return result
 }
 
-function isActiveOpenAIOAuthAccountWithRefreshToken(account: AccountSummary): boolean {
+function isExistingOpenAIOAuthAccountWithRefreshToken(account: AccountSummary): boolean {
   return account.providerCode === 'openai'
     && account.type === 'oauth'
-    && account.status === 'active'
-    && account.schedulable
     && Boolean(stringCredential(account.credentials, 'refresh_token'))
 }
 
@@ -256,10 +273,20 @@ function parseCredentialExpiresAt(credentials: Record<string, unknown>): number 
   return Number.isFinite(expiresAt) ? expiresAt : undefined
 }
 
-function cleanupRetryBackoff(now: number): void {
-  for (const [accountId, backoffUntil] of retryBackoffByAccountId.entries()) {
-    if (backoffUntil <= now) {
-      retryBackoffByAccountId.delete(accountId)
+function recordRefreshFailure(accountId: string, backoffUntil: number): { count: number; backoffUntil: number } {
+  const previous = refreshFailureStateByAccountId.get(accountId)
+  const next = {
+    count: (previous?.count ?? 0) + 1,
+    backoffUntil
+  }
+  refreshFailureStateByAccountId.set(accountId, next)
+  return next
+}
+
+function cleanupRefreshFailureBackoff(now: number): void {
+  for (const [accountId, failureState] of refreshFailureStateByAccountId.entries()) {
+    if (failureState.backoffUntil <= now) {
+      refreshFailureStateByAccountId.set(accountId, { ...failureState, backoffUntil: 0 })
     }
   }
 }
@@ -293,6 +320,10 @@ async function runWithAccountRefreshLock<T>(accountId: string, task: () => Promi
 
 function finalizeSuccessfulTokenRefresh(account: AccountSummary, options: OpenAIOAuthAccountRefreshCallOptions = {}): AccountSummary | RefreshedOpenAIOAuthAccount {
   if (options.persistMode === 'db-service') {
+    clearGatewayRuntimeCache()
+    return account
+  }
+  if (options.restoreFailureState === false) {
     clearGatewayRuntimeCache()
     return account
   }

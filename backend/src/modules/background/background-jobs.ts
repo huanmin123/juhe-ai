@@ -202,7 +202,7 @@ function clampBytes(value: number, max: number): number {
 async function runOpenAIOAuthAccessTokenRefresh(): Promise<void> {
   try {
     const result = await refreshDueOpenAIOAuthAccessTokens()
-    if (result.refreshed > 0 || result.failed > 0 || result.cooldowned > 0) {
+    if (result.refreshed > 0 || result.failed > 0 || result.exceptioned > 0 || result.cooldowned > 0) {
       logger.info({
         event: 'background_openai_oauth_access_token_refresh_completed',
         ...result

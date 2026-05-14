@@ -31,7 +31,7 @@ export const statusOptions: Array<{ label: string; value: 'all' | AccountStatus 
   { label: '全部状态', value: 'all' },
   { label: '正常', value: 'active' },
   { label: '停用', value: 'disabled' },
-  { label: '错误', value: 'error' },
+  { label: '异常', value: 'error' },
   { label: '限流中', value: 'rate_limited' },
   { label: '临时不可调用', value: 'temporary_unavailable' }
 ]

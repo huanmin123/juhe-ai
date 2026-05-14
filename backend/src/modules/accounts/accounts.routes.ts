@@ -478,6 +478,7 @@ accountsRouter.patch('/:id', (req, res) => {
               accountExpiresAt: '过期时间',
               boundGroupId: '绑定分组',
               cooldownUntil: '冷却结束时间',
+              lastErrorCode: '异常类型',
               lastErrorMessage: '错误信息'
             }),
             ...(body.clearFailureState === true ? [safeChange('clearFailureState', '恢复异常状态', false, true)] : [])

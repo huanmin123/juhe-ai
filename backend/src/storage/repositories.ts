@@ -418,6 +418,7 @@ function disableExpiredAccounts(access?: AccessScope): void {
           super_priority_enabled = 0,
           fallback_enabled = 0,
           cooldown_until = NULL,
+          last_error_code = NULL,
           last_error_message = ?,
           updated_at = ?
       WHERE account_expires_at IS NOT NULL
@@ -426,6 +427,7 @@ function disableExpiredAccounts(access?: AccessScope): void {
           status <> 'disabled'
           OR schedulable <> 0
           OR cooldown_until IS NOT NULL
+          OR last_error_code IS NOT NULL
           OR last_error_message IS NULL
         )${scope.clause}
     `)
@@ -824,6 +826,7 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       schedulable: effectiveAuthorizedSchedulable,
       accountExpiresAt: isAuthorizedView ? undefined : row.account_expires_at ?? undefined,
       cooldownUntil: isAuthorizedView ? row.bound_group_local_cooldown_until ?? undefined : row.cooldown_until ?? undefined,
+      lastErrorCode: isAuthorizedView ? (effectiveAuthorizedStatus === row.status ? row.last_error_code ?? undefined : undefined) : row.last_error_code ?? undefined,
       lastErrorMessage: isAuthorizedView ? row.bound_group_local_last_error_message ?? undefined : row.last_error_message ?? undefined,
       localStatus: isAuthorizedView ? authorizedLocalStatus : undefined,
       localCooldownUntil: isAuthorizedView ? row.bound_group_local_cooldown_until ?? undefined : undefined,
@@ -1009,6 +1012,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       schedulable: row.schedulable === 1,
       accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: row.cooldown_until ?? undefined,
+      lastErrorCode: row.last_error_code ?? undefined,
       lastErrorMessage: row.last_error_message ?? undefined,
       lastUsedAt: row.last_used_at ?? undefined,
       todayUsage: emptyAccountUsageSummary(),
@@ -1084,6 +1088,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     schedulable: expiredByPackage ? false : input.schedulable !== false,
     accountExpiresAt: accountExpiresAt ?? undefined,
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
+    lastErrorCode: undefined,
     lastErrorMessage: expiredByPackage ? '账户套餐已过期，已自动停用' : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     lastUsedAt: undefined,
     todayUsage: emptyAccountUsageSummary(),
@@ -1102,8 +1107,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
-          priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1126,6 +1131,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         optionalString(input.notes) ?? null,
         account.accountExpiresAt ?? null,
         account.cooldownUntil ?? null,
+        account.lastErrorCode ?? null,
         account.lastErrorMessage ?? null,
         0,
         null,
@@ -1187,25 +1193,32 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 
   const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
   const requestedStatus = hasStatusInput ? normalizeAccountStatus(input.status, current.status) : current.status
-  if (hasStatusInput && requestedStatus === 'active' && isCoolingAccountStatus(current.status)) {
-    throw new Error('临时不可调用或限流中的账户不能通过启用账户恢复，请使用恢复正常或先执行实际测试')
+  if (hasStatusInput && requestedStatus === 'active' && (isCoolingAccountStatus(current.status) || current.status === 'error')) {
+    throw new Error('临时不可调用、限流中或异常账户不能通过启用账户恢复，请使用恢复正常或恢复异常')
   }
   const nextStatus = expiredByPackage ? 'disabled' : requestedStatus
   let nextCooldownUntil = current.cooldownUntil
+  let nextLastErrorCode = current.lastErrorCode
   let nextLastErrorMessage = current.lastErrorMessage
   if (hasStatusInput) {
     if (nextStatus === 'active') {
       nextCooldownUntil = undefined
+      nextLastErrorCode = undefined
       nextLastErrorMessage = undefined
     } else if (nextStatus === 'disabled' || nextStatus === 'error') {
       nextCooldownUntil = undefined
+      if (nextStatus === 'disabled') {
+        nextLastErrorCode = undefined
+      }
     } else if (isCoolingAccountStatus(nextStatus) && !nextCooldownUntil) {
       nextCooldownUntil = new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+      nextLastErrorCode = undefined
       nextLastErrorMessage = nextLastErrorMessage ?? '手动设置为临时不可调用'
     }
   }
   if (expiredByPackage) {
     nextCooldownUntil = undefined
+    nextLastErrorCode = undefined
     nextLastErrorMessage = '账户套餐已过期，已自动停用'
   }
   const hasSuperPriorityInput = Object.prototype.hasOwnProperty.call(input, 'superPriorityEnabled')
@@ -1262,6 +1275,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
           : current.schedulable,
     accountExpiresAt: nextAccountExpiresAt ?? undefined,
     cooldownUntil: nextCooldownUntil,
+    lastErrorCode: nextLastErrorCode,
     lastErrorMessage: nextLastErrorMessage,
     lastUsedAt: current.lastUsedAt,
     usage: current.usage
@@ -1274,7 +1288,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       UPDATE accounts
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
-            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_message = ?, updated_at = ?
+            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
       .run(
@@ -1294,6 +1308,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.schedulable ? 1 : 0,
         next.accountExpiresAt ?? null,
         next.cooldownUntil ?? null,
+        next.lastErrorCode ?? null,
         next.lastErrorMessage ?? null,
         nowIso(),
         id,
@@ -1349,6 +1364,7 @@ export function clearAccountFailureState(
             super_priority_enabled = 0,
             fallback_enabled = 0,
             cooldown_until = NULL,
+            last_error_code = NULL,
             last_error_message = ?,
             stream_failure_count = 0,
             stream_failure_window_started_at = NULL,
@@ -1368,6 +1384,7 @@ export function clearAccountFailureState(
       SET status = 'active',
           schedulable = 1,
           cooldown_until = NULL,
+          last_error_code = NULL,
           last_error_message = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
@@ -1388,6 +1405,10 @@ export function clearAccountStreamFailureState(id: string): boolean {
       UPDATE accounts
       SET stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
+          last_error_code = CASE
+            WHEN status = 'active' THEN NULL
+            ELSE last_error_code
+          END,
           last_error_message = CASE
             WHEN status = 'active' THEN NULL
             ELSE last_error_message
@@ -1398,6 +1419,7 @@ export function clearAccountStreamFailureState(id: string): boolean {
         AND (
           stream_failure_count > 0
           OR stream_failure_window_started_at IS NOT NULL
+          OR (status = 'active' AND last_error_code IS NOT NULL)
           OR (status = 'active' AND last_error_message IS NOT NULL)
         )
     `)
@@ -1424,6 +1446,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
             super_priority_enabled = 0,
             fallback_enabled = 0,
             cooldown_until = NULL,
+            last_error_code = NULL,
             last_error_message = ?,
             stream_failure_count = 0,
             stream_failure_window_started_at = NULL,
@@ -1447,6 +1470,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
           super_priority_enabled = 0,
           fallback_enabled = 0,
           cooldown_until = ?,
+          last_error_code = NULL,
           last_error_message = ?,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
@@ -1515,6 +1539,7 @@ export function migrateAccountTraffic(input: {
               super_priority_enabled = 0,
               fallback_enabled = 0,
               cooldown_until = NULL,
+              last_error_code = NULL,
               last_error_message = ?,
               stream_failure_count = 0,
               stream_failure_window_started_at = NULL,
@@ -1529,6 +1554,7 @@ export function migrateAccountTraffic(input: {
               super_priority_enabled = 0,
               fallback_enabled = 0,
               cooldown_until = ?,
+              last_error_code = NULL,
               last_error_message = ?,
               stream_failure_count = 0,
               stream_failure_window_started_at = NULL,
@@ -1664,12 +1690,17 @@ function migrateAuthorizedAccountBindingTraffic(input: {
   return nextSource && nextTarget ? { sourceAccount: nextSource, targetAccount: nextTarget, sourceCooldownUntil: sourceCooldownUntil ?? undefined } : undefined
 }
 
-export function markAccountDisabledByFailure(id: string, reason: string): AccountSummary | undefined {
+export function markAccountException(
+  id: string,
+  errorCode: string,
+  reason: string,
+  options: { preserveDisabled?: boolean } = {}
+): AccountSummary | undefined {
   const current = listAccounts().find((account) => account.id === id)
   if (!current) {
     return undefined
   }
-  if (current.status === 'disabled') {
+  if (current.status === 'disabled' && options.preserveDisabled !== false) {
     return undefined
   }
 
@@ -1681,18 +1712,23 @@ export function markAccountDisabledByFailure(id: string, reason: string): Accoun
           super_priority_enabled = 0,
           fallback_enabled = 0,
           cooldown_until = NULL,
+          last_error_code = ?,
           last_error_message = ?,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
           updated_at = ?
       WHERE id = ?
     `)
-    .run(reason || null, nowIso(), id)
+    .run(errorCode || null, reason || null, nowIso(), id)
   if (Number(result.changes ?? 0) > 0) {
     refreshGroupAccountStatsAfterWrite()
   }
 
   return listAccounts().find((account) => account.id === id)
+}
+
+export function markAccountDisabledByFailure(id: string, reason: string): AccountSummary | undefined {
+  return markAccountException(id, 'upstream_failure', reason)
 }
 
 export function recordAccountStreamFailure(input: {

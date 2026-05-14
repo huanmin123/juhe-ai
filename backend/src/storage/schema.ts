@@ -104,6 +104,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       account_expires_at TEXT,
       last_used_at TEXT,
       cooldown_until TEXT,
+      last_error_code TEXT,
       last_error_message TEXT,
       stream_failure_count INTEGER NOT NULL DEFAULT 0,
       stream_failure_window_started_at TEXT,
@@ -335,6 +336,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
+
+  ensureRecordTableColumns(database, 'accounts', {
+    last_error_code: 'TEXT'
+  })
 }
 
 export function applyRecordSchema(database: DatabaseSync): void {

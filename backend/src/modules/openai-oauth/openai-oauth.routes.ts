@@ -438,6 +438,7 @@ function buildOAuthUpdateLog(
       safeChange('credentials', 'OAuth 凭据', before.credentials, after.credentials),
       safeChange('status', '状态', before.status, after.status),
       safeChange('cooldownUntil', '冷却结束时间', before.cooldownUntil, afterRecord.cooldownUntil),
+      safeChange('lastErrorCode', '异常类型', before.lastErrorCode, afterRecord.lastErrorCode),
       safeChange('lastErrorMessage', '错误信息', before.lastErrorMessage, afterRecord.lastErrorMessage)
     ],
     viewers: viewer(ownerSystemAccountId, 'resource_owner')
