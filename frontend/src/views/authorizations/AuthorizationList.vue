@@ -62,7 +62,7 @@
         </div>
         <div class="mobile-list-meta-grid">
           <div class="mobile-list-meta-item">
-            <span>归属人</span>
+            <span>资源归属人</span>
             <strong>{{ record.resourceOwnerSystemAccountName || record.resourceOwnerSystemAccountId }}</strong>
           </div>
           <div class="mobile-list-meta-item">

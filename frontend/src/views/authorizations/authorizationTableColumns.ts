@@ -5,7 +5,7 @@ export type AuthorizationSourceFilter = 'all' | 'manual' | 'team'
 export const authorizationColumns = [
   { title: '资源名称', key: 'resource', width: 260 },
   { title: '方向', key: 'direction', width: 120 },
-  { title: '归属人', key: 'owner', width: 180 },
+  { title: '资源归属人', key: 'owner', width: 180 },
   { title: '被授权的目标', key: 'grantee', width: 180 },
   { title: '今日', key: 'usageTotal', width: 180 },
   { title: '最后使用', key: 'lastUsedAt', width: 170 },

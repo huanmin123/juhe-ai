@@ -45,6 +45,15 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/my-api-keys',
+    component: () => import('@/views/api-keys/ApiKeysView.vue'),
+    meta: {
+      title: '我的 API Key',
+      description: '管理自己的 API Key，绑定自有或授权给自己的分组。',
+      viewScope: 'self'
+    }
+  },
+  {
     path: '/my-authorizations',
     component: () => import('@/views/authorizations/AuthorizationsView.vue'),
     meta: {
@@ -85,15 +94,6 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '查看自己加入的授权团队和团队成员。',
       menuGroup: 'my-authorization',
       menuGroupTitle: '我的授权',
-      viewScope: 'self'
-    }
-  },
-  {
-    path: '/my-api-keys',
-    component: () => import('@/views/api-keys/ApiKeysView.vue'),
-    meta: {
-      title: '我的 API Key',
-      description: '管理自己的 API Key，绑定自有或授权给自己的分组。',
       viewScope: 'self'
     }
   },
@@ -150,6 +150,20 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '供应商',
       description: '管理当前支持的供应商能力与模型定价，当前启用 OpenAI。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
+      viewScope: 'admin',
+      roles: ['admin']
+    }
+  },
+  {
+    path: '/proxies',
+    component: () => import('@/views/proxies/ProxiesView.vue'),
+    meta: {
+      title: '代理管理',
+      description: '管理可绑定到账户的代理配置，支持刷新、测试和后续转发。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -160,6 +174,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'AI 账户管理',
       description: '按系统账户管理 OpenAI OAuth / API Key 账户，统一查看状态、并发、代理和错误策略。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -170,6 +186,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'AI 分组管理',
       description: '按系统账户管理账户分组、授权分组和调度边界。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -228,16 +246,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: 'API Key 管理',
       description: '按系统账户管理 API Key 和分组绑定。',
-      viewScope: 'admin',
-      roles: ['admin']
-    }
-  },
-  {
-    path: '/proxies',
-    component: () => import('@/views/proxies/ProxiesView.vue'),
-    meta: {
-      title: '代理管理',
-      description: '管理可绑定到账户的代理配置，支持刷新、测试和后续转发。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -248,6 +258,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '用量统计管理',
       description: '按系统账户查看可使用账户的每日消耗趋势，仅统计所选用户发起的调用。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -258,6 +270,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '使用记录管理',
       description: '按系统账户查看网关请求、命中账户、Token 用量、成本和错误状态。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -268,6 +282,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '操作日志管理',
       description: '查看所有用户的业务变更操作日志，追溯操作人、资源、影响用户和 traceId。',
+      menuGroup: 'log-management',
+      menuGroupTitle: '日志管理',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -278,6 +294,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '审计日志',
       description: '按 traceId 追溯原始请求、上游尝试、响应头和完整 payload，失败请求全量记录，成功请求按采样保存。',
+      menuGroup: 'log-management',
+      menuGroupTitle: '日志管理',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -288,6 +306,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '日志搜索',
       description: '索引查询检索最近 3 天运行日志；grep 模式由后端 rg 按任意关键字扫描文件日志，多关键字同时命中。',
+      menuGroup: 'log-management',
+      menuGroupTitle: '日志管理',
       viewScope: 'admin',
       roles: ['admin']
     }

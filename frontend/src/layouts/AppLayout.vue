@@ -188,7 +188,9 @@ const menuIconMap = {
 }
 
 const menuGroupIconMap = {
+  'ai-management': DatabaseOutlined,
   authorization: SafetyCertificateOutlined,
+  'log-management': ProfileOutlined,
   'my-authorization': SafetyCertificateOutlined
 }
 

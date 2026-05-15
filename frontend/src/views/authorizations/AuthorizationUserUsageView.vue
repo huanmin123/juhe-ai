@@ -25,7 +25,7 @@
             :active-only="false"
             allow-clear
             class="authorization-usage-select responsive-list-inline-filter"
-            placeholder="筛选授权团队"
+            placeholder="筛选所属团队"
             scope="team"
             @change="loadData"
           />
@@ -75,8 +75,8 @@
             />
           </label>
           <label class="mobile-filter-field">
-            <span>授权团队</span>
-            <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选授权团队" @change="loadData" />
+            <span>所属团队</span>
+            <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选所属团队" @change="loadData" />
           </label>
           <label class="mobile-filter-field">
             <span>被授权用户</span>
@@ -208,7 +208,7 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import dayjs, { type Dayjs } from 'dayjs'
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -249,10 +249,10 @@ const groups = ref<GroupSummary[]>([])
 const filters = reactive<UserUsageFilters>(defaultFilters())
 const resourceTypeOptions = authorizationResourceTypeOptions
 const columns = [
-  { title: '被授权用户', key: 'user', width: 230 },
-  { title: '所属团队', key: 'teams', width: 180 },
   { title: '资源名称', key: 'account', width: 220 },
   { title: '资源归属人', key: 'accountOwner', width: 180 },
+  { title: '被授权用户', key: 'user', width: 230 },
+  { title: '所属团队', key: 'teams', width: 180 },
   { title: '月度消耗', key: 'usage', width: 220 },
   { title: '最后使用', key: 'lastUsedAt', width: 180 }
 ]
@@ -392,20 +392,38 @@ function resetFilters() {
 }
 
 function applyRouteFilters() {
+  if (!hasRouteFilters()) return
   const teamId = singleQueryValue(route.query.teamId)
   const granteeSystemAccountId = singleQueryValue(route.query.granteeSystemAccountId)
   const resourceOwnerSystemAccountId = singleQueryValue(route.query.resourceOwnerSystemAccountId)
   const resourceId = singleQueryValue(route.query.resourceId)
   const resourceType = route.query.resourceType === 'account' || route.query.resourceType === 'group' ? route.query.resourceType : undefined
   const statMonth = singleQueryValue(route.query.statMonth)
-  if (teamId) filters.teamId = teamId
-  if (granteeSystemAccountId) filters.granteeSystemAccountId = granteeSystemAccountId
-  if (isManagementView.value && resourceOwnerSystemAccountId) filters.resourceOwnerSystemAccountId = resourceOwnerSystemAccountId
-  if (resourceType) filters.resourceType = resourceType
-  if (resourceType && resourceId) filters.resourceId = resourceId
+  Object.assign(filters, defaultFilters())
+  filters.teamId = teamId
+  filters.granteeSystemAccountId = granteeSystemAccountId
+  if (isManagementView.value && resourceOwnerSystemAccountId) {
+    filters.resourceOwnerSystemAccountId = resourceOwnerSystemAccountId
+  }
+  if (resourceType) {
+    filters.resourceType = resourceType
+    filters.resourceId = resourceId
+  }
   if (isMonthKey(statMonth)) {
     usageMonthValue.value = dayjs(`${statMonth}-01`).startOf('month')
   }
+}
+
+function hasRouteFilters(): boolean {
+  return Boolean(
+    singleQueryValue(route.query.teamId)
+    || singleQueryValue(route.query.granteeSystemAccountId)
+    || singleQueryValue(route.query.resourceOwnerSystemAccountId)
+    || singleQueryValue(route.query.resourceId)
+    || singleQueryValue(route.query.statMonth)
+    || route.query.resourceType === 'account'
+    || route.query.resourceType === 'group'
+  )
 }
 
 function singleQueryValue(value: unknown): string | undefined {
@@ -455,6 +473,13 @@ function matchesSelectedResourceOwner(resource: Pick<AccountSummary | GroupSumma
 }
 
 onMounted(() => {
+  applyRouteFilters()
+  void loadData()
+})
+
+watch(() => route.fullPath, () => {
+  if (route.path !== '/authorization-user-usage' && route.path !== '/my-authorization-user-usage') return
+  if (!hasRouteFilters()) return
   applyRouteFilters()
   void loadData()
 })
