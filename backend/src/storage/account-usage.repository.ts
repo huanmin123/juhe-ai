@@ -77,6 +77,7 @@ interface AccountUsageStatsSourceRow {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost: number
   total_cost: number
   last_used_at: string | null
 }
@@ -126,6 +127,7 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
       usage_window.input_tokens,
       usage_window.output_tokens,
       usage_window.cache_read_tokens,
+      usage_window.cache_read_cost_usd AS cache_read_cost,
       usage_window.total_cost_usd AS total_cost,
       usage_window.last_used_at
     FROM usage_scope_range_windows usage_window
@@ -215,7 +217,7 @@ function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, pag
 function loadAccountUsageOverviewSummary(access: AccessScope | undefined, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>) {
   const scope = accountUsageOverviewSummaryScope(access)
   const row = getRecordDatabase().prepare(`
-    SELECT request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd AS total_cost, last_used_at
+    SELECT request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd AS cache_read_cost, total_cost_usd AS total_cost, last_used_at
     FROM usage_scope_range_windows
     WHERE system_account_id = ?
       AND scope_type = 'system_account'
@@ -227,6 +229,7 @@ function loadAccountUsageOverviewSummary(access: AccessScope | undefined, range:
     input_tokens: number
     output_tokens: number
     cache_read_tokens: number
+    cache_read_cost: number
     total_cost: number
     last_used_at: string | null
   } | undefined

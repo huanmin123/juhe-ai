@@ -98,7 +98,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
@@ -156,6 +156,9 @@ const usageTrendChart = shallowRef<ECharts>()
 const modelDistributionChart = shallowRef<ECharts>()
 const errorChart = shallowRef<ECharts>()
 const systemMetricsChart = shallowRef<ECharts>()
+const pageActive = ref(false)
+const chartRenderPending = ref(false)
+let resizeListenerAttached = false
 
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
@@ -174,7 +177,7 @@ const usageTrendEmptyDescription = computed(() => hasWindowUsage.value ? `${curr
 const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.value}暂无模型调用`)
 const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无失败请求` : `${currentWindowLabel.value}暂无失败请求`)
 const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
-const usageTrendDescription = computed(() => `${currentWindowLabel.value} Token 消耗 = 输入 Token + 输出 Token；缓存读取已包含在输入 Token 中，仅作为拆分指标展示。失败 = 失败请求次数；平均总耗时 = 网关记录的请求总耗时平均值。`)
+const usageTrendDescription = computed(() => '请求和失败按次数统计；Token 为输入 + 输出；平均总耗时取网关均值。')
 
 const summaryCards = computed(() => {
   const summary = usageOverview.value?.summary
@@ -241,7 +244,16 @@ async function loadSystemAccounts(): Promise<void> {
 }
 
 function renderCharts() {
+  if (!pageActive.value) {
+    chartRenderPending.value = true
+    return
+  }
   void nextTick(() => {
+    if (!pageActive.value) {
+      chartRenderPending.value = true
+      return
+    }
+    chartRenderPending.value = false
     renderUsageTrendChart()
     renderModelDistributionChart()
     renderErrorChart()
@@ -311,9 +323,22 @@ function disposeChart(chartRef: ShallowRef<ECharts | undefined>) {
 }
 
 function resizeCharts() {
+  if (!pageActive.value) return
   for (const chart of [usageTrendChart.value, modelDistributionChart.value, errorChart.value, systemMetricsChart.value]) {
     if (chart && !chart.isDisposed()) chart.resize()
   }
+}
+
+function addResizeListener() {
+  if (resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = true
+  window.addEventListener('resize', resizeCharts)
+}
+
+function removeResizeListener() {
+  if (!resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = false
+  window.removeEventListener('resize', resizeCharts)
 }
 
 function snapshotPageState(): StatsPageState {
@@ -385,12 +410,34 @@ function formatDateLabel(value: string) {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(() => {
-  window.addEventListener('resize', resizeCharts)
+  pageActive.value = true
+  addResizeListener()
   void loadData()
 })
 
+onActivated(() => {
+  pageActive.value = true
+  addResizeListener()
+  if (chartRenderPending.value) {
+    renderCharts()
+    return
+  }
+  void nextTick(resizeCharts)
+})
+
+onDeactivated(() => {
+  pageActive.value = false
+  chartRenderPending.value = true
+  removeResizeListener()
+  disposeChart(usageTrendChart)
+  disposeChart(modelDistributionChart)
+  disposeChart(errorChart)
+  disposeChart(systemMetricsChart)
+})
+
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', resizeCharts)
+  pageActive.value = false
+  removeResizeListener()
   disposeChart(usageTrendChart)
   disposeChart(modelDistributionChart)
   disposeChart(errorChart)

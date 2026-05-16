@@ -137,6 +137,7 @@ export function emptyUsageSummary(): AccountUsageSummary {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheReadCost: 0,
     totalTokens: 0,
     totalCost: 0
   }
@@ -148,6 +149,7 @@ export function normalizeUsageSummary(usage?: Partial<AccountUsageSummary>): Acc
     inputTokens: usage?.inputTokens ?? 0,
     outputTokens: usage?.outputTokens ?? 0,
     cacheReadTokens: usage?.cacheReadTokens ?? 0,
+    cacheReadCost: usage?.cacheReadCost ?? 0,
     totalTokens: usage?.totalTokens ?? 0,
     totalCost: usage?.totalCost ?? 0,
     lastUsedAt: usage?.lastUsedAt
@@ -165,6 +167,7 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
       inputTokens: summary.inputTokens + current.inputTokens,
       outputTokens: summary.outputTokens + current.outputTokens,
       cacheReadTokens: summary.cacheReadTokens + current.cacheReadTokens,
+      cacheReadCost: summary.cacheReadCost + current.cacheReadCost,
       totalTokens: summary.totalTokens + current.totalTokens,
       totalCost: summary.totalCost + current.totalCost,
       lastUsedAt

@@ -27,7 +27,7 @@ import { json } from '@codemirror/lang-json'
 import { bracketMatching, defaultHighlightStyle, syntaxHighlighting } from '@codemirror/language'
 import { EditorState } from '@codemirror/state'
 import { EditorView, highlightActiveLine, highlightSpecialChars, lineNumbers } from '@codemirror/view'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import { message } from '@/lib/antd'
 
@@ -56,6 +56,9 @@ const formatting = ref(false)
 
 let editorView: EditorView | undefined
 let formatTaskId = 0
+let formatTimer: ReturnType<typeof window.setTimeout> | undefined
+let componentDisposed = false
+let componentActive = true
 
 const hasText = computed(() => Boolean(props.text))
 const sourceText = computed(() => props.text || props.emptyText)
@@ -81,26 +84,52 @@ watch(
 )
 
 onMounted(() => {
+  componentDisposed = false
+  componentActive = true
   updateEditor()
 })
 
+onActivated(() => {
+  componentActive = true
+  void scheduleFormat()
+  void nextTick(updateEditor)
+})
+
+onDeactivated(() => {
+  componentActive = false
+  cancelScheduledFormat()
+  destroyEditor()
+})
+
 onBeforeUnmount(() => {
-  editorView?.destroy()
-  editorView = undefined
+  componentDisposed = true
+  componentActive = false
+  cancelScheduledFormat()
+  destroyEditor()
 })
 
 async function scheduleFormat(): Promise<void> {
   const taskId = ++formatTaskId
   formatting.value = true
   await nextTick()
-  window.setTimeout(() => {
-    if (taskId !== formatTaskId) return
+  if (componentDisposed || !componentActive) return
+  cancelScheduledFormat()
+  formatTimer = window.setTimeout(() => {
+    formatTimer = undefined
+    if (componentDisposed || !componentActive || taskId !== formatTaskId) return
     const result = formatForDisplay(sourceText.value || '', isJson.value)
     displayText.value = result.text
     formatError.value = result.error
     formatting.value = false
     void nextTick(updateEditor)
   }, 0)
+}
+
+function cancelScheduledFormat(): void {
+  if (formatTimer && typeof window !== 'undefined') {
+    window.clearTimeout(formatTimer)
+    formatTimer = undefined
+  }
 }
 
 function formatForDisplay(text: string, shouldFormatJson: boolean): { text: string; error: string } {
@@ -114,6 +143,7 @@ function formatForDisplay(text: string, shouldFormatJson: boolean): { text: stri
 }
 
 function updateEditor(): void {
+  if (componentDisposed || !componentActive) return
   if (!editorRoot.value) return
   const state = createEditorState(displayText.value, isJson.value)
   if (!editorView) {
@@ -124,6 +154,11 @@ function updateEditor(): void {
     return
   }
   editorView.setState(state)
+}
+
+function destroyEditor(): void {
+  editorView?.destroy()
+  editorView = undefined
 }
 
 function createEditorState(doc: string, shouldUseJson: boolean): EditorState {

@@ -1,5 +1,5 @@
 import type { UnwrapNestedRefs } from 'vue'
-import { computed, reactive, ref } from 'vue'
+import { computed, onBeforeUnmount, reactive, ref } from 'vue'
 
 type AccountPaginationState = UnwrapNestedRefs<{ current: number; pageSize: number; total: number }>
 
@@ -13,6 +13,7 @@ export function useAccountMobilePagination(
   const mobileRefreshing = ref(false)
   const mobileVisibleCount = ref(pageSize)
   const accountPagination = externalPagination ?? reactive({ current: 1, pageSize, total: 0 })
+  let localLoadMoreTimer: ReturnType<typeof window.setTimeout> | undefined
 
   const mobileHasMore = computed(() => mobileVisibleCount.value < totalCount())
   const tablePagination = computed(() => ({
@@ -44,7 +45,9 @@ export function useAccountMobilePagination(
       if (externalPagination) {
         await loadData({ append: true, quiet: true })
       } else {
-        window.setTimeout(() => {
+        clearLocalLoadMoreTimer()
+        localLoadMoreTimer = window.setTimeout(() => {
+          localLoadMoreTimer = undefined
           mobileVisibleCount.value = Math.min(mobileVisibleCount.value + pageSize, totalCount())
           mobileLoadingMore.value = false
         }, 260)
@@ -72,6 +75,17 @@ export function useAccountMobilePagination(
     accountPagination.current = Math.min(accountPagination.current, maxPage)
     mobileVisibleCount.value = Math.min(Math.max(mobileVisibleCount.value, pageSize), Math.max(totalCount(), pageSize))
   }
+
+  function clearLocalLoadMoreTimer() {
+    if (localLoadMoreTimer && typeof window !== 'undefined') {
+      window.clearTimeout(localLoadMoreTimer)
+      localLoadMoreTimer = undefined
+    }
+  }
+
+  onBeforeUnmount(() => {
+    clearLocalLoadMoreTimer()
+  })
 
   return {
     accountPagination,

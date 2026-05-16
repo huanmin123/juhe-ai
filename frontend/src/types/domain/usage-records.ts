@@ -40,6 +40,7 @@ export interface UsageRecordSummary {
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
+  cacheReadCostUsd?: number
   inputImageTokens?: number
   outputImageTokens?: number
   costUsd?: number

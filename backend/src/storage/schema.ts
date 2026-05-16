@@ -436,6 +436,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER,
       output_tokens INTEGER,
       cache_read_tokens INTEGER,
+      cache_read_cost_usd REAL,
       input_image_tokens INTEGER,
       output_image_tokens INTEGER,
       cost_usd REAL,
@@ -695,6 +696,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -719,6 +721,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -743,6 +746,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -767,6 +771,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -791,6 +796,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -815,6 +821,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -841,6 +848,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -865,6 +873,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       last_used_at TEXT,
       updated_at TEXT NOT NULL,
@@ -885,6 +894,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -910,6 +920,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       last_used_at TEXT,
       updated_at TEXT NOT NULL,
@@ -927,6 +938,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, stat_minute, provider_code, model)
@@ -943,6 +955,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, stat_date, provider_code, model)
@@ -959,6 +972,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, stat_hour, provider_code, model)
@@ -975,6 +989,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, stat_week, provider_code, model)
@@ -991,6 +1006,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, stat_month, provider_code, model)
@@ -1150,6 +1166,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -1171,6 +1188,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -1190,6 +1208,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (system_account_id, window_key, rank, provider_code, model)
@@ -1246,6 +1265,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_cost_usd REAL NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
       last_used_at TEXT,
       updated_at TEXT NOT NULL,
@@ -1491,11 +1511,37 @@ export function applyRecordSchema(database: DatabaseSync): void {
   `)
 
   ensureRecordTableColumns(database, 'usage_records', {
+    cache_read_cost_usd: 'REAL',
     account_authorization_source_type: 'TEXT',
     account_authorization_source_team_id: 'TEXT',
     group_authorization_source_type: 'TEXT',
     group_authorization_source_team_id: 'TEXT'
   })
+  for (const tableName of [
+    'usage_stats_totals',
+    'usage_stats_minute',
+    'usage_stats_hourly',
+    'usage_stats_daily',
+    'usage_stats_weekly',
+    'usage_stats_monthly',
+    'authorization_team_usage_summary_daily',
+    'authorization_team_usage_range_windows',
+    'authorization_user_usage_summary_daily',
+    'authorization_user_usage_range_windows',
+    'usage_model_minute',
+    'usage_model_hourly',
+    'usage_model_daily',
+    'usage_model_weekly',
+    'usage_model_monthly',
+    'usage_overview_summary_windows',
+    'usage_overview_trend_windows',
+    'usage_model_rank_windows',
+    'usage_scope_range_windows'
+  ]) {
+    ensureRecordTableColumns(database, tableName, {
+      cache_read_cost_usd: 'REAL NOT NULL DEFAULT 0'
+    })
+  }
   ensureRecordTableColumns(database, 'ai_performance_summary_windows', {
     start_date: "TEXT NOT NULL DEFAULT ''",
     end_date: "TEXT NOT NULL DEFAULT ''",

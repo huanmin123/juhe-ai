@@ -27,6 +27,10 @@ import { myTeamsRouter, systemTeamsRouter } from './modules/system-teams/system-
 import { tableMonitorRouter } from './modules/table-monitor/table-monitor.routes.js'
 import { usageRecordsRouter } from './modules/usage-records/usage-records.routes.js'
 import { openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
+import {
+  type GatewayRawBodyRequest
+} from './modules/gateway/openai-gateway-request-body.js'
+import { captureGatewayRawBody } from './modules/gateway/openai-gateway-request-body-middleware.js'
 import { myOperationLogsRouter, operationLogsRouter } from './modules/operation-logs/operation-logs.routes.js'
 import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
 import { openAIOAuthRouter } from './modules/openai-oauth/openai-oauth.routes.js'
@@ -46,26 +50,7 @@ const frontendDistPath = resolve(backendRoot, '..', 'frontend', 'dist')
 const frontendIndexPath = resolve(frontendDistPath, 'index.html')
 const gatewayRawBodyLimit = '64mb'
 
-type RawBodyRequest = Request & { rawBody?: Buffer }
 type BodyParserError = Error & { status?: number; statusCode?: number; type?: string; received?: number; length?: number; limit?: number }
-
-function captureGatewayRawBody(req: RawBodyRequest, _res: Response, next: NextFunction): void {
-  const rawBody = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0)
-  req.rawBody = rawBody
-
-  const contentType = req.headers['content-type'] ?? ''
-  if (rawBody.length > 0 && String(contentType).toLowerCase().includes('json')) {
-    try {
-      req.body = JSON.parse(rawBody.toString('utf8')) as unknown
-    } catch {
-      req.body = undefined
-    }
-  } else {
-    req.body = undefined
-  }
-
-  next()
-}
 
 function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Response, next: NextFunction): void {
   if (res.headersSent) {
@@ -125,7 +110,7 @@ app.use('/v1', express.raw({ type: () => true, limit: gatewayRawBodyLimit }), ha
 app.use(express.json({
   limit: '2mb',
   verify: (req, _res, buffer) => {
-    ;(req as RawBodyRequest).rawBody = Buffer.from(buffer)
+    ;(req as GatewayRawBodyRequest).rawBody = Buffer.from(buffer)
   }
 }))
 

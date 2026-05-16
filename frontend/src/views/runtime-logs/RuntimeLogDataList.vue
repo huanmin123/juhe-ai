@@ -81,7 +81,7 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { formatDateTime } from '@/shared/formatters'
 import type { RuntimeLogGrepItem, RuntimeLogSummary } from '@/types/domain'
-import { eventText, levelColor, levelText } from './runtimeLogFormatters'
+import { eventText, levelColor, levelText, runtimeLogMessageText } from './runtimeLogFormatters'
 import { runtimeLogColumns } from './runtimeLogTableColumns'
 
 type RuntimeLogListRecord = RuntimeLogSummary | RuntimeLogGrepItem
@@ -129,9 +129,9 @@ function handleActionClick(key: string, record: RuntimeLogListRecord) {
 
 function messageText(record: RuntimeLogListRecord): string {
   if (props.messageMode === 'grep' && 'line' in record) {
-    return record.errorMessage || record.message || record.line || '-'
+    return runtimeLogMessageText(record, { includeLine: true })
   }
-  return record.errorMessage || record.message || '-'
+  return runtimeLogMessageText(record)
 }
 
 function cardTitle(record: RuntimeLogListRecord): string {

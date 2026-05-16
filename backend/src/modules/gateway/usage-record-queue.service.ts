@@ -21,6 +21,7 @@ let shutdownHooksInstalled = false
 interface UsageRecordFlushOptions {
   drain?: boolean
   retryOnFailure?: boolean
+  maxBatches?: number
 }
 
 export function enqueueUsageRecord(input: UsageRecordInput): void {
@@ -49,7 +50,7 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
       retainedOverflowWarningCount,
       pendingCount: pendingUsageRecords.length
     }, '使用记录队列超过软上限，已保留待写入记录并触发立即落库')
-    flushUsageRecordQueue({ drain: true })
+    flushUsageRecordQueue({ drain: true, maxBatches: 5 })
   }
   scheduleUsageRecordFlush(pendingUsageRecords.length >= usageRecordBatchSize ? 0 : usageRecordFlushIntervalMs)
 }
@@ -66,12 +67,15 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
 
   flushing = true
   let shouldRetry = false
+  let flushedBatches = 0
+  const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
     do {
       const batch = pendingUsageRecords.splice(0, usageRecordBatchSize)
       if (batch.length === 0) {
         break
       }
+      flushedBatches += 1
 
       try {
         createUsageRecordsBatch(batch)
@@ -87,7 +91,7 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
         shouldRetry = options.retryOnFailure !== false
         break
       }
-    } while (options.drain && pendingUsageRecords.length > 0)
+    } while (options.drain && pendingUsageRecords.length > 0 && flushedBatches < maxBatches)
   } finally {
     flushing = false
   }
@@ -149,4 +153,8 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
     id: input.id ?? `usage_${Date.now()}_${randomUUID()}`,
     createdAt: input.createdAt ?? nowIso()
   }
+}
+
+function normalizeMaxBatches(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
 }

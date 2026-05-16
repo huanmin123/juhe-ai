@@ -9,6 +9,7 @@ export interface AccountUsageAggregateRow {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost: number
   total_cost: number
   last_used_at: string | null
 }
@@ -31,6 +32,7 @@ export interface UsageStatsRecordRow {
   input_tokens: number | null
   output_tokens: number | null
   cache_read_tokens: number | null
+  cache_read_cost_usd: number | null
   cost_usd: number | null
   error_code: string | null
   error_message: string | null
@@ -65,6 +67,7 @@ export const USAGE_STATS_RECORD_SELECT_COLUMNS = `
   input_tokens,
   output_tokens,
   cache_read_tokens,
+  cache_read_cost_usd,
   cost_usd,
   error_code,
   error_message,
@@ -94,6 +97,7 @@ export interface UsageStatsAccumulator {
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
+  cacheReadCostUsd: number
   totalCostUsd: number
   durationMsSum: number
   durationMsCount: number
@@ -119,6 +123,7 @@ export interface StatsAggregateMathRow {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost_usd: number
   total_cost: number
   duration_ms_sum: number
   duration_ms_count: number

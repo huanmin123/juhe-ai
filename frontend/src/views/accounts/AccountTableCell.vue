@@ -2,20 +2,20 @@
   <div v-if="columnKey === 'name'" class="resource-name-cell">
     <span class="resource-name-line">
       <span>{{ account.name }}</span>
-      <a-tooltip v-if="isAuthorizedAccount(account)" :title="authorizedTooltip">
+      <a-tooltip v-if="isAuthorizedAccount(account)" :title="authorizedTooltip(account)">
         <InfoCircleOutlined class="authorized-account-icon" :class="{ 'owner-disabled': isOwnerDisabledAuthorizedAccount(account) }" />
       </a-tooltip>
     </span>
   </div>
   <a-tag v-else-if="columnKey === 'type'" color="processing">{{ accountTypeText(account.type) }}</a-tag>
-  <a-tag v-else-if="columnKey === 'providerCode'" color="geekblue">{{ providerName }}</a-tag>
+  <a-tag v-else-if="columnKey === 'providerCode'" color="geekblue">{{ providerName(account.providerCode) }}</a-tag>
   <span v-else-if="columnKey === 'systemAccount'" :class="account.systemAccountName ? 'name-cell' : 'muted-cell'">
     {{ account.systemAccountName || account.systemAccountId || '-' }}
   </span>
   <span v-else-if="columnKey === 'notes'" class="account-notes-text">{{ account.notes || '-' }}</span>
   <template v-else-if="columnKey === 'group'">
-    <a-tooltip v-if="groupName" :title="groupName">
-      <span class="account-group-text">{{ groupName }}</span>
+    <a-tooltip v-if="currentGroupName" :title="currentGroupName">
+      <span class="account-group-text">{{ currentGroupName }}</span>
     </a-tooltip>
     <span v-else class="muted-cell">未归属</span>
   </template>
@@ -40,10 +40,10 @@
   <AccountRowActions
     v-else-if="columnKey === 'actions'"
     :account="account"
-    :can-delete="canDelete"
-    :can-edit="canEdit"
-    :group-name="groupName"
-    :menu-items="menuItems"
+    :can-delete="canDelete(account)"
+    :can-edit="canEdit(account)"
+    :group-name="groupName(account.id)"
+    :menu-items="menuItems(account)"
     @bind-group="$emit('bind-group', account)"
     @delete="$emit('delete', account)"
     @edit="$emit('edit', account)"
@@ -80,30 +80,33 @@ defineEmits<{
 
 const props = defineProps<{
   account: AccountSummary
-  authorizedTooltip: string
-  canDelete: boolean
-  canEdit: boolean
+  authorizedTooltip: (account: AccountSummary) => string
+  canDelete: (account: AccountSummary) => boolean
+  canEdit: (account: AccountSummary) => boolean
   columnKey: string
-  groupName?: string
-  menuItems: AccountMenuItem[]
-  providerName: string
-  proxy?: ProxyProfileOptionSummary
+  groupName: (accountId: string) => string | undefined
+  menuItems: (account: AccountSummary) => AccountMenuItem[]
+  providerName: (providerCode?: string) => string
+  proxy: (proxyProfileId?: string) => ProxyProfileOptionSummary | undefined
 }>()
+
+const currentGroupName = computed(() => props.groupName(props.account.id))
+const currentProxy = computed(() => props.proxy(props.account.proxyProfileId))
 
 const proxyText = computed(() => {
   if (!props.account.proxyProfileId) return ''
-  return props.proxy?.name ?? '代理已配置'
+  return currentProxy.value?.name ?? '代理已配置'
 })
 const proxyTagColor = computed(() => {
   if (props.account.proxyProfileUnavailable) return 'red'
-  if (props.proxy?.enabled === false) return 'red'
-  return props.proxy ? 'cyan' : 'orange'
+  if (currentProxy.value?.enabled === false) return 'red'
+  return currentProxy.value ? 'cyan' : 'orange'
 })
 const proxyTooltip = computed(() => {
   if (props.account.proxyProfileErrorMessage) return props.account.proxyProfileErrorMessage
   if (props.account.proxyProfileUnavailable) return '代理不可用，请到代理管理确认配置'
-  if (props.proxy?.enabled === false) return '代理已停用，请启用代理或更换账户代理'
-  if (props.proxy) return `${props.proxy.name}（${props.proxy.type}）`
+  if (currentProxy.value?.enabled === false) return '代理已停用，请启用代理或更换账户代理'
+  if (currentProxy.value) return `${currentProxy.value.name}（${currentProxy.value.type}）`
   return '代理配置不存在或当前不可见'
 })
 const concurrencyTooltip = computed(() => `当前正在转发 ${props.account.currentConcurrency} 个请求，配置上限 ${props.account.concurrencyLimit}`)

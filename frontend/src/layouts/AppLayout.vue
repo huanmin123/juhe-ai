@@ -68,6 +68,7 @@ import type { MenuProps } from 'ant-design-vue'
 import { message } from '@/lib/antd'
 import type { ItemType } from 'ant-design-vue'
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import type { Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -96,11 +97,22 @@ const sidebarCollapsed = ref(false)
 const passwordModalOpen = ref(false)
 const passwordSaving = ref(false)
 const passwordForm = reactive({ newPassword: '', confirmPassword: '' })
-const keepAliveMax = 18
+const keepAliveMax = 48
 const announcementModalOpen = ref(false)
 const announcementsLoading = ref(false)
 const announcements = ref<AnnouncementSummary[]>([])
 let announcementsRefreshTimer: number | undefined
+let routePreloadTimer: number | undefined
+let routePreloadGeneration = 0
+let routePreloadDestroyed = false
+let announcementsRefreshRunning = false
+let announcementsRequestId = 0
+const preloadedRoutePaths = new Set<string>()
+type AsyncRouteComponent = () => Promise<Component>
+type IdleWindow = Window & {
+  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
+}
+const routePreloadBatchSize = 3
 
 const selectedKeys = computed(() => [route.path])
 const openMenuKeys = computed(() => {
@@ -278,10 +290,15 @@ async function refreshAnnouncementsInModal() {
 }
 
 async function loadAnnouncements(): Promise<AnnouncementSummary[]> {
-  if (!currentUser.value) return announcements.value
+  const requestUserKey = currentAnnouncementUserKey()
+  if (!requestUserKey) return announcements.value
+  const requestId = ++announcementsRequestId
   announcementsLoading.value = true
   try {
     const nextAnnouncements = await api.announcements.publicList({ limit: 30 })
+    if (requestId !== announcementsRequestId || requestUserKey !== currentAnnouncementUserKey()) {
+      return announcements.value
+    }
     announcements.value = nextAnnouncements
     return nextAnnouncements
   } catch (error) {
@@ -289,15 +306,25 @@ async function loadAnnouncements(): Promise<AnnouncementSummary[]> {
     message.error('加载公告失败')
     return announcements.value
   } finally {
-    announcementsLoading.value = false
+    if (requestId === announcementsRequestId) {
+      announcementsLoading.value = false
+    }
   }
 }
 
+function currentAnnouncementUserKey(): string {
+  const user = currentUser.value
+  return user?.id || user?.username || ''
+}
+
 async function markAnnouncementsViewed(visibleAnnouncements = announcements.value) {
+  const requestUserKey = currentAnnouncementUserKey()
+  if (!requestUserKey) return
   const unreadIds = visibleAnnouncements.filter((announcement) => !announcement.readAt).map((announcement) => announcement.id)
   if (!unreadIds.length) return
   try {
     const result = await api.announcements.markRead({ announcementIds: unreadIds })
+    if (requestUserKey !== currentAnnouncementUserKey()) return
     const readIds = new Set(unreadIds)
     announcements.value = announcements.value.map((announcement) => readIds.has(announcement.id)
       ? { ...announcement, readAt: result.readAt }
@@ -351,7 +378,77 @@ function handleResize() {
   updateViewport()
 }
 
+function scheduleVisibleRoutePreload() {
+  if (typeof window === 'undefined') return
+  routePreloadGeneration += 1
+  const generation = routePreloadGeneration
+  if (routePreloadTimer) {
+    window.clearTimeout(routePreloadTimer)
+  }
+  routePreloadTimer = window.setTimeout(() => {
+    routePreloadTimer = undefined
+    void preloadVisibleRoutesInBatches(generation)
+  }, 1200)
+}
+
+async function preloadVisibleRoutesInBatches(generation: number) {
+  const preloadTargets = visibleMenuRoutes.value
+    .filter((item) => item.meta?.heavy || item.path === route.path)
+    .filter((item) => !preloadedRoutePaths.has(item.path))
+
+  for (let index = 0; index < preloadTargets.length; index += routePreloadBatchSize) {
+    if (routePreloadDestroyed || generation !== routePreloadGeneration) return
+    await waitForRoutePreloadIdle()
+    if (routePreloadDestroyed || generation !== routePreloadGeneration) return
+    const batch = preloadTargets.slice(index, index + routePreloadBatchSize)
+    await Promise.all(batch.map(preloadRouteComponent))
+  }
+}
+
+async function preloadRouteComponent(item: typeof menuRoutes[number]) {
+  preloadedRoutePaths.add(item.path)
+  const loader = typeof item.component === 'function' && !('render' in item.component)
+    ? item.component as AsyncRouteComponent
+    : undefined
+  if (!loader) return
+  try {
+    await loader()
+  } catch (error) {
+    preloadedRoutePaths.delete(item.path)
+    console.error(error)
+  }
+}
+
+function waitForRoutePreloadIdle(): Promise<void> {
+  if (typeof window === 'undefined') return Promise.resolve()
+  return new Promise((resolve) => {
+    const idleWindow = window as IdleWindow
+    if (idleWindow.requestIdleCallback) {
+      idleWindow.requestIdleCallback(resolve, { timeout: 1500 })
+      return
+    }
+    window.setTimeout(resolve, 300)
+  })
+}
+
+async function refreshAnnouncementsSafely() {
+  if (announcementsRefreshRunning) return
+  announcementsRefreshRunning = true
+  try {
+    if (announcementModalOpen.value) {
+      await refreshAnnouncementsInModal()
+    } else {
+      await loadAnnouncements()
+    }
+  } catch (error) {
+    console.error(error)
+  } finally {
+    announcementsRefreshRunning = false
+  }
+}
+
 onMounted(() => {
+  routePreloadDestroyed = false
   updateViewport()
   loadAppBrandSettings().catch((error) => {
     console.error(error)
@@ -360,17 +457,20 @@ onMounted(() => {
     console.error(error)
   })
   announcementsRefreshTimer = window.setInterval(() => {
-    const refreshTask = announcementModalOpen.value ? refreshAnnouncementsInModal() : loadAnnouncements()
-    refreshTask.catch((error) => {
-      console.error(error)
-    })
+    void refreshAnnouncementsSafely()
   }, 60000)
   window.addEventListener('resize', handleResize, { passive: true })
+  scheduleVisibleRoutePreload()
 })
 
 onBeforeUnmount(() => {
+  routePreloadDestroyed = true
+  routePreloadGeneration += 1
   if (announcementsRefreshTimer) {
     window.clearInterval(announcementsRefreshTimer)
+  }
+  if (routePreloadTimer) {
+    window.clearTimeout(routePreloadTimer)
   }
   window.removeEventListener('resize', handleResize)
 })
@@ -381,6 +481,7 @@ watch(
     if (isMobile.value) {
       sidebarOpen.value = false
     }
+    scheduleVisibleRoutePreload()
   }
 )
 
@@ -390,7 +491,9 @@ watch(
     if (user) {
       void loadAnnouncements()
     } else {
+      announcementsRequestId += 1
       announcements.value = []
+      announcementsLoading.value = false
     }
     if (route.meta.viewScope === 'admin' || route.meta.viewScope === 'self') {
       setMenuModeFromRoute(user, route.meta.viewScope)
@@ -410,6 +513,10 @@ watch(
   },
   { immediate: true }
 )
+
+watch(visibleMenuRoutes, () => {
+  scheduleVisibleRoutePreload()
+})
 </script>
 
 <style scoped>

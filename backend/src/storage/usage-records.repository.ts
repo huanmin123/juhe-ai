@@ -31,6 +31,7 @@ export interface UsageRecordSummary {
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
+  cacheReadCostUsd?: number
   inputImageTokens?: number
   outputImageTokens?: number
   costUsd?: number
@@ -101,6 +102,7 @@ export interface UsageRecordInput {
   inputTokens?: number
   outputTokens?: number
   cacheReadTokens?: number
+  cacheReadCostUsd?: number
   inputImageTokens?: number
   outputImageTokens?: number
   costUsd?: number
@@ -179,6 +181,7 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
         ur.input_tokens,
         ur.output_tokens,
         ur.cache_read_tokens,
+        ur.cache_read_cost_usd,
         ur.input_image_tokens,
         ur.output_image_tokens,
         ur.cost_usd,
@@ -282,13 +285,13 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   const insertStatement = database.prepare(`
     INSERT INTO usage_records (
       id, system_account_id, trace_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
-      status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
+      status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
       request_snapshot_json, response_snapshot_json,
       account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
       account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
       group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const updateAccountStatement = businessDatabase.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
@@ -322,6 +325,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
         input.inputTokens ?? null,
         input.outputTokens ?? null,
         input.cacheReadTokens ?? null,
+        input.cacheReadCostUsd ?? null,
         input.inputImageTokens ?? null,
         input.outputImageTokens ?? null,
         input.costUsd ?? null,
@@ -396,6 +400,7 @@ function usageRecordSummaryFromRow(
   const inputTokens = typeof row.input_tokens === 'number' ? row.input_tokens : undefined
   const outputTokens = typeof row.output_tokens === 'number' ? row.output_tokens : undefined
   const cacheReadTokens = typeof row.cache_read_tokens === 'number' ? row.cache_read_tokens : undefined
+  const cacheReadCostUsd = typeof row.cache_read_cost_usd === 'number' ? row.cache_read_cost_usd : undefined
   const inputImageTokens = typeof row.input_image_tokens === 'number' ? row.input_image_tokens : undefined
   const outputImageTokens = typeof row.output_image_tokens === 'number' ? row.output_image_tokens : undefined
   const model = optionalString(row.model)
@@ -425,6 +430,7 @@ function usageRecordSummaryFromRow(
     inputTokens,
     outputTokens,
     cacheReadTokens,
+    cacheReadCostUsd,
     inputImageTokens,
     outputImageTokens,
     costUsd: typeof row.cost_usd === 'number' ? row.cost_usd : undefined,

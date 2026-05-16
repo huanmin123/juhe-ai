@@ -78,7 +78,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 运行日志索引通过 `runtime_log_file_cursors` 保存文件 offset、行号和文件标识；worker 重启后从游标继续，首次遇到已有当前日志文件时默认从文件末尾开始，避免导入历史大文件。
 - 按行读取只在完整换行结束后推进 offset；末尾半行保留到下一轮，轮转、截断或文件标识变化时重置游标。
 - 审计 payload blob 详情接口只能按 offset / limit 返回有限窗口；未压缩 blob 使用文件 offset 读取，gzip blob 通过解压流跳过到逻辑 offset 后只收集当前窗口，接口返回 `bodyOffset`、`bodyLimit`、`bodyTotalBytes`、`bodyNextOffset` 和 `bodyTruncated`。
-- 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；例外不得用于运行日志、审计 payload、使用记录导出或统计明细。
+- 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；`/v1` raw body 可接收 `64mb`，JSON 请求体继续正常解析以保留 `model`、`stream`、会话粘滞、统计和审计字段，`2mb` 只是大 JSON 预警阈值，不作为拒绝阈值，超过后保持客户端连接并进入 worker thread 异步解析，解析完成再继续调度和转发；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获；例外不得用于运行日志、审计 payload、使用记录导出或统计明细。
 
 ## 统计缓存与监控存储
 
@@ -88,7 +88,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 
 当前统计相关表：
 
-- `usage_stats_totals`：按 `system_account_id + scope_type + scope_id` 保存累计请求、成功、错误、token、成本、平均总耗时所需的求和字段。
+- `usage_stats_totals`：按 `system_account_id + scope_type + scope_id` 保存累计请求、成功、错误、token、缓存成本、总成本、平均总耗时所需的求和字段。
 - `usage_stats_daily`：按 `system_account_id + scope_type + scope_id + stat_date` 保存业务统计，用于个人账户按日消耗趋势、账户 / 分组 / API Key 今日口径和授权额度自然日口径；管理侧授权团队 / 用户明细不读此表做报表汇总。
 - `usage_stats_hourly`：按 `system_account_id + scope_type + scope_id + stat_hour` 保存业务统计，用于 worker 刷新统计概览、排行、额度和 AI 性能摘要窗口，也用于 `AI性能监控` 的账户级首 token 和总耗时小时趋势；页面摘要和额度不能在请求时聚合小时桶。
 - `authorization_team_usage_summary_daily`：按 `system_account_id + stat_date + team_filter_id + resource_filter_type + resource_filter_id` 保存授权团队日摘要行，由 worker 随使用记录游标增量写入。
@@ -107,7 +107,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `usage_error_daily`：按 `system_account_id + stat_date + error_group + error_code` 保存错误数量，用于自然日错误情况。
 - `usage_error_hourly`：按 `system_account_id + stat_hour + error_group + error_code` 保存小时级错误数量，用于统计概览监控窗口。
 - `group_account_stats`：按 `system_account_id + group_id` 保存分组绑定账户数量、可用数、状态数量和并发上限，供分组列表直接读取。
-- `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、事件循环延迟、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后。
+- `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、后台 worker 事件循环额外延迟、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
 - `system_metrics_trend_windows`：按统计概览日期范围预生成系统性能 / 网络吞吐趋势，接口只按范围窗口直读。
 - `database_storage_snapshots`：按采样时间保存业务库 / 记录库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量。
@@ -234,7 +234,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - API Key 额度是轻量异步统计口径：统计 worker 默认每 1 分钟增量推进，网关额度判断带短 TTL 内存缓存，因此允许轻微超额；统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
 - 删除 API Key 时同步删除该 Key 的使用记录、审计日志和 API Key 维度缓存，并基于该 Key 的历史使用记录从调用方、账户、分组、授权、模型和错误等相关聚合缓存中反向扣减。
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
-- 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属。
+- 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属；`event_loop_lag_ms` 来自 worker 内独立事件循环直方图，记录上个采样窗口内去除采样分辨率基线后的额外最大延迟，不再使用采样任务本身的定时器晚到时间。
 - 系统采样的 `memory_used_percent` 表示主机实际内存压力口径，不是所有平台都等同于 `totalmem - freemem`。macOS 会把可回收文件缓存、inactive 和 speculative 页面排除在已用内存外，按 `vm_stat` 的 `Anonymous pages + Pages wired down + Pages occupied by compressor` 计算，避免把系统缓存误报为应用内存占用；读取失败时才回退到 Node 默认口径。
 - 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；大 blob 文件写入本地数据目录。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
@@ -640,7 +640,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 团队来源变更只影响用户级授权来源摘要；成员移除后，如果该用户没有其他来源则授权失效，但历史用户消耗仍按该用户保留。
 - 分组授权共享的是动态分组集合，但只共享分组所有者自有账户；如果分组里包含别人授权来的账户，调度时必须过滤，不能通过分组授权继续共享给第三方。
 - `usage_records` 按每次实际上游请求 / 上游尝试写入；同一个客户端请求如果发生重试或切号，可以产生多条记录。`usage_records` 是排障和重建统计的事实源，不等同于业务消耗统计。
-- `request_count` 统计的是进入网关使用记录的请求次数：后台统计 worker 会聚合成功、失败、测试和后台检测产生的 `usage_records`。没有 token / cost 的失败记录按 0 token、0 cost 计入请求和错误次数，便于统一追踪；成本与 token 仍以实际解析到的上游用量为准。
+- `request_count` 统计的是进入网关使用记录的请求次数：后台统计 worker 会聚合成功、失败、测试和后台检测产生的 `usage_records`。没有 token / cost 的失败记录按 0 token、0 cost 计入请求和错误次数，便于统一追踪；成本、缓存成本与 token 仍以实际解析到的上游用量和模型价格快照为准。
 - 同一次上游尝试不能因为调用方同时拥有个人来源和团队来源而重复入库；资源真实总量按 `usage_records.id` 去重。
 - 统计按请求实际命中的 `group_id`、`account_id` 和当时的统一授权 ID 记录，历史不会因后续团队成员或分组账户变化而重算。
 ## 账户套餐到期
@@ -706,7 +706,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `streamIdleTimeoutSeconds = 60`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；同一个值也限制持续有 raw chunk 但没有形成完整 SSE 事件的等待时间。若流式解析器因单行或单事件过大跳过解析，后续只按 raw chunk 活动计时。
 - `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
-- `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合批量上限。
+- `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合批量上限；连续批次之间让出事件循环，排行和窗口快照由独立 worker 任务刷新。
 - `groupAccountStatsRefreshIntervalSeconds = 60`：分组账户统计缓存默认刷新间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
 - `usageRecordRetentionDays = 7`：使用记录默认保留 7 天；清理时必须等统计游标已处理。

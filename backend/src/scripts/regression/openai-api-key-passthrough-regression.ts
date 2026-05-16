@@ -1,9 +1,17 @@
 import { strict as assert } from 'node:assert'
-import type { Request } from 'express'
+import { EventEmitter } from 'node:events'
 
-import { buildUpstreamHeaders, buildUpstreamRequestBody } from '../../modules/gateway/openai-gateway-upstream.js'
+import { requestModel } from '../../modules/gateway/openai-gateway-usage.js'
+import { buildUpstreamHeaders, buildUpstreamRequestBody, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/openai-gateway-upstream.js'
+import {
+  createGatewayRequestBodyState,
+  gatewayJsonBodyLargeWarningBytes,
+  type GatewayRawBodyRequest
+} from '../../modules/gateway/openai-gateway-request-body.js'
+import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
+import { stopGatewayJsonParseWorker } from '../../modules/gateway/openai-gateway-json-parser.js'
 
-type TestRequest = Request & { rawBody?: Buffer }
+type TestRequest = GatewayRawBodyRequest
 
 const apiKeyAccount = {
   apiKey: 'sk-upstream',
@@ -12,12 +20,15 @@ const apiKeyAccount = {
   credentials: {}
 }
 
-function main(): void {
+async function main(): Promise<void> {
   testRawBodyPassthrough()
   testApiKeyHeaderFiltering()
   testOpenAIAccountHeadersAreNotClientOrCredentialControlled()
   testOpenAIBetaPreservedFromClient()
   testJsonBodyFallbackWhenPassthroughDisabled()
+  testLargeJsonBodyParsedForGatewayMetadata()
+  await testLargeJsonBodyParsedByGatewayWorker()
+  await testLargeJsonBodyWorkerStopsWhenClientAborts()
   console.log('OpenAI API Key passthrough regression passed')
 }
 
@@ -142,19 +153,91 @@ function testJsonBodyFallbackWhenPassthroughDisabled(): void {
   assert.equal(headers.get('accept'), 'application/json')
 }
 
+function testLargeJsonBodyParsedForGatewayMetadata(): void {
+  const body = {
+    model: 'gpt-5.4',
+    stream: true,
+    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes)
+  }
+  const rawBody = Buffer.from(JSON.stringify(body))
+  const req = createRequest(body, { 'content-type': 'application/json' }, rawBody)
+  req.gatewayRequestBody = createGatewayRequestBodyState({
+    rawBody,
+    contentType: 'application/json',
+    jsonParseStatus: 'parsed'
+  })
+
+  const upstreamBody = buildUpstreamRequestBody(req, true)
+
+  assert.ok(Buffer.isBuffer(upstreamBody))
+  assert.equal(Buffer.compare(upstreamBody, rawBody), 0)
+  assert.equal(requestModel(req), 'gpt-5.4')
+  assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), true)
+}
+
+async function testLargeJsonBodyParsedByGatewayWorker(): Promise<void> {
+  const body = {
+    model: 'gpt-5.4',
+    stream: true,
+    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes)
+  }
+  const rawBody = Buffer.from(JSON.stringify(body))
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  let nextCalled = false
+
+  await captureGatewayRawBody(req, new EventEmitter() as never, () => {
+    nextCalled = true
+  })
+
+  assert.equal(nextCalled, true)
+  assert.equal((req.body as { model?: string }).model, 'gpt-5.4')
+  assert.equal((req.body as { stream?: boolean }).stream, true)
+  assert.equal(requestModel(req), 'gpt-5.4')
+  assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), true)
+
+  const upstreamBody = buildUpstreamRequestBody(req, true)
+  assert.ok(Buffer.isBuffer(upstreamBody))
+  assert.equal(Buffer.compare(upstreamBody, rawBody), 0)
+}
+
+async function testLargeJsonBodyWorkerStopsWhenClientAborts(): Promise<void> {
+  const body = {
+    model: 'gpt-5.4',
+    stream: true,
+    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes * 4)
+  }
+  const rawBody = Buffer.from(JSON.stringify(body))
+  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
+  const res = new EventEmitter()
+  let nextCalled = false
+
+  const capture = captureGatewayRawBody(req, res as never, () => {
+    nextCalled = true
+  })
+  req.aborted = true
+  req.emit('aborted')
+  await capture
+
+  assert.equal(nextCalled, false)
+}
+
 function createRequest(
   body: unknown,
   headers: Record<string, string | string[] | undefined> = {},
   rawBody = Buffer.from(JSON.stringify(body ?? {}))
 ): TestRequest {
-  return {
+  return Object.assign(new EventEmitter(), {
     method: 'POST',
     originalUrl: '/v1/responses',
     path: '/v1/responses',
     headers,
     body,
     rawBody
-  } as TestRequest
+  }) as TestRequest
 }
 
-main()
+try {
+  await main()
+} finally {
+  await stopGatewayJsonParseWorker()
+}

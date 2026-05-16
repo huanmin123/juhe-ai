@@ -149,7 +149,7 @@
 <script setup lang="ts">
 import axios from 'axios'
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { AccountListSortParam } from '@/api/client'
@@ -320,7 +320,46 @@ const testModelOptions = computed(() => {
 })
 const defaultTestModel = computed(() => testModelOptions.value[0]?.value || 'gpt-5.5')
 
-const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIds.value.includes(account.id)))
+const accountById = computed(() => new Map(accounts.value.map((account) => [account.id, account])))
+const selectedAccountIdSet = computed(() => new Set(selectedAccountIds.value))
+const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIdSet.value.has(account.id)))
+const providerNameByCode = computed(() => new Map(availableProviders.value.map((provider) => [provider.code, provider.name])))
+const proxyByIdMap = computed(() => new Map(proxies.value.map((proxy) => [proxy.id, proxy])))
+const groupById = computed(() => new Map(groups.value.map((group) => [group.id, group])))
+const groupIdByAccountId = computed(() => {
+  const map = new Map<string, string>()
+  for (const group of groups.value) {
+    for (const accountId of group.accountIds ?? []) {
+      if (!map.has(accountId)) {
+        map.set(accountId, group.id)
+      }
+    }
+  }
+  return map
+})
+const groupNameByAccountId = computed(() => {
+  const map = new Map<string, string>()
+  for (const group of groups.value) {
+    for (const accountId of group.accountIds ?? []) {
+      if (!map.has(accountId)) {
+        map.set(accountId, group.name)
+      }
+    }
+  }
+  for (const account of accounts.value) {
+    if (account.boundGroupName) {
+      map.set(account.id, account.boundGroupName)
+      continue
+    }
+    if (account.boundGroupId) {
+      const boundGroupName = groupById.value.get(account.boundGroupId)?.name
+      if (boundGroupName) {
+        map.set(account.id, boundGroupName)
+      }
+    }
+  }
+  return map
+})
 
 const rowSelection = computed(() => ({
   columnWidth: accountSelectionColumnWidth,
@@ -332,7 +371,7 @@ const rowSelection = computed(() => ({
 }))
 
 function isAccountSelected(accountId: string): boolean {
-  return selectedAccountIds.value.includes(accountId)
+  return selectedAccountIdSet.value.has(accountId)
 }
 
 function toggleAccountSelection(account: AccountSummary) {
@@ -347,7 +386,7 @@ const proxyOptions = computed(() => proxies.value.map((proxy) => ({
   value: proxy.id,
   disabled: proxy.enabled === false
 })))
-const proxyById = (proxyProfileId?: string) => proxies.value.find((proxy) => proxy.id === proxyProfileId)
+const proxyById = (proxyProfileId?: string) => proxyProfileId ? proxyByIdMap.value.get(proxyProfileId) : undefined
 const providerGroups = computed(() => groups.value.filter((group) => canManageGroupAccounts(group) && (!form.providerCode || group.providerCode === form.providerCode)))
 const groupOptions = computed(() => providerGroups.value.map((group) => ({ label: group.name, value: group.id })))
 const bindGroupOptions = computed(() => {
@@ -416,17 +455,15 @@ function accountTypeTitle(providerCode: string, type: AccountType) {
 
 function providerName(providerCode?: string) {
   if (!providerCode) return '未知供应商'
-  return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
+  return providerNameByCode.value.get(providerCode) ?? providerCode
 }
 
 function groupIdForAccount(accountId: string) {
-  const account = accounts.value.find((item) => item.id === accountId)
-  return account?.boundGroupId ?? groups.value.find((group) => group.accountIds.includes(accountId))?.id
+  return accountById.value.get(accountId)?.boundGroupId ?? groupIdByAccountId.value.get(accountId)
 }
 
 function groupNameForAccount(accountId: string) {
-  const account = accounts.value.find((item) => item.id === accountId)
-  return account?.boundGroupName ?? groups.value.find((group) => group.accountIds.includes(accountId))?.name
+  return groupNameByAccountId.value.get(accountId)
 }
 
 function authorizedAccountTooltip(account: AccountSummary): string {
@@ -603,7 +640,8 @@ async function loadData(options: { append?: boolean; quiet?: boolean; forceOptio
     accountPagination.pageSize = accountList.pageSize
     accountPagination.total = accountList.total
     accounts.value = options.append ? [...accounts.value, ...accountList.items] : accountList.items
-    selectedAccountIds.value = selectedAccountIds.value.filter((id) => accounts.value.some((account) => account.id === id && canBatchManageAccount(account)))
+    const selectableAccountIds = new Set(accounts.value.filter(canBatchManageAccount).map((account) => account.id))
+    selectedAccountIds.value = selectedAccountIds.value.filter((id) => selectableAccountIds.has(id))
     if (modalOpen.value && !editingId.value) {
       ensureDefaultGroupSelected()
     }
@@ -727,7 +765,6 @@ function selectAccountType(type: AccountType) {
     notes: form.notes,
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
-    fallbackEnabled: form.fallbackEnabled,
     accountExpiresAt: form.accountExpiresAt
   })
   ensureDefaultGroupSelected(providerCode)
@@ -743,7 +780,6 @@ function openEdit(account: AccountSummary) {
     status: account.status,
     concurrencyLimit: account.concurrencyLimit,
     priority: account.priority,
-    fallbackEnabled: account.fallbackEnabled,
     proxyProfileId: account.proxyProfileId,
     accountExpiresAt: parseDatePickerValue(account.accountExpiresAt),
     groupId: groupIdForAccount(account.id),
@@ -935,7 +971,6 @@ const saveAccount = submitAction('accounts.save', async () => {
     status: form.status,
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
-    fallbackEnabled: form.fallbackEnabled,
     proxyProfileId: form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(form.accountExpiresAt),
     groupId: form.groupId,
@@ -1012,7 +1047,6 @@ async function createOAuthAccountFromUnifiedForm() {
     groupId: form.groupId,
     concurrencyLimit: form.concurrencyLimit,
     priority: form.priority,
-    fallbackEnabled: form.fallbackEnabled,
     proxyProfileId: form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(form.accountExpiresAt),
     credentialsPatch: { error_handling_rules: buildCredentials().error_handling_rules },
@@ -1446,6 +1480,10 @@ function snapshotPageState(): AccountsPageState {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
+
+onDeactivated(stopAccountTest)
+
+onBeforeUnmount(stopAccountTest)
 </script>
 
 <style scoped>

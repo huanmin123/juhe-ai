@@ -53,7 +53,17 @@
     <a-row :gutter="[16, 16]" class="history-grid">
       <a-col v-for="item in historyCards" :key="item.role" :xs="24" :xl="12">
         <a-card class="page-card history-card" :title="item.title">
-          <div v-if="item.rows.length > 0" :ref="item.setChartRef" class="history-chart" />
+          <DeferredRender
+            v-if="item.rows.length > 0"
+            :active="pageActive"
+            :delay-frames="2"
+            :min-height="320"
+            :reset-key="`${item.role}:${item.rows.length}:${selectedTableKeys[item.role] || ''}`"
+            reset-on-deactivate
+            @ready="renderHistoryChart(item.role)"
+          >
+            <div :ref="item.setChartRef" class="history-chart" />
+          </DeferredRender>
           <div v-else class="page-empty-card">
             <a-empty :description="`${databaseRoleLabel(item.role)}暂无增长历史`" />
           </div>
@@ -62,56 +72,63 @@
     </a-row>
 
     <a-card class="page-card">
-      <a-table
-        :columns="columns"
-        :custom-row="customTableRow"
-        :data-source="filteredTables"
-        :loading="loading"
-        :pagination="tablePagination"
-        :row-class-name="rowClassName"
-        :row-key="tableKey"
-        :scroll="{ x: 1180 }"
-        class="table-monitor-table"
-        size="middle"
-      >
-        <template #bodyCell="{ column, record }">
-          <template v-if="column.key === 'databaseRole'">
-            <a-tag :color="databaseRoleColor(record.databaseRole)">{{ databaseRoleLabel(record.databaseRole) }}</a-tag>
+      <DeferredRender :active="pageActive" :delay-frames="1" :min-height="360" reset-on-deactivate>
+        <a-table
+          :columns="columns"
+          :custom-row="customTableRow"
+          :data-source="filteredTables"
+          :loading="loading"
+          :pagination="tablePagination"
+          :row-class-name="rowClassName"
+          :row-key="tableKey"
+          :scroll="{ x: 1180 }"
+          class="table-monitor-table"
+          size="middle"
+        >
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'databaseRole'">
+              <a-tag :color="databaseRoleColor(record.databaseRole)">{{ databaseRoleLabel(record.databaseRole) }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'tableName'">
+              <span class="mono-cell">{{ record.tableName }}</span>
+            </template>
+            <template v-else-if="column.key === 'rowCount'">
+              {{ formatInteger(record.rowCount) }}
+            </template>
+            <template v-else-if="column.key === 'tableBytes'">
+              {{ formatBytes(record.tableBytes) }}
+            </template>
+            <template v-else-if="column.key === 'indexBytes'">
+              {{ formatBytes(record.indexBytes) }}
+            </template>
+            <template v-else-if="column.key === 'totalBytes'">
+              <strong>{{ formatBytes(record.totalBytes) }}</strong>
+            </template>
+            <template v-else-if="column.key === 'growth1h'">
+              <a-tag :color="growthColor(record.growthBytes1h)">{{ formatGrowthBytes(record.growthBytes1h) }}</a-tag>
+              <span class="growth-rows">{{ formatGrowthRows(record.growthRows1h) }}</span>
+            </template>
+            <template v-else-if="column.key === 'growth24h'">
+              <a-tag :color="growthColor(record.growthBytes24h)">{{ formatGrowthBytes(record.growthBytes24h) }}</a-tag>
+              <span class="growth-rows">{{ formatGrowthRows(record.growthRows24h) }}</span>
+            </template>
+            <template v-else-if="column.key === 'sampledAt'">
+              {{ formatDateTime(record.sampledAt) }}
+            </template>
           </template>
-          <template v-else-if="column.key === 'tableName'">
-            <span class="mono-cell">{{ record.tableName }}</span>
-          </template>
-          <template v-else-if="column.key === 'rowCount'">
-            {{ formatInteger(record.rowCount) }}
-          </template>
-          <template v-else-if="column.key === 'tableBytes'">
-            {{ formatBytes(record.tableBytes) }}
-          </template>
-          <template v-else-if="column.key === 'indexBytes'">
-            {{ formatBytes(record.indexBytes) }}
-          </template>
-          <template v-else-if="column.key === 'totalBytes'">
-            <strong>{{ formatBytes(record.totalBytes) }}</strong>
-          </template>
-          <template v-else-if="column.key === 'growth1h'">
-            <a-tag :color="growthColor(record.growthBytes1h)">{{ formatGrowthBytes(record.growthBytes1h) }}</a-tag>
-            <span class="growth-rows">{{ formatGrowthRows(record.growthRows1h) }}</span>
-          </template>
-          <template v-else-if="column.key === 'growth24h'">
-            <a-tag :color="growthColor(record.growthBytes24h)">{{ formatGrowthBytes(record.growthBytes24h) }}</a-tag>
-            <span class="growth-rows">{{ formatGrowthRows(record.growthRows24h) }}</span>
-          </template>
-          <template v-else-if="column.key === 'sampledAt'">
-            {{ formatDateTime(record.sampledAt) }}
-          </template>
+        </a-table>
+        <template #placeholder>
+          <div class="table-monitor-table-placeholder">
+            <a-spin v-if="loading" size="small" />
+          </div>
         </template>
-      </a-table>
+      </DeferredRender>
     </a-card>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef } from 'vue'
 import type { ShallowRef } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
@@ -119,6 +136,7 @@ import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
+import DeferredRender from '@/components/DeferredRender.vue'
 import { init, type ECharts } from '@/lib/echarts'
 import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
 import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverview, TableStorageSnapshotSummary } from '@/types/domain'
@@ -139,6 +157,8 @@ const loading = ref(false)
 const keyword = ref('')
 const historyRange = ref<[Dayjs, Dayjs] | undefined>([dayjs().subtract(1, 'month').startOf('day'), dayjs().endOf('day')])
 const overview = ref<TableStorageOverview>()
+const pageActive = ref(false)
+let resizeListenerAttached = false
 const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'records']
 const selectedTableKeys = ref<Record<MonitoredDatabaseRole, string | undefined>>({
   business: undefined,
@@ -284,7 +304,9 @@ function rowClassName(record: TableStorageSnapshotSummary) {
 }
 
 function renderHistoryChart(role: MonitoredDatabaseRole) {
+  if (!pageActive.value) return
   void nextTick(() => {
+    if (!pageActive.value) return
     const rows = historyRowsByRole.value[role]
     if (!rows.length) {
       disposeChart(historyCharts[role])
@@ -413,19 +435,53 @@ function formatSampleTime(value: string) {
   return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
 }
 
-onMounted(() => {
-  void loadData()
+function addResizeListener() {
+  if (resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = true
   window.addEventListener('resize', resizeHistoryChart)
+}
+
+function removeResizeListener() {
+  if (!resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = false
+  window.removeEventListener('resize', resizeHistoryChart)
+}
+
+onMounted(() => {
+  pageActive.value = true
+  void loadData()
+  addResizeListener()
+})
+
+onActivated(() => {
+  pageActive.value = true
+  addResizeListener()
+  void nextTick(() => {
+    for (const role of databaseSummaryRoles) {
+      renderHistoryChart(role)
+    }
+    resizeHistoryChart()
+  })
+})
+
+onDeactivated(() => {
+  pageActive.value = false
+  removeResizeListener()
+  for (const role of databaseSummaryRoles) {
+    disposeChart(historyCharts[role])
+  }
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', resizeHistoryChart)
+  pageActive.value = false
+  removeResizeListener()
   for (const role of databaseSummaryRoles) {
     disposeChart(historyCharts[role])
   }
 })
 
 function resizeHistoryChart() {
+  if (!pageActive.value) return
   for (const role of databaseSummaryRoles) {
     const chart = historyCharts[role].value
     if (chart && !chart.isDisposed()) {
@@ -516,6 +572,13 @@ function resizeHistoryChart() {
 
 .table-monitor-table :deep(.ant-table-row) {
   cursor: pointer;
+}
+
+.table-monitor-table-placeholder {
+  display: flex;
+  min-height: 360px;
+  align-items: center;
+  justify-content: center;
 }
 
 .table-monitor-table :deep(.selected-monitor-row > td) {

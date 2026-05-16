@@ -50,6 +50,7 @@ export function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): Usage
     inputTokens: Math.max(0, Number(row.input_tokens ?? 0)),
     outputTokens: Math.max(0, Number(row.output_tokens ?? 0)),
     cacheReadTokens: Math.max(0, Number(row.cache_read_tokens ?? 0)),
+    cacheReadCostUsd: Math.max(0, Number(row.cache_read_cost_usd ?? 0)),
     totalCostUsd: Math.max(0, Number(row.cost_usd ?? 0)),
     durationMsSum: durationMs,
     durationMsCount: row.duration_ms === null ? 0 : 1,

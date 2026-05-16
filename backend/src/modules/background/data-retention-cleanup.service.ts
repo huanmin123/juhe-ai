@@ -122,21 +122,21 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
     result.runtimeLogs = cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
     result.usageRecords = cleanupInBatches(() => cleanupProcessedUsageRecordsBefore(cutoffIso(now, retention.usageRecordDays), batchSize), batchSize, maxBatches)
 
-    const stats = cleanupUsageStatsBucketsBefore({
+    cleanupRetentionInBatches(result, () => cleanupUsageStatsBucketsBefore({
       minuteCutoffMinute: cutoffMinuteKey(now, retention.statsMinuteHours, timezone),
       hourlyCutoffHour: cutoffHourKey(now, retention.statsHourlyDays, timezone),
       dailyCutoffDate: cutoffDateKey(now, retention.statsDailyDays, timezone),
       weeklyCutoffWeek: cutoffWeekKey(now, retention.statsWeeklyWeeks, timezone),
       monthlyCutoffMonth: cutoffMonthKey(now, retention.statsMonthlyMonths, timezone),
-      rankSnapshotCutoffIso: cutoffIso(now, retention.rankSnapshotDays)
-    })
-    Object.assign(result, stats)
+      rankSnapshotCutoffIso: cutoffIso(now, retention.rankSnapshotDays),
+      limit: batchSize
+    }), maxBatches)
 
-    const metrics = cleanupSystemMetricsBefore({
+    cleanupRetentionInBatches(result, () => cleanupSystemMetricsBefore({
       samplesCutoffIso: cutoffIso(now, retention.systemMetricsSampleDays),
-      hourlyCutoffHour: cutoffHourKey(now, retention.systemMetricsHourlyDays, timezone)
-    })
-    Object.assign(result, metrics)
+      hourlyCutoffHour: cutoffHourKey(now, retention.systemMetricsHourlyDays, timezone),
+      limit: batchSize
+    }), maxBatches)
 
     result.tableStorageSnapshots = cleanupInBatches(
       () => cleanupTableStorageSnapshotsBefore(cutoffIso(now, retention.tableStorageSnapshotDays), batchSize),
@@ -173,6 +173,33 @@ function cleanupInBatches(cleanupBatch: () => number, batchSize: number, maxBatc
     }
   }
   return total
+}
+
+function cleanupRetentionInBatches(
+  result: DataRetentionCleanupResult,
+  cleanupBatch: () => Partial<Record<keyof DataRetentionCleanupResult, number>>,
+  maxBatches: number
+): void {
+  for (let index = 0; index < maxBatches; index += 1) {
+    const deleted = cleanupBatch()
+    addCleanupResult(result, deleted)
+    if (sumDeleted(deleted) === 0) {
+      break
+    }
+  }
+}
+
+function addCleanupResult(
+  result: DataRetentionCleanupResult,
+  deleted: Partial<Record<keyof DataRetentionCleanupResult, number>>
+): void {
+  for (const [key, value] of Object.entries(deleted) as Array<[keyof DataRetentionCleanupResult, number | undefined]>) {
+    result[key] += value ?? 0
+  }
+}
+
+function sumDeleted(deleted: Partial<Record<keyof DataRetentionCleanupResult, number>>): number {
+  return Object.values(deleted).reduce((sum, value) => sum + Number(value ?? 0), 0)
 }
 
 function cutoffIso(now: number, retentionDays: number): string {

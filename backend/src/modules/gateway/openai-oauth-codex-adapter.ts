@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto'
 import type { Request } from 'express'
 
+import {
+  getGatewayRequestBodyState,
+  gatewayJsonBodyLargeWarningBytes,
+  type GatewayRawBodyRequest
+} from './openai-gateway-request-body.js'
+import { parseGatewayJsonBodyInWorker } from './openai-gateway-json-parser.js'
+import { getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
+
 export interface OpenAIOAuthCodexAccount {
   id?: string
   apiKey: string
@@ -19,15 +27,19 @@ export interface OpenAIOAuthCodexRequestParts {
 }
 
 export class OpenAIOAuthCodexAdapterError extends Error {
-  readonly statusCode = 400
-  readonly type = 'invalid_request_error'
+  readonly statusCode: number
+  readonly type: string
 
-  constructor(message: string, readonly code = 'invalid_openai_oauth_codex_request') {
+  constructor(
+    message: string,
+    readonly code = 'invalid_openai_oauth_codex_request',
+    options: { statusCode?: number; type?: string } = {}
+  ) {
     super(message)
+    this.statusCode = options.statusCode ?? 400
+    this.type = options.type ?? 'invalid_request_error'
   }
 }
-
-type RawBodyRequest = Request & { rawBody?: Buffer }
 
 interface NormalizedCodexBody {
   body?: string
@@ -41,14 +53,19 @@ interface OpenAIOAuthCodexSessionResolution {
   promptCacheKey?: string
 }
 
-export function buildOpenAIOAuthCodexRequestParts(
+type OpenAIOAuthCodexRawBodyRequest = GatewayRawBodyRequest & {
+  openAIOAuthCodexLargeBodyLogged?: boolean
+}
+
+export async function buildOpenAIOAuthCodexRequestParts(
   req: Request,
   inputHeaders: Record<string, string | string[] | undefined>,
   account: OpenAIOAuthCodexAccount,
-  identity: OpenAIOAuthCodexIdentity
-): OpenAIOAuthCodexRequestParts {
+  identity: OpenAIOAuthCodexIdentity,
+  signal?: AbortSignal
+): Promise<OpenAIOAuthCodexRequestParts> {
   const compact = isOpenAIOAuthCodexCompactRequest(req)
-  const normalizedBody = normalizeOpenAIOAuthCodexBody(req, inputHeaders, account, identity, compact)
+  const normalizedBody = await normalizeOpenAIOAuthCodexBody(req, inputHeaders, account, identity, compact, signal)
   return {
     headers: buildOpenAIOAuthCodexHeaders(inputHeaders, account, {
       compact,
@@ -64,18 +81,19 @@ export function isOpenAIOAuthCodexCompactRequest(req: Request): boolean {
   return (path.replace(/^\/v1(?=\/|$)/, '') || '/') === '/responses/compact'
 }
 
-function normalizeOpenAIOAuthCodexBody(
+async function normalizeOpenAIOAuthCodexBody(
   req: Request,
   inputHeaders: Record<string, string | string[] | undefined>,
   account: OpenAIOAuthCodexAccount,
   identity: OpenAIOAuthCodexIdentity,
-  compact: boolean
-): NormalizedCodexBody {
+  compact: boolean,
+  signal?: AbortSignal
+): Promise<NormalizedCodexBody> {
   if (req.method === 'GET' || req.method === 'HEAD') {
     return { stream: false, session: {} }
   }
 
-  const body = parseOpenAIOAuthCodexJsonObjectBody(req)
+  const body = await parseOpenAIOAuthCodexJsonObjectBody(req, signal)
   validateOpenAIOAuthCodexBody(body, compact)
   const session = resolveOpenAIOAuthCodexSession(inputHeaders, body, account, identity)
   applyOpenAIOAuthCodexSessionToBody(body, session, compact)
@@ -96,12 +114,24 @@ function normalizeOpenAIOAuthCodexBody(
   return { body: JSON.stringify(body), stream: true, session }
 }
 
-function parseOpenAIOAuthCodexJsonObjectBody(req: Request): Record<string, unknown> {
-  const rawBody = (req as RawBodyRequest).rawBody
+async function parseOpenAIOAuthCodexJsonObjectBody(req: Request, signal?: AbortSignal): Promise<Record<string, unknown>> {
+  logOpenAIOAuthCodexLargeBodyParse(req)
+  if (req.body !== undefined) {
+    return ensurePlainJsonObject(req.body)
+  }
+
+  const bodyState = getGatewayRequestBodyState(req)
+  if (bodyState?.jsonParseStatus === 'invalid_json') {
+    throw new OpenAIOAuthCodexAdapterError('OpenAI OAuth Codex 请求体必须是有效的 JSON 对象')
+  }
+
+  const rawBody = (req as GatewayRawBodyRequest).rawBody
   if (rawBody && rawBody.length > 0) {
-    const text = rawBody.toString('utf8')
     try {
-      return ensurePlainJsonObject(JSON.parse(text) as unknown)
+      const parsed = rawBody.length > gatewayJsonBodyLargeWarningBytes
+        ? await parseGatewayJsonBodyInWorker(rawBody, undefined, signal)
+        : JSON.parse(rawBody.toString('utf8')) as unknown
+      return ensurePlainJsonObject(parsed)
     } catch (error) {
       if (error instanceof OpenAIOAuthCodexAdapterError) {
         throw error
@@ -114,6 +144,25 @@ function parseOpenAIOAuthCodexJsonObjectBody(req: Request): Record<string, unkno
     return {}
   }
   return ensurePlainJsonObject(req.body)
+}
+
+function logOpenAIOAuthCodexLargeBodyParse(req: Request): void {
+  const request = req as OpenAIOAuthCodexRawBodyRequest
+  const rawBody = request.rawBody
+  const bodyState = getGatewayRequestBodyState(req)
+  if (request.openAIOAuthCodexLargeBodyLogged || !rawBody || rawBody.length <= gatewayJsonBodyLargeWarningBytes) {
+    return
+  }
+  request.openAIOAuthCodexLargeBodyLogged = true
+  getRequestLogger().warn({
+    event: 'openai_oauth_codex_large_body_parse',
+    method: req.method,
+    path: req.path,
+    originalUrl: sanitizeUrlForLog(req.originalUrl || req.path || ''),
+    rawBodyBytes: rawBody.length,
+    jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
+    gatewayJsonParseStatus: bodyState?.jsonParseStatus
+  }, 'OpenAI OAuth Codex 大请求体进入兼容解析')
 }
 
 function ensurePlainJsonObject(value: unknown): Record<string, unknown> {

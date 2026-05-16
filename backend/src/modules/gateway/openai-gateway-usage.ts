@@ -1,6 +1,8 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import type { Request } from 'express'
 
+import { buildGatewayRequestBodySummary } from './openai-gateway-request-body.js'
+
 export interface UpstreamAttempt {
   accountId: string
   accountName: string
@@ -103,7 +105,10 @@ export function buildUsageRequestSnapshot(req: Request, traceId: string, clientI
     traceId,
     headers: sanitizeRequestHeaders(req.headers)
   }
-  if (req.body !== undefined) {
+  const bodySummary = buildGatewayRequestBodySummary(req)
+  if (bodySummary) {
+    snapshot.body = bodySummary
+  } else if (req.body !== undefined) {
     snapshot.body = req.body
   }
   return snapshot

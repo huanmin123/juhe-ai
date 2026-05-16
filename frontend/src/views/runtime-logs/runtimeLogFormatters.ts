@@ -64,7 +64,7 @@ export const runtimeLogEventTextMap: Record<string, string> = {
   gateway_upstream_response_received: '网关上游响应已收到',
   gateway_upstream_retry_error_body_truncated: '网关上游重试错误响应体截断',
   http_request_closed: 'HTTP 请求连接关闭',
-  http_request_completed: 'HTTP 请求完成',
+  http_request_completed: 'HTTP 请求已结束',
   http_request_unhandled_error: 'HTTP 请求未处理异常',
   openai_oauth_access_token_refresh_account_failed: 'OpenAI OAuth 账户 Token 刷新失败',
   openai_oauth_access_token_refresh_race_recovered: 'OpenAI OAuth Token 并发刷新已恢复',
@@ -80,6 +80,14 @@ export const runtimeLogEventTextMap: Record<string, string> = {
 export function eventText(value?: string): string {
   if (!value) return '-'
   return runtimeLogEventTextMap[value] ?? value
+}
+
+export function runtimeLogMessageText(record: { event?: string; errorMessage?: string; message?: string; line?: string }, options: { includeLine?: boolean } = {}): string {
+  const rawMessage = record.errorMessage || record.message || (options.includeLine ? record.line : undefined) || '-'
+  if (record.event === 'http_request_completed' && rawMessage === 'HTTP 请求完成') {
+    return 'HTTP 请求已结束'
+  }
+  return rawMessage
 }
 
 export function levelText(value: string): string {

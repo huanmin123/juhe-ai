@@ -374,8 +374,8 @@ function findPreviousTableSnapshot(databaseRole: MonitoredDatabaseRole, tableNam
 
 function cleanupOldTableStorageSnapshots(database: DatabaseSync, sampledAt: string): void {
   const cutoff = new Date(Date.parse(sampledAt) - tableMonitorSampleRetentionDays * 24 * 60 * 60 * 1000).toISOString()
-  database.prepare('DELETE FROM table_storage_snapshots WHERE sampled_at < ?').run(cutoff)
-  database.prepare('DELETE FROM database_storage_snapshots WHERE sampled_at < ?').run(cutoff)
+  deleteSnapshotRowsById(database, 'table_storage_snapshots', cutoff, 10000)
+  deleteSnapshotRowsById(database, 'database_storage_snapshots', cutoff, 10000)
 }
 
 function pragmaNumber(database: DatabaseSync, pragmaName: 'page_size' | 'page_count' | 'freelist_count'): number | undefined {

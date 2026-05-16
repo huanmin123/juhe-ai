@@ -119,49 +119,52 @@ export function cleanupUsageStatsBucketsBefore(input: {
   weeklyCutoffWeek: string
   monthlyCutoffMonth: string
   rankSnapshotCutoffIso: string
+  limit?: number
 }): UsageStatsRetentionCleanupResult {
   const database = getRecordDatabase()
+  const limit = positiveLimit(input.limit)
   return {
-    usageStatsMinute: changed(database.prepare('DELETE FROM usage_stats_minute WHERE stat_minute < ?').run(input.minuteCutoffMinute)),
-    usageModelMinute: changed(database.prepare('DELETE FROM usage_model_minute WHERE stat_minute < ?').run(input.minuteCutoffMinute)),
-    usageErrorMinute: changed(database.prepare('DELETE FROM usage_error_minute WHERE stat_minute < ?').run(input.minuteCutoffMinute)),
-    usageLatencyMinute: changed(database.prepare('DELETE FROM usage_latency_minute WHERE stat_minute < ?').run(input.minuteCutoffMinute)),
-    usageStatsDaily: changed(database.prepare('DELETE FROM usage_stats_daily WHERE stat_date < ?').run(input.dailyCutoffDate)),
-    usageModelDaily: changed(database.prepare('DELETE FROM usage_model_daily WHERE stat_date < ?').run(input.dailyCutoffDate)),
-    usageErrorDaily: changed(database.prepare('DELETE FROM usage_error_daily WHERE stat_date < ?').run(input.dailyCutoffDate)),
-    usageLatencyDaily: changed(database.prepare('DELETE FROM usage_latency_daily WHERE stat_date < ?').run(input.dailyCutoffDate)),
-    usageStatsHourly: changed(database.prepare('DELETE FROM usage_stats_hourly WHERE stat_hour < ?').run(input.hourlyCutoffHour)),
-    usageModelHourly: changed(database.prepare('DELETE FROM usage_model_hourly WHERE stat_hour < ?').run(input.hourlyCutoffHour)),
-    usageErrorHourly: changed(database.prepare('DELETE FROM usage_error_hourly WHERE stat_hour < ?').run(input.hourlyCutoffHour)),
-    usageLatencyHourly: changed(database.prepare('DELETE FROM usage_latency_hourly WHERE stat_hour < ?').run(input.hourlyCutoffHour)),
-    usageStatsWeekly: changed(database.prepare('DELETE FROM usage_stats_weekly WHERE stat_week < ?').run(input.weeklyCutoffWeek)),
-    usageModelWeekly: changed(database.prepare('DELETE FROM usage_model_weekly WHERE stat_week < ?').run(input.weeklyCutoffWeek)),
-    usageErrorWeekly: changed(database.prepare('DELETE FROM usage_error_weekly WHERE stat_week < ?').run(input.weeklyCutoffWeek)),
-    usageLatencyWeekly: changed(database.prepare('DELETE FROM usage_latency_weekly WHERE stat_week < ?').run(input.weeklyCutoffWeek)),
-    usageStatsMonthly: changed(database.prepare('DELETE FROM usage_stats_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
-    usageModelMonthly: changed(database.prepare('DELETE FROM usage_model_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
-    usageErrorMonthly: changed(database.prepare('DELETE FROM usage_error_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
-    usageLatencyMonthly: changed(database.prepare('DELETE FROM usage_latency_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
-    authorizationTeamUsageSummaryDaily: changed(database.prepare('DELETE FROM authorization_team_usage_summary_daily WHERE stat_date < ?').run(input.dailyCutoffDate)),
-    authorizationTeamUsageRangeWindows: changed(database.prepare('DELETE FROM authorization_team_usage_range_windows WHERE end_date < ?').run(input.dailyCutoffDate)),
-    authorizationUserUsageSummaryDaily: changed(database.prepare('DELETE FROM authorization_user_usage_summary_daily WHERE stat_date < ?').run(input.dailyCutoffDate)),
-    authorizationUserUsageRangeWindows: changed(database.prepare('DELETE FROM authorization_user_usage_range_windows WHERE end_date < ?').run(input.dailyCutoffDate)),
-    usageRankSnapshots: changed(database.prepare('DELETE FROM usage_rank_snapshots WHERE snapshot_at < ?').run(input.rankSnapshotCutoffIso)),
+    usageStatsMinute: deleteRowsBeforeByRowid(database, 'usage_stats_minute', 'stat_minute', input.minuteCutoffMinute, limit),
+    usageModelMinute: deleteRowsBeforeByRowid(database, 'usage_model_minute', 'stat_minute', input.minuteCutoffMinute, limit),
+    usageErrorMinute: deleteRowsBeforeByRowid(database, 'usage_error_minute', 'stat_minute', input.minuteCutoffMinute, limit),
+    usageLatencyMinute: deleteRowsBeforeByRowid(database, 'usage_latency_minute', 'stat_minute', input.minuteCutoffMinute, limit),
+    usageStatsDaily: deleteRowsBeforeByRowid(database, 'usage_stats_daily', 'stat_date', input.dailyCutoffDate, limit),
+    usageModelDaily: deleteRowsBeforeByRowid(database, 'usage_model_daily', 'stat_date', input.dailyCutoffDate, limit),
+    usageErrorDaily: deleteRowsBeforeByRowid(database, 'usage_error_daily', 'stat_date', input.dailyCutoffDate, limit),
+    usageLatencyDaily: deleteRowsBeforeByRowid(database, 'usage_latency_daily', 'stat_date', input.dailyCutoffDate, limit),
+    usageStatsHourly: deleteRowsBeforeByRowid(database, 'usage_stats_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    usageModelHourly: deleteRowsBeforeByRowid(database, 'usage_model_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    usageErrorHourly: deleteRowsBeforeByRowid(database, 'usage_error_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    usageLatencyHourly: deleteRowsBeforeByRowid(database, 'usage_latency_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    usageStatsWeekly: deleteRowsBeforeByRowid(database, 'usage_stats_weekly', 'stat_week', input.weeklyCutoffWeek, limit),
+    usageModelWeekly: deleteRowsBeforeByRowid(database, 'usage_model_weekly', 'stat_week', input.weeklyCutoffWeek, limit),
+    usageErrorWeekly: deleteRowsBeforeByRowid(database, 'usage_error_weekly', 'stat_week', input.weeklyCutoffWeek, limit),
+    usageLatencyWeekly: deleteRowsBeforeByRowid(database, 'usage_latency_weekly', 'stat_week', input.weeklyCutoffWeek, limit),
+    usageStatsMonthly: deleteRowsBeforeByRowid(database, 'usage_stats_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
+    usageModelMonthly: deleteRowsBeforeByRowid(database, 'usage_model_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
+    usageErrorMonthly: deleteRowsBeforeByRowid(database, 'usage_error_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
+    usageLatencyMonthly: deleteRowsBeforeByRowid(database, 'usage_latency_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
+    authorizationTeamUsageSummaryDaily: deleteRowsBeforeByRowid(database, 'authorization_team_usage_summary_daily', 'stat_date', input.dailyCutoffDate, limit),
+    authorizationTeamUsageRangeWindows: deleteRowsBeforeByRowid(database, 'authorization_team_usage_range_windows', 'end_date', input.dailyCutoffDate, limit),
+    authorizationUserUsageSummaryDaily: deleteRowsBeforeByRowid(database, 'authorization_user_usage_summary_daily', 'stat_date', input.dailyCutoffDate, limit),
+    authorizationUserUsageRangeWindows: deleteRowsBeforeByRowid(database, 'authorization_user_usage_range_windows', 'end_date', input.dailyCutoffDate, limit),
+    usageRankSnapshots: deleteRowsBeforeByRowid(database, 'usage_rank_snapshots', 'snapshot_at', input.rankSnapshotCutoffIso, limit),
     usageOverviewSummaryWindows: 0,
     usageOverviewTrendWindows: 0,
     usageModelRankWindows: 0,
     usageErrorRankWindows: 0,
     aiPerformanceSummaryWindows: 0,
     usageQuotaHourlyWindows: 0,
-    usageScopeRangeWindows: changed(database.prepare('DELETE FROM usage_scope_range_windows WHERE end_date < ?').run(input.dailyCutoffDate))
+    usageScopeRangeWindows: deleteRowsBeforeByRowid(database, 'usage_scope_range_windows', 'end_date', input.dailyCutoffDate, limit)
   }
 }
 
-export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; hourlyCutoffHour: string }): SystemMetricsRetentionCleanupResult {
+export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; hourlyCutoffHour: string; limit?: number }): SystemMetricsRetentionCleanupResult {
   const database = getRecordDatabase()
+  const limit = positiveLimit(input.limit)
   return {
-    systemMetricsSamples: changed(database.prepare('DELETE FROM system_metrics_samples WHERE sampled_at < ?').run(input.samplesCutoffIso)),
-    systemMetricsHourly: changed(database.prepare('DELETE FROM system_metrics_hourly WHERE stat_hour < ?').run(input.hourlyCutoffHour))
+    systemMetricsSamples: deleteRowsBeforeByRowid(database, 'system_metrics_samples', 'sampled_at', input.samplesCutoffIso, limit),
+    systemMetricsHourly: deleteRowsBeforeByRowid(database, 'system_metrics_hourly', 'stat_hour', input.hourlyCutoffHour, limit)
   }
 }
 
@@ -181,8 +184,28 @@ function deleteRowsById(tableName: 'usage_records', rows: CleanupRow[]): number 
   return changed(result)
 }
 
-function positiveLimit(value: number): number {
-  return Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 10000
+function deleteRowsBeforeByRowid(
+  database: ReturnType<typeof getRecordDatabase>,
+  tableName: string,
+  timeColumnName: string,
+  cutoffValue: string,
+  limit: number
+): number {
+  const result = database.prepare(`
+    DELETE FROM ${tableName}
+    WHERE rowid IN (
+      SELECT rowid
+      FROM ${tableName}
+      WHERE ${timeColumnName} < ?
+      ORDER BY ${timeColumnName} ASC, rowid ASC
+      LIMIT ?
+    )
+  `).run(cutoffValue, positiveLimit(limit))
+  return changed(result)
+}
+
+function positiveLimit(value: number | undefined): number {
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : 10000
 }
 
 function changed(result: { changes?: number | bigint }): number {

@@ -10,6 +10,7 @@ const globalPending = reactive(new Map<string, number>())
 
 export function useSubmitAction(scope = 'local') {
   const ownedKeys = new Set<string>()
+  const releaseTimers = new Map<string, ReturnType<typeof window.setTimeout>>()
 
   function isSubmitting(key: string): boolean {
     return globalPending.has(resolveKey(scope, key))
@@ -36,7 +37,11 @@ export function useSubmitAction(scope = 'local') {
           ownedKeys.delete(resolvedKey)
         }
         if (options.releaseDelayMs && options.releaseDelayMs > 0) {
-          window.setTimeout(release, options.releaseDelayMs)
+          const timer = window.setTimeout(() => {
+            releaseTimers.delete(resolvedKey)
+            release()
+          }, options.releaseDelayMs)
+          releaseTimers.set(resolvedKey, timer)
         } else {
           release()
         }
@@ -49,6 +54,10 @@ export function useSubmitAction(scope = 'local') {
   }
 
   onBeforeUnmount(() => {
+    for (const timer of releaseTimers.values()) {
+      window.clearTimeout(timer)
+    }
+    releaseTimers.clear()
     for (const key of ownedKeys) {
       globalPending.delete(key)
     }

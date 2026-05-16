@@ -26,6 +26,8 @@ export function emptyStatsAggregateMathRow(): AccountUsageAggregateRow & StatsAg
     input_tokens: 0,
     output_tokens: 0,
     cache_read_tokens: 0,
+    cache_read_cost: 0,
+    cache_read_cost_usd: 0,
     total_cost: 0,
     duration_ms_sum: 0,
     duration_ms_count: 0,

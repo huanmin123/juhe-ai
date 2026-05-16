@@ -175,9 +175,9 @@ function subtractUsageStatsEntry(database: DatabaseSync, entry: UsageStatsEntry,
 function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, stats: UsageStatsAccumulator, updatedAt: string): void {
   database.prepare(`
     INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, last_error_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, scope_type, scope_id) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -185,6 +185,7 @@ function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, 
       input_tokens = input_tokens + excluded.input_tokens,
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -202,9 +203,9 @@ function upsertUsageStatsTimeBucket(database: DatabaseSync, bucket: TimeBucketDe
   const { tableName, columnName } = bucket
   database.prepare(`
     INSERT INTO ${tableName} (system_account_id, scope_type, scope_id, ${columnName}, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, last_error_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, scope_type, scope_id, ${columnName}) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -212,6 +213,7 @@ function upsertUsageStatsTimeBucket(database: DatabaseSync, bucket: TimeBucketDe
       input_tokens = input_tokens + excluded.input_tokens,
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -234,6 +236,7 @@ function subtractUsageStatsTotal(database: DatabaseSync, systemAccountId: string
         input_tokens = MAX(0, input_tokens - ?),
         output_tokens = MAX(0, output_tokens - ?),
         cache_read_tokens = MAX(0, cache_read_tokens - ?),
+        cache_read_cost_usd = MAX(0, cache_read_cost_usd - ?),
         total_cost_usd = MAX(0, total_cost_usd - ?),
         duration_ms_sum = MAX(0, duration_ms_sum - ?),
         duration_ms_count = MAX(0, duration_ms_count - ?),
@@ -259,6 +262,7 @@ function subtractUsageStatsTimeBucket(database: DatabaseSync, bucket: TimeBucket
         input_tokens = MAX(0, input_tokens - ?),
         output_tokens = MAX(0, output_tokens - ?),
         cache_read_tokens = MAX(0, cache_read_tokens - ?),
+        cache_read_cost_usd = MAX(0, cache_read_cost_usd - ?),
         total_cost_usd = MAX(0, total_cost_usd - ?),
         duration_ms_sum = MAX(0, duration_ms_sum - ?),
         duration_ms_count = MAX(0, duration_ms_count - ?),
@@ -282,6 +286,7 @@ function statsParamsTail(stats: UsageStatsAccumulator, updatedAt: string): Array
     stats.inputTokens,
     stats.outputTokens,
     stats.cacheReadTokens,
+    stats.cacheReadCostUsd,
     stats.totalCostUsd,
     stats.durationMsSum,
     stats.durationMsCount,
@@ -303,6 +308,7 @@ function statsSubtractParams(stats: UsageStatsAccumulator): number[] {
     stats.inputTokens,
     stats.outputTokens,
     stats.cacheReadTokens,
+    stats.cacheReadCostUsd,
     stats.totalCostUsd,
     stats.durationMsSum,
     stats.durationMsCount,
@@ -327,7 +333,7 @@ function deleteEmptyUsageStatsTotal(database: DatabaseSync, systemAccountId: str
     DELETE FROM usage_stats_totals
     WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
-      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND total_cost_usd = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0 AND total_cost_usd = 0
   `).run(systemAccountId, scopeType, scopeId)
 }
 
@@ -336,7 +342,7 @@ function deleteEmptyUsageStatsTimeBucket(database: DatabaseSync, bucket: TimeBuc
     DELETE FROM ${bucket.tableName}
     WHERE system_account_id = ? AND scope_type = ? AND scope_id = ? AND ${bucket.columnName} = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
-      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND total_cost_usd = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0 AND total_cost_usd = 0
   `).run(systemAccountId, scopeType, scopeId, timeValue)
 }
 
@@ -475,11 +481,11 @@ function upsertAuthorizationTeamUsageSummaryRow(database: DatabaseSync, systemAc
   database.prepare(`
     INSERT INTO authorization_team_usage_summary_daily (
       system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id, row_count,
-      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max,
       last_used_at, last_error_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -487,6 +493,7 @@ function upsertAuthorizationTeamUsageSummaryRow(database: DatabaseSync, systemAc
       input_tokens = input_tokens + excluded.input_tokens,
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -509,6 +516,7 @@ function subtractAuthorizationTeamUsageSummaryRow(database: DatabaseSync, system
         input_tokens = MAX(0, input_tokens - ?),
         output_tokens = MAX(0, output_tokens - ?),
         cache_read_tokens = MAX(0, cache_read_tokens - ?),
+        cache_read_cost_usd = MAX(0, cache_read_cost_usd - ?),
         total_cost_usd = MAX(0, total_cost_usd - ?),
         duration_ms_sum = MAX(0, duration_ms_sum - ?),
         duration_ms_count = MAX(0, duration_ms_count - ?),
@@ -528,11 +536,11 @@ function upsertAuthorizationUserUsageSummaryRow(database: DatabaseSync, systemAc
   database.prepare(`
     INSERT INTO authorization_user_usage_summary_daily (
       system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id, row_count,
-      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
       duration_ms_sum, duration_ms_count, duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max,
       last_used_at, last_error_at, updated_at
     )
-    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -540,6 +548,7 @@ function upsertAuthorizationUserUsageSummaryRow(database: DatabaseSync, systemAc
       input_tokens = input_tokens + excluded.input_tokens,
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       duration_ms_sum = duration_ms_sum + excluded.duration_ms_sum,
       duration_ms_count = duration_ms_count + excluded.duration_ms_count,
@@ -562,6 +571,7 @@ function subtractAuthorizationUserUsageSummaryRow(database: DatabaseSync, system
         input_tokens = MAX(0, input_tokens - ?),
         output_tokens = MAX(0, output_tokens - ?),
         cache_read_tokens = MAX(0, cache_read_tokens - ?),
+        cache_read_cost_usd = MAX(0, cache_read_cost_usd - ?),
         total_cost_usd = MAX(0, total_cost_usd - ?),
         duration_ms_sum = MAX(0, duration_ms_sum - ?),
         duration_ms_count = MAX(0, duration_ms_count - ?),
@@ -582,7 +592,7 @@ function deleteEmptyAuthorizationTeamUsageSummaryRow(database: DatabaseSync, sys
     DELETE FROM authorization_team_usage_summary_daily
     WHERE system_account_id = ? AND stat_date = ? AND team_filter_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
-      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND total_cost_usd = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0 AND total_cost_usd = 0
   `).run(systemAccountId, statDate, key.teamFilterId ?? '', key.resourceFilterType, key.resourceFilterId)
 }
 
@@ -591,7 +601,7 @@ function deleteEmptyAuthorizationUserUsageSummaryRow(database: DatabaseSync, sys
     DELETE FROM authorization_user_usage_summary_daily
     WHERE system_account_id = ? AND stat_date = ? AND team_filter_id = ? AND grantee_filter_system_account_id = ? AND resource_filter_type = ? AND resource_filter_id = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
-      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND total_cost_usd = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0 AND total_cost_usd = 0
   `).run(systemAccountId, statDate, key.teamFilterId ?? '', key.granteeFilterSystemAccountId ?? '', key.resourceFilterType, key.resourceFilterId)
 }
 
@@ -699,8 +709,8 @@ function subtractUsageModelBuckets(database: DatabaseSync, row: UsageStatsRecord
 function upsertUsageModelBucket(database: DatabaseSync, bucket: TimeBucketDefinition, timeValue: string, systemAccountId: string, providerCode: string, model: string, stats: UsageStatsAccumulator, updatedAt: string): void {
   database.prepare(`
     INSERT INTO ${bucket.tableName} (system_account_id, ${bucket.columnName}, provider_code, model, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(system_account_id, ${bucket.columnName}, provider_code, model) DO UPDATE SET
       request_count = request_count + excluded.request_count,
       success_count = success_count + excluded.success_count,
@@ -708,9 +718,10 @@ function upsertUsageModelBucket(database: DatabaseSync, bucket: TimeBucketDefini
       input_tokens = input_tokens + excluded.input_tokens,
       output_tokens = output_tokens + excluded.output_tokens,
       cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+      cache_read_cost_usd = cache_read_cost_usd + excluded.cache_read_cost_usd,
       total_cost_usd = total_cost_usd + excluded.total_cost_usd,
       updated_at = excluded.updated_at
-  `).run(systemAccountId, timeValue, providerCode, model, stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, updatedAt)
+  `).run(systemAccountId, timeValue, providerCode, model, stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.cacheReadCostUsd, stats.totalCostUsd, updatedAt)
 }
 
 function subtractUsageModelBucket(database: DatabaseSync, bucket: TimeBucketDefinition, timeValue: string, systemAccountId: string, providerCode: string, model: string, stats: UsageStatsAccumulator, updatedAt: string): void {
@@ -722,10 +733,11 @@ function subtractUsageModelBucket(database: DatabaseSync, bucket: TimeBucketDefi
         input_tokens = MAX(0, input_tokens - ?),
         output_tokens = MAX(0, output_tokens - ?),
         cache_read_tokens = MAX(0, cache_read_tokens - ?),
+        cache_read_cost_usd = MAX(0, cache_read_cost_usd - ?),
         total_cost_usd = MAX(0, total_cost_usd - ?),
         updated_at = ?
     WHERE system_account_id = ? AND ${bucket.columnName} = ? AND provider_code = ? AND model = ?
-  `).run(stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.totalCostUsd, updatedAt, systemAccountId, timeValue, providerCode, model)
+  `).run(stats.requestCount, stats.successCount, stats.errorCount, stats.inputTokens, stats.outputTokens, stats.cacheReadTokens, stats.cacheReadCostUsd, stats.totalCostUsd, updatedAt, systemAccountId, timeValue, providerCode, model)
   deleteEmptyUsageModelBucket(database, bucket, timeValue, systemAccountId, providerCode, model)
 }
 
@@ -734,7 +746,7 @@ function deleteEmptyUsageModelBucket(database: DatabaseSync, bucket: TimeBucketD
     DELETE FROM ${bucket.tableName}
     WHERE system_account_id = ? AND ${bucket.columnName} = ? AND provider_code = ? AND model = ?
       AND request_count = 0 AND success_count = 0 AND error_count = 0
-      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND total_cost_usd = 0
+      AND input_tokens = 0 AND output_tokens = 0 AND cache_read_tokens = 0 AND cache_read_cost_usd = 0 AND total_cost_usd = 0
   `).run(systemAccountId, timeValue, providerCode, model)
 }
 

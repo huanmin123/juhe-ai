@@ -1,4 +1,4 @@
-import { computed } from 'vue'
+import { computed, onBeforeUnmount, onDeactivated } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { authState } from './useAuth'
@@ -46,6 +46,7 @@ export function usePageStateCache<T extends object>(
   const debounceMs = options.debounceMs ?? 200
   const fixedPageKey = normalizePageKey(pageKey || route.path)
   let writeTimer: ReturnType<typeof window.setTimeout> | undefined
+  let pendingSnapshot: (() => T) | undefined
 
   const cacheKey = computed(() => {
     return `${pageStateStoragePrefix}${userCacheKey()}:${fixedPageKey}:v${version}`
@@ -81,20 +82,17 @@ export function usePageStateCache<T extends object>(
 
   function scheduleWrite(snapshot: () => T): void {
     if (typeof window === 'undefined') return
+    pendingSnapshot = snapshot
     if (writeTimer) {
       window.clearTimeout(writeTimer)
     }
     writeTimer = window.setTimeout(() => {
-      write(snapshot())
-      writeTimer = undefined
+      flushPendingWrite()
     }, debounceMs)
   }
 
   function clear(): void {
-    if (writeTimer && typeof window !== 'undefined') {
-      window.clearTimeout(writeTimer)
-      writeTimer = undefined
-    }
+    cancelPendingWrite()
     const storage = storageFor(storageType)
     if (!storage) return
     try {
@@ -104,8 +102,33 @@ export function usePageStateCache<T extends object>(
     }
   }
 
+  function cancelPendingWrite(): void {
+    if (writeTimer && typeof window !== 'undefined') {
+      window.clearTimeout(writeTimer)
+      writeTimer = undefined
+    }
+    pendingSnapshot = undefined
+  }
+
+  function flushPendingWrite(): void {
+    if (writeTimer && typeof window !== 'undefined') {
+      window.clearTimeout(writeTimer)
+      writeTimer = undefined
+    }
+    const snapshot = pendingSnapshot
+    pendingSnapshot = undefined
+    if (snapshot) {
+      write(snapshot())
+    }
+  }
+
+  onDeactivated(flushPendingWrite)
+  onBeforeUnmount(flushPendingWrite)
+
   return {
+    cancelPendingWrite,
     clear,
+    flushPendingWrite,
     read,
     scheduleWrite,
     write

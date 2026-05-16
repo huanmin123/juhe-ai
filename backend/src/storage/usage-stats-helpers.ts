@@ -32,6 +32,7 @@ export function emptyAccountUsageSummary(): AccountUsageSummary {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheReadCost: 0,
     totalTokens: 0,
     totalCost: 0
   }
@@ -49,17 +50,21 @@ export function usageSummaryFromAggregate(row: {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost?: number
+  cache_read_cost_usd?: number
   total_cost: number
   last_used_at: string | null
 }): AccountUsageSummary {
   const inputTokens = Number(row.input_tokens ?? 0)
   const outputTokens = Number(row.output_tokens ?? 0)
   const cacheReadTokens = Number(row.cache_read_tokens ?? 0)
+  const cacheReadCost = Number(row.cache_read_cost ?? row.cache_read_cost_usd ?? 0)
   return {
     requestCount: Number(row.request_count ?? 0),
     inputTokens,
     outputTokens,
     cacheReadTokens,
+    cacheReadCost,
     totalTokens: inputTokens + outputTokens,
     totalCost: Number(row.total_cost ?? 0),
     lastUsedAt: row.last_used_at ?? undefined
@@ -77,6 +82,7 @@ export function addUsageSummaries(left: AccountUsageSummary | undefined, right: 
     inputTokens: leftUsage.inputTokens + rightUsage.inputTokens,
     outputTokens: leftUsage.outputTokens + rightUsage.outputTokens,
     cacheReadTokens: leftUsage.cacheReadTokens + rightUsage.cacheReadTokens,
+    cacheReadCost: leftUsage.cacheReadCost + rightUsage.cacheReadCost,
     totalTokens: leftUsage.totalTokens + rightUsage.totalTokens,
     totalCost: leftUsage.totalCost + rightUsage.totalCost,
     lastUsedAt

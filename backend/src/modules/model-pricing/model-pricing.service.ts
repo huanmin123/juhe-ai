@@ -46,7 +46,7 @@ interface RawModelPricing {
   supports_service_tier?: boolean
 }
 
-interface CostInput {
+export interface CostInput {
   providerCode: string
   model?: string
   inputTokens?: number
@@ -119,6 +119,22 @@ export function estimateProviderCostUsd(input: CostInput): number | undefined {
     + outputImageTokens * (outputImagePrice ?? 0)
 
   return Number(cost.toFixed(10))
+}
+
+export function estimateProviderCacheReadCostUsd(input: CostInput): number | undefined {
+  if (!isOpenAIProvider(input.providerCode) || !input.model || input.cacheReadTokens === undefined) {
+    return undefined
+  }
+
+  const pricing = findOpenAIModelPricing(input.model)
+  if (!pricing) return undefined
+
+  const cachedInputPrice = normalizePrice(pricing.cache_read_input_token_cost)
+    ?? normalizePrice(pricing.input_cost_per_token)
+  if (cachedInputPrice === undefined) return undefined
+
+  const cacheReadTokens = Math.max(input.cacheReadTokens ?? 0, 0)
+  return roundCost(cacheReadTokens * cachedInputPrice)
 }
 
 export function buildProviderCostBreakdown(input: CostBreakdownInput): ProviderCostBreakdown | undefined {

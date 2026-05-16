@@ -11,6 +11,8 @@ import {
   buildUpstreamHeaders,
   isEffectiveOpenAIStreamRequest
 } from '../../modules/gateway/openai-gateway-upstream.js'
+import { gatewayJsonBodyLargeWarningBytes } from '../../modules/gateway/openai-gateway-request-body.js'
+import { stopGatewayJsonParseWorker } from '../../modules/gateway/openai-gateway-json-parser.js'
 
 type TestRequest = Request & { rawBody?: Buffer }
 
@@ -30,19 +32,20 @@ const identity = {
   groupId: 'group_a'
 }
 
-function main(): void {
-  testResponsesBodyNormalization()
-  testCompactBodyNormalization()
-  testHeaderAllowlistAndDefaults()
-  testSessionIsolation()
-  testInvalidBodyRejection()
-  testRequiredBodyFieldRejection()
+async function main(): Promise<void> {
+  await testResponsesBodyNormalization()
+  await testCompactBodyNormalization()
+  await testHeaderAllowlistAndDefaults()
+  await testSessionIsolation()
+  await testInvalidBodyRejection()
+  await testLargeBodyCompatibility()
+  await testRequiredBodyFieldRejection()
   testOAuthEffectiveStreamSemantics()
   testApiKeyPassthroughUnchanged()
   console.log('OpenAI OAuth Codex adapter regression passed')
 }
 
-function testResponsesBodyNormalization(): void {
+async function testResponsesBodyNormalization(): Promise<void> {
   const req = createRequest('/v1/responses', {
     model: 'gpt-5.3-codex',
     input: 'hello',
@@ -68,7 +71,7 @@ function testResponsesBodyNormalization(): void {
     'x-forwarded-for': '127.0.0.1',
     'user-agent': 'OpenAI/Node'
   })
-  const parts = buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   const body = parseBody(parts.body)
 
   assert.equal(body.store, false)
@@ -103,7 +106,7 @@ function testResponsesBodyNormalization(): void {
   assert.equal(parts.headers.get('user-agent'), 'codex_cli_rs/0.125.0')
 }
 
-function testCompactBodyNormalization(): void {
+async function testCompactBodyNormalization(): Promise<void> {
   const req = createRequest('/v1/responses/compact', {
     model: 'gpt-5.3-codex',
     input: [{ role: 'system', content: 'developer context' }],
@@ -115,7 +118,7 @@ function testCompactBodyNormalization(): void {
     tools: [{ type: 'web_search_preview' }],
     metadata: { session_id: 'metadata-session' }
   })
-  const parts = buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   const body = parseBody(parts.body)
 
   assert.equal(body.store, undefined)
@@ -128,7 +131,7 @@ function testCompactBodyNormalization(): void {
   assert.equal(parts.headers.get('accept'), 'application/json')
 }
 
-function testHeaderAllowlistAndDefaults(): void {
+async function testHeaderAllowlistAndDefaults(): Promise<void> {
   const req = createRequest('/v1/responses', {
     model: 'gpt-5.3-codex',
     input: [],
@@ -148,7 +151,7 @@ function testHeaderAllowlistAndDefaults(): void {
     cookie: 'secret=value',
     'x-real-ip': '127.0.0.1'
   })
-  const parts = buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
 
   assert.equal(parts.headers.get('authorization'), 'Bearer oauth-access-token')
   assert.equal(parts.headers.get('chatgpt-account-id'), 'chatgpt-account')
@@ -166,7 +169,7 @@ function testHeaderAllowlistAndDefaults(): void {
   assert.equal(parts.headers.get('x-real-ip'), null)
 }
 
-function testSessionIsolation(): void {
+async function testSessionIsolation(): Promise<void> {
   const reqA = createRequest('/v1/responses', {
     model: 'gpt-5.3-codex',
     input: [],
@@ -177,8 +180,8 @@ function testSessionIsolation(): void {
     input: [],
     prompt_cache_key: 'same-cache'
   })
-  const partsA = buildOpenAIOAuthCodexRequestParts(reqA, reqA.headers, account, identity)
-  const partsB = buildOpenAIOAuthCodexRequestParts(reqB, reqB.headers, account, { ...identity, apiKeyId: 'key_b' })
+  const partsA = await buildOpenAIOAuthCodexRequestParts(reqA, reqA.headers, account, identity)
+  const partsB = await buildOpenAIOAuthCodexRequestParts(reqB, reqB.headers, account, { ...identity, apiKeyId: 'key_b' })
   const bodyA = parseBody(partsA.body)
   const bodyB = parseBody(partsB.body)
 
@@ -192,60 +195,88 @@ function testSessionIsolation(): void {
   )
 }
 
-function testInvalidBodyRejection(): void {
-  assert.throws(() => {
+async function testInvalidBodyRejection(): Promise<void> {
+  await assert.rejects(async () => {
     const req = createRequest('/v1/responses', ['not-object'])
-    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   }, OpenAIOAuthCodexAdapterError)
 
-  assert.throws(() => {
+  await assert.rejects(async () => {
     const req = createRequest('/v1/responses', {
       input: [],
       instructions: { text: 'invalid' }
     })
-    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   }, OpenAIOAuthCodexAdapterError)
 
-  assert.throws(() => {
+  await assert.rejects(async () => {
     const req = createRequest('/v1/responses', undefined, { 'content-type': 'application/json' }, '{not-json')
-    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   }, OpenAIOAuthCodexAdapterError)
 }
 
-function testRequiredBodyFieldRejection(): void {
-  assert.throws(() => {
+async function testLargeBodyCompatibility(): Promise<void> {
+  const requestBody = {
+    model: 'gpt-5.3-codex',
+    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes),
+    store: true,
+    stream: false,
+    metadata: { session_id: 'large-body-session' }
+  }
+  const rawBodyText = JSON.stringify(requestBody)
+  assert.ok(Buffer.byteLength(rawBodyText) > gatewayJsonBodyLargeWarningBytes)
+
+  const req = createRequest(
+    '/v1/responses',
+    undefined,
+    { 'content-type': 'application/json' },
+    rawBodyText
+  )
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  const body = parseBody(parts.body)
+  const input = body.input as Array<{ content?: Array<{ text?: string }> }>
+
+  assert.equal(body.store, false)
+  assert.equal(body.stream, true)
+  assert.equal(body.metadata, undefined)
+  assert.equal(input[0]?.content?.[0]?.text, requestBody.input)
+  assert.equal(parts.headers.get('accept'), 'text/event-stream')
+}
+
+async function testRequiredBodyFieldRejection(): Promise<void> {
+  await assert.rejects(async () => {
     const req = createRequest('/v1/responses', {})
-    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   }, OpenAIOAuthCodexAdapterError)
 
-  assert.throws(() => {
+  await assert.rejects(async () => {
     const req = createRequest('/v1/responses', {
       model: '   ',
       input: []
     })
-    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   }, OpenAIOAuthCodexAdapterError)
 
-  assert.throws(() => {
+  await assert.rejects(async () => {
     const req = createRequest('/v1/responses', {
       model: 'gpt-5.3-codex'
     })
-    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   }, OpenAIOAuthCodexAdapterError)
 
-  assert.throws(() => {
+  await assert.rejects(async () => {
     const req = createRequest('/v1/responses', {
       model: 'gpt-5.3-codex',
       input: { text: 'invalid' }
     })
-    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   }, OpenAIOAuthCodexAdapterError)
 
-  assert.doesNotThrow(() => {
+  await assert.doesNotReject(async () => {
     const req = createRequest('/v1/responses/compact', {
       model: 'gpt-5.3-codex'
     })
-    buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   })
 }
 
@@ -322,4 +353,8 @@ function parseBody(body: string | undefined): Record<string, unknown> {
   return JSON.parse(body as string) as Record<string, unknown>
 }
 
-main()
+try {
+  await main()
+} finally {
+  await stopGatewayJsonParseWorker()
+}

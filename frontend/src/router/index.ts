@@ -8,6 +8,7 @@ declare module 'vue-router' {
     title: string
     description: string
     keepAlive?: boolean
+    heavy?: boolean
     menuGroup?: string
     menuGroupTitle?: string
     public?: boolean
@@ -23,7 +24,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '统计概览',
       description: '查看自己的请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和成本概览。',
-      viewScope: 'self'
+      viewScope: 'self',
+      heavy: true
     }
   },
   {
@@ -32,7 +34,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '我的 AI 账户',
       description: '创建和维护自己的 OpenAI OAuth / API Key 账户。',
-      viewScope: 'self'
+      viewScope: 'self',
+      heavy: true
     }
   },
   {
@@ -50,7 +53,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '我的 API Key',
       description: '管理自己的 API Key，绑定自有或授权给自己的分组。',
-      viewScope: 'self'
+      viewScope: 'self',
+      heavy: true
     }
   },
   {
@@ -61,7 +65,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '管理自己授权出去或授权给自己的账户、分组和团队授权，不在这里展示消耗统计。',
       menuGroup: 'my-authorization',
       menuGroupTitle: '我的授权',
-      viewScope: 'self'
+      viewScope: 'self',
+      heavy: true
     }
   },
   {
@@ -72,7 +77,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '按授权团队查看自己授权出去资源的日期范围团队消耗，并可跳转到成员用户消耗。',
       menuGroup: 'my-authorization',
       menuGroupTitle: '我的授权',
-      viewScope: 'self'
+      viewScope: 'self',
+      heavy: true
     }
   },
   {
@@ -83,7 +89,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '按被授权用户查看自己授权出去资源的日期范围消耗，包含授权团队里的成员用户。',
       menuGroup: 'my-authorization',
       menuGroupTitle: '我的授权',
-      viewScope: 'self'
+      viewScope: 'self',
+      heavy: true
     }
   },
   {
@@ -103,7 +110,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '我的用量',
       description: '查看你可使用账户的每日消耗趋势，仅统计你自己发起的调用。',
-      viewScope: 'self'
+      viewScope: 'self',
+      heavy: true
     }
   },
   {
@@ -113,7 +121,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: 'AI性能监控',
       description: '追踪自有 AI 账户的小时级性能趋势，按账户整体统计，含授权出去后的使用。',
       viewScope: 'self',
-      keepAlive: false
+      heavy: true
     }
   },
   {
@@ -122,7 +130,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '我的使用记录',
       description: '查看自己的网关请求、命中账户、Token 用量、成本和错误状态。',
-      viewScope: 'self'
+      viewScope: 'self',
+      heavy: true
     }
   },
   {
@@ -131,7 +140,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '我的操作日志',
       description: '查看自己发起、管理员代操作和影响到自己的业务变更记录。',
-      viewScope: 'self'
+      viewScope: 'self',
+      heavy: true
     }
   },
   {
@@ -141,7 +151,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '统计概览',
       description: '按监控窗口查看请求数、失败趋势、Token 消耗、平均总耗时、模型分布、错误 Top 10 和系统性能。',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -177,7 +188,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -201,7 +213,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -213,7 +226,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -225,7 +239,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'authorization',
       menuGroupTitle: '统一授权管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -249,7 +264,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -261,7 +277,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -274,7 +291,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: ['admin'],
-      keepAlive: false
+      heavy: true
     }
   },
   {
@@ -286,7 +303,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -298,7 +316,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -310,7 +329,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -322,7 +342,8 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
-      roles: ['admin']
+      roles: ['admin'],
+      heavy: true
     }
   },
   {
@@ -345,7 +366,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       description: '查看业务库和记录库的表大小、行数、文件空闲空间和近期增长。',
       viewScope: 'admin',
       roles: ['admin'],
-      keepAlive: false
+      heavy: true
     }
   },
   {

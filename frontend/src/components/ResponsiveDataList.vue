@@ -1,30 +1,43 @@
 ﻿<template>
   <div ref="listRootRef" class="responsive-data-list">
-    <a-table
+    <DeferredRender
       v-if="!isMobile"
-      :class="tableClassNames"
-      :style="tableStyleVars"
-      :size="size"
-      :columns="tableColumns"
-      :data-source="dataSource"
-      :row-key="rowKey"
-      :loading="loading"
-      :pagination="tablePagination"
-      :scroll="tableScroll"
-      :table-layout="tableLayout"
-      :row-selection="rowSelection"
-      :expandable="expandable"
-      @change="handleTableChange"
+      :active="pageActive"
+      :deferred="deferTableMount"
+      :delay-frames="tableMountDelayFrames"
+      :min-height="tablePlaceholderMinHeight"
+      reset-on-deactivate
     >
-      <template #emptyText>
-        <slot name="emptyText">
-          <a-empty class="page-empty-card" description="暂无数据" />
-        </slot>
+      <a-table
+        :class="tableClassNames"
+        :style="tableStyleVars"
+        :size="size"
+        :columns="tableColumns"
+        :data-source="dataSource"
+        :row-key="rowKey"
+        :loading="loading"
+        :pagination="tablePagination"
+        :scroll="tableScroll"
+        :table-layout="tableLayout"
+        :row-selection="rowSelection"
+        :expandable="expandable"
+        @change="handleTableChange"
+      >
+        <template #emptyText>
+          <slot name="emptyText">
+            <a-empty class="page-empty-card" description="暂无数据" />
+          </slot>
+        </template>
+        <template #bodyCell="slotProps">
+          <slot name="bodyCell" v-bind="slotProps" />
+        </template>
+      </a-table>
+      <template #placeholder>
+        <div class="responsive-data-list-table-placeholder">
+          <a-spin v-if="loading" size="small" />
+        </div>
       </template>
-      <template #bodyCell="slotProps">
-        <slot name="bodyCell" v-bind="slotProps" />
-      </template>
-    </a-table>
+    </DeferredRender>
 
     <div
       v-else
@@ -58,6 +71,7 @@
 
 <script setup lang="ts" generic="T extends Record<string, any>">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
+import DeferredRender from './DeferredRender.vue'
 import { normalizeResponsiveTableSorter, type ResponsiveDataListSort } from './responsiveDataListSorting'
 
 type RowKey = string | ((record: T) => string | number)
@@ -86,6 +100,8 @@ const props = withDefaults(defineProps<{
   size?: 'small' | 'middle' | 'large'
   lockBodyScroll?: boolean
   adaptiveColumnWidth?: boolean
+  deferTableMount?: boolean
+  tableMountDelayFrames?: number
 }>(), {
   rowKey: 'id',
   loading: false,
@@ -102,7 +118,9 @@ const props = withDefaults(defineProps<{
   loadingMore: false,
   refreshing: false,
   pullRefreshEnabled: false,
-  adaptiveColumnWidth: true
+  adaptiveColumnWidth: true,
+  deferTableMount: true,
+  tableMountDelayFrames: 1
 })
 
 const emit = defineEmits<{
@@ -124,6 +142,7 @@ const isMobile = ref(initialMobileState())
 const listRootRef = ref<HTMLElement>()
 const listHeight = ref(0)
 const mobileListRef = ref<HTMLElement>()
+const pageActive = ref(false)
 const hasOverlayScrollbarPlaceholder = ref(false)
 const scrollbarPlaceholderWidth = ref(0)
 const pullDistance = ref(0)
@@ -139,7 +158,9 @@ let listResizeObserver: ResizeObserver | undefined
 let tableMutationObserver: MutationObserver | undefined
 let tableScrollbarPlaceholderFrame = 0
 let tableScrollbarPlaceholderTimers: number[] = []
+let tableScrollbarPlaceholderUpdateQueued = false
 let bodyScrollLocked = false
+let viewportListenersAttached = false
 
 const mobileDataSource = computed(() => props.mobileDataSource ?? props.dataSource)
 const tableColumns = computed(() => normalizeTableColumns(props.columns))
@@ -181,6 +202,10 @@ const tableScroll = computed(() => {
 })
 
 const tableLayout = computed(() => props.adaptiveColumnWidth ? 'auto' : undefined)
+const tablePlaceholderMinHeight = computed(() => {
+  const height = tableScrollY.value
+  return typeof height === 'number' ? height + tableHeaderHeight : 220
+})
 
 const tableScrollY = computed(() => {
   if (listHeight.value > 0) {
@@ -379,13 +404,28 @@ function unlockBodyScroll() {
 
 function queueTableScrollbarPlaceholderUpdate() {
   if (typeof window === 'undefined') return
-  window.cancelAnimationFrame(tableScrollbarPlaceholderFrame)
-  tableScrollbarPlaceholderTimers.forEach((timer) => window.clearTimeout(timer))
-  tableScrollbarPlaceholderTimers = []
+  if (tableScrollbarPlaceholderUpdateQueued) return
+  tableScrollbarPlaceholderUpdateQueued = true
   tableScrollbarPlaceholderFrame = window.requestAnimationFrame(() => {
+    tableScrollbarPlaceholderFrame = 0
     updateTableScrollbarPlaceholderState()
   })
-  tableScrollbarPlaceholderTimers = [80, 240, 600].map((delay) => window.setTimeout(updateTableScrollbarPlaceholderState, delay))
+  tableScrollbarPlaceholderTimers = [80, 240, 600].map((delay) => window.setTimeout(() => {
+    updateTableScrollbarPlaceholderState()
+    if (delay === 600) {
+      tableScrollbarPlaceholderUpdateQueued = false
+      tableScrollbarPlaceholderTimers = []
+    }
+  }, delay))
+}
+
+function cancelTableScrollbarPlaceholderUpdate() {
+  if (typeof window === 'undefined') return
+  window.cancelAnimationFrame(tableScrollbarPlaceholderFrame)
+  tableScrollbarPlaceholderFrame = 0
+  tableScrollbarPlaceholderTimers.forEach((timer) => window.clearTimeout(timer))
+  tableScrollbarPlaceholderTimers = []
+  tableScrollbarPlaceholderUpdateQueued = false
 }
 
 function updateTableScrollbarPlaceholderState() {
@@ -425,6 +465,36 @@ function observeTableMutations() {
     attributes: true,
     attributeFilter: ['class', 'style']
   })
+}
+
+function observeListResize() {
+  if (listResizeObserver || typeof ResizeObserver === 'undefined' || !listRootRef.value) return
+  listResizeObserver = new ResizeObserver(() => {
+    updateListHeight()
+    queueTableScrollbarPlaceholderUpdate()
+  })
+  listResizeObserver.observe(listRootRef.value)
+}
+
+function disconnectListResize() {
+  listResizeObserver?.disconnect()
+  listResizeObserver = undefined
+}
+
+function addViewportListeners() {
+  if (viewportListenersAttached || typeof window === 'undefined') return
+  viewportListenersAttached = true
+  window.addEventListener('resize', updateViewportState, { passive: true })
+  window.addEventListener('resize', updateListHeight, { passive: true })
+  window.addEventListener('resize', queueTableScrollbarPlaceholderUpdate, { passive: true })
+}
+
+function removeViewportListeners() {
+  if (!viewportListenersAttached || typeof window === 'undefined') return
+  viewportListenersAttached = false
+  window.removeEventListener('resize', updateViewportState)
+  window.removeEventListener('resize', updateListHeight)
+  window.removeEventListener('resize', queueTableScrollbarPlaceholderUpdate)
 }
 
 function handleMobileScroll(event: Event) {
@@ -487,25 +557,22 @@ watch([
 }, { flush: 'post' })
 
 onMounted(() => {
+  pageActive.value = true
   updateViewportState()
   updateListHeight()
   nextTick(queueTableScrollbarPlaceholderUpdate)
   lockBodyScroll()
-  if (typeof ResizeObserver !== 'undefined' && listRootRef.value) {
-    listResizeObserver = new ResizeObserver(() => {
-      updateListHeight()
-      queueTableScrollbarPlaceholderUpdate()
-    })
-    listResizeObserver.observe(listRootRef.value)
-  }
+  observeListResize()
   observeTableMutations()
-  window.addEventListener('resize', updateViewportState, { passive: true })
-  window.addEventListener('resize', updateListHeight, { passive: true })
-  window.addEventListener('resize', queueTableScrollbarPlaceholderUpdate, { passive: true })
+  addViewportListeners()
 })
 
 onActivated(() => {
+  pageActive.value = true
   lockBodyScroll()
+  observeListResize()
+  observeTableMutations()
+  addViewportListeners()
   nextTick(() => {
     updateViewportState()
     updateListHeight()
@@ -514,20 +581,22 @@ onActivated(() => {
 })
 
 onDeactivated(() => {
+  pageActive.value = false
   unlockBodyScroll()
+  tableMutationObserver?.disconnect()
+  tableMutationObserver = undefined
+  disconnectListResize()
+  removeViewportListeners()
+  cancelTableScrollbarPlaceholderUpdate()
 })
 
 onBeforeUnmount(() => {
+  pageActive.value = false
   unlockBodyScroll()
-  if (typeof window !== 'undefined') {
-    window.cancelAnimationFrame(tableScrollbarPlaceholderFrame)
-    tableScrollbarPlaceholderTimers.forEach((timer) => window.clearTimeout(timer))
-  }
-  listResizeObserver?.disconnect()
+  cancelTableScrollbarPlaceholderUpdate()
+  disconnectListResize()
   tableMutationObserver?.disconnect()
-  window.removeEventListener('resize', updateViewportState)
-  window.removeEventListener('resize', updateListHeight)
-  window.removeEventListener('resize', queueTableScrollbarPlaceholderUpdate)
+  removeViewportListeners()
 })
 </script>
 
@@ -660,5 +729,12 @@ onBeforeUnmount(() => {
   display: flex;
   justify-content: center;
   padding: 36px 0;
+}
+
+.responsive-data-list-table-placeholder {
+  display: flex;
+  min-height: 220px;
+  align-items: center;
+  justify-content: center;
 }
 </style>

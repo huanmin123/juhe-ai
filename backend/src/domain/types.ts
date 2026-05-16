@@ -154,6 +154,7 @@ export interface AccountUsageSummary {
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
+  cacheReadCost: number
   totalTokens: number
   totalCost: number
   lastUsedAt?: string

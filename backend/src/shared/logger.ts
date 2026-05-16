@@ -1,12 +1,13 @@
 import { randomUUID } from 'node:crypto'
 import {
-  appendFileSync,
+  createWriteStream,
   existsSync,
   mkdirSync,
   readdirSync,
   renameSync,
   statSync,
-  unlinkSync
+  unlinkSync,
+  type WriteStream
 } from 'node:fs'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
@@ -26,6 +27,7 @@ interface RotatingFileLogStreamOptions {
 
 class RotatingFileLogStream extends Writable {
   private readonly currentPath: string
+  private stream: WriteStream
   private currentSize = 0
   private readonly protectedCurrentFileNames = new Set([
     'juhe-ai.log',
@@ -38,6 +40,7 @@ class RotatingFileLogStream extends Writable {
     mkdirSync(options.directory, { recursive: true })
     this.currentPath = join(options.directory, options.fileName)
     this.currentSize = this.readCurrentSize()
+    this.stream = this.openStream()
     this.cleanup()
   }
 
@@ -64,19 +67,53 @@ class RotatingFileLogStream extends Writable {
     try {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk, encoding)
       if (this.currentSize > 0 && this.currentSize + buffer.byteLength > this.options.maxFileBytes) {
-        this.rotate()
+        this.rotate((error) => {
+          if (error) {
+            callback(error)
+            return
+          }
+          this.writeBuffer(buffer, callback)
+        })
+        return
       }
-      appendFileSync(this.currentPath, buffer)
-      this.currentSize += buffer.byteLength
-      callback()
+      this.writeBuffer(buffer, callback)
     } catch (error) {
       callback(error instanceof Error ? error : new Error(String(error)))
     }
   }
 
-  private rotate(): void {
+  _final(callback: (error?: Error | null) => void): void {
+    this.closeStream(this.stream, callback)
+  }
+
+  _destroy(error: Error | null, callback: (error?: Error | null) => void): void {
+    this.stream.destroy()
+    callback(error)
+  }
+
+  private writeBuffer(buffer: Buffer, callback: (error?: Error | null) => void): void {
+    this.currentSize += buffer.byteLength
+    this.stream.write(buffer, (error?: Error | null) => {
+      callback(error ?? undefined)
+    })
+  }
+
+  private rotate(callback: (error?: Error | null) => void): void {
+    this.closeStream(this.stream, (closeError) => {
+      if (closeError) {
+        callback(closeError)
+        return
+      }
+
+      this.rotateClosedFile(callback)
+    })
+  }
+
+  private rotateClosedFile(callback: (error?: Error | null) => void): void {
     if (!existsSync(this.currentPath)) {
       this.currentSize = 0
+      this.stream = this.openStream()
+      callback()
       return
     }
 
@@ -89,6 +126,32 @@ class RotatingFileLogStream extends Writable {
     }
     this.currentSize = 0
     this.cleanup()
+    this.stream = this.openStream()
+    callback()
+  }
+
+  private openStream(): WriteStream {
+    const stream = createWriteStream(this.currentPath, { flags: 'a' })
+    stream.on('error', () => {
+    })
+    return stream
+  }
+
+  private closeStream(stream: WriteStream, callback: (error?: Error | null) => void): void {
+    let settled = false
+    const settle = (error?: Error | null) => {
+      if (settled) return
+      settled = true
+      stream.off('error', onError)
+      stream.off('close', onClose)
+      callback(error)
+    }
+    const onError = (error: Error) => settle(error)
+    const onClose = () => settle()
+
+    stream.once('error', onError)
+    stream.once('close', onClose)
+    stream.end()
   }
 
   private readCurrentSize(): number {

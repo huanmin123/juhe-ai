@@ -408,6 +408,7 @@ interface UsageWindowAggregate {
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
+  cacheReadCostUsd: number
   totalCostUsd: number
   durationMsSum: number
   durationMsCount: number
@@ -426,6 +427,7 @@ interface UsageStatsDailyWindowRow {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost_usd: number
   total_cost_usd: number
   duration_ms_sum: number
   duration_ms_count: number
@@ -443,6 +445,7 @@ interface UsageOverviewHourlyWindowRow {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost_usd: number
   total_cost_usd: number
   duration_ms_sum: number
   duration_ms_count: number
@@ -456,6 +459,7 @@ interface UsageModelWindowRow {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost_usd: number
   total_cost_usd: number
 }
 
@@ -476,6 +480,7 @@ interface UsageModelWindowAggregate {
   inputTokens: number
   outputTokens: number
   cacheReadTokens: number
+  cacheReadCostUsd: number
   totalCostUsd: number
 }
 
@@ -563,7 +568,7 @@ function refreshUsageOverviewSummaryWindows(
 ): void {
   const rows = database.prepare(`
     SELECT stat_date, request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-      total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at
     FROM usage_stats_daily
     WHERE system_account_id = ?
@@ -577,10 +582,10 @@ function refreshUsageOverviewSummaryWindows(
   const insert = database.prepare(`
     INSERT INTO usage_overview_summary_windows (
       system_account_id, window_key, start_date, end_date, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
       duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count,
       last_used_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const range of ranges) {
     const aggregate = aggregateUsageRowsForRange(rowsByDate, range)
@@ -595,6 +600,7 @@ function refreshUsageOverviewSummaryWindows(
       aggregate.inputTokens,
       aggregate.outputTokens,
       aggregate.cacheReadTokens,
+      aggregate.cacheReadCostUsd,
       aggregate.totalCostUsd,
       aggregate.durationMsSum,
       aggregate.durationMsCount,
@@ -616,7 +622,7 @@ function refreshUsageOverviewTrendWindows(
 ): void {
   const rows = database.prepare(`
     SELECT stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-      total_cost_usd, duration_ms_sum, duration_ms_count
+      cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count
     FROM usage_stats_hourly
     WHERE system_account_id = ?
       AND scope_type = 'system_account'
@@ -629,9 +635,9 @@ function refreshUsageOverviewTrendWindows(
   const insert = database.prepare(`
     INSERT INTO usage_overview_trend_windows (
       system_account_id, window_key, start_date, end_date, bucket_key, request_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd,
       duration_ms_sum, duration_ms_count, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const range of ranges) {
     const buckets = aggregateUsageTrendBuckets(rowsByDate, range)
@@ -647,6 +653,7 @@ function refreshUsageOverviewTrendWindows(
         bucket.inputTokens,
         bucket.outputTokens,
         bucket.cacheReadTokens,
+        bucket.cacheReadCostUsd,
         bucket.totalCostUsd,
         bucket.durationMsSum,
         bucket.durationMsCount,
@@ -665,7 +672,7 @@ function refreshUsageModelRankWindows(
   updatedAt: string
 ): void {
   const rows = database.prepare(`
-    SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd
+    SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd
     FROM usage_model_daily
     WHERE system_account_id = ?
       AND stat_date >= ?
@@ -676,8 +683,8 @@ function refreshUsageModelRankWindows(
   const insert = database.prepare(`
     INSERT INTO usage_model_rank_windows (
       system_account_id, window_key, start_date, end_date, rank, provider_code, model,
-      request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const range of ranges) {
     const rankedRows = aggregateUsageModelRows(rowsByDate, range)
@@ -694,6 +701,7 @@ function refreshUsageModelRankWindows(
         row.inputTokens,
         row.outputTokens,
         row.cacheReadTokens,
+        row.cacheReadCostUsd,
         row.totalCostUsd,
         updatedAt
       )
@@ -920,12 +928,14 @@ function aggregateUsageModelRows(rowsByDate: Map<string, UsageModelWindowRow[]>,
       inputTokens: 0,
       outputTokens: 0,
       cacheReadTokens: 0,
+      cacheReadCostUsd: 0,
       totalCostUsd: 0
     }
     bucket.requestCount += Number(row.request_count ?? 0)
     bucket.inputTokens += Number(row.input_tokens ?? 0)
     bucket.outputTokens += Number(row.output_tokens ?? 0)
     bucket.cacheReadTokens += Number(row.cache_read_tokens ?? 0)
+    bucket.cacheReadCostUsd += Number(row.cache_read_cost_usd ?? 0)
     bucket.totalCostUsd += Number(row.total_cost_usd ?? 0)
     buckets.set(key, bucket)
   }
@@ -971,6 +981,7 @@ function emptyUsageWindowAggregate(): UsageWindowAggregate {
     inputTokens: 0,
     outputTokens: 0,
     cacheReadTokens: 0,
+    cacheReadCostUsd: 0,
     totalCostUsd: 0,
     durationMsSum: 0,
     durationMsCount: 0,
@@ -988,6 +999,7 @@ function addUsageWindowAggregate(target: UsageWindowAggregate, row: {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost_usd: number
   total_cost_usd: number
   duration_ms_sum: number
   duration_ms_count: number
@@ -1003,6 +1015,7 @@ function addUsageWindowAggregate(target: UsageWindowAggregate, row: {
   target.inputTokens += Number(row.input_tokens ?? 0)
   target.outputTokens += Number(row.output_tokens ?? 0)
   target.cacheReadTokens += Number(row.cache_read_tokens ?? 0)
+  target.cacheReadCostUsd += Number(row.cache_read_cost_usd ?? 0)
   target.totalCostUsd += Number(row.total_cost_usd ?? 0)
   target.durationMsSum += Number(row.duration_ms_sum ?? 0)
   target.durationMsCount += Number(row.duration_ms_count ?? 0)
@@ -1083,7 +1096,7 @@ function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt
   const insert = database.prepare(`
     INSERT INTO usage_scope_range_windows (
       system_account_id, scope_type, scope_id, start_date, end_date,
-      request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, last_used_at, updated_at
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
     )
     SELECT
       system_account_id,
@@ -1095,6 +1108,7 @@ function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt
       COALESCE(SUM(input_tokens), 0),
       COALESCE(SUM(output_tokens), 0),
       COALESCE(SUM(cache_read_tokens), 0),
+      COALESCE(SUM(cache_read_cost_usd), 0),
       COALESCE(SUM(total_cost_usd), 0),
       MAX(last_used_at),
       ?
@@ -1106,6 +1120,7 @@ function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt
       OR COALESCE(SUM(input_tokens), 0) > 0
       OR COALESCE(SUM(output_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_tokens), 0) > 0
+      OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
       OR COALESCE(SUM(total_cost_usd), 0) > 0
   `)
   for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
@@ -1129,7 +1144,7 @@ function refreshAuthorizationUsageRangeWindowSnapshots(database: DatabaseSync, u
   const insertTeamRange = database.prepare(`
     INSERT INTO authorization_team_usage_range_windows (
       system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
-      request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, last_used_at, updated_at
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
     )
     SELECT
       system_account_id,
@@ -1142,6 +1157,7 @@ function refreshAuthorizationUsageRangeWindowSnapshots(database: DatabaseSync, u
       COALESCE(SUM(input_tokens), 0),
       COALESCE(SUM(output_tokens), 0),
       COALESCE(SUM(cache_read_tokens), 0),
+      COALESCE(SUM(cache_read_cost_usd), 0),
       COALESCE(SUM(total_cost_usd), 0),
       MAX(last_used_at),
       ?
@@ -1153,12 +1169,13 @@ function refreshAuthorizationUsageRangeWindowSnapshots(database: DatabaseSync, u
       OR COALESCE(SUM(input_tokens), 0) > 0
       OR COALESCE(SUM(output_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_tokens), 0) > 0
+      OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
       OR COALESCE(SUM(total_cost_usd), 0) > 0
   `)
   const insertUserRange = database.prepare(`
     INSERT INTO authorization_user_usage_range_windows (
       system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
-      request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, last_used_at, updated_at
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
     )
     SELECT
       system_account_id,
@@ -1172,6 +1189,7 @@ function refreshAuthorizationUsageRangeWindowSnapshots(database: DatabaseSync, u
       COALESCE(SUM(input_tokens), 0),
       COALESCE(SUM(output_tokens), 0),
       COALESCE(SUM(cache_read_tokens), 0),
+      COALESCE(SUM(cache_read_cost_usd), 0),
       COALESCE(SUM(total_cost_usd), 0),
       MAX(last_used_at),
       ?
@@ -1183,6 +1201,7 @@ function refreshAuthorizationUsageRangeWindowSnapshots(database: DatabaseSync, u
       OR COALESCE(SUM(input_tokens), 0) > 0
       OR COALESCE(SUM(output_tokens), 0) > 0
       OR COALESCE(SUM(cache_read_tokens), 0) > 0
+      OR COALESCE(SUM(cache_read_cost_usd), 0) > 0
       OR COALESCE(SUM(total_cost_usd), 0) > 0
   `)
   for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
@@ -1210,7 +1229,7 @@ export interface UsageStatsConsistencyIssue {
   scopeType: string
   scopeId: string
   statDate: string
-  metric: 'request_count' | 'success_count' | 'error_count' | 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'total_cost_usd'
+  metric: 'request_count' | 'success_count' | 'error_count' | 'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_read_cost_usd' | 'total_cost_usd'
   dailyValue: number
   hourlyValue: number
 }
@@ -1219,7 +1238,7 @@ export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsiste
   const database = getRecordDatabase()
   const samples = database.prepare(`
     SELECT system_account_id, scope_type, scope_id, stat_date,
-      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd
+      request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd
     FROM usage_stats_daily
     WHERE stat_date < ?
     ORDER BY updated_at DESC, stat_date DESC, system_account_id ASC, scope_type ASC, scope_id ASC
@@ -1236,6 +1255,7 @@ export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsiste
         COALESCE(SUM(input_tokens), 0) AS input_tokens,
         COALESCE(SUM(output_tokens), 0) AS output_tokens,
         COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+        COALESCE(SUM(cache_read_cost_usd), 0) AS cache_read_cost_usd,
         COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd
       FROM usage_stats_hourly
       WHERE system_account_id = ?
@@ -1311,7 +1331,7 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
 
   const summaryRow = database.prepare(`
     SELECT ? AS account_id, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd AS total_cost,
+      input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd AS cache_read_cost, cache_read_cost_usd, total_cost_usd AS total_cost,
       duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
     FROM usage_overview_summary_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
@@ -1319,19 +1339,19 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
 
   const hourlyRows = database.prepare(`
     SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
-      total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
+      cache_read_cost_usd, total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
     FROM usage_overview_trend_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
-  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
+  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>
 
   const modelRows = database.prepare(`
     SELECT provider_code, model,
-      request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd AS total_cost
+      request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd AS total_cost
     FROM usage_model_rank_windows
     WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY rank ASC
-  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
+  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>
 
   const errorRows = database.prepare(`
     SELECT provider_code, error_code, status_code, error_message, error_count
@@ -1928,7 +1948,7 @@ function maxFromCountedMetric(value: unknown, count: number): number | undefined
 }
 
 function mapUsageTrendRows(
-  rows: Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>,
+  rows: Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; cache_read_cost_usd: number; total_cost: number }>,
 ): UsageStatsOverview['hourlyTrend'] {
   return rows.map((row) => ({
     statHour: row.stat_hour,
@@ -2054,6 +2074,7 @@ interface ConsistencyStatsRow {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost_usd: number
   total_cost_usd: number
 }
 
@@ -2069,17 +2090,18 @@ function consistencyStatsRow(row: Record<string, unknown>): ConsistencyStatsRow 
     input_tokens: Number(row.input_tokens ?? 0),
     output_tokens: Number(row.output_tokens ?? 0),
     cache_read_tokens: Number(row.cache_read_tokens ?? 0),
+    cache_read_cost_usd: Number(row.cache_read_cost_usd ?? 0),
     total_cost_usd: Number(row.total_cost_usd ?? 0)
   }
 }
 
 function compareConsistencyRows(daily: ConsistencyStatsRow, hourly: ConsistencyStatsRow): UsageStatsConsistencyIssue[] {
-  const metrics: UsageStatsConsistencyIssue['metric'][] = ['request_count', 'success_count', 'error_count', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'total_cost_usd']
+  const metrics: UsageStatsConsistencyIssue['metric'][] = ['request_count', 'success_count', 'error_count', 'input_tokens', 'output_tokens', 'cache_read_tokens', 'cache_read_cost_usd', 'total_cost_usd']
   const issues: UsageStatsConsistencyIssue[] = []
   for (const metric of metrics) {
     const dailyValue = daily[metric]
     const hourlyValue = hourly[metric]
-    const tolerance = metric === 'total_cost_usd' ? 0.000001 : 0
+    const tolerance = metric === 'total_cost_usd' || metric === 'cache_read_cost_usd' ? 0.000001 : 0
     if (Math.abs(dailyValue - hourlyValue) <= tolerance) continue
     issues.push({
       systemAccountId: daily.systemAccountId,

@@ -25,6 +25,7 @@ type UsageStatsScopeAggregateRow = {
   input_tokens: number
   output_tokens: number
   cache_read_tokens: number
+  cache_read_cost: number
   total_cost: number
   last_used_at: string | null
   system_account_id: string
@@ -72,6 +73,7 @@ export function loadUsageDailySeriesForScopeRequests(scopes: UsageStatsScopeRequ
           input_tokens,
           output_tokens,
           cache_read_tokens,
+          cache_read_cost_usd AS cache_read_cost,
           total_cost_usd AS total_cost,
           last_used_at
         FROM usage_stats_daily
@@ -92,6 +94,7 @@ export function loadUsageDailySeriesForScopeRequests(scopes: UsageStatsScopeRequ
           input_tokens,
           output_tokens,
           cache_read_tokens,
+          cache_read_cost_usd AS cache_read_cost,
           total_cost_usd AS total_cost,
           last_used_at
         FROM usage_scope_range_windows
@@ -132,6 +135,7 @@ function emptyUsageDailySeries(dateKeys: string[]): UsageStatsDailySeries {
       input_tokens: 0,
       output_tokens: 0,
       cache_read_tokens: 0,
+      cache_read_cost: 0,
       total_cost: 0,
       last_used_at: null
     }),

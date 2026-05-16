@@ -4,6 +4,7 @@ import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
 import {
   axisNumberLabel,
   bytesPerSecondToMbps,
+  formatCompactInteger,
   formatCost,
   formatDuration,
   formatDurationSeconds,
@@ -302,7 +303,7 @@ function modelTooltip(params: unknown) {
     `<strong>${point?.name ?? ''}</strong>`,
     `供应商：${data.providerCode ?? '-'}`,
     `请求数：${formatInteger(numberFromTooltip(data.requestCount))}`,
-    `Token 消耗：${formatInteger(numberFromTooltip(data.totalTokens))}`,
+    `Token 消耗：${formatCompactInteger(numberFromTooltip(data.totalTokens))}`,
     `成本：${formatCost(numberFromTooltip(data.totalCost))}`
   ].join('<br/>')
 }

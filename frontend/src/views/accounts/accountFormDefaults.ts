@@ -24,7 +24,6 @@ export function defaultAccountForm(
     status: 'active',
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
-    fallbackEnabled: false,
     proxyProfileId: undefined,
     notes: ''
   }

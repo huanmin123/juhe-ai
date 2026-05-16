@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { cpus, freemem, platform, totalmem } from 'node:os'
+import { monitorEventLoopDelay } from 'node:perf_hooks'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
@@ -33,9 +34,11 @@ let started = false
 let usageStatsAggregationRunning = false
 let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
-let lastMetricsExpectedAt = Date.now()
 const dailyIntervalMs = 24 * 60 * 60 * 1000
 const scheduler = new WorkerScheduler()
+const eventLoopDelayHistogram = monitorEventLoopDelay({ resolution: 10 })
+
+eventLoopDelayHistogram.enable()
 
 export function startBackgroundJobs(): void {
   if (started) return
@@ -60,14 +63,15 @@ async function runUsageStatsAggregation(): Promise<void> {
   if (usageStatsAggregationRunning) return
   usageStatsAggregationRunning = true
   try {
-    flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+    flushUsageRecordQueue({ drain: true, retryOnFailure: false, maxBatches: 5 })
+    await yieldToEventLoop()
     const batchSize = settingsNumber('statsAggregationBatchSize', 2000, 100, 10000)
     const maxBatches = settingsNumber('statsAggregationMaxBatchesPerRun', 5, 1, 100)
     for (let index = 0; index < maxBatches; index += 1) {
       const processed = aggregateUsageStatsBatch(batchSize)
       if (processed < batchSize) break
+      await yieldToEventLoop()
     }
-    refreshUsageRankSnapshots()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
   } finally {
@@ -95,9 +99,6 @@ async function runResourceAuthorizationExpirySweep(): Promise<void> {
 }
 
 async function runSystemMetricsSample(): Promise<void> {
-  const now = Date.now()
-  const lagMs = Math.max(0, now - lastMetricsExpectedAt)
-  lastMetricsExpectedAt = now + settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000
   const memoryMetrics = await currentMemoryMetrics()
   const memoryUsage = process.memoryUsage()
   const networkMetrics = await currentNetworkMetrics()
@@ -110,7 +111,7 @@ async function runSystemMetricsSample(): Promise<void> {
       processRssBytes: memoryUsage.rss,
       processHeapUsedBytes: memoryUsage.heapUsed,
       processHeapTotalBytes: memoryUsage.heapTotal,
-      eventLoopLagMs: lagMs,
+      eventLoopLagMs: currentEventLoopDelayMs(),
       ...networkMetrics,
       dbFileBytes: databaseFileBytes(),
       statsLagSeconds: latestUsageStatsLagSeconds()
@@ -223,7 +224,8 @@ async function runProxyLatencyRefresh(): Promise<void> {
 
 async function runAccountQualityRefresh(): Promise<void> {
   try {
-    flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+    flushUsageRecordQueue({ drain: true, retryOnFailure: false, maxBatches: 5 })
+    await yieldToEventLoop()
     const windowMinutes = settingsNumber('accountQualityWindowMinutes', 10, 1, 60)
     const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)
     if (realtimeResult.refreshed > 0 || realtimeResult.removed > 0) {
@@ -314,6 +316,23 @@ function databaseFileBytes(): number | undefined {
   } catch {
     return undefined
   }
+}
+
+function currentEventLoopDelayMs(): number | undefined {
+  const minNs = eventLoopDelayHistogram.min
+  const maxNs = eventLoopDelayHistogram.max
+  eventLoopDelayHistogram.reset()
+
+  if (!Number.isFinite(minNs) || !Number.isFinite(maxNs) || maxNs <= 0 || minNs > maxNs) {
+    return undefined
+  }
+
+  return roundMetricMs((maxNs - minNs) / 1_000_000)
+}
+
+function roundMetricMs(value: number): number | undefined {
+  if (!Number.isFinite(value)) return undefined
+  return Math.round(Math.max(0, value) * 100) / 100
 }
 
 async function runTableStorageMonitor(): Promise<void> {
@@ -511,4 +530,8 @@ function execFileText(file: string, args: string[], timeout: number): Promise<st
 function numberValue(value: unknown): number | undefined {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) ? number : undefined
+}
+
+function yieldToEventLoop(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
 }

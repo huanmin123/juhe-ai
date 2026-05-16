@@ -82,7 +82,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
@@ -131,6 +131,9 @@ const averageFirstTokenChart = shallowRef<ECharts>()
 const maxFirstTokenChart = shallowRef<ECharts>()
 const averageDurationChart = shallowRef<ECharts>()
 const maxDurationChart = shallowRef<ECharts>()
+const pageActive = ref(false)
+const chartRenderPending = ref(false)
+let resizeListenerAttached = false
 
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
@@ -379,8 +382,10 @@ function handleAccountSelect(value: unknown) {
 
 function handleAccountSearch(value: string) {
   accountSearchKeyword.value = value
-  if (accountSearchTimer) window.clearTimeout(accountSearchTimer)
+  clearAccountSearchTimer()
   accountSearchTimer = window.setTimeout(() => {
+    accountSearchTimer = undefined
+    if (!pageActive.value) return
     void loadAccounts()
   }, 250)
 }
@@ -413,7 +418,16 @@ function toggleAccountFilter(id: string) {
 }
 
 function renderCharts() {
+  if (!pageActive.value) {
+    chartRenderPending.value = true
+    return
+  }
   void nextTick(() => {
+    if (!pageActive.value) {
+      chartRenderPending.value = true
+      return
+    }
+    chartRenderPending.value = false
     for (const chart of performanceCharts.value) {
       renderPerformanceChart(chart.metric, chart.chartRef, chart.hasData)
     }
@@ -448,8 +462,28 @@ function disposeChart(chartRef: ShallowRef<ECharts | undefined>) {
 }
 
 function resizeCharts() {
+  if (!pageActive.value) return
   for (const chart of performanceCharts.value.map((item) => item.chartRef.value)) {
     if (chart && !chart.isDisposed()) chart.resize()
+  }
+}
+
+function addResizeListener() {
+  if (resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = true
+  window.addEventListener('resize', resizeCharts)
+}
+
+function removeResizeListener() {
+  if (!resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = false
+  window.removeEventListener('resize', resizeCharts)
+}
+
+function clearAccountSearchTimer() {
+  if (accountSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(accountSearchTimer)
+    accountSearchTimer = undefined
   }
 }
 
@@ -565,14 +599,36 @@ function pruneAccountState() {
 }
 
 onMounted(() => {
-  window.addEventListener('resize', resizeCharts)
+  pageActive.value = true
+  addResizeListener()
   void loadAccounts()
   void loadPerformance()
 })
 
+onActivated(() => {
+  pageActive.value = true
+  addResizeListener()
+  if (chartRenderPending.value) {
+    renderCharts()
+    return
+  }
+  void nextTick(resizeCharts)
+})
+
+onDeactivated(() => {
+  pageActive.value = false
+  chartRenderPending.value = true
+  removeResizeListener()
+  clearAccountSearchTimer()
+  for (const chart of performanceCharts.value) {
+    disposeChart(chart.chartRef)
+  }
+})
+
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', resizeCharts)
-  if (accountSearchTimer) window.clearTimeout(accountSearchTimer)
+  pageActive.value = false
+  removeResizeListener()
+  clearAccountSearchTimer()
   for (const chart of performanceCharts.value) {
     disposeChart(chart.chartRef)
   }

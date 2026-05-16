@@ -10,6 +10,7 @@ import {
   isOpenAIOAuthCodexCompactRequest,
   type OpenAIOAuthCodexIdentity
 } from './openai-oauth-codex-adapter.js'
+import { type GatewayRawBodyRequest } from './openai-gateway-request-body.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
@@ -35,8 +36,6 @@ interface UpstreamHeaderAccount {
   type?: string
   credentials?: Record<string, unknown>
 }
-
-type RawBodyRequest = Request & { rawBody?: Buffer }
 
 export class UpstreamRequestTimeoutError extends Error {}
 export class UpstreamRequestAbortedError extends Error {
@@ -189,10 +188,10 @@ export function buildUpstreamRequestBody(req: Request, passthroughEnabled: boole
   if (req.method === 'GET' || req.method === 'HEAD') {
     return undefined
   }
+  const rawBody = (req as GatewayRawBodyRequest).rawBody
   if (!passthroughEnabled) {
     return JSON.stringify(req.body ?? {})
   }
-  const rawBody = (req as RawBodyRequest).rawBody
   if (rawBody && rawBody.length > 0) {
     return rawBody
   }
@@ -202,13 +201,14 @@ export function buildUpstreamRequestBody(req: Request, passthroughEnabled: boole
   return JSON.stringify(req.body)
 }
 
-export function buildUpstreamRequestParts(
+export async function buildUpstreamRequestParts(
   req: Request,
   account: UpstreamHeaderAccount,
-  identity: OpenAIOAuthCodexIdentity
-): { headers: Headers; body?: Buffer | string } {
+  identity: OpenAIOAuthCodexIdentity,
+  signal?: AbortSignal
+): Promise<{ headers: Headers; body?: Buffer | string }> {
   if (account.type === 'oauth') {
-    return buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+    return await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity, signal)
   }
   return {
     headers: buildUpstreamHeaders(req.headers, account),

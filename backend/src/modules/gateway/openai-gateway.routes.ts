@@ -15,7 +15,7 @@ import {
   readCachedGatewaySettingsAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from './gateway-runtime-cache.service.js'
-import { estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
+import { estimateProviderCacheReadCostUsd, estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
 import { shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { refreshOpenAIOAuthAccountAccessToken } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import {
@@ -849,6 +849,11 @@ function recordCompletedUpstreamAttempt(
     cacheReadTokens: input.usage.cacheReadTokens,
     inputImageTokens: input.usage.inputImageTokens,
     outputImageTokens: input.usage.outputImageTokens,
+    cacheReadCostUsd: estimateProviderCacheReadCostUsd({
+      providerCode: 'openai',
+      model,
+      cacheReadTokens: input.usage.cacheReadTokens
+    }),
     costUsd: estimateProviderCostUsd({
       providerCode: 'openai',
       model,
@@ -1139,13 +1144,13 @@ async function fetchFirstAvailableUpstream(
     if (upstreamUrls.length === 0) {
       continue
     }
-    let requestParts: ReturnType<typeof buildUpstreamRequestParts>
+    let requestParts: Awaited<ReturnType<typeof buildUpstreamRequestParts>>
     try {
-      requestParts = buildUpstreamRequestParts(req, account, {
+      requestParts = await buildUpstreamRequestParts(req, account, {
         systemAccountId: usageContext.systemAccountId,
         apiKeyId: usageContext.apiKeyId,
         groupId: usageContext.groupId
-      })
+      }, signal)
     } catch (error) {
       if (error instanceof OpenAIOAuthCodexAdapterError) {
         lastAttempt = {

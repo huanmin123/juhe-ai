@@ -56,7 +56,7 @@
 
 <script setup lang="ts">
 import { FilterOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons-vue'
-import { Comment, Fragment, Text, computed, onBeforeUnmount, onMounted, ref, useSlots, type VNode } from 'vue'
+import { Comment, Fragment, Text, computed, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, useSlots, type VNode } from 'vue'
 
 const props = withDefaults(defineProps<{
   keyword?: string
@@ -94,6 +94,7 @@ const filtersOpen = ref(false)
 const actionsOpen = ref(false)
 const isMobile = ref(initialMobileState())
 const slots = useSlots()
+let resizeListenerAttached = false
 
 const mobileVisibleActionCount = computed(() => {
   if (typeof props.mobileActionCount === 'number') return props.mobileActionCount
@@ -127,6 +128,18 @@ function updateViewportState() {
   }
 }
 
+function addResizeListener() {
+  if (resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = true
+  window.addEventListener('resize', updateViewportState, { passive: true })
+}
+
+function removeResizeListener() {
+  if (!resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = false
+  window.removeEventListener('resize', updateViewportState)
+}
+
 function initialMobileState() {
   return typeof window !== 'undefined' && window.innerWidth <= props.mobileBreakpoint
 }
@@ -144,11 +157,22 @@ function countActionNodes(nodes: VNode[]): number {
 
 onMounted(() => {
   updateViewportState()
-  window.addEventListener('resize', updateViewportState, { passive: true })
+  addResizeListener()
+})
+
+onActivated(() => {
+  updateViewportState()
+  addResizeListener()
+})
+
+onDeactivated(() => {
+  filtersOpen.value = false
+  actionsOpen.value = false
+  removeResizeListener()
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', updateViewportState)
+  removeResizeListener()
 })
 </script>
 

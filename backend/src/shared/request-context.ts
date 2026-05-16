@@ -115,16 +115,16 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
   }
 
   if (isHealthPath(req.path) && res.statusCode < 400) {
-    context.logger.debug(fields, 'HTTP 请求完成')
+    context.logger.debug(fields, 'HTTP 请求已结束')
     return
   }
 
   if (res.statusCode >= 500) {
-    context.logger.error(fields, 'HTTP 请求完成')
+    context.logger.error(fields, 'HTTP 请求已结束')
   } else if (res.statusCode >= 400) {
-    context.logger.warn(fields, 'HTTP 请求完成')
+    context.logger.warn(fields, 'HTTP 请求已结束')
   } else {
-    context.logger.info(fields, 'HTTP 请求完成')
+    context.logger.info(fields, 'HTTP 请求已结束')
   }
 }
 

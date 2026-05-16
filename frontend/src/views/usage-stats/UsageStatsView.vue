@@ -186,7 +186,7 @@
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import dayjs, { type Dayjs } from 'dayjs'
-import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, shallowRef, watch } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
 
 import { api } from '@/api/client'
@@ -201,7 +201,7 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText, statusColor, statusText } from '@/views/accounts/accountFormatters'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
-import { formatCompactInteger, formatCost, formatInteger, formatSeconds } from '@/views/stats/statsFormatters'
+import { formatCompactInteger, formatCost, formatInteger, formatPercent, formatSeconds } from '@/views/stats/statsFormatters'
 import { buildAccountUsageTrendOption, chartColors, orderedUsageRows, type UsageTrendMetric } from './usageTrendChartOptions'
 
 interface UsageStatsFilters {
@@ -274,6 +274,9 @@ const accountUsagePagination = reactive({
 
 const trendChartRef = ref<HTMLDivElement>()
 const trendChart = shallowRef<ECharts>()
+const pageActive = ref(false)
+const chartRenderPending = ref(false)
+let resizeListenerAttached = false
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const rows = computed(() => orderedUsageRows(overview.value?.rows ?? []))
@@ -347,9 +350,16 @@ const summaryCards = computed(() => {
   return [
     { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
     { key: 'tokens', label: 'Token 消耗', value: formatCompactInteger(summary?.totalTokens), extra: `输入 ${formatCompactInteger(summary?.inputTokens)} / 输出 ${formatCompactInteger(summary?.outputTokens)} / 缓存读取 ${formatCompactInteger(summary?.cacheReadTokens)}` },
+    { key: 'cacheRate', label: '缓存率', value: formatPercent(cacheReadRate(summary)), extra: `缓存成本 ${formatCost(summary?.cacheReadCost)}` },
     { key: 'cost', label: '成本', value: formatCost(summary?.totalCost), extra: `最后使用 ${formatDateTime(summary?.lastUsedAt)}` }
   ]
 })
+
+function cacheReadRate(summary?: AccountUsageStatsOverview['summary']) {
+  const inputTokens = summary?.inputTokens ?? 0
+  if (inputTokens <= 0) return 0
+  return ((summary?.cacheReadTokens ?? 0) / inputTokens) * 100
+}
 
 async function loadData(options: { quiet?: boolean; forceOptions?: boolean } = {}) {
   if (!options.quiet) {
@@ -546,7 +556,16 @@ function trendAccountLabel(account: AccountUsageStatsRow) {
 }
 
 function renderChart() {
+  if (!pageActive.value) {
+    chartRenderPending.value = true
+    return
+  }
   void nextTick(() => {
+    if (!pageActive.value) {
+      chartRenderPending.value = true
+      return
+    }
+    chartRenderPending.value = false
     if (!overview.value || !hasTrendData.value) {
       disposeChart(trendChart)
       return
@@ -575,9 +594,22 @@ function disposeChart(chartRef: ShallowRef<ECharts | undefined>) {
 }
 
 function resizeCharts() {
+  if (!pageActive.value) return
   if (trendChart.value && !trendChart.value.isDisposed()) {
     trendChart.value.resize()
   }
+}
+
+function addResizeListener() {
+  if (resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = true
+  window.addEventListener('resize', resizeCharts)
+}
+
+function removeResizeListener() {
+  if (!resizeListenerAttached || typeof window === 'undefined') return
+  resizeListenerAttached = false
+  window.removeEventListener('resize', resizeCharts)
 }
 
 function snapshotPageState(): UsageStatsPageState {
@@ -671,12 +703,31 @@ function pruneSelectedTrendAccounts(currentRows: AccountUsageStatsRow[]) {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(() => {
-  window.addEventListener('resize', resizeCharts)
+  pageActive.value = true
+  addResizeListener()
   void loadData()
 })
 
+onActivated(() => {
+  pageActive.value = true
+  addResizeListener()
+  if (chartRenderPending.value) {
+    renderChart()
+    return
+  }
+  void nextTick(resizeCharts)
+})
+
+onDeactivated(() => {
+  pageActive.value = false
+  chartRenderPending.value = true
+  removeResizeListener()
+  disposeChart(trendChart)
+})
+
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', resizeCharts)
+  pageActive.value = false
+  removeResizeListener()
   disposeChart(trendChart)
 })
 </script>
