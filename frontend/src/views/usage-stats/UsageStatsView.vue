@@ -18,7 +18,7 @@
           <a-range-picker
             v-model:value="dateRange"
             :allow-clear="false"
-            :disabled="true"
+            :disabled="loading"
             :disabled-date="disabledDate"
             class="usage-stats-range-picker"
             format="YYYY-MM-DD"
@@ -211,7 +211,7 @@ interface UsageStatsFilters {
 type UsageStatsPageState = {
   filters: UsageStatsFilters
   metric: UsageTrendMetric
-  range: {
+  range?: {
     startDate: string
     endDate: string
   }
@@ -236,18 +236,13 @@ const metricOptions: Array<{ label: string; value: UsageTrendMetric }> = [
 ]
 
 const defaultDateRange = (): [Dayjs, Dayjs] => {
-  const end = dayjs().startOf('day')
-  return [end.subtract(MAX_RANGE_DAYS - 1, 'day'), end]
+  const today = dayjs().startOf('day')
+  return [today, today]
 }
 const defaultUsageStatsPageState = (): UsageStatsPageState => {
-  const [start, end] = defaultDateRange()
   return {
     filters: { systemAccountId: allSystemAccountsValue },
-    metric: 'cost',
-    range: {
-      startDate: formatDateKey(start),
-      endDate: formatDateKey(end)
-    }
+    metric: 'cost'
   }
 }
 
@@ -258,11 +253,12 @@ const systemAccounts = ref<SystemAccountSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const usageStatsOptionsLoaded = ref(false)
 const usageStatsOptionsScopeKey = ref('')
-const pageStateCache = usePageStateCache<UsageStatsPageState>(undefined, defaultUsageStatsPageState, { version: 3 })
+const pageStateCache = usePageStateCache<UsageStatsPageState>(undefined, defaultUsageStatsPageState, { version: 5 })
 const initialPageState = pageStateCache.read()
 const filters = reactive<UsageStatsFilters>({ ...initialPageState.filters })
 const selectedMetric = ref<UsageTrendMetric>(metricOptions.some((item) => item.value === initialPageState.metric) ? initialPageState.metric : 'cost')
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
+const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedTrendAccountIds = ref<string[]>([])
 const addedTrendAccountIds = ref<string[]>([])
@@ -282,7 +278,8 @@ const rows = computed(() => orderedUsageRows(overview.value?.rows ?? []))
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
-const rangeLabel = computed(() => `${formatDateLabel(selectedRange.value[0])} 至 ${formatDateLabel(selectedRange.value[1])}`)
+const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
+const rangeLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const rowsById = computed(() => new Map(rows.value.map((row) => [row.id, row])))
 const defaultTrendRows = computed(() => (overview.value?.defaultTrendAccountIds ?? [])
   .map((id) => rowsById.value.get(id))
@@ -363,6 +360,7 @@ async function loadData(options: { quiet?: boolean; forceOptions?: boolean } = {
       loadUsageStatsOptions(options.forceOptions === true)
     ])
     overview.value = usageOverview
+    syncDateRangeFromResponse(usageOverview.range)
     accountUsagePagination.current = usageOverview.page
     accountUsagePagination.pageSize = usageOverview.pageSize || accountUsagePageSize
     accountUsagePagination.total = usageOverview.total
@@ -411,6 +409,7 @@ function resetFilters() {
   Object.assign(filters, defaults.filters)
   selectedMetric.value = defaults.metric
   dateRange.value = parseDateRange(defaults.range)
+  dateRangeExplicit.value = false
   selectedTrendAccountIds.value = []
   addedTrendAccountIds.value = []
   accountPickerValue.value = []
@@ -436,14 +435,23 @@ async function refreshMobileRows() {
 }
 
 function accountUsageParams(systemAccountId?: string) {
-  const [startDate, endDate] = selectedRange.value
-  return {
+  const params: {
+    systemAccountId?: string
+    startDate?: string
+    endDate?: string
+    page: number
+    pageSize: number
+  } = {
     systemAccountId,
-    startDate,
-    endDate,
     page: accountUsagePagination.current,
     pageSize: accountUsagePagination.pageSize
   }
+  if (dateRangeExplicit.value) {
+    const [startDate, endDate] = selectedRange.value
+    params.startDate = startDate
+    params.endDate = endDate
+  }
+  return params
 }
 
 function handleDateRangeChange() {
@@ -451,6 +459,7 @@ function handleDateRangeChange() {
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
+  dateRangeExplicit.value = true
   accountUsagePagination.current = 1
   void loadData()
 }
@@ -507,7 +516,9 @@ function filterAccountOption(input: string, option?: { label?: unknown; value?: 
 
 function disabledDate(current: Dayjs) {
   if (!current) return false
-  if (current.isAfter(dayjs(), 'day')) return true
+  const today = dayjs().startOf('day')
+  if (current.isAfter(today, 'day')) return true
+  if (current.isBefore(today.subtract(MAX_RANGE_DAYS - 1, 'day'), 'day')) return true
   const anchor = calendarRange.value[0] ?? calendarRange.value[1]
   if (!anchor) return false
   return Math.abs(current.startOf('day').diff(anchor.startOf('day'), 'day')) > MAX_RANGE_DAYS - 1
@@ -572,7 +583,7 @@ function snapshotPageState(): UsageStatsPageState {
   return {
     filters: { ...filters },
     metric: selectedMetric.value,
-    range: { startDate, endDate }
+    range: dateRangeExplicit.value ? { startDate, endDate } : undefined
   }
 }
 
@@ -584,13 +595,17 @@ function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayj
   return [dayjs(normalizedStart), dayjs(normalizedEnd)]
 }
 
+function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: string }) {
+  const start = parseDateKey(value?.startDate)
+  const end = parseDateKey(value?.endDate)
+  if (!start || !end || start.isAfter(end, 'day')) return
+  dateRange.value = [start.startOf('day'), end.startOf('day')]
+}
+
 function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
-  const today = dayjs().startOf('day')
-  let start = (value[0] ?? today).startOf('day')
-  let end = (value[1] ?? today).startOf('day')
-  if (end.isAfter(today, 'day')) {
-    end = today
-  }
+  const [defaultStart, defaultEnd] = defaultDateRange()
+  let start = (value[0] ?? defaultStart).startOf('day')
+  let end = (value[1] ?? defaultEnd).startOf('day')
   if (start.isAfter(end, 'day')) {
     start = end
   }

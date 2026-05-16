@@ -4,17 +4,13 @@ import type {
   AiPerformanceAccount,
   AiPerformanceAccountOption,
   AiPerformanceOverview,
-  AiPerformanceWindowDefinition,
-  AiPerformanceWindowKey,
   AccountUsageStatsRange,
-  UsageOverviewWindowDefinition,
-  UsageOverviewWindowKey
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
-import { averageFromSum, dateKey, hourKey, monthKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { averageFromSum, dateKey, dateKeysInRange, hourKey, monthKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateAccountQualityMinuteStatsRecord, aggregateCallerAccountUsageStatsRecord, aggregateUsageStatsRecord } from './usage-stats-writers.js'
 import {
@@ -31,7 +27,6 @@ import {
 } from './usage-stats-types.js'
 
 export type { SystemMetricsOverview, SystemMetricsSampleInput, UsageStatsOverview } from './usage-stats-types.js'
-export type { AiPerformanceWindowKey, UsageOverviewWindowKey } from '../domain/types.js'
 
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
 const CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME = 'caller_account_usage_stats_backfill'
@@ -42,26 +37,6 @@ const AI_PERFORMANCE_ACCOUNT_OPTION_MAX_LIMIT = 50
 const HOUR_MS = 60 * 60 * 1000
 const DAY_MS = 24 * HOUR_MS
 const FIXED_RANGE_WINDOW_DAYS = 31
-
-const USAGE_OVERVIEW_WINDOWS: UsageOverviewWindowDefinition[] = [
-  { key: 'last1d', label: '近一天', hours: 24 },
-  { key: 'last3d', label: '近三天', hours: 72 },
-  { key: 'last7d', label: '近一周', hours: 168 },
-  { key: 'last30d', label: '近一月', hours: 720 }
-]
-
-const USAGE_OVERVIEW_TREND_BUCKET_HOURS: Record<UsageOverviewWindowKey, number> = {
-  last1d: 1,
-  last3d: 6,
-  last7d: 24,
-  last30d: 24
-}
-
-const AI_PERFORMANCE_WINDOWS: AiPerformanceWindowDefinition[] = [
-  { key: 'last1d', label: '近一天', hours: 24 },
-  { key: 'last3d', label: '近三天', hours: 72 },
-  { key: 'last7d', label: '近一周', hours: 168 }
-]
 
 const QUOTA_HOURLY_WINDOW_HOURS = [1, 3, 6, 12, 24, 72, 168, 720] as const
 
@@ -426,6 +401,93 @@ function emptyGroupAccountStatsAccumulator(groupId: string, systemAccountId: str
   }
 }
 
+interface UsageWindowAggregate {
+  requestCount: number
+  successCount: number
+  errorCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  totalCostUsd: number
+  durationMsSum: number
+  durationMsCount: number
+  durationMsMax: number
+  firstTokenMsSum: number
+  firstTokenMsCount: number
+  firstTokenMsMax: number
+  lastUsedAt?: string
+}
+
+interface UsageStatsDailyWindowRow {
+  stat_date: string
+  request_count: number
+  success_count: number
+  error_count: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  total_cost_usd: number
+  duration_ms_sum: number
+  duration_ms_count: number
+  duration_ms_max: number
+  first_token_ms_sum: number
+  first_token_ms_count: number
+  first_token_ms_max: number
+  last_used_at: string | null
+}
+
+interface UsageOverviewHourlyWindowRow {
+  stat_hour: string
+  request_count: number
+  error_count: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  total_cost_usd: number
+  duration_ms_sum: number
+  duration_ms_count: number
+}
+
+interface UsageModelWindowRow {
+  stat_date: string
+  provider_code: string
+  model: string
+  request_count: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  total_cost_usd: number
+}
+
+interface UsageErrorWindowRow {
+  stat_date: string
+  error_group: string
+  provider_code: string
+  error_code: string
+  status_code: number
+  error_message: string | null
+  error_count: number
+}
+
+interface UsageModelWindowAggregate {
+  providerCode: string
+  model: string
+  requestCount: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  totalCostUsd: number
+}
+
+interface UsageErrorWindowAggregate {
+  errorGroup: string
+  providerCode: string
+  errorCode: string
+  statusCode: number
+  errorMessage?: string
+  errorCount: number
+}
+
 export function refreshUsageRankSnapshots(): void {
   const database = getRecordDatabase()
   const timezone = usageStatsTimezone()
@@ -458,28 +520,22 @@ function refreshUsageOverviewWindowSnapshots(database: DatabaseSync, updatedAt: 
   database.prepare('DELETE FROM system_metrics_trend_windows').run()
 
   const scopes = usageOverviewSnapshotScopes(database)
+  const ranges = fixedUsageStatsRanges(timezone)
+  const todayKey = dateKey(new Date(), timezone)
+  const earliestDate = ranges[0]?.startDate ?? todayKey
+  const uniqueSystemAccountIds = [...new Set(scopes.map((scope) => scope.systemAccountId).filter((id) => id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID))]
   for (const scope of scopes) {
-    for (const window of USAGE_OVERVIEW_WINDOWS) {
-      const sinceHour = hourKey(new Date(Date.now() - window.hours * HOUR_MS), timezone)
-      refreshUsageOverviewSummaryWindow(database, scope, window.key, sinceHour, updatedAt)
-      refreshUsageOverviewTrendWindow(database, scope, window.key, sinceHour, trendBucketHours(window.key), updatedAt)
-      refreshUsageModelRankWindow(database, scope.systemAccountId, window.key, sinceHour, updatedAt)
-      refreshUsageErrorRankWindow(database, scope.systemAccountId, window.key, sinceHour, updatedAt)
-    }
+    refreshUsageOverviewSummaryWindows(database, scope, ranges, earliestDate, todayKey, updatedAt)
+    refreshUsageOverviewTrendWindows(database, scope, ranges, earliestDate, todayKey, updatedAt)
   }
-  const systemAccountIds = scopes
-    .map((scope) => scope.systemAccountId)
-    .filter((id) => id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID)
-  for (const systemAccountId of systemAccountIds) {
-    for (const window of AI_PERFORMANCE_WINDOWS) {
-      const sinceHour = hourKey(new Date(Date.now() - window.hours * HOUR_MS), timezone)
-      refreshAiPerformanceSummaryWindow(database, systemAccountId, window.key, sinceHour, updatedAt)
-    }
+  for (const systemAccountId of [...uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    refreshUsageModelRankWindows(database, systemAccountId, ranges, earliestDate, todayKey, updatedAt)
+    refreshUsageErrorRankWindows(database, systemAccountId, ranges, earliestDate, todayKey, updatedAt)
   }
-  for (const window of USAGE_OVERVIEW_WINDOWS) {
-    const sinceHour = hourKey(new Date(Date.now() - window.hours * HOUR_MS), timezone)
-    refreshSystemMetricsTrendWindow(database, window.key, sinceHour, trendBucketHours(window.key), updatedAt)
+  for (const systemAccountId of uniqueSystemAccountIds) {
+    refreshAiPerformanceSummaryWindows(database, systemAccountId, ranges, earliestDate, todayKey, updatedAt)
   }
+  refreshSystemMetricsTrendWindows(database, ranges, earliestDate, todayKey, updatedAt)
 }
 
 function usageOverviewSnapshotScopes(database: DatabaseSync): Array<{ systemAccountId: string; scopeId: string }> {
@@ -497,48 +553,65 @@ function usageOverviewSnapshotScopes(database: DatabaseSync): Array<{ systemAcco
   return scopes
 }
 
-function refreshUsageOverviewSummaryWindow(
+function refreshUsageOverviewSummaryWindows(
   database: DatabaseSync,
   scope: { systemAccountId: string; scopeId: string },
-  windowKey: UsageOverviewWindowKey,
-  sinceHour: string,
+  ranges: AccountUsageStatsRange[],
+  earliestDate: string,
+  todayKey: string,
   updatedAt: string
 ): void {
-  database.prepare(`
-    INSERT INTO usage_overview_summary_windows (
-      system_account_id, window_key, request_count, success_count, error_count,
-      input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
-      duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count,
-      last_used_at, updated_at
-    )
-    SELECT ?, ?,
-      COALESCE(SUM(request_count), 0),
-      COALESCE(SUM(success_count), 0),
-      COALESCE(SUM(error_count), 0),
-      COALESCE(SUM(input_tokens), 0),
-      COALESCE(SUM(output_tokens), 0),
-      COALESCE(SUM(cache_read_tokens), 0),
-      COALESCE(SUM(total_cost_usd), 0),
-      COALESCE(SUM(duration_ms_sum), 0),
-      COALESCE(SUM(duration_ms_count), 0),
-      COALESCE(SUM(first_token_ms_sum), 0),
-      COALESCE(SUM(first_token_ms_count), 0),
-      MAX(last_used_at),
-      ?
-    FROM usage_stats_hourly
+  const rows = database.prepare(`
+    SELECT stat_date, request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens,
+      total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
+      first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at
+    FROM usage_stats_daily
     WHERE system_account_id = ?
       AND scope_type = 'system_account'
       AND scope_id = ?
-      AND stat_hour >= ?
-  `).run(scope.systemAccountId, windowKey, updatedAt, scope.systemAccountId, scope.scopeId, sinceHour)
+      AND stat_date >= ?
+      AND stat_date <= ?
+    ORDER BY stat_date ASC
+  `).all(scope.systemAccountId, scope.scopeId, earliestDate, todayKey) as unknown as UsageStatsDailyWindowRow[]
+  const rowsByDate = rowsByStatDate(rows)
+  const insert = database.prepare(`
+    INSERT INTO usage_overview_summary_windows (
+      system_account_id, window_key, start_date, end_date, request_count, success_count, error_count,
+      input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
+      duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count,
+      last_used_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const range of ranges) {
+    const aggregate = aggregateUsageRowsForRange(rowsByDate, range)
+    insert.run(
+      scope.systemAccountId,
+      rangeWindowKey(range),
+      range.startDate,
+      range.endDate,
+      aggregate.requestCount,
+      aggregate.successCount,
+      aggregate.errorCount,
+      aggregate.inputTokens,
+      aggregate.outputTokens,
+      aggregate.cacheReadTokens,
+      aggregate.totalCostUsd,
+      aggregate.durationMsSum,
+      aggregate.durationMsCount,
+      aggregate.firstTokenMsSum,
+      aggregate.firstTokenMsCount,
+      aggregate.lastUsedAt ?? null,
+      updatedAt
+    )
+  }
 }
 
-function refreshUsageOverviewTrendWindow(
+function refreshUsageOverviewTrendWindows(
   database: DatabaseSync,
   scope: { systemAccountId: string; scopeId: string },
-  windowKey: UsageOverviewWindowKey,
-  sinceHour: string,
-  bucketHours: number,
+  ranges: AccountUsageStatsRange[],
+  earliestDate: string,
+  todayKey: string,
   updatedAt: string
 ): void {
   const rows = database.prepare(`
@@ -549,192 +622,417 @@ function refreshUsageOverviewTrendWindow(
       AND scope_type = 'system_account'
       AND scope_id = ?
       AND stat_hour >= ?
+      AND stat_hour <= ?
     ORDER BY stat_hour ASC
-  `).all(scope.systemAccountId, scope.scopeId, sinceHour) as unknown as Array<{
-    stat_hour: string
-    request_count: number
-    error_count: number
-    input_tokens: number
-    output_tokens: number
-    cache_read_tokens: number
-    total_cost_usd: number
-    duration_ms_sum: number
-    duration_ms_count: number
-  }>
-  const buckets = new Map<string, {
-    requestCount: number
-    errorCount: number
-    inputTokens: number
-    outputTokens: number
-    cacheReadTokens: number
-    totalCostUsd: number
-    durationMsSum: number
-    durationMsCount: number
-  }>()
-  for (const row of rows) {
-    const key = trendBucketKey(row.stat_hour, bucketHours)
-    const bucket = buckets.get(key) ?? {
-      requestCount: 0,
-      errorCount: 0,
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      totalCostUsd: 0,
-      durationMsSum: 0,
-      durationMsCount: 0
-    }
-    bucket.requestCount += Number(row.request_count ?? 0)
-    bucket.errorCount += Number(row.error_count ?? 0)
-    bucket.inputTokens += Number(row.input_tokens ?? 0)
-    bucket.outputTokens += Number(row.output_tokens ?? 0)
-    bucket.cacheReadTokens += Number(row.cache_read_tokens ?? 0)
-    bucket.totalCostUsd += Number(row.total_cost_usd ?? 0)
-    bucket.durationMsSum += Number(row.duration_ms_sum ?? 0)
-    bucket.durationMsCount += Number(row.duration_ms_count ?? 0)
-    buckets.set(key, bucket)
-  }
-
+  `).all(scope.systemAccountId, scope.scopeId, `${earliestDate}T00`, `${todayKey}T23`) as unknown as UsageOverviewHourlyWindowRow[]
+  const rowsByDate = rowsByStatHourDate(rows)
   const insert = database.prepare(`
     INSERT INTO usage_overview_trend_windows (
-      system_account_id, window_key, bucket_key, request_count, error_count,
+      system_account_id, window_key, start_date, end_date, bucket_key, request_count, error_count,
       input_tokens, output_tokens, cache_read_tokens, total_cost_usd,
       duration_ms_sum, duration_ms_count, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const range of ranges) {
+    const buckets = aggregateUsageTrendBuckets(rowsByDate, range)
+    for (const [bucketKey, bucket] of sortedMapEntries(buckets)) {
+      insert.run(
+        scope.systemAccountId,
+        rangeWindowKey(range),
+        range.startDate,
+        range.endDate,
+        bucketKey,
+        bucket.requestCount,
+        bucket.errorCount,
+        bucket.inputTokens,
+        bucket.outputTokens,
+        bucket.cacheReadTokens,
+        bucket.totalCostUsd,
+        bucket.durationMsSum,
+        bucket.durationMsCount,
+        updatedAt
+      )
+    }
+  }
+}
+
+function refreshUsageModelRankWindows(
+  database: DatabaseSync,
+  systemAccountId: string,
+  ranges: AccountUsageStatsRange[],
+  earliestDate: string,
+  todayKey: string,
+  updatedAt: string
+): void {
+  const rows = database.prepare(`
+    SELECT stat_date, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd
+    FROM usage_model_daily
+    WHERE system_account_id = ?
+      AND stat_date >= ?
+      AND stat_date <= ?
+    ORDER BY stat_date ASC
+  `).all(systemAccountId, earliestDate, todayKey) as unknown as UsageModelWindowRow[]
+  const rowsByDate = rowsByStatDate(rows)
+  const insert = database.prepare(`
+    INSERT INTO usage_model_rank_windows (
+      system_account_id, window_key, start_date, end_date, rank, provider_code, model,
+      request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const range of ranges) {
+    const rankedRows = aggregateUsageModelRows(rowsByDate, range)
+    rankedRows.slice(0, 10).forEach((row, index) => {
+      insert.run(
+        systemAccountId,
+        rangeWindowKey(range),
+        range.startDate,
+        range.endDate,
+        index + 1,
+        row.providerCode,
+        row.model,
+        row.requestCount,
+        row.inputTokens,
+        row.outputTokens,
+        row.cacheReadTokens,
+        row.totalCostUsd,
+        updatedAt
+      )
+    })
+  }
+}
+
+function refreshUsageErrorRankWindows(
+  database: DatabaseSync,
+  systemAccountId: string,
+  ranges: AccountUsageStatsRange[],
+  earliestDate: string,
+  todayKey: string,
+  updatedAt: string
+): void {
+  const rows = database.prepare(`
+    SELECT stat_date, error_group, provider_code, error_code, status_code, error_message, error_count
+    FROM usage_error_daily
+    WHERE system_account_id = ?
+      AND stat_date >= ?
+      AND stat_date <= ?
+    ORDER BY stat_date ASC
+  `).all(systemAccountId, earliestDate, todayKey) as unknown as UsageErrorWindowRow[]
+  const rowsByDate = rowsByStatDate(rows)
+  const insert = database.prepare(`
+    INSERT INTO usage_error_rank_windows (
+      system_account_id, window_key, start_date, end_date, rank, provider_code, error_code,
+      status_code, error_message, error_count, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const range of ranges) {
+    const rankedRows = aggregateUsageErrorRows(rowsByDate, range)
+    rankedRows.slice(0, 10).forEach((row, index) => {
+      insert.run(
+        systemAccountId,
+        rangeWindowKey(range),
+        range.startDate,
+        range.endDate,
+        index + 1,
+        row.providerCode,
+        row.errorCode,
+        row.statusCode,
+        row.errorMessage ?? null,
+        row.errorCount,
+        updatedAt
+      )
+    })
+  }
+}
+
+function refreshAiPerformanceSummaryWindows(
+  database: DatabaseSync,
+  systemAccountId: string,
+  ranges: AccountUsageStatsRange[],
+  earliestDate: string,
+  todayKey: string,
+  updatedAt: string
+): void {
+  const rows = database.prepare(`
+    SELECT stat_date,
+      COALESCE(SUM(request_count), 0) AS request_count,
+      COALESCE(SUM(success_count), 0) AS success_count,
+      COALESCE(SUM(error_count), 0) AS error_count,
+      COALESCE(SUM(input_tokens), 0) AS input_tokens,
+      COALESCE(SUM(output_tokens), 0) AS output_tokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cache_read_tokens,
+      COALESCE(SUM(total_cost_usd), 0) AS total_cost_usd,
+      COALESCE(SUM(duration_ms_sum), 0) AS duration_ms_sum,
+      COALESCE(SUM(duration_ms_count), 0) AS duration_ms_count,
+      COALESCE(MAX(duration_ms_max), 0) AS duration_ms_max,
+      COALESCE(SUM(first_token_ms_sum), 0) AS first_token_ms_sum,
+      COALESCE(SUM(first_token_ms_count), 0) AS first_token_ms_count,
+      COALESCE(MAX(first_token_ms_max), 0) AS first_token_ms_max,
+      MAX(last_used_at) AS last_used_at
+    FROM usage_stats_daily
+    WHERE system_account_id = ?
+      AND scope_type = 'account'
+      AND stat_date >= ?
+      AND stat_date <= ?
+    GROUP BY stat_date
+    ORDER BY stat_date ASC
+  `).all(systemAccountId, earliestDate, todayKey) as unknown as UsageStatsDailyWindowRow[]
+  const rowsByDate = rowsByStatDate(rows)
+  const insert = database.prepare(`
+    INSERT INTO ai_performance_summary_windows (
+      system_account_id, window_key, start_date, end_date, request_count, duration_ms_sum, duration_ms_count,
+      duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max, updated_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const [bucketKey, bucket] of buckets) {
+  for (const range of ranges) {
+    const aggregate = aggregateUsageRowsForRange(rowsByDate, range)
     insert.run(
-      scope.systemAccountId,
-      windowKey,
-      bucketKey,
-      bucket.requestCount,
-      bucket.errorCount,
-      bucket.inputTokens,
-      bucket.outputTokens,
-      bucket.cacheReadTokens,
-      bucket.totalCostUsd,
-      bucket.durationMsSum,
-      bucket.durationMsCount,
+      systemAccountId,
+      rangeWindowKey(range),
+      range.startDate,
+      range.endDate,
+      aggregate.requestCount,
+      aggregate.durationMsSum,
+      aggregate.durationMsCount,
+      aggregate.durationMsMax,
+      aggregate.firstTokenMsSum,
+      aggregate.firstTokenMsCount,
+      aggregate.firstTokenMsMax,
       updatedAt
     )
   }
 }
 
-function refreshUsageModelRankWindow(database: DatabaseSync, systemAccountId: string, windowKey: UsageOverviewWindowKey, sinceHour: string, updatedAt: string): void {
-  database.prepare(`
-    INSERT INTO usage_model_rank_windows (
-      system_account_id, window_key, rank, provider_code, model,
-      request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, updated_at
-    )
-    SELECT ?, ?, rank, provider_code, model, request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, ?
-    FROM (
-      SELECT
-        provider_code,
-        model,
-        SUM(request_count) AS request_count,
-        SUM(input_tokens) AS input_tokens,
-        SUM(output_tokens) AS output_tokens,
-        SUM(cache_read_tokens) AS cache_read_tokens,
-        SUM(total_cost_usd) AS total_cost_usd,
-        ROW_NUMBER() OVER (ORDER BY SUM(request_count) DESC, provider_code ASC, model ASC) AS rank
-      FROM usage_model_hourly
-      WHERE system_account_id = ?
-        AND stat_hour >= ?
-      GROUP BY provider_code, model
-    )
-    WHERE rank <= 10
-  `).run(systemAccountId, windowKey, updatedAt, systemAccountId, sinceHour)
-}
-
-function refreshUsageErrorRankWindow(database: DatabaseSync, systemAccountId: string, windowKey: UsageOverviewWindowKey, sinceHour: string, updatedAt: string): void {
-  database.prepare(`
-    INSERT INTO usage_error_rank_windows (
-      system_account_id, window_key, rank, provider_code, error_code,
-      status_code, error_message, error_count, updated_at
-    )
-    SELECT ?, ?, rank, provider_code, error_code, status_code, error_message, error_count, ?
-    FROM (
-      SELECT
-        provider_code,
-        error_code,
-        MAX(status_code) AS status_code,
-        MAX(error_message) AS error_message,
-        SUM(error_count) AS error_count,
-        ROW_NUMBER() OVER (
-          ORDER BY SUM(error_count) DESC, provider_code ASC, error_code ASC, error_group ASC
-        ) AS rank
-      FROM usage_error_hourly
-      WHERE system_account_id = ?
-        AND stat_hour >= ?
-      GROUP BY error_group, provider_code, error_code
-    )
-    WHERE rank <= 10
-  `).run(systemAccountId, windowKey, updatedAt, systemAccountId, sinceHour)
-}
-
-function refreshAiPerformanceSummaryWindow(database: DatabaseSync, systemAccountId: string, windowKey: AiPerformanceWindowKey, sinceHour: string, updatedAt: string): void {
-  database.prepare(`
-    INSERT INTO ai_performance_summary_windows (
-      system_account_id, window_key, request_count, duration_ms_sum, duration_ms_count,
-      duration_ms_max, first_token_ms_sum, first_token_ms_count, first_token_ms_max, updated_at
-    )
-    SELECT ?, ?,
-      COALESCE(SUM(request_count), 0),
-      COALESCE(SUM(duration_ms_sum), 0),
-      COALESCE(SUM(duration_ms_count), 0),
-      COALESCE(MAX(duration_ms_max), 0),
-      COALESCE(SUM(first_token_ms_sum), 0),
-      COALESCE(SUM(first_token_ms_count), 0),
-      COALESCE(MAX(first_token_ms_max), 0),
-      ?
-    FROM usage_stats_hourly
-    WHERE system_account_id = ?
-      AND scope_type = 'account'
-      AND stat_hour >= ?
-  `).run(systemAccountId, windowKey, updatedAt, systemAccountId, sinceHour)
-}
-
-function refreshSystemMetricsTrendWindow(database: DatabaseSync, windowKey: UsageOverviewWindowKey, sinceHour: string, bucketHours: number, updatedAt: string): void {
-  const rows = database.prepare('SELECT * FROM system_metrics_hourly WHERE stat_hour >= ? ORDER BY stat_hour ASC').all(sinceHour) as unknown as Array<Record<string, unknown>>
-  const buckets = aggregateSystemMetricsRows(rows, bucketHours)
+function refreshSystemMetricsTrendWindows(
+  database: DatabaseSync,
+  ranges: AccountUsageStatsRange[],
+  earliestDate: string,
+  todayKey: string,
+  updatedAt: string
+): void {
+  const rows = database.prepare('SELECT * FROM system_metrics_hourly WHERE stat_hour >= ? AND stat_hour <= ? ORDER BY stat_hour ASC').all(`${earliestDate}T00`, `${todayKey}T23`) as unknown as Array<Record<string, unknown>>
+  const rowsByDate = rowsByStatHourDate(rows.map((row) => ({ ...row, stat_hour: String(row.stat_hour ?? '') })))
   const insert = database.prepare(`
     INSERT INTO system_metrics_trend_windows (
-      window_key, bucket_key, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
+      window_key, start_date, end_date, bucket_key, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
       memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
       process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_max,
       network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
       network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
       network_rx_total_bytes_max, network_tx_total_bytes_max,
       db_file_bytes_max, stats_lag_seconds_max, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
-  for (const row of buckets) {
-    insert.run(
-      windowKey,
-      String(row.stat_hour ?? ''),
-      Number(row.sample_count ?? 0),
-      Number(row.cpu_percent_sum ?? 0),
-      nullableNumber(row.cpu_percent_max),
-      Number(row.memory_used_percent_sum ?? 0),
-      nullableNumber(row.memory_used_percent_max),
-      Number(row.process_rss_bytes_sum ?? 0),
-      nullableNumber(row.process_rss_bytes_max),
-      Number(row.process_heap_used_bytes_sum ?? 0),
-      nullableNumber(row.process_heap_used_bytes_max),
-      Number(row.event_loop_lag_ms_sum ?? 0),
-      nullableNumber(row.event_loop_lag_ms_max),
-      Number(row.network_rx_bytes_per_sec_sum ?? 0),
-      nullableNumber(row.network_rx_bytes_per_sec_max),
-      Number(row.network_rx_bytes_per_sec_count ?? 0),
-      Number(row.network_tx_bytes_per_sec_sum ?? 0),
-      nullableNumber(row.network_tx_bytes_per_sec_max),
-      Number(row.network_tx_bytes_per_sec_count ?? 0),
-      nullableNumber(row.network_rx_total_bytes_max),
-      nullableNumber(row.network_tx_total_bytes_max),
-      nullableNumber(row.db_file_bytes_max),
-      nullableNumber(row.stats_lag_seconds_max),
-      updatedAt
-    )
+  for (const range of ranges) {
+    const buckets = aggregateSystemMetricsRows(rowsForDateRange(rowsByDate, range), trendBucketHours(range))
+    for (const row of buckets.sort((left, right) => compareText(String(left.stat_hour ?? ''), String(right.stat_hour ?? '')))) {
+      insert.run(
+        rangeWindowKey(range),
+        range.startDate,
+        range.endDate,
+        String(row.stat_hour ?? ''),
+        Number(row.sample_count ?? 0),
+        Number(row.cpu_percent_sum ?? 0),
+        nullableNumber(row.cpu_percent_max),
+        Number(row.memory_used_percent_sum ?? 0),
+        nullableNumber(row.memory_used_percent_max),
+        Number(row.process_rss_bytes_sum ?? 0),
+        nullableNumber(row.process_rss_bytes_max),
+        Number(row.process_heap_used_bytes_sum ?? 0),
+        nullableNumber(row.process_heap_used_bytes_max),
+        Number(row.event_loop_lag_ms_sum ?? 0),
+        nullableNumber(row.event_loop_lag_ms_max),
+        Number(row.network_rx_bytes_per_sec_sum ?? 0),
+        nullableNumber(row.network_rx_bytes_per_sec_max),
+        Number(row.network_rx_bytes_per_sec_count ?? 0),
+        Number(row.network_tx_bytes_per_sec_sum ?? 0),
+        nullableNumber(row.network_tx_bytes_per_sec_max),
+        Number(row.network_tx_bytes_per_sec_count ?? 0),
+        nullableNumber(row.network_rx_total_bytes_max),
+        nullableNumber(row.network_tx_total_bytes_max),
+        nullableNumber(row.db_file_bytes_max),
+        nullableNumber(row.stats_lag_seconds_max),
+        updatedAt
+      )
+    }
   }
+}
+
+function rowsByStatDate<T extends { stat_date: string }>(rows: T[]): Map<string, T[]> {
+  const result = new Map<string, T[]>()
+  for (const row of rows) {
+    const rowsForDate = result.get(row.stat_date) ?? []
+    rowsForDate.push(row)
+    result.set(row.stat_date, rowsForDate)
+  }
+  return result
+}
+
+function rowsByStatHourDate<T extends { stat_hour: string }>(rows: T[]): Map<string, T[]> {
+  const result = new Map<string, T[]>()
+  for (const row of rows) {
+    const statDate = row.stat_hour.slice(0, 10)
+    if (!statDate) continue
+    const rowsForDate = result.get(statDate) ?? []
+    rowsForDate.push(row)
+    result.set(statDate, rowsForDate)
+  }
+  return result
+}
+
+function rowsForDateRange<T>(rowsByDate: Map<string, T[]>, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): T[] {
+  const rows: T[] = []
+  for (const statDate of dateKeysInRange(range)) {
+    rows.push(...(rowsByDate.get(statDate) ?? []))
+  }
+  return rows
+}
+
+function aggregateUsageRowsForRange(rowsByDate: Map<string, UsageStatsDailyWindowRow[]>, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): UsageWindowAggregate {
+  const aggregate = emptyUsageWindowAggregate()
+  for (const row of rowsForDateRange(rowsByDate, range)) {
+    addUsageWindowAggregate(aggregate, row)
+  }
+  return aggregate
+}
+
+function aggregateUsageTrendBuckets(rowsByDate: Map<string, UsageOverviewHourlyWindowRow[]>, range: AccountUsageStatsRange): Map<string, UsageWindowAggregate> {
+  const buckets = new Map<string, UsageWindowAggregate>()
+  const bucketHours = trendBucketHours(range)
+  for (const row of rowsForDateRange(rowsByDate, range)) {
+    const bucketKey = trendBucketKey(row.stat_hour, bucketHours)
+    const bucket = buckets.get(bucketKey) ?? emptyUsageWindowAggregate()
+    addUsageWindowAggregate(bucket, row)
+    buckets.set(bucketKey, bucket)
+  }
+  return buckets
+}
+
+function aggregateUsageModelRows(rowsByDate: Map<string, UsageModelWindowRow[]>, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): UsageModelWindowAggregate[] {
+  const buckets = new Map<string, UsageModelWindowAggregate>()
+  for (const row of rowsForDateRange(rowsByDate, range)) {
+    const providerCode = row.provider_code || 'unknown'
+    const model = row.model || 'unknown'
+    const key = `${providerCode}\n${model}`
+    const bucket = buckets.get(key) ?? {
+      providerCode,
+      model,
+      requestCount: 0,
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      totalCostUsd: 0
+    }
+    bucket.requestCount += Number(row.request_count ?? 0)
+    bucket.inputTokens += Number(row.input_tokens ?? 0)
+    bucket.outputTokens += Number(row.output_tokens ?? 0)
+    bucket.cacheReadTokens += Number(row.cache_read_tokens ?? 0)
+    bucket.totalCostUsd += Number(row.total_cost_usd ?? 0)
+    buckets.set(key, bucket)
+  }
+  return [...buckets.values()].sort((left, right) =>
+    right.requestCount - left.requestCount
+    || compareText(left.providerCode, right.providerCode)
+    || compareText(left.model, right.model)
+  )
+}
+
+function aggregateUsageErrorRows(rowsByDate: Map<string, UsageErrorWindowRow[]>, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): UsageErrorWindowAggregate[] {
+  const buckets = new Map<string, UsageErrorWindowAggregate>()
+  for (const row of rowsForDateRange(rowsByDate, range)) {
+    const errorGroup = row.error_group || 'unknown'
+    const providerCode = row.provider_code || 'unknown'
+    const errorCode = row.error_code || 'unknown'
+    const key = `${errorGroup}\n${providerCode}\n${errorCode}`
+    const bucket = buckets.get(key) ?? {
+      errorGroup,
+      providerCode,
+      errorCode,
+      statusCode: 0,
+      errorCount: 0
+    }
+    bucket.statusCode = Math.max(bucket.statusCode, Number(row.status_code ?? 0))
+    bucket.errorMessage = maxText(bucket.errorMessage, row.error_message)
+    bucket.errorCount += Number(row.error_count ?? 0)
+    buckets.set(key, bucket)
+  }
+  return [...buckets.values()].sort((left, right) =>
+    right.errorCount - left.errorCount
+    || compareText(left.providerCode, right.providerCode)
+    || compareText(left.errorCode, right.errorCode)
+    || compareText(left.errorGroup, right.errorGroup)
+  )
+}
+
+function emptyUsageWindowAggregate(): UsageWindowAggregate {
+  return {
+    requestCount: 0,
+    successCount: 0,
+    errorCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    totalCostUsd: 0,
+    durationMsSum: 0,
+    durationMsCount: 0,
+    durationMsMax: 0,
+    firstTokenMsSum: 0,
+    firstTokenMsCount: 0,
+    firstTokenMsMax: 0
+  }
+}
+
+function addUsageWindowAggregate(target: UsageWindowAggregate, row: {
+  request_count: number
+  success_count?: number
+  error_count: number
+  input_tokens: number
+  output_tokens: number
+  cache_read_tokens: number
+  total_cost_usd: number
+  duration_ms_sum: number
+  duration_ms_count: number
+  duration_ms_max?: number
+  first_token_ms_sum?: number
+  first_token_ms_count?: number
+  first_token_ms_max?: number
+  last_used_at?: string | null
+}): void {
+  target.requestCount += Number(row.request_count ?? 0)
+  target.successCount += Number(row.success_count ?? 0)
+  target.errorCount += Number(row.error_count ?? 0)
+  target.inputTokens += Number(row.input_tokens ?? 0)
+  target.outputTokens += Number(row.output_tokens ?? 0)
+  target.cacheReadTokens += Number(row.cache_read_tokens ?? 0)
+  target.totalCostUsd += Number(row.total_cost_usd ?? 0)
+  target.durationMsSum += Number(row.duration_ms_sum ?? 0)
+  target.durationMsCount += Number(row.duration_ms_count ?? 0)
+  target.durationMsMax = Math.max(target.durationMsMax, Number(row.duration_ms_max ?? 0))
+  target.firstTokenMsSum += Number(row.first_token_ms_sum ?? 0)
+  target.firstTokenMsCount += Number(row.first_token_ms_count ?? 0)
+  target.firstTokenMsMax = Math.max(target.firstTokenMsMax, Number(row.first_token_ms_max ?? 0))
+  target.lastUsedAt = latestText(target.lastUsedAt, row.last_used_at)
+}
+
+function sortedMapEntries<T>(map: Map<string, T>): Array<[string, T]> {
+  return [...map.entries()].sort(([leftKey], [rightKey]) => compareText(leftKey, rightKey))
+}
+
+function latestText(left: string | undefined, right: string | null | undefined): string | undefined {
+  if (!right) return left
+  if (!left || right > left) return right
+  return left
+}
+
+function maxText(left: string | undefined, right: string | null | undefined): string | undefined {
+  if (right === null || right === undefined) return left
+  if (left === undefined || right > left) return right
+  return left
+}
+
+function compareText(left: string, right: string): number {
+  if (left < right) return -1
+  if (left > right) return 1
+  return 0
 }
 
 function refreshUsageQuotaHourlyWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
@@ -897,21 +1195,14 @@ function refreshAuthorizationUsageRangeWindowSnapshots(database: DatabaseSync, u
   }
 }
 
-export function fixedUsageStatsRangeWindow(timezone = usageStatsTimezone()): AccountUsageStatsRange {
-  const todayKey = dateKey(new Date(), timezone)
-  const endDate = parseDateKeyStrict(todayKey) ?? new Date()
-  const startDate = localDateKey(addDays(endDate, -(FIXED_RANGE_WINDOW_DAYS - 1)))
+export function normalizeDefaultUsageStatsRange(timezone = usageStatsTimezone()): AccountUsageStatsRange {
+  const today = dateKey(new Date(), timezone)
   return {
-    startDate,
-    endDate: todayKey,
-    days: FIXED_RANGE_WINDOW_DAYS,
+    startDate: today,
+    endDate: today,
+    days: 1,
     maxDays: FIXED_RANGE_WINDOW_DAYS
   }
-}
-
-export function isFixedUsageStatsRangeWindow(range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>, timezone = usageStatsTimezone()): boolean {
-  const fixed = fixedUsageStatsRangeWindow(timezone)
-  return range.startDate === fixed.startDate && range.endDate === fixed.endDate
 }
 
 export interface UsageStatsConsistencyIssue {
@@ -1013,44 +1304,44 @@ export function latestUsageStatsLagSeconds(): number {
   return Number(row?.lag_seconds ?? 0)
 }
 
-export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOverviewWindowKey = 'last1d'): UsageStatsOverview {
+export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): UsageStatsOverview {
   const database = getRecordDatabase()
   const statsScope = usageOverviewStatsScope(access)
-  const window = usageOverviewWindow(windowKey)
+  const windowKey = rangeWindowKey(range)
 
   const summaryRow = database.prepare(`
     SELECT ? AS account_id, request_count, success_count, error_count,
       input_tokens, output_tokens, cache_read_tokens, total_cost_usd AS total_cost,
       duration_ms_sum, duration_ms_count, first_token_ms_sum, first_token_ms_count, last_used_at
     FROM usage_overview_summary_windows
-    WHERE system_account_id = ? AND window_key = ?
-  `).get(statsScope.scopeId, statsScope.systemAccountId, window.key) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow | undefined
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+  `).get(statsScope.scopeId, statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as AccountUsageAggregateRow & StatsAggregateMathRow | undefined
 
   const hourlyRows = database.prepare(`
     SELECT bucket_key AS stat_hour, request_count, error_count, input_tokens, output_tokens, cache_read_tokens,
       total_cost_usd AS total_cost, duration_ms_sum, duration_ms_count
     FROM usage_overview_trend_windows
-    WHERE system_account_id = ? AND window_key = ?
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
-  `).all(statsScope.systemAccountId, window.key) as unknown as Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
+  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<StatsAggregateMathRow & { stat_hour: string; error_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
 
   const modelRows = database.prepare(`
     SELECT provider_code, model,
       request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd AS total_cost
     FROM usage_model_rank_windows
-    WHERE system_account_id = ? AND window_key = ?
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY rank ASC
-  `).all(statsScope.systemAccountId, window.key) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
+  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<{ provider_code: string; model: string; request_count: number; input_tokens: number; output_tokens: number; cache_read_tokens: number; total_cost: number }>
 
   const errorRows = database.prepare(`
     SELECT provider_code, error_code, status_code, error_message, error_count
     FROM usage_error_rank_windows
-    WHERE system_account_id = ? AND window_key = ?
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY rank ASC
-  `).all(statsScope.systemAccountId, window.key) as unknown as Array<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>
+  `).all(statsScope.systemAccountId, windowKey, range.startDate, range.endDate) as unknown as Array<{ provider_code: string; error_code: string; status_code: number; error_message: string | null; error_count: number }>
 
   return {
-    window,
+    range,
     summary: usageSummaryWithMath(summaryRow ?? emptyStatsAggregateMathRow()),
     hourlyTrend: mapUsageTrendRows(hourlyRows),
     modelDistribution: modelRows.map((row) => ({
@@ -1071,15 +1362,14 @@ export function getUsageStatsOverview(access?: AccessScope, windowKey: UsageOver
   }
 }
 
-export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerformanceWindowKey = 'last1d', accountIds: string[] = []): AiPerformanceOverview {
+export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange(), accountIds: string[] = []): AiPerformanceOverview {
   const database = getRecordDatabase()
   const timezone = usageStatsTimezone()
   const systemAccountId = currentSystemAccountId(access)
-  const window = aiPerformanceWindow(windowKey)
-  const now = Date.now()
-  const hourBuckets = hourBucketsUntilNow(window.hours, now, timezone)
-  const windowSinceHour = hourBuckets[0] ?? hourKey(new Date(now), timezone)
-  const activeSinceHour = hourKey(new Date(now - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS), timezone)
+  const hourBuckets = hourBucketsForRange(range)
+  const windowSinceHour = hourBuckets[0] ?? `${range.startDate}T00`
+  const windowEndHour = hourBuckets[hourBuckets.length - 1] ?? `${range.endDate}T23`
+  const activeSinceHour = hourKey(new Date(Date.now() - 6 * DAY_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(accountIds).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
 
   const defaultRows = loadDefaultAiPerformanceAccounts(database, systemAccountId)
@@ -1091,10 +1381,10 @@ export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerf
   const orderedRows = dedupeAiPerformanceAccountRows([...defaultRows, ...selectedRows])
   const accounts = orderedRows.map((row) => mapAiPerformanceAccount(row, defaultIds, selectedIds))
   const hourlyRows = accounts.length
-    ? loadAiPerformanceHourlyRows(database, systemAccountId, accounts.map((account) => account.id), windowSinceHour)
+    ? loadAiPerformanceHourlyRows(database, systemAccountId, accounts.map((account) => account.id), windowSinceHour, windowEndHour)
     : []
   const hourlyRowsByAccountHour = new Map(hourlyRows.map((row) => [`${row.scope_id}\n${row.stat_hour}`, row]))
-  const summaryRow = loadAiPerformanceSummaryRow(database, systemAccountId, window.key)
+  const summaryRow = loadAiPerformanceSummaryRow(database, systemAccountId, range)
 
   const hourlySeries = accounts.map((account) => ({
     accountId: account.id,
@@ -1119,7 +1409,7 @@ export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerf
   }))
 
   return {
-    window,
+    range,
     defaultAccounts: accounts.filter((account) => account.defaultVisible),
     selectedAccounts: accounts.filter((account) => account.selected),
     accounts,
@@ -1137,7 +1427,7 @@ export function getAiPerformanceOverview(access?: AccessScope, windowKey: AiPerf
   }
 }
 
-function loadAiPerformanceSummaryRow(database: DatabaseSync, systemAccountId: string, windowKey: AiPerformanceWindowKey): {
+function loadAiPerformanceSummaryRow(database: DatabaseSync, systemAccountId: string, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): {
   request_count: number
   first_token_ms_sum: number
   first_token_ms_count: number
@@ -1149,8 +1439,8 @@ function loadAiPerformanceSummaryRow(database: DatabaseSync, systemAccountId: st
   return database.prepare(`
     SELECT request_count, first_token_ms_sum, first_token_ms_count, first_token_ms_max, duration_ms_sum, duration_ms_count, duration_ms_max
     FROM ai_performance_summary_windows
-    WHERE system_account_id = ? AND window_key = ?
-  `).get(systemAccountId, windowKey) as unknown as {
+    WHERE system_account_id = ? AND window_key = ? AND start_date = ? AND end_date = ?
+  `).get(systemAccountId, rangeWindowKey(range), range.startDate, range.endDate) as unknown as {
     request_count: number
     first_token_ms_sum: number
     first_token_ms_count: number
@@ -1168,7 +1458,7 @@ export function listAiPerformanceAccountOptions(
   const database = getRecordDatabase()
   const timezone = usageStatsTimezone()
   const systemAccountId = currentSystemAccountId(access)
-  const activeSinceHour = hourKey(new Date(Date.now() - (AI_PERFORMANCE_WINDOWS[2].hours - 1) * HOUR_MS), timezone)
+  const activeSinceHour = hourKey(new Date(Date.now() - 6 * DAY_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(options.accountIds ?? []).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
   const searchLimit = boundedAccountOptionLimit(options.limit)
   const searchRows = loadAiPerformanceAccountOptionRows(database, systemAccountId, activeSinceHour, {
@@ -1189,10 +1479,10 @@ export function listAiPerformanceAccountOptions(
   }))
 }
 
-export function getSystemMetricsOverview(windowKey: UsageOverviewWindowKey = 'last1d'): SystemMetricsOverview {
+export function getSystemMetricsOverview(range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): SystemMetricsOverview {
   const database = getRecordDatabase()
   const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC, id DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
-  const window = usageOverviewWindow(windowKey)
+  const windowKey = rangeWindowKey(range)
   const rows = database.prepare(`
     SELECT bucket_key AS stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
       memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
@@ -1202,17 +1492,13 @@ export function getSystemMetricsOverview(windowKey: UsageOverviewWindowKey = 'la
       network_rx_total_bytes_max, network_tx_total_bytes_max,
       db_file_bytes_max, stats_lag_seconds_max
     FROM system_metrics_trend_windows
-    WHERE window_key = ?
+    WHERE window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
-  `).all(window.key) as unknown as Array<Record<string, unknown>>
+  `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
   return {
     latest: latest ? mapSystemMetricsLatest(latest) : undefined,
     hourlyTrend: rows.map(mapSystemMetricsHourly)
   }
-}
-
-function usageOverviewWindow(windowKey: UsageOverviewWindowKey): UsageOverviewWindowDefinition {
-  return USAGE_OVERVIEW_WINDOWS.find((window) => window.key === windowKey) ?? USAGE_OVERVIEW_WINDOWS[0]
 }
 
 function refreshAccountLast7dRequestRankSnapshot(database: DatabaseSync, snapshotAt: string, updatedAt: string, timezone: string): void {
@@ -1333,10 +1619,6 @@ function refreshUsageRankSnapshotFromStats(database: DatabaseSync, input: {
   `).run(input.scopeType, input.windowKey, input.metric, input.snapshotAt, input.updatedAt, input.scopeType, ...input.timeParams, input.limit)
 }
 
-function aiPerformanceWindow(windowKey: AiPerformanceWindowKey): AiPerformanceWindowDefinition {
-  return AI_PERFORMANCE_WINDOWS.find((window) => window.key === windowKey) ?? AI_PERFORMANCE_WINDOWS[0]
-}
-
 interface AiPerformanceAccountRow {
   id: string
   name: string
@@ -1445,7 +1727,7 @@ function loadUsageRankMetricsByScopeIds(
   return result
 }
 
-function loadAiPerformanceHourlyRows(database: DatabaseSync, systemAccountId: string, accountIds: string[], sinceHour: string): AiPerformanceHourlyRow[] {
+function loadAiPerformanceHourlyRows(database: DatabaseSync, systemAccountId: string, accountIds: string[], sinceHour: string, endHour: string): AiPerformanceHourlyRow[] {
   const placeholders = sqlPlaceholders(accountIds.length)
   return database.prepare(`
     SELECT
@@ -1463,8 +1745,9 @@ function loadAiPerformanceHourlyRows(database: DatabaseSync, systemAccountId: st
       AND scope_type = 'account'
       AND scope_id IN (${placeholders})
       AND stat_hour >= ?
+      AND stat_hour <= ?
     ORDER BY stat_hour ASC
-  `).all(systemAccountId, ...accountIds, sinceHour) as unknown as AiPerformanceHourlyRow[]
+  `).all(systemAccountId, ...accountIds, sinceHour, endHour) as unknown as AiPerformanceHourlyRow[]
 }
 
 function loadAiPerformanceAccountOptionRows(
@@ -1585,8 +1868,45 @@ function boundedAccountOptionLimit(value?: number): number {
   return Math.min(AI_PERFORMANCE_ACCOUNT_OPTION_MAX_LIMIT, Math.max(1, Math.trunc(number)))
 }
 
-function trendBucketHours(windowKey: UsageOverviewWindowKey): number {
-  return USAGE_OVERVIEW_TREND_BUCKET_HOURS[windowKey] ?? 1
+function fixedUsageStatsRanges(timezone: string): AccountUsageStatsRange[] {
+  const todayKey = dateKey(new Date(), timezone)
+  const endDate = parseDateKeyStrict(todayKey)
+  if (!endDate) return []
+  const earliestDate = addDays(endDate, -(FIXED_RANGE_WINDOW_DAYS - 1))
+  const dates = Array.from({ length: FIXED_RANGE_WINDOW_DAYS }, (_, index) => localDateKey(addDays(earliestDate, index)))
+  const ranges: AccountUsageStatsRange[] = []
+  for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
+    for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
+      ranges.push({
+        startDate: dates[startIndex],
+        endDate: dates[endIndex],
+        days: endIndex - startIndex + 1,
+        maxDays: FIXED_RANGE_WINDOW_DAYS
+      })
+    }
+  }
+  return ranges
+}
+
+function rangeWindowKey(range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): string {
+  return `${range.startDate}:${range.endDate}`
+}
+
+function trendBucketHours(range: Pick<AccountUsageStatsRange, 'days'>): number {
+  if (range.days <= 1) return 1
+  if (range.days <= 3) return 6
+  return 24
+}
+
+function hourBucketsForRange(range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): string[] {
+  const dates = dateKeysInRange(range)
+  const buckets: string[] = []
+  for (const date of dates) {
+    for (let hour = 0; hour < 24; hour += 1) {
+      buckets.push(`${date}T${String(hour).padStart(2, '0')}`)
+    }
+  }
+  return buckets
 }
 
 function maxFromCountedMetric(value: unknown, count: number): number | undefined {

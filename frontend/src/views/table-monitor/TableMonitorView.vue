@@ -16,9 +16,8 @@
             v-model:value="historyRange"
             allow-clear
             class="table-history-range"
-            show-time
             :disabled="loading"
-            :placeholder="['开始时间', '结束时间']"
+            :placeholder="['开始日期', '结束日期']"
             @change="loadData"
           />
         </div>
@@ -138,7 +137,7 @@ const columns = [
 
 const loading = ref(false)
 const keyword = ref('')
-const historyRange = ref<[Dayjs, Dayjs] | undefined>([dayjs().subtract(1, 'month'), dayjs()])
+const historyRange = ref<[Dayjs, Dayjs] | undefined>([dayjs().subtract(1, 'month').startOf('day'), dayjs().endOf('day')])
 const overview = ref<TableStorageOverview>()
 const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'records']
 const selectedTableKeys = ref<Record<MonitoredDatabaseRole, string | undefined>>({
@@ -266,8 +265,8 @@ function firstTableForRole(role: MonitoredDatabaseRole): TableStorageSnapshotSum
 
 function historyRangeParams() {
   return {
-    startAt: formatServerDateTimeInput(historyRange.value?.[0]) ?? undefined,
-    endAt: formatServerDateTimeInput(historyRange.value?.[1]) ?? undefined
+    startAt: formatServerDateTimeInput(historyRange.value?.[0]?.startOf('day')) ?? undefined,
+    endAt: formatServerDateTimeInput(historyRange.value?.[1]?.endOf('day')) ?? undefined
   }
 }
 

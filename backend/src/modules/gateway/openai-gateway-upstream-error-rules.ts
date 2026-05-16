@@ -65,6 +65,24 @@ export const openAIUpstreamErrorFeatureRules = [
     },
     action: 'passthrough_request_error',
     accountPolicy: 'none'
+  },
+  {
+    id: 'openai_instructions_required_request_passthrough',
+    enabled: true,
+    name: 'OpenAI instructions 缺失按请求级错误返回',
+    description: '上游 HTTP 400 返回 Instructions are required 时，判定为请求或上游协议形态错误，原样返回客户端。',
+    source: 'audit_log',
+    rationale: '生产审计显示该错误会把可用账号误判为临时不可调用；特征命中只说明本次请求被上游明确拒绝，不代表账号健康问题。',
+    provider: 'openai',
+    endpoint: '/v1/chat/completions',
+    streamOnly: false,
+    match: {
+      statusCodes: [400],
+      errorTypes: ['invalid_request_error'],
+      messageKeywords: ['Instructions are required']
+    },
+    action: 'passthrough_request_error',
+    accountPolicy: 'none'
   }
 ] satisfies readonly UpstreamErrorFeatureRule[]
 

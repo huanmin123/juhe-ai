@@ -105,6 +105,7 @@ function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogL
   const rawPageSize = numberQueryValue(query.pageSize)
   const rawLimit = numberQueryValue(query.limit)
   const rawLevel = optionalQueryText(query.level)?.toLowerCase()
+  const timeRange = dateTimeRangeQueryValue(query.startAt, query.endAt)
   return {
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
@@ -114,7 +115,9 @@ function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogL
       ? rawLevel as RuntimeLogLevel | 'all'
       : undefined,
     event: optionalQueryText(query.event),
-    keyword: optionalQueryText(query.keyword)
+    keyword: optionalQueryText(query.keyword),
+    startAt: timeRange.startAt,
+    endAt: timeRange.endAt
   }
 }
 
@@ -132,6 +135,22 @@ function stringArrayQueryValues(value: unknown): string[] {
     return value.filter((item): item is string => typeof item === 'string')
   }
   return typeof value === 'string' ? [value] : []
+}
+
+function dateTimeRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?: string; endAt?: string } {
+  const startAt = dateTimeQueryValue(startValue)
+  const endAt = dateTimeQueryValue(endValue)
+  if (startAt && endAt && startAt > endAt) {
+    return { startAt: endAt, endAt: startAt }
+  }
+  return { startAt, endAt }
+}
+
+function dateTimeQueryValue(value: unknown): string | undefined {
+  const text = optionalQueryText(value)
+  if (!text) return undefined
+  const time = Date.parse(text)
+  return Number.isNaN(time) ? undefined : new Date(time).toISOString()
 }
 
 function numberQueryValue(value: unknown): number | undefined {

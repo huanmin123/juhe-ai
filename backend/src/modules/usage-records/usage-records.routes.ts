@@ -2,6 +2,7 @@ import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
 import { getUsageRecordDetail, listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary } from '../../storage/repositories.js'
+import { startOfZonedDateKeyIso, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { buildProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
 
@@ -47,6 +48,7 @@ function parseListOptions(query: Record<string, unknown>): UsageRecordListOption
   const rawPageSize = numberQueryValue(query.pageSize)
   const rawLimit = numberQueryValue(query.limit)
   const rawStatusCode = numberQueryValue(query.statusCode)
+  const createdAtRange = dateRangeQueryValue(query.startDate, query.endDate)
   const sortBy = typeof query.sortBy === 'string' && usageRecordSortFields.has(query.sortBy as UsageRecordSortField)
     ? query.sortBy as UsageRecordSortField
     : undefined
@@ -63,7 +65,9 @@ function parseListOptions(query: Record<string, unknown>): UsageRecordListOption
     accountKeyword: optionalQueryText(query.accountKeyword ?? query.keyword ?? query.accountName),
     result,
     statusCode: isHttpStatusCode(rawStatusCode) ? rawStatusCode : undefined,
-    model: optionalQueryText(query.model)
+    model: optionalQueryText(query.model),
+    startAt: createdAtRange.startAt,
+    endAt: createdAtRange.endAt
   }
 }
 
@@ -80,4 +84,44 @@ function isHttpStatusCode(value: unknown): value is number {
 function optionalQueryText(value: unknown): string | undefined {
   const text = Array.isArray(value) ? value[0] : value
   return typeof text === 'string' && text.trim() ? text.trim() : undefined
+}
+
+function dateRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?: string; endAt?: string } {
+  const startDate = dateQueryValue(startValue)
+  const endDate = dateQueryValue(endValue)
+  if (!startDate && !endDate) {
+    return {}
+  }
+  const start = startDate ?? endDate
+  const end = endDate ?? startDate
+  if (!start || !end) {
+    return {}
+  }
+  const rangeStart = start <= end ? start : end
+  const rangeEnd = start <= end ? end : start
+  return {
+    startAt: startOfDateKeyIso(rangeStart),
+    endAt: startOfDateKeyIso(nextDateKey(rangeEnd))
+  }
+}
+
+function dateQueryValue(value: unknown): string | undefined {
+  const text = optionalQueryText(value)
+  if (!text || !/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return undefined
+  }
+  const [year, month, day] = text.split('-').map((part) => Number(part))
+  const date = new Date(year, month - 1, day)
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day ? text : undefined
+}
+
+function startOfDateKeyIso(dateKey: string): string | undefined {
+  return startOfZonedDateKeyIso(dateKey, usageStatsTimezone())
+}
+
+function nextDateKey(dateKey: string): string {
+  const [year, month, day] = dateKey.split('-').map((part) => Number(part))
+  const date = new Date(year, month - 1, day)
+  date.setDate(date.getDate() + 1)
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
 }

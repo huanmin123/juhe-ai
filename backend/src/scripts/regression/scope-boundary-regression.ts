@@ -219,6 +219,8 @@ interface SeedState {
   userCId: string
   inboundAuthorizationId: string
   userBGroupId: string
+  usageToday: string
+  usageYesterday: string
 }
 
 async function main(): Promise<void> {
@@ -305,6 +307,26 @@ async function main(): Promise<void> {
     assert(failedUserBUsage.total === 1 && failedUserBUsage.items[0]?.statusCode === 429 && failedUserBUsage.items[0]?.success === false, '管理使用记录失败状态码筛选异常')
     const modelFilteredUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/api/usage-records?systemAccountId=${seed.userBId}&model=${encodeURIComponent('scope-model-c')}&page=1&pageSize=10`, seed.adminCookie)
     assert(modelFilteredUsage.total === 1 && modelFilteredUsage.items[0]?.model === 'scope-model-c', '管理使用记录模型筛选异常')
+    const dateFilteredUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/api/usage-records?systemAccountId=${seed.userBId}&startDate=${seed.usageToday}&endDate=${seed.usageToday}&page=1&pageSize=10`, seed.adminCookie)
+    assert(dateFilteredUsage.total === 3 && dateFilteredUsage.items.every((record) => record.systemAccountId === seed.userBId), '管理使用记录自然日范围筛选异常')
+    const emptyDateFilteredUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/api/usage-records?systemAccountId=${seed.userBId}&startDate=${seed.usageYesterday}&endDate=${seed.usageYesterday}&page=1&pageSize=10`, seed.adminCookie)
+    assert(emptyDateFilteredUsage.total === 0 && emptyDateFilteredUsage.items.length === 0, '管理使用记录自然日范围空结果筛选异常')
+    repositories.createUsageRecordsBatch([
+      usageRecord('scope_usage_b_dst_before', seed.userBId, seed.userBAccountId, 'POST /v1/responses', 'scope-model-dst', 200, true, '2026-04-04T10:59:59.000Z'),
+      usageRecord('scope_usage_b_dst_start', seed.userBId, seed.userBAccountId, 'POST /v1/responses', 'scope-model-dst', 200, true, '2026-04-04T11:00:01.000Z'),
+      usageRecord('scope_usage_b_dst_end', seed.userBId, seed.userBAccountId, 'POST /v1/responses', 'scope-model-dst', 200, true, '2026-04-05T11:59:59.000Z')
+    ])
+    const originalUsageStatsTimezone = usageStatsTimezoneSetting()
+    setUsageStatsTimezoneSetting('Pacific/Auckland')
+    try {
+      const dstDateFilteredUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/api/usage-records?systemAccountId=${seed.userBId}&model=${encodeURIComponent('scope-model-dst')}&startDate=2026-04-05&endDate=2026-04-05&page=1&pageSize=10`, seed.adminCookie)
+      assert(dstDateFilteredUsage.total === 2, `管理使用记录夏令时自然日边界筛选异常：${dstDateFilteredUsage.total}`)
+      assert(dstDateFilteredUsage.items.some((record) => record.id === 'scope_usage_b_dst_start'), '夏令时自然日筛选缺少当天首小时记录')
+      assert(dstDateFilteredUsage.items.some((record) => record.id === 'scope_usage_b_dst_end'), '夏令时自然日筛选缺少当天结束前记录')
+      assert(!dstDateFilteredUsage.items.some((record) => record.id === 'scope_usage_b_dst_before'), '夏令时自然日筛选不应包含前一日本地记录')
+    } finally {
+      setUsageStatsTimezoneSetting(originalUsageStatsTimezone)
+    }
     summary.push('使用记录分页筛选检查通过')
 
     const userAAccountUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/api/my-stats/account-usage?systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.userACookie)
@@ -336,9 +358,10 @@ async function main(): Promise<void> {
 
     const userAAiPerformanceAccounts = await getEnvelope<AiPerformanceAccountOption[]>(baseUrl, `/api/my-stats/ai-performance/accounts?keyword=${encodeURIComponent('用户 B')}`, seed.userACookie)
     assert(!userAAiPerformanceAccounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控不应返回别人授权给我的账户')
-    const userAAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/api/my-stats/ai-performance?window=last7d&accountIds=${seed.userBAccountId}`, seed.userACookie)
+    const aiPerformanceRangeQuery = `startDate=${seed.usageToday}&endDate=${seed.usageToday}`
+    const userAAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/api/my-stats/ai-performance?${aiPerformanceRangeQuery}&accountIds=${seed.userBAccountId}`, seed.userACookie)
     assert(!userAAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控选中参数不应越权加入授权账户')
-    const userBAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, '/api/my-stats/ai-performance?window=last7d', seed.userBCookie)
+    const userBAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/api/my-stats/ai-performance?${aiPerformanceRangeQuery}`, seed.userBCookie)
     assert(userBAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控拥有者应能看到自己的账户')
     assert(userBAiPerformance.summary.requestCount === 4, `AI性能监控应按账户整体统计包含被授权人调用，实际 ${userBAiPerformance.summary.requestCount}`)
     summary.push('AI性能监控拥有者口径和授权账户隔离检查通过')
@@ -483,15 +506,15 @@ function seedData(): SeedState {
     name: '用户 A Key',
     groupId: repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
   }, userAAccess)
-  const usageBaseTime = new Date(Date.now() - 60 * 60 * 1000)
-  const usageAt = (offsetSeconds: number) => new Date(usageBaseTime.getTime() + offsetSeconds * 1000).toISOString()
+  const usageToday = localDateKey(new Date())
+  const usageYesterday = localDateKey(addDays(new Date(), -1))
   repositories.createUsageRecordsBatch([
-    usageRecord('scope_usage_a_1', userA.id, userAAccount.id, 'GET /v1/models', 'scope-model-a', 200, true, usageAt(1)),
-    usageRecord('scope_usage_a_2', userA.id, userAAccount.id, 'POST /v1/responses', 'scope-model-a', 500, false, usageAt(2)),
-    usageRecord('scope_usage_a_authorized_b_1', userA.id, userBAccount.id, 'POST /v1/responses', 'scope-model-authorized', 200, true, usageAt(3)),
-    usageRecord('scope_usage_b_1', userB.id, userBAccount.id, 'GET /v1/models', 'scope-model-b', 200, true, usageAt(4)),
-    usageRecord('scope_usage_b_2', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-b', 429, false, usageAt(5)),
-    usageRecord('scope_usage_b_3', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-c', 200, true, usageAt(6))
+    usageRecord('scope_usage_a_1', userA.id, userAAccount.id, 'GET /v1/models', 'scope-model-a', 200, true, usageAt(usageToday, 1)),
+    usageRecord('scope_usage_a_2', userA.id, userAAccount.id, 'POST /v1/responses', 'scope-model-a', 500, false, usageAt(usageToday, 2)),
+    usageRecord('scope_usage_a_authorized_b_1', userA.id, userBAccount.id, 'POST /v1/responses', 'scope-model-authorized', 200, true, usageAt(usageToday, 3)),
+    usageRecord('scope_usage_b_1', userB.id, userBAccount.id, 'GET /v1/models', 'scope-model-b', 200, true, usageAt(usageToday, 4)),
+    usageRecord('scope_usage_b_2', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-b', 429, false, usageAt(usageToday, 5)),
+    usageRecord('scope_usage_b_3', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-c', 200, true, usageAt(usageToday, 6))
   ])
   while (usageStatsRepository.aggregateUsageStatsBatch(1000) > 0) {}
   usageStatsRepository.refreshUsageRankSnapshots()
@@ -511,8 +534,48 @@ function seedData(): SeedState {
     teamUserBOnlyId: teamUserBOnly.id,
     teamNoUserAId: teamNoUserA.id,
     inboundAuthorizationId: inboundAuthorization.id,
-    userBGroupId: userBGroup.id
+    userBGroupId: userBGroup.id,
+    usageToday,
+    usageYesterday
   }
+}
+
+function usageAt(dateKey: string, offsetSeconds: number): string {
+  const [year, month, day] = dateKey.split('-').map((part) => Number(part))
+  return new Date(year, month - 1, day, 1, 0, offsetSeconds).toISOString()
+}
+
+function localDateKey(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date)
+  next.setDate(next.getDate() + days)
+  return next
+}
+
+function usageStatsTimezoneSetting(): string {
+  const row = databaseModule.getDatabase()
+    .prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'")
+    .get() as unknown as { value_json?: string } | undefined
+  if (!row?.value_json) return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  try {
+    const value = JSON.parse(row.value_json) as unknown
+    return typeof value === 'string' && value.trim() ? value.trim() : Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  } catch {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+  }
+}
+
+function setUsageStatsTimezoneSetting(timezone: string): void {
+  databaseModule.getDatabase()
+    .prepare(`
+      INSERT INTO system_settings (system_account_id, key, value_json, updated_at)
+      VALUES ('sys_admin', 'usageStatsTimezone', ?, ?)
+      ON CONFLICT(system_account_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+    `)
+    .run(JSON.stringify(timezone), new Date().toISOString())
 }
 
 function usageRecord(

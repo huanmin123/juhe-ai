@@ -51,6 +51,7 @@ operationLogsRouter.get('/:id', requireAdmin, (req, res) => {
 })
 
 function parseOperationLogListOptions(query: Record<string, unknown>, includeAdminFilters: boolean): OperationLogListOptions {
+  const createdAtRange = dateTimeRangeQueryValue(query.startAt, query.endAt)
   return {
     page: numberQueryValue(query.page),
     pageSize: numberQueryValue(query.pageSize),
@@ -61,12 +62,28 @@ function parseOperationLogListOptions(query: Record<string, unknown>, includeAdm
     resourceType: optionalQueryText(query.resourceType),
     resourceId: optionalQueryText(query.resourceId),
     traceId: optionalQueryText(query.traceId),
-    startAt: optionalQueryText(query.startAt),
-    endAt: optionalQueryText(query.endAt),
+    startAt: createdAtRange.startAt,
+    endAt: createdAtRange.endAt,
     actorSystemAccountId: includeAdminFilters ? optionalQueryText(query.actorSystemAccountId) : undefined,
     affectedSystemAccountId: includeAdminFilters ? optionalQueryText(query.affectedSystemAccountId) : undefined,
     operationScopeSystemAccountId: includeAdminFilters ? optionalQueryText(query.operationScopeSystemAccountId) : undefined
   }
+}
+
+function dateTimeRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?: string; endAt?: string } {
+  const startAt = dateTimeQueryValue(startValue)
+  const endAt = dateTimeQueryValue(endValue)
+  if (startAt && endAt && startAt > endAt) {
+    return { startAt: endAt, endAt: startAt }
+  }
+  return { startAt, endAt }
+}
+
+function dateTimeQueryValue(value: unknown): string | undefined {
+  const text = optionalQueryText(value)
+  if (!text) return undefined
+  const time = Date.parse(text)
+  return Number.isNaN(time) ? undefined : new Date(time).toISOString()
 }
 
 function numberQueryValue(value: unknown): number | undefined {

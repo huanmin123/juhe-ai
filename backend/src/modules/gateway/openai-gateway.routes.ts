@@ -735,12 +735,6 @@ export async function handleOpenAIGatewayRequest(
     }
     if (error instanceof UpstreamRejectedRequestError) {
       const auditError = parseClientVisibleUpstreamErrorForAudit(error.response, error.message)
-      if (error.upstreamErrorFeature) {
-        auditCapture.addGatewayMetadata({
-          label: 'upstream_error_feature',
-          metadata: upstreamErrorFeatureAuditMetadata(error.upstreamErrorFeature)
-        })
-      }
       sendRawUpstreamErrorResponse(res, error.response)
       auditCapture.finalize({
         outcome: 'upstream_failed',
@@ -1321,6 +1315,18 @@ async function fetchFirstAvailableUpstream(
                 parsedError
               })
               if (featureDecision) {
+                const featureResponse = {
+                  statusCode: response.status,
+                  headers: response.headers,
+                  body: responseBody,
+                  bodyText: responseBodyText
+                }
+                const featureLastAttempt = lastAttempt ?? {
+                  accountId: account.id,
+                  accountName: account.name,
+                  upstreamUrl,
+                  status: response.status
+                }
                 getRequestLogger().warn({
                   event: 'gateway_upstream_error_feature_matched',
                   accountId: account.id,
@@ -1337,16 +1343,15 @@ async function fetchFirstAvailableUpstream(
                   upstreamErrorType: featureDecision.upstreamErrorType,
                   upstreamErrorCode: featureDecision.upstreamErrorCode,
                   upstreamErrorMessage: featureDecision.upstreamErrorMessage
-                }, '命中上游错误响应特征规则，按请求级失败原样返回客户端')
+                }, upstreamErrorFeatureActionLogMessage(featureDecision))
+                auditCapture.addGatewayMetadata({
+                  label: 'upstream_error_feature',
+                  metadata: upstreamErrorFeatureAuditMetadata(featureDecision)
+                })
                 throw new UpstreamRejectedRequestError(
                   `命中上游错误响应特征规则 ${featureDecision.ruleName}，判定为请求级失败`,
-                  lastAttempt,
-                  {
-                    statusCode: response.status,
-                    headers: response.headers,
-                    body: responseBody,
-                    bodyText: responseBodyText
-                  },
+                  featureLastAttempt,
+                  featureResponse,
                   featureDecision
                 )
               }
@@ -1683,6 +1688,10 @@ function upstreamErrorFeatureAuditMetadata(decision: UpstreamErrorFeatureDecisio
     upstreamErrorMessage: decision.upstreamErrorMessage,
     accountPolicy: decision.accountPolicy
   }
+}
+
+function upstreamErrorFeatureActionLogMessage(decision: UpstreamErrorFeatureDecision): string {
+  return '命中上游错误响应特征规则，按请求级失败原样返回客户端'
 }
 
 function clearAccountStreamFailureStateWithCacheInvalidation(accountId: string): void {

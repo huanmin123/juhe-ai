@@ -247,16 +247,17 @@ const columns = [
 
 const initialLoading = computed(() => loading.value && !overview.value)
 const dateRange = ref<[Dayjs, Dayjs]>(defaultDateRange())
+const dateRangeExplicit = ref(false)
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
-const defaultRange = computed(() => normalizedDateRange(defaultDateRange()))
+const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const activeFilterCount = computed(() => {
   let count = 0
   if (filters.teamId) count += 1
   if (selectedResourceOwnerSystemAccountId.value) count += 1
   if (filters.resourceType !== 'all') count += 1
   if (filters.resourceId) count += 1
-  if (selectedRange.value[0] !== defaultRange.value[0] || selectedRange.value[1] !== defaultRange.value[1]) count += 1
+  if (dateRangeExplicit.value) count += 1
   return count
 })
 const selectedResourceOwnerSystemAccountId = computed(() => {
@@ -277,7 +278,7 @@ const ownAuthorizableAccounts = computed(() => accounts.value.filter((account) =
 const ownAuthorizableGroups = computed(() => groups.value.filter((group) => group.permissions?.canAuthorize !== false))
 const teamRows = computed<AuthorizationTeamUsageRow[]>(() => overview.value?.rows ?? [])
 const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
-const rangeLabel = computed(() => `${formatDateLabel(selectedRange.value[0])} 至 ${formatDateLabel(selectedRange.value[1])}`)
+const rangeLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const summaryCards = computed(() => [
   { key: 'teams', label: '授权团队', value: formatNumber(overview.value?.teamCount ?? 0), extra: `范围 ${rangeLabel.value}` },
   { key: 'requests', label: '范围请求', value: formatNumber(totalUsage.value.requestCount), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` },
@@ -323,19 +324,20 @@ async function loadData() {
   loading.value = true
   try {
     const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
+    const rangeParams = selectedRangeParams()
     const params = {
       systemAccountId: ownerSystemAccountId,
       resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
       resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
       teamId: filters.teamId,
-      startDate: selectedRange.value[0],
-      endDate: selectedRange.value[1]
+      ...rangeParams
     }
     const [usageOverview] = await Promise.all([
       isManagementView.value ? api.authorizations.teamUsage(params) : api.myAuthorizations.teamUsage(params),
       loadOptions()
     ])
     overview.value = usageOverview
+    syncDateRangeFromResponse(usageOverview.range)
   } catch (error) {
     console.error(error)
     message.error('加载团队消耗明细失败')
@@ -346,12 +348,13 @@ async function loadData() {
 
 function handleTeamAction(key: string, row: AuthorizationTeamUsageRow) {
   if (key !== 'users') return
+  const [startDate, endDate] = displayRange.value
   void router.push({
     path: isManagementView.value ? '/authorization-user-usage' : '/my-authorization-user-usage',
     query: {
       teamId: row.teamId,
-      startDate: selectedRange.value[0],
-      endDate: selectedRange.value[1],
+      startDate,
+      endDate,
       resourceType: row.resourceType,
       resourceId: row.resourceId,
       resourceOwnerSystemAccountId: row.accountOwnerSystemAccountId ?? selectedResourceOwnerSystemAccountId.value
@@ -382,6 +385,7 @@ function handleResourceOwnerChange() {
 function resetFilters() {
   Object.assign(filters, defaultFilters())
   dateRange.value = defaultDateRange()
+  dateRangeExplicit.value = false
   calendarRange.value = [null, null]
   void loadData()
 }
@@ -391,7 +395,14 @@ function handleDateRangeChange() {
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
+  dateRangeExplicit.value = true
   void loadData()
+}
+
+function selectedRangeParams(): { startDate?: string; endDate?: string } {
+  if (!dateRangeExplicit.value) return {}
+  const [startDate, endDate] = selectedRange.value
+  return { startDate, endDate }
 }
 
 function handleCalendarChange(value: Array<Dayjs | null> | null) {
@@ -415,8 +426,8 @@ function disabledDate(current: Dayjs) {
 }
 
 function defaultDateRange(): [Dayjs, Dayjs] {
-  const end = dayjs().startOf('day')
-  return [end.subtract(MAX_RANGE_DAYS - 1, 'day'), end]
+  const today = dayjs().startOf('day')
+  return [today, today]
 }
 
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
@@ -427,19 +438,19 @@ function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayj
   return [dayjs(normalizedStart), dayjs(normalizedEnd)]
 }
 
+function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: string }) {
+  const start = parseDateKey(value?.startDate)
+  const end = parseDateKey(value?.endDate)
+  if (!start || !end || start.isAfter(end, 'day')) return
+  dateRange.value = [start.startOf('day'), end.startOf('day')]
+}
+
 function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
-  const today = dayjs().startOf('day')
-  let start = (value[0] ?? today).startOf('day')
-  let end = (value[1] ?? today).startOf('day')
-  if (end.isAfter(today, 'day')) {
-    end = today
-  }
+  const [defaultStart, defaultEnd] = defaultDateRange()
+  let start = (value[0] ?? defaultStart).startOf('day')
+  let end = (value[1] ?? defaultEnd).startOf('day')
   if (start.isAfter(end, 'day')) {
     start = end
-  }
-  const earliestStart = today.subtract(MAX_RANGE_DAYS - 1, 'day')
-  if (start.isBefore(earliestStart, 'day')) {
-    start = earliestStart
   }
   if (end.diff(start, 'day') > MAX_RANGE_DAYS - 1) {
     start = end.subtract(MAX_RANGE_DAYS - 1, 'day')

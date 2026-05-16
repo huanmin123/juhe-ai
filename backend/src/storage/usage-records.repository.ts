@@ -54,6 +54,8 @@ export interface UsageRecordListOptions {
   result?: 'success' | 'failed' | 'all'
   statusCode?: number
   model?: string
+  startAt?: string
+  endAt?: string
 }
 
 export interface UsageRecordListResult {
@@ -483,6 +485,16 @@ function buildUsageRecordFilters(access?: AccessScope, options?: UsageRecordList
   if (isHttpStatusCode(options?.statusCode)) {
     clauses.push('ur.status_code = ?')
     params.push(options.statusCode)
+  }
+  const startAt = options?.startAt?.trim()
+  if (startAt) {
+    clauses.push('ur.created_at >= ?')
+    params.push(startAt)
+  }
+  const endAt = options?.endAt?.trim()
+  if (endAt) {
+    clauses.push('ur.created_at < ?')
+    params.push(endAt)
   }
   const model = options?.model?.trim()
   if (model) {

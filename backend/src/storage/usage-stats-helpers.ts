@@ -1,7 +1,8 @@
 import type { AccountUsageDailyPoint, AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { getDatabase } from './database.js'
 
-const dayMs = 24 * 60 * 60 * 1000
+const hourMs = 60 * 60 * 1000
+const dayMs = 24 * hourMs
 export const ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS = 31
 export const DEFAULT_USAGE_STATS_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
 
@@ -11,6 +12,12 @@ interface DateParts {
   day: number
   hour: number
   minute: number
+}
+
+interface DateKeyParts {
+  year: number
+  month: number
+  day: number
 }
 
 export interface UsageStatsBucketPlan {
@@ -95,15 +102,62 @@ export function dateKey(date = new Date(), timezone = DEFAULT_USAGE_STATS_TIMEZO
   return `${year}-${two(month)}-${two(day)}`
 }
 
+export function startOfZonedDateKeyIso(dateKey: string, timezone = DEFAULT_USAGE_STATS_TIMEZONE): string | undefined {
+  const target = parseDateKeyParts(dateKey)
+  if (!target) return undefined
+
+  const normalizedTimezone = normalizeUsageStatsTimezone(timezone)
+  const formatter = new Intl.DateTimeFormat('en-CA', {
+    timeZone: normalizedTimezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  })
+  const targetMidnightUtc = utcDateStartMs(target.year, target.month, target.day)
+  let low = targetMidnightUtc - 48 * hourMs
+  let high = targetMidnightUtc + 48 * hourMs
+
+  for (let guard = 0; guard < 8 && compareZonedDateKeyAt(formatter, low, dateKey) >= 0; guard += 1) {
+    high = low
+    low -= 48 * hourMs
+  }
+  for (let guard = 0; guard < 8 && compareZonedDateKeyAt(formatter, high, dateKey) < 0; guard += 1) {
+    low = high + 1
+    high += 48 * hourMs
+  }
+  if (compareZonedDateKeyAt(formatter, high, dateKey) < 0) return undefined
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (compareZonedDateKeyAt(formatter, mid, dateKey) >= 0) {
+      high = mid
+    } else {
+      low = mid + 1
+    }
+  }
+
+  return new Date(low).toISOString()
+}
+
 export function normalizeAccountUsageStatsRange(input: { startDate?: string; endDate?: string } = {}, timezone = DEFAULT_USAGE_STATS_TIMEZONE): AccountUsageStatsRange {
   const todayKey = dateKey(undefined, timezone)
   const today = parseDateKey(todayKey) ?? startOfLocalDay(new Date())
-  const defaultStart = addDays(today, -(ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS - 1))
+  const earliestSupportedDate = addDays(today, -(ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS - 1))
+  const defaultStart = today
   let end = parseDateKey(input.endDate) ?? today
   if (end > today) {
     end = today
   }
+  if (end < earliestSupportedDate) {
+    end = earliestSupportedDate
+  }
   let start = parseDateKey(input.startDate) ?? defaultStart
+  if (start > today) {
+    start = today
+  }
+  if (start < earliestSupportedDate) {
+    start = earliestSupportedDate
+  }
   if (start > end) {
     start = end
   }
@@ -210,16 +264,26 @@ export function averageFromSum(sum: unknown, count: unknown): number | undefined
 
 function parseDateKey(value?: string): Date | undefined {
   if (!value) return undefined
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  const parts = parseDateKeyParts(value)
+  if (!parts) return undefined
+  const { year, month, day } = parts
+  const date = new Date(year, month - 1, day)
+  return startOfLocalDay(date)
+}
+
+function parseDateKeyParts(value?: string): DateKeyParts | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? '')
   if (!match) return undefined
   const year = Number(match[1])
   const month = Number(match[2])
   const day = Number(match[3])
-  const date = new Date(year, month - 1, day)
-  if (date.getFullYear() !== year || date.getMonth() !== month - 1 || date.getDate() !== day) {
+  const date = new Date(0)
+  date.setUTCHours(0, 0, 0, 0)
+  date.setUTCFullYear(year, month - 1, day)
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
     return undefined
   }
-  return startOfLocalDay(date)
+  return { year, month, day }
 }
 
 function zonedDateParts(date: Date, timezone: string): DateParts {
@@ -279,6 +343,24 @@ function endOfMonth(date: Date): Date {
 
 function localDateKey(date: Date): string {
   return `${date.getFullYear()}-${two(date.getMonth() + 1)}-${two(date.getDate())}`
+}
+
+function zonedDateKeyAt(formatter: Intl.DateTimeFormat, epochMs: number): string {
+  const parts = formatter.formatToParts(new Date(epochMs))
+  const value = (type: string) => parts.find((part) => part.type === type)?.value ?? '00'
+  return `${value('year')}-${value('month')}-${value('day')}`
+}
+
+function compareZonedDateKeyAt(formatter: Intl.DateTimeFormat, epochMs: number, targetDateKey: string): number {
+  const current = zonedDateKeyAt(formatter, epochMs)
+  return current < targetDateKey ? -1 : current > targetDateKey ? 1 : 0
+}
+
+function utcDateStartMs(year: number, month: number, day: number): number {
+  const date = new Date(0)
+  date.setUTCHours(0, 0, 0, 0)
+  date.setUTCFullYear(year, month - 1, day)
+  return date.getTime()
 }
 
 function two(value: number): string {

@@ -7,29 +7,21 @@ import {
   type AccountListOptions,
   type AccountListSchedulableFilter
 } from '../../storage/repositories.js'
-import { getDatabase } from '../../storage/database.js'
 import {
-  fixedUsageStatsRangeWindow,
   getAiPerformanceOverview,
   getSystemMetricsOverview,
   getUsageStatsOverview,
-  isFixedUsageStatsRangeWindow,
   listAiPerformanceAccountOptions,
-  type AiPerformanceWindowKey,
-  type UsageOverviewWindowKey
 } from '../../storage/usage-stats.repository.js'
-import { normalizeAccountUsageStatsRange, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
+import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 
 export const statsRouter = Router()
 
 const usageOverviewQuerySchema = z.object({
-  window: z.enum(['last1d', 'last3d', 'last7d', 'last30d']).default('last1d')
-})
-
-const aiPerformanceQuerySchema = z.object({
-  window: z.enum(['last1d', 'last3d', 'last7d']).default('last1d')
+  startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
+  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
 })
 
 const aiPerformanceAccountOptionsQuerySchema = z.object({
@@ -40,10 +32,10 @@ const aiPerformanceAccountOptionsQuerySchema = z.object({
 statsRouter.get('/usage-overview', (req, res) => {
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '统计窗口不合法')))
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '统计日期范围不合法')))
     return
   }
-  res.json(ok(getUsageStatsOverview(getRequestAccessScope(req.query.systemAccountId), parsed.data.window as UsageOverviewWindowKey)))
+  res.json(ok(getUsageStatsOverview(getRequestAccessScope(req.query.systemAccountId), normalizeStatsDateRange(parsed.data))))
 })
 
 statsRouter.get('/ai-performance', (req, res) => {
@@ -52,12 +44,12 @@ statsRouter.get('/ai-performance', (req, res) => {
     res.status(404).json({ message: '资源不存在' })
     return
   }
-  const parsed = aiPerformanceQuerySchema.safeParse(req.query)
+  const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '性能监控窗口不合法')))
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '性能监控日期范围不合法')))
     return
   }
-  res.json(ok(getAiPerformanceOverview(getRequestAccessScope(), parsed.data.window as AiPerformanceWindowKey, parseAccountIds(req.query.accountIds))))
+  res.json(ok(getAiPerformanceOverview(getRequestAccessScope(), normalizeStatsDateRange(parsed.data), parseAccountIds(req.query.accountIds))))
 })
 
 statsRouter.get('/ai-performance/accounts', (req, res) => {
@@ -96,7 +88,7 @@ function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOp
     keyword: optionalQueryText(query.keyword),
     type: optionalQueryText(query.type),
     schedulable: schedulableQueryValue(query.schedulable),
-    range: isFixedUsageStatsRangeWindow(range, timezone) ? range : fixedUsageStatsRangeWindow(timezone)
+    range
   }
 }
 
@@ -135,8 +127,16 @@ function parseAccountIds(value: unknown): string[] {
 statsRouter.get('/system-metrics', requireAdmin, (req, res) => {
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
-    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '监控窗口不合法')))
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '监控日期范围不合法')))
     return
   }
-  res.json(ok(getSystemMetricsOverview(parsed.data.window as UsageOverviewWindowKey)))
+  res.json(ok(getSystemMetricsOverview(normalizeStatsDateRange(parsed.data))))
 })
+
+function normalizeStatsDateRange(input: { startDate?: string; endDate?: string }) {
+  const timezone = usageStatsTimezone()
+  const today = todayDateKey(timezone)
+  const startDate = input.startDate ?? input.endDate ?? today
+  const endDate = input.endDate ?? input.startDate ?? today
+  return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
+}

@@ -27,6 +27,8 @@ export interface RuntimeLogListOptions {
   level?: RuntimeLogLevel | 'all'
   event?: string
   keyword?: string
+  startAt?: string
+  endAt?: string
 }
 
 export interface RuntimeLogListResult {
@@ -313,6 +315,18 @@ function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: strin
   if (level && level !== 'all') {
     clauses.push('rl.level = ?')
     params.push(level)
+  }
+
+  const startAt = options.startAt?.trim()
+  if (startAt) {
+    clauses.push('rl.time >= ?')
+    params.push(startAt)
+  }
+
+  const endAt = options.endAt?.trim()
+  if (endAt) {
+    clauses.push('rl.time <= ?')
+    params.push(endAt)
   }
 
   return {

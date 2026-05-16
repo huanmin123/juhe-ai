@@ -1142,6 +1142,8 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_overview_summary_windows (
       system_account_id TEXT NOT NULL,
       window_key TEXT NOT NULL,
+      start_date TEXT NOT NULL DEFAULT '',
+      end_date TEXT NOT NULL DEFAULT '',
       request_count INTEGER NOT NULL DEFAULT 0,
       success_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
@@ -1161,6 +1163,8 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_overview_trend_windows (
       system_account_id TEXT NOT NULL,
       window_key TEXT NOT NULL,
+      start_date TEXT NOT NULL DEFAULT '',
+      end_date TEXT NOT NULL DEFAULT '',
       bucket_key TEXT NOT NULL,
       request_count INTEGER NOT NULL DEFAULT 0,
       error_count INTEGER NOT NULL DEFAULT 0,
@@ -1177,6 +1181,8 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_model_rank_windows (
       system_account_id TEXT NOT NULL,
       window_key TEXT NOT NULL,
+      start_date TEXT NOT NULL DEFAULT '',
+      end_date TEXT NOT NULL DEFAULT '',
       rank INTEGER NOT NULL,
       provider_code TEXT NOT NULL DEFAULT 'unknown',
       model TEXT NOT NULL DEFAULT 'unknown',
@@ -1192,6 +1198,8 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_error_rank_windows (
       system_account_id TEXT NOT NULL,
       window_key TEXT NOT NULL,
+      start_date TEXT NOT NULL DEFAULT '',
+      end_date TEXT NOT NULL DEFAULT '',
       rank INTEGER NOT NULL,
       provider_code TEXT NOT NULL DEFAULT 'unknown',
       error_code TEXT NOT NULL DEFAULT 'unknown',
@@ -1205,6 +1213,8 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS ai_performance_summary_windows (
       system_account_id TEXT NOT NULL,
       window_key TEXT NOT NULL,
+      start_date TEXT NOT NULL DEFAULT '',
+      end_date TEXT NOT NULL DEFAULT '',
       request_count INTEGER NOT NULL DEFAULT 0,
       duration_ms_sum INTEGER NOT NULL DEFAULT 0,
       duration_ms_count INTEGER NOT NULL DEFAULT 0,
@@ -1303,6 +1313,8 @@ export function applyRecordSchema(database: DatabaseSync): void {
 
     CREATE TABLE IF NOT EXISTS system_metrics_trend_windows (
       window_key TEXT NOT NULL,
+      start_date TEXT NOT NULL DEFAULT '',
+      end_date TEXT NOT NULL DEFAULT '',
       bucket_key TEXT NOT NULL,
       sample_count INTEGER NOT NULL DEFAULT 0,
       cpu_percent_sum REAL NOT NULL DEFAULT 0,
@@ -1485,9 +1497,23 @@ export function applyRecordSchema(database: DatabaseSync): void {
     group_authorization_source_team_id: 'TEXT'
   })
   ensureRecordTableColumns(database, 'ai_performance_summary_windows', {
+    start_date: "TEXT NOT NULL DEFAULT ''",
+    end_date: "TEXT NOT NULL DEFAULT ''",
     duration_ms_max: 'INTEGER NOT NULL DEFAULT 0',
     first_token_ms_max: 'INTEGER NOT NULL DEFAULT 0'
   })
+  for (const tableName of [
+    'usage_overview_summary_windows',
+    'usage_overview_trend_windows',
+    'usage_model_rank_windows',
+    'usage_error_rank_windows',
+    'system_metrics_trend_windows'
+  ]) {
+    ensureRecordTableColumns(database, tableName, {
+      start_date: "TEXT NOT NULL DEFAULT ''",
+      end_date: "TEXT NOT NULL DEFAULT ''"
+    })
+  }
 }
 
 function ensureRecordTableColumns(database: DatabaseSync, tableName: string, columns: Record<string, string>): void {

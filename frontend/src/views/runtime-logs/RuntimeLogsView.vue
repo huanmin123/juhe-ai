@@ -24,6 +24,15 @@
             @change="applyIndexFilters"
           />
           <a-input v-model:value="keywordFilter" allow-clear class="toolbar-select log-keyword-filter responsive-list-inline-filter" placeholder="关键字" @press-enter="applyIndexFilters" />
+          <a-range-picker
+            v-model:value="indexTimeRange"
+            allow-clear
+            class="toolbar-select index-time-range responsive-list-inline-filter"
+            show-time
+            :disabled-date="disabledIndexDate"
+            :placeholder="['索引开始时间', '索引结束时间']"
+            @change="handleIndexRangeChange"
+          />
         </template>
         <template #actions>
           <a-segmented v-model:value="viewMode" class="log-mode-segmented" :options="viewModeOptions" @change="handleModeChange" />
@@ -38,6 +47,17 @@
             </a-form-item>
             <a-form-item label="关键字">
               <a-input v-model:value="keywordFilter" allow-clear placeholder="错误摘要或日志内容" />
+            </a-form-item>
+            <a-form-item label="索引时间范围">
+              <a-range-picker
+                v-model:value="indexTimeRange"
+                allow-clear
+                show-time
+                class="drawer-range-picker"
+                :disabled-date="disabledIndexDate"
+                :placeholder="['索引开始时间', '索引结束时间']"
+                @change="handleIndexRangeChange"
+              />
             </a-form-item>
           </a-form>
         </template>
@@ -189,18 +209,21 @@ type RuntimeLogsPageState = {
   eventFilter?: string
   grepKeywordFilter: string
   grepTimeRange?: [string, string]
+  indexTimeRange?: [string, string]
   keywordFilter: string
   levelFilter: RuntimeLogLevel | 'all'
   pagination: { current: number; pageSize: number }
   traceIdFilter: string
   viewMode: RuntimeLogViewMode
 }
+type RuntimeLogTimeRangeValue = [Dayjs | null | undefined, Dayjs | null | undefined] | null | undefined
 const pageSize = 100
 const defaultRuntimeLogsPageState = (): RuntimeLogsPageState => {
   return {
     eventFilter: undefined,
     grepKeywordFilter: '',
     grepTimeRange: undefined,
+    indexTimeRange: undefined,
     keywordFilter: '',
     levelFilter: 'all',
     pagination: { current: 1, pageSize },
@@ -218,6 +241,7 @@ const grepRecords = ref<RuntimeLogGrepItem[]>([])
 const grepResult = ref<RuntimeLogGrepResult>()
 const facets = ref<RuntimeLogFacets>()
 const grepTimeRange = ref<[Dayjs, Dayjs] | undefined>(parseStoredGrepRangeWithoutRuntime(initialPageState.grepTimeRange))
+const indexTimeRange = ref<RuntimeLogTimeRangeValue>(parseOptionalTimeRange(initialPageState.indexTimeRange))
 const selectedLog = ref<RuntimeLogSummary>()
 const selectedGrepItem = ref<RuntimeLogGrepItem>()
 const detailOpen = ref(false)
@@ -257,6 +281,7 @@ const activeFilterCount = computed(() => {
   if (levelFilter.value !== 'all') count += 1
   if (eventFilter.value) count += 1
   if (keywordFilter.value.trim()) count += 1
+  if (normalizeOptionalTimeRange(indexTimeRange.value)) count += 1
   return count
 })
 const grepActiveFilterCount = computed(() => isDefaultGrepRange() ? 0 : 1)
@@ -314,6 +339,16 @@ function disabledGrepDate(current: Dayjs): boolean {
   return current.isBefore(earliest, 'day') || current.isAfter(dayjs(), 'day')
 }
 
+function disabledIndexDate(current: Dayjs): boolean {
+  const earliest = facets.value?.earliestIndexedAt ? dayjs(facets.value.earliestIndexedAt).startOf('day') : dayjs().subtract(facets.value?.retentionDays ?? 3, 'day').startOf('day')
+  return current.isBefore(earliest, 'day') || current.isAfter(dayjs(), 'day')
+}
+
+function handleIndexRangeChange(): void {
+  indexTimeRange.value = normalizeOptionalTimeRange(indexTimeRange.value)
+  applyIndexFilters()
+}
+
 function handleGrepRangeChange(): void {
   grepTimeRange.value = ensureGrepTimeRange()
 }
@@ -343,6 +378,7 @@ function resetFilters(): void {
   levelFilter.value = defaults.levelFilter
   eventFilter.value = defaults.eventFilter
   keywordFilter.value = defaults.keywordFilter
+  indexTimeRange.value = parseOptionalTimeRange(defaults.indexTimeRange)
   pagination.current = defaults.pagination.current
   pagination.pageSize = defaults.pagination.pageSize
   pageStateCache.clear()
@@ -369,6 +405,7 @@ async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Pr
   }
   try {
     const traceId = traceIdFilter.value.trim()
+    const range = normalizeOptionalTimeRange(indexTimeRange.value)
     const [result, nextFacets] = await Promise.all([
       api.runtimeLogs.list({
         page: pagination.current,
@@ -376,7 +413,9 @@ async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Pr
         traceId: traceId || undefined,
         level: levelFilter.value,
         event: eventFilter.value || undefined,
-        keyword: keywordFilter.value || undefined
+        keyword: keywordFilter.value || undefined,
+        startAt: range?.[0].toISOString(),
+        endAt: range?.[1].toISOString()
       }),
       api.runtimeLogs.facets()
     ])
@@ -480,16 +519,32 @@ function searchTrace(traceId?: string): void {
 }
 
 function snapshotPageState(): RuntimeLogsPageState {
+  const range = normalizeOptionalTimeRange(indexTimeRange.value)
   return {
     eventFilter: eventFilter.value,
     grepKeywordFilter: grepKeywordFilter.value,
     grepTimeRange: grepTimeRange.value ? [grepTimeRange.value[0].toISOString(), grepTimeRange.value[1].toISOString()] : undefined,
+    indexTimeRange: range ? [range[0].toISOString(), range[1].toISOString()] : undefined,
     keywordFilter: keywordFilter.value,
     levelFilter: levelFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     traceIdFilter: traceIdFilter.value,
     viewMode: viewMode.value
   }
+}
+
+function parseOptionalTimeRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
+  if (!value) return undefined
+  const start = dayjs(value[0])
+  const end = dayjs(value[1])
+  return normalizeOptionalTimeRange(start.isValid() && end.isValid() ? [start, end] : undefined)
+}
+
+function normalizeOptionalTimeRange(value: RuntimeLogTimeRangeValue): [Dayjs, Dayjs] | undefined {
+  const start = value?.[0]
+  const end = value?.[1]
+  if (!start?.isValid() || !end?.isValid()) return undefined
+  return start.isAfter(end) ? [end, start] : [start, end]
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
@@ -522,6 +577,10 @@ onMounted(() => {
 
 .log-keyword-filter {
   width: 240px;
+}
+
+.index-time-range {
+  width: 360px;
 }
 
 .grep-time-range {

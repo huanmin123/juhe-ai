@@ -2,6 +2,7 @@
   <a-card class="page-card responsive-page-card">
     <UsageRecordsFilterToolbar
       v-model:keyword="accountNameFilter"
+      v-model:date-range="dateRangeFilter"
       v-model:result="resultFilter"
       v-model:status-code="statusCodeFilter"
       v-model:system-account-id="systemAccountFilter"
@@ -114,6 +115,7 @@
 <script setup lang="ts">
 import { CopyOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
+import dayjs, { type Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
@@ -143,6 +145,7 @@ type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
 type TableSortOrder = 'ascend' | 'descend' | null
 type UsageRecordsPageState = {
   accountNameFilter: string
+  dateRangeFilter?: [string, string]
   pagination: { current: number; pageSize: number }
   resultFilter: 'all' | 'success' | 'failed'
   sortState: { field: UsageRecordSortField; order: TableSortOrder }
@@ -153,19 +156,21 @@ type UsageRecordsPageState = {
 const pageSize = 20
 const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
   accountNameFilter: '',
+  dateRangeFilter: undefined,
   pagination: { current: 1, pageSize },
   resultFilter: 'all',
   sortState: { field: 'createdAt', order: 'descend' },
   statusCodeFilter: '',
   systemAccountFilter: allSystemAccountsValue
 })
-const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 2 })
+const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 3 })
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
 const mobileLoadingMore = ref(false)
 const records = ref<UsageRecordSummary[]>([])
 const accountNameFilter = ref(initialPageState.accountNameFilter)
+const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseDateRange(initialPageState.dateRangeFilter))
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -184,6 +189,7 @@ const resultOptions = [
 const activeFilterCount = computed(() => {
   let count = 0
   if (accountNameFilter.value.trim()) count += 1
+  if (dateRangeFilter.value) count += 1
   if (resultFilter.value !== 'all') count += 1
   if (statusCodeFilter.value) count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
@@ -231,6 +237,7 @@ const columns = computed(() => {
 function resetFilters(): void {
   const defaults = defaultUsageRecordsPageState()
   accountNameFilter.value = defaults.accountNameFilter
+  dateRangeFilter.value = parseDateRange(defaults.dateRangeFilter)
   resultFilter.value = defaults.resultFilter
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
@@ -328,10 +335,13 @@ async function loadData(options: { append?: boolean; quiet?: boolean; forceOptio
 async function fetchRecords() {
   const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
   const sortOrder = sortState.value.order === 'ascend' ? 'asc' : 'desc'
+  const dateRange = dateRangeParam(dateRangeFilter.value)
   const params: UsageRecordListParams = {
     page: pagination.current,
     pageSize: pagination.pageSize,
     accountKeyword: accountNameFilter.value.trim() || undefined,
+    startDate: dateRange?.[0],
+    endDate: dateRange?.[1],
     result: resultFilter.value,
     statusCode: normalizedStatusCode(statusCodeFilter.value),
     systemAccountId,
@@ -363,6 +373,11 @@ function normalizedStatusCode(value: string): number | undefined {
   return Number.isInteger(statusCode) && statusCode >= 100 && statusCode <= 599 ? statusCode : undefined
 }
 
+function dateRangeParam(value?: [Dayjs, Dayjs]): [string, string] | undefined {
+  const normalized = normalizeDateRange(value)
+  return normalized ? [formatDateKey(normalized[0]), formatDateKey(normalized[1])] : undefined
+}
+
 async function copyTraceId(traceId?: string): Promise<void> {
   if (!traceId) return
   if (!navigator.clipboard?.writeText) {
@@ -381,12 +396,38 @@ async function copyTraceId(traceId?: string): Promise<void> {
 function snapshotPageState(): UsageRecordsPageState {
   return {
     accountNameFilter: accountNameFilter.value,
+    dateRangeFilter: dateRangeParam(dateRangeFilter.value),
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     resultFilter: resultFilter.value,
     sortState: sortState.value,
     statusCodeFilter: statusCodeFilter.value,
     systemAccountFilter: systemAccountFilter.value
   }
+}
+
+function parseDateRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
+  if (!value) return undefined
+  const start = parseDateKey(value[0])
+  const end = parseDateKey(value[1])
+  return start && end ? normalizeDateRange([start, end]) : undefined
+}
+
+function normalizeDateRange(value?: [Dayjs, Dayjs]): [Dayjs, Dayjs] | undefined {
+  const start = value?.[0]
+  const end = value?.[1]
+  if (!start?.isValid() || !end?.isValid()) return undefined
+  return start.isAfter(end, 'day') ? [end.startOf('day'), start.startOf('day')] : [start.startOf('day'), end.startOf('day')]
+}
+
+function parseDateKey(value?: string): Dayjs | undefined {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined
+  const [year, month, day] = value.split('-').map((part) => Number(part))
+  const parsed = dayjs(new Date(year, month - 1, day)).startOf('day')
+  return parsed.year() === year && parsed.month() === month - 1 && parsed.date() === day ? parsed : undefined
+}
+
+function formatDateKey(value: Dayjs): string {
+  return value.format('YYYY-MM-DD')
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })

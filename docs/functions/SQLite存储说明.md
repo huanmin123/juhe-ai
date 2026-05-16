@@ -95,11 +95,11 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `authorization_team_usage_range_windows`：按 `system_account_id + start_date + end_date + team_filter_id + resource_filter_type + resource_filter_id` 保存团队消耗页最近 31 天内任意日范围窗口，接口按日期范围直读。
 - `authorization_user_usage_summary_daily`：按 `system_account_id + stat_date + team_filter_id + grantee_filter_system_account_id + resource_filter_type + resource_filter_id` 保存授权用户日摘要行，由 worker 随使用记录游标增量写入。
 - `authorization_user_usage_range_windows`：按 `system_account_id + start_date + end_date + team_filter_id + grantee_filter_system_account_id + resource_filter_type + resource_filter_id` 保存用户消耗页最近 31 天内任意日范围窗口，接口按日期范围直读。
-- `usage_overview_summary_windows`：按 `system_account_id + window_key` 保存统计概览固定窗口摘要，接口不再按小时桶临时汇总。
-- `usage_overview_trend_windows`：按 `system_account_id + window_key + bucket_key` 保存统计概览趋势点，近三天 / 近一周 / 近一月的分桶在 worker 内完成。
-- `usage_model_rank_windows`：按 `system_account_id + window_key + rank` 保存统计概览模型 TopN，接口只按窗口读取排名行。
-- `usage_error_rank_windows`：按 `system_account_id + window_key + rank` 保存统计概览错误 TopN，接口只按窗口读取排名行。
-- `ai_performance_summary_windows`：按 `system_account_id + window_key` 保存 AI 性能监控摘要，前端账户筛选只影响图表显隐，不重新计算摘要。
+- `usage_overview_summary_windows`：按 `system_account_id + window_key + start_date + end_date` 保存统计概览范围摘要，接口不再按小时桶临时汇总。
+- `usage_overview_trend_windows`：按 `system_account_id + window_key + start_date + end_date + bucket_key` 保存统计概览趋势点，范围分桶在 worker 内完成。
+- `usage_model_rank_windows`：按 `system_account_id + window_key + start_date + end_date + rank` 保存统计概览模型 TopN，接口只按范围窗口读取排名行。
+- `usage_error_rank_windows`：按 `system_account_id + window_key + start_date + end_date + rank` 保存统计概览错误 TopN，接口只按范围窗口读取排名行。
+- `ai_performance_summary_windows`：按 `system_account_id + window_key + start_date + end_date` 保存 AI 性能监控摘要，前端账户筛选只影响图表显隐，不重新计算摘要。
 - `usage_quota_hourly_windows`：按 `system_account_id + scope_type + scope_id + window_hours` 保存 n 小时额度成本，网关额度判断不再 `SUM usage_stats_hourly`。
 - `usage_scope_range_windows`：按 `system_account_id + scope_type + scope_id + start_date + end_date` 保存最近 31 天范围内的范围总量，用量统计和授权详情只按范围 key 直读。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 保存请求数、Token 和成本，用于自然日模型分布。
@@ -109,7 +109,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `group_account_stats`：按 `system_account_id + group_id` 保存分组绑定账户数量、可用数、状态数量和并发上限，供分组列表直接读取。
 - `system_metrics_samples`：按采样时间保存 CPU、内存、RSS、Heap、事件循环延迟、网络入站/出站吞吐、网卡累计收发、数据库文件大小和统计滞后。
 - `system_metrics_hourly`：把采样数据按小时聚合为平均值、最大值和最小值；网络吞吐平均值按有效网络速率样本数计算，避免采样端暂不可用时被按 0 稀释。
-- `system_metrics_trend_windows`：按统计概览窗口预生成系统性能 / 网络吞吐趋势，接口只按窗口直读。
+- `system_metrics_trend_windows`：按统计概览日期范围预生成系统性能 / 网络吞吐趋势，接口只按范围窗口直读。
 - `database_storage_snapshots`：按采样时间保存业务库 / 记录库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量。
 - `table_storage_snapshots`：按采样时间保存每张表的行数、表大小、索引大小、总大小和 1 小时 / 24 小时增长。
 - 表监控采样由后台 worker 每 10 分钟执行一次，历史默认保留最近一月。
@@ -165,14 +165,14 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `usage_stats_totals(system_account_id, scope_type, scope_id)`：列表读取累计值。
 - `usage_stats_daily(system_account_id, scope_type, scope_id, stat_date)`：今日和天级趋势读取。
 - `usage_stats_hourly(system_account_id, scope_type, scope_id, stat_hour)`：小时趋势读取。
-- `usage_overview_summary_windows(system_account_id, window_key)`：统计概览摘要读取。
-- `usage_overview_trend_windows(system_account_id, window_key, bucket_key)`：统计概览趋势读取。
-- `usage_model_rank_windows(system_account_id, window_key, rank)`：模型 TopN 读取。
-- `usage_error_rank_windows(system_account_id, window_key, rank)`：错误 TopN 读取。
-- `ai_performance_summary_windows(system_account_id, window_key)`：AI 性能监控摘要读取。
+- `usage_overview_summary_windows(system_account_id, window_key, start_date, end_date)`：统计概览摘要读取。
+- `usage_overview_trend_windows(system_account_id, window_key, start_date, end_date, bucket_key)`：统计概览趋势读取。
+- `usage_model_rank_windows(system_account_id, window_key, start_date, end_date, rank)`：模型 TopN 读取。
+- `usage_error_rank_windows(system_account_id, window_key, start_date, end_date, rank)`：错误 TopN 读取。
+- `ai_performance_summary_windows(system_account_id, window_key, start_date, end_date)`：AI 性能监控摘要读取。
 - `usage_quota_hourly_windows(system_account_id, scope_type, scope_id, window_hours)`：n 小时额度读取。
 - `usage_scope_range_windows(system_account_id, scope_type, scope_id, start_date, end_date)`：最近 31 天范围总量读取。
-- `system_metrics_trend_windows(window_key, bucket_key)`：系统性能 / 网络吞吐趋势读取。
+- `system_metrics_trend_windows(window_key, start_date, end_date, bucket_key)`：系统性能 / 网络吞吐趋势读取。
 - `usage_model_daily(system_account_id, stat_date, model)`：模型分布读取。
 - `usage_error_daily(system_account_id, stat_date, error_group, error_code)`：错误分布读取。
 - `usage_model_hourly(system_account_id, stat_hour, model)`：监控窗口模型分布读取。
@@ -216,9 +216,9 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 主进程可以把请求链路产生的待处理数据投递给 worker，但 IPC 或等价通道必须有上限，满载时按任务安全等级丢弃或降级，不能阻塞正常请求。
 - DB service 只负责数据库请求隔离，不负责后台定时调度；后台 worker 仍负责统计、审计、运行日志索引、数据保留、代理检测和 OAuth 后台刷新。Web 主进程、background worker 和 DB service 都必须使用短事务和 `busy_timeout` 控制 SQLite 写锁等待。
 - 统计 worker 每 1 分钟按 `system_account_id` 和 `(created_at, id)` 游标增量读取 `usage_records` 并 upsert 到聚合表。
-- 用量统计菜单只读取统计缓存，且口径是当前调用方自己的账户消耗：页面固定展示最近 31 天窗口；筛选区下方趋势账户列表在普通用户和管理员指定用户时，默认从 `usage_rank_snapshots` 读取 `caller_account + last7d + request_count` 的最近 7 天活跃前 10。趋势点读取 `usage_stats_daily` 的日行，范围累计读取 `usage_scope_range_windows` 的范围行；管理员全部用户视图的顶部摘要读取 `system_account = global` 的范围行。接口不能把每日行再相加生成范围汇总，前端也不能把行汇总成摘要。
-- 统计概览属于监控窗口，不使用 0 点重置的今日口径；默认展示近一天，并支持近一天、近三天、近一周和近一月筛选。概览摘要、请求 / 失败 / Token / 平均总耗时趋势、模型分布和错误 Top 10 均读取 worker 写入的 `usage_overview_*_windows`、`usage_model_rank_windows` 和 `usage_error_rank_windows`，不在接口中按小时缓存临时相加；用户侧展示自己的错误 Top 10，系统性能 / 网络吞吐趋势只在管理侧展示。
-- `AI性能监控` 的默认账户池只读取 `usage_rank_snapshots` 中 `account + last7d + request_count` 的最近 7 天活跃前 10，快照缺失时默认列表为空，不能在接口请求时临时聚合降级；图表序列只读取 `usage_stats_hourly` 的 `scope_type = account` 数据。接口只接受当前登录用户自有 AI 账户，别人授权给当前用户使用的账户不能作为默认账户、搜索结果或临时追加账户返回；但拥有者看到的是账户真实总量，自用和被授权人调用都会进入同一账户曲线。图表窗口固定为近 1 天、近 3 天或近 7 天，按小时返回首 token 平均值和总耗时平均值；页面顶部摘要由后端返回，前端账户筛选只影响图表显隐，不重新计算业务摘要。接口不得实时 `GROUP BY usage_records`。
+- 用量统计菜单只读取统计缓存，且口径是当前调用方自己的账户消耗：页面日期范围默认今天，最大最近 31 天；筛选区下方趋势账户列表在普通用户和管理员指定用户时，默认从 `usage_rank_snapshots` 读取 `caller_account + last7d + request_count` 的最近 7 天活跃前 10。趋势点读取 `usage_stats_daily` 的日行，范围累计读取 `usage_scope_range_windows` 的范围行；管理员全部用户视图的顶部摘要读取 `system_account = global` 的范围行。接口不能把每日行再相加生成范围汇总，前端也不能把行汇总成摘要。
+- 统计概览属于监控窗口；页面日期范围默认今天，最大最近 31 天。概览摘要、请求 / 失败 / Token / 平均总耗时趋势、模型分布和错误 Top 10 均读取 worker 写入的 `usage_overview_*_windows`、`usage_model_rank_windows` 和 `usage_error_rank_windows`，不在接口中按小时缓存临时相加；用户侧展示自己的错误 Top 10，系统性能 / 网络吞吐趋势只在管理侧展示。
+- `AI性能监控` 的默认账户池只读取 `usage_rank_snapshots` 中 `account + last7d + request_count` 的最近 7 天活跃前 10，快照缺失时默认列表为空，不能在接口请求时临时聚合降级；图表序列只读取 `usage_stats_hourly` 的 `scope_type = account` 数据。接口只接受当前登录用户自有 AI 账户，别人授权给当前用户使用的账户不能作为默认账户、搜索结果或临时追加账户返回；但拥有者看到的是账户真实总量，自用和被授权人调用都会进入同一账户曲线。图表日期范围默认今天，最大最近 31 天，按小时返回首 token 平均值和总耗时平均值；页面顶部摘要由后端返回，前端账户筛选只影响图表显隐，不重新计算业务摘要。接口不得实时 `GROUP BY usage_records`。
 - 分组账户统计 worker 定时重建 `group_account_stats`，分组列表不得在查询时临时 `COUNT/SUM group_accounts + accounts`。
 - 账号质量刷新 worker 默认每 10 分钟执行一次：先 flush 使用记录队列，再从 `account_quality_minute_stats` 汇总近 10 分钟真实网关请求刷新 `account_quality_scores`。分钟桶由用量统计 worker 随主游标增量写入，升级补齐使用 `account_quality_minute_stats_backfill` 独立游标分批推进；刷新 worker 不回扫 `usage_records`。主动探测能力已删除，worker 只处理真实请求样本，源码和预上线本地库都不再保留 `last_probe_at`。超过 24 小时未更新的质量分不参与网关调度。
 - OpenAI OAuth Access Token 保活 worker 默认每 1 分钟扫描仍存在、未删除、有 `refresh_token` 且即将过期的 OAuth 账户，扫描不受账户状态和调度标记影响；成功时只更新 `accounts.credentials_encrypted` 中的 token 凭据，不恢复调度状态、不清理冷却和最近错误；连续 3 次失败会把账户写为 `status = error`、`last_error_code = oauth_token_refresh_failed`。
@@ -640,7 +640,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 ## 错误兜底策略
 
-账户添加和编辑优先维护账号自己的 `credentials.error_handling_rules`。命中内嵌账号错误规则时，网关按规则写入限流、临时不可调用或异常状态；异常状态统一落到 `status = error`，异常类型写入 `last_error_code`。停用和异常都是不可调度硬状态，网关异步成功/失败回写、流熔断、冷却写入和 OAuth 刷新成功都不能自动恢复或降级覆盖这两个状态；异常只能通过显式“恢复异常”清理。非 2xx 上游错误响应会先经过代码内置的上游错误响应特征规则；命中已确认请求级错误时，网关直接原样透传上游错误给客户端，不进入账号错误策略、不冷却账号、不继续扫池，并在原始审计 `gateway_metadata` 记录命中特征。未命中特征和账号规则的上游非成功响应先作为待确认失败，不立即写入账号状态。后续账号请求成功时，前序待确认失败才按 `defaultTemporaryUnschedulableMinutes` 进入临时不可调用；两个不同账号返回同一错误签名时，网关判定为请求级失败，直接原样透传上游错误给客户端，不冷却账号、不继续扫池。凡是决定放行给客户端的上游响应，都必须透传上游状态码、可透传响应头和原始响应体，不改写、不包装为网关自有错误格式。
+账户添加和编辑优先维护账号自己的 `credentials.error_handling_rules`。命中内嵌账号错误规则时，网关按规则写入限流、临时不可调用或异常状态；异常状态统一落到 `status = error`，异常类型写入 `last_error_code`。停用和异常都是不可调度硬状态，网关异步成功/失败回写、流熔断、冷却写入和 OAuth 刷新成功都不能自动恢复或降级覆盖这两个状态；异常只能通过显式“恢复异常”清理。非 2xx 上游错误响应会先经过代码内置的上游错误响应特征规则；命中已确认客户端请求错误时，网关直接原样透传上游错误给客户端，不进入账号错误策略、不冷却账号、不继续扫池，并在原始审计 `gateway_metadata` 记录命中特征。未命中特征和账号规则的上游非成功响应先作为待确认失败，不立即写入账号状态。后续账号请求成功时，前序待确认失败才按 `defaultTemporaryUnschedulableMinutes` 进入临时不可调用；两个不同账号返回同一错误签名时，网关判定为请求级失败，直接原样透传上游错误给客户端，不冷却账号、不继续扫池。凡是决定放行给客户端的上游响应，都必须透传上游状态码、可透传响应头和原始响应体，不改写、不包装为网关自有错误格式。
 
 ## 默认运行策略
 

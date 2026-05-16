@@ -3,7 +3,17 @@
     <a-card class="page-card ai-performance-header-card">
       <div class="page-toolbar ai-performance-toolbar">
         <div class="ai-performance-filters">
-          <a-segmented v-model:value="selectedWindow" class="ai-performance-window-segmented" :options="windowOptions" :disabled="loading" @change="handleWindowChange" />
+          <a-range-picker
+            v-model:value="dateRange"
+            :allow-clear="false"
+            :disabled="loading"
+            :disabled-date="disabledDate"
+            class="ai-performance-range-picker"
+            format="YYYY-MM-DD"
+            @calendar-change="handleCalendarChange"
+            @change="handleDateRangeChange"
+            @open-change="handleDateRangeOpenChange"
+          />
           <a-select
             :value="accountPickerValue"
             class="ai-performance-account-select"
@@ -64,22 +74,25 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 
 import type { Ref, ShallowRef } from 'vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
+import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
 import { init, type ECharts } from '@/lib/echarts'
-import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview, AiPerformanceWindowKey } from '@/types/domain'
+import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview } from '@/types/domain'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDuration, formatInteger, formatSeconds } from '@/views/stats/statsFormatters'
 import { buildAiPerformanceOption, chartColors, orderedAiPerformanceSeries, type AiPerformanceMetric } from './aiPerformanceChartOptions'
 
-const windowOptions: Array<{ label: string; value: AiPerformanceWindowKey }> = [
-  { label: '近一天', value: 'last1d' },
-  { label: '近三天', value: 'last3d' },
-  { label: '近一周', value: 'last7d' }
-]
+const MAX_RANGE_DAYS = 31
+const defaultDateRange = (): [Dayjs, Dayjs] => {
+  const today = dayjs().startOf('day')
+  return [today, today]
+}
 
-const selectedWindow = ref<AiPerformanceWindowKey>('last1d')
+const dateRange = ref<[Dayjs, Dayjs]>(defaultDateRange())
+const dateRangeExplicit = ref(false)
+const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const addedAccountIds = ref<string[]>([])
 const activeAccountIds = ref<string[]>([])
 const accountPickerValue = ref<string[]>([])
@@ -102,7 +115,9 @@ const maxDurationChart = shallowRef<ECharts>()
 
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
-const currentWindowLabel = computed(() => overview.value?.window.label ?? windowOptions.find((item) => item.value === selectedWindow.value)?.label ?? '近一天')
+const selectedRange = computed(() => normalizedDateRange(dateRange.value))
+const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
+const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const overviewAccounts = computed(() => overview.value?.accounts ?? [])
 const activeAccountIdSet = computed(() => new Set(activeAccountIds.value))
 const hasActiveAccountFilter = computed(() => activeAccountIds.value.length > 0)
@@ -214,7 +229,7 @@ const performanceCharts = computed(() => [
 const summaryCards = computed(() => {
   const summary = overview.value?.summary
   return [
-    { key: 'requests', label: `${currentWindowLabel.value}请求`, value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
+    { key: 'requests', label: '范围请求', value: formatInteger(summary?.requestCount), extra: `统计滞后 ${formatSeconds(overview.value?.statsLagSeconds)}` },
     { key: 'firstToken', label: '平均首 token', value: formatDuration(summary?.averageFirstTokenMs), extra: `样本 ${formatInteger(summary?.firstTokenCount)}` },
     { key: 'maxFirstToken', label: '最大首 token', value: formatDuration(summary?.maxFirstTokenMs), extra: `样本 ${formatInteger(summary?.firstTokenCount)}` },
     { key: 'duration', label: '平均总耗时', value: formatDuration(summary?.averageDurationMs), extra: `样本 ${formatInteger(summary?.durationCount)}` },
@@ -225,10 +240,13 @@ const summaryCards = computed(() => {
 async function loadPerformance() {
   loading.value = true
   try {
-    overview.value = await api.myStats.aiPerformance({
-      window: selectedWindow.value,
+    const rangeParams = selectedRangeParams()
+    const performanceOverview = await api.myStats.aiPerformance({
+      ...rangeParams,
       accountIds: addedAccountIds.value
     })
+    overview.value = performanceOverview
+    syncDateRangeFromResponse(performanceOverview.range)
     pruneAccountState()
   } catch (error) {
     console.error(error)
@@ -261,9 +279,29 @@ async function loadAccounts() {
   }
 }
 
-function handleWindowChange(value: string | number) {
-  selectedWindow.value = value as AiPerformanceWindowKey
+function handleDateRangeChange() {
+  dateRange.value = parseDateRange({
+    startDate: formatDateKey(dateRange.value[0]),
+    endDate: formatDateKey(dateRange.value[1])
+  })
+  dateRangeExplicit.value = true
   void loadPerformance()
+}
+
+function selectedRangeParams(): { startDate?: string; endDate?: string } {
+  if (!dateRangeExplicit.value) return {}
+  const [startDate, endDate] = selectedRange.value
+  return { startDate, endDate }
+}
+
+function handleCalendarChange(value: Array<Dayjs | null> | null) {
+  calendarRange.value = [value?.[0] ?? null, value?.[1] ?? null]
+}
+
+function handleDateRangeOpenChange(open: boolean) {
+  if (!open) {
+    calendarRange.value = [null, null]
+  }
 }
 
 function handleAccountSelect(value: unknown) {
@@ -413,6 +451,58 @@ function accountStatusText(status: AccountStatus) {
   return labels[status] ?? status
 }
 
+function disabledDate(current: Dayjs) {
+  if (!current) return false
+  const today = dayjs().startOf('day')
+  if (current.isAfter(today, 'day')) return true
+  if (current.isBefore(today.subtract(MAX_RANGE_DAYS - 1, 'day'), 'day')) return true
+  const anchor = calendarRange.value[0] ?? calendarRange.value[1]
+  if (!anchor) return false
+  return Math.abs(current.startOf('day').diff(anchor.startOf('day'), 'day')) > MAX_RANGE_DAYS - 1
+}
+
+function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
+  const [defaultStart, defaultEnd] = defaultDateRange()
+  const start = parseDateKey(value?.startDate) ?? defaultStart
+  const end = parseDateKey(value?.endDate) ?? defaultEnd
+  const [normalizedStart, normalizedEnd] = normalizedDateRange([start, end])
+  return [dayjs(normalizedStart), dayjs(normalizedEnd)]
+}
+
+function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: string }) {
+  const start = parseDateKey(value?.startDate)
+  const end = parseDateKey(value?.endDate)
+  if (!start || !end || start.isAfter(end, 'day')) return
+  dateRange.value = [start.startOf('day'), end.startOf('day')]
+}
+
+function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
+  const [defaultStart, defaultEnd] = defaultDateRange()
+  let start = (value[0] ?? defaultStart).startOf('day')
+  let end = (value[1] ?? defaultEnd).startOf('day')
+  if (start.isAfter(end, 'day')) start = end
+  if (end.diff(start, 'day') > MAX_RANGE_DAYS - 1) {
+    start = end.subtract(MAX_RANGE_DAYS - 1, 'day')
+  }
+  return [formatDateKey(start), formatDateKey(end)]
+}
+
+function parseDateKey(value?: string): Dayjs | undefined {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined
+  const [year, month, day] = value.split('-').map((part) => Number(part))
+  const parsed = dayjs(new Date(year, month - 1, day)).startOf('day')
+  return parsed.year() === year && parsed.month() === month - 1 && parsed.date() === day ? parsed : undefined
+}
+
+function formatDateKey(value: Dayjs): string {
+  return value.format('YYYY-MM-DD')
+}
+
+function formatDateLabel(value: string) {
+  const parsed = parseDateKey(value)
+  return parsed ? parsed.format('M月D日') : value
+}
+
 function pruneAccountState() {
   const currentOverview = overview.value
   if (!currentOverview) return
@@ -461,9 +551,8 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
-.ai-performance-window-segmented {
-  width: max-content;
-  max-width: 100%;
+.ai-performance-range-picker {
+  width: 250px;
 }
 
 .ai-performance-account-select {
@@ -533,7 +622,7 @@ onBeforeUnmount(() => {
     flex: 1 1 auto;
   }
 
-  .ai-performance-window-segmented,
+  .ai-performance-range-picker,
   .ai-performance-account-select {
     width: 100%;
     min-width: 0;

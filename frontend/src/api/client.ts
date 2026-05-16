@@ -9,7 +9,6 @@ import type {
   AccountUsageStatsOverview,
   AiPerformanceAccountOption,
   AiPerformanceOverview,
-  AiPerformanceWindowKey,
   AnnouncementLevel,
   AnnouncementStatus,
   AnnouncementSummary,
@@ -56,7 +55,6 @@ import type {
   MonitoredDatabaseRole,
   TableStorageOverview,
   TableStorageSnapshotSummary,
-  UsageOverviewWindowKey,
   UsageStatsOverview,
   UsageRecordListResult,
   UsageRecordSummary
@@ -76,7 +74,8 @@ interface RequestControlOptions {
 }
 
 interface UsageOverviewParams extends ListParams {
-  window?: UsageOverviewWindowKey
+  startDate?: string
+  endDate?: string
 }
 
 interface AccountUsageStatsParams extends ListParams {
@@ -91,7 +90,8 @@ interface AccountUsageStatsParams extends ListParams {
 }
 
 interface AiPerformanceParams {
-  window?: AiPerformanceWindowKey
+  startDate?: string
+  endDate?: string
   accountIds?: string[]
 }
 
@@ -136,6 +136,8 @@ export interface UsageRecordListParams extends ListParams {
   result?: 'success' | 'failed' | 'all'
   statusCode?: number
   model?: string
+  startDate?: string
+  endDate?: string
   sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
   sortOrder?: SortDirection
   limit?: number
@@ -177,6 +179,8 @@ export interface RuntimeLogListParams {
   level?: RuntimeLogLevel | 'all'
   event?: string
   keyword?: string
+  startAt?: string
+  endAt?: string
   limit?: number
 }
 
@@ -456,7 +460,7 @@ export const api = {
   stats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
     accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
-    systemMetrics: (params?: Pick<UsageOverviewParams, 'window'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params }))
+    systemMetrics: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params }))
   },
   tableMonitor: {
     overview: (params?: TableMonitorOverviewParams) => unwrap<TableStorageOverview>(http.get('/table-monitor/overview', { params })),
@@ -517,7 +521,8 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
 function aiPerformanceParams(params?: AiPerformanceParams): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
-  if (params.window) output.window = params.window
+  if (params.startDate) output.startDate = params.startDate
+  if (params.endDate) output.endDate = params.endDate
   if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
   return Object.keys(output).length ? output : undefined
 }

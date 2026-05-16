@@ -11,6 +11,14 @@
     @search="emit('search')"
   >
     <template #inline-filters>
+      <a-range-picker
+        :value="dateRange"
+        allow-clear
+        class="filter-select date-range-filter toolbar-select responsive-list-inline-filter"
+        format="YYYY-MM-DD"
+        :placeholder="['开始日期', '结束日期']"
+        @change="handleDateRangeUpdate"
+      />
       <a-select
         :value="result"
         class="filter-select toolbar-select responsive-list-inline-filter"
@@ -38,6 +46,17 @@
     </template>
     <template #filters>
       <label class="mobile-filter-field">
+        <span>时间范围</span>
+        <a-range-picker
+          :value="dateRange"
+          allow-clear
+          class="mobile-date-range-filter"
+          format="YYYY-MM-DD"
+          :placeholder="['开始日期', '结束日期']"
+          @change="handleDateRangeUpdate"
+        />
+      </label>
+      <label class="mobile-filter-field">
         <span>请求结果</span>
         <a-select :value="result" :options="resultOptions" @update:value="handleResultUpdate" />
       </label>
@@ -61,6 +80,8 @@
 </template>
 
 <script setup lang="ts">
+import type { Dayjs } from 'dayjs'
+
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { SystemAccountSummary } from '@/types/domain'
@@ -71,9 +92,11 @@ type FilterOption<T extends string> = {
   value: T
 }
 type SelectValue = string | string[] | number | undefined
+type DateRangeValue = Array<Dayjs | null | undefined> | null | undefined
 
 defineProps<{
   activeFilterCount: number
+  dateRange?: [Dayjs, Dayjs]
   isManagementView: boolean
   keyword: string
   refreshLoading: boolean
@@ -89,6 +112,7 @@ const emit = defineEmits<{
   (event: 'reset'): void
   (event: 'search'): void
   (event: 'system-account-change'): void
+  (event: 'update:dateRange', value?: [Dayjs, Dayjs]): void
   (event: 'update:keyword', value: string): void
   (event: 'update:result', value: ResultFilter): void
   (event: 'update:statusCode', value: string): void
@@ -112,8 +136,20 @@ function handleStatusCodeUpdate(value: SelectValue) {
   }
 }
 
+function handleDateRangeUpdate(value: DateRangeValue) {
+  emit('update:dateRange', normalizeDateRange(value))
+  emit('search')
+}
+
 function handleSystemAccountUpdate(value: SelectValue) {
   emit('update:systemAccountId', typeof value === 'string' ? value : '')
+}
+
+function normalizeDateRange(value: DateRangeValue): [Dayjs, Dayjs] | undefined {
+  const start = value?.[0]
+  const end = value?.[1]
+  if (!start?.isValid() || !end?.isValid()) return undefined
+  return start.isAfter(end, 'day') ? [end.startOf('day'), start.startOf('day')] : [start.startOf('day'), end.startOf('day')]
 }
 </script>
 
@@ -124,6 +160,10 @@ function handleSystemAccountUpdate(value: SelectValue) {
 
 .system-account-filter {
   width: 180px;
+}
+
+.date-range-filter {
+  width: 240px;
 }
 
 .toolbar-select {
@@ -139,6 +179,10 @@ function handleSystemAccountUpdate(value: SelectValue) {
 }
 
 .mobile-filter-field :deep(.ant-select) {
+  width: 100%;
+}
+
+.mobile-date-range-filter {
   width: 100%;
 }
 </style>

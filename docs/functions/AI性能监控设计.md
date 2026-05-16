@@ -114,7 +114,8 @@ GET /api/my-stats/ai-performance/accounts
 
 | 参数 | 说明 |
 | --- | --- |
-| `window` | `last1d`、`last3d`、`last7d`，默认 `last1d` |
+| `startDate` | 日期范围开始，格式 `YYYY-MM-DD`，默认今天 |
+| `endDate` | 日期范围结束，格式 `YYYY-MM-DD`，默认今天；最大最近 31 天 |
 | `accountIds` | 搜索追加到账户列表的临时账户 ID，支持逗号分隔或重复参数；不持久化；不表示当前点击筛选 |
 
 账户选项查询参数：
@@ -129,7 +130,7 @@ GET /api/my-stats/ai-performance/accounts
 
 ```ts
 interface AiPerformanceOverview {
-  window: { key: 'last1d' | 'last3d' | 'last7d'; label: string; hours: number }
+  range: { startDate: string; endDate: string; days: number; maxDays: number }
   defaultAccounts: AiPerformanceAccount[]
   selectedAccounts: AiPerformanceAccount[]
   accounts: AiPerformanceAccount[]

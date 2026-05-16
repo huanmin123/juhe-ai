@@ -21,22 +21,6 @@ export interface AccountUsageDailyPoint extends AccountUsageSummary {
   statDate: string
 }
 
-export type UsageOverviewWindowKey = 'last1d' | 'last3d' | 'last7d' | 'last30d'
-
-export interface UsageOverviewWindowDefinition {
-  key: UsageOverviewWindowKey
-  label: string
-  hours: number
-}
-
-export type AiPerformanceWindowKey = 'last1d' | 'last3d' | 'last7d'
-
-export interface AiPerformanceWindowDefinition {
-  key: AiPerformanceWindowKey
-  label: string
-  hours: number
-}
-
 export interface AiPerformanceAccount {
   id: string
   name: string
@@ -77,7 +61,7 @@ export interface AiPerformanceAccountSeries {
 }
 
 export interface AiPerformanceOverview {
-  window: AiPerformanceWindowDefinition
+  range: AccountUsageStatsRange
   defaultAccounts: AiPerformanceAccount[]
   selectedAccounts: AiPerformanceAccount[]
   accounts: AiPerformanceAccount[]
@@ -95,7 +79,7 @@ export interface AiPerformanceOverview {
 }
 
 export interface UsageStatsOverview {
-  window: UsageOverviewWindowDefinition
+  range: AccountUsageStatsRange
   summary: AccountUsageSummary & {
     successCount: number
     errorCount: number

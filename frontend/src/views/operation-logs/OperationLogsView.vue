@@ -13,6 +13,15 @@
       <template #inline-filters>
         <a-select v-model:value="moduleFilter" class="toolbar-select module-filter responsive-list-inline-filter" :options="moduleOptions" @change="applyFilters" />
         <a-select v-model:value="actionFilter" class="toolbar-select action-filter responsive-list-inline-filter" :options="actionOptions" @change="applyFilters" />
+        <a-range-picker
+          v-model:value="createdAtRange"
+          allow-clear
+          class="toolbar-select created-at-range responsive-list-inline-filter"
+          format="YYYY-MM-DD HH:mm"
+          show-time
+          :placeholder="['创建开始时间', '创建结束时间']"
+          @change="handleCreatedAtRangeChange"
+        />
         <a-input v-model:value="traceIdFilter" allow-clear class="toolbar-select trace-filter responsive-list-inline-filter" placeholder="traceId" @press-enter="applyFilters" />
         <a-select
           v-if="isManagementView"
@@ -31,6 +40,17 @@
           </a-form-item>
           <a-form-item label="动作">
             <a-select v-model:value="actionFilter" :options="actionOptions" />
+          </a-form-item>
+          <a-form-item label="创建时间">
+            <a-range-picker
+              v-model:value="createdAtRange"
+              allow-clear
+              class="drawer-range-picker"
+              format="YYYY-MM-DD HH:mm"
+              show-time
+              :placeholder="['开始时间', '结束时间']"
+              @change="handleCreatedAtRangeChange"
+            />
           </a-form-item>
           <a-form-item label="traceId">
             <a-input v-model:value="traceIdFilter" allow-clear placeholder="输入 traceId" />
@@ -206,6 +226,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
+import dayjs, { type Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api, type OperationLogListParams } from '@/api/client'
@@ -223,18 +244,21 @@ type OperationLogsPageState = {
   actionFilter: string
   actorSystemAccountFilter: string
   affectedSystemAccountFilter: string
+  createdAtRange?: [string, string]
   keywordFilter: string
   moduleFilter: string
   operationScopeSystemAccountFilter: string
   pagination: { current: number; pageSize: number }
   traceIdFilter: string
 }
+type CreatedAtRangeValue = [Dayjs | null | undefined, Dayjs | null | undefined] | null | undefined
 
 const pageSize = 20
 const defaultOperationLogsPageState = (): OperationLogsPageState => ({
   actionFilter: 'all',
   actorSystemAccountFilter: allSystemAccountsValue,
   affectedSystemAccountFilter: allSystemAccountsValue,
+  createdAtRange: undefined,
   keywordFilter: '',
   moduleFilter: 'all',
   operationScopeSystemAccountFilter: allSystemAccountsValue,
@@ -257,6 +281,7 @@ const systemAccountsLoaded = ref(false)
 const keywordFilter = ref(initialPageState.keywordFilter)
 const moduleFilter = ref(initialPageState.moduleFilter)
 const actionFilter = ref(initialPageState.actionFilter)
+const createdAtRange = ref<CreatedAtRangeValue>(parseCreatedAtRange(initialPageState.createdAtRange))
 const traceIdFilter = ref(initialPageState.traceIdFilter)
 const actorSystemAccountFilter = ref(initialPageState.actorSystemAccountFilter)
 const affectedSystemAccountFilter = ref(initialPageState.affectedSystemAccountFilter)
@@ -317,6 +342,7 @@ const activeFilterCount = computed(() => {
   if (keywordFilter.value.trim()) count += 1
   if (moduleFilter.value !== 'all') count += 1
   if (actionFilter.value !== 'all') count += 1
+  if (normalizeCreatedAtRange(createdAtRange.value)) count += 1
   if (traceIdFilter.value.trim()) count += 1
   if (isManagementView.value && actorSystemAccountFilter.value !== allSystemAccountsValue) count += 1
   if (isManagementView.value && affectedSystemAccountFilter.value !== allSystemAccountsValue) count += 1
@@ -382,6 +408,7 @@ function resetFilters(): void {
   keywordFilter.value = defaults.keywordFilter
   moduleFilter.value = defaults.moduleFilter
   actionFilter.value = defaults.actionFilter
+  createdAtRange.value = parseCreatedAtRange(defaults.createdAtRange)
   traceIdFilter.value = defaults.traceIdFilter
   actorSystemAccountFilter.value = defaults.actorSystemAccountFilter
   affectedSystemAccountFilter.value = defaults.affectedSystemAccountFilter
@@ -390,6 +417,11 @@ function resetFilters(): void {
   pagination.pageSize = defaults.pagination.pageSize
   pageStateCache.clear()
   void loadData()
+}
+
+function handleCreatedAtRangeChange(): void {
+  createdAtRange.value = normalizeCreatedAtRange(createdAtRange.value)
+  applyFilters()
 }
 
 function handleTableChange(paginationInfo: unknown): void {
@@ -442,12 +474,15 @@ async function loadData(options: { append?: boolean; quiet?: boolean; forceOptio
 }
 
 async function fetchRecords() {
+  const range = normalizeCreatedAtRange(createdAtRange.value)
   const params: OperationLogListParams = {
     page: pagination.current,
     pageSize: pagination.pageSize,
     keyword: keywordFilter.value.trim() || undefined,
     module: moduleFilter.value === 'all' ? undefined : moduleFilter.value,
     action: actionFilter.value === 'all' ? undefined : actionFilter.value,
+    startAt: range?.[0].toISOString(),
+    endAt: range?.[1].toISOString(),
     traceId: traceIdFilter.value.trim() || undefined,
     actorSystemAccountId: adminAccountFilter(actorSystemAccountFilter.value),
     affectedSystemAccountId: adminAccountFilter(affectedSystemAccountFilter.value),
@@ -552,16 +587,32 @@ function visibilityReasonText(value: string): string {
 }
 
 function snapshotPageState(): OperationLogsPageState {
+  const range = normalizeCreatedAtRange(createdAtRange.value)
   return {
     actionFilter: actionFilter.value,
     actorSystemAccountFilter: actorSystemAccountFilter.value,
     affectedSystemAccountFilter: affectedSystemAccountFilter.value,
+    createdAtRange: range ? [range[0].toISOString(), range[1].toISOString()] : undefined,
     keywordFilter: keywordFilter.value,
     moduleFilter: moduleFilter.value,
     operationScopeSystemAccountFilter: operationScopeSystemAccountFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     traceIdFilter: traceIdFilter.value
   }
+}
+
+function parseCreatedAtRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
+  if (!value) return undefined
+  const start = dayjs(value[0])
+  const end = dayjs(value[1])
+  return normalizeCreatedAtRange(start.isValid() && end.isValid() ? [start, end] : undefined)
+}
+
+function normalizeCreatedAtRange(value: CreatedAtRangeValue): [Dayjs, Dayjs] | undefined {
+  const start = value?.[0]
+  const end = value?.[1]
+  if (!start?.isValid() || !end?.isValid()) return undefined
+  return start.isAfter(end) ? [end, start] : [start, end]
 }
 
 const moduleTextMap: Record<string, string> = {
@@ -649,12 +700,20 @@ onMounted(loadData)
   width: 126px;
 }
 
+.created-at-range {
+  width: 360px;
+}
+
 .trace-filter {
   width: 190px;
 }
 
 .account-filter {
   width: 220px;
+}
+
+.drawer-range-picker {
+  width: 100%;
 }
 
 .operation-log-table :deep(.ant-table-cell) {

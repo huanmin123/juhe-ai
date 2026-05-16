@@ -472,7 +472,10 @@ function normalizeAuthorizationUsageRange(input: { statMonth?: string; startDate
     const endDate = input.endDate ?? input.startDate ?? today
     return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
   }
-  const requestedMonth = input.statMonth ?? input.startDate?.slice(0, 7) ?? input.endDate?.slice(0, 7) ?? today.slice(0, 7)
+  if (!input.statMonth) {
+    return normalizeAccountUsageStatsRange({ startDate: today, endDate: today }, timezone)
+  }
+  const requestedMonth = input.statMonth
   const statMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : today.slice(0, 7)
   const [year, month] = statMonth.split('-').map(Number)
   const days = Number.isFinite(year) && Number.isFinite(month) ? new Date(year, month, 0).getDate() : 31

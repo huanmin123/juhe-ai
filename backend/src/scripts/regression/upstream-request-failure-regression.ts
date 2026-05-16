@@ -133,6 +133,27 @@ async function main(): Promise<void> {
     assert.equal(sameSignatureUpstreamHitCount, 2, `同一错误应只用两个账号确认后停止，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '同签名请求级失败不应本地屏蔽账号')
 
+    currentScenario = 'instructions_required_feature'
+    const instructionsRequiredResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'instructions required should continue next' }],
+        stream: false
+      })
+    })
+    const instructionsRequiredResponseText = await instructionsRequiredResponse.text()
+
+    assert.equal(instructionsRequiredResponse.status, 400, `Instructions are required 特征应把上游 400 原样返回客户端，实际 HTTP ${instructionsRequiredResponse.status}: ${instructionsRequiredResponseText}`)
+    assert.equal(instructionsRequiredResponseText, instructionsRequiredRejectedRequestBody, `客户端收到的 Instructions are required 错误体应与上游原文一致：${instructionsRequiredResponseText}`)
+    assert.equal(instructionsRequiredResponse.headers.get('content-type'), 'application/json; charset=utf-8', 'Instructions are required 错误响应应保留上游 content-type')
+    assert.equal(instructionsRequiredUpstreamHitCount, 1, `Instructions are required 特征应首个账号命中后停止，实际上游命中 ${instructionsRequiredUpstreamHitCount} 次`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, 'Instructions are required 特征不应本地屏蔽账号')
+
     usageRecordQueue.flushAllUsageRecordQueue()
     const accounts = repositories.listAccounts()
     for (const account of [firstAccount, secondAccount]) {
@@ -144,7 +165,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('请求级上游失败回归通过：工具输出缺失特征直接返回客户端；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
+    console.log('请求级上游失败回归通过：工具输出缺失和 Instructions are required 特征直接返回客户端；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -159,11 +180,12 @@ async function main(): Promise<void> {
   }
 }
 
-type RegressionScenario = 'tool_output_missing_feature' | 'same_signature_confirmation'
+type RegressionScenario = 'tool_output_missing_feature' | 'same_signature_confirmation' | 'instructions_required_feature'
 
 let currentScenario: RegressionScenario = 'tool_output_missing_feature'
 let toolOutputMissingUpstreamHitCount = 0
 let sameSignatureUpstreamHitCount = 0
+let instructionsRequiredUpstreamHitCount = 0
 const toolOutputMissingRejectedRequestMessage = 'No tool output found for function call fc_request_failure_regression.'
 const toolOutputMissingRejectedRequestBody = JSON.stringify({
   error: {
@@ -180,9 +202,24 @@ const sameSignatureRejectedRequestBody = JSON.stringify({
     code: null
   }
 })
+const instructionsRequiredRejectedRequestBody = JSON.stringify({
+  error: {
+    message: 'Instructions are required',
+    type: 'invalid_request_error',
+    param: '',
+    code: null
+  }
+})
 
 function createRejectedRequestUpstream(): http.Server {
   return http.createServer((_req, res) => {
+    if (currentScenario === 'instructions_required_feature') {
+      instructionsRequiredUpstreamHitCount += 1
+      res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(instructionsRequiredRejectedRequestBody)
+      return
+    }
+
     const body = currentScenario === 'tool_output_missing_feature'
       ? toolOutputMissingRejectedRequestBody
       : sameSignatureRejectedRequestBody
