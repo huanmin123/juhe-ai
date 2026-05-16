@@ -1,7 +1,7 @@
 import type { EChartsOption } from 'echarts'
 
 import type { AiPerformanceOverview } from '@/types/domain'
-import { formatHourLabel, formatInteger } from '@/views/stats/statsFormatters'
+import { formatInteger } from '@/views/stats/statsFormatters'
 
 export const chartColors = ['#1677ff', '#52c41a', '#fa8c16', '#722ed1', '#13c2c2', '#eb2f96', '#2f54eb', '#a0d911', '#fa541c', '#8c8c8c', '#08979c', '#531dab']
 
@@ -17,6 +17,7 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
   const hours = overview.hourlySeries[0]?.points.map((point) => point.statHour) ?? []
   const orderedSeries = orderedAiPerformanceSeries(overview)
   const colors = orderedSeries.map((series, index) => context.colorByAccountId?.get(series.accountId) ?? chartColors[index % chartColors.length])
+  const axisLabelPlan = aiPerformanceAxisLabelPlan(overview.range)
   const accountById = new Map(overview.accounts.map((account) => [account.id, account]))
   const nameCounts = overview.accounts.reduce((counts, account) => {
     counts.set(account.name, (counts.get(account.name) ?? 0) + 1)
@@ -44,8 +45,13 @@ export function buildAiPerformanceOption(overview: AiPerformanceOverview, metric
     xAxis: {
       type: 'category',
       boundaryGap: false,
-      data: hours.map(formatHourLabel),
-      axisLabel: { color: '#64748b' },
+      data: hours,
+      axisLabel: {
+        color: '#64748b',
+        hideOverlap: true,
+        interval: axisLabelPlan.interval,
+        formatter: axisLabelPlan.formatter
+      },
       axisLine: { lineStyle: { color: '#d9e2ef' } }
     },
     yAxis: {
@@ -112,19 +118,90 @@ interface TooltipPoint {
 
 function performanceTooltip(params: unknown, overview: AiPerformanceOverview, metric: AiPerformanceMetric) {
   const points = tooltipParams(params)
-  const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
+  const title = performanceTooltipTitle(points[0])
   const visiblePoints = points.filter((point) => pointValue(point) !== undefined)
   const emptyMessage = isFirstTokenMetric(metric) ? '本小时暂无首 token 样本' : '本小时暂无总耗时样本'
   if (!visiblePoints.length) {
-    return [`<strong>${title}</strong>`, emptyMessage].join('<br/>')
+    return [`<strong>${escapeHtml(title)}</strong>`, emptyMessage].join('<br/>')
   }
-  const lines = [`<strong>${title}</strong>`]
+  const lines = [`<strong>${escapeHtml(title)}</strong>`]
   for (const point of visiblePoints) {
     const data = tooltipData(point)
     const accountName = String(data.accountDisplayName ?? point.seriesName ?? data.accountName ?? '')
     lines.push(`${point.marker ?? ''}${escapeHtml(accountName)}: ${formatDurationSeconds(pointValue(point))}，样本 ${formatInteger(numberFromTooltip(data.sampleCount))}，请求 ${formatInteger(numberFromTooltip(data.requestCount))}`)
   }
   return lines.join('<br/>')
+}
+
+interface AxisLabelPlan {
+  interval: (index: number, value: string) => boolean
+  formatter: (value: string) => string
+}
+
+function aiPerformanceAxisLabelPlan(range: AiPerformanceOverview['range']): AxisLabelPlan {
+  const days = Math.max(1, Number(range.days ?? 1))
+  const startDay = dateKeyToEpochDay(range.startDate)
+  const endDay = dateKeyToEpochDay(range.endDate)
+  const longRangeStepDays = days <= 16 ? 1 : 2
+
+  return {
+    interval: (index, value) => {
+      const parsed = parseStatHour(value)
+      if (!parsed) return index === 0
+      const hour = Number(parsed.hour)
+      if (days <= 1) return hour % 3 === 0
+      if (days <= 3) return hour % 6 === 0
+      if (days <= 7) return hour === 0 || hour === 12
+      if (hour !== 0) return false
+      const currentDay = dateKeyToEpochDay(parsed.dateKey)
+      if (currentDay === undefined) return false
+      if (currentDay === startDay || currentDay === endDay) return true
+      if (startDay === undefined) return true
+      return (currentDay - startDay) % longRangeStepDays === 0
+    },
+    formatter: (value) => formatAxisStatHour(value, days)
+  }
+}
+
+function formatAxisStatHour(value: string, days: number) {
+  const parsed = parseStatHour(value)
+  if (!parsed) return value
+  if (days <= 1) return `${parsed.hour}:00`
+  if (days <= 3) return parsed.hour === '00' ? `${parsed.month}-${parsed.day} 00:00` : `${parsed.hour}:00`
+  if (days <= 7) return parsed.hour === '00' ? `${parsed.month}-${parsed.day}` : `${parsed.hour}:00`
+  return `${parsed.month}-${parsed.day}`
+}
+
+function performanceTooltipTitle(point?: TooltipPoint) {
+  const data = tooltipData(point)
+  const statHour = typeof data.statHour === 'string' ? data.statHour : undefined
+  return formatTooltipStatHour(statHour ?? point?.name ?? point?.axisValueLabel ?? '')
+}
+
+function formatTooltipStatHour(value: string) {
+  const parsed = parseStatHour(value)
+  return parsed ? `${parsed.dateKey} ${parsed.hour}:00` : value
+}
+
+function parseStatHour(value: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})$/.exec(value)
+  if (!match) return undefined
+  return {
+    dateKey: `${match[1]}-${match[2]}-${match[3]}`,
+    month: match[2],
+    day: match[3],
+    hour: match[4]
+  }
+}
+
+function dateKeyToEpochDay(value?: string) {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value ?? '')
+  if (!match) return undefined
+  const year = Number(match[1])
+  const month = Number(match[2])
+  const day = Number(match[3])
+  const time = Date.UTC(year, month - 1, day)
+  return Number.isFinite(time) ? Math.floor(time / 86_400_000) : undefined
 }
 
 function metricPointValue(point: AiPerformancePoint, metric: AiPerformanceMetric) {
