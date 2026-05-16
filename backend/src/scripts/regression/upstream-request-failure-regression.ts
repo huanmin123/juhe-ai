@@ -91,7 +91,8 @@ async function main(): Promise<void> {
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
 
-    const response = await fetch(`${baseUrl}/v1/chat/completions`, {
+    currentScenario = 'tool_output_missing_feature'
+    const featureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${apiKey.key}`,
@@ -99,17 +100,38 @@ async function main(): Promise<void> {
       },
       body: JSON.stringify({
         model: 'gpt-4o-mini',
-        messages: [{ role: 'user', content: 'bad tool state' }],
+        messages: [{ role: 'user', content: 'bad tool state feature' }],
         stream: false
       })
     })
-    const responseText = await response.text()
+    const featureResponseText = await featureResponse.text()
 
-    assert.equal(response.status, 400, `请求级失败应把上游 400 返回客户端，实际 HTTP ${response.status}: ${responseText}`)
-    assert.equal(responseText, rejectedRequestBody, `客户端收到的错误体应与上游原文一致：${responseText}`)
-    assert.equal(response.headers.get('content-type'), 'application/json; charset=utf-8', '客户端错误响应应保留上游 content-type')
-    assert.equal(upstreamHitCount, 2, `同一错误应只用两个账号确认后停止，实际上游命中 ${upstreamHitCount} 次`)
+    assert.equal(featureResponse.status, 400, `工具输出缺失特征应把上游 400 返回客户端，实际 HTTP ${featureResponse.status}: ${featureResponseText}`)
+    assert.equal(featureResponseText, toolOutputMissingRejectedRequestBody, `客户端收到的工具输出缺失错误体应与上游原文一致：${featureResponseText}`)
+    assert.equal(featureResponse.headers.get('content-type'), 'application/json; charset=utf-8', '工具输出缺失错误响应应保留上游 content-type')
+    assert.equal(toolOutputMissingUpstreamHitCount, 1, `工具输出缺失特征应首个账号命中后停止，实际上游命中 ${toolOutputMissingUpstreamHitCount} 次`)
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '请求级失败不应本地屏蔽账号')
+
+    currentScenario = 'same_signature_confirmation'
+    const signatureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'same upstream request error' }],
+        stream: false
+      })
+    })
+    const signatureResponseText = await signatureResponse.text()
+
+    assert.equal(signatureResponse.status, 400, `同签名请求级失败应把上游 400 返回客户端，实际 HTTP ${signatureResponse.status}: ${signatureResponseText}`)
+    assert.equal(signatureResponseText, sameSignatureRejectedRequestBody, `客户端收到的同签名错误体应与上游原文一致：${signatureResponseText}`)
+    assert.equal(signatureResponse.headers.get('content-type'), 'application/json; charset=utf-8', '同签名错误响应应保留上游 content-type')
+    assert.equal(sameSignatureUpstreamHitCount, 2, `同一错误应只用两个账号确认后停止，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '同签名请求级失败不应本地屏蔽账号')
 
     usageRecordQueue.flushAllUsageRecordQueue()
     const accounts = repositories.listAccounts()
@@ -122,7 +144,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('请求级上游失败回归通过：两个账号返回一致错误时直接返回客户端，账号不冷却、不本地屏蔽、不继续扫池')
+    console.log('请求级上游失败回归通过：工具输出缺失特征直接返回客户端；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -137,11 +159,23 @@ async function main(): Promise<void> {
   }
 }
 
-let upstreamHitCount = 0
-const rejectedRequestMessage = 'No tool output found for function call fc_request_failure_regression.'
-const rejectedRequestBody = JSON.stringify({
+type RegressionScenario = 'tool_output_missing_feature' | 'same_signature_confirmation'
+
+let currentScenario: RegressionScenario = 'tool_output_missing_feature'
+let toolOutputMissingUpstreamHitCount = 0
+let sameSignatureUpstreamHitCount = 0
+const toolOutputMissingRejectedRequestMessage = 'No tool output found for function call fc_request_failure_regression.'
+const toolOutputMissingRejectedRequestBody = JSON.stringify({
   error: {
-    message: rejectedRequestMessage,
+    message: toolOutputMissingRejectedRequestMessage,
+    type: 'invalid_request_error',
+    code: null
+  }
+})
+const sameSignatureRejectedRequestMessage = 'Regression request payload is invalid.'
+const sameSignatureRejectedRequestBody = JSON.stringify({
+  error: {
+    message: sameSignatureRejectedRequestMessage,
     type: 'invalid_request_error',
     code: null
   }
@@ -149,9 +183,16 @@ const rejectedRequestBody = JSON.stringify({
 
 function createRejectedRequestUpstream(): http.Server {
   return http.createServer((_req, res) => {
-    upstreamHitCount += 1
+    const body = currentScenario === 'tool_output_missing_feature'
+      ? toolOutputMissingRejectedRequestBody
+      : sameSignatureRejectedRequestBody
+    if (currentScenario === 'tool_output_missing_feature') {
+      toolOutputMissingUpstreamHitCount += 1
+    } else {
+      sameSignatureUpstreamHitCount += 1
+    }
     res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
-    res.end(rejectedRequestBody)
+    res.end(body)
   })
 }
 

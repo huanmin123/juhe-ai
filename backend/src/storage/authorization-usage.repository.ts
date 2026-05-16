@@ -30,7 +30,7 @@ interface AuthorizationUsageMonth {
 
 interface ReportFilterKey {
   systemAccountId: string
-  statMonth: string
+  range: AccountUsageStatsRange
   teamFilterId: string
   granteeFilterSystemAccountId: string
   resourceFilterType: AuthorizationReportResourceType
@@ -66,10 +66,11 @@ interface AuthorizationResourceInfo {
   ownerSystemAccountId: string
 }
 
-export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, month: AuthorizationUsageMonth): AuthorizationTeamUsageOverview {
-  const filterKey = authorizationReportFilterKey(filters, access, month)
+export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange | AuthorizationUsageMonth): AuthorizationTeamUsageOverview {
+  const normalizedRange = authorizationUsageRange(range)
+  const filterKey = authorizationReportFilterKey(filters, access, normalizedRange)
   if (!filterKey) {
-    return emptyAuthorizationTeamUsageOverview(month)
+    return emptyAuthorizationTeamUsageOverview(normalizedRange)
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
@@ -84,16 +85,18 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
       report.cache_read_tokens,
       report.total_cost_usd AS total_cost,
       report.last_used_at
-    FROM authorization_team_usage_summary_monthly report
+    FROM authorization_team_usage_range_windows report
     WHERE report.system_account_id = ?
-      AND report.stat_month = ?
+      AND report.start_date = ?
+      AND report.end_date = ?
       AND report.team_filter_id <> ''
       AND (? = '' OR report.team_filter_id = ?)
       AND ${resourcePredicate.sql}
     ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.team_filter_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
   `).all(
     filterKey.systemAccountId,
-    filterKey.statMonth,
+    filterKey.range.startDate,
+    filterKey.range.endDate,
     filterKey.teamFilterId,
     filterKey.teamFilterId,
     ...resourcePredicate.params
@@ -118,17 +121,18 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
     }
   })
   return {
-    range: monthRange(month),
+    range: filterKey.range,
     summary,
     rows: overviewRows,
     teamCount: new Set(overviewRows.map((row) => row.teamId)).size
   }
 }
 
-export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, month: AuthorizationUsageMonth): AuthorizationUserUsageOverview {
-  const filterKey = authorizationReportFilterKey(filters, access, month)
+export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange | AuthorizationUsageMonth): AuthorizationUserUsageOverview {
+  const normalizedRange = authorizationUsageRange(range)
+  const filterKey = authorizationReportFilterKey(filters, access, normalizedRange)
   if (!filterKey) {
-    return emptyAuthorizationUserUsageOverview(month)
+    return emptyAuthorizationUserUsageOverview(normalizedRange)
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
@@ -144,9 +148,10 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
       report.cache_read_tokens,
       report.total_cost_usd AS total_cost,
       report.last_used_at
-    FROM authorization_user_usage_summary_monthly report
+    FROM authorization_user_usage_range_windows report
     WHERE report.system_account_id = ?
-      AND report.stat_month = ?
+      AND report.start_date = ?
+      AND report.end_date = ?
       AND report.team_filter_id = ?
       AND report.grantee_filter_system_account_id <> ''
       AND (? = '' OR report.grantee_filter_system_account_id = ?)
@@ -154,7 +159,8 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.grantee_filter_system_account_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
   `).all(
     filterKey.systemAccountId,
-    filterKey.statMonth,
+    filterKey.range.startDate,
+    filterKey.range.endDate,
     filterKey.teamFilterId,
     filterKey.granteeFilterSystemAccountId,
     filterKey.granteeFilterSystemAccountId,
@@ -186,21 +192,21 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     }
   })
   return {
-    range: monthRange(month),
+    range: filterKey.range,
     summary,
     rows: overviewRows,
     userCount: new Set(overviewRows.map((row) => row.systemAccountId)).size
   }
 }
 
-function authorizationReportFilterKey(filters: AuthorizationUsageFilters, access: AccessScope | undefined, month: AuthorizationUsageMonth): ReportFilterKey | undefined {
+function authorizationReportFilterKey(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): ReportFilterKey | undefined {
   const systemAccountId = manageableSystemAccountId(access)
   if (!systemAccountId && !canAccessAll(access)) {
     return undefined
   }
   return {
     systemAccountId: systemAccountId ?? 'global',
-    statMonth: month.statMonth,
+    range,
     teamFilterId: filters.teamId ?? '',
     granteeFilterSystemAccountId: filters.granteeSystemAccountId ?? '',
     resourceFilterType: filters.resourceType ?? 'all',
@@ -236,16 +242,18 @@ function loadAuthorizationTeamUsageSummary(filterKey: ReportFilterKey): AccountU
       cache_read_tokens,
       total_cost_usd AS total_cost,
       last_used_at
-    FROM authorization_team_usage_summary_monthly
+    FROM authorization_team_usage_range_windows
     WHERE system_account_id = ?
-      AND stat_month = ?
+      AND start_date = ?
+      AND end_date = ?
       AND team_filter_id = ?
       AND resource_filter_type = ?
       AND resource_filter_id = ?
     LIMIT 1
   `).get(
     filterKey.systemAccountId,
-    filterKey.statMonth,
+    filterKey.range.startDate,
+    filterKey.range.endDate,
     filterKey.teamFilterId,
     filterKey.resourceFilterType,
     filterKey.resourceFilterId
@@ -262,9 +270,10 @@ function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountU
       cache_read_tokens,
       total_cost_usd AS total_cost,
       last_used_at
-    FROM authorization_user_usage_summary_monthly
+    FROM authorization_user_usage_range_windows
     WHERE system_account_id = ?
-      AND stat_month = ?
+      AND start_date = ?
+      AND end_date = ?
       AND team_filter_id = ?
       AND grantee_filter_system_account_id = ?
       AND resource_filter_type = ?
@@ -272,7 +281,8 @@ function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountU
     LIMIT 1
   `).get(
     filterKey.systemAccountId,
-    filterKey.statMonth,
+    filterKey.range.startDate,
+    filterKey.range.endDate,
     filterKey.teamFilterId,
     filterKey.granteeFilterSystemAccountId,
     filterKey.resourceFilterType,
@@ -281,37 +291,49 @@ function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountU
   return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
 }
 
-function emptyAuthorizationTeamUsageOverview(month: AuthorizationUsageMonth): AuthorizationTeamUsageOverview {
+function emptyAuthorizationTeamUsageOverview(range: AccountUsageStatsRange): AuthorizationTeamUsageOverview {
   return {
-    range: monthRange(month),
+    range,
     summary: emptyAccountUsageSummary(),
     rows: [],
     teamCount: 0
   }
 }
 
-function emptyAuthorizationUserUsageOverview(month: AuthorizationUsageMonth): AuthorizationUserUsageOverview {
+function emptyAuthorizationUserUsageOverview(range: AccountUsageStatsRange): AuthorizationUserUsageOverview {
   return {
-    range: monthRange(month),
+    range,
     summary: emptyAccountUsageSummary(),
     rows: [],
     userCount: 0
   }
 }
 
-function monthRange(month: AuthorizationUsageMonth): AccountUsageStatsRange {
+function authorizationUsageRange(range: AccountUsageStatsRange | AuthorizationUsageMonth): AccountUsageStatsRange {
+  if ('days' in range && 'maxDays' in range) {
+    return range
+  }
+  const days = daysBetween(range.startDate, range.endDate)
   return {
-    startDate: month.startDate,
-    endDate: month.endDate,
-    days: daysInMonth(month.statMonth),
-    maxDays: daysInMonth(month.statMonth)
+    startDate: range.startDate,
+    endDate: range.endDate,
+    days,
+    maxDays: days
   }
 }
 
-function daysInMonth(statMonth: string): number {
-  const [year, month] = statMonth.split('-').map(Number)
-  if (!Number.isFinite(year) || !Number.isFinite(month)) return 31
-  return new Date(year, month, 0).getDate()
+function daysBetween(startDate: string, endDate: string): number {
+  const start = dateFromKey(startDate)
+  const end = dateFromKey(endDate)
+  if (!start || !end || start > end) return 1
+  return Math.max(1, Math.floor((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1)
+}
+
+function dateFromKey(value: string): Date | undefined {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (!match) return undefined
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
+  return date.getFullYear() === Number(match[1]) && date.getMonth() === Number(match[2]) - 1 && date.getDate() === Number(match[3]) ? date : undefined
 }
 
 function userUsageSourceLabels(teamFilterId: string): string[] {

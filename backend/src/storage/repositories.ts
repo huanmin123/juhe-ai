@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { hasAccountQualityScoreSort, normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
@@ -2020,30 +2020,14 @@ export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
 
 export function listAuthorizationGranteeAccounts(access?: AccessScope): SystemAccountPrincipalSummary[] {
   const database = getDatabase()
-  if (canAccessAll(access)) {
-    const rows = database.prepare('SELECT * FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC, id ASC').all() as unknown as SystemAccountRow[]
-    return rows.map(systemAccountPrincipalSummaryFromRow)
-  }
-  const viewerId = currentSystemAccountId(access)
-  const rows = database
-    .prepare(`
-      SELECT DISTINCT system_accounts.*
-      FROM system_accounts
-      WHERE system_accounts.id = ?
-         OR system_accounts.id IN (
-           SELECT active_members.system_account_id
-           FROM system_team_members viewer_members
-           INNER JOIN system_team_members active_members ON active_members.team_id = viewer_members.team_id
-           INNER JOIN system_teams ON system_teams.id = viewer_members.team_id
-           WHERE viewer_members.system_account_id = ?
-             AND viewer_members.status = 'active'
-             AND active_members.status = 'active'
-             AND system_teams.status = 'active'
-         )
-      ORDER BY system_accounts.status ASC, system_accounts.display_name ASC, system_accounts.username ASC, system_accounts.id ASC
-    `)
-    .all(viewerId, viewerId) as unknown as SystemAccountRow[]
+  const rows = database.prepare('SELECT * FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC, id ASC').all() as unknown as SystemAccountRow[]
   return rows.map(systemAccountPrincipalSummaryFromRow)
+}
+
+export function listAuthorizationGranteeTeams(access?: AccessScope): SystemTeamPrincipalSummary[] {
+  const database = getDatabase()
+  const rows = database.prepare('SELECT * FROM system_teams ORDER BY status ASC, name ASC, id ASC').all() as unknown as SystemTeamRow[]
+  return rows.map(systemTeamPrincipalSummaryFromRow)
 }
 
 export function createSystemTeam(input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary {
@@ -2297,6 +2281,14 @@ export function getResourceAuthorizationUsage(authorizationId: string, access?: 
 
 function systemTeamSummaryFromRow(row: SystemTeamRow, members: SystemTeamMemberSummary[], _access?: AccessScope): SystemTeamSummary {
   return { id: row.id, name: row.name, description: row.description ?? undefined, status: row.status, memberCount: members.length, activeMemberCount: members.filter((member) => member.status === 'active').length, members, createdBy: row.created_by, createdAt: row.created_at, updatedAt: row.updated_at }
+}
+
+function systemTeamPrincipalSummaryFromRow(row: SystemTeamRow): SystemTeamPrincipalSummary {
+  return {
+    id: row.id,
+    name: row.name,
+    status: row.status
+  }
 }
 
 function systemAccountPrincipalSummaryFromRow(row: SystemAccountRow): SystemAccountPrincipalSummary {

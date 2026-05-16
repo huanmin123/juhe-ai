@@ -42,9 +42,10 @@
           v-model:value="form.granteeId"
           :accounts="users"
           :teams="teams"
+          :excluded-ids="form.granteeType === 'system_account' ? excludedGranteeIds : []"
           :scope="form.granteeType === 'system_account' ? 'system_account' : 'team'"
-          :disabled="!hasGranteeOptions"
-          :placeholder="form.granteeType === 'system_account' ? '选择一个用户' : '选择一个团队'"
+          :disabled="(isManagementView && !form.ownerSystemAccountId) || !hasGranteeOptions"
+          :placeholder="isManagementView && !form.ownerSystemAccountId ? '请先选择授权人' : form.granteeType === 'system_account' ? '选择一个用户' : '选择一个团队'"
         />
       </a-form-item>
       <a-form-item label="说明">
@@ -67,7 +68,7 @@
 
 <script setup lang="ts">
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
+import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import RequestQuotaFields from '../shared/RequestQuotaFields.vue'
 import type { AuthorizationCreateFormModel } from './authorizationFormTypes'
 
@@ -75,6 +76,7 @@ const open = defineModel<boolean>('open', { required: true })
 
 defineProps<{
   form: AuthorizationCreateFormModel
+  excludedGranteeIds: string[]
   hasGranteeOptions: boolean
   isManagementView: boolean
   ownerUsers: SystemAccountPrincipalSummary[]
@@ -83,7 +85,7 @@ defineProps<{
   resourceSelectDisabled: boolean
   resourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }>
   saving?: boolean
-  teams: SystemTeamSummary[]
+  teams: SystemTeamPrincipalSummary[]
   users: SystemAccountPrincipalSummary[]
 }>()
 

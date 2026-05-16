@@ -15,6 +15,7 @@ import { auditLogsRouter } from './modules/audit-logs/audit-logs.routes.js'
 import { authorizationOptionsRouter } from './modules/authorization-options/authorization-options.routes.js'
 import { authorizationsRouter } from './modules/authorizations/authorizations.routes.js'
 import { errorPoliciesRouter } from './modules/error-policies/error-policies.routes.js'
+import { featureRulesRouter } from './modules/feature-rules/feature-rules.routes.js'
 import { groupsRouter } from './modules/groups/groups.routes.js'
 import { providersRouter } from './modules/providers/providers.routes.js'
 import { proxiesRouter } from './modules/proxies/proxies.routes.js'
@@ -154,6 +155,7 @@ app.use('/api/my-stats', forceSelfAccessScope, statsRouter)
 app.use('/api/my-operation-logs', forceSelfAccessScope, myOperationLogsRouter)
 app.use('/api/providers', requireAdmin, providersRouter)
 app.use('/api/error-policies', errorPoliciesRouter)
+app.use('/api/feature-rules', requireAdmin, featureRulesRouter)
 app.use('/api/accounts', requireAdmin, accountsRouter)
 app.use('/api/groups', requireAdmin, groupsRouter)
 app.use('/api/api-keys', requireAdmin, apiKeysRouter)

@@ -112,52 +112,6 @@
           </div>
         </section>
 
-        <section class="settings-section">
-          <div class="section-heading">
-            <div>
-              <h3>内置流式特征规则</h3>
-              <p>这些规则来自代码文件，只用于记录和排障，页面不提供修改入口。</p>
-            </div>
-            <a-tag color="blue">只读</a-tag>
-          </div>
-
-          <a-alert class="setting-alert section-alert" type="info" show-icon>
-            <template #message>规则命中后会按代码定义处理上游 SSE 特征；需要调整时应修改代码并走回归验证。</template>
-          </a-alert>
-
-          <a-skeleton v-if="streamRulesLoading" active :paragraph="{ rows: 4 }" />
-          <a-empty v-else-if="!streamRules.length" description="当前没有内置流式特征规则" />
-          <a-collapse v-else class="stream-rule-collapse" ghost>
-            <a-collapse-panel v-for="rule in streamRules" :key="rule.id">
-              <template #header>
-                <div class="stream-rule-header">
-                  <div>
-                    <div class="stream-rule-title">{{ rule.name }}</div>
-                    <div class="stream-rule-summary">{{ rule.description || '暂无描述' }}</div>
-                  </div>
-                  <a-space wrap>
-                    <a-tag :color="rule.enabled ? 'green' : 'default'">{{ rule.enabled ? '启用' : '停用' }}</a-tag>
-                    <a-tag color="purple">{{ rule.action }}</a-tag>
-                    <a-tag>{{ rule.endpoint }}</a-tag>
-                  </a-space>
-                </div>
-              </template>
-
-              <div class="stream-rule-body">
-                <a-descriptions bordered size="small" :column="2" class="stream-rule-descriptions">
-                  <a-descriptions-item label="规则 ID" :span="2">{{ rule.id }}</a-descriptions-item>
-                  <a-descriptions-item label="来源">{{ streamRuleSourceText(rule.source) }}</a-descriptions-item>
-                  <a-descriptions-item label="供应商">{{ streamRuleProviderText(rule.provider) }}</a-descriptions-item>
-                  <a-descriptions-item label="触发阶段">{{ streamRuleTriggerPhaseText(rule.triggerPhase) }}</a-descriptions-item>
-                  <a-descriptions-item label="账号策略">{{ streamRuleAccountPolicyText(rule.accountPolicy) }}</a-descriptions-item>
-                  <a-descriptions-item label="为什么这样做" :span="2">{{ rule.rationale || '暂无记录' }}</a-descriptions-item>
-                </a-descriptions>
-                <pre class="stream-rule-json">{{ formatStreamRuleJson(rule.rule) }}</pre>
-              </div>
-            </a-collapse-panel>
-          </a-collapse>
-        </section>
-
         <div class="settings-actions">
           <a-space>
             <a-button type="primary" :loading="savingSystem" @click="saveSystemSettings">保存系统设置</a-button>
@@ -175,7 +129,6 @@ import { onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { applyAppBrand } from '@/composables/useAppBrand'
-import type { StreamInterceptRuleCatalogItem } from '@/types/domain'
 import {
   defaultGlobalSettings,
   defaultSystemSettings,
@@ -187,8 +140,6 @@ import {
 
 const savingGlobal = ref(false)
 const savingSystem = ref(false)
-const streamRulesLoading = ref(false)
-const streamRules = ref<StreamInterceptRuleCatalogItem[]>([])
 const globalForm = reactive<GlobalForm>({ ...defaultGlobalSettings })
 const systemForm = reactive<SystemForm>({ ...defaultSystemSettings })
 
@@ -204,18 +155,6 @@ async function loadSettings() {
   } catch (error) {
     console.error(error)
     message.error('加载系统设置失败')
-  }
-}
-
-async function loadStreamRules() {
-  streamRulesLoading.value = true
-  try {
-    streamRules.value = await api.settings.streamInterceptRules()
-  } catch (error) {
-    console.error(error)
-    message.error('加载内置流式特征规则失败')
-  } finally {
-    streamRulesLoading.value = false
   }
 }
 
@@ -284,39 +223,8 @@ function handleIconUpload(file: File): boolean {
   return false
 }
 
-function streamRuleSourceText(source?: string): string {
-  if (source === 'audit_log') return '审计日志'
-  if (source === 'source_code') return '源码排查'
-  if (source === 'manual_verification') return '人工验证'
-  return source || '未记录'
-}
-
-function streamRuleProviderText(provider: string): string {
-  if (provider === 'openai') return 'OpenAI'
-  if (provider === 'all') return '全部供应商'
-  return provider
-}
-
-function streamRuleTriggerPhaseText(phase: string): string {
-  if (phase === 'before_output') return '输出前'
-  if (phase === 'after_output') return '输出后'
-  if (phase === 'all') return '全部阶段'
-  return phase
-}
-
-function streamRuleAccountPolicyText(policy: string): string {
-  if (policy === 'temporary_unavailable') return '写入临时不可调用'
-  if (policy === 'none') return '不改变账号状态'
-  return policy
-}
-
-function formatStreamRuleJson(rule: Record<string, unknown>): string {
-  return JSON.stringify(rule, null, 2)
-}
-
 onMounted(() => {
   void loadSettings()
-  void loadStreamRules()
 })
 </script>
 
@@ -452,57 +360,6 @@ onMounted(() => {
   grid-column: 1 / -1;
 }
 
-.stream-rule-collapse {
-  background: #f8fafc;
-  border: 1px solid #edf1f7;
-  border-radius: 12px;
-}
-
-.stream-rule-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  width: 100%;
-}
-
-.stream-rule-title {
-  color: #0f172a;
-  font-size: 14px;
-  font-weight: 800;
-}
-
-.stream-rule-summary {
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.stream-rule-body {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.stream-rule-descriptions {
-  background: #fff;
-}
-
-.stream-rule-json {
-  max-height: 360px;
-  margin: 0;
-  padding: 14px;
-  overflow: auto;
-  color: #dbeafe;
-  font-size: 12px;
-  line-height: 18px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  background: #0f172a;
-  border-radius: 10px;
-}
-
 .settings-actions {
   display: flex;
   justify-content: flex-end;
@@ -529,9 +386,5 @@ onMounted(() => {
     justify-content: flex-start;
   }
 
-  .stream-rule-header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
 }
 </style>

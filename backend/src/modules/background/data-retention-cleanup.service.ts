@@ -56,6 +56,14 @@ export interface DataRetentionCleanupResult {
   usageModelMonthly: number
   usageErrorMonthly: number
   usageLatencyMonthly: number
+  authorizationTeamUsageMonthly: number
+  authorizationTeamUsageSummaryMonthly: number
+  authorizationTeamUsageSummaryDaily: number
+  authorizationTeamUsageRangeWindows: number
+  authorizationUserUsageMonthly: number
+  authorizationUserUsageSummaryMonthly: number
+  authorizationUserUsageSummaryDaily: number
+  authorizationUserUsageRangeWindows: number
   usageRankSnapshots: number
   usageOverviewSummaryWindows: number
   usageOverviewTrendWindows: number
@@ -225,6 +233,14 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     usageModelMonthly: 0,
     usageErrorMonthly: 0,
     usageLatencyMonthly: 0,
+    authorizationTeamUsageMonthly: 0,
+    authorizationTeamUsageSummaryMonthly: 0,
+    authorizationTeamUsageSummaryDaily: 0,
+    authorizationTeamUsageRangeWindows: 0,
+    authorizationUserUsageMonthly: 0,
+    authorizationUserUsageSummaryMonthly: 0,
+    authorizationUserUsageSummaryDaily: 0,
+    authorizationUserUsageRangeWindows: 0,
     usageRankSnapshots: 0,
     usageOverviewSummaryWindows: 0,
     usageOverviewTrendWindows: 0,

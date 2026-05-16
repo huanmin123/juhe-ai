@@ -29,6 +29,8 @@ export interface SystemTeamSummary {
   members?: SystemTeamMemberSummary[]
 }
 
+export type SystemTeamPrincipalSummary = Pick<SystemTeamSummary, 'id' | 'name' | 'status'>
+
 export interface AuthorizationSourceSummary {
   id: string
   authorizationId?: string

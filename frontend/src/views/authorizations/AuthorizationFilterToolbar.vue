@@ -95,7 +95,7 @@ import { QuestionCircleOutlined } from '@ant-design/icons-vue'
 
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
+import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import type { AuthorizationDirectionFilter, AuthorizationFilterResourceType, AuthorizationSourceFilter } from './authorizationTableColumns'
 
 const props = defineProps<{
@@ -112,7 +112,7 @@ const props = defineProps<{
   sourceOptions: Array<{ label: string; value: AuthorizationSourceFilter }>
   resourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }>
   resourceOptions: Array<{ label: string; value: string }>
-  teams: SystemTeamSummary[]
+  teams: SystemTeamPrincipalSummary[]
   users: SystemAccountPrincipalSummary[]
   activeFilterCount: number
   loading: boolean

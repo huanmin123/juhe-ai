@@ -18,6 +18,7 @@ mkdirSync(tempRoot, { recursive: true })
 const [
   { accountsRouter },
   { apiKeysRouter },
+  { authorizationOptionsRouter },
   { authorizationsRouter },
   { groupsRouter },
   { statsRouter },
@@ -31,6 +32,7 @@ const [
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/api-keys/api-keys.routes.js'),
+  import('../../modules/authorization-options/authorization-options.routes.js'),
   import('../../modules/authorizations/authorizations.routes.js'),
   import('../../modules/groups/groups.routes.js'),
   import('../../modules/stats/stats.routes.js'),
@@ -51,6 +53,7 @@ app.use('/api', requireAuth)
 app.use('/api/my-accounts', forceSelfAccessScope, accountsRouter)
 app.use('/api/my-groups', forceSelfAccessScope, groupsRouter)
 app.use('/api/my-api-keys', forceSelfAccessScope, apiKeysRouter)
+app.use('/api/my-authorization-options', forceSelfAccessScope, authorizationOptionsRouter)
 app.use('/api/my-authorizations', forceSelfAccessScope, authorizationsRouter)
 app.use('/api/my-usage-records', forceSelfAccessScope, usageRecordsRouter)
 app.use('/api/my-stats', forceSelfAccessScope, statsRouter)
@@ -58,6 +61,7 @@ app.use('/api/my-teams', forceSelfAccessScope, myTeamsRouter)
 app.use('/api/accounts', requireAdmin, accountsRouter)
 app.use('/api/groups', requireAdmin, groupsRouter)
 app.use('/api/api-keys', requireAdmin, apiKeysRouter)
+app.use('/api/authorization-options', requireAdmin, authorizationOptionsRouter)
 app.use('/api/authorizations', requireAdmin, authorizationsRouter)
 app.use('/api/usage-records', requireAdmin, usageRecordsRouter)
 app.use('/api/stats', requireAdmin, statsRouter)
@@ -173,6 +177,19 @@ interface SystemTeamSummary {
   members?: SystemTeamMemberSummary[]
 }
 
+interface SystemAccountPrincipalSummary {
+  id: string
+  username: string
+  displayName: string
+  status: string
+}
+
+interface SystemTeamPrincipalSummary {
+  id: string
+  name: string
+  status: string
+}
+
 interface ResourceAuthorizationSummary {
   id: string
   resourceType: string
@@ -198,6 +215,8 @@ interface SeedState {
   userBProxyId: string
   teamSharedId: string
   teamUserBOnlyId: string
+  teamNoUserAId: string
+  userCId: string
   inboundAuthorizationId: string
   userBGroupId: string
 }
@@ -335,6 +354,17 @@ async function main(): Promise<void> {
     assert(adminTeams.some((team) => team.id === seed.teamSharedId) && adminTeams.some((team) => team.id === seed.teamUserBOnlyId), '管理员系统团队管理没有返回全量团队')
     summary.push('我的团队成员作用域检查通过')
 
+    const userAGranteeAccounts = await getEnvelope<SystemAccountPrincipalSummary[]>(baseUrl, '/api/my-authorization-options/grantee-accounts', seed.userACookie)
+    assert(userAGranteeAccounts.some((account) => account.id === seed.userAId), '授权候选用户应包含当前用户，前端负责阻止授权给自己')
+    assert(userAGranteeAccounts.some((account) => account.id === seed.userBId), '授权候选用户应包含同团队用户')
+    assert(userAGranteeAccounts.some((account) => account.id === seed.userCId), '授权候选用户应包含非同团队用户')
+    const userAGranteeTeams = await getEnvelope<SystemTeamPrincipalSummary[]>(baseUrl, '/api/my-authorization-options/grantee-teams', seed.userACookie)
+    assert(userAGranteeTeams.some((team) => team.id === seed.teamSharedId), '授权候选团队应包含当前用户加入的团队')
+    assert(userAGranteeTeams.some((team) => team.id === seed.teamUserBOnlyId), '授权候选团队应包含当前用户未加入但同团队成员加入的团队')
+    assert(userAGranteeTeams.some((team) => team.id === seed.teamNoUserAId), '授权候选团队应包含当前用户完全无关的系统团队')
+    assert(userAGranteeTeams.every((team) => !Object.prototype.hasOwnProperty.call(team, 'members')), '授权候选团队不应返回成员明细')
+    summary.push('授权候选用户和团队全量检查通过')
+
     const userAAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, `/api/my-authorizations?status=all&systemAccountId=${seed.userBId}`, seed.userACookie)
     const inboundAuthorization = userAAuthorizations.find((authorization) => authorization.id === seed.inboundAuthorizationId)
     assert(inboundAuthorization?.resourceOwnerSystemAccountId === seed.userBId && inboundAuthorization.granteeSystemAccountId === seed.userAId, '用户 A 我的授权没有返回入站授权')
@@ -386,6 +416,14 @@ function seedData(): SeedState {
     status: 'active',
     mustChangePassword: false
   })
+  const userC = repositories.createSystemAccount({
+    username: 'scope_user_c',
+    displayName: '作用域用户 C',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
 
   const userAAccess = { systemAccountId: userA.id, role: 'user' as const }
   const userBAccess = { systemAccountId: userB.id, role: 'user' as const }
@@ -429,6 +467,11 @@ function seedData(): SeedState {
     description: '只有用户 B 加入'
   }, { systemAccountId: admin.id, role: 'admin' as const })
   repositories.addSystemTeamMembers(teamUserBOnly.id, { systemAccountIds: [userB.id] }, { systemAccountId: admin.id, role: 'admin' as const })
+  const teamNoUserA = repositories.createSystemTeam({
+    name: '作用域无用户 A 团队',
+    description: '用户 A 不在此团队'
+  }, { systemAccountId: admin.id, role: 'admin' as const })
+  repositories.addSystemTeamMembers(teamNoUserA.id, { systemAccountIds: [userC.id] }, { systemAccountId: admin.id, role: 'admin' as const })
   const inboundAuthorization = repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: userBAccount.id,
@@ -457,6 +500,7 @@ function seedData(): SeedState {
     adminId: admin.id,
     userAId: userA.id,
     userBId: userB.id,
+    userCId: userC.id,
     adminCookie: sessionCookie(admin.id),
     userACookie: sessionCookie(userA.id),
     userBCookie: sessionCookie(userB.id),
@@ -465,6 +509,7 @@ function seedData(): SeedState {
     userBProxyId: userBProxy.id,
     teamSharedId: teamShared.id,
     teamUserBOnlyId: teamUserBOnly.id,
+    teamNoUserAId: teamNoUserA.id,
     inboundAuthorizationId: inboundAuthorization.id,
     userBGroupId: userBGroup.id
   }

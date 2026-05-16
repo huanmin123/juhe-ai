@@ -24,10 +24,10 @@ export interface UsageStatsRetentionCleanupResult {
   usageModelMonthly: number
   usageErrorMonthly: number
   usageLatencyMonthly: number
-  authorizationTeamUsageMonthly: number
-  authorizationTeamUsageSummaryMonthly: number
-  authorizationUserUsageMonthly: number
-  authorizationUserUsageSummaryMonthly: number
+  authorizationTeamUsageSummaryDaily: number
+  authorizationTeamUsageRangeWindows: number
+  authorizationUserUsageSummaryDaily: number
+  authorizationUserUsageRangeWindows: number
   usageRankSnapshots: number
   usageOverviewSummaryWindows: number
   usageOverviewTrendWindows: number
@@ -142,10 +142,10 @@ export function cleanupUsageStatsBucketsBefore(input: {
     usageModelMonthly: changed(database.prepare('DELETE FROM usage_model_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
     usageErrorMonthly: changed(database.prepare('DELETE FROM usage_error_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
     usageLatencyMonthly: changed(database.prepare('DELETE FROM usage_latency_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
-    authorizationTeamUsageMonthly: changed(database.prepare('DELETE FROM authorization_team_usage_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
-    authorizationTeamUsageSummaryMonthly: changed(database.prepare('DELETE FROM authorization_team_usage_summary_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
-    authorizationUserUsageMonthly: changed(database.prepare('DELETE FROM authorization_user_usage_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
-    authorizationUserUsageSummaryMonthly: changed(database.prepare('DELETE FROM authorization_user_usage_summary_monthly WHERE stat_month < ?').run(input.monthlyCutoffMonth)),
+    authorizationTeamUsageSummaryDaily: changed(database.prepare('DELETE FROM authorization_team_usage_summary_daily WHERE stat_date < ?').run(input.dailyCutoffDate)),
+    authorizationTeamUsageRangeWindows: changed(database.prepare('DELETE FROM authorization_team_usage_range_windows WHERE end_date < ?').run(input.dailyCutoffDate)),
+    authorizationUserUsageSummaryDaily: changed(database.prepare('DELETE FROM authorization_user_usage_summary_daily WHERE stat_date < ?').run(input.dailyCutoffDate)),
+    authorizationUserUsageRangeWindows: changed(database.prepare('DELETE FROM authorization_user_usage_range_windows WHERE end_date < ?').run(input.dailyCutoffDate)),
     usageRankSnapshots: changed(database.prepare('DELETE FROM usage_rank_snapshots WHERE snapshot_at < ?').run(input.rankSnapshotCutoffIso)),
     usageOverviewSummaryWindows: 0,
     usageOverviewTrendWindows: 0,

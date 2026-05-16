@@ -357,6 +357,11 @@ export function applyRecordSchema(database: DatabaseSync): void {
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
 
+    DROP TABLE IF EXISTS authorization_team_usage_monthly;
+    DROP TABLE IF EXISTS authorization_team_usage_summary_monthly;
+    DROP TABLE IF EXISTS authorization_user_usage_monthly;
+    DROP TABLE IF EXISTS authorization_user_usage_summary_monthly;
+
     CREATE TABLE IF NOT EXISTS account_quality_minute_stats (
       account_id TEXT NOT NULL,
       system_account_id TEXT NOT NULL,
@@ -823,36 +828,9 @@ export function applyRecordSchema(database: DatabaseSync): void {
       PRIMARY KEY (system_account_id, scope_type, scope_id, stat_month)
     );
 
-    CREATE TABLE IF NOT EXISTS authorization_team_usage_monthly (
+    CREATE TABLE IF NOT EXISTS authorization_team_usage_summary_daily (
       system_account_id TEXT NOT NULL,
-      stat_month TEXT NOT NULL,
-      team_id TEXT NOT NULL,
-      resource_filter_type TEXT NOT NULL DEFAULT 'all',
-      resource_filter_id TEXT NOT NULL DEFAULT '',
-      hit_account_id TEXT NOT NULL DEFAULT '',
-      hit_account_owner_system_account_id TEXT NOT NULL DEFAULT '',
-      request_count INTEGER NOT NULL DEFAULT 0,
-      success_count INTEGER NOT NULL DEFAULT 0,
-      error_count INTEGER NOT NULL DEFAULT 0,
-      input_tokens INTEGER NOT NULL DEFAULT 0,
-      output_tokens INTEGER NOT NULL DEFAULT 0,
-      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-      total_cost_usd REAL NOT NULL DEFAULT 0,
-      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
-      duration_ms_count INTEGER NOT NULL DEFAULT 0,
-      duration_ms_max INTEGER NOT NULL DEFAULT 0,
-      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
-      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
-      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
-      last_used_at TEXT,
-      last_error_at TEXT,
-      updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, stat_month, team_id, resource_filter_type, resource_filter_id, hit_account_id, hit_account_owner_system_account_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS authorization_team_usage_summary_monthly (
-      system_account_id TEXT NOT NULL,
-      stat_month TEXT NOT NULL,
+      stat_date TEXT NOT NULL,
       team_filter_id TEXT NOT NULL DEFAULT '',
       resource_filter_type TEXT NOT NULL DEFAULT 'all',
       resource_filter_id TEXT NOT NULL DEFAULT '',
@@ -873,40 +851,29 @@ export function applyRecordSchema(database: DatabaseSync): void {
       last_used_at TEXT,
       last_error_at TEXT,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, stat_month, team_filter_id, resource_filter_type, resource_filter_id)
+      PRIMARY KEY (system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id)
     );
 
-    CREATE TABLE IF NOT EXISTS authorization_user_usage_monthly (
+    CREATE TABLE IF NOT EXISTS authorization_team_usage_range_windows (
       system_account_id TEXT NOT NULL,
-      stat_month TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
       team_filter_id TEXT NOT NULL DEFAULT '',
-      grantee_system_account_id TEXT NOT NULL,
       resource_filter_type TEXT NOT NULL DEFAULT 'all',
       resource_filter_id TEXT NOT NULL DEFAULT '',
-      hit_account_id TEXT NOT NULL DEFAULT '',
-      hit_account_owner_system_account_id TEXT NOT NULL DEFAULT '',
       request_count INTEGER NOT NULL DEFAULT 0,
-      success_count INTEGER NOT NULL DEFAULT 0,
-      error_count INTEGER NOT NULL DEFAULT 0,
       input_tokens INTEGER NOT NULL DEFAULT 0,
       output_tokens INTEGER NOT NULL DEFAULT 0,
       cache_read_tokens INTEGER NOT NULL DEFAULT 0,
       total_cost_usd REAL NOT NULL DEFAULT 0,
-      duration_ms_sum INTEGER NOT NULL DEFAULT 0,
-      duration_ms_count INTEGER NOT NULL DEFAULT 0,
-      duration_ms_max INTEGER NOT NULL DEFAULT 0,
-      first_token_ms_sum INTEGER NOT NULL DEFAULT 0,
-      first_token_ms_count INTEGER NOT NULL DEFAULT 0,
-      first_token_ms_max INTEGER NOT NULL DEFAULT 0,
       last_used_at TEXT,
-      last_error_at TEXT,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, stat_month, team_filter_id, grantee_system_account_id, resource_filter_type, resource_filter_id, hit_account_id, hit_account_owner_system_account_id)
+      PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id)
     );
 
-    CREATE TABLE IF NOT EXISTS authorization_user_usage_summary_monthly (
+    CREATE TABLE IF NOT EXISTS authorization_user_usage_summary_daily (
       system_account_id TEXT NOT NULL,
-      stat_month TEXT NOT NULL,
+      stat_date TEXT NOT NULL,
       team_filter_id TEXT NOT NULL DEFAULT '',
       grantee_filter_system_account_id TEXT NOT NULL DEFAULT '',
       resource_filter_type TEXT NOT NULL DEFAULT 'all',
@@ -928,7 +895,25 @@ export function applyRecordSchema(database: DatabaseSync): void {
       last_used_at TEXT,
       last_error_at TEXT,
       updated_at TEXT NOT NULL,
-      PRIMARY KEY (system_account_id, stat_month, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
+      PRIMARY KEY (system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS authorization_user_usage_range_windows (
+      system_account_id TEXT NOT NULL,
+      start_date TEXT NOT NULL,
+      end_date TEXT NOT NULL,
+      team_filter_id TEXT NOT NULL DEFAULT '',
+      grantee_filter_system_account_id TEXT NOT NULL DEFAULT '',
+      resource_filter_type TEXT NOT NULL DEFAULT 'all',
+      resource_filter_id TEXT NOT NULL DEFAULT '',
+      request_count INTEGER NOT NULL DEFAULT 0,
+      input_tokens INTEGER NOT NULL DEFAULT 0,
+      output_tokens INTEGER NOT NULL DEFAULT 0,
+      cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+      total_cost_usd REAL NOT NULL DEFAULT 0,
+      last_used_at TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id)
     );
 
     CREATE TABLE IF NOT EXISTS usage_model_minute (
@@ -1448,10 +1433,10 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_stats_weekly_week ON usage_stats_weekly(stat_week);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_monthly_scope_month ON usage_stats_monthly(system_account_id, scope_type, scope_id, stat_month);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_monthly_month ON usage_stats_monthly(stat_month);
-    CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_monthly_lookup ON authorization_team_usage_monthly(system_account_id, stat_month, resource_filter_type, resource_filter_id, team_id, hit_account_id);
-    CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_summary_monthly_lookup ON authorization_team_usage_summary_monthly(system_account_id, stat_month, team_filter_id, resource_filter_type, resource_filter_id);
-    CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_monthly_lookup ON authorization_user_usage_monthly(system_account_id, stat_month, team_filter_id, resource_filter_type, resource_filter_id, grantee_system_account_id, hit_account_id);
-    CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_monthly_lookup ON authorization_user_usage_summary_monthly(system_account_id, stat_month, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_summary_daily_lookup ON authorization_team_usage_summary_daily(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_range_lookup ON authorization_team_usage_range_windows(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_daily_lookup ON authorization_user_usage_summary_daily(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_range_lookup ON authorization_user_usage_range_windows(system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id);
     CREATE INDEX IF NOT EXISTS idx_usage_model_minute_minute ON usage_model_minute(system_account_id, stat_minute, model);
     CREATE INDEX IF NOT EXISTS idx_usage_model_minute_stat_minute ON usage_model_minute(stat_minute);
     CREATE INDEX IF NOT EXISTS idx_usage_model_daily_date ON usage_model_daily(system_account_id, stat_date, model);

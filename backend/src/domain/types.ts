@@ -84,6 +84,8 @@ export interface SystemTeamSummary {
   updatedAt: string
 }
 
+export type SystemTeamPrincipalSummary = Pick<SystemTeamSummary, 'id' | 'name' | 'status'>
+
 export interface ResourceAuthorizationSourceSummary {
   id: string
   authorizationId: string

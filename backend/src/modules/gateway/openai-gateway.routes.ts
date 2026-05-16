@@ -68,6 +68,11 @@ import {
 import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
 import type { StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
+import {
+  matchUpstreamErrorFeatureRule,
+  openAIUpstreamErrorFeatureRules,
+  type UpstreamErrorFeatureDecision
+} from './openai-gateway-upstream-error-rules.js'
 import { pipeNonStreamUpstreamResponse, readUpstreamBodyLimited } from './openai-gateway-body.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from './api-key-quota.service.js'
@@ -730,6 +735,12 @@ export async function handleOpenAIGatewayRequest(
     }
     if (error instanceof UpstreamRejectedRequestError) {
       const auditError = parseClientVisibleUpstreamErrorForAudit(error.response, error.message)
+      if (error.upstreamErrorFeature) {
+        auditCapture.addGatewayMetadata({
+          label: 'upstream_error_feature',
+          metadata: upstreamErrorFeatureAuditMetadata(error.upstreamErrorFeature)
+        })
+      }
       sendRawUpstreamErrorResponse(res, error.response)
       auditCapture.finalize({
         outcome: 'upstream_failed',
@@ -1053,7 +1064,8 @@ class UpstreamRejectedRequestError extends Error {
   constructor(
     message: string,
     readonly lastAttempt: UpstreamAttempt,
-    readonly response: ClientVisibleUpstreamErrorResponse
+    readonly response: ClientVisibleUpstreamErrorResponse,
+    readonly upstreamErrorFeature?: UpstreamErrorFeatureDecision
   ) {
     super(message)
   }
@@ -1298,6 +1310,47 @@ async function fetchFirstAvailableUpstream(
               bodyText: responseBodyText,
               settings
             } as const
+            if (!responseBodyRead.truncated) {
+              const parsedError = parseErrorPayload(responseBodyText, response.headers)
+              const featureDecision = matchUpstreamErrorFeatureRule(openAIUpstreamErrorFeatureRules, {
+                provider: 'openai',
+                endpoint: requestEndpoint(req),
+                stream: isEffectiveOpenAIStreamRequest(req, account),
+                statusCode: response.status,
+                bodyText: responseBodyText,
+                parsedError
+              })
+              if (featureDecision) {
+                getRequestLogger().warn({
+                  event: 'gateway_upstream_error_feature_matched',
+                  accountId: account.id,
+                  accountName: account.name,
+                  accountType: account.type,
+                  upstreamUrl,
+                  attemptIndex,
+                  auditAttemptIndex,
+                  statusCode: response.status,
+                  ruleId: featureDecision.ruleId,
+                  ruleName: featureDecision.ruleName,
+                  action: featureDecision.action,
+                  accountPolicy: featureDecision.accountPolicy,
+                  upstreamErrorType: featureDecision.upstreamErrorType,
+                  upstreamErrorCode: featureDecision.upstreamErrorCode,
+                  upstreamErrorMessage: featureDecision.upstreamErrorMessage
+                }, '命中上游错误响应特征规则，按请求级失败原样返回客户端')
+                throw new UpstreamRejectedRequestError(
+                  `命中上游错误响应特征规则 ${featureDecision.ruleName}，判定为请求级失败`,
+                  lastAttempt,
+                  {
+                    statusCode: response.status,
+                    headers: response.headers,
+                    body: responseBody,
+                    bodyText: responseBodyText
+                  },
+                  featureDecision
+                )
+              }
+            }
             if (hasAccountErrorPolicyDecision(account, failureInput)) {
               forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
               applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
@@ -1615,6 +1668,20 @@ function streamInterceptAuditMetadata(decision: StreamInterceptDecision): Record
     outputSeen: decision.outputSeen,
     accountPolicy: decision.accountPolicy,
     cooldownMinutes: decision.cooldownMinutes
+  }
+}
+
+function upstreamErrorFeatureAuditMetadata(decision: UpstreamErrorFeatureDecision): Record<string, unknown> {
+  return {
+    upstreamErrorFeatureMatched: true,
+    featureRuleId: decision.ruleId,
+    featureRuleName: decision.ruleName,
+    action: decision.action,
+    statusCode: decision.statusCode,
+    upstreamErrorType: decision.upstreamErrorType,
+    upstreamErrorCode: decision.upstreamErrorCode,
+    upstreamErrorMessage: decision.upstreamErrorMessage,
+    accountPolicy: decision.accountPolicy
   }
 }
 

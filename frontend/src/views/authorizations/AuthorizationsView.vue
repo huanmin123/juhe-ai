@@ -34,6 +34,7 @@
     <AuthorizationCreateModal
       v-model:open="createModalOpen"
       :form="createForm"
+      :excluded-grantee-ids="createExcludedGranteeIds"
       :has-grantee-options="hasCreateGranteeOptions"
       :is-management-view="isManagementView"
       :owner-users="users"
@@ -68,7 +69,7 @@ import { authState } from '@/composables/useAuth'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
-import type { AccountSummary, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
+import type { AccountSummary, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
 import AuthorizationFilterToolbar from './AuthorizationFilterToolbar.vue'
@@ -105,7 +106,7 @@ const accounts = ref<AccountSummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const createAccounts = ref<AccountSummary[]>([])
 const createGroups = ref<GroupSummary[]>([])
-const teams = ref<SystemTeamSummary[]>([])
+const teams = ref<SystemTeamPrincipalSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
 
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
@@ -200,8 +201,9 @@ const createResourcePlaceholder = computed(() => {
   return createResourceOptions.value.length ? '请选择整个分组账号池' : '该授权人暂无可授权分组'
 })
 
+const createExcludedGranteeIds = computed(() => createForm.ownerSystemAccountId ? [createForm.ownerSystemAccountId] : [])
 const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'system_account'
-  ? users.value.some((user) => user.status === 'active')
+  ? users.value.some((user) => user.status === 'active' && !createExcludedGranteeIds.value.includes(user.id))
   : teams.value.some((team) => team.status === 'active'))
 const activeFilterCount = computed(() => {
   let count = 0
@@ -241,8 +243,8 @@ async function loadMetaData() {
   const [accountResult, groupResult, teamResult, userResult] = await Promise.allSettled([
     isManagementView.value ? api.accounts.list({ systemAccountId, limit: 200 }) : api.myAccounts.list({ limit: 200 }),
     isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
-    isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
-    isManagementView.value ? api.systemAccounts.list() : api.myAuthorizationOptions.granteeAccounts()
+    isManagementView.value ? api.authorizationOptions.granteeTeams() : api.myAuthorizationOptions.granteeTeams(),
+    isManagementView.value ? api.authorizationOptions.granteeAccounts() : api.myAuthorizationOptions.granteeAccounts()
   ])
   if (accountResult.status === 'fulfilled') {
     accounts.value = accountResult.value.items
@@ -309,6 +311,9 @@ function openCreateModal() {
 
 function handleCreateOwnerChange() {
   createForm.resourceId = ''
+  if (createForm.granteeType === 'system_account' && createForm.granteeId === createForm.ownerSystemAccountId) {
+    createForm.granteeId = ''
+  }
   void loadCreateOwnerResources()
 }
 
@@ -375,6 +380,10 @@ const createAuthorization = submitAction('authorizations.create', async () => {
   }
   if (createForm.granteeType === 'system_account' && !users.value.some((user) => user.id === createForm.granteeId && user.status === 'active')) {
     message.warning('请选择启用中的系统账户')
+    return
+  }
+  if (createForm.granteeType === 'system_account' && createExcludedGranteeIds.value.includes(createForm.granteeId)) {
+    message.warning('不能授权给资源所有者自己')
     return
   }
   if (createForm.granteeType === 'team' && !teams.value.some((team) => team.id === createForm.granteeId && team.status === 'active')) {

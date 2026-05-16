@@ -441,6 +441,7 @@ export function refreshUsageRankSnapshots(): void {
     refreshUsageOverviewWindowSnapshots(database, updatedAt, timezone)
     refreshUsageQuotaHourlyWindowSnapshots(database, updatedAt, timezone)
     refreshUsageScopeRangeWindowSnapshots(database, updatedAt, timezone)
+    refreshAuthorizationUsageRangeWindowSnapshots(database, updatedAt, timezone)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -814,6 +815,84 @@ function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt
       const startDate = dates[startIndex]
       const rangeEndDate = dates[endIndex]
       insert.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
+    }
+  }
+}
+
+function refreshAuthorizationUsageRangeWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
+  const todayKey = dateKey(new Date(), timezone)
+  const endDate = parseDateKeyStrict(todayKey)
+  if (!endDate) return
+  const earliestDate = addDays(endDate, -(FIXED_RANGE_WINDOW_DAYS - 1))
+  const dates = Array.from({ length: FIXED_RANGE_WINDOW_DAYS }, (_, index) => localDateKey(addDays(earliestDate, index)))
+  database.prepare('DELETE FROM authorization_team_usage_range_windows WHERE end_date >= ? AND end_date <= ?').run(dates[0], todayKey)
+  database.prepare('DELETE FROM authorization_user_usage_range_windows WHERE end_date >= ? AND end_date <= ?').run(dates[0], todayKey)
+
+  const insertTeamRange = database.prepare(`
+    INSERT INTO authorization_team_usage_range_windows (
+      system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
+      request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, last_used_at, updated_at
+    )
+    SELECT
+      system_account_id,
+      ?,
+      ?,
+      team_filter_id,
+      resource_filter_type,
+      resource_filter_id,
+      COALESCE(SUM(request_count), 0),
+      COALESCE(SUM(input_tokens), 0),
+      COALESCE(SUM(output_tokens), 0),
+      COALESCE(SUM(cache_read_tokens), 0),
+      COALESCE(SUM(total_cost_usd), 0),
+      MAX(last_used_at),
+      ?
+    FROM authorization_team_usage_summary_daily
+    WHERE stat_date >= ?
+      AND stat_date <= ?
+    GROUP BY system_account_id, team_filter_id, resource_filter_type, resource_filter_id
+    HAVING COALESCE(SUM(request_count), 0) > 0
+      OR COALESCE(SUM(input_tokens), 0) > 0
+      OR COALESCE(SUM(output_tokens), 0) > 0
+      OR COALESCE(SUM(cache_read_tokens), 0) > 0
+      OR COALESCE(SUM(total_cost_usd), 0) > 0
+  `)
+  const insertUserRange = database.prepare(`
+    INSERT INTO authorization_user_usage_range_windows (
+      system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,
+      request_count, input_tokens, output_tokens, cache_read_tokens, total_cost_usd, last_used_at, updated_at
+    )
+    SELECT
+      system_account_id,
+      ?,
+      ?,
+      team_filter_id,
+      grantee_filter_system_account_id,
+      resource_filter_type,
+      resource_filter_id,
+      COALESCE(SUM(request_count), 0),
+      COALESCE(SUM(input_tokens), 0),
+      COALESCE(SUM(output_tokens), 0),
+      COALESCE(SUM(cache_read_tokens), 0),
+      COALESCE(SUM(total_cost_usd), 0),
+      MAX(last_used_at),
+      ?
+    FROM authorization_user_usage_summary_daily
+    WHERE stat_date >= ?
+      AND stat_date <= ?
+    GROUP BY system_account_id, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id
+    HAVING COALESCE(SUM(request_count), 0) > 0
+      OR COALESCE(SUM(input_tokens), 0) > 0
+      OR COALESCE(SUM(output_tokens), 0) > 0
+      OR COALESCE(SUM(cache_read_tokens), 0) > 0
+      OR COALESCE(SUM(total_cost_usd), 0) > 0
+  `)
+  for (let startIndex = 0; startIndex < dates.length; startIndex += 1) {
+    for (let endIndex = startIndex; endIndex < dates.length; endIndex += 1) {
+      const startDate = dates[startIndex]
+      const rangeEndDate = dates[endIndex]
+      insertTeamRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
+      insertUserRange.run(startDate, rangeEndDate, updatedAt, startDate, rangeEndDate)
     }
   }
 }

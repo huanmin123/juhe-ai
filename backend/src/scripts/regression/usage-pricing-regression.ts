@@ -11,7 +11,7 @@ import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPr
 import { usageSummaryFromAggregate } from '../../storage/usage-stats-helpers.js'
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url))
-const backendSrcDirectory = resolve(scriptDirectory, '..')
+const backendSrcDirectory = resolve(scriptDirectory, '../..')
 
 function jsonBuffer(value: unknown): Buffer {
   return Buffer.from(JSON.stringify(value), 'utf8')

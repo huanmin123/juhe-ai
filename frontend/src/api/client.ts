@@ -45,7 +45,9 @@ import type {
   RuntimeLogGrepResult,
   RuntimeLogSearchResult,
   StreamInterceptRuleCatalogItem,
+  UpstreamErrorFeatureRuleCatalogItem,
   SystemTeamMemberSummary,
+  SystemTeamPrincipalSummary,
   SystemTeamSummary,
   SystemSettings,
   SystemAccountPrincipalSummary,
@@ -233,6 +235,8 @@ export interface AuthorizationUsageOverviewParams extends AuthorizationScopePara
   granteeSystemAccountId?: string
   teamId?: string
   statMonth?: string
+  startDate?: string
+  endDate?: string
 }
 
 export interface AnnouncementListParams {
@@ -284,7 +288,8 @@ export const api = {
     update: (id: string, payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.patch(`/system-accounts/${id}`, payload))
   },
   authorizationOptions: {
-    granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/authorization-options/grantee-accounts'))
+    granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/authorization-options/grantee-accounts')),
+    granteeTeams: () => unwrap<SystemTeamPrincipalSummary[]>(http.get('/authorization-options/grantee-teams'))
   },
   announcements: {
     publicList: (params?: AnnouncementListParams) => unwrap<AnnouncementSummary[]>(http.get('/announcements/public', { params })),
@@ -297,7 +302,8 @@ export const api = {
     delete: (id: string) => http.delete(`/announcements/${id}`)
   },
   myAuthorizationOptions: {
-    granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/my-authorization-options/grantee-accounts'))
+    granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/my-authorization-options/grantee-accounts')),
+    granteeTeams: () => unwrap<SystemTeamPrincipalSummary[]>(http.get('/my-authorization-options/grantee-teams'))
   },
   providers: {
     list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
@@ -462,12 +468,15 @@ export const api = {
     aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params) })),
     aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params) }))
   },
+  featureRules: {
+    streamInterceptRules: () => unwrap<StreamInterceptRuleCatalogItem[]>(http.get('/feature-rules/stream-intercept-rules')),
+    upstreamErrorFeatureRules: () => unwrap<UpstreamErrorFeatureRuleCatalogItem[]>(http.get('/feature-rules/upstream-error-feature-rules'))
+  },
   settings: {
     public: () => unwrap<GlobalSettings>(http.get('/settings/public')),
     global: () => unwrap<GlobalSettings>(http.get('/settings/global')),
     updateGlobal: (payload: GlobalSettings) => unwrap<GlobalSettings>(http.patch('/settings/global', payload)),
     get: () => unwrap<SystemSettings>(http.get('/settings')),
-    streamInterceptRules: () => unwrap<StreamInterceptRuleCatalogItem[]>(http.get('/settings/stream-intercept-rules')),
     update: (payload: SystemSettings) => unwrap<SystemSettings>(http.patch('/settings', payload))
   }
 }

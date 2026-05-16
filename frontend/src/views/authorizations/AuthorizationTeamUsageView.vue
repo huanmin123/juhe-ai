@@ -10,14 +10,16 @@
         @refresh="loadData"
       >
         <template #inline-filters>
-          <a-date-picker
-            v-model:value="usageMonthValue"
+          <a-range-picker
+            v-model:value="dateRange"
             :allow-clear="false"
             :disabled="loading"
+            :disabled-date="disabledDate"
             class="authorization-usage-range responsive-list-inline-filter"
-            format="YYYY年M月"
-            picker="month"
-            @change="handleUsageMonthChange"
+            format="YYYY-MM-DD"
+            @calendar-change="handleCalendarChange"
+            @change="handleDateRangeChange"
+            @open-change="handleDateRangeOpenChange"
           />
           <SystemPrincipalSelect
             v-model:value="filters.teamId"
@@ -55,14 +57,16 @@
         </template>
         <template #filters>
           <label class="mobile-filter-field">
-            <span>用量时间</span>
-            <a-date-picker
-              v-model:value="usageMonthValue"
+            <span>用量日期</span>
+            <a-range-picker
+              v-model:value="dateRange"
               :allow-clear="false"
               :disabled="loading"
-              format="YYYY年M月"
-              picker="month"
-              @change="handleUsageMonthChange"
+              :disabled-date="disabledDate"
+              format="YYYY-MM-DD"
+              @calendar-change="handleCalendarChange"
+              @change="handleDateRangeChange"
+              @open-change="handleDateRangeOpenChange"
             />
           </label>
           <label class="mobile-filter-field">
@@ -158,7 +162,7 @@
             </div>
             <div class="mobile-list-meta-grid">
               <div class="mobile-list-meta-item mobile-list-meta-wide">
-                <span>月度消耗</span>
+                <span>范围消耗</span>
                 <strong><UsageSummaryTags :usage="record.usage" /></strong>
               </div>
               <div class="mobile-list-meta-item">
@@ -199,7 +203,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import type { AccountSummary, AuthorizationResourceType, AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamSummary } from '@/types/domain'
+import type { AccountSummary, AuthorizationResourceType, AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import {
@@ -216,13 +220,13 @@ type TeamUsageFilters = {
   resourceOwnerSystemAccountId: string
   resourceType: AuthorizationFilterResourceType
   resourceId?: string
-  statMonth: string
 }
+const MAX_RANGE_DAYS = 31
 const router = useRouter()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const loading = ref(false)
 const overview = ref<AuthorizationTeamUsageOverview>()
-const teams = ref<SystemTeamSummary[]>([])
+const teams = ref<SystemTeamPrincipalSummary[]>([])
 const resourceOwners = ref<SystemAccountPrincipalSummary[]>([])
 const accounts = ref<AccountSummary[]>([])
 const groups = ref<GroupSummary[]>([])
@@ -236,20 +240,23 @@ const columns = [
   { title: '资源名称', key: 'account', width: 220 },
   { title: '资源归属人', key: 'accountOwner', width: 180 },
   { title: '被授权团队', key: 'team', width: 240 },
-  { title: '月度消耗', key: 'usage', width: 220 },
+  { title: '范围消耗', key: 'usage', width: 220 },
   { title: '最后使用', key: 'lastUsedAt', width: 180 },
   { title: '操作', key: 'actions', width: 96, fixed: 'right' }
 ]
 
 const initialLoading = computed(() => loading.value && !overview.value)
-const defaultMonth = computed(() => defaultUsageMonth())
+const dateRange = ref<[Dayjs, Dayjs]>(defaultDateRange())
+const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
+const selectedRange = computed(() => normalizedDateRange(dateRange.value))
+const defaultRange = computed(() => normalizedDateRange(defaultDateRange()))
 const activeFilterCount = computed(() => {
   let count = 0
   if (filters.teamId) count += 1
   if (selectedResourceOwnerSystemAccountId.value) count += 1
   if (filters.resourceType !== 'all') count += 1
   if (filters.resourceId) count += 1
-  if (filters.statMonth !== defaultMonth.value) count += 1
+  if (selectedRange.value[0] !== defaultRange.value[0] || selectedRange.value[1] !== defaultRange.value[1]) count += 1
   return count
 })
 const selectedResourceOwnerSystemAccountId = computed(() => {
@@ -270,26 +277,18 @@ const ownAuthorizableAccounts = computed(() => accounts.value.filter((account) =
 const ownAuthorizableGroups = computed(() => groups.value.filter((group) => group.permissions?.canAuthorize !== false))
 const teamRows = computed<AuthorizationTeamUsageRow[]>(() => overview.value?.rows ?? [])
 const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
-const rangeLabel = computed(() => formatMonthLabel(filters.statMonth))
+const rangeLabel = computed(() => `${formatDateLabel(selectedRange.value[0])} 至 ${formatDateLabel(selectedRange.value[1])}`)
 const summaryCards = computed(() => [
-  { key: 'teams', label: '授权团队', value: formatNumber(overview.value?.teamCount ?? 0), extra: `月份 ${rangeLabel.value}` },
-  { key: 'requests', label: '月度请求', value: formatNumber(totalUsage.value.requestCount), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` },
+  { key: 'teams', label: '授权团队', value: formatNumber(overview.value?.teamCount ?? 0), extra: `范围 ${rangeLabel.value}` },
+  { key: 'requests', label: '范围请求', value: formatNumber(totalUsage.value.requestCount), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` },
   { key: 'tokens', label: 'Token 消耗', value: formatUsageAmount(totalUsage.value.totalTokens), extra: `输入 ${formatUsageAmount(totalUsage.value.inputTokens)}` },
   { key: 'cost', label: '成本', value: formatCost(totalUsage.value.totalCost), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` }
 ])
-const usageMonthValue = computed<Dayjs>({
-  get() {
-    return dayjs(`${filters.statMonth}-01`).startOf('month')
-  },
-  set(value) {
-    filters.statMonth = normalizeUsageMonth(value)
-  }
-})
 
 async function loadOptions() {
   const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
   const [teamResult, ownerResult, accountResult, groupResult] = await Promise.allSettled([
-    isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
+    isManagementView.value ? api.authorizationOptions.granteeTeams() : api.myAuthorizationOptions.granteeTeams(),
     isManagementView.value ? api.systemAccounts.list() : Promise.resolve([]),
     isManagementView.value ? api.accounts.list({ systemAccountId: ownerSystemAccountId, limit: 500 }) : api.myAccounts.list({ limit: 500 }),
     isManagementView.value ? api.groups.list({ systemAccountId: ownerSystemAccountId }) : api.myGroups.list()
@@ -329,7 +328,8 @@ async function loadData() {
       resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
       resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
       teamId: filters.teamId,
-      statMonth: filters.statMonth
+      startDate: selectedRange.value[0],
+      endDate: selectedRange.value[1]
     }
     const [usageOverview] = await Promise.all([
       isManagementView.value ? api.authorizations.teamUsage(params) : api.myAuthorizations.teamUsage(params),
@@ -350,7 +350,8 @@ function handleTeamAction(key: string, row: AuthorizationTeamUsageRow) {
     path: isManagementView.value ? '/authorization-user-usage' : '/my-authorization-user-usage',
     query: {
       teamId: row.teamId,
-      statMonth: filters.statMonth,
+      startDate: selectedRange.value[0],
+      endDate: selectedRange.value[1],
       resourceType: row.resourceType,
       resourceId: row.resourceId,
       resourceOwnerSystemAccountId: row.accountOwnerSystemAccountId ?? selectedResourceOwnerSystemAccountId.value
@@ -380,22 +381,86 @@ function handleResourceOwnerChange() {
 
 function resetFilters() {
   Object.assign(filters, defaultFilters())
+  dateRange.value = defaultDateRange()
+  calendarRange.value = [null, null]
   void loadData()
 }
 
-function handleUsageMonthChange() {
-  usageMonthValue.value = usageMonthValue.value
+function handleDateRangeChange() {
+  dateRange.value = parseDateRange({
+    startDate: formatDateKey(dateRange.value[0]),
+    endDate: formatDateKey(dateRange.value[1])
+  })
   void loadData()
 }
 
-function normalizeUsageMonth(value: Dayjs): string {
-  const today = dayjs().startOf('month')
-  const month = value && value.isValid() ? value.startOf('month') : today
-  return month.isAfter(today, 'month') ? today.format('YYYY-MM') : month.format('YYYY-MM')
+function handleCalendarChange(value: Array<Dayjs | null> | null) {
+  calendarRange.value = [value?.[0] ?? null, value?.[1] ?? null]
 }
 
-function defaultUsageMonth(): string {
-  return dayjs().format('YYYY-MM')
+function handleDateRangeOpenChange(open: boolean) {
+  if (!open) {
+    calendarRange.value = [null, null]
+  }
+}
+
+function disabledDate(current: Dayjs) {
+  if (!current) return false
+  const today = dayjs().startOf('day')
+  if (current.isAfter(today, 'day')) return true
+  if (current.isBefore(today.subtract(MAX_RANGE_DAYS - 1, 'day'), 'day')) return true
+  const anchor = calendarRange.value[0] ?? calendarRange.value[1]
+  if (!anchor) return false
+  return Math.abs(current.startOf('day').diff(anchor.startOf('day'), 'day')) > MAX_RANGE_DAYS - 1
+}
+
+function defaultDateRange(): [Dayjs, Dayjs] {
+  const end = dayjs().startOf('day')
+  return [end.subtract(MAX_RANGE_DAYS - 1, 'day'), end]
+}
+
+function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
+  const [defaultStart, defaultEnd] = defaultDateRange()
+  const start = parseDateKey(value?.startDate) ?? defaultStart
+  const end = parseDateKey(value?.endDate) ?? defaultEnd
+  const [normalizedStart, normalizedEnd] = normalizedDateRange([start, end])
+  return [dayjs(normalizedStart), dayjs(normalizedEnd)]
+}
+
+function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
+  const today = dayjs().startOf('day')
+  let start = (value[0] ?? today).startOf('day')
+  let end = (value[1] ?? today).startOf('day')
+  if (end.isAfter(today, 'day')) {
+    end = today
+  }
+  if (start.isAfter(end, 'day')) {
+    start = end
+  }
+  const earliestStart = today.subtract(MAX_RANGE_DAYS - 1, 'day')
+  if (start.isBefore(earliestStart, 'day')) {
+    start = earliestStart
+  }
+  if (end.diff(start, 'day') > MAX_RANGE_DAYS - 1) {
+    start = end.subtract(MAX_RANGE_DAYS - 1, 'day')
+  }
+  return [formatDateKey(start), formatDateKey(end)]
+}
+
+function parseDateKey(value?: string): Dayjs | undefined {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined
+  const [year, month, day] = value.split('-').map((part) => Number(part))
+  const parsed = dayjs(new Date(year, month - 1, day)).startOf('day')
+  return parsed.year() === year && parsed.month() === month - 1 && parsed.date() === day ? parsed : undefined
+}
+
+function formatDateKey(value: Dayjs): string {
+  return value.format('YYYY-MM-DD')
+}
+
+function formatDateLabel(value: string) {
+  const parsed = parseDateKey(value)
+  return parsed ? parsed.format('M月D日') : value
 }
 
 function defaultFilters(): TeamUsageFilters {
@@ -403,14 +468,8 @@ function defaultFilters(): TeamUsageFilters {
     resourceOwnerSystemAccountId: allSystemAccountsValue,
     resourceType: 'all',
     resourceId: undefined,
-    teamId: undefined,
-    statMonth: defaultUsageMonth()
+    teamId: undefined
   }
-}
-
-function formatMonthLabel(value: string): string {
-  const parsed = dayjs(value)
-  return parsed.isValid() ? parsed.format('YYYY年M月') : value
 }
 
 function matchesSelectedResourceOwner(resource: Pick<AccountSummary | GroupSummary, 'ownerSystemAccountId' | 'systemAccountId'>): boolean {
@@ -441,7 +500,7 @@ onMounted(loadData)
 }
 
 .authorization-usage-range {
-  width: 250px;
+  width: 260px;
 }
 
 .authorization-usage-select {

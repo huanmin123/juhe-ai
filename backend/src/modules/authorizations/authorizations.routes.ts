@@ -123,8 +123,8 @@ authorizationsRouter.get('/usage/team-details', (req, res) => {
     return
   }
   const { systemAccountId, statMonth, startDate, endDate, ...filters } = parsed.data
-  const month = normalizeAuthorizationUsageMonth({ statMonth, startDate, endDate })
-  res.json(ok(getAuthorizationTeamUsageOverview(filters, getRequestAccessScope(systemAccountId), month)))
+  const range = normalizeAuthorizationUsageRange({ statMonth, startDate, endDate })
+  res.json(ok(getAuthorizationTeamUsageOverview(filters, getRequestAccessScope(systemAccountId), range)))
 })
 
 authorizationsRouter.get('/usage/user-details', (req, res) => {
@@ -134,8 +134,8 @@ authorizationsRouter.get('/usage/user-details', (req, res) => {
     return
   }
   const { systemAccountId, statMonth, startDate, endDate, ...filters } = parsed.data
-  const month = normalizeAuthorizationUsageMonth({ statMonth, startDate, endDate })
-  res.json(ok(getAuthorizationUserUsageOverview(filters, getRequestAccessScope(systemAccountId), month)))
+  const range = normalizeAuthorizationUsageRange({ statMonth, startDate, endDate })
+  res.json(ok(getAuthorizationUserUsageOverview(filters, getRequestAccessScope(systemAccountId), range)))
 })
 
 authorizationsRouter.post('/', mutationGuard({
@@ -464,16 +464,20 @@ function normalizeAuthorizationListUsageRange(input: { startDate?: string; endDa
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
 }
 
-function normalizeAuthorizationUsageMonth(input: { statMonth?: string; startDate?: string; endDate?: string }) {
+function normalizeAuthorizationUsageRange(input: { statMonth?: string; startDate?: string; endDate?: string }) {
   const timezone = usageStatsTimezone()
   const today = todayDateKey(timezone)
+  if (input.startDate || input.endDate) {
+    const startDate = input.startDate ?? input.endDate ?? today
+    const endDate = input.endDate ?? input.startDate ?? today
+    return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
+  }
   const requestedMonth = input.statMonth ?? input.startDate?.slice(0, 7) ?? input.endDate?.slice(0, 7) ?? today.slice(0, 7)
   const statMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : today.slice(0, 7)
   const [year, month] = statMonth.split('-').map(Number)
   const days = Number.isFinite(year) && Number.isFinite(month) ? new Date(year, month, 0).getDate() : 31
-  return {
-    statMonth,
+  return normalizeAccountUsageStatsRange({
     startDate: `${statMonth}-01`,
     endDate: `${statMonth}-${String(days).padStart(2, '0')}`
-  }
+  }, timezone)
 }
