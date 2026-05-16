@@ -265,6 +265,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/ai-performance',
+    component: () => import('@/views/ai-performance/AiPerformanceView.vue'),
+    meta: {
+      title: 'AI性能监控',
+      description: '按系统账户查看自有 AI 账户的小时级性能趋势，含授权出去后的使用。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
+      viewScope: 'admin',
+      roles: ['admin'],
+      keepAlive: false
+    }
+  },
+  {
     path: '/usage-records',
     component: () => import('@/views/usage-records/UsageRecordsView.vue'),
     meta: {

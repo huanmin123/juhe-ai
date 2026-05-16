@@ -15,7 +15,7 @@ import {
 } from '../../storage/usage-stats.repository.js'
 import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
+import { getRequestAccessScope } from '../auth/request-context.js'
 
 export const statsRouter = Router()
 
@@ -39,31 +39,21 @@ statsRouter.get('/usage-overview', (req, res) => {
 })
 
 statsRouter.get('/ai-performance', (req, res) => {
-  const context = getRequestAuthContext()
-  if (context?.role !== 'user') {
-    res.status(404).json({ message: '资源不存在' })
-    return
-  }
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '性能监控日期范围不合法')))
     return
   }
-  res.json(ok(getAiPerformanceOverview(getRequestAccessScope(), normalizeStatsDateRange(parsed.data), parseAccountIds(req.query.accountIds))))
+  res.json(ok(getAiPerformanceOverview(getRequestAccessScope(req.query.systemAccountId), normalizeStatsDateRange(parsed.data), parseAccountIds(req.query.accountIds))))
 })
 
 statsRouter.get('/ai-performance/accounts', (req, res) => {
-  const context = getRequestAuthContext()
-  if (context?.role !== 'user') {
-    res.status(404).json({ message: '资源不存在' })
-    return
-  }
   const parsed = aiPerformanceAccountOptionsQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'AI账户筛选参数不合法')))
     return
   }
-  res.json(ok(listAiPerformanceAccountOptions(getRequestAccessScope(), {
+  res.json(ok(listAiPerformanceAccountOptions(getRequestAccessScope(req.query.systemAccountId), {
     keyword: parsed.data.keyword,
     accountIds: parseAccountIds(req.query.accountIds),
     limit: parsed.data.limit

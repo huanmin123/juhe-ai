@@ -177,6 +177,7 @@ export interface AiPerformanceAccountOption {
   status: AccountStatus
   providerCode: ProviderCode
   systemAccountId: string
+  systemAccountName?: string
   requestCountLast7d: number
 }
 

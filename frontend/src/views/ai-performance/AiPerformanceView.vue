@@ -3,6 +3,18 @@
     <a-card class="page-card ai-performance-header-card">
       <div class="page-toolbar ai-performance-toolbar">
         <div class="ai-performance-filters">
+          <SystemPrincipalSelect
+            v-if="isManagementView"
+            v-model:value="selectedSystemAccountId"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :disabled="loading"
+            all-label="全部用户"
+            class="ai-performance-system-account-select"
+            include-all
+            placeholder="筛选用户"
+            @change="handleSystemAccountChange"
+          />
           <a-range-picker
             v-model:value="dateRange"
             :allow-clear="false"
@@ -77,32 +89,39 @@ import { message } from '@/lib/antd'
 import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { init, type ECharts } from '@/lib/echarts'
-import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview } from '@/types/domain'
+import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview, SystemAccountSummary } from '@/types/domain'
+import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import { formatDuration, formatInteger, formatSeconds } from '@/views/stats/statsFormatters'
 import { buildAiPerformanceOption, chartColors, orderedAiPerformanceSeries, type AiPerformanceMetric } from './aiPerformanceChartOptions'
 
 const MAX_RANGE_DAYS = 31
+const DEFAULT_RANGE_DAYS = 3
 const defaultDateRange = (): [Dayjs, Dayjs] => {
   const today = dayjs().startOf('day')
-  return [today, today]
+  return [today.subtract(DEFAULT_RANGE_DAYS - 1, 'day'), today]
 }
 
 const dateRange = ref<[Dayjs, Dayjs]>(defaultDateRange())
-const dateRangeExplicit = ref(false)
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const addedAccountIds = ref<string[]>([])
 const activeAccountIds = ref<string[]>([])
 const accountPickerValue = ref<string[]>([])
 const overview = ref<AiPerformanceOverview>()
 const accounts = ref<AiPerformanceAccountOption[]>([])
+const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccountsLoaded = ref(false)
+const selectedSystemAccountId = ref(allSystemAccountsValue)
 const loading = ref(false)
 const accountsLoading = ref(false)
 const accountSearchKeyword = ref('')
 let accountSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let accountSearchSeq = 0
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
 const averageFirstTokenChartRef = ref<HTMLDivElement>()
 const maxFirstTokenChartRef = ref<HTMLDivElement>()
@@ -165,7 +184,9 @@ const accountFilterItems = computed(() => {
   return orderedAiPerformanceSeries(currentOverview).map((series, index) => {
     const account = accountById.get(series.accountId)
     const accountName = account?.name ?? series.accountName
-    const label = (nameCounts.get(accountName) ?? 0) > 1 && account?.providerCode
+    const label = isManagementView.value && account?.systemAccountName
+      ? `${accountName}（${account.systemAccountName}）`
+      : (nameCounts.get(accountName) ?? 0) > 1 && account?.providerCode
       ? `${accountName}（${account.providerCode}）`
       : accountName
     return {
@@ -240,11 +261,17 @@ const summaryCards = computed(() => {
 async function loadPerformance() {
   loading.value = true
   try {
+    await loadSystemAccounts()
+    const systemAccountId = selectedPerformanceSystemAccountId()
     const rangeParams = selectedRangeParams()
-    const performanceOverview = await api.myStats.aiPerformance({
+    const performanceParams = {
       ...rangeParams,
+      systemAccountId,
       accountIds: addedAccountIds.value
-    })
+    }
+    const performanceOverview = isManagementView.value
+      ? await api.stats.aiPerformance(performanceParams)
+      : await api.myStats.aiPerformance(performanceParams)
     overview.value = performanceOverview
     syncDateRangeFromResponse(performanceOverview.range)
     pruneAccountState()
@@ -261,12 +288,18 @@ async function loadAccounts() {
   const requestSeq = ++accountSearchSeq
   accountsLoading.value = true
   try {
+    await loadSystemAccounts()
     const keyword = accountSearchKeyword.value.trim()
-    const nextAccounts = await api.myStats.aiPerformanceAccounts({
+    const systemAccountId = selectedPerformanceSystemAccountId()
+    const accountParams = {
+      systemAccountId,
       keyword,
       accountIds: addedAccountIds.value,
       limit: 30
-    })
+    }
+    const nextAccounts = isManagementView.value
+      ? await api.stats.aiPerformanceAccounts(accountParams)
+      : await api.myStats.aiPerformanceAccounts(accountParams)
     if (requestSeq !== accountSearchSeq) return
     accounts.value = nextAccounts
   } catch (error) {
@@ -284,14 +317,28 @@ function handleDateRangeChange() {
     startDate: formatDateKey(dateRange.value[0]),
     endDate: formatDateKey(dateRange.value[1])
   })
-  dateRangeExplicit.value = true
   void loadPerformance()
 }
 
 function selectedRangeParams(): { startDate?: string; endDate?: string } {
-  if (!dateRangeExplicit.value) return {}
   const [startDate, endDate] = selectedRange.value
   return { startDate, endDate }
+}
+
+function selectedPerformanceSystemAccountId(): string | undefined {
+  return isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
+}
+
+async function loadSystemAccounts(): Promise<void> {
+  if (!isManagementView.value || systemAccountsLoaded.value) return
+  systemAccounts.value = await api.systemAccounts.list()
+  systemAccountsLoaded.value = true
+}
+
+function handleSystemAccountChange() {
+  clearAccountState()
+  void loadAccounts()
+  void loadPerformance()
 }
 
 function handleCalendarChange(value: Array<Dayjs | null> | null) {
@@ -345,12 +392,16 @@ function handleAccountDropdownVisibleChange(open: boolean) {
 }
 
 function resetAccounts() {
+  clearAccountState()
+  void loadAccounts()
+  void loadPerformance()
+}
+
+function clearAccountState() {
   addedAccountIds.value = []
   activeAccountIds.value = []
   accountPickerValue.value = []
   accountSearchKeyword.value = ''
-  void loadAccounts()
-  void loadPerformance()
 }
 
 function toggleAccountFilter(id: string) {
@@ -437,7 +488,8 @@ function metricElementRef(metric: AiPerformanceMetric): Ref<HTMLDivElement | und
 
 function accountOptionLabel(account: AiPerformanceAccountOption) {
   const statusText = account.status === 'active' ? '' : `（${accountStatusText(account.status)}）`
-  return `${account.name}${statusText} · 近7天 ${formatInteger(account.requestCountLast7d)} 次`
+  const ownerText = isManagementView.value && account.systemAccountName ? ` · ${account.systemAccountName}` : ''
+  return `${account.name}${statusText}${ownerText} · 近7天 ${formatInteger(account.requestCountLast7d)} 次`
 }
 
 function accountStatusText(status: AccountStatus) {
@@ -551,6 +603,10 @@ onBeforeUnmount(() => {
   min-width: 0;
 }
 
+.ai-performance-system-account-select {
+  width: 240px;
+}
+
 .ai-performance-range-picker {
   width: 250px;
 }
@@ -622,6 +678,7 @@ onBeforeUnmount(() => {
     flex: 1 1 auto;
   }
 
+  .ai-performance-system-account-select,
   .ai-performance-range-picker,
   .ai-performance-account-select {
     width: 100%;

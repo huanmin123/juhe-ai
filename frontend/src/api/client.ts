@@ -89,13 +89,13 @@ interface AccountUsageStatsParams extends ListParams {
   limit?: number
 }
 
-interface AiPerformanceParams {
+interface AiPerformanceParams extends ListParams {
   startDate?: string
   endDate?: string
   accountIds?: string[]
 }
 
-interface AiPerformanceAccountOptionsParams {
+interface AiPerformanceAccountOptionsParams extends ListParams {
   keyword?: string
   accountIds?: string[]
   limit?: number
@@ -460,6 +460,8 @@ export const api = {
   stats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
     accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
+    aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params) })),
+    aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/stats/ai-performance', { params: aiPerformanceParams(params) })),
     systemMetrics: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params }))
   },
   tableMonitor: {
@@ -469,8 +471,8 @@ export const api = {
   myStats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),
     accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/my-stats/account-usage', { params: stripSystemAccountParam(params) })),
-    aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params) })),
-    aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params) }))
+    aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params, false) })),
+    aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params, false) }))
   },
   featureRules: {
     streamInterceptRules: () => unwrap<StreamInterceptRuleCatalogItem[]>(http.get('/feature-rules/stream-intercept-rules')),
@@ -518,18 +520,20 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
   return output
 }
 
-function aiPerformanceParams(params?: AiPerformanceParams): Record<string, unknown> | undefined {
+function aiPerformanceParams(params?: AiPerformanceParams, includeSystemAccount = true): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
+  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if (params.startDate) output.startDate = params.startDate
   if (params.endDate) output.endDate = params.endDate
   if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
   return Object.keys(output).length ? output : undefined
 }
 
-function aiPerformanceAccountOptionsParams(params?: AiPerformanceAccountOptionsParams): Record<string, unknown> | undefined {
+function aiPerformanceAccountOptionsParams(params?: AiPerformanceAccountOptionsParams, includeSystemAccount = true): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
+  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
   if (params.limit) output.limit = params.limit

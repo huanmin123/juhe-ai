@@ -174,6 +174,7 @@ const menuIconMap = {
   '/my-stats': BarChartOutlined,
   '/stats': BarChartOutlined,
   '/my-ai-performance': BarChartOutlined,
+  '/ai-performance': BarChartOutlined,
   '/my-usage-stats': FundOutlined,
   '/usage-stats': FundOutlined,
   '/my-usage-records': HistoryOutlined,

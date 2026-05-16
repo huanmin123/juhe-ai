@@ -532,7 +532,7 @@ function refreshUsageOverviewWindowSnapshots(database: DatabaseSync, updatedAt: 
     refreshUsageModelRankWindows(database, systemAccountId, ranges, earliestDate, todayKey, updatedAt)
     refreshUsageErrorRankWindows(database, systemAccountId, ranges, earliestDate, todayKey, updatedAt)
   }
-  for (const systemAccountId of uniqueSystemAccountIds) {
+  for (const systemAccountId of [...uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
     refreshAiPerformanceSummaryWindows(database, systemAccountId, ranges, earliestDate, todayKey, updatedAt)
   }
   refreshSystemMetricsTrendWindows(database, ranges, earliestDate, todayKey, updatedAt)
@@ -1365,7 +1365,7 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
 export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange(), accountIds: string[] = []): AiPerformanceOverview {
   const database = getRecordDatabase()
   const timezone = usageStatsTimezone()
-  const systemAccountId = currentSystemAccountId(access)
+  const systemAccountId = aiPerformanceSystemAccountId(access)
   const hourBuckets = hourBucketsForRange(range)
   const windowSinceHour = hourBuckets[0] ?? `${range.startDate}T00`
   const windowEndHour = hourBuckets[hourBuckets.length - 1] ?? `${range.endDate}T23`
@@ -1451,13 +1451,20 @@ function loadAiPerformanceSummaryRow(database: DatabaseSync, systemAccountId: st
   } | undefined
 }
 
+function aiPerformanceSystemAccountId(access?: AccessScope): string {
+  const scopedId = scopedSystemAccountId(access)
+  if (scopedId) return scopedId
+  if (canAccessAll(access)) return GLOBAL_STATS_SYSTEM_ACCOUNT_ID
+  return currentSystemAccountId(access)
+}
+
 export function listAiPerformanceAccountOptions(
   access?: AccessScope,
   options: { keyword?: string; accountIds?: string[]; limit?: number } = {}
 ): AiPerformanceAccountOption[] {
   const database = getRecordDatabase()
   const timezone = usageStatsTimezone()
-  const systemAccountId = currentSystemAccountId(access)
+  const systemAccountId = aiPerformanceSystemAccountId(access)
   const activeSinceHour = hourKey(new Date(Date.now() - 6 * DAY_MS), timezone)
   const selectedAccountIds = uniqueNonEmpty(options.accountIds ?? []).slice(0, AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT)
   const searchLimit = boundedAccountOptionLimit(options.limit)
@@ -1475,6 +1482,7 @@ export function listAiPerformanceAccountOptions(
     status: row.status,
     providerCode: row.provider_code,
     systemAccountId: row.system_account_id,
+    systemAccountName: row.system_account_name ?? undefined,
     requestCountLast7d: Number(row.request_count_last_7d ?? 0)
   }))
 }
@@ -1762,14 +1770,17 @@ function loadAiPerformanceAccountOptionRows(
   }
 
   const likeKeyword = `%${keyword}%`
+  const systemAccountWhere = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND accounts.system_account_id = ?'
+  const systemAccountParams = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [systemAccountId]
   const accountRows = getDatabase().prepare(`
     SELECT accounts.id
     FROM accounts
-    WHERE accounts.system_account_id = ?
-      AND (accounts.name LIKE ? OR accounts.id LIKE ? OR accounts.provider_code LIKE ?)
+    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
+    WHERE (accounts.name LIKE ? OR accounts.id LIKE ? OR accounts.provider_code LIKE ? OR COALESCE(system_accounts.display_name, '') LIKE ? OR COALESCE(system_accounts.username, '') LIKE ?)
+      ${systemAccountWhere}
     ORDER BY lower(accounts.name) ASC, accounts.id ASC
     LIMIT ?
-  `).all(systemAccountId, likeKeyword, likeKeyword, likeKeyword, options.limit) as unknown as Array<{ id: string }>
+  `).all(likeKeyword, likeKeyword, likeKeyword, likeKeyword, likeKeyword, ...systemAccountParams, options.limit) as unknown as Array<{ id: string }>
   const accountIds = accountRows.map((row) => row.id)
   return accountIds.length
     ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, accountIds)
@@ -1783,6 +1794,8 @@ function mergeAiPerformanceStatsWithAccounts(
   const ids = [...new Set(statsRows.map((row) => row.id).filter(Boolean))]
   if (!ids.length) return []
   const placeholders = sqlPlaceholders(ids.length)
+  const systemAccountWhere = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND accounts.system_account_id = ?'
+  const systemAccountParams = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [systemAccountId]
   const accounts = getDatabase().prepare(`
     SELECT
       accounts.id,
@@ -1793,9 +1806,9 @@ function mergeAiPerformanceStatsWithAccounts(
       system_accounts.display_name AS system_account_name
     FROM accounts
     LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
-    WHERE accounts.system_account_id = ?
-      AND accounts.id IN (${placeholders})
-  `).all(systemAccountId, ...ids) as unknown as Array<{
+    WHERE accounts.id IN (${placeholders})
+      ${systemAccountWhere}
+  `).all(...ids, ...systemAccountParams) as unknown as Array<{
     id: string
     name: string
     status: AiPerformanceAccount['status']

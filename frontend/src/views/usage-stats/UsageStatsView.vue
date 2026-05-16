@@ -235,9 +235,12 @@ const metricOptions: Array<{ label: string; value: UsageTrendMetric }> = [
   { label: '请求', value: 'requests' }
 ]
 
+const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+
 const defaultDateRange = (): [Dayjs, Dayjs] => {
   const today = dayjs().startOf('day')
-  return [today, today]
+  const start = isManagementView.value ? today : today.subtract(MAX_RANGE_DAYS - 1, 'day')
+  return [start, today]
 }
 const defaultUsageStatsPageState = (): UsageStatsPageState => {
   return {
@@ -263,7 +266,6 @@ const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedTrendAccountIds = ref<string[]>([])
 const addedTrendAccountIds = ref<string[]>([])
 const accountPickerValue = ref<string[]>([])
-const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const accountUsagePagination = reactive({
   current: 1,
   pageSize: accountUsagePageSize,
@@ -446,7 +448,7 @@ function accountUsageParams(systemAccountId?: string) {
     page: accountUsagePagination.current,
     pageSize: accountUsagePagination.pageSize
   }
-  if (dateRangeExplicit.value) {
+  if (shouldSendDateRangeParams()) {
     const [startDate, endDate] = selectedRange.value
     params.startDate = startDate
     params.endDate = endDate
@@ -585,6 +587,10 @@ function snapshotPageState(): UsageStatsPageState {
     metric: selectedMetric.value,
     range: dateRangeExplicit.value ? { startDate, endDate } : undefined
   }
+}
+
+function shouldSendDateRangeParams(): boolean {
+  return dateRangeExplicit.value || !isManagementView.value
 }
 
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
