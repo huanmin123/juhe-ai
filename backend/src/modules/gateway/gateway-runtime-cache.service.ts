@@ -1,5 +1,6 @@
 import { createAppCache } from '../../shared/cache.js'
 import { runtimeConfig } from '../../config/runtime.js'
+import { hashSecret } from '../../storage/crypto.js'
 import {
   listOpenAIAccountsForGroup,
   resolveGroupUsageAccessMetadata,
@@ -7,11 +8,20 @@ import {
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
 import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-service/db-service-ipc.js'
+import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
 
-const gatewaySettingsTtlMs = 1000
-const groupUsageAccessTtlMs = 1000
-const openAIAccountsTtlMs = 1000
+const gatewayRuntimeTtlMs = 60_000
+const gatewaySettingsTtlMs = 60_000
+const groupUsageAccessTtlMs = 60_000
+const openAIAccountsTtlMs = 60_000
+
+const gatewayRuntimeCache = createAppCache<string, DbServiceGatewayRuntime>({
+  name: 'gateway:runtime',
+  max: 10000,
+  ttlMs: gatewayRuntimeTtlMs,
+  updateAgeOnGet: true
+})
 
 const gatewaySettingsCache = createAppCache<string, GatewaySettings>({
   name: 'gateway:settings',
@@ -43,7 +53,13 @@ export function readCachedGatewaySettings(): GatewaySettings {
 }
 
 export async function readCachedGatewaySettingsAsync(): Promise<GatewaySettings> {
-  return await requestDbService({ type: 'read_gateway_settings' })
+  const cached = gatewaySettingsCache.get('current')
+  if (cached) {
+    return { ...cached }
+  }
+  const value = await requestDbService({ type: 'read_gateway_settings' })
+  gatewaySettingsCache.set('current', value)
+  return { ...value }
 }
 
 export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
@@ -59,11 +75,18 @@ export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAcc
 }
 
 export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string, systemAccountId: string): Promise<GroupUsageAccessMetadata | undefined> {
-  return await requestDbService({
+  const cacheKey = gatewayCacheKey(groupId, systemAccountId)
+  const cached = groupUsageAccessCache.get(cacheKey)
+  if (cached !== undefined) {
+    return cached ? { ...cached } : undefined
+  }
+  const value = await requestDbService({
     type: 'resolve_group_usage_access',
     groupId,
     systemAccountId
   })
+  groupUsageAccessCache.set(cacheKey, value ?? false)
+  return value ? { ...value } : undefined
 }
 
 export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountId: string): OpenAIAccountSecret[] {
@@ -79,20 +102,61 @@ export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountI
 }
 
 export async function listCachedOpenAIAccountsForGroupAsync(groupId: string, systemAccountId: string): Promise<OpenAIAccountSecret[]> {
+  const cacheKey = gatewayCacheKey(groupId, systemAccountId)
+  const cached = openAIAccountsCache.get(cacheKey)
+  if (cached) {
+    return cached.map(cloneOpenAIAccountSecret)
+  }
   const accounts = await requestDbService({
     type: 'list_openai_accounts_for_group',
     groupId,
     systemAccountId
   })
+  openAIAccountsCache.set(cacheKey, accounts.map(cloneOpenAIAccountSecret))
   return accounts.map(cloneOpenAIAccountSecret)
+}
+
+export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbServiceGatewayRuntime> {
+  const cacheKey = hashSecret(apiKey)
+  const cached = gatewayRuntimeCache.get(cacheKey)
+  if (cached && cached.apiKey) {
+    return cloneGatewayRuntime(cached)
+  }
+
+  const runtime = await requestDbService({
+    type: 'read_gateway_runtime',
+    key: apiKey
+  })
+  if (!runtime.apiKey) {
+    return cloneGatewayRuntime(runtime)
+  }
+
+  gatewayRuntimeCache.set(cacheKey, cloneGatewayRuntime(runtime), { ttlMs: gatewayRuntimeCacheTtlMs(runtime) })
+  gatewaySettingsCache.set('current', runtime.settings)
+  if (runtime.groupAccess) {
+    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.group_id, runtime.apiKey.system_account_id), runtime.groupAccess)
+  }
+  openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.group_id, runtime.apiKey.system_account_id), runtime.accounts.map(cloneOpenAIAccountSecret))
+  return cloneGatewayRuntime(runtime)
 }
 
 export function clearGatewayRuntimeCache(): void {
   clearGatewayRuntimeCacheLocal()
-  clearDbServiceGatewayRuntimeCache()
+  if (runtimeConfig.processRole === 'server') {
+    clearDbServiceGatewayRuntimeCache()
+    return
+  }
+  if (runtimeConfig.processRole === 'db-service') {
+    clearDbServiceGatewayRuntimeCache()
+    return
+  }
+  if (runtimeConfig.processRole === 'worker' && process.send) {
+    process.send({ type: 'gateway_runtime_cache_invalidate' })
+  }
 }
 
 export function clearGatewayRuntimeCacheLocal(): void {
+  gatewayRuntimeCache.clear()
   gatewaySettingsCache.clear()
   groupUsageAccessCache.clear()
   openAIAccountsCache.clear()
@@ -113,4 +177,25 @@ function cloneOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAccountSe
     ...account,
     credentials: { ...account.credentials }
   }
+}
+
+function cloneGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {
+  return {
+    apiKey: runtime.apiKey ? { ...runtime.apiKey } : undefined,
+    settings: { ...runtime.settings },
+    groupAccess: runtime.groupAccess ? { ...runtime.groupAccess } : undefined,
+    accounts: runtime.accounts.map(cloneOpenAIAccountSecret)
+  }
+}
+
+function gatewayRuntimeCacheTtlMs(runtime: DbServiceGatewayRuntime): number {
+  const expiresAt = runtime.apiKey?.expires_at
+  if (!expiresAt) {
+    return gatewayRuntimeTtlMs
+  }
+  const expiresAtMs = Date.parse(expiresAt)
+  if (!Number.isFinite(expiresAtMs)) {
+    return gatewayRuntimeTtlMs
+  }
+  return Math.max(1, Math.min(gatewayRuntimeTtlMs, expiresAtMs - Date.now()))
 }

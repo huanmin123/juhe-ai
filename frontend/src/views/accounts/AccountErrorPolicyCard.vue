@@ -145,20 +145,22 @@ import {
   createBlankAccountErrorRule,
   getNextAccountErrorRulePriority,
   normalizeAccountErrorPolicyPriorities,
-  type AccountErrorAction,
   type AccountErrorPolicyRuleForm
 } from './accountErrorPolicy'
+import {
+  accountErrorActionColor as actionColor,
+  accountErrorActionLabel as actionLabel,
+  accountErrorActionSelectOptions,
+  accountErrorRuleConditionSummary as ruleConditionSummary,
+  accountErrorRuleKey as ruleKey
+} from './accountErrorPolicyDisplay'
 
 const rules = defineModel<AccountErrorPolicyRuleForm[]>('rules', { required: true })
 
 const policyActiveKeys = ref<string[]>([])
 const activeRuleKeys = ref<string[]>([])
-const actionOptions = accountErrorActionOptions.map((item) => ({ label: item.label, value: item.value }))
+const actionOptions = accountErrorActionSelectOptions
 const enabledRuleCount = computed(() => rules.value.filter((rule) => rule.enabled !== false).length)
-
-function ruleKey(index: number) {
-  return `rule-${index}`
-}
 
 function openPolicy() {
   policyActiveKeys.value = ['policy']
@@ -209,30 +211,6 @@ function expandAllRules() {
 
 function collapseAllRules() {
   activeRuleKeys.value = []
-}
-
-function actionLabel(action: AccountErrorAction) {
-  return accountErrorActionOptions.find((item) => item.value === action)?.label ?? action
-}
-
-function actionColor(action: AccountErrorAction) {
-  if (action === 'rate_limited') return 'orange'
-  if (action === 'error_disabled') return 'red'
-  return 'gold'
-}
-
-function compactValue(value: string) {
-  return value.trim().replace(/\s+/g, ' ')
-}
-
-function ruleConditionSummary(rule: AccountErrorPolicyRuleForm) {
-  const parts = [
-    compactValue(rule.status_codes) ? `状态 ${compactValue(rule.status_codes)}` : '',
-    compactValue(rule.error_codes) ? `码 ${compactValue(rule.error_codes)}` : '',
-    compactValue(rule.error_types) ? `类型 ${compactValue(rule.error_types)}` : '',
-    compactValue(rule.keywords) ? `关键词 ${compactValue(rule.keywords)}` : ''
-  ].filter(Boolean)
-  return parts.length > 0 ? parts.join(' / ') : '未配置匹配条件'
 }
 </script>
 

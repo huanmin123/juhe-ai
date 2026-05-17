@@ -21,6 +21,7 @@
     "test:db-service-worker-local": "pnpm --filter juhe-ai-backend test:db-service-worker-local",
     "test:disabled-account-state-guard": "pnpm --filter juhe-ai-backend test:disabled-account-state-guard",
     "test:account-list-stable-sort": "pnpm --filter juhe-ai-backend test:account-list-stable-sort",
+    "test:gateway-runtime-cache": "pnpm --filter juhe-ai-backend test:gateway-runtime-cache",
     "test:session-affinity": "pnpm --filter juhe-ai-backend test:session-affinity"
   },
   "engines": {

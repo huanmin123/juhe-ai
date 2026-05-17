@@ -26,6 +26,7 @@
     "test:openai-api-key-passthrough": "tsx src/scripts/regression/openai-api-key-passthrough-regression.ts",
     "test:runtime-log-grep-path": "tsx src/scripts/regression/runtime-log-grep-path-regression.ts",
     "test:runtime-log-index-large-line": "tsx src/scripts/regression/runtime-log-index-large-line-regression.ts",
+    "test:gateway-runtime-cache": "tsx src/scripts/regression/gateway-runtime-cache-regression.ts",
     "clean:dist": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
     "build": "pnpm run clean:dist && tsc -p tsconfig.json",
     "start": "node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js",

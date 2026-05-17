@@ -401,8 +401,6 @@ function disableExpiredAccounts(access?: AccessScope): void {
       UPDATE accounts
       SET status = 'disabled',
           schedulable = 0,
-          super_priority_enabled = 0,
-          fallback_enabled = 0,
           cooldown_until = NULL,
           last_error_code = NULL,
           last_error_message = ?,
@@ -478,16 +476,8 @@ function normalizeSuperPriorityInput(value: unknown, fallback: boolean): boolean
   return fallback
 }
 
-function effectiveSuperPriorityEnabled(status: AccountStatus, value: unknown): boolean {
-  return status === 'active' && normalizeSuperPriorityInput(value, false)
-}
-
 function normalizeFallbackInput(value: unknown, fallback: boolean): boolean {
   return normalizeSuperPriorityInput(value, fallback)
-}
-
-function effectiveFallbackEnabled(status: AccountStatus, value: unknown): boolean {
-  return status === 'active' && normalizeFallbackInput(value, false)
 }
 
 function normalizedGroupAccountLocalStatus(value: unknown): AccountStatus | undefined {
@@ -776,11 +766,11 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       currentConcurrency: isAuthorizedView ? 0 : (currentConcurrencyByAccount.get(row.id) ?? 0),
       priority: isAuthorizedView ? 0 : row.priority,
       superPriorityEnabled: isAuthorizedView
-        ? effectiveAuthorizedStatus === 'active' && row.bound_group_local_super_priority_enabled === 1
-        : row.status === 'active' && row.super_priority_enabled === 1,
+        ? row.bound_group_local_super_priority_enabled === 1
+        : row.super_priority_enabled === 1,
       fallbackEnabled: isAuthorizedView
-        ? effectiveAuthorizedStatus === 'active' && row.bound_group_local_fallback_enabled === 1
-        : row.status === 'active' && row.fallback_enabled === 1,
+        ? row.bound_group_local_fallback_enabled === 1
+        : row.fallback_enabled === 1,
       qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
       qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
       qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
@@ -944,8 +934,8 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       concurrencyLimit: row.concurrency_limit,
       currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
       priority: row.priority,
-      superPriorityEnabled: row.status === 'active' && row.super_priority_enabled === 1,
-      fallbackEnabled: row.status === 'active' && row.fallback_enabled === 1,
+      superPriorityEnabled: row.super_priority_enabled === 1,
+      fallbackEnabled: row.fallback_enabled === 1,
       proxyProfileId: row.proxy_profile_id ?? undefined,
       passthroughEnabled: row.passthrough_enabled === 1,
       errorPolicyId: row.error_policy_id ?? undefined,
@@ -1002,8 +992,11 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     throw new Error('账户分组无效')
   }
   const proxyProfileId = globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
-  const createSuperPriorityEnabled = effectiveSuperPriorityEnabled(nextStatus, input.superPriorityEnabled ?? input.super_priority_enabled)
-  const createFallbackEnabled = effectiveFallbackEnabled(nextStatus, input.fallbackEnabled ?? input.fallback_enabled)
+  const createSuperPriorityEnabled = normalizeSuperPriorityInput(input.superPriorityEnabled ?? input.super_priority_enabled, false)
+  const createFallbackEnabled = normalizeFallbackInput(input.fallbackEnabled ?? input.fallback_enabled, false)
+  if (nextStatus !== 'active' && (createSuperPriorityEnabled || createFallbackEnabled)) {
+    throw new Error('只有正常状态的账户可以设置超级优先或降级备用')
+  }
   if (createSuperPriorityEnabled && createFallbackEnabled) {
     throw new Error('超级优先和降级备用不能同时开启')
   }
@@ -1170,23 +1163,23 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     Object.prototype.hasOwnProperty.call(input, 'superPriorityEnabled') ? input.superPriorityEnabled : input.super_priority_enabled,
     current.superPriorityEnabled
   )
-  if (hasSuperPriorityInput && requestedSuperPriority && nextStatus !== 'active') {
+  if (hasSuperPriorityInput && requestedSuperPriority && nextStatus !== 'active' && !current.superPriorityEnabled) {
     throw new Error('只有正常状态的账户可以设置超级优先')
   }
-  let nextSuperPriorityEnabled = nextStatus === 'active' ? requestedSuperPriority : false
+  let nextSuperPriorityEnabled = requestedSuperPriority
   const hasFallbackInput = Object.prototype.hasOwnProperty.call(input, 'fallbackEnabled')
     || Object.prototype.hasOwnProperty.call(input, 'fallback_enabled')
   const requestedFallback = normalizeFallbackInput(
     Object.prototype.hasOwnProperty.call(input, 'fallbackEnabled') ? input.fallbackEnabled : input.fallback_enabled,
     current.fallbackEnabled
   )
-  if (hasFallbackInput && requestedFallback && nextStatus !== 'active') {
+  if (hasFallbackInput && requestedFallback && nextStatus !== 'active' && !current.fallbackEnabled) {
     throw new Error('只有正常状态的账户可以设置降级备用')
   }
   if (hasSuperPriorityInput && requestedSuperPriority && hasFallbackInput && requestedFallback) {
     throw new Error('超级优先和降级备用不能同时开启')
   }
-  let nextFallbackEnabled = nextStatus === 'active' ? requestedFallback : false
+  let nextFallbackEnabled = requestedFallback
   if (hasSuperPriorityInput && nextSuperPriorityEnabled) {
     nextFallbackEnabled = false
   }
@@ -1304,8 +1297,6 @@ export function clearAccountFailureState(
         UPDATE accounts
         SET status = 'disabled',
             schedulable = 0,
-            super_priority_enabled = 0,
-            fallback_enabled = 0,
             cooldown_until = NULL,
             last_error_code = NULL,
             last_error_message = ?,
@@ -1386,8 +1377,6 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
         UPDATE accounts
         SET status = 'disabled',
             schedulable = 0,
-            super_priority_enabled = 0,
-            fallback_enabled = 0,
             cooldown_until = NULL,
             last_error_code = NULL,
             last_error_message = ?,
@@ -1410,8 +1399,6 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
       UPDATE accounts
       SET status = ?,
           schedulable = 1,
-          super_priority_enabled = 0,
-          fallback_enabled = 0,
           cooldown_until = ?,
           last_error_code = NULL,
           last_error_message = ?,
@@ -1479,8 +1466,6 @@ export function migrateAccountTraffic(input: {
           UPDATE accounts
           SET status = 'disabled',
               schedulable = 0,
-              super_priority_enabled = 0,
-              fallback_enabled = 0,
               cooldown_until = NULL,
               last_error_code = NULL,
               last_error_message = ?,
@@ -1494,8 +1479,6 @@ export function migrateAccountTraffic(input: {
         .prepare(`
           UPDATE accounts
           SET status = 'temporary_unavailable',
-              super_priority_enabled = 0,
-              fallback_enabled = 0,
               cooldown_until = ?,
               last_error_code = NULL,
               last_error_message = ?,
@@ -1613,8 +1596,6 @@ function migrateAuthorizedAccountBindingTraffic(input: {
       SET local_status = ?,
           local_cooldown_until = ?,
           local_last_error_message = ?,
-          local_super_priority_enabled = 0,
-          local_fallback_enabled = 0,
           updated_at = ?
       WHERE account_id = ?
         AND system_account_id = ?
@@ -1652,8 +1633,6 @@ export function markAccountException(
       UPDATE accounts
       SET status = 'error',
           schedulable = 0,
-          super_priority_enabled = 0,
-          fallback_enabled = 0,
           cooldown_until = NULL,
           last_error_code = ?,
           last_error_message = ?,

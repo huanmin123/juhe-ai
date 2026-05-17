@@ -1,8 +1,8 @@
 import type { Request, Response } from 'express'
 
 import { getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
-import { requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
+import { readCachedGatewayRuntimeAsync } from './gateway-runtime-cache.service.js'
 import { extractBearerToken, requestStream } from './openai-gateway-usage.js'
 import {
   gatewayErrorPayload,
@@ -21,10 +21,7 @@ export async function resolveGatewayRuntimeAsync(req: Request, res: Response): P
     return undefined
   }
 
-  const runtime = await requestDbService({
-    type: 'read_gateway_runtime',
-    key: gatewayApiKey
-  })
+  const runtime = await readCachedGatewayRuntimeAsync(gatewayApiKey)
   if (!runtime.apiKey) {
     getRequestLogger().warn({
       event: 'gateway_auth_failed',

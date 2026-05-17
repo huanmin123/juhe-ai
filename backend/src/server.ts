@@ -90,7 +90,12 @@ app.get(`${systemPrefix}/health`, (_req, res) => {
 app.use(systemApiPrefix, dbServiceHttpProxy)
 
 if (existsSync(frontendIndexPath)) {
-  app.get(systemPrefix, (_req, res) => {
+  app.get(systemPrefix, (req, res, next) => {
+    if (req.path !== systemPrefix) {
+      next()
+      return
+    }
+
     res.redirect(302, `${systemPrefix}/`)
   })
   app.use(systemPrefix, express.static(frontendDistPath))

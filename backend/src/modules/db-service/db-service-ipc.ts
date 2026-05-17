@@ -130,6 +130,20 @@ export async function requestDbService<T extends DbServiceOperation>(
 }
 
 export function clearDbServiceGatewayRuntimeCache(): void {
+  if (runtimeConfig.processRole === 'db-service') {
+    void requestDbService(
+      { type: 'clear_gateway_runtime_cache' },
+      { timeoutMs: invalidateTimeoutMs }
+    ).catch((error) => {
+      logger.warn(errorLogFields(error, {
+        event: 'db_service_local_cache_invalidation_failed'
+      }), 'DB service 本地缓存失效失败')
+    }).finally(() => {
+      process.send?.({ type: 'gateway_runtime_cache_invalidate' } satisfies DbServiceChildMessage)
+    })
+    return
+  }
+
   void requestDbService(
     { type: 'clear_gateway_runtime_cache' },
     { timeoutMs: invalidateTimeoutMs }
@@ -226,6 +240,11 @@ function handleDbServiceMessage(message: unknown): void {
     case 'db_service_server_runtime_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
         void respondToServerRuntimeRequest(record.requestId)
+      }
+      break
+    case 'gateway_runtime_cache_invalidate':
+      if (runtimeConfig.processRole === 'server') {
+        void clearServerGatewayRuntimeCache()
       }
       break
     default:
@@ -344,4 +363,9 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
     activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount()
   }
+}
+
+async function clearServerGatewayRuntimeCache(): Promise<void> {
+  const gatewayCache = await import('../gateway/gateway-runtime-cache.service.js')
+  gatewayCache.clearGatewayRuntimeCacheLocal()
 }

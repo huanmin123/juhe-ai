@@ -134,6 +134,12 @@
           <template v-else-if="column.key === 'tokens'">
             <span class="usage-number">{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</span>
           </template>
+          <template v-else-if="column.key === 'cacheRate'">
+            <span class="usage-number">{{ formatPercent(cacheReadRate(record.rangeUsage)) }}</span>
+          </template>
+          <template v-else-if="column.key === 'cacheCost'">
+            <span class="usage-number">{{ formatCost(record.rangeUsage.cacheReadCost) }}</span>
+          </template>
           <template v-else-if="column.key === 'cost'">
             <span class="usage-number">{{ formatCost(record.rangeUsage.totalCost) }}</span>
           </template>
@@ -167,6 +173,14 @@
                 <strong>{{ formatCompactInteger(record.rangeUsage.totalTokens) }}</strong>
               </div>
               <div class="usage-mobile-metric">
+                <span>缓存率</span>
+                <strong>{{ formatPercent(cacheReadRate(record.rangeUsage)) }}</strong>
+              </div>
+              <div class="usage-mobile-metric">
+                <span>缓存成本</span>
+                <strong>{{ formatCost(record.rangeUsage.cacheReadCost) }}</strong>
+              </div>
+              <div class="usage-mobile-metric">
                 <span>成本</span>
                 <strong>{{ formatCost(record.rangeUsage.totalCost) }}</strong>
               </div>
@@ -196,7 +210,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountUsageStatsOverview, AccountUsageStatsRow, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
+import type { AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText, statusColor, statusText } from '@/views/accounts/accountFormatters'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -304,7 +318,7 @@ const visibleTrendRows = computed(() => selectedTrendAccountIds.value.length ? s
 const hasSelectedTrendAccounts = computed(() => selectedTrendAccountIds.value.length > 0)
 const trendEmptyDescription = computed(() => visibleTrendRows.value.length ? `${rangeLabel.value} 暂无${metricText(selectedMetric.value)}消耗趋势` : '暂无可展示账户')
 const hasTrendData = computed(() => visibleTrendRows.value.some((row) => row.dailyUsage.some((point) => metricValue(point, selectedMetric.value) > 0)))
-const tableScrollX = computed(() => isManagementView.value ? 1180 : 1040)
+const tableScrollX = computed(() => isManagementView.value ? 1620 : 1450)
 const tablePagination = computed(() => ({
   current: accountUsagePagination.current,
   pageSize: accountUsagePagination.pageSize,
@@ -327,6 +341,8 @@ const columns = computed(() => {
   baseColumns.push(
     { title: '请求', key: 'requests', width: 120, align: 'right' },
     { title: 'Token', key: 'tokens', width: 130, align: 'right' },
+    { title: '缓存率', key: 'cacheRate', width: 120, align: 'right' },
+    { title: '缓存成本', key: 'cacheCost', width: 130, align: 'right' },
     { title: '成本', key: 'cost', width: 130, align: 'right' },
     { title: '最后使用', key: 'lastUsedAt', width: 180 }
   )
@@ -355,7 +371,7 @@ const summaryCards = computed(() => {
   ]
 })
 
-function cacheReadRate(summary?: AccountUsageStatsOverview['summary']) {
+function cacheReadRate(summary?: AccountUsageSummary) {
   const inputTokens = summary?.inputTokens ?? 0
   if (inputTokens <= 0) return 0
   return ((summary?.cacheReadTokens ?? 0) / inputTokens) * 100

@@ -8,10 +8,17 @@ import { getRequestLogger } from '../../shared/request-context.js'
 import { parseErrorPayload } from './account-error-policy.service.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
 import {
+  estimateProviderCacheReadCostUsd,
+  estimateProviderCostUsd
+} from '../model-pricing/model-pricing.service.js'
+import {
   buildGatewayErrorResponseSnapshot,
+  buildUsageRequestSnapshot,
   buildUsageResponseSnapshot,
+  emptyUsage,
   requestModel,
   requestStream,
+  type ParsedUsage,
   type UsageRequestSnapshot
 } from './openai-gateway-usage.js'
 import type { GatewayErrorPayload } from './openai-gateway-responses.js'
@@ -133,6 +140,98 @@ export function recordFailedUpstreamAttempt(
       bodyText: input.bodyText,
       errorMessage
     })
+  })
+}
+
+export function recordCompletedUpstreamAttempt(
+  req: Request,
+  input: {
+    traceId: string
+    clientIp?: string
+    systemAccountId: string
+    apiKeyId?: string
+    groupId: string
+    account: UpstreamAccount
+    endpoint: string
+    statusCode?: number
+    success: boolean
+    stream: boolean
+    firstTokenMs?: number
+    startedAt: number
+    usage: ParsedUsage
+    errorCode?: string
+    errorMessage?: string
+    requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
+    responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
+  }
+): void {
+  const model = requestModel(req)
+  enqueueUsageRecord({
+    traceId: input.traceId,
+    clientIp: input.clientIp,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    accountId: input.account.id,
+    ...accountUsageMetadata(input.account),
+    endpoint: input.endpoint,
+    providerCode: 'openai',
+    model,
+    stream: input.stream,
+    statusCode: input.statusCode,
+    success: input.success,
+    firstTokenMs: input.firstTokenMs,
+    durationMs: Date.now() - input.startedAt,
+    inputTokens: input.usage.inputTokens,
+    outputTokens: input.usage.outputTokens,
+    cacheReadTokens: input.usage.cacheReadTokens,
+    inputImageTokens: input.usage.inputImageTokens,
+    outputImageTokens: input.usage.outputImageTokens,
+    cacheReadCostUsd: estimateProviderCacheReadCostUsd({
+      providerCode: 'openai',
+      model,
+      cacheReadTokens: input.usage.cacheReadTokens
+    }),
+    costUsd: estimateProviderCostUsd({
+      providerCode: 'openai',
+      model,
+      inputTokens: input.usage.inputTokens,
+      outputTokens: input.usage.outputTokens,
+      cacheReadTokens: input.usage.cacheReadTokens,
+      inputImageTokens: input.usage.inputImageTokens,
+      outputImageTokens: input.usage.outputImageTokens
+    }),
+    errorCode: input.errorCode,
+    errorMessage: input.errorMessage,
+    requestSnapshot: input.requestSnapshot,
+    responseSnapshot: input.responseSnapshot
+  })
+}
+
+export function recordClientAbortedUpstreamAttempt(
+  req: Request,
+  input: {
+    traceId: string
+    clientIp?: string
+    systemAccountId: string
+    apiKeyId?: string
+    groupId: string
+    account: UpstreamAccount
+    endpoint: string
+    statusCode?: number
+    stream: boolean
+    firstTokenMs?: number
+    startedAt: number
+    requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
+    responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
+  }
+): void {
+  recordCompletedUpstreamAttempt(req, {
+    ...input,
+    success: false,
+    usage: emptyUsage(),
+    errorCode: 'client_aborted',
+    errorMessage: '请求已取消'
   })
 }
 

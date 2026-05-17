@@ -41,6 +41,7 @@ type BackgroundWorkerMessage =
   | { type: 'background_worker_runtime_log_line'; line: string }
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
+  | { type: 'gateway_runtime_cache_invalidate' }
 
 interface PendingRequest {
   resolve: (snapshot: BackgroundWorkerRuntimeSnapshot | undefined) => void
@@ -269,6 +270,11 @@ function handleWorkerMessage(message: unknown): void {
         lastSnapshot = record.snapshot as BackgroundWorkerRuntimeSnapshot
       }
       break
+    case 'gateway_runtime_cache_invalidate':
+      if (runtimeConfig.processRole !== 'worker') {
+        void clearServerGatewayRuntimeCache()
+      }
+      break
     default:
       break
   }
@@ -440,6 +446,7 @@ function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
     case 'background_worker_status_request':
     case 'background_worker_status_response':
     case 'background_worker_ready':
+    case 'gateway_runtime_cache_invalidate':
       return 512
     default:
       return 512
@@ -506,4 +513,11 @@ function failPendingRequests(): void {
     pending.resolve(lastSnapshot)
     pendingRequests.delete(requestId)
   }
+}
+
+async function clearServerGatewayRuntimeCache(): Promise<void> {
+  const dbServiceIpc = await import('../db-service/db-service-ipc.js')
+  const gatewayCache = await import('../gateway/gateway-runtime-cache.service.js')
+  gatewayCache.clearGatewayRuntimeCacheLocal()
+  dbServiceIpc.clearDbServiceGatewayRuntimeCache()
 }

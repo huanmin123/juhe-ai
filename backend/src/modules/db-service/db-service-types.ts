@@ -236,3 +236,6 @@ export type DbServiceChildMessage =
     type: 'db_service_server_runtime_request'
     requestId: string
   }
+  | {
+    type: 'gateway_runtime_cache_invalidate'
+  }

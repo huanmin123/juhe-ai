@@ -10,34 +10,27 @@ import {
 } from '../../storage/repositories.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
 import {
-  clearGatewayRuntimeCache,
   listCachedOpenAIAccountsForGroupAsync,
   readCachedGatewaySettingsAsync,
   resolveCachedGroupUsageAccessMetadataAsync
 } from './gateway-runtime-cache.service.js'
-import { estimateProviderCacheReadCostUsd, estimateProviderCostUsd } from '../model-pricing/model-pricing.service.js'
 import { shouldRefreshOpenAIOAuthCredentials } from '../openai-oauth/openai-oauth.service.js'
 import { refreshOpenAIOAuthAccountAccessToken } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import {
-  decideAccountErrorPolicy,
   parseErrorPayload,
   type GatewaySettings
 } from './account-error-policy.service.js'
-import { parseOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
-import { requestDbService } from '../db-service/db-service-ipc.js'
 import {
   buildUsageRequestSnapshot,
   buildUsageResponseSnapshot,
   emptyUsage,
   extractClientIp,
-  headersToObject,
   applyOpenAIStreamUsageFallback,
   parseOpenAIUsageFromJsonBuffer,
   parseOpenAIUsageFromJsonTextFragment,
   requestEndpoint,
   requestModel,
   extractBearerToken,
-  type ParsedUsage,
   type UpstreamAttempt
 } from './openai-gateway-usage.js'
 import {
@@ -53,8 +46,9 @@ import {
 } from './openai-gateway-upstream.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import {
-  accountUsageMetadata,
   groupUsageMetadata,
+  recordClientAbortedUpstreamAttempt,
+  recordCompletedUpstreamAttempt,
   recordGatewayFailure,
   recordFailedUpstreamAttempt,
   type GatewayUsageContext
@@ -66,13 +60,7 @@ import {
   writeGatewayStreamFailureEvent
 } from './openai-gateway-responses.js'
 import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
-import { pipeUpstreamStream, type StreamFailureContext } from './openai-gateway-stream.js'
-import type { StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
-import {
-  matchUpstreamErrorFeatureRule,
-  openAIUpstreamErrorFeatureRules,
-  type UpstreamErrorFeatureDecision
-} from './openai-gateway-upstream-error-rules.js'
+import { pipeUpstreamStream } from './openai-gateway-stream.js'
 import { pipeNonStreamUpstreamResponse, readUpstreamBodyLimited } from './openai-gateway-body.js'
 import { createAuditCapture, responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { API_KEY_QUOTA_EXCEEDED_MESSAGE, checkGatewayApiKeyQuotaAsync } from './api-key-quota.service.js'
@@ -90,10 +78,35 @@ import {
   type UpstreamAccount
 } from './openai-gateway-route-helpers.js'
 import {
-  enqueueGatewayAccountErrorHandlingSideEffect,
-  enqueueGatewayStreamFailureSideEffect,
   filterLocallySuppressedGatewayAccounts
 } from './gateway-account-side-effects.service.js'
+import {
+  buildDiagnosticUpstreamError,
+  parseClientVisibleUpstreamErrorForAudit,
+  sendRawUpstreamErrorResponse
+} from './openai-gateway-error-helpers.js'
+import {
+  failedProxyDispatchReason,
+  rememberFailedProxyForDispatch,
+  shouldRecordAbortedUpstreamAttempt,
+  throwIfRequestAborted,
+  waitBeforeTemporaryUnschedulableRetry
+} from './openai-gateway-dispatch-helpers.js'
+import {
+  streamInterceptAuditMetadata
+} from './openai-gateway-audit-metadata.js'
+import {
+  applyAccountErrorHandlingWithCacheInvalidation,
+  clearAccountStreamFailureStateWithCacheInvalidation,
+  handleStreamFailure,
+  persistOpenAICodexHeadersIfNeeded
+} from './openai-gateway-account-effects.js'
+import {
+  flushDeferredAccountFailures,
+  handleFailedUpstreamResponse,
+  UpstreamRejectedRequestError,
+  type DeferredAccountFailure
+} from './openai-gateway-failure-dispatch.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -845,193 +858,6 @@ export async function handleOpenAIGatewayRequest(
   }
 }
 
-function recordCompletedUpstreamAttempt(
-  req: Request,
-  input: {
-    traceId: string
-    clientIp?: string
-    systemAccountId: string
-    apiKeyId?: string
-    groupId: string
-    account: UpstreamAccount
-    endpoint: string
-    statusCode?: number
-    success: boolean
-    stream: boolean
-    firstTokenMs?: number
-    startedAt: number
-    usage: ParsedUsage
-    errorCode?: string
-    errorMessage?: string
-    requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
-    responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
-  }
-): void {
-  const model = requestModel(req)
-  enqueueUsageRecord({
-    traceId: input.traceId,
-    clientIp: input.clientIp,
-    systemAccountId: input.systemAccountId,
-    apiKeyId: input.apiKeyId,
-    groupId: input.groupId,
-    accountId: input.account.id,
-    ...accountUsageMetadata(input.account),
-    endpoint: input.endpoint,
-    providerCode: 'openai',
-    model,
-    stream: input.stream,
-    statusCode: input.statusCode,
-    success: input.success,
-    firstTokenMs: input.firstTokenMs,
-    durationMs: Date.now() - input.startedAt,
-    inputTokens: input.usage.inputTokens,
-    outputTokens: input.usage.outputTokens,
-    cacheReadTokens: input.usage.cacheReadTokens,
-    inputImageTokens: input.usage.inputImageTokens,
-    outputImageTokens: input.usage.outputImageTokens,
-    cacheReadCostUsd: estimateProviderCacheReadCostUsd({
-      providerCode: 'openai',
-      model,
-      cacheReadTokens: input.usage.cacheReadTokens
-    }),
-    costUsd: estimateProviderCostUsd({
-      providerCode: 'openai',
-      model,
-      inputTokens: input.usage.inputTokens,
-      outputTokens: input.usage.outputTokens,
-      cacheReadTokens: input.usage.cacheReadTokens,
-      inputImageTokens: input.usage.inputImageTokens,
-      outputImageTokens: input.usage.outputImageTokens
-    }),
-    errorCode: input.errorCode,
-    errorMessage: input.errorMessage,
-    requestSnapshot: input.requestSnapshot,
-    responseSnapshot: input.responseSnapshot
-  })
-}
-
-function recordClientAbortedUpstreamAttempt(
-  req: Request,
-  input: {
-    traceId: string
-    clientIp?: string
-    systemAccountId: string
-    apiKeyId?: string
-    groupId: string
-    account: UpstreamAccount
-    endpoint: string
-    statusCode?: number
-    stream: boolean
-    firstTokenMs?: number
-    startedAt: number
-    requestSnapshot?: ReturnType<typeof buildUsageRequestSnapshot>
-    responseSnapshot?: ReturnType<typeof buildUsageResponseSnapshot>
-  }
-): void {
-  recordCompletedUpstreamAttempt(req, {
-    ...input,
-    success: false,
-    usage: emptyUsage(),
-    errorCode: 'client_aborted',
-    errorMessage: '请求已取消'
-  })
-}
-
-function buildDiagnosticUpstreamError(
-  lastAttempt: UpstreamAttempt | undefined,
-  fallbackMessage: string
-): { statusCode: number; payload: GatewayDiagnosticErrorPayload; errorMessage: string } | undefined {
-  if (!lastAttempt) return undefined
-
-  const statusCode = isHttpStatusCode(lastAttempt.status) ? lastAttempt.status : 503
-  const bodyText = lastAttempt.responseBodyText?.trim()
-  const responseHeaders = headersFromObject(lastAttempt.responseHeaders)
-  const parsedError = bodyText ? parseErrorPayload(bodyText, responseHeaders) : {}
-  const errorMessage = stringValue(parsedError.message) || lastAttempt.message || fallbackMessage
-  const errorType = stringValue(parsedError.type) || stringValue(parsedError.code) || 'upstream_error'
-  const parsedPayload = bodyText ? parseJsonObject(bodyText) : undefined
-  const payload = hasErrorObject(parsedPayload)
-    ? parsedPayload as GatewayDiagnosticErrorPayload
-    : gatewayErrorPayload(errorMessage, errorType) as GatewayDiagnosticErrorPayload
-
-  payload.upstream = {
-    statusCode: lastAttempt.status,
-    accountId: lastAttempt.accountId,
-    accountName: lastAttempt.accountName,
-    upstreamUrl: lastAttempt.upstreamUrl
-  }
-
-  return { statusCode, payload, errorMessage }
-}
-
-function parseClientVisibleUpstreamErrorForAudit(
-  response: ClientVisibleUpstreamErrorResponse,
-  fallbackMessage: string
-): { errorMessage: string; errorCode?: string } {
-  const parsedError = response.bodyText ? parseErrorPayload(response.bodyText, response.headers) : {}
-  return {
-    errorMessage: stringValue(parsedError.message) || fallbackMessage,
-    errorCode: stringValue(parsedError.code) || stringValue(parsedError.type) || undefined
-  }
-}
-
-function sendRawUpstreamErrorResponse(res: Response, response: ClientVisibleUpstreamErrorResponse): void {
-  if (res.writableEnded || res.destroyed) {
-    return
-  }
-  if (!res.headersSent) {
-    res.status(response.statusCode)
-    copyResponseHeaders({
-      status: response.statusCode,
-      ok: false,
-      headers: response.headers,
-      body: null
-    }, res)
-  }
-  res.end(response.body)
-}
-
-type GatewayDiagnosticErrorPayload = ReturnType<typeof gatewayErrorPayload> & {
-  upstream?: {
-    statusCode?: number
-    accountId: string
-    accountName: string
-    upstreamUrl: string
-  }
-}
-
-function headersFromObject(headers?: Record<string, string>): Headers {
-  const output = new Headers()
-  if (!headers) return output
-  for (const [name, value] of Object.entries(headers)) {
-    output.set(name, value)
-  }
-  return output
-}
-
-function parseJsonObject(text: string): Record<string, unknown> | undefined {
-  try {
-    const value = JSON.parse(text) as unknown
-    return typeof value === 'object' && value !== null && !Array.isArray(value)
-      ? value as Record<string, unknown>
-      : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function hasErrorObject(value: Record<string, unknown> | undefined): boolean {
-  return typeof value?.error === 'object' && value.error !== null && !Array.isArray(value.error)
-}
-
-function isHttpStatusCode(value: unknown): value is number {
-  return typeof value === 'number' && value >= 400 && value <= 599
-}
-
-function stringValue(value: unknown): string {
-  return typeof value === 'string' && value.trim() ? value.trim() : ''
-}
-
 function sendQuotaExceededResponse(
   req: Request,
   res: Response,
@@ -1097,43 +923,6 @@ class UpstreamAttemptError extends Error {
   constructor(message: string, readonly lastAttempt?: UpstreamAttempt) {
     super(message)
   }
-}
-
-class UpstreamRejectedRequestError extends Error {
-  constructor(
-    message: string,
-    readonly lastAttempt: UpstreamAttempt,
-    readonly response: ClientVisibleUpstreamErrorResponse,
-    readonly upstreamErrorFeature?: UpstreamErrorFeatureDecision
-  ) {
-    super(message)
-  }
-}
-
-interface ClientVisibleUpstreamErrorResponse {
-  statusCode: number
-  headers: Headers
-  body: Buffer
-  bodyText: string
-}
-
-interface DeferredAccountFailure {
-  account: UpstreamAccount
-  input: {
-    success: false
-    statusCode: number
-    headers: Headers | Record<string, string | string[]>
-    bodyText: string
-    settings: GatewaySettings
-  }
-  signature?: UpstreamFailureSignature
-  lastAttempt: UpstreamAttempt
-  response?: ClientVisibleUpstreamErrorResponse
-}
-
-interface UpstreamFailureSignature {
-  key: string
-  label: string
 }
 
 async function fetchFirstAvailableUpstream(
@@ -1292,146 +1081,27 @@ async function fetchFirstAvailableUpstream(
               return { account, response, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
             }
 
-            const responseBodyRead = await readUpstreamBodyLimited(response.body, {
-              startedAt: attemptStartedAt,
-              signal
-            })
-            const responseBody = responseBodyRead.body
-            const responseBodyText = responseBodyRead.bodyText
-            const diagnosticResponseBodyText = responseBodyRead.diagnosticBodyText
-            if (responseBodyRead.truncated) {
-              getRequestLogger().warn({
-                event: 'gateway_upstream_retry_error_body_truncated',
-                accountId: account.id,
-                statusCode: response.status,
-                readBytes: responseBodyRead.readBytes,
-                upstreamUrl
-              }, '上游失败响应体超过网关捕获上限，已截断用于重试诊断')
-            }
-            getRequestLogger().warn({
-              event: 'gateway_upstream_response_failed',
-              accountId: account.id,
-              accountType: account.type,
+            const failedResponseResult = await handleFailedUpstreamResponse({
+              req,
+              usageContext,
+              auditCapture,
+              auditAttemptId,
+              account,
               upstreamUrl,
+              response,
+              settings,
+              attemptStartedAt,
               attemptIndex,
               auditAttemptIndex,
-              statusCode: response.status,
-              contentType: response.headers.get('content-type'),
-              elapsedMs: Date.now() - attemptStartedAt,
-              responseBodyBytes: responseBody.byteLength,
-              responseBodyTruncated: responseBodyRead.truncated
-            }, '上游返回非成功状态')
-            lastAttempt = {
-              ...lastAttempt,
-              responseHeaders: headersToObject(response.headers),
-              responseBodyText: diagnosticResponseBodyText
-            }
-            auditCapture.completeAttempt(auditAttemptId, {
-              statusCode: response.status,
-              responseHeaders: response.headers,
-              responseBody,
-              success: false,
-              errorPhase: 'upstream_response',
-              errorMessage: diagnosticResponseBodyText
+              retryAttempts,
+              sessionAffinityKey,
+              signal,
+              lastAttempt,
+              deferredAccountFailures
             })
-            recordFailedUpstreamAttempt(req, usageContext, account, {
-              upstreamUrl,
-              startedAt: attemptStartedAt,
-              statusCode: response.status,
-              headers: response.headers,
-              bodyText: diagnosticResponseBodyText
-            })
-            persistOpenAICodexHeadersIfNeeded(account, response.headers, 'gateway_error')
-            const failureInput = {
-              success: false,
-              statusCode: response.status,
-              headers: response.headers,
-              bodyText: responseBodyText,
-              settings
-            } as const
-            if (!responseBodyRead.truncated) {
-              const parsedError = parseErrorPayload(responseBodyText, response.headers)
-              const featureDecision = matchUpstreamErrorFeatureRule(openAIUpstreamErrorFeatureRules, {
-                provider: 'openai',
-                endpoint: requestEndpoint(req),
-                stream: isEffectiveOpenAIStreamRequest(req, account),
-                statusCode: response.status,
-                bodyText: responseBodyText,
-                parsedError
-              })
-              if (featureDecision) {
-                const featureResponse = {
-                  statusCode: response.status,
-                  headers: response.headers,
-                  body: responseBody,
-                  bodyText: responseBodyText
-                }
-                const featureLastAttempt = lastAttempt ?? {
-                  accountId: account.id,
-                  accountName: account.name,
-                  upstreamUrl,
-                  status: response.status
-                }
-                getRequestLogger().warn({
-                  event: 'gateway_upstream_error_feature_matched',
-                  accountId: account.id,
-                  accountName: account.name,
-                  accountType: account.type,
-                  upstreamUrl,
-                  attemptIndex,
-                  auditAttemptIndex,
-                  statusCode: response.status,
-                  ruleId: featureDecision.ruleId,
-                  ruleName: featureDecision.ruleName,
-                  action: featureDecision.action,
-                  accountPolicy: featureDecision.accountPolicy,
-                  upstreamErrorType: featureDecision.upstreamErrorType,
-                  upstreamErrorCode: featureDecision.upstreamErrorCode,
-                  upstreamErrorMessage: featureDecision.upstreamErrorMessage
-                }, upstreamErrorFeatureActionLogMessage(featureDecision))
-                auditCapture.addGatewayMetadata({
-                  label: 'upstream_error_feature',
-                  metadata: upstreamErrorFeatureAuditMetadata(featureDecision)
-                })
-                throw new UpstreamRejectedRequestError(
-                  `命中上游错误响应特征规则 ${featureDecision.ruleName}，判定为请求级失败`,
-                  featureLastAttempt,
-                  featureResponse,
-                  featureDecision
-                )
-              }
-            }
-            if (hasAccountErrorPolicyDecision(account, failureInput)) {
-              forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-              applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
-            } else {
-              if (attemptIndex < retryAttempts) {
-                getRequestLogger().warn({
-                  event: 'gateway_upstream_same_account_retry_scheduled',
-                  accountId: account.id,
-                  accountName: account.name,
-                  accountType: account.type,
-                  upstreamUrl,
-                  attemptIndex,
-                  nextAttemptIndex: attemptIndex + 1,
-                  statusCode: response.status,
-                  retryIntervalSeconds: settings.temporaryUnschedulableRetryIntervalSeconds
-                }, '上游未知失败未命中策略，先按临时不可调用标准同账号重试')
-                await waitBeforeTemporaryUnschedulableRetry(settings)
-                continue
-              }
-              deferUnknownAccountFailureOrRejectRequest(deferredAccountFailures, {
-                account,
-                input: failureInput,
-                signature: buildUpstreamFailureSignature(response.headers, responseBodyText),
-                lastAttempt,
-                response: responseBodyRead.truncated ? undefined : {
-                  statusCode: response.status,
-                  headers: response.headers,
-                  body: responseBody,
-                  bodyText: responseBodyText
-                }
-              })
+            lastAttempt = failedResponseResult.lastAttempt
+            if (failedResponseResult.action === 'retry') {
+              continue
             }
             skipAccount = true
             break
@@ -1521,245 +1191,6 @@ async function fetchFirstAvailableUpstream(
   )
 }
 
-function hasAccountErrorPolicyDecision(
-  account: UpstreamAccount,
-  input: {
-    statusCode: number
-    headers: Headers | Record<string, string | string[]>
-    bodyText: string
-    settings: GatewaySettings
-  }
-): boolean {
-  const headers = input.headers instanceof Headers ? input.headers : headersFromObjectForPolicy(input.headers)
-  return Boolean(decideAccountErrorPolicy(account, input.statusCode, headers, Buffer.from(input.bodyText), input.settings))
-}
-
-function deferUnknownAccountFailureOrRejectRequest(
-  deferredAccountFailures: DeferredAccountFailure[],
-  failure: DeferredAccountFailure
-): void {
-  const matchedFailure = failure.signature
-    ? deferredAccountFailures.find((item) => item.account.id !== failure.account.id && item.signature?.key === failure.signature?.key)
-    : undefined
-
-  if (matchedFailure && failure.signature && failure.response) {
-    getRequestLogger().warn({
-      event: 'gateway_request_failure_signature_confirmed',
-      firstAccountId: matchedFailure.account.id,
-      firstAccountName: matchedFailure.account.name,
-      secondAccountId: failure.account.id,
-      secondAccountName: failure.account.name,
-      statusCode: failure.lastAttempt.status,
-      failureSignature: failure.signature.label
-    }, '多个上游账号返回一致错误，按请求级失败返回客户端')
-    throw new UpstreamRejectedRequestError(
-      '多个上游账号返回一致错误，判定为请求级失败：' + failure.signature.label,
-      failure.lastAttempt,
-      failure.response
-    )
-  }
-
-  deferredAccountFailures.push(failure)
-}
-
-function flushDeferredAccountFailures(deferredAccountFailures: DeferredAccountFailure[], sessionAffinityKey?: string): void {
-  while (deferredAccountFailures.length > 0) {
-    const failure = deferredAccountFailures.shift()
-    if (!failure) {
-      continue
-    }
-    forgetOpenAIAccountForSession(sessionAffinityKey, failure.account.id)
-    applyAccountErrorHandlingWithCacheInvalidation(failure.account, failure.input)
-  }
-}
-
-function buildUpstreamFailureSignature(headers: Headers, bodyText: string): UpstreamFailureSignature | undefined {
-  const parsedError = parseErrorPayload(bodyText, headers)
-  const parts = [
-    signaturePart('type', parsedError.type),
-    signaturePart('code', parsedError.code),
-    signaturePart('message', parsedError.message)
-  ].filter((part): part is string => Boolean(part))
-
-  if (parts.length > 0) {
-    return {
-      key: parts.join('|'),
-      label: signatureLabel(parts.join(' '))
-    }
-  }
-
-  const normalizedBody = normalizeFailureSignatureText(bodyText)
-  return normalizedBody
-    ? {
-      key: 'body:' + normalizedBody,
-      label: signatureLabel(normalizedBody)
-    }
-    : undefined
-}
-
-function signaturePart(name: string, value: unknown): string | undefined {
-  const normalized = normalizeFailureSignatureText(typeof value === 'string' ? value : '')
-  return normalized ? `${name}:${normalized}` : undefined
-}
-
-function normalizeFailureSignatureText(value: string): string {
-  return value.trim().replace(/\s+/g, ' ').toLowerCase().slice(0, 2000)
-}
-
-function signatureLabel(value: string): string {
-  return value.length > 240 ? value.slice(0, 240) + '...' : value
-}
-
-function headersFromObjectForPolicy(headers: Record<string, string | string[]>): Headers {
-  const output = new Headers()
-  for (const [name, value] of Object.entries(headers)) {
-    output.set(name, Array.isArray(value) ? value.join(', ') : value)
-  }
-  return output
-}
-
-function failedProxyDispatchReason(failedProxyDispatchKeys: Map<string, string>, account: UpstreamAccount): string | undefined {
-  const key = accountProxyDispatchKey(account)
-  return key ? failedProxyDispatchKeys.get(key) : undefined
-}
-
-function rememberFailedProxyForDispatch(failedProxyDispatchKeys: Map<string, string>, account: UpstreamAccount, reason: string): void {
-  const key = accountProxyDispatchKey(account)
-  if (key) {
-    failedProxyDispatchKeys.set(key, reason)
-  }
-}
-
-function accountProxyDispatchKey(account: UpstreamAccount): string | undefined {
-  if (account.proxyProfileId) return `profile:${account.proxyProfileId}`
-  if (account.proxyUrl) return `url:${account.proxyUrl}`
-  return undefined
-}
-
-async function waitBeforeTemporaryUnschedulableRetry(settings: GatewaySettings): Promise<void> {
-  const intervalMs = Math.max(0, settings.temporaryUnschedulableRetryIntervalSeconds) * 1000
-  if (intervalMs <= 0) {
-    return
-  }
-  await new Promise((resolve) => setTimeout(resolve, intervalMs))
-}
-
-function throwIfRequestAborted(signal?: AbortSignal): void {
-  if (signal?.aborted) {
-    throw new UpstreamRequestAbortedError('请求已取消')
-  }
-}
-
-function shouldRecordAbortedUpstreamAttempt(error: unknown): boolean {
-  return error instanceof UpstreamRequestAbortedError && error.upstreamRequestStarted
-}
-
-function applyAccountErrorHandlingWithCacheInvalidation(
-  account: UpstreamAccount,
-  input: {
-    success: boolean
-    statusCode?: number
-    headers?: Headers | Record<string, string | string[]>
-    bodyText?: string
-    errorMessage?: string
-    settings?: GatewaySettings
-  }
-): void {
-  const normalizedInput = {
-    ...input,
-    headers: input.headers instanceof Headers ? headersToObject(input.headers) : input.headers
-  }
-  enqueueGatewayAccountErrorHandlingSideEffect({
-    type: 'apply_account_error_handling',
-    account,
-    input: normalizedInput
-  })
-}
-
-function handleStreamFailure(
-  account: UpstreamAccount,
-  reason: string,
-  settings: GatewaySettings,
-  errorCode: string | undefined,
-  context: StreamFailureContext
-): void {
-  if (!settings.streamCircuitBreakerEnabled) {
-    return
-  }
-  if (!context.outputReceived) {
-    getRequestLogger().warn({
-      event: 'gateway_stream_failure_account_side_effect_deferred',
-      accountId: account.id,
-      accountName: account.name,
-      errorCode,
-      reason,
-      downstreamBytesWritten: context.downstreamBytesWritten
-    }, '流式失败发生在可见输出前，暂不累计账号流失败计数')
-    return
-  }
-
-  enqueueGatewayStreamFailureSideEffect({
-    type: 'record_account_stream_failure',
-    input: {
-      accountId: account.id,
-      thresholdCount: settings.streamFailureThresholdCount,
-      thresholdWindowMinutes: settings.streamFailureThresholdWindowMinutes,
-      action: 'cooldown',
-      cooldownMinutes: settings.defaultTemporaryUnschedulableMinutes,
-      reason
-    }
-  })
-}
-
-function streamInterceptAuditMetadata(decision: StreamInterceptDecision): Record<string, unknown> {
-  return {
-    streamIntercepted: true,
-    fallbackReason: decision.reason,
-    interceptAction: decision.action,
-    triggerPhase: decision.triggerPhase,
-    upstreamEventType: decision.upstreamEventType,
-    upstreamErrorCode: decision.upstreamErrorCode,
-    upstreamErrorMessage: decision.upstreamErrorMessage,
-    rewriteErrorCode: decision.rewriteErrorCode,
-    rewriteMessage: decision.rewriteMessage,
-    outputSeen: decision.outputSeen
-  }
-}
-
-function upstreamErrorFeatureAuditMetadata(decision: UpstreamErrorFeatureDecision): Record<string, unknown> {
-  return {
-    upstreamErrorFeatureMatched: true,
-    featureRuleId: decision.ruleId,
-    featureRuleName: decision.ruleName,
-    action: decision.action,
-    statusCode: decision.statusCode,
-    upstreamErrorType: decision.upstreamErrorType,
-    upstreamErrorCode: decision.upstreamErrorCode,
-    upstreamErrorMessage: decision.upstreamErrorMessage,
-    accountPolicy: decision.accountPolicy
-  }
-}
-
-function upstreamErrorFeatureActionLogMessage(decision: UpstreamErrorFeatureDecision): string {
-  return '命中上游错误响应特征规则，按请求级失败原样返回客户端'
-}
-
-function clearAccountStreamFailureStateWithCacheInvalidation(accountId: string): void {
-  void requestDbService({
-    type: 'clear_account_stream_failure_state',
-    accountId
-  }).then((result) => {
-    if (result.changed) {
-      clearGatewayRuntimeCache()
-    }
-  }).catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_account_stream_failure_clear_failed',
-      accountId
-    }), '网关清理账号流式失败计数失败')
-  })
-}
-
 async function prepareUpstreamAccount(account: UpstreamAccount, signal?: AbortSignal): Promise<UpstreamAccount> {
   if (account.type !== 'oauth' || !shouldRefreshOpenAIOAuthCredentials(account.credentials) || !account.refreshToken) {
     return account
@@ -1778,23 +1209,6 @@ async function prepareUpstreamAccount(account: UpstreamAccount, signal?: AbortSi
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : account.expiresAt,
     credentials
   }
-}
-
-function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: Headers, source: string): void {
-  if (account.type !== 'oauth') return
-  if (!parseOpenAICodexUsageHeaders(headers)) return
-  void requestDbService({
-    type: 'persist_openai_codex_usage_headers',
-    accountId: account.id,
-    headers: headersToObject(headers),
-    source
-  }).catch((error) => {
-    logger.warn(errorLogFields(error, {
-      event: 'gateway_codex_usage_snapshot_side_effect_failed',
-      accountId: account.id,
-      source
-    }), 'OpenAI Codex 用量快照副作用写入失败')
-  })
 }
 
 function isImplicitOpenAIStreamResponse(req: Request, account: UpstreamAccount): boolean {
