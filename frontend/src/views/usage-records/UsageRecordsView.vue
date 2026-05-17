@@ -115,7 +115,7 @@
 <script setup lang="ts">
 import { CopyOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import dayjs, { type Dayjs } from 'dayjs'
+import type { Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
@@ -123,6 +123,7 @@ import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
@@ -374,7 +375,7 @@ function normalizedStatusCode(value: string): number | undefined {
 }
 
 function dateRangeParam(value?: [Dayjs, Dayjs]): [string, string] | undefined {
-  const normalized = normalizeDateRange(value)
+  const normalized = normalizeDayjsDateRange(value)
   return normalized ? [formatDateKey(normalized[0]), formatDateKey(normalized[1])] : undefined
 }
 
@@ -409,25 +410,7 @@ function parseDateRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
   if (!value) return undefined
   const start = parseDateKey(value[0])
   const end = parseDateKey(value[1])
-  return start && end ? normalizeDateRange([start, end]) : undefined
-}
-
-function normalizeDateRange(value?: [Dayjs, Dayjs]): [Dayjs, Dayjs] | undefined {
-  const start = value?.[0]
-  const end = value?.[1]
-  if (!start?.isValid() || !end?.isValid()) return undefined
-  return start.isAfter(end, 'day') ? [end.startOf('day'), start.startOf('day')] : [start.startOf('day'), end.startOf('day')]
-}
-
-function parseDateKey(value?: string): Dayjs | undefined {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined
-  const [year, month, day] = value.split('-').map((part) => Number(part))
-  const parsed = dayjs(new Date(year, month - 1, day)).startOf('day')
-  return parsed.year() === year && parsed.month() === month - 1 && parsed.date() === day ? parsed : undefined
-}
-
-function formatDateKey(value: Dayjs): string {
-  return value.format('YYYY-MM-DD')
+  return start && end ? normalizeDayjsDateRange([start, end]) : undefined
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })

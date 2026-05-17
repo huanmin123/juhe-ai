@@ -34,8 +34,7 @@ async function main(): Promise<void> {
   testOpenAIClientPathCompatibility()
   testJsonBodyFallbackWhenPassthroughDisabled()
   testLargeJsonBodyParsedForGatewayMetadata()
-  await testLargeJsonBodyParsedByGatewayWorker()
-  await testLargeJsonBodyWorkerStopsWhenClientAborts()
+  await testLargeJsonBodyDeferredByGatewayMiddleware()
   console.log('OpenAI API Key passthrough regression passed')
 }
 
@@ -214,7 +213,7 @@ function testLargeJsonBodyParsedForGatewayMetadata(): void {
   assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), true)
 }
 
-async function testLargeJsonBodyParsedByGatewayWorker(): Promise<void> {
+async function testLargeJsonBodyDeferredByGatewayMiddleware(): Promise<void> {
   const body = {
     model: 'gpt-5.4',
     stream: true,
@@ -229,8 +228,8 @@ async function testLargeJsonBodyParsedByGatewayWorker(): Promise<void> {
   })
 
   assert.equal(nextCalled, true)
-  assert.equal((req.body as { model?: string }).model, 'gpt-5.4')
-  assert.equal((req.body as { stream?: boolean }).stream, true)
+  assert.equal(req.body, undefined)
+  assert.equal(req.gatewayRequestBody?.jsonParseStatus, 'deferred_large_json')
   assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
   assert.equal(req.gatewayRequestBody?.stream, true)
   assert.equal(requestModel(req), 'gpt-5.4')
@@ -239,27 +238,6 @@ async function testLargeJsonBodyParsedByGatewayWorker(): Promise<void> {
   const upstreamBody = buildUpstreamRequestBody(req, true)
   assert.ok(Buffer.isBuffer(upstreamBody))
   assert.equal(Buffer.compare(upstreamBody, rawBody), 0)
-}
-
-async function testLargeJsonBodyWorkerStopsWhenClientAborts(): Promise<void> {
-  const body = {
-    model: 'gpt-5.4',
-    stream: true,
-    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes * 4)
-  }
-  const rawBody = Buffer.from(JSON.stringify(body))
-  const req = createRequest(rawBody, { 'content-type': 'application/json' }, rawBody)
-  const res = new EventEmitter()
-  let nextCalled = false
-
-  const capture = captureGatewayRawBody(req, res as never, () => {
-    nextCalled = true
-  })
-  req.aborted = true
-  req.emit('aborted')
-  await capture
-
-  assert.equal(nextCalled, false)
 }
 
 function createRequest(

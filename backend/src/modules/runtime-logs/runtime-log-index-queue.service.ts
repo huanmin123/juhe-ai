@@ -138,6 +138,11 @@ export function installRuntimeLogIndexQueueShutdownHooks(): void {
 function runtimeLogInputFromLine(rawLine: string, sourceKey?: string): RuntimeLogIndexInput | undefined {
   const line = rawLine.trim()
   if (!line) return undefined
+  const rawJson = truncateRawJson(line)
+
+  if (line.length > runtimeLogMaxRawJsonChars) {
+    return fallbackRuntimeLogInput(rawJson, sourceKey ?? stableRuntimeLogSource(line, rawJson))
+  }
 
   let parsed: Record<string, unknown>
   try {
@@ -159,9 +164,26 @@ function runtimeLogInputFromLine(rawLine: string, sourceKey?: string): RuntimeLo
     event: stringValue(parsed.event),
     message: stringValue(parsed.msg) ?? stringValue(parsed.message),
     errorMessage: stringValue(parsed.errorMessage) ?? errorMessageFromErr(parsed.err),
-    rawJson: truncateRawJson(line),
+    rawJson,
     createdAt: time
   }
+}
+
+function fallbackRuntimeLogInput(rawJson: string, sourceKey: string): RuntimeLogIndexInput {
+  const createdAt = nowIso()
+  return {
+    id: stableRuntimeLogId(sourceKey),
+    time: createdAt,
+    level: 'info',
+    rawJson,
+    createdAt
+  }
+}
+
+function stableRuntimeLogSource(line: string, rawJson: string): string {
+  return line.length > runtimeLogMaxRawJsonChars
+    ? `${line.length}:${rawJson}`
+    : line
 }
 
 function stableRuntimeLogId(value: string): string {

@@ -1,9 +1,9 @@
 import type { NextFunction, Response } from 'express'
 
 import { getRequestLogger, sanitizeUrlForLog } from '../../shared/request-context.js'
-import { parseGatewayJsonBodyInWorker } from './openai-gateway-json-parser.js'
 import {
   createGatewayRequestBodyState,
+  extractGatewayJsonBodyMetadata,
   gatewayJsonBodyLargeWarningBytes,
   isGatewayJsonContentType,
   type GatewayRawBodyRequest
@@ -28,24 +28,34 @@ export async function captureGatewayRawBody(
       req.body = undefined
     } else {
       if (rawBody.length > gatewayJsonBodyLargeWarningBytes) {
+        const metadata = extractGatewayJsonBodyMetadata(rawBody)
         getRequestLogger().warn({
-          event: 'gateway_large_json_body_parse',
+          event: 'gateway_large_json_body_deferred',
           method: req.method,
           path: req.path,
           originalUrl: sanitizeUrlForLog(req.originalUrl),
           rawBodyBytes: rawBody.length,
-          jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
-        }, '网关大 JSON 请求体进入异步兼容解析')
-      }
-      try {
-        const parsedBody = rawBody.length > gatewayJsonBodyLargeWarningBytes
-          ? await parseLargeGatewayJsonBody(req, res, rawBody)
-          : JSON.parse(rawBody.toString('utf8')) as unknown
-        req.body = parsedBody
-        req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'parsed', parsedBody })
-      } catch {
-        req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'invalid_json' })
+          jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
+          model: metadata.model,
+          stream: metadata.stream
+        }, '网关大 JSON 请求体延迟到账号适配阶段按需解析')
+        req.gatewayRequestBody = createGatewayRequestBodyState({
+          rawBody,
+          contentType,
+          jsonParseStatus: 'deferred_large_json',
+          model: metadata.model,
+          stream: metadata.stream
+        })
         req.body = undefined
+      } else {
+        try {
+          const parsedBody = JSON.parse(rawBody.toString('utf8')) as unknown
+          req.body = parsedBody
+          req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'parsed', parsedBody })
+        } catch {
+          req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'invalid_json' })
+          req.body = undefined
+        }
       }
     }
 
@@ -55,18 +65,5 @@ export async function captureGatewayRawBody(
     next()
   } catch (error) {
     next(error)
-  }
-}
-
-async function parseLargeGatewayJsonBody(req: GatewayRawBodyRequest, res: Response, rawBody: Buffer): Promise<unknown> {
-  const abortController = new AbortController()
-  const abort = () => abortController.abort()
-  req.once('aborted', abort)
-  res.once('close', abort)
-  try {
-    return await parseGatewayJsonBodyInWorker(rawBody, undefined, abortController.signal)
-  } finally {
-    req.off('aborted', abort)
-    res.off('close', abort)
   }
 }

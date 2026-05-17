@@ -51,6 +51,18 @@ assert.deepEqual(defined(chatUsage), {
   cacheReadTokens: 400
 })
 
+const usageAfterLargePayload = parseOpenAIUsageFromJsonBuffer(jsonBuffer({
+  output: [{ content: 'x'.repeat(1024 * 1024) }],
+  usage: {
+    input_tokens: 321,
+    output_tokens: 45
+  }
+}))
+assert.deepEqual(defined(usageAfterLargePayload), {
+  inputTokens: 321,
+  outputTokens: 45
+})
+
 const responsesStreamInspection = inspectOpenAIStreamText([
   'event: response.output_text.delta',
   'data: {"type":"response.output_text.delta","delta":"hi"}',

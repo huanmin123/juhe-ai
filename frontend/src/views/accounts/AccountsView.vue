@@ -169,28 +169,38 @@ import AccountTestModal from './AccountTestModal.vue'
 import AccountTrafficMigrationModal from './AccountTrafficMigrationModal.vue'
 import {
   loadAccountErrorPolicyRules,
-  validateAccountErrorPolicyRules,
   type AccountErrorPolicyRuleForm
 } from './accountErrorPolicy'
-import { buildAccountCredentials, currentAccountCredentials } from './accountCredentials'
+import {
+  accountByIdMap,
+  bindGroupOptionsForAccount,
+  bindGroupTip as buildBindGroupTip,
+  buildProxyOptions,
+  buildTestModelOptions,
+  defaultGroupForProvider as selectDefaultGroupForProvider,
+  groupIdByAccountIdMap,
+  groupNameByAccountIdMap,
+  groupOptionsForProvider,
+  isManageableGroupForProvider,
+  providerNameByCodeMap,
+  proxyByIdMap,
+  targetSystemAccountLabel as buildTargetSystemAccountLabel,
+  trafficMigrationTargetOptions as buildTrafficMigrationTargetOptions
+} from './accountDerivedState'
 import { defaultAccountForm } from './accountFormDefaults'
 import {
   accountTypeDescription,
   accountTypeText,
   accountTypeTitle as buildAccountTypeTitle,
   asString,
-  formatServerDateTimeInput,
   isAuthorizedAccount,
-  isOwnerDisabledAuthorizedAccount,
   isTemporaryAccountStatus,
   parseDatePickerValue,
 } from './accountFormatters'
-import type { AccountMenuItem } from './accountActionTypes'
 import type { AccountFilters, AccountFormModel } from './accountFormTypes'
 import {
   ACCOUNT_PAGE_SIZE,
   FALLBACK_PROVIDER,
-  defaultTestModelOptions,
   schedulableOptions,
   statusOptions,
   typeOptions
@@ -204,6 +214,19 @@ import {
   normalizeAccountTableSorts
 } from './accountTableColumns'
 import { countActiveAccountFilters } from './accountListFilters'
+import {
+  accountMenuItems,
+  authorizedAccountTooltip,
+  canBatchManageAccount,
+  canDeleteAccount,
+  canEditAccount,
+  canManageOpenAIOAuth,
+  canRestoreException,
+  canTestAccount,
+  canUseAccountActions,
+  canUseAsTrafficMigrationTarget as canUseAsTrafficMigrationTargetWithGroupResolver
+} from './accountRules'
+import { buildAccountSavePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm } from './accountSavePayload'
 import { useAccountMobilePagination } from './useAccountMobilePagination'
 
 const loading = ref(false)
@@ -310,56 +333,19 @@ const accountScopeParams = computed(() => {
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
   const systemAccountId = accountScopeParams.value?.systemAccountId
-  if (!systemAccountId) return '请选择系统账户后再创建'
-  return systemAccounts.value.find((account) => account.id === systemAccountId)?.displayName || systemAccounts.value.find((account) => account.id === systemAccountId)?.username || systemAccountId
+  return buildTargetSystemAccountLabel(systemAccounts.value, systemAccountId)
 })
 
-const testModelOptions = computed(() => {
-  const models = providerModels.value.length ? providerModels.value.map((item) => item.model) : defaultTestModelOptions
-  return [...new Set(models)].map((model) => ({ label: model, value: model }))
-})
+const testModelOptions = computed(() => buildTestModelOptions(providerModels.value))
 const defaultTestModel = computed(() => testModelOptions.value[0]?.value || 'gpt-5.5')
 
-const accountById = computed(() => new Map(accounts.value.map((account) => [account.id, account])))
+const accountById = computed(() => accountByIdMap(accounts.value))
 const selectedAccountIdSet = computed(() => new Set(selectedAccountIds.value))
 const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIdSet.value.has(account.id)))
-const providerNameByCode = computed(() => new Map(availableProviders.value.map((provider) => [provider.code, provider.name])))
-const proxyByIdMap = computed(() => new Map(proxies.value.map((proxy) => [proxy.id, proxy])))
-const groupById = computed(() => new Map(groups.value.map((group) => [group.id, group])))
-const groupIdByAccountId = computed(() => {
-  const map = new Map<string, string>()
-  for (const group of groups.value) {
-    for (const accountId of group.accountIds ?? []) {
-      if (!map.has(accountId)) {
-        map.set(accountId, group.id)
-      }
-    }
-  }
-  return map
-})
-const groupNameByAccountId = computed(() => {
-  const map = new Map<string, string>()
-  for (const group of groups.value) {
-    for (const accountId of group.accountIds ?? []) {
-      if (!map.has(accountId)) {
-        map.set(accountId, group.name)
-      }
-    }
-  }
-  for (const account of accounts.value) {
-    if (account.boundGroupName) {
-      map.set(account.id, account.boundGroupName)
-      continue
-    }
-    if (account.boundGroupId) {
-      const boundGroupName = groupById.value.get(account.boundGroupId)?.name
-      if (boundGroupName) {
-        map.set(account.id, boundGroupName)
-      }
-    }
-  }
-  return map
-})
+const providerNameByCode = computed(() => providerNameByCodeMap(availableProviders.value))
+const proxyByIdMapRef = computed(() => proxyByIdMap(proxies.value))
+const groupIdByAccountId = computed(() => groupIdByAccountIdMap(groups.value))
+const groupNameByAccountId = computed(() => groupNameByAccountIdMap(accounts.value, groups.value))
 
 const rowSelection = computed(() => ({
   columnWidth: accountSelectionColumnWidth,
@@ -381,38 +367,12 @@ function toggleAccountSelection(account: AccountSummary) {
     : [...selectedAccountIds.value, account.id]
 }
 
-const proxyOptions = computed(() => proxies.value.map((proxy) => ({
-  label: `${proxy.name}（${proxy.type}${proxy.enabled === false ? '，已停用' : ''}）`,
-  value: proxy.id,
-  disabled: proxy.enabled === false
-})))
-const proxyById = (proxyProfileId?: string) => proxyProfileId ? proxyByIdMap.value.get(proxyProfileId) : undefined
-const providerGroups = computed(() => groups.value.filter((group) => canManageGroupAccounts(group) && (!form.providerCode || group.providerCode === form.providerCode)))
-const groupOptions = computed(() => providerGroups.value.map((group) => ({ label: group.name, value: group.id })))
-const bindGroupOptions = computed(() => {
-  const account = bindingAccount.value
-  if (!account) return []
-  return groups.value
-    .filter((group) => canManageGroupAccounts(group) && group.providerCode === account.providerCode)
-    .map((group) => ({ label: group.name, value: group.id }))
-})
-const bindGroupTip = computed(() => {
-  const ownerName = bindingAccount.value?.ownerSystemAccountName || '其他用户'
-  return `授权账户来自 ${ownerName}。绑定到你的同供应商分组后，对应 API Key 才能调度使用。`
-})
-const trafficMigrationTargetOptions = computed(() => {
-  const source = trafficMigrationSourceAccount.value
-  if (!source) return []
-  return accounts.value
-    .filter((account) => canUseAsTrafficMigrationTarget(source, account))
-    .map((account) => {
-      const groupName = groupNameForAccount(account.id)
-      return {
-        label: groupName ? `${account.name}（${groupName}）` : account.name,
-        value: account.id
-      }
-    })
-})
+const proxyOptions = computed(() => buildProxyOptions(proxies.value))
+const proxyById = (proxyProfileId?: string) => proxyProfileId ? proxyByIdMapRef.value.get(proxyProfileId) : undefined
+const groupOptions = computed(() => groupOptionsForProvider(groups.value, form.providerCode))
+const bindGroupOptions = computed(() => bindGroupOptionsForAccount(groups.value, bindingAccount.value))
+const bindGroupTip = computed(() => buildBindGroupTip(bindingAccount.value))
+const trafficMigrationTargetOptions = computed(() => buildTrafficMigrationTargetOptions(accounts.value, trafficMigrationSourceAccount.value, groupIdForAccount, groupNameForAccount))
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
 const accountTypeChoices = computed(() => (selectedProvider.value?.accountTypes ?? []).map((type) => ({
@@ -466,60 +426,8 @@ function groupNameForAccount(accountId: string) {
   return groupNameByAccountId.value.get(accountId)
 }
 
-function authorizedAccountTooltip(account: AccountSummary): string {
-  const ownerName = account.ownerSystemAccountName || '其他用户'
-  if (isOwnerDisabledAuthorizedAccount(account)) {
-    return `授权自 ${ownerName}。账户所有者已停用该账户，你暂时无法启用或调用；请联系对方启用后再使用。`
-  }
-  return `授权自 ${ownerName}，仅可使用`
-}
-
-function hasAccountEditPermission(account: AccountSummary): boolean {
-  return account.permissions?.canEdit !== false
-}
-
-function canEditAccount(account: AccountSummary): boolean {
-  return hasAccountEditPermission(account)
-}
-
-function canDeleteAccount(account: AccountSummary): boolean {
-  return account.permissions?.canDelete !== false
-}
-
-function canUseAccountActions(account: AccountSummary): boolean {
-  return account.status !== 'error' && canEditAccount(account) && account.permissions?.canViewCredentials !== false
-}
-
-function canBatchManageAccount(account: AccountSummary): boolean {
-  return canEditAccount(account) && account.status !== 'error'
-}
-
-function canRestoreException(account: AccountSummary): boolean {
-  return account.status === 'error' && hasAccountEditPermission(account)
-}
-
-function canTestAccount(account: AccountSummary): boolean {
-  return account.status !== 'disabled' && account.permissions?.canUse !== false
-}
-
-function canManageGroupAccounts(group: GroupSummary): boolean {
-  return group.permissions?.canManageAccounts !== false && group.accessType !== 'authorized'
-}
-
 function canUseAsTrafficMigrationTarget(source: AccountSummary, target: AccountSummary): boolean {
-  if (target.id === source.id) return false
-  if (target.providerCode !== source.providerCode) return false
-  if (groupIdForAccount(target.id) !== groupIdForAccount(source.id)) return false
-  if (isAuthorizedAccount(source)) {
-    return target.permissions?.canUse !== false && target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
-  }
-  if (!canEditAccount(target)) return false
-  if (target.ownerSystemAccountId !== source.ownerSystemAccountId) return false
-  return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
-}
-
-function canManageOpenAIOAuth(account: AccountSummary): boolean {
-  return canUseAccountActions(account) && account.providerCode === 'openai' && account.type === 'oauth'
+  return canUseAsTrafficMigrationTargetWithGroupResolver(source, target, groupIdForAccount)
 }
 
 async function handleAccountSortChange(sorts: ResponsiveDataListSort[]) {
@@ -529,8 +437,7 @@ async function handleAccountSortChange(sorts: ResponsiveDataListSort[]) {
 }
 
 function defaultGroupForProvider(providerCode: string) {
-  const candidates = groups.value.filter((group) => group.providerCode === providerCode && canManageGroupAccounts(group))
-  return candidates.find((group) => group.isDefault) ?? candidates[0]
+  return selectDefaultGroupForProvider(groups.value, providerCode)
 }
 
 function ensureDefaultGroupSelected(providerCode = form.providerCode) {
@@ -539,85 +446,10 @@ function ensureDefaultGroupSelected(providerCode = form.providerCode) {
     return
   }
   const currentGroup = groups.value.find((group) => group.id === form.groupId)
-  if (currentGroup?.providerCode === providerCode && canManageGroupAccounts(currentGroup)) {
+  if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode)) {
     return
   }
   form.groupId = defaultGroupForProvider(providerCode)?.id
-}
-
-function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
-  const items: AccountMenuItem[] = []
-  if (isAuthorizedAccount(account)) {
-    if (account.status === 'error') {
-      return items.map(normalizeAccountMenuItem)
-    }
-    if (account.boundGroupId && account.localStatus && account.localStatus !== 'active') {
-      items.push({ key: 'restore-normal', label: '恢复正常' })
-    }
-    if (account.status === 'active') {
-      items.push({
-        key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
-        label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'
-      })
-      items.push({
-        key: account.fallbackEnabled ? 'fallback-off' : 'fallback-on',
-        label: account.fallbackEnabled ? '取消降级备用' : '降级备用'
-      })
-      items.push({ key: 'migrate-traffic', label: '迁移流量' })
-    }
-    return items.map(normalizeAccountMenuItem)
-  }
-  if (canTestAccount(account)) {
-    items.push({ key: 'test', label: '测试' })
-  }
-  if (account.status === 'error') {
-    if (canRestoreException(account)) {
-      items.push({ key: 'restore-normal', label: '恢复异常' })
-    }
-    return items.map(normalizeAccountMenuItem)
-  }
-  if (canUseAccountActions(account)) {
-    if (canManageOpenAIOAuth(account)) {
-      items.push({ key: 'refresh-oauth-token', label: '刷新令牌' })
-      items.push({ key: 'reauthorize-oauth', label: '重新授权' })
-    }
-    if (isTemporaryAccountStatus(account)) {
-      items.push({ key: 'restore-normal', label: '恢复正常' })
-    }
-    if (account.status === 'active') {
-      items.push({
-        key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
-        label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'
-      })
-      items.push({
-        key: account.fallbackEnabled ? 'fallback-off' : 'fallback-on',
-        label: account.fallbackEnabled ? '取消降级备用' : '降级备用'
-      })
-    }
-    items.push({ key: 'migrate-traffic', label: '迁移流量' })
-    items.push({
-      key: 'toggle-status',
-      label: account.status === 'disabled' ? '启用账户' : '停用账户',
-      danger: account.status !== 'disabled',
-      icon: account.status === 'disabled' ? 'enable' : 'pause',
-      tone: account.status === 'disabled' ? 'success' : 'warning'
-    })
-  }
-  return items.map(normalizeAccountMenuItem)
-}
-
-function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {
-  if (item.icon || item.tone) return item
-  if (item.key === 'test') return { ...item, icon: 'test', tone: 'info' }
-  if (item.key === 'refresh-oauth-token') return { ...item, icon: 'refresh', tone: 'info' }
-  if (item.key === 'reauthorize-oauth') return { ...item, icon: 'reset', tone: 'warning' }
-  if (item.key === 'restore-normal') return { ...item, icon: 'restore', tone: 'success' }
-  if (item.key === 'super-priority-on') return { ...item, icon: 'superPriority', tone: 'warning' }
-  if (item.key === 'super-priority-off') return { ...item, icon: 'superPriority', tone: 'default' }
-  if (item.key === 'fallback-on') return { ...item, icon: 'fallback', tone: 'purple' }
-  if (item.key === 'fallback-off') return { ...item, icon: 'fallback', tone: 'default' }
-  if (item.key === 'migrate-traffic') return { ...item, icon: 'migrate', tone: 'purple' }
-  return item
 }
 
 async function copyText(value: string) {
@@ -845,8 +677,7 @@ function closeReauthorizeModal() {
 }
 
 function defaultBindGroupForAccount(account: AccountSummary): GroupSummary | undefined {
-  const candidates = groups.value.filter((group) => canManageGroupAccounts(group) && group.providerCode === account.providerCode)
-  return candidates.find((group) => group.isDefault) ?? candidates[0]
+  return defaultGroupForProvider(account.providerCode)
 }
 
 async function saveBindGroup() {
@@ -904,78 +735,24 @@ async function saveTrafficMigration() {
   }
 }
 
-function buildCredentials() {
-  return buildAccountCredentials({
-    currentCredentials: currentAccountCredentials(accounts.value, editingId.value),
-    errorPolicyRules: accountErrorPolicyRules.value,
-    form
-  })
-}
-
 const saveAccount = submitAction('accounts.save', async () => {
-  if (!form.providerCode) {
-    message.warning('请先选择供应商')
-    return
-  }
-  if (!form.type) {
-    message.warning('请先选择账户类型')
-    return
-  }
-  if ((editingId.value || form.type === 'api_key') && !form.name.trim()) {
-    message.warning('请填写账户名称')
-    return
-  }
-  if (!form.groupId) {
-    message.warning('请选择归属分组')
-    return
-  }
-  if (form.type === 'api_key' && !form.apiKey.trim()) {
-    message.warning('请填写 API Key')
-    return
-  }
-  if (form.type === 'api_key' && !form.baseUrl.trim()) {
-    message.warning('请填写 Base URL')
-    return
-  }
-  if (editingId.value && form.type === 'oauth' && !form.accessToken.trim() && !form.refreshToken.trim()) {
-    message.warning('请至少填写 Access Token 或 Refresh Token')
-    return
-  }
-  if (!editingId.value && form.type === 'oauth' && form.providerCode !== 'openai') {
-    message.warning('当前只支持创建 OpenAI OAuth 账户')
-    return
-  }
-  if (!editingId.value && form.type === 'oauth' && form.oauthMode === 'manual' && !authResult.value?.sessionId) {
-    message.warning('请先生成授权链接')
-    return
-  }
-  if (!editingId.value && form.type === 'oauth' && form.oauthMode === 'manual' && !form.callbackUrl.trim()) {
-    message.warning('请粘贴回调 URL')
-    return
-  }
-  if (!editingId.value && form.type === 'oauth' && form.oauthMode === 'refresh_token' && !form.refreshToken.trim()) {
-    message.warning('请填写 Refresh Token')
-    return
-  }
-  const errorPolicyValidation = validateAccountErrorPolicyRules(accountErrorPolicyRules.value)
-  if (!errorPolicyValidation.valid) {
-    message.warning(errorPolicyValidation.message || '错误处理策略配置不完整')
+  const validationMessage = validateAccountSaveForm({
+    editingId: editingId.value,
+    form,
+    hasAuthSession: Boolean(authResult.value?.sessionId),
+    errorPolicyRules: accountErrorPolicyRules.value
+  })
+  if (validationMessage) {
+    message.warning(validationMessage)
     return
   }
 
-  const payload = {
-    providerCode: form.providerCode,
-    name: form.name.trim() || undefined,
-    type: form.type,
-    credentials: buildCredentials(),
-    status: form.status,
-    concurrencyLimit: form.concurrencyLimit,
-    priority: form.priority,
-    proxyProfileId: form.proxyProfileId,
-    accountExpiresAt: formatServerDateTimeInput(form.accountExpiresAt),
-    groupId: form.groupId,
-    notes: form.notes
-  }
+  const payload = buildAccountSavePayload({
+    accounts: accounts.value,
+    editingId: editingId.value,
+    form,
+    errorPolicyRules: accountErrorPolicyRules.value
+  })
 
   try {
     if (editingId.value) {
@@ -1042,16 +819,12 @@ function openReauthorizeAuthUrl() {
 }
 
 async function createOAuthAccountFromUnifiedForm() {
-  const commonPayload = {
-    name: form.name.trim() || undefined,
-    groupId: form.groupId,
-    concurrencyLimit: form.concurrencyLimit,
-    priority: form.priority,
-    proxyProfileId: form.proxyProfileId,
-    accountExpiresAt: formatServerDateTimeInput(form.accountExpiresAt),
-    credentialsPatch: { error_handling_rules: buildCredentials().error_handling_rules },
-    notes: form.notes || undefined
-  }
+  const commonPayload = buildOAuthCreateCommonPayload({
+    accounts: accounts.value,
+    editingId: editingId.value,
+    form,
+    errorPolicyRules: accountErrorPolicyRules.value
+  })
 
   if (form.oauthMode === 'manual') {
     const payload = {

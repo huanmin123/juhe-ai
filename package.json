@@ -13,6 +13,7 @@
     "typecheck": "pnpm -r typecheck",
     "lint": "pnpm -r lint",
     "test:smoke": "pnpm --filter juhe-ai-backend test:smoke",
+    "test:perf": "pnpm --filter juhe-ai-backend test:perf",
     "test:scope": "pnpm --filter juhe-ai-backend test:scope",
     "test:proxy-negative": "pnpm --filter juhe-ai-backend test:proxy-negative",
     "test:large-response": "pnpm --filter juhe-ai-backend test:large-response",

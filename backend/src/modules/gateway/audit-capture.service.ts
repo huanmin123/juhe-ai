@@ -275,17 +275,20 @@ export class AuditCaptureContext {
   private addPayload(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): void {
     if (!this.enabled) return
     if (this.overflowed) return
+    const nextApproximateBytes = this.approximateBytes + estimatePayloadBytes(payload)
+    if (nextApproximateBytes > this.activeCaptureMaxBytes) {
+      this.overflowed = true
+      this.payloads.length = 0
+      this.approximateBytes = nextApproximateBytes
+      return
+    }
     this.payloads.push({
       ...payload,
       id: `audpay_${Date.now()}_${randomUUID()}`,
       sequenceIndex: this.sequenceIndex,
       createdAt: nowIso()
     })
-    this.approximateBytes += estimatePayloadBytes(payload)
-    if (this.approximateBytes > this.activeCaptureMaxBytes) {
-      this.overflowed = true
-      this.payloads.length = 0
-    }
+    this.approximateBytes = nextApproximateBytes
     this.sequenceIndex += 1
   }
 }

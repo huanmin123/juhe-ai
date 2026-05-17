@@ -205,12 +205,7 @@ export function emptyUsage(): ParsedUsage {
 
 export function parseOpenAIUsageFromJsonBuffer(responseBody: Buffer): ParsedUsage {
   if (responseBody.length === 0) return emptyUsage()
-  try {
-    const payload = JSON.parse(responseBody.toString('utf8')) as Record<string, unknown>
-    return extractUsage(payload.usage)
-  } catch {
-    return emptyUsage()
-  }
+  return parseOpenAIUsageFromJsonTextFragment(responseBody.toString('utf8'))
 }
 
 export function parseOpenAIUsageFromJsonTextFragment(text?: string): ParsedUsage {

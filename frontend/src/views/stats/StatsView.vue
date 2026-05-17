@@ -99,16 +99,16 @@
 
 <script setup lang="ts">
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from 'vue'
-import type { Ref, ShallowRef } from 'vue'
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
-import dayjs, { type Dayjs } from 'dayjs'
+import type { Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import { disposeChart, ensureChart, resizeEcharts, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { init, type ECharts } from '@/lib/echarts'
+import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import type { SystemAccountSummary, SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from './StatsChartCard.vue'
@@ -124,10 +124,7 @@ type StatsPageState = {
   }
   selectedSystemAccountId: string
 }
-const defaultDateRange = (): [Dayjs, Dayjs] => {
-  const today = dayjs().startOf('day')
-  return [today, today]
-}
+const defaultDateRange = todayDateRange
 const defaultStatsPageState = (): StatsPageState => {
   return {
     selectedSystemAccountId: allSystemAccountsValue
@@ -306,27 +303,9 @@ function renderSystemMetricsChart() {
   chart.setOption(buildSystemMetricsOption(systemMetrics.value.hourlyTrend), { notMerge: true })
 }
 
-function ensureChart(elementRef: Ref<HTMLDivElement | undefined>, chartRef: ShallowRef<ECharts | undefined>) {
-  const element = elementRef.value
-  if (!element) return undefined
-  if (!chartRef.value || chartRef.value.isDisposed()) {
-    chartRef.value = init(element)
-  }
-  return chartRef.value
-}
-
-function disposeChart(chartRef: ShallowRef<ECharts | undefined>) {
-  if (chartRef.value && !chartRef.value.isDisposed()) {
-    chartRef.value.dispose()
-  }
-  chartRef.value = undefined
-}
-
 function resizeCharts() {
   if (!pageActive.value) return
-  for (const chart of [usageTrendChart.value, modelDistributionChart.value, errorChart.value, systemMetricsChart.value]) {
-    if (chart && !chart.isDisposed()) chart.resize()
-  }
+  resizeEcharts([usageTrendChart.value, modelDistributionChart.value, errorChart.value, systemMetricsChart.value])
 }
 
 function addResizeListener() {
@@ -356,21 +335,11 @@ function selectedRangeParams(): { startDate?: string; endDate?: string } {
 }
 
 function disabledDate(current: Dayjs) {
-  if (!current) return false
-  const today = dayjs().startOf('day')
-  if (current.isAfter(today, 'day')) return true
-  if (current.isBefore(today.subtract(MAX_RANGE_DAYS - 1, 'day'), 'day')) return true
-  const anchor = calendarRange.value[0] ?? calendarRange.value[1]
-  if (!anchor) return false
-  return Math.abs(current.startOf('day').diff(anchor.startOf('day'), 'day')) > MAX_RANGE_DAYS - 1
+  return isRecentWindowDateDisabled(current, calendarRange.value, MAX_RANGE_DAYS)
 }
 
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
-  const [defaultStart, defaultEnd] = defaultDateRange()
-  const start = parseDateKey(value?.startDate) ?? defaultStart
-  const end = parseDateKey(value?.endDate) ?? defaultEnd
-  const [normalizedStart, normalizedEnd] = normalizedDateRange([start, end])
-  return [dayjs(normalizedStart), dayjs(normalizedEnd)]
+  return parseDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
 
 function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: string }) {
@@ -381,30 +350,7 @@ function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: strin
 }
 
 function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
-  const [defaultStart, defaultEnd] = defaultDateRange()
-  let start = (value[0] ?? defaultStart).startOf('day')
-  let end = (value[1] ?? defaultEnd).startOf('day')
-  if (start.isAfter(end, 'day')) start = end
-  if (end.diff(start, 'day') > MAX_RANGE_DAYS - 1) {
-    start = end.subtract(MAX_RANGE_DAYS - 1, 'day')
-  }
-  return [formatDateKey(start), formatDateKey(end)]
-}
-
-function parseDateKey(value?: string): Dayjs | undefined {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined
-  const [year, month, day] = value.split('-').map((part) => Number(part))
-  const parsed = dayjs(new Date(year, month - 1, day)).startOf('day')
-  return parsed.year() === year && parsed.month() === month - 1 && parsed.date() === day ? parsed : undefined
-}
-
-function formatDateKey(value: Dayjs): string {
-  return value.format('YYYY-MM-DD')
-}
-
-function formatDateLabel(value: string) {
-  const parsed = parseDateKey(value)
-  return parsed ? parsed.format('M月D日') : value
+  return normalizeDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })

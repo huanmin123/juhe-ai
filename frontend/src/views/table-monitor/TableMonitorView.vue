@@ -137,7 +137,7 @@ import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import DeferredRender from '@/components/DeferredRender.vue'
-import { init, type ECharts } from '@/lib/echarts'
+import { disposeChart, ensureChartFromElement, resizeEcharts, type ECharts } from '@/composables/useEcharts'
 import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
 import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverview, TableStorageSnapshotSummary } from '@/types/domain'
 
@@ -312,7 +312,7 @@ function renderHistoryChart(role: MonitoredDatabaseRole) {
       disposeChart(historyCharts[role])
       return
     }
-    const chart = ensureChart(historyChartElements[role], historyCharts[role])
+    const chart = ensureChartFromElement(historyChartElements[role], historyCharts[role])
     if (!chart) return
     chart.setOption({
       tooltip: { trigger: 'axis' },
@@ -354,21 +354,6 @@ function renderHistoryChart(role: MonitoredDatabaseRole) {
       ]
     }, { notMerge: true })
   })
-}
-
-function ensureChart(element: HTMLDivElement | undefined, chartRef: ShallowRef<ECharts | undefined>) {
-  if (!element) return undefined
-  if (!chartRef.value || chartRef.value.isDisposed()) {
-    chartRef.value = init(element)
-  }
-  return chartRef.value
-}
-
-function disposeChart(chartRef: ShallowRef<ECharts | undefined>) {
-  if (chartRef.value && !chartRef.value.isDisposed()) {
-    chartRef.value.dispose()
-  }
-  chartRef.value = undefined
 }
 
 function tableKey(row: TableStorageSnapshotSummary) {
@@ -482,12 +467,7 @@ onBeforeUnmount(() => {
 
 function resizeHistoryChart() {
   if (!pageActive.value) return
-  for (const role of databaseSummaryRoles) {
-    const chart = historyCharts[role].value
-    if (chart && !chart.isDisposed()) {
-      chart.resize()
-    }
-  }
+  resizeEcharts(databaseSummaryRoles.map((role) => historyCharts[role].value))
 }
 </script>
 

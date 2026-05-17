@@ -160,9 +160,116 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
   return {
     ...input,
     id: input.id ?? `usage_${Date.now()}_${randomUUID()}`,
+    requestSnapshot: sanitizeUsageRecordSnapshot(input.requestSnapshot),
+    responseSnapshot: sanitizeUsageRecordSnapshot(input.responseSnapshot),
     createdAt: input.createdAt ?? nowIso()
   }
 }
+
+function sanitizeUsageRecordSnapshot(value: unknown): unknown {
+  if (value === undefined || value === null) {
+    return undefined
+  }
+  return sanitizeSnapshotValue(value, {
+    depth: 0,
+    bytes: 0,
+    truncated: false,
+    seen: new WeakSet<object>()
+  })
+}
+
+function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext): unknown {
+  if (context.bytes >= usageSnapshotMaxBytes) {
+    context.truncated = true
+    return '[truncated]'
+  }
+  if (typeof value === 'string') {
+    return sanitizeSnapshotString(value, context)
+  }
+  if (typeof value === 'number' || typeof value === 'boolean' || value === null || value === undefined) {
+    context.bytes += 8
+    return value
+  }
+  if (Buffer.isBuffer(value)) {
+    context.bytes += Math.min(value.byteLength, usageSnapshotMaxStringBytes)
+    return {
+      _buffer: true,
+      bytes: value.byteLength,
+      truncated: value.byteLength > usageSnapshotMaxStringBytes
+    }
+  }
+  if (value instanceof Date) {
+    return sanitizeSnapshotString(value.toISOString(), context)
+  }
+  if (typeof value !== 'object') {
+    return sanitizeSnapshotString(String(value), context)
+  }
+  if (context.seen.has(value)) {
+    return '[circular]'
+  }
+  if (context.depth >= usageSnapshotMaxDepth) {
+    context.truncated = true
+    return '[depth_truncated]'
+  }
+  context.seen.add(value)
+  if (Array.isArray(value)) {
+    const items: unknown[] = []
+    for (let index = 0; index < value.length && index < usageSnapshotMaxArrayItems; index += 1) {
+      context.depth += 1
+      items.push(sanitizeSnapshotValue(value[index], context))
+      context.depth -= 1
+      if (context.bytes >= usageSnapshotMaxBytes) break
+    }
+    if (value.length > items.length) {
+      context.truncated = true
+      items.push(`[${value.length - items.length} items truncated]`)
+    }
+    return items
+  }
+  const output: Record<string, unknown> = {}
+  const entries = Object.entries(value as Record<string, unknown>)
+  for (let index = 0; index < entries.length && index < usageSnapshotMaxObjectKeys; index += 1) {
+    const [key, item] = entries[index]
+    context.bytes += Buffer.byteLength(key, 'utf8') + 4
+    context.depth += 1
+    output[key] = sanitizeSnapshotValue(item, context)
+    context.depth -= 1
+    if (context.bytes >= usageSnapshotMaxBytes) break
+  }
+  if (entries.length > Object.keys(output).length || context.truncated) {
+    output._truncated = true
+  }
+  return output
+}
+
+function sanitizeSnapshotString(value: string, context: SnapshotSanitizeContext): string {
+  const bytes = Buffer.byteLength(value, 'utf8')
+  const remaining = Math.max(0, usageSnapshotMaxBytes - context.bytes)
+  const limit = Math.min(usageSnapshotMaxStringBytes, remaining)
+  if (bytes <= limit) {
+    context.bytes += bytes
+    return value
+  }
+  context.truncated = true
+  const suffix = `...[truncated ${bytes - limit} bytes]`
+  const prefixBytes = Math.max(0, limit - Buffer.byteLength(suffix, 'utf8'))
+  const truncated = value.slice(0, prefixBytes)
+  context.bytes += Buffer.byteLength(truncated, 'utf8') + Buffer.byteLength(suffix, 'utf8')
+  return `${truncated}${suffix}`
+}
+
+interface SnapshotSanitizeContext {
+  depth: number
+  bytes: number
+  truncated: boolean
+  seen: WeakSet<object>
+}
+
+const usageSnapshotMaxBytes = 64 * 1024
+const usageSnapshotMaxStringBytes = 16 * 1024
+const usageSnapshotMaxArrayItems = 50
+const usageSnapshotMaxObjectKeys = 80
+const usageSnapshotMaxDepth = 6
 
 function normalizeMaxBatches(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY

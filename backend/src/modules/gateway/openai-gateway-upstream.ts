@@ -10,7 +10,7 @@ import {
   isOpenAIOAuthCodexCompactRequest,
   type OpenAIOAuthCodexIdentity
 } from './openai-oauth-codex-adapter.js'
-import { type GatewayRawBodyRequest } from './openai-gateway-request-body.js'
+import { getGatewayRequestBodyState, type GatewayRawBodyRequest } from './openai-gateway-request-body.js'
 import { requestStream } from './openai-gateway-usage.js'
 
 export interface GatewayUpstreamResponse {
@@ -191,6 +191,10 @@ export function buildUpstreamRequestBody(req: Request, passthroughEnabled: boole
   }
   const rawBody = (req as GatewayRawBodyRequest).rawBody
   if (!passthroughEnabled) {
+    const bodyState = getGatewayRequestBodyState(req)
+    if (bodyState?.jsonParseStatus === 'deferred_large_json' && rawBody && rawBody.length > 0) {
+      return rawBody
+    }
     return JSON.stringify(req.body ?? {})
   }
   if (rawBody && rawBody.length > 0) {

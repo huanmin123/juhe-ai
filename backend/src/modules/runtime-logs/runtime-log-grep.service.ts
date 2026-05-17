@@ -538,6 +538,10 @@ function lineMatchesKeywords(line: string, normalizedKeywords: string[]): boolea
 }
 
 function isRuntimeLogSearchRequestLine(line: string): boolean {
+  if (line.length > maxLineLength) {
+    return isRuntimeLogSearchPathText(line)
+  }
+
   try {
     const parsed = JSON.parse(line) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return false
@@ -557,6 +561,11 @@ function isRuntimeLogSearchPath(value: string | undefined): boolean {
     || Boolean(path?.startsWith('/__aisys__/api/runtime-logs/'))
     || path === '/api/runtime-logs'
     || Boolean(path?.startsWith('/api/runtime-logs/'))
+}
+
+function isRuntimeLogSearchPathText(value: string): boolean {
+  return value.includes('/__aisys__/api/runtime-logs')
+    || value.includes('/api/runtime-logs')
 }
 
 function compareGrepItems(left: OrderedRuntimeLogGrepItem, right: OrderedRuntimeLogGrepItem): number {
@@ -608,6 +617,10 @@ function trimLine(value: string, length = maxLineLength): string {
 
 function runtimeLogFieldsFromLine(line: string): Pick<RuntimeLogGrepItem, 'time' | 'level' | 'traceId' | 'event' | 'message' | 'errorMessage' | 'rawJson' | 'line'> {
   const rawJson = trimLine(line)
+  if (line.length > maxLineLength) {
+    return fallbackRuntimeLogFields(rawJson)
+  }
+
   try {
     const parsed = JSON.parse(line) as unknown
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {

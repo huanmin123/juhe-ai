@@ -1,5 +1,6 @@
 import type { EChartsOption } from 'echarts'
 
+import { formatDateShortLabel } from '@/shared/dateRange'
 import type { AccountUsageStatsOverview, AccountUsageStatsRow } from '@/types/domain'
 import { axisNumberLabel, formatCost, formatInteger } from '@/views/stats/statsFormatters'
 import { chartColors as aiPerformanceChartColors } from '@/views/ai-performance/aiPerformanceChartOptions'
@@ -26,7 +27,7 @@ export function buildAccountUsageTrendOption(overview: AccountUsageStatsOverview
     xAxis: {
       type: 'category',
       boundaryGap: false,
-      data: dates.map(formatDateLabel),
+      data: dates.map(formatDateShortLabel),
       axisLabel: { color: '#64748b' },
       axisLine: { lineStyle: { color: '#d9e2ef' } }
     },
@@ -133,11 +134,6 @@ function numberFromTooltip(value: unknown): number | undefined {
     return numberFromTooltip(value[value.length - 1])
   }
   return undefined
-}
-
-function formatDateLabel(value: string) {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
-  return match ? `${match[2]}-${match[3]}` : value
 }
 
 function escapeHtml(value: unknown) {

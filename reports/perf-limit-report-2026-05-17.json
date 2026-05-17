@@ -1,0 +1,796 @@
+{
+  "generatedAt": "2026-05-17T01:08:14.363Z",
+  "note": "本结果来自本机模拟上游和临时 SQLite 数据库，用于容量参考；真实部署容量需要在目标机器和目标网络下复测。",
+  "config": {
+    "scenarios": [
+      "models",
+      "responses",
+      "chat"
+    ],
+    "concurrencyLevels": [
+      50,
+      100,
+      200,
+      400,
+      800
+    ],
+    "durationSeconds": 12,
+    "warmupSeconds": 3,
+    "requestTimeoutMs": 10000,
+    "upstreamLatencyMs": 20,
+    "upstreamStreamChunks": 4,
+    "upstreamStreamChunkIntervalMs": 10,
+    "upstreamBodyBytes": 512,
+    "upstreamErrorRate": 0,
+    "accountCount": 8,
+    "accountConcurrencyLimit": 10000,
+    "model": "gpt-5.4-mini",
+    "promptBytes": 64,
+    "p95TargetMs": 1000,
+    "reportPath": "F:\\sub2api-lite\\reports\\perf-limit-report-2026-05-17.json"
+  },
+  "seeded": {
+    "apiKeyId": "key_1778979859190_5fac82f4",
+    "groupId": "grp_1778979858785_66a41446",
+    "accountCount": 8
+  },
+  "estimatedStableCapacity": {
+    "scenario": "models",
+    "concurrency": 200,
+    "successQps": 511.6,
+    "p95LatencyMs": 913.113,
+    "p99LatencyMs": 973.688,
+    "errorRate": 0,
+    "condition": "errorRate <= 1% 且 p95 <= 1000ms"
+  },
+  "results": [
+    {
+      "scenario": "models",
+      "concurrency": 50,
+      "durationSeconds": 12.028,
+      "warmupSeconds": 3,
+      "totalRequests": 5033,
+      "successRequests": 5033,
+      "failedRequests": 0,
+      "qps": 418.44,
+      "successQps": 418.44,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 36.294,
+        "avg": 119.354,
+        "p50": 93.214,
+        "p90": 228.105,
+        "p95": 264.323,
+        "p99": 369.224,
+        "max": 488.795
+      },
+      "eventLoopDelayMs": {
+        "mean": 26.305,
+        "p95": 61.735,
+        "p99": 94.437,
+        "max": 239.862
+      },
+      "cpu": {
+        "userMs": 3141,
+        "systemMs": 469,
+        "totalMs": 3610,
+        "perRequestMs": 0.7173
+      },
+      "memory": {
+        "rssStartMb": 211.3,
+        "rssEndMb": 266.01,
+        "heapUsedStartMb": 85.67,
+        "heapUsedEndMb": 68.75
+      },
+      "statusCounts": {
+        "200": 5033
+      },
+      "errorCounts": {},
+      "responseBytes": 32090408,
+      "usageRecordsDelta": 5033,
+      "auditLogsDelta": 470,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 0
+    },
+    {
+      "scenario": "models",
+      "concurrency": 100,
+      "durationSeconds": 12.061,
+      "warmupSeconds": 3,
+      "totalRequests": 5742,
+      "successRequests": 5742,
+      "failedRequests": 0,
+      "qps": 476.06,
+      "successQps": 476.06,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 61.712,
+        "avg": 209.481,
+        "p50": 165.108,
+        "p90": 389.885,
+        "p95": 445.262,
+        "p99": 527.73,
+        "max": 641.7
+      },
+      "eventLoopDelayMs": {
+        "mean": 41.685,
+        "p95": 107.479,
+        "p99": 172.229,
+        "max": 209.191
+      },
+      "cpu": {
+        "userMs": 2734,
+        "systemMs": 390,
+        "totalMs": 3124,
+        "perRequestMs": 0.5441
+      },
+      "memory": {
+        "rssStartMb": 268.96,
+        "rssEndMb": 290.13,
+        "heapUsedStartMb": 52.65,
+        "heapUsedEndMb": 93.58
+      },
+      "statusCounts": {
+        "200": 5742
+      },
+      "errorCounts": {},
+      "responseBytes": 36610992,
+      "usageRecordsDelta": 5742,
+      "auditLogsDelta": 574,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 0
+    },
+    {
+      "scenario": "models",
+      "concurrency": 200,
+      "durationSeconds": 12.177,
+      "warmupSeconds": 3,
+      "totalRequests": 6230,
+      "successRequests": 6230,
+      "failedRequests": 0,
+      "qps": 511.6,
+      "successQps": 511.6,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 153.785,
+        "avg": 389.12,
+        "p50": 310.789,
+        "p90": 725.592,
+        "p95": 913.113,
+        "p99": 973.688,
+        "max": 1077.472
+      },
+      "eventLoopDelayMs": {
+        "mean": 61.427,
+        "p95": 158.859,
+        "p99": 263.062,
+        "max": 348.389
+      },
+      "cpu": {
+        "userMs": 2125,
+        "systemMs": 297,
+        "totalMs": 2422,
+        "perRequestMs": 0.3888
+      },
+      "memory": {
+        "rssStartMb": 302.63,
+        "rssEndMb": 309.02,
+        "heapUsedStartMb": 48.13,
+        "heapUsedEndMb": 66.52
+      },
+      "statusCounts": {
+        "200": 6230
+      },
+      "errorCounts": {},
+      "responseBytes": 39722480,
+      "usageRecordsDelta": 6230,
+      "auditLogsDelta": 615,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 0
+    },
+    {
+      "scenario": "models",
+      "concurrency": 400,
+      "durationSeconds": 12.341,
+      "warmupSeconds": 3,
+      "totalRequests": 6333,
+      "successRequests": 6333,
+      "failedRequests": 0,
+      "qps": 513.17,
+      "successQps": 513.17,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 343.682,
+        "avg": 771.431,
+        "p50": 657.333,
+        "p90": 1298.357,
+        "p95": 1475.908,
+        "p99": 1673.721,
+        "max": 1726.116
+      },
+      "eventLoopDelayMs": {
+        "mean": 67.994,
+        "p95": 231.866,
+        "p99": 361.759,
+        "max": 435.683
+      },
+      "cpu": {
+        "userMs": 2391,
+        "systemMs": 484,
+        "totalMs": 2875,
+        "perRequestMs": 0.454
+      },
+      "memory": {
+        "rssStartMb": 337.64,
+        "rssEndMb": 347.59,
+        "heapUsedStartMb": 154.47,
+        "heapUsedEndMb": 58.22
+      },
+      "statusCounts": {
+        "200": 6333
+      },
+      "errorCounts": {},
+      "responseBytes": 40379208,
+      "usageRecordsDelta": 6333,
+      "auditLogsDelta": 628,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 0
+    },
+    {
+      "scenario": "models",
+      "concurrency": 800,
+      "durationSeconds": 12.467,
+      "warmupSeconds": 3,
+      "totalRequests": 6547,
+      "successRequests": 6547,
+      "failedRequests": 0,
+      "qps": 525.14,
+      "successQps": 525.14,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 564.431,
+        "avg": 1505.027,
+        "p50": 1219.25,
+        "p90": 2498.333,
+        "p95": 2816.251,
+        "p99": 3345.218,
+        "max": 3540.167
+      },
+      "eventLoopDelayMs": {
+        "mean": 80.737,
+        "p95": 297.271,
+        "p99": 597.688,
+        "max": 698.876
+      },
+      "cpu": {
+        "userMs": 2343,
+        "systemMs": 515,
+        "totalMs": 2858,
+        "perRequestMs": 0.4365
+      },
+      "memory": {
+        "rssStartMb": 368.4,
+        "rssEndMb": 432.26,
+        "heapUsedStartMb": 154.4,
+        "heapUsedEndMb": 212.03
+      },
+      "statusCounts": {
+        "200": 6547
+      },
+      "errorCounts": {},
+      "responseBytes": 41743672,
+      "usageRecordsDelta": 6547,
+      "auditLogsDelta": 623,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 0
+    },
+    {
+      "scenario": "responses",
+      "concurrency": 50,
+      "durationSeconds": 12.046,
+      "warmupSeconds": 3,
+      "totalRequests": 4052,
+      "successRequests": 4052,
+      "failedRequests": 0,
+      "qps": 336.38,
+      "successQps": 336.38,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 46.345,
+        "avg": 148.31,
+        "p50": 122.604,
+        "p90": 257.562,
+        "p95": 301.69,
+        "p99": 606.479,
+        "max": 718.426
+      },
+      "eventLoopDelayMs": {
+        "mean": 21.267,
+        "p95": 50.168,
+        "p99": 114.426,
+        "max": 450.888
+      },
+      "cpu": {
+        "userMs": 1890,
+        "systemMs": 406,
+        "totalMs": 2296,
+        "perRequestMs": 0.5666
+      },
+      "memory": {
+        "rssStartMb": 415.57,
+        "rssEndMb": 410.87,
+        "heapUsedStartMb": 156.2,
+        "heapUsedEndMb": 84.59
+      },
+      "statusCounts": {
+        "200": 4052
+      },
+      "errorCounts": {},
+      "responseBytes": 3148404,
+      "usageRecordsDelta": 4052,
+      "auditLogsDelta": 422,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4052
+    },
+    {
+      "scenario": "responses",
+      "concurrency": 100,
+      "durationSeconds": 12.096,
+      "warmupSeconds": 3,
+      "totalRequests": 4462,
+      "successRequests": 4462,
+      "failedRequests": 0,
+      "qps": 368.9,
+      "successQps": 368.9,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 72.827,
+        "avg": 270.475,
+        "p50": 240.952,
+        "p90": 452.822,
+        "p95": 509.099,
+        "p99": 799.051,
+        "max": 870.204
+      },
+      "eventLoopDelayMs": {
+        "mean": 32.307,
+        "p95": 81.002,
+        "p99": 137.232,
+        "max": 338.69
+      },
+      "cpu": {
+        "userMs": 2516,
+        "systemMs": 609,
+        "totalMs": 3125,
+        "perRequestMs": 0.7004
+      },
+      "memory": {
+        "rssStartMb": 407.72,
+        "rssEndMb": 407.78,
+        "heapUsedStartMb": 45.57,
+        "heapUsedEndMb": 56.79
+      },
+      "statusCounts": {
+        "200": 4462
+      },
+      "errorCounts": {},
+      "responseBytes": 3466974,
+      "usageRecordsDelta": 4462,
+      "auditLogsDelta": 488,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4462
+    },
+    {
+      "scenario": "responses",
+      "concurrency": 200,
+      "durationSeconds": 12.17,
+      "warmupSeconds": 3,
+      "totalRequests": 4846,
+      "successRequests": 4846,
+      "failedRequests": 0,
+      "qps": 398.19,
+      "successQps": 398.19,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 187.039,
+        "avg": 501.253,
+        "p50": 410.449,
+        "p90": 927.748,
+        "p95": 1050.424,
+        "p99": 1144.944,
+        "max": 1221.518
+      },
+      "eventLoopDelayMs": {
+        "mean": 46.916,
+        "p95": 133.825,
+        "p99": 228.458,
+        "max": 271.057
+      },
+      "cpu": {
+        "userMs": 1516,
+        "systemMs": 500,
+        "totalMs": 2016,
+        "perRequestMs": 0.416
+      },
+      "memory": {
+        "rssStartMb": 413.3,
+        "rssEndMb": 413.77,
+        "heapUsedStartMb": 135.71,
+        "heapUsedEndMb": 124.64
+      },
+      "statusCounts": {
+        "200": 4846
+      },
+      "errorCounts": {},
+      "responseBytes": 3765342,
+      "usageRecordsDelta": 4846,
+      "auditLogsDelta": 540,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4846
+    },
+    {
+      "scenario": "responses",
+      "concurrency": 400,
+      "durationSeconds": 12.401,
+      "warmupSeconds": 3,
+      "totalRequests": 4815,
+      "successRequests": 4815,
+      "failedRequests": 0,
+      "qps": 388.28,
+      "successQps": 388.28,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 409.724,
+        "avg": 1020.427,
+        "p50": 836.688,
+        "p90": 1774.037,
+        "p95": 1986.139,
+        "p99": 2312.167,
+        "max": 2824.997
+      },
+      "eventLoopDelayMs": {
+        "mean": 50.887,
+        "p95": 145.097,
+        "p99": 290.98,
+        "max": 393.74
+      },
+      "cpu": {
+        "userMs": 2328,
+        "systemMs": 578,
+        "totalMs": 2906,
+        "perRequestMs": 0.6035
+      },
+      "memory": {
+        "rssStartMb": 411.29,
+        "rssEndMb": 423.01,
+        "heapUsedStartMb": 81.76,
+        "heapUsedEndMb": 126.42
+      },
+      "statusCounts": {
+        "200": 4815
+      },
+      "errorCounts": {},
+      "responseBytes": 3741255,
+      "usageRecordsDelta": 4815,
+      "auditLogsDelta": 484,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4815
+    },
+    {
+      "scenario": "responses",
+      "concurrency": 800,
+      "durationSeconds": 12.653,
+      "warmupSeconds": 3,
+      "totalRequests": 4947,
+      "successRequests": 4947,
+      "failedRequests": 0,
+      "qps": 390.99,
+      "successQps": 390.99,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 647.199,
+        "avg": 1989.446,
+        "p50": 1498.54,
+        "p90": 3140.594,
+        "p95": 4440.577,
+        "p99": 6769.708,
+        "max": 7083.18
+      },
+      "eventLoopDelayMs": {
+        "mean": 52.587,
+        "p95": 166.986,
+        "p99": 224.264,
+        "max": 630.718
+      },
+      "cpu": {
+        "userMs": 1953,
+        "systemMs": 609,
+        "totalMs": 2562,
+        "perRequestMs": 0.5179
+      },
+      "memory": {
+        "rssStartMb": 485.13,
+        "rssEndMb": 521.16,
+        "heapUsedStartMb": 279.58,
+        "heapUsedEndMb": 233.44
+      },
+      "statusCounts": {
+        "200": 4947
+      },
+      "errorCounts": {},
+      "responseBytes": 3843819,
+      "usageRecordsDelta": 5131,
+      "auditLogsDelta": 659,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4947
+    },
+    {
+      "scenario": "chat",
+      "concurrency": 50,
+      "durationSeconds": 12.038,
+      "warmupSeconds": 3,
+      "totalRequests": 4008,
+      "successRequests": 4008,
+      "failedRequests": 0,
+      "qps": 332.94,
+      "successQps": 332.94,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 46.154,
+        "avg": 149.855,
+        "p50": 111.055,
+        "p90": 261.023,
+        "p95": 324.652,
+        "p99": 517.282,
+        "max": 580.791
+      },
+      "eventLoopDelayMs": {
+        "mean": 21.338,
+        "p95": 56.164,
+        "p99": 105.71,
+        "max": 262.799
+      },
+      "cpu": {
+        "userMs": 2063,
+        "systemMs": 531,
+        "totalMs": 2594,
+        "perRequestMs": 0.6472
+      },
+      "memory": {
+        "rssStartMb": 510.38,
+        "rssEndMb": 507.99,
+        "heapUsedStartMb": 109.78,
+        "heapUsedEndMb": 57.21
+      },
+      "statusCounts": {
+        "200": 4008
+      },
+      "errorCounts": {},
+      "responseBytes": 3066120,
+      "usageRecordsDelta": 4008,
+      "auditLogsDelta": 400,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4008
+    },
+    {
+      "scenario": "chat",
+      "concurrency": 100,
+      "durationSeconds": 12.118,
+      "warmupSeconds": 3,
+      "totalRequests": 4350,
+      "successRequests": 4350,
+      "failedRequests": 0,
+      "qps": 358.96,
+      "successQps": 358.96,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 79.867,
+        "avg": 277.688,
+        "p50": 235.063,
+        "p90": 447.524,
+        "p95": 548.715,
+        "p99": 688.451,
+        "max": 850.749
+      },
+      "eventLoopDelayMs": {
+        "mean": 33.358,
+        "p95": 87.949,
+        "p99": 163.316,
+        "max": 273.416
+      },
+      "cpu": {
+        "userMs": 1719,
+        "systemMs": 343,
+        "totalMs": 2062,
+        "perRequestMs": 0.474
+      },
+      "memory": {
+        "rssStartMb": 511.06,
+        "rssEndMb": 512.19,
+        "heapUsedStartMb": 117.73,
+        "heapUsedEndMb": 90.78
+      },
+      "statusCounts": {
+        "200": 4350
+      },
+      "errorCounts": {},
+      "responseBytes": 3327750,
+      "usageRecordsDelta": 4350,
+      "auditLogsDelta": 454,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4350
+    },
+    {
+      "scenario": "chat",
+      "concurrency": 200,
+      "durationSeconds": 12.13,
+      "warmupSeconds": 3,
+      "totalRequests": 4203,
+      "successRequests": 4203,
+      "failedRequests": 0,
+      "qps": 346.5,
+      "successQps": 346.5,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 128.769,
+        "avg": 574.521,
+        "p50": 490.52,
+        "p90": 1031.112,
+        "p95": 1175.967,
+        "p99": 1367.871,
+        "max": 1548.033
+      },
+      "eventLoopDelayMs": {
+        "mean": 49.231,
+        "p95": 148.767,
+        "p99": 279.183,
+        "max": 336.069
+      },
+      "cpu": {
+        "userMs": 2890,
+        "systemMs": 734,
+        "totalMs": 3624,
+        "perRequestMs": 0.8622
+      },
+      "memory": {
+        "rssStartMb": 509.78,
+        "rssEndMb": 513.61,
+        "heapUsedStartMb": 155.86,
+        "heapUsedEndMb": 67.42
+      },
+      "statusCounts": {
+        "200": 4203
+      },
+      "errorCounts": {},
+      "responseBytes": 3215295,
+      "usageRecordsDelta": 4203,
+      "auditLogsDelta": 421,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4203
+    },
+    {
+      "scenario": "chat",
+      "concurrency": 400,
+      "durationSeconds": 12.334,
+      "warmupSeconds": 3,
+      "totalRequests": 4808,
+      "successRequests": 4808,
+      "failedRequests": 0,
+      "qps": 389.82,
+      "successQps": 389.82,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 364.607,
+        "avg": 1010.85,
+        "p50": 817.438,
+        "p90": 1729.775,
+        "p95": 1887.333,
+        "p99": 1976.708,
+        "max": 2226.66
+      },
+      "eventLoopDelayMs": {
+        "mean": 50.205,
+        "p95": 152.437,
+        "p99": 209.846,
+        "max": 451.412
+      },
+      "cpu": {
+        "userMs": 2625,
+        "systemMs": 625,
+        "totalMs": 3250,
+        "perRequestMs": 0.676
+      },
+      "memory": {
+        "rssStartMb": 521.48,
+        "rssEndMb": 532.07,
+        "heapUsedStartMb": 143.78,
+        "heapUsedEndMb": 213.75
+      },
+      "statusCounts": {
+        "200": 4808
+      },
+      "errorCounts": {},
+      "responseBytes": 3678120,
+      "usageRecordsDelta": 4808,
+      "auditLogsDelta": 495,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 4808
+    },
+    {
+      "scenario": "chat",
+      "concurrency": 800,
+      "durationSeconds": 12.742,
+      "warmupSeconds": 3,
+      "totalRequests": 5217,
+      "successRequests": 5217,
+      "failedRequests": 0,
+      "qps": 409.42,
+      "successQps": 409.42,
+      "errorRate": 0,
+      "latencyMs": {
+        "min": 759.798,
+        "avg": 1908.032,
+        "p50": 1479.626,
+        "p90": 3508.74,
+        "p95": 4484.953,
+        "p99": 7399.6,
+        "max": 7807.177
+      },
+      "eventLoopDelayMs": {
+        "mean": 49.57,
+        "p95": 132.579,
+        "p99": 211.288,
+        "max": 1248.854
+      },
+      "cpu": {
+        "userMs": 1891,
+        "systemMs": 453,
+        "totalMs": 2344,
+        "perRequestMs": 0.4493
+      },
+      "memory": {
+        "rssStartMb": 533.7,
+        "rssEndMb": 523.48,
+        "heapUsedStartMb": 146.45,
+        "heapUsedEndMb": 157.37
+      },
+      "statusCounts": {
+        "200": 5217
+      },
+      "errorCounts": {},
+      "responseBytes": 3991005,
+      "usageRecordsDelta": 5407,
+      "auditLogsDelta": 702,
+      "usageRecordQueueLength": 0,
+      "auditLogQueueLength": 0,
+      "upstreamRequestsDelta": 5217
+    }
+  ],
+  "upstream": {
+    "totalRequests": 63250,
+    "pathCounts": {
+      "POST /v1/chat/completions": 31288,
+      "POST /v1/responses": 31962
+    }
+  },
+  "recordDatabase": {
+    "usageRecords": 105356,
+    "auditLogs": 11008,
+    "bytes": 265515008,
+    "walBytes": 6855712
+  }
+}

@@ -53,6 +53,7 @@ try {
   assert.equal(overflowEvents.total, 1, 'active capture 超限时应保留失败事件')
   assert.equal(overflowEvents.items[0]?.captureStatus, 'overflow', 'active capture 超限事件应标记为 overflow')
   assert.equal(overflowEvents.items[0]?.payloadCount, 0, 'active capture 超限事件不应伪装成完整原文')
+  assert.equal(repositories.getAuditLogDetail(overflowEvents.items[0]?.id ?? '')?.payloads.length, 0, 'active capture 超限时不应短暂保留大 payload')
 
   auditQueue.recordDroppedAuditCapture({
     traceId: 'trace-body-rejected-retained',
@@ -115,6 +116,30 @@ try {
   assert.equal(repositories.listUsageRecords(undefined, { pageSize: 10 }).items.some((item) => item.traceId === 'trace-usage-server-no-worker-ipc'), false, 'server 无可用 worker 时使用记录不能回落本地队列写入')
   assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, localUsageQueueLengthBefore, 'server 无可用 worker 时使用记录不能进入本地待写队列')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, pendingUsageWorkerMessagesBefore + 1, 'server 无可用 worker 时使用记录应进入 IPC 待投递队列')
+
+  usageRecordQueue.enqueueUsageRecord({
+    id: 'usage_snapshot_truncated',
+    traceId: 'trace-usage-snapshot-truncated',
+    systemAccountId: 'sys_admin',
+    groupId: 'group_default',
+    endpoint: '/v1/responses',
+    providerCode: 'openai',
+    success: false,
+    statusCode: 502,
+    errorCode: 'large_snapshot',
+    errorMessage: '大响应快照应被截断',
+    responseSnapshot: {
+      upstreamUrl: 'https://api.openai.com/v1/responses',
+      statusCode: 502,
+      bodyText: 'x'.repeat(200 * 1024)
+    }
+  })
+  usageRecordQueue.flushAllUsageRecordQueue()
+  const truncatedUsageRecord = repositories.getUsageRecordDetail('usage_snapshot_truncated')
+  const truncatedBodyText = truncatedUsageRecord?.responseSnapshot?.bodyText
+  assert.equal(typeof truncatedBodyText, 'string', '使用记录响应快照应保留可读 bodyText')
+  assert((truncatedBodyText as string).length < 40 * 1024, '使用记录响应快照 bodyText 应在入队前截断')
+  assert((truncatedBodyText as string).includes('[truncated'), '使用记录响应快照应标记截断')
 
   repositories.createAuditLogsBatch([
     {

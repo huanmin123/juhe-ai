@@ -191,7 +191,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import dayjs, { type Dayjs } from 'dayjs'
+import type { Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
@@ -203,6 +203,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import type { AccountSummary, AuthorizationResourceType, AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
@@ -416,26 +417,15 @@ function handleDateRangeOpenChange(open: boolean) {
 }
 
 function disabledDate(current: Dayjs) {
-  if (!current) return false
-  const today = dayjs().startOf('day')
-  if (current.isAfter(today, 'day')) return true
-  if (current.isBefore(today.subtract(MAX_RANGE_DAYS - 1, 'day'), 'day')) return true
-  const anchor = calendarRange.value[0] ?? calendarRange.value[1]
-  if (!anchor) return false
-  return Math.abs(current.startOf('day').diff(anchor.startOf('day'), 'day')) > MAX_RANGE_DAYS - 1
+  return isRecentWindowDateDisabled(current, calendarRange.value, MAX_RANGE_DAYS)
 }
 
 function defaultDateRange(): [Dayjs, Dayjs] {
-  const today = dayjs().startOf('day')
-  return [today, today]
+  return todayDateRange()
 }
 
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
-  const [defaultStart, defaultEnd] = defaultDateRange()
-  const start = parseDateKey(value?.startDate) ?? defaultStart
-  const end = parseDateKey(value?.endDate) ?? defaultEnd
-  const [normalizedStart, normalizedEnd] = normalizedDateRange([start, end])
-  return [dayjs(normalizedStart), dayjs(normalizedEnd)]
+  return parseDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
 
 function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: string }) {
@@ -446,32 +436,7 @@ function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: strin
 }
 
 function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
-  const [defaultStart, defaultEnd] = defaultDateRange()
-  let start = (value[0] ?? defaultStart).startOf('day')
-  let end = (value[1] ?? defaultEnd).startOf('day')
-  if (start.isAfter(end, 'day')) {
-    start = end
-  }
-  if (end.diff(start, 'day') > MAX_RANGE_DAYS - 1) {
-    start = end.subtract(MAX_RANGE_DAYS - 1, 'day')
-  }
-  return [formatDateKey(start), formatDateKey(end)]
-}
-
-function parseDateKey(value?: string): Dayjs | undefined {
-  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return undefined
-  const [year, month, day] = value.split('-').map((part) => Number(part))
-  const parsed = dayjs(new Date(year, month - 1, day)).startOf('day')
-  return parsed.year() === year && parsed.month() === month - 1 && parsed.date() === day ? parsed : undefined
-}
-
-function formatDateKey(value: Dayjs): string {
-  return value.format('YYYY-MM-DD')
-}
-
-function formatDateLabel(value: string) {
-  const parsed = parseDateKey(value)
-  return parsed ? parsed.format('M月D日') : value
+  return normalizeDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
 
 function defaultFilters(): TeamUsageFilters {

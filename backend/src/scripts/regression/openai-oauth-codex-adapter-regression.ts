@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { EventEmitter } from 'node:events'
 import type { Request } from 'express'
 
 import {
@@ -11,10 +12,15 @@ import {
   buildUpstreamHeaders,
   isEffectiveOpenAIStreamRequest
 } from '../../modules/gateway/openai-gateway-upstream.js'
-import { gatewayJsonBodyLargeWarningBytes } from '../../modules/gateway/openai-gateway-request-body.js'
+import {
+  gatewayJsonBodyLargeWarningBytes,
+  getGatewayRequestBodyState,
+  type GatewayRawBodyRequest
+} from '../../modules/gateway/openai-gateway-request-body.js'
+import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
 import { stopGatewayJsonParseWorker } from '../../modules/gateway/openai-gateway-json-parser.js'
 
-type TestRequest = Request & { rawBody?: Buffer }
+type TestRequest = GatewayRawBodyRequest
 
 const account = {
   id: 'acct_owner_oauth',
@@ -39,6 +45,7 @@ async function main(): Promise<void> {
   await testSessionIsolation()
   await testInvalidBodyRejection()
   await testLargeBodyCompatibility()
+  await testLargeBodyDeferredMiddlewareToOAuthWorker()
   await testRequiredBodyFieldRejection()
   testOAuthEffectiveStreamSemantics()
   testApiKeyPassthroughUnchanged()
@@ -260,6 +267,46 @@ async function testLargeBodyCompatibility(): Promise<void> {
   assert.equal(((body.tool_choice as { tools?: Array<Record<string, unknown>> }).tools ?? [])[0]?.type, 'web_search')
   assert.equal(body.service_tier, 'priority')
   assert.equal(input[0]?.content?.[0]?.text, requestBody.input)
+  assert.equal(parts.headers.get('accept'), 'text/event-stream')
+}
+
+async function testLargeBodyDeferredMiddlewareToOAuthWorker(): Promise<void> {
+  const requestBody = {
+    model: 'gpt-5.3-codex',
+    input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes),
+    stream: false,
+    metadata: { session_id: 'middleware-large-body-session' },
+    tools: [{ type: 'web_search_preview_2025_03_11' }]
+  }
+  const rawBodyText = JSON.stringify(requestBody)
+  const rawBody = Buffer.from(rawBodyText)
+  assert.ok(rawBody.byteLength > gatewayJsonBodyLargeWarningBytes)
+
+  const req = createRequest(
+    '/v1/responses',
+    rawBody,
+    { 'content-type': 'application/json' },
+    rawBodyText
+  )
+  let nextCalled = false
+
+  await captureGatewayRawBody(req, new EventEmitter() as never, () => {
+    nextCalled = true
+  })
+
+  assert.equal(nextCalled, true)
+  assert.equal(req.body, undefined)
+  assert.equal(getGatewayRequestBodyState(req)?.jsonParseStatus, 'deferred_large_json')
+  assert.equal(getGatewayRequestBodyState(req)?.model, 'gpt-5.3-codex')
+  assert.equal(getGatewayRequestBodyState(req)?.stream, undefined)
+
+  const parts = await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  const body = parseBody(parts.body)
+
+  assert.equal(body.stream, true)
+  assert.equal(body.store, false)
+  assert.equal(body.metadata, undefined)
+  assert.equal((body.tools as Array<Record<string, unknown>>)[0].type, 'web_search')
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
 }
 

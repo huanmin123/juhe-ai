@@ -84,6 +84,7 @@ import type { Dayjs } from 'dayjs'
 
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import { normalizeDayjsDateRange } from '@/shared/dateRange'
 import type { SystemAccountSummary } from '@/types/domain'
 
 type ResultFilter = 'all' | 'success' | 'failed'
@@ -137,7 +138,7 @@ function handleStatusCodeUpdate(value: SelectValue) {
 }
 
 function handleDateRangeUpdate(value: DateRangeValue) {
-  emit('update:dateRange', normalizeDateRange(value))
+  emit('update:dateRange', normalizeDayjsDateRange(dateRangeValue(value)))
   emit('search')
 }
 
@@ -145,11 +146,10 @@ function handleSystemAccountUpdate(value: SelectValue) {
   emit('update:systemAccountId', typeof value === 'string' ? value : '')
 }
 
-function normalizeDateRange(value: DateRangeValue): [Dayjs, Dayjs] | undefined {
+function dateRangeValue(value: DateRangeValue): [Dayjs, Dayjs] | undefined {
   const start = value?.[0]
   const end = value?.[1]
-  if (!start?.isValid() || !end?.isValid()) return undefined
-  return start.isAfter(end, 'day') ? [end.startOf('day'), start.startOf('day')] : [start.startOf('day'), end.startOf('day')]
+  return start && end ? [start, end] : undefined
 }
 </script>
 
