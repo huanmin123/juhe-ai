@@ -3,7 +3,23 @@ import { sqlPlaceholders } from './query-utils.js'
 
 type CleanupRow = Record<string, unknown>
 
+interface UsageRecordsCleanupCursor {
+  cursorCreatedAt?: string
+  cursorId?: string
+  blockedReason?: string
+}
+
+export interface ProcessedUsageRecordsCleanupBatchResult {
+  cutoffCreatedAt: string
+  safetyCursorCreatedAt?: string
+  safetyCursorId?: string
+  deletedRows: number
+  hasMore: boolean
+  blockedReason?: string
+}
+
 export interface UsageStatsRetentionCleanupResult {
+  accountQualityMinuteStats: number
   usageStatsMinute: number
   usageModelMinute: number
   usageErrorMinute: number
@@ -36,22 +52,41 @@ export interface UsageStatsRetentionCleanupResult {
   aiPerformanceSummaryWindows: number
   usageQuotaHourlyWindows: number
   usageScopeRangeWindows: number
+  accountUsageSnapshots: number
 }
 
 export interface SystemMetricsRetentionCleanupResult {
   systemMetricsSamples: number
   systemMetricsHourly: number
+  systemMetricsTrendWindows: number
 }
 
 export function cleanupProcessedUsageRecordsBefore(cutoffCreatedAt: string, limit = 10000): number {
+  return cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt, limit).deletedRows
+}
+
+export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: string, limit = 10000): ProcessedUsageRecordsCleanupBatchResult {
   const database = getRecordDatabase()
   const cursor = usageRecordsCleanupCursor(database)
   const cursorCreatedAt = cursor?.cursorCreatedAt
   const cursorId = cursor?.cursorId
   if (!cursorCreatedAt || !cursorId) {
-    return 0
+    if (!hasUsageRecordsBefore(database, cutoffCreatedAt)) {
+      return {
+        cutoffCreatedAt,
+        deletedRows: 0,
+        hasMore: false
+      }
+    }
+    return {
+      cutoffCreatedAt,
+      deletedRows: 0,
+      hasMore: false,
+      blockedReason: cursor?.blockedReason ?? '统计安全游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试'
+    }
   }
 
+  const batchLimit = positiveLimit(limit)
   const rows = database
     .prepare(`
       SELECT id
@@ -61,29 +96,53 @@ export function cleanupProcessedUsageRecordsBefore(cutoffCreatedAt: string, limi
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
-    .all(cutoffCreatedAt, cursorCreatedAt, cursorCreatedAt, cursorId, positiveLimit(limit)) as CleanupRow[]
-  return deleteRowsById('usage_records', rows)
+    .all(cutoffCreatedAt, cursorCreatedAt, cursorCreatedAt, cursorId, batchLimit + 1) as CleanupRow[]
+  return {
+    cutoffCreatedAt,
+    safetyCursorCreatedAt: cursorCreatedAt,
+    safetyCursorId: cursorId,
+    deletedRows: deleteRowsById('usage_records', rows.slice(0, batchLimit)),
+    hasMore: rows.length > batchLimit
+  }
 }
 
-function usageRecordsCleanupCursor(database: ReturnType<typeof getRecordDatabase>): { cursorCreatedAt: string; cursorId: string } | undefined {
-  const aggregationCursor = requiredJobCursor(database, 'usage_stats_aggregation')
-  if (!aggregationCursor) return undefined
+function hasUsageRecordsBefore(database: ReturnType<typeof getRecordDatabase>, cutoffCreatedAt: string): boolean {
+  const row = database
+    .prepare('SELECT id FROM usage_records WHERE created_at < ? LIMIT 1')
+    .get(cutoffCreatedAt) as unknown as { id?: string } | undefined
+  return Boolean(row?.id)
+}
 
-  const backfillJobs = [
-    'caller_account_usage_stats_backfill',
-    'account_quality_minute_stats_backfill',
-    'usage_stats_extended_buckets_migration',
-    'usage_model_error_extended_buckets_migration',
-    'usage_latency_buckets_migration'
+function usageRecordsCleanupCursor(database: ReturnType<typeof getRecordDatabase>): UsageRecordsCleanupCursor {
+  const aggregationCursor = requiredJobCursor(database, 'usage_stats_aggregation')
+  if (!aggregationCursor) {
+    return {
+      blockedReason: '统计聚合游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试'
+    }
+  }
+
+  const dependentJobs = [
+    { name: 'caller_account_usage_stats_backfill', label: '调用账号统计回填', required: true },
+    { name: 'account_quality_minute_stats_backfill', label: '账号质量统计回填', required: true },
+    { name: 'usage_stats_extended_buckets_migration', label: '用量统计扩展桶迁移', required: false },
+    { name: 'usage_model_error_extended_buckets_migration', label: '模型与错误统计扩展桶迁移', required: false },
+    { name: 'usage_latency_buckets_migration', label: '延迟统计桶迁移', required: false }
   ]
   let cleanupCursor = aggregationCursor
-  for (const jobName of backfillJobs) {
-    const state = jobState(database, jobName)
+  for (const job of dependentJobs) {
+    const state = jobState(database, job.name)
+    if (!state && !job.required) {
+      continue
+    }
     if (!state?.last_success_at) {
       const backfillCursor = state?.cursor_created_at && state.cursor_id
         ? { cursorCreatedAt: state.cursor_created_at, cursorId: state.cursor_id }
         : undefined
-      if (!backfillCursor) return undefined
+      if (!backfillCursor) {
+        return {
+          blockedReason: `${job.label}游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试`
+        }
+      }
       cleanupCursor = earlierCursor(cleanupCursor, backfillCursor)
     }
   }
@@ -113,17 +172,21 @@ function earlierCursor(
 }
 
 export function cleanupUsageStatsBucketsBefore(input: {
+  accountQualityMinuteCutoffMinute: string
   minuteCutoffMinute: string
   hourlyCutoffHour: string
   dailyCutoffDate: string
   weeklyCutoffWeek: string
   monthlyCutoffMonth: string
   rankSnapshotCutoffIso: string
+  windowCutoffDate: string
+  windowCutoffIso: string
   limit?: number
 }): UsageStatsRetentionCleanupResult {
   const database = getRecordDatabase()
   const limit = positiveLimit(input.limit)
   return {
+    accountQualityMinuteStats: deleteRowsBeforeByRowid(database, 'account_quality_minute_stats', 'stat_minute', input.accountQualityMinuteCutoffMinute, limit),
     usageStatsMinute: deleteRowsBeforeByRowid(database, 'usage_stats_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageModelMinute: deleteRowsBeforeByRowid(database, 'usage_model_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageErrorMinute: deleteRowsBeforeByRowid(database, 'usage_error_minute', 'stat_minute', input.minuteCutoffMinute, limit),
@@ -145,26 +208,28 @@ export function cleanupUsageStatsBucketsBefore(input: {
     usageErrorMonthly: deleteRowsBeforeByRowid(database, 'usage_error_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
     usageLatencyMonthly: deleteRowsBeforeByRowid(database, 'usage_latency_monthly', 'stat_month', input.monthlyCutoffMonth, limit),
     authorizationTeamUsageSummaryDaily: deleteRowsBeforeByRowid(database, 'authorization_team_usage_summary_daily', 'stat_date', input.dailyCutoffDate, limit),
-    authorizationTeamUsageRangeWindows: deleteRowsBeforeByRowid(database, 'authorization_team_usage_range_windows', 'end_date', input.dailyCutoffDate, limit),
+    authorizationTeamUsageRangeWindows: deleteRowsBeforeByRowid(database, 'authorization_team_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
     authorizationUserUsageSummaryDaily: deleteRowsBeforeByRowid(database, 'authorization_user_usage_summary_daily', 'stat_date', input.dailyCutoffDate, limit),
-    authorizationUserUsageRangeWindows: deleteRowsBeforeByRowid(database, 'authorization_user_usage_range_windows', 'end_date', input.dailyCutoffDate, limit),
+    authorizationUserUsageRangeWindows: deleteRowsBeforeByRowid(database, 'authorization_user_usage_range_windows', 'end_date', input.windowCutoffDate, limit),
     usageRankSnapshots: deleteRowsBeforeByRowid(database, 'usage_rank_snapshots', 'snapshot_at', input.rankSnapshotCutoffIso, limit),
-    usageOverviewSummaryWindows: 0,
-    usageOverviewTrendWindows: 0,
-    usageModelRankWindows: 0,
-    usageErrorRankWindows: 0,
-    aiPerformanceSummaryWindows: 0,
-    usageQuotaHourlyWindows: 0,
-    usageScopeRangeWindows: deleteRowsBeforeByRowid(database, 'usage_scope_range_windows', 'end_date', input.dailyCutoffDate, limit)
+    usageOverviewSummaryWindows: deleteRowsBeforeByRowid(database, 'usage_overview_summary_windows', 'end_date', input.windowCutoffDate, limit),
+    usageOverviewTrendWindows: deleteRowsBeforeByRowid(database, 'usage_overview_trend_windows', 'end_date', input.windowCutoffDate, limit),
+    usageModelRankWindows: deleteRowsBeforeByRowid(database, 'usage_model_rank_windows', 'end_date', input.windowCutoffDate, limit),
+    usageErrorRankWindows: deleteRowsBeforeByRowid(database, 'usage_error_rank_windows', 'end_date', input.windowCutoffDate, limit),
+    aiPerformanceSummaryWindows: deleteRowsBeforeByRowid(database, 'ai_performance_summary_windows', 'end_date', input.windowCutoffDate, limit),
+    usageQuotaHourlyWindows: deleteRowsBeforeByRowid(database, 'usage_quota_hourly_windows', 'updated_at', input.windowCutoffIso, limit),
+    usageScopeRangeWindows: deleteRowsBeforeByRowid(database, 'usage_scope_range_windows', 'end_date', input.windowCutoffDate, limit),
+    accountUsageSnapshots: deleteRowsBeforeByRowid(database, 'account_usage_snapshots', 'updated_at', input.windowCutoffIso, limit)
   }
 }
 
-export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; hourlyCutoffHour: string; limit?: number }): SystemMetricsRetentionCleanupResult {
+export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; hourlyCutoffHour: string; trendWindowCutoffDate: string; limit?: number }): SystemMetricsRetentionCleanupResult {
   const database = getRecordDatabase()
   const limit = positiveLimit(input.limit)
   return {
     systemMetricsSamples: deleteRowsBeforeByRowid(database, 'system_metrics_samples', 'sampled_at', input.samplesCutoffIso, limit),
-    systemMetricsHourly: deleteRowsBeforeByRowid(database, 'system_metrics_hourly', 'stat_hour', input.hourlyCutoffHour, limit)
+    systemMetricsHourly: deleteRowsBeforeByRowid(database, 'system_metrics_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
+    systemMetricsTrendWindows: deleteRowsBeforeByRowid(database, 'system_metrics_trend_windows', 'end_date', input.trendWindowCutoffDate, limit)
   }
 }
 

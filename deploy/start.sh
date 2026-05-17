@@ -5,14 +5,16 @@ APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$APP_DIR"
 
 if ! command -v node >/dev/null 2>&1; then
-  echo "Node.js is required. Install Node.js 22.13.0+ (22.x) or 23.4.0+ before running this script." >&2
+  echo "Node.js LTS is required. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) before running this script." >&2
   exit 1
 fi
 
-if ! node --input-type=module -e "import 'node:sqlite'" >/dev/null 2>&1; then
-  echo "Node.js with node:sqlite support is required. Install Node.js 22.13.0+ (22.x) or 23.4.0+ / a newer LTS release. Current: $(node -v)" >&2
+RUNTIME_CHECK_SCRIPT="backend/dist/scripts/preflight/check-node-sqlite.js"
+if [ ! -f "$RUNTIME_CHECK_SCRIPT" ]; then
+  echo "Runtime preflight script not found: $RUNTIME_CHECK_SCRIPT. Please rebuild the release package." >&2
   exit 1
 fi
+node "$RUNTIME_CHECK_SCRIPT"
 
 if ! command -v pnpm >/dev/null 2>&1; then
   if command -v corepack >/dev/null 2>&1; then

@@ -182,6 +182,7 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
@@ -191,7 +192,6 @@ import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
 import { createQuotaLimitForm, quotaLimitsPayload as buildQuotaLimitsPayload } from '@/views/shared/requestQuotaForm'
 
-const loading = ref(false)
 const modalOpen = ref(false)
 const createdKeyOpen = ref(false)
 const helpOpen = ref(false)
@@ -219,14 +219,11 @@ const initialPageState = pageStateCache.read()
 const keywordFilter = ref(initialPageState.keywordFilter)
 const statusFilter = ref<'all' | 'active' | 'disabled'>(initialPageState.statusFilter)
 const groupFilter = ref<string | undefined>(initialPageState.groupFilter)
-const mobileLoadingMore = ref(false)
-const apiKeys = ref<ApiKeySummary[]>([])
 const groups = ref<GroupSummary[]>([])
 const systemAccounts = ref<SystemAccountSummary[]>([])
 const apiKeyOptionsLoaded = ref(false)
 const apiKeyOptionsScopeKey = ref('')
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
-const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 const form = reactive({
   name: '',
   groupId: '',
@@ -236,6 +233,34 @@ const form = reactive({
   quotaLimits: createQuotaLimitForm()
 })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const {
+  items: apiKeys,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  pagination,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileApiKeys,
+  resetPagination
+} = useResponsivePagedList<ApiKeySummary, { forceOptions?: boolean }>({
+  pageSize,
+  initialPagination: initialPageState.pagination,
+  showTotal: (total) => `共 ${total} 个 API Key`,
+  fetchPage: async (options, pageState) => {
+    const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
+    const [keyList] = await Promise.all([
+      isManagementView.value ? api.apiKeys.list(apiKeyListParams(systemAccountId, pageState)) : api.myApiKeys.list(apiKeyListParams(undefined, pageState)),
+      loadApiKeyOptions(systemAccountId, options.forceOptions === true)
+    ])
+    return keyList
+  },
+  onError: (error) => {
+    console.error(error)
+    message.error('加载 API Key 失败')
+  }
+})
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -282,15 +307,6 @@ const groupOptions = computed(() => groups.value.map((group) => ({ label: groupO
 const groupFilterOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
 const filteredApiKeys = computed(() => apiKeys.value)
 const mobileApiKeys = computed(() => apiKeys.value)
-const mobileHasMore = computed(() => apiKeys.value.length < pagination.total)
-const tablePagination = computed(() => ({
-  current: pagination.current,
-  pageSize: pagination.pageSize,
-  total: pagination.total,
-  hideOnSinglePage: true,
-  showSizeChanger: false,
-  showTotal: (total: number) => `共 ${total} 个 API Key`
-}))
 const apiKeyScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -326,34 +342,6 @@ function formatKeyPreview(value?: string) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`
 }
 
-async function loadData(options: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}) {
-  await fetchData(options)
-}
-
-async function fetchData(options: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}) {
-  if (!options.quiet) {
-    loading.value = true
-  }
-  try {
-    const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
-    const [keyList] = await Promise.all([
-      isManagementView.value ? api.apiKeys.list(apiKeyListParams(systemAccountId)) : api.myApiKeys.list(apiKeyListParams()),
-      loadApiKeyOptions(systemAccountId, options.forceOptions === true)
-    ])
-    pagination.current = keyList.page
-    pagination.pageSize = keyList.pageSize
-    pagination.total = keyList.total
-    apiKeys.value = options.append ? [...apiKeys.value, ...keyList.items] : keyList.items
-  } catch (error) {
-    console.error(error)
-    message.error('加载 API Key 失败')
-  } finally {
-    if (!options.quiet) {
-      loading.value = false
-    }
-  }
-}
-
 async function loadApiKeyOptions(systemAccountId: string | undefined, force = false): Promise<void> {
   const scopeKey = isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self'
   if (!force && apiKeyOptionsLoaded.value && apiKeyOptionsScopeKey.value === scopeKey) {
@@ -376,56 +364,30 @@ function resetFilters() {
   statusFilter.value = defaults.statusFilter
   groupFilter.value = defaults.groupFilter
   systemAccountFilter.value = defaults.systemAccountFilter
-  pagination.current = defaults.pagination.current
-  pagination.pageSize = defaults.pagination.pageSize
+  resetPagination()
   pageStateCache.clear()
-  void fetchData({ forceOptions: true })
+  void loadData({ forceOptions: true })
 }
 
 function applyFilters() {
   resetPagination()
-  void fetchData()
+  void loadData()
 }
 
 function refreshApiKeys() {
   resetPagination()
-  void fetchData({ forceOptions: true })
+  void loadData({ forceOptions: true })
 }
 
 function handleSystemAccountFilterChange() {
   groupFilter.value = undefined
   resetPagination()
-  void fetchData({ forceOptions: true })
-}
-
-function handleTableChange(paginationInfo: unknown) {
-  if (!paginationInfo || typeof paginationInfo !== 'object') return
-  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
-  const nextCurrent = Number(next.current)
-  const nextPageSize = Number(next.pageSize)
-  pagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
-  pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
-  void fetchData()
-}
-
-async function loadMoreMobileApiKeys() {
-  if (!mobileHasMore.value || mobileLoadingMore.value) return
-  mobileLoadingMore.value = true
-  pagination.current += 1
-  try {
-    await fetchData({ append: true, quiet: true })
-  } finally {
-    mobileLoadingMore.value = false
-  }
+  void loadData({ forceOptions: true })
 }
 
 async function refreshMobileApiKeys() {
   resetPagination()
-  await fetchData({ forceOptions: true })
-}
-
-function resetPagination() {
-  pagination.current = 1
+  await loadData({ forceOptions: true })
 }
 
 function snapshotPageState(): ApiKeysPageState {
@@ -438,11 +400,11 @@ function snapshotPageState(): ApiKeysPageState {
   }
 }
 
-function apiKeyListParams(systemAccountId?: string) {
+function apiKeyListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
   return {
     systemAccountId,
-    page: pagination.current,
-    pageSize: pagination.pageSize,
+    page: pageState.current,
+    pageSize: pageState.pageSize,
     keyword: keywordFilter.value.trim() || undefined,
     status: statusFilter.value,
     groupId: groupFilter.value

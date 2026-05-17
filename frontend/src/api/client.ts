@@ -54,6 +54,7 @@ import type {
   MonitoredDatabaseRole,
   TableStorageOverview,
   TableStorageSnapshotSummary,
+  UsageRecordsCleanupResult,
   UsageStatsOverview,
   UsageRecordListResult,
   UsageRecordSummary
@@ -210,6 +211,12 @@ interface TableMonitorOverviewParams {
   startAt?: string
   endAt?: string
   limit?: number
+}
+
+interface UsageRecordsCleanupPayload {
+  cutoffAt: string
+  batchSize?: number
+  maxBatches?: number
 }
 
 export interface AuthorizationListParams extends ListParams {
@@ -462,7 +469,8 @@ export const api = {
   },
   tableMonitor: {
     overview: (params?: TableMonitorOverviewParams) => unwrap<TableStorageOverview>(http.get('/table-monitor/overview', { params })),
-    history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params }))
+    history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params })),
+    cleanupUsageRecords: (payload: UsageRecordsCleanupPayload) => unwrap<UsageRecordsCleanupResult>(http.post('/table-monitor/usage-records/cleanup', payload, noTimeout))
   },
   myStats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),

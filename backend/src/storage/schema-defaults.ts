@@ -39,6 +39,7 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['statsAggregationMaxBatchesPerRun', 5],
   ['groupAccountStatsRefreshIntervalSeconds', 60],
   ['systemMetricsSampleIntervalSeconds', 30],
+  ['tableMonitorMaxTablesPerRun', 4],
   ['accountQualityRefreshIntervalSeconds', 600],
   ['accountQualityWindowMinutes', 10],
   ['cooldownAccountRetestEnabled', true],

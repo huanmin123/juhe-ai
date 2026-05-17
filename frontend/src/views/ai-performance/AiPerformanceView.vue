@@ -122,6 +122,7 @@ const accountsLoading = ref(false)
 const accountSearchKeyword = ref('')
 let accountSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let accountSearchSeq = 0
+let systemAccountsLoadingPromise: Promise<void> | undefined
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
 const averageFirstTokenChartRef = ref<HTMLDivElement>()
@@ -333,10 +334,18 @@ function selectedPerformanceSystemAccountId(): string | undefined {
   return isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
 }
 
-async function loadSystemAccounts(): Promise<void> {
-  if (!isManagementView.value || systemAccountsLoaded.value) return
-  systemAccounts.value = await api.systemAccounts.list()
-  systemAccountsLoaded.value = true
+function loadSystemAccounts(): Promise<void> {
+  if (!isManagementView.value || systemAccountsLoaded.value) return Promise.resolve()
+  if (systemAccountsLoadingPromise) return systemAccountsLoadingPromise
+  systemAccountsLoadingPromise = api.systemAccounts.list()
+    .then((accounts) => {
+      systemAccounts.value = accounts
+      systemAccountsLoaded.value = true
+    })
+    .finally(() => {
+      systemAccountsLoadingPromise = undefined
+    })
+  return systemAccountsLoadingPromise
 }
 
 function handleSystemAccountChange() {

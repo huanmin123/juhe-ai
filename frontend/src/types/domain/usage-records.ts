@@ -55,6 +55,7 @@ export interface UsageRecordSummary {
 export interface UsageRecordListResult {
   items: UsageRecordSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }

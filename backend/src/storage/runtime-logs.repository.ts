@@ -1,5 +1,5 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { sqlPlaceholders } from './query-utils.js'
+import { compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString } from './value-utils.js'
 
 export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
@@ -34,6 +34,7 @@ export interface RuntimeLogListOptions {
 export interface RuntimeLogListResult {
   items: RuntimeLogSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }
@@ -154,24 +155,6 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
   const keywordFilter = buildRuntimeLogKeywordFilter(options.keyword)
   const database = getRecordDatabase()
 
-  const totalRow = keywordFilter
-    ? database
-      .prepare(`
-        SELECT COUNT(*) AS total
-        FROM runtime_log_search
-        INNER JOIN runtime_logs rl ON rl.id = runtime_log_search.log_id
-        ${filters.clause}
-        AND ${keywordFilter.clause}
-      `)
-      .get(...filters.params, ...keywordFilter.params) as RuntimeLogRow | undefined
-    : database
-      .prepare(`
-        SELECT COUNT(*) AS total
-        FROM runtime_logs rl
-        ${filters.clause}
-      `)
-      .get(...filters.params) as RuntimeLogRow | undefined
-
   const rows = keywordFilter
     ? database
       .prepare(`
@@ -183,7 +166,7 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
         ORDER BY rl.time DESC, rl.id DESC
         LIMIT ? OFFSET ?
       `)
-      .all(...filters.params, ...keywordFilter.params, pageSize, offset) as RuntimeLogRow[]
+      .all(...filters.params, ...keywordFilter.params, pageSize + 1, offset) as RuntimeLogRow[]
     : database
       .prepare(`
         SELECT rl.*
@@ -192,11 +175,14 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
         ORDER BY rl.time DESC, rl.id DESC
         LIMIT ? OFFSET ?
       `)
-      .all(...filters.params, pageSize, offset) as RuntimeLogRow[]
+      .all(...filters.params, pageSize + 1, offset) as RuntimeLogRow[]
 
+  const pageRows = takePageRows(rows, pageSize)
+  const items = pageRows.rows.map(runtimeLogFromRow)
   return {
-    items: rows.map(runtimeLogFromRow),
-    total: Number(totalRow?.total ?? 0),
+    items,
+    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
     page,
     pageSize
   }

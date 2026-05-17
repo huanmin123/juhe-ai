@@ -1,5 +1,6 @@
 import type { Request } from 'express'
 
+import { errorLogFields } from '../../shared/logger.js'
 import { getRequestLogger } from '../../shared/request-context.js'
 import {
   decideAccountErrorPolicy,
@@ -28,13 +29,21 @@ import {
   openAIUpstreamErrorFeatureRules,
   type UpstreamErrorFeatureDecision
 } from './openai-gateway-upstream-error-rules.js'
-import { isEffectiveOpenAIStreamRequest, type GatewayUpstreamResponse } from './openai-gateway-upstream.js'
+import {
+  isEffectiveOpenAIStreamRequest,
+  isUpstreamRequestAbortedError,
+  type GatewayUpstreamResponse
+} from './openai-gateway-upstream.js'
 import { headersToObject, requestEndpoint, type UpstreamAttempt } from './openai-gateway-usage.js'
 import {
   recordFailedUpstreamAttempt,
   type GatewayUsageContext
 } from './openai-gateway-usage-records.js'
-import { waitBeforeTemporaryUnschedulableRetry } from './openai-gateway-dispatch-helpers.js'
+import {
+  rememberFailedProxyForDispatch,
+  shouldRecordAbortedUpstreamAttempt,
+  waitBeforeTemporaryUnschedulableRetry
+} from './openai-gateway-dispatch-helpers.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 
 export class UpstreamRejectedRequestError extends Error {
@@ -81,6 +90,25 @@ interface HandleFailedUpstreamResponseInput {
   signal?: AbortSignal
   lastAttempt?: UpstreamAttempt
   deferredAccountFailures: DeferredAccountFailure[]
+}
+
+interface HandleUpstreamRequestErrorInput {
+  req: Request
+  usageContext: GatewayUsageContext
+  auditCapture: AuditCaptureContext
+  auditAttemptId: string
+  account: UpstreamAccount
+  upstreamUrl: string
+  settings: GatewaySettings
+  attemptStartedAt: number
+  attemptIndex: number
+  auditAttemptIndex: number
+  retryAttempts: number
+  sessionAffinityKey?: string
+  signal?: AbortSignal
+  lastAttempt?: UpstreamAttempt
+  failedProxyDispatchKeys: Map<string, string>
+  error: unknown
 }
 
 export async function handleFailedUpstreamResponse(
@@ -250,6 +278,92 @@ export async function handleFailedUpstreamResponse(
     }
   })
 
+  return { action: 'skip_account', lastAttempt }
+}
+
+export async function handleUpstreamRequestError(
+  input: HandleUpstreamRequestErrorInput
+): Promise<{ action: 'retry' | 'skip_account'; lastAttempt?: UpstreamAttempt }> {
+  const {
+    req,
+    usageContext,
+    auditCapture,
+    auditAttemptId,
+    account,
+    upstreamUrl,
+    settings,
+    attemptStartedAt,
+    attemptIndex,
+    auditAttemptIndex,
+    retryAttempts,
+    sessionAffinityKey,
+    signal,
+    failedProxyDispatchKeys,
+    error
+  } = input
+
+  if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
+    let lastAttempt = input.lastAttempt
+    if (shouldRecordAbortedUpstreamAttempt(error)) {
+      const statusCode = lastAttempt?.accountId === account.id && lastAttempt.upstreamUrl === upstreamUrl
+        ? lastAttempt.status
+        : undefined
+      recordFailedUpstreamAttempt(req, usageContext, account, {
+        upstreamUrl,
+        startedAt: attemptStartedAt,
+        statusCode,
+        errorMessage: '请求已取消'
+      })
+      lastAttempt = {
+        accountId: account.id,
+        accountName: account.name,
+        upstreamUrl,
+        status: statusCode,
+        message: '请求已取消'
+      }
+    }
+    auditCapture.completeAttempt(auditAttemptId, {
+      success: false,
+      errorPhase: 'client',
+      errorMessage: '请求已取消'
+    })
+    throw error
+  }
+
+  const message = error instanceof Error ? error.message : '请求失败'
+  getRequestLogger().warn(errorLogFields(error, {
+    event: 'gateway_upstream_request_failed',
+    accountId: account.id,
+    accountType: account.type,
+    upstreamUrl,
+    attemptIndex,
+    auditAttemptIndex,
+    elapsedMs: Date.now() - attemptStartedAt,
+    stream: isEffectiveOpenAIStreamRequest(req, account)
+  }), '网关请求上游失败')
+  const lastAttempt: UpstreamAttempt = {
+    accountId: account.id,
+    accountName: account.name,
+    upstreamUrl,
+    message
+  }
+  auditCapture.completeAttempt(auditAttemptId, {
+    success: false,
+    errorPhase: 'upstream_request',
+    errorMessage: message
+  })
+  recordFailedUpstreamAttempt(req, usageContext, account, {
+    upstreamUrl,
+    startedAt: attemptStartedAt,
+    errorMessage: message
+  })
+  if (attemptIndex < retryAttempts) {
+    await waitBeforeTemporaryUnschedulableRetry(settings)
+    return { action: 'retry', lastAttempt }
+  }
+  forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
+  applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
+  rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   return { action: 'skip_account', lastAttempt }
 }
 

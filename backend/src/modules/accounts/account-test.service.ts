@@ -13,7 +13,7 @@ import {
 } from '../../storage/repositories.js'
 import { getRequestAuthContext, withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
-import { OpenAIStreamInspector } from '../gateway/openai-gateway-usage.js'
+import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
 
 const defaultTestModel = 'gpt-5.5'
 const defaultTestPrompt = 'Return OK.'

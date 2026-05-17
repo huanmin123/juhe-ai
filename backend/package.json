@@ -12,6 +12,7 @@
     "test:proxy-negative": "tsx src/scripts/regression/proxy-negative-regression.ts",
     "test:large-response": "node --expose-gc --import tsx src/scripts/regression/non-stream-large-response-regression.ts",
     "test:stream-first-output-timeout": "tsx src/scripts/regression/stream-first-output-timeout-regression.ts",
+    "test:codex-client-strategy": "tsx src/scripts/regression/codex-client-strategy-regression.ts",
     "test:db-service-worker-local": "tsx src/scripts/regression/db-service-worker-local-regression.ts",
     "test:db-service-system-api-boundary": "tsx src/scripts/regression/db-service-system-api-boundary-regression.ts",
     "test:db-service-system-api-http": "tsx src/scripts/regression/db-service-system-api-http-regression.ts",
@@ -27,6 +28,7 @@
     "test:runtime-log-grep-path": "tsx src/scripts/regression/runtime-log-grep-path-regression.ts",
     "test:runtime-log-index-large-line": "tsx src/scripts/regression/runtime-log-index-large-line-regression.ts",
     "test:gateway-runtime-cache": "tsx src/scripts/regression/gateway-runtime-cache-regression.ts",
+    "test:gateway-concurrency-snapshot": "tsx src/scripts/regression/gateway-concurrency-snapshot-regression.ts",
     "clean:dist": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
     "build": "pnpm run clean:dist && tsc -p tsconfig.json",
     "start": "node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js",
@@ -34,7 +36,7 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "engines": {
-    "node": ">=22.13.0 <23 || >=23.4.0"
+    "node": ">=22.13.0 <23 || >=24.11.0 <25"
   },
   "dependencies": {
     "@vscode/ripgrep": "1.18.0",

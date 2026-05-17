@@ -45,6 +45,17 @@ export function loadAccountCurrentConcurrencyByIds(accountIds: string[]): Map<st
   return result
 }
 
+export function snapshotAccountConcurrency(): Record<string, number> {
+  const snapshot: Record<string, number> = {}
+  for (const [accountId, current] of currentConcurrencyByAccountId.entries()) {
+    const normalized = Math.max(0, Math.trunc(current))
+    if (accountId && normalized > 0) {
+      snapshot[accountId] = normalized
+    }
+  }
+  return snapshot
+}
+
 export function sumAccountCurrentConcurrency(accountIds: string[], concurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)): number {
   let total = 0
   for (const accountId of new Set(accountIds.filter(Boolean))) {

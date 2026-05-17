@@ -2,7 +2,8 @@ import type { Response } from 'express'
 
 import { getRequestLogger } from '../../shared/request-context.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
-import { emptyUsage, OpenAIStreamInspector, type ParsedUsage } from './openai-gateway-usage.js'
+import { emptyUsage, type ParsedUsage } from './openai-gateway-usage.js'
+import { OpenAIStreamInspector } from './openai-gateway-stream-inspection.js'
 import {
   isUpstreamRequestAbortedError,
   readStreamChunkWithAbort,
@@ -35,6 +36,10 @@ export interface StreamFailureContext {
   outputReceived: boolean
 }
 
+export interface StreamPipeOptions {
+  clientRetryEnabled?: boolean
+}
+
 const streamDiagnosticCaptureBytes = 256 * 1024
 const streamAuditCaptureBytes = 1024 * 1024
 const streamProgressLogIntervalMs = 60_000
@@ -46,11 +51,14 @@ export async function pipeUpstreamStream(
   settings: GatewaySettings,
   startedAt: number,
   handleStreamFailure: (reason: string, errorCode: string | undefined, context: StreamFailureContext) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  options: StreamPipeOptions = {}
 ): Promise<StreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
   const inspector = new OpenAIStreamInspector()
-  const interceptor = new OpenAIStreamInterceptBuffer()
+  const interceptor = new OpenAIStreamInterceptBuffer({
+    clientRetryEnabled: options.clientRetryEnabled === true
+  })
   const responseCapture = new LimitedBufferCapture(streamAuditCaptureBytes)
   const upstreamCapture = new LimitedBufferCapture(streamAuditCaptureBytes)
   const diagnosticCapture = new LimitedBufferCapture(streamDiagnosticCaptureBytes)
@@ -334,7 +342,11 @@ export async function pipeUpstreamStream(
       return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
     }
     const message = inspection.errorMessage ?? rawMessage
-    const errorCode = streamClientFailureCode(inspection.errorCode ?? gatewayStreamFailureCode(message), inspection.outputReceived)
+    const errorCode = streamClientFailureCode(
+      inspection.errorCode ?? gatewayStreamFailureCode(message),
+      inspection.outputReceived,
+      options.clientRetryEnabled === true
+    )
     handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
     if (!inspection.failedReceived) {
       streamLogger.warn({
@@ -370,7 +382,11 @@ export async function pipeUpstreamStream(
     endResponse(res)
     const success = completed && !inspection.failedReceived
     const message = success ? '已完成' : (inspection.errorMessage ?? '上游流式响应失败')
-    const errorCode = success ? undefined : streamClientFailureCode(inspection.errorCode ?? gatewayStreamFailureCode(message), inspection.outputReceived)
+    const errorCode = success ? undefined : streamClientFailureCode(
+      inspection.errorCode ?? gatewayStreamFailureCode(message),
+      inspection.outputReceived,
+      options.clientRetryEnabled === true
+    )
     if (!success) {
       handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
     }
@@ -390,7 +406,11 @@ export async function pipeUpstreamStream(
   }
   if (!inspection.terminalReceived) {
     const message = '上游流在 OpenAI 终止事件前结束'
-    const errorCode = streamClientFailureCode(gatewayStreamFailureCode(message), inspection.outputReceived)
+    const errorCode = streamClientFailureCode(
+      gatewayStreamFailureCode(message),
+      inspection.outputReceived,
+      options.clientRetryEnabled === true
+    )
     handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
     streamLogger.warn({
       event: 'gateway_stream_missing_terminal',
@@ -425,7 +445,11 @@ export async function pipeUpstreamStream(
 
   if (!completed || inspection.failedReceived) {
     const message = inspection.errorMessage ?? '上游流式响应失败'
-    const errorCode = streamClientFailureCode(inspection.errorCode ?? gatewayStreamFailureCode(message), inspection.outputReceived)
+    const errorCode = streamClientFailureCode(
+      inspection.errorCode ?? gatewayStreamFailureCode(message),
+      inspection.outputReceived,
+      options.clientRetryEnabled === true
+    )
     handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
     streamLogger.warn({
       event: 'gateway_stream_finished_failed',
@@ -576,8 +600,8 @@ function streamFailureContext(downstreamBytesWritten: number, outputReceived: bo
   }
 }
 
-function streamClientFailureCode(errorCode: string, outputReceived: boolean): string {
-  return outputReceived ? errorCode : gatewayStreamClientRetryErrorCode
+function streamClientFailureCode(errorCode: string, outputReceived: boolean, clientRetryEnabled: boolean): string {
+  return clientRetryEnabled && !outputReceived ? gatewayStreamClientRetryErrorCode : errorCode
 }
 
 function streamResult(

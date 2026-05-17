@@ -27,7 +27,7 @@
 
 ## 3. 技术边界
 
-- 运行时：`Node.js 22.13.0+`（22.x）或 `23.4.0+`，且需要支持 `node:sqlite`。
+- 运行时：官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`，且内置 SQLite 必须支持 FTS5 / trigram tokenizer。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
 - 存储：Node 内置 `node:sqlite`，默认拆为业务库 `backend/data/juhe-ai.sqlite3` 和记录库 `backend/data/juhe-ai-records.sqlite3`。

@@ -103,6 +103,7 @@ interface SystemSettings {
   statsAggregationMaxBatchesPerRun?: number
   groupAccountStatsRefreshIntervalSeconds?: number
   systemMetricsSampleIntervalSeconds?: number
+  tableMonitorMaxTablesPerRun?: number
   accountQualityRefreshIntervalSeconds?: number
   accountQualityWindowMinutes?: number
   cooldownAccountRetestEnabled?: boolean
@@ -171,6 +172,7 @@ async function main(): Promise<void> {
     assert(typeof settings.statsAggregationMaxBatchesPerRun === 'number', '系统设置缺少 statsAggregationMaxBatchesPerRun')
     assert(typeof settings.groupAccountStatsRefreshIntervalSeconds === 'number', '系统设置缺少 groupAccountStatsRefreshIntervalSeconds')
     assert(typeof settings.systemMetricsSampleIntervalSeconds === 'number', '系统设置缺少 systemMetricsSampleIntervalSeconds')
+    assert(typeof settings.tableMonitorMaxTablesPerRun === 'number', '系统设置缺少 tableMonitorMaxTablesPerRun')
     assert(typeof settings.accountQualityRefreshIntervalSeconds === 'number', '系统设置缺少 accountQualityRefreshIntervalSeconds')
     assert(typeof settings.accountQualityWindowMinutes === 'number', '系统设置缺少 accountQualityWindowMinutes')
     assert(typeof settings.cooldownAccountRetestEnabled === 'boolean', '系统设置缺少 cooldownAccountRetestEnabled')

@@ -9,7 +9,8 @@ import type {
   DbServiceOperationResult,
   DbServiceParentMessage,
   DbServiceRuntimeSnapshot,
-  DbServiceServerRuntimeSnapshot
+  DbServiceServerRuntimeSnapshot,
+  DbServiceServerRuntimeSnapshotScope
 } from './db-service-types.js'
 
 interface PendingRequest {
@@ -169,22 +170,12 @@ export function getDbServiceState(): DbServiceState {
 }
 
 export async function requestServerRuntimeSnapshot(timeoutMs = 1000): Promise<DbServiceServerRuntimeSnapshot | undefined> {
-  if (runtimeConfig.processRole !== 'db-service' || !process.send) {
-    return undefined
-  }
+  return await requestServerRuntimeSnapshotByScope('full', timeoutMs)
+}
 
-  const requestId = randomUUID()
-  return await new Promise<DbServiceServerRuntimeSnapshot | undefined>((resolve) => {
-    const timeout = setTimeout(() => {
-      pendingServerRuntimeRequests.delete(requestId)
-      resolve(undefined)
-    }, timeoutMs)
-    pendingServerRuntimeRequests.set(requestId, { resolve, timeout })
-    process.send?.({
-      type: 'db_service_server_runtime_request',
-      requestId
-    } satisfies DbServiceChildMessage)
-  })
+export async function requestServerAccountConcurrencySnapshot(timeoutMs = 300): Promise<Record<string, number> | undefined> {
+  const snapshot = await requestServerRuntimeSnapshotByScope('account_concurrency', timeoutMs)
+  return snapshot?.accountConcurrency
 }
 
 export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
@@ -239,7 +230,10 @@ function handleDbServiceMessage(message: unknown): void {
       break
     case 'db_service_server_runtime_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
-        void respondToServerRuntimeRequest(record.requestId)
+        void respondToServerRuntimeRequest(
+          record.requestId,
+          record.scope === 'account_concurrency' ? 'account_concurrency' : 'full'
+        )
       }
       break
     case 'gateway_runtime_cache_invalidate':
@@ -296,14 +290,16 @@ async function runLocalDbServiceOperation<T extends DbServiceOperation>(operatio
   return await handleDbServiceOperation(operation)
 }
 
-async function respondToServerRuntimeRequest(requestId: string): Promise<void> {
+async function respondToServerRuntimeRequest(requestId: string, scope: DbServiceServerRuntimeSnapshotScope = 'full'): Promise<void> {
   const child = dbServiceProcess
   if (!child) {
     return
   }
 
   try {
-    const snapshot = await buildServerRuntimeSnapshot()
+    const snapshot = scope === 'account_concurrency'
+      ? await buildServerAccountConcurrencySnapshot()
+      : await buildServerRuntimeSnapshot()
     child.send?.({
       type: 'db_service_server_runtime_response',
       requestId,
@@ -320,21 +316,47 @@ async function respondToServerRuntimeRequest(requestId: string): Promise<void> {
   }
 }
 
+async function requestServerRuntimeSnapshotByScope(
+  scope: DbServiceServerRuntimeSnapshotScope,
+  timeoutMs: number
+): Promise<DbServiceServerRuntimeSnapshot | undefined> {
+  if (runtimeConfig.processRole !== 'db-service' || !process.send) {
+    return undefined
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<DbServiceServerRuntimeSnapshot | undefined>((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingServerRuntimeRequests.delete(requestId)
+      resolve(undefined)
+    }, timeoutMs)
+    pendingServerRuntimeRequests.set(requestId, { resolve, timeout })
+    process.send?.({
+      type: 'db_service_server_runtime_request',
+      requestId,
+      scope
+    } satisfies DbServiceChildMessage)
+  })
+}
+
 async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
   const [
     backgroundIpc,
     gatewaySideEffects,
-    auditCapture
+    auditCapture,
+    accountConcurrency
   ] = await Promise.all([
     import('../background/background-ipc.js'),
     import('../gateway/gateway-account-side-effects.service.js'),
-    import('../gateway/audit-capture.service.js')
+    import('../gateway/audit-capture.service.js'),
+    import('../../shared/account-concurrency.js')
   ])
   const workerSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(1000).catch(() => undefined)
   const workerState = backgroundIpc.getBackgroundWorkerState()
   const dbServiceState = getDbServiceState()
 
   return {
+    accountConcurrency: accountConcurrency.snapshotAccountConcurrency(),
     worker: {
       pid: workerSnapshot?.pid ?? workerState.pid,
       ready: workerSnapshot?.ready ?? workerState.ready,
@@ -362,6 +384,13 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
     },
     gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
     activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount()
+  }
+}
+
+async function buildServerAccountConcurrencySnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
+  const accountConcurrency = await import('../../shared/account-concurrency.js')
+  return {
+    accountConcurrency: accountConcurrency.snapshotAccountConcurrency()
   }
 }
 

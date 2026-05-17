@@ -4,6 +4,11 @@ type RuntimeLogLineSink = (line: string) => void
 
 let runtimeLogLineSink: RuntimeLogLineSink | undefined
 const pendingRuntimeLogLines: string[] = []
+let pendingRuntimeLogLineBytes = 0
+
+const maxPendingLineBytes = 256 * 1024
+const maxPendingQueueLines = 1000
+const maxPendingQueueBytes = 1024 * 1024
 
 export function setRuntimeLogLineSink(sink?: RuntimeLogLineSink): void {
   runtimeLogLineSink = sink
@@ -12,6 +17,7 @@ export function setRuntimeLogLineSink(sink?: RuntimeLogLineSink): void {
   }
 
   const lines = pendingRuntimeLogLines.splice(0, pendingRuntimeLogLines.length)
+  pendingRuntimeLogLineBytes = 0
   for (const line of lines) {
     runtimeLogLineSink(line)
   }
@@ -24,6 +30,7 @@ export class RuntimeLogIndexStream extends Writable {
     try {
       const text = Buffer.isBuffer(chunk) ? chunk.toString('utf8') : Buffer.from(chunk, encoding).toString('utf8')
       this.pending += text
+      this.truncateOversizedPendingLine()
       this.drainLines(false)
       callback()
     } catch (error) {
@@ -61,6 +68,28 @@ export class RuntimeLogIndexStream extends Writable {
       return
     }
 
-    pendingRuntimeLogLines.push(line)
+    enqueuePendingRuntimeLogLine(line)
   }
+
+  private truncateOversizedPendingLine(): void {
+    if (Buffer.byteLength(this.pending, 'utf8') <= maxPendingLineBytes) {
+      return
+    }
+    this.emitLine(`${this.pending.slice(0, maxPendingLineBytes)} [truncated: runtime log line exceeded pending buffer limit]`)
+    this.pending = ''
+  }
+}
+
+function enqueuePendingRuntimeLogLine(line: string): void {
+  const lineBytes = Buffer.byteLength(line, 'utf8')
+  while (
+    pendingRuntimeLogLines.length >= maxPendingQueueLines
+    || pendingRuntimeLogLineBytes + lineBytes > maxPendingQueueBytes
+  ) {
+    const removed = pendingRuntimeLogLines.shift()
+    if (removed === undefined) break
+    pendingRuntimeLogLineBytes = Math.max(0, pendingRuntimeLogLineBytes - Buffer.byteLength(removed, 'utf8'))
+  }
+  pendingRuntimeLogLines.push(line)
+  pendingRuntimeLogLineBytes += lineBytes
 }

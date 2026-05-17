@@ -9,6 +9,7 @@ import { averageFromSum, dateKey, hourKey, usageStatsTimezone } from './usage-st
 import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
+import { ensureUsageStatsBackfill } from './usage-stats-backfill-runner.js'
 import {
   refreshAccountLast7dRequestRankSnapshot,
   refreshApiKeyCurrentMonthCostRankSnapshot,
@@ -120,186 +121,27 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
 }
 
 function ensureCallerAccountUsageStatsBackfill(database: DatabaseSync, limit: number): { complete: boolean; processed: number } {
-  const backfillState = database
-    .prepare("SELECT cursor_created_at, cursor_id, last_success_at FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
-    .get(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null; last_success_at?: string | null } | undefined
-  if (backfillState?.last_success_at) {
-    return { complete: true, processed: 0 }
-  }
-
-  const usageStatsState = usageStatsJobState(database)
-  if (!usageStatsState.cursorCreatedAt) {
-    recordCallerAccountUsageStatsBackfill(database, 'skipped')
-    return { complete: true, processed: 0 }
-  }
-
-  const cursorCreatedAt = backfillState?.cursor_created_at ?? ''
-  const cursorId = backfillState?.cursor_id ?? ''
-  const rows = database
-    .prepare(`
-      SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
-      FROM usage_records
-      WHERE account_id IS NOT NULL
-        AND (created_at > ? OR (created_at = ? AND id > ?))
-        AND (created_at < ? OR (created_at = ? AND id <= ?))
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(cursorCreatedAt, cursorCreatedAt, cursorId, usageStatsState.cursorCreatedAt, usageStatsState.cursorCreatedAt, usageStatsState.cursorId, limit) as unknown as UsageStatsRecordRow[]
-  const updatedAt = nowIso()
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    for (const row of rows) {
-      aggregateCallerAccountUsageStatsRecord(database, row, updatedAt)
-    }
-    const last = rows[rows.length - 1]
-    const complete = !last || rows.length < limit || last.created_at > usageStatsState.cursorCreatedAt || (last.created_at === usageStatsState.cursorCreatedAt && last.id >= usageStatsState.cursorId)
-    if (complete) {
-      recordCallerAccountUsageStatsBackfill(database, `processed:${rows.length}`, updatedAt)
-    } else {
-      recordCallerAccountUsageStatsBackfillProgress(database, last.created_at, last.id, updatedAt)
-    }
-    commitDatabaseTransaction(database, transactionStarted)
-    return { complete, processed: rows.length }
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    recordCallerAccountUsageStatsBackfillFailure(database, error)
-    throw error
-  }
-}
-
-function recordCallerAccountUsageStatsBackfillProgress(database: DatabaseSync, cursorCreatedAt: string, cursorId: string, updatedAt = nowIso()): void {
-  database.prepare(`
-    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, ?, ?, NULL, NULL, 0, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_created_at = excluded.cursor_created_at,
-      cursor_id = excluded.cursor_id,
-      last_success_at = NULL,
-      last_error_message = NULL,
-      lag_seconds = 0,
-      updated_at = excluded.updated_at
-  `).run(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME, cursorCreatedAt, cursorId, updatedAt)
-}
-
-function recordCallerAccountUsageStatsBackfill(database: DatabaseSync, cursorId: string, updatedAt = nowIso()): void {
-  database.prepare(`
-    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, '', ?, ?, NULL, 0, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_id = excluded.cursor_id,
-      last_success_at = excluded.last_success_at,
-      last_error_message = NULL,
-      lag_seconds = 0,
-      updated_at = excluded.updated_at
-  `).run(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME, cursorId, updatedAt, updatedAt)
-}
-
-function recordCallerAccountUsageStatsBackfillFailure(database: DatabaseSync, error: unknown): void {
-  const updatedAt = nowIso()
-  const message = error instanceof Error ? error.message : 'caller_account 用量统计回填失败'
-  database.prepare(`
-    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, '', 'failed', NULL, ?, 0, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_id = excluded.cursor_id,
-      last_success_at = NULL,
-      last_error_message = excluded.last_error_message,
-      lag_seconds = 0,
-      updated_at = excluded.updated_at
-  `).run(CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME, message, updatedAt)
+  return ensureUsageStatsBackfill({
+    database,
+    jobName: CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME,
+    limit,
+    sourceCursor: usageStatsJobState(database),
+    recordFilterSql: 'account_id IS NOT NULL',
+    failureMessage: 'caller_account 用量统计回填失败',
+    aggregateRecord: aggregateCallerAccountUsageStatsRecord
+  })
 }
 
 function ensureAccountQualityMinuteStatsBackfill(database: DatabaseSync, limit: number): { complete: boolean; processed: number } {
-  const backfillState = database
-    .prepare("SELECT cursor_created_at, cursor_id, last_success_at FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
-    .get(ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null; last_success_at?: string | null } | undefined
-  if (backfillState?.last_success_at) {
-    return { complete: true, processed: 0 }
-  }
-
-  const usageStatsState = usageStatsJobState(database)
-  if (!usageStatsState.cursorCreatedAt) {
-    recordAccountQualityMinuteStatsBackfill(database, 'skipped')
-    return { complete: true, processed: 0 }
-  }
-
-  const cursorCreatedAt = backfillState?.cursor_created_at ?? ''
-  const cursorId = backfillState?.cursor_id ?? ''
-  const rows = database
-    .prepare(`
-      SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
-      FROM usage_records
-      WHERE account_id IS NOT NULL
-        AND api_key_id IS NOT NULL
-        AND (created_at > ? OR (created_at = ? AND id > ?))
-        AND (created_at < ? OR (created_at = ? AND id <= ?))
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(cursorCreatedAt, cursorCreatedAt, cursorId, usageStatsState.cursorCreatedAt, usageStatsState.cursorCreatedAt, usageStatsState.cursorId, limit) as unknown as UsageStatsRecordRow[]
-  const updatedAt = nowIso()
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    for (const row of rows) {
-      aggregateAccountQualityMinuteStatsRecord(database, row, updatedAt)
-    }
-    const last = rows[rows.length - 1]
-    const complete = !last || rows.length < limit || last.created_at > usageStatsState.cursorCreatedAt || (last.created_at === usageStatsState.cursorCreatedAt && last.id >= usageStatsState.cursorId)
-    if (complete) {
-      recordAccountQualityMinuteStatsBackfill(database, `processed:${rows.length}`, updatedAt)
-    } else {
-      recordAccountQualityMinuteStatsBackfillProgress(database, last.created_at, last.id, updatedAt)
-    }
-    commitDatabaseTransaction(database, transactionStarted)
-    return { complete, processed: rows.length }
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    recordAccountQualityMinuteStatsBackfillFailure(database, error)
-    throw error
-  }
-}
-
-function recordAccountQualityMinuteStatsBackfillProgress(database: DatabaseSync, cursorCreatedAt: string, cursorId: string, updatedAt = nowIso()): void {
-  database.prepare(`
-    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, ?, ?, NULL, NULL, 0, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_created_at = excluded.cursor_created_at,
-      cursor_id = excluded.cursor_id,
-      last_success_at = NULL,
-      last_error_message = NULL,
-      lag_seconds = 0,
-      updated_at = excluded.updated_at
-  `).run(ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME, cursorCreatedAt, cursorId, updatedAt)
-}
-
-function recordAccountQualityMinuteStatsBackfill(database: DatabaseSync, cursorId: string, updatedAt = nowIso()): void {
-  database.prepare(`
-    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, '', ?, ?, NULL, 0, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_id = excluded.cursor_id,
-      last_success_at = excluded.last_success_at,
-      last_error_message = NULL,
-      lag_seconds = 0,
-      updated_at = excluded.updated_at
-  `).run(ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME, cursorId, updatedAt, updatedAt)
-}
-
-function recordAccountQualityMinuteStatsBackfillFailure(database: DatabaseSync, error: unknown): void {
-  const updatedAt = nowIso()
-  const message = error instanceof Error ? error.message : '账号质量分钟缓存回填失败'
-  database.prepare(`
-    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, '', 'failed', NULL, ?, 0, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_id = excluded.cursor_id,
-      last_success_at = NULL,
-      last_error_message = excluded.last_error_message,
-      lag_seconds = 0,
-      updated_at = excluded.updated_at
-  `).run(ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME, message, updatedAt)
+  return ensureUsageStatsBackfill({
+    database,
+    jobName: ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME,
+    limit,
+    sourceCursor: usageStatsJobState(database),
+    recordFilterSql: 'account_id IS NOT NULL AND api_key_id IS NOT NULL',
+    failureMessage: '账号质量分钟缓存回填失败',
+    aggregateRecord: aggregateAccountQualityMinuteStatsRecord
+  })
 }
 
 export function refreshGroupAccountStatsCache(): void {

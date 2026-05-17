@@ -7,7 +7,7 @@
         filter-title="日志筛选"
         :active-filter-count="activeFilterCount"
         :refresh-loading="loading"
-        @refresh="loadData"
+        @refresh="refreshIndexLogs"
         @reset="resetFilters"
         @search="applyIndexFilters"
       >
@@ -182,7 +182,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
@@ -190,6 +190,7 @@ import type { RuntimeLogFacets, RuntimeLogGrepItem, RuntimeLogGrepResult, Runtim
 import { formatDateTime } from '@/shared/formatters'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import {
   eventText,
   grepLinePositionText,
@@ -235,9 +236,6 @@ const defaultRuntimeLogsPageState = (): RuntimeLogsPageState => {
 const pageStateCache = usePageStateCache<RuntimeLogsPageState>(undefined, defaultRuntimeLogsPageState, { version: 4 })
 const initialPageState = pageStateCache.read()
 
-const loading = ref(false)
-const mobileLoadingMore = ref(false)
-const records = ref<RuntimeLogSummary[]>([])
 const grepRecords = ref<RuntimeLogGrepItem[]>([])
 const grepResult = ref<RuntimeLogGrepResult>()
 const facets = ref<RuntimeLogFacets>()
@@ -254,21 +252,58 @@ const grepKeywordFilter = ref(initialPageState.grepKeywordFilter)
 const levelFilter = ref<RuntimeLogLevel | 'all'>(initialPageState.levelFilter)
 const eventFilter = ref<string | undefined>(initialPageState.eventFilter)
 const keywordFilter = ref(initialPageState.keywordFilter)
-const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
+const {
+  items: records,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  pagination,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileRecords,
+  refreshMobile: refreshMobileRecords,
+  resetPagination
+} = useResponsivePagedList<RuntimeLogSummary, { refreshFacets?: boolean }>({
+  pageSize,
+  initialPagination: initialPageState.pagination,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${range?.[1] ?? total - 1} 条运行日志，还有更多`
+    : `共 ${total} 条运行日志`,
+  fetchPage: async (options, pageState) => {
+    const traceId = traceIdFilter.value.trim()
+    const range = normalizeOptionalTimeRange(indexTimeRange.value)
+    const facetsRequest = options.refreshFacets === true || !facets.value
+      ? api.runtimeLogs.facets()
+      : Promise.resolve(facets.value)
+    const [result, nextFacets] = await Promise.all([
+      api.runtimeLogs.list({
+        page: pageState.current,
+        pageSize: pageState.pageSize,
+        traceId: traceId || undefined,
+        level: levelFilter.value,
+        event: eventFilter.value || undefined,
+        keyword: keywordFilter.value || undefined,
+        startAt: range?.[0].toISOString(),
+        endAt: range?.[1].toISOString()
+      }),
+      facetsRequest
+    ])
+    if (nextFacets) {
+      facets.value = nextFacets
+    }
+    return result
+  },
+  onError: (error) => {
+    console.error(error)
+    message.error('加载运行日志失败')
+  }
+})
 
 const viewModeOptions = runtimeLogViewModeOptions
 const levelOptions = runtimeLogLevelOptions
 
 const eventOptions = computed(() => (facets.value?.events ?? []).map((event) => ({ label: eventText(event), value: event, rawEvent: event })))
-const tablePagination = computed(() => ({
-  current: pagination.current,
-  pageSize: pagination.pageSize,
-  total: pagination.total,
-  hideOnSinglePage: true,
-  showSizeChanger: false,
-  showTotal: (total: number) => `共 ${total} 条运行日志`
-}))
-const mobileHasMore = computed(() => records.value.length < pagination.total)
 const grepRuntime = computed(() => facets.value?.grep)
 const grepRangeLimitText = computed(() => {
   const runtime = grepRuntime.value
@@ -369,7 +404,7 @@ function handleModeChange(value: string | number): void {
 }
 
 function applyIndexFilters(): void {
-  pagination.current = 1
+  resetPagination()
   void loadData()
 }
 
@@ -380,10 +415,9 @@ function resetFilters(): void {
   eventFilter.value = defaults.eventFilter
   keywordFilter.value = defaults.keywordFilter
   indexTimeRange.value = parseOptionalTimeRange(defaults.indexTimeRange)
-  pagination.current = defaults.pagination.current
-  pagination.pageSize = defaults.pagination.pageSize
+  resetPagination()
   pageStateCache.clear()
-  void loadData()
+  void loadData({ refreshFacets: true })
 }
 
 function resetGrepSearch(): void {
@@ -400,65 +434,8 @@ function filterEventOption(input: string, option?: { label?: string; rawEvent?: 
   return [option?.label, option?.rawEvent, option?.value].some((item) => String(item ?? '').toLowerCase().includes(keyword))
 }
 
-async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Promise<void> {
-  if (!options.quiet) {
-    loading.value = true
-  }
-  try {
-    const traceId = traceIdFilter.value.trim()
-    const range = normalizeOptionalTimeRange(indexTimeRange.value)
-    const [result, nextFacets] = await Promise.all([
-      api.runtimeLogs.list({
-        page: pagination.current,
-        pageSize: pagination.pageSize,
-        traceId: traceId || undefined,
-        level: levelFilter.value,
-        event: eventFilter.value || undefined,
-        keyword: keywordFilter.value || undefined,
-        startAt: range?.[0].toISOString(),
-        endAt: range?.[1].toISOString()
-      }),
-      api.runtimeLogs.facets()
-    ])
-    pagination.current = result.page
-    pagination.pageSize = result.pageSize
-    pagination.total = result.total
-    records.value = options.append ? [...records.value, ...result.items] : result.items
-    facets.value = nextFacets
-  } catch (error) {
-    console.error(error)
-    message.error('加载运行日志失败')
-  } finally {
-    if (!options.quiet) {
-      loading.value = false
-    }
-  }
-}
-
-function handleTableChange(paginationInfo: unknown): void {
-  if (!paginationInfo || typeof paginationInfo !== 'object') return
-  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
-  const nextCurrent = Number(next.current)
-  const nextPageSize = Number(next.pageSize)
-  pagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
-  pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
-  void loadData()
-}
-
-async function loadMoreMobileRecords(): Promise<void> {
-  if (!mobileHasMore.value || mobileLoadingMore.value) return
-  mobileLoadingMore.value = true
-  pagination.current += 1
-  try {
-    await loadData({ append: true, quiet: true })
-  } finally {
-    mobileLoadingMore.value = false
-  }
-}
-
-async function refreshMobileRecords(): Promise<void> {
-  pagination.current = 1
-  await loadData()
+function refreshIndexLogs(): void {
+  void loadData({ refreshFacets: true })
 }
 
 async function searchGrepLogs(): Promise<void> {
@@ -515,7 +492,7 @@ function searchTrace(traceId?: string): void {
   if (!traceId) return
   viewMode.value = 'index'
   traceIdFilter.value = traceId
-  pagination.current = 1
+  resetPagination()
   void loadData()
 }
 

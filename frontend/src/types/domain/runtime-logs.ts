@@ -15,6 +15,7 @@ export interface RuntimeLogSummary {
 export interface RuntimeLogSearchResult {
   items: RuntimeLogSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
   elapsedMs: number

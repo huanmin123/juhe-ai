@@ -41,13 +41,17 @@ function Test-RipgrepDependency {
 }
 
 if (-not (Test-CommandExists 'node')) {
-  throw 'Node.js is required. Install Node.js 22.13.0+ (22.x) or 23.4.0+ before running this script.'
+  throw 'Node.js LTS is required. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) before running this script.'
 }
 
-node --input-type=module -e "import 'node:sqlite'" *> $null
+$runtimeCheckPath = 'backend/dist/scripts/preflight/check-node-sqlite.js'
+if (-not (Test-Path -LiteralPath $runtimeCheckPath)) {
+  throw "Runtime preflight script not found: $runtimeCheckPath. Please rebuild the release package."
+}
+
+node $runtimeCheckPath
 if ($LASTEXITCODE -ne 0) {
-  $nodeVersion = (& node -v) -join ''
-  throw "Node.js with node:sqlite support is required. Install Node.js 22.13.0+ (22.x) or 23.4.0+ / a newer LTS release. Current: $nodeVersion"
+  exit $LASTEXITCODE
 }
 
 if (-not (Test-CommandExists 'pnpm')) {

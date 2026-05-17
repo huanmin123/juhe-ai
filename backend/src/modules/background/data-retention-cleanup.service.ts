@@ -17,6 +17,7 @@ import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
 
 const dayMs = 24 * 60 * 60 * 1000
 const usageRecordRetentionMaxDays = 7
+const accountQualityMinuteRetentionHours = 24
 const statsMinuteRetentionMaxHours = 24 * 14
 const statsHourlyRetentionMaxDays = 180
 const statsDailyRetentionMaxDays = 800
@@ -25,6 +26,7 @@ const statsMonthlyRetentionMaxMonths = 60
 const rankSnapshotRetentionMaxDays = 365
 const systemMetricsRawRetentionMaxDays = 7
 const statsRetentionMaxDays = 30
+const snapshotRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
 const defaultCleanupBatchSize = 10000
 const defaultCleanupMaxBatchesPerRun = 10
@@ -36,6 +38,7 @@ export interface DataRetentionCleanupResult {
   auditLogs: number
   runtimeLogs: number
   usageRecords: number
+  accountQualityMinuteStats: number
   usageStatsMinute: number
   usageModelMinute: number
   usageErrorMinute: number
@@ -72,8 +75,10 @@ export interface DataRetentionCleanupResult {
   aiPerformanceSummaryWindows: number
   usageQuotaHourlyWindows: number
   usageScopeRangeWindows: number
+  accountUsageSnapshots: number
   systemMetricsSamples: number
   systemMetricsHourly: number
+  systemMetricsTrendWindows: number
   tableStorageSnapshots: number
   systemSessions: number
 }
@@ -108,6 +113,8 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       rankSnapshotDays: settingNumber(settings, 'usageRankSnapshotRetentionDays', 30, 1, rankSnapshotRetentionMaxDays),
       systemMetricsSampleDays: settingNumber(settings, 'systemMetricsRetentionDays', 7, 1, systemMetricsRawRetentionMaxDays),
       systemMetricsHourlyDays: settingNumber(settings, 'systemMetricsHourlyRetentionDays', 30, 1, statsRetentionMaxDays),
+      accountUsageSnapshotDays: snapshotRetentionMaxDays,
+      fixedWindowDays: statsRetentionMaxDays,
       tableStorageSnapshotDays: tableMonitorSampleRetentionDays
     }
 
@@ -123,18 +130,22 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
     result.usageRecords = cleanupInBatches(() => cleanupProcessedUsageRecordsBefore(cutoffIso(now, retention.usageRecordDays), batchSize), batchSize, maxBatches)
 
     cleanupRetentionInBatches(result, () => cleanupUsageStatsBucketsBefore({
+      accountQualityMinuteCutoffMinute: cutoffMinuteKey(now, accountQualityMinuteRetentionHours, timezone),
       minuteCutoffMinute: cutoffMinuteKey(now, retention.statsMinuteHours, timezone),
       hourlyCutoffHour: cutoffHourKey(now, retention.statsHourlyDays, timezone),
       dailyCutoffDate: cutoffDateKey(now, retention.statsDailyDays, timezone),
       weeklyCutoffWeek: cutoffWeekKey(now, retention.statsWeeklyWeeks, timezone),
       monthlyCutoffMonth: cutoffMonthKey(now, retention.statsMonthlyMonths, timezone),
       rankSnapshotCutoffIso: cutoffIso(now, retention.rankSnapshotDays),
+      windowCutoffDate: cutoffDateKey(now, retention.fixedWindowDays, timezone),
+      windowCutoffIso: cutoffIso(now, retention.accountUsageSnapshotDays),
       limit: batchSize
     }), maxBatches)
 
     cleanupRetentionInBatches(result, () => cleanupSystemMetricsBefore({
       samplesCutoffIso: cutoffIso(now, retention.systemMetricsSampleDays),
       hourlyCutoffHour: cutoffHourKey(now, retention.systemMetricsHourlyDays, timezone),
+      trendWindowCutoffDate: cutoffDateKey(now, retention.fixedWindowDays, timezone),
       limit: batchSize
     }), maxBatches)
 
@@ -240,6 +251,7 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     auditLogs: 0,
     runtimeLogs: 0,
     usageRecords: 0,
+    accountQualityMinuteStats: 0,
     usageStatsMinute: 0,
     usageModelMinute: 0,
     usageErrorMinute: 0,
@@ -276,8 +288,10 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     aiPerformanceSummaryWindows: 0,
     usageQuotaHourlyWindows: 0,
     usageScopeRangeWindows: 0,
+    accountUsageSnapshots: 0,
     systemMetricsSamples: 0,
     systemMetricsHourly: 0,
+    systemMetricsTrendWindows: 0,
     tableStorageSnapshots: 0,
     systemSessions: 0
   }

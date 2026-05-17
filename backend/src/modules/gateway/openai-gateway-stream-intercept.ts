@@ -3,7 +3,12 @@ import {
   gatewayStreamClientRetryErrorCode,
   gatewayStreamClientRetryMessage
 } from './openai-gateway-responses.js'
-import { openAIStreamEventHasVisibleOutput } from './openai-gateway-usage.js'
+import {
+  isOpenAIStreamFailureEvent,
+  isOpenAIStreamVisibleOutputEvent,
+  parseOpenAISseEventText,
+  type ParsedOpenAIStreamEvent
+} from './openai-gateway-stream-events.js'
 
 export interface StreamInterceptDecision {
   reason: 'before_output_stream_failure'
@@ -23,25 +28,29 @@ export interface StreamInterceptorResult {
   parserSkipped: boolean
 }
 
-interface ParsedSseEvent {
-  rawText: string
-  eventName: string
-  dataText: string
-  data?: Record<string, unknown>
-  dataParseError: boolean
-  eventType: string
-  errorCode?: string
-  errorMessage?: string
+export interface OpenAIStreamInterceptBufferOptions {
+  clientRetryEnabled?: boolean
 }
 
 const maxBufferedSseEventBytes = 256 * 1024
 
 export class OpenAIStreamInterceptBuffer {
   private readonly pendingBuffer = new PendingSseEventBuffer()
+  private readonly clientRetryEnabled: boolean
   private parserSkipped = false
   private outputSeen = false
 
+  constructor(options: OpenAIStreamInterceptBufferOptions = {}) {
+    this.clientRetryEnabled = options.clientRetryEnabled === true
+  }
+
   pushChunk(chunk: Buffer): StreamInterceptorResult {
+    if (!this.clientRetryEnabled) {
+      return {
+        chunks: [chunk],
+        parserSkipped: false
+      }
+    }
     if (this.parserSkipped) {
       return {
         chunks: [chunk],
@@ -65,7 +74,7 @@ export class OpenAIStreamInterceptBuffer {
       const rawBuffer = this.pendingBuffer.shiftEvent()
       if (!rawBuffer) break
       const rawText = rawBuffer.toString('utf8')
-      const event = parseSseEvent(rawText)
+      const event = parseOpenAISseEventText(rawText)
       const decision = buildBeforeOutputFailureDecision(event, this.outputSeen)
       if (decision) {
         chunks.push(buildGatewayStreamFailureEvent(decision.rewriteMessage, decision.rewriteErrorCode))
@@ -76,7 +85,7 @@ export class OpenAIStreamInterceptBuffer {
         }
       }
       chunks.push(rawBuffer)
-      if (isVisibleOutputEvent(event)) {
+      if (isOpenAIStreamVisibleOutputEvent(event)) {
         this.outputSeen = true
       }
     }
@@ -88,6 +97,12 @@ export class OpenAIStreamInterceptBuffer {
   }
 
   flushPendingOnEof(): StreamInterceptorResult {
+    if (!this.clientRetryEnabled) {
+      return {
+        chunks: [],
+        parserSkipped: false
+      }
+    }
     if (this.parserSkipped || this.pendingBuffer.length === 0) {
       return {
         chunks: [],
@@ -96,7 +111,7 @@ export class OpenAIStreamInterceptBuffer {
     }
 
     const rawBuffer = this.pendingBuffer.drainEnsuringBoundary()
-    const event = parseSseEvent(rawBuffer.toString('utf8'))
+    const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
     const decision = buildBeforeOutputFailureDecision(event, this.outputSeen)
     if (decision) {
       return {
@@ -105,7 +120,7 @@ export class OpenAIStreamInterceptBuffer {
         parserSkipped: this.parserSkipped
       }
     }
-    if (isVisibleOutputEvent(event)) {
+    if (isOpenAIStreamVisibleOutputEvent(event)) {
       this.outputSeen = true
     }
     return {
@@ -115,8 +130,8 @@ export class OpenAIStreamInterceptBuffer {
   }
 }
 
-function buildBeforeOutputFailureDecision(event: ParsedSseEvent, outputSeen: boolean): StreamInterceptDecision | undefined {
-  if (outputSeen || !isStreamFailureEvent(event)) {
+function buildBeforeOutputFailureDecision(event: ParsedOpenAIStreamEvent, outputSeen: boolean): StreamInterceptDecision | undefined {
+  if (outputSeen || !isOpenAIStreamFailureEvent(event)) {
     return undefined
   }
   return {
@@ -130,19 +145,6 @@ function buildBeforeOutputFailureDecision(event: ParsedSseEvent, outputSeen: boo
     rewriteMessage: event.errorMessage || gatewayStreamClientRetryMessage,
     outputSeen
   }
-}
-
-function isStreamFailureEvent(event: ParsedSseEvent): boolean {
-  if (event.eventType === 'response.failed' || event.eventName === 'response.failed') return true
-  if (event.eventType === 'error' || event.eventName === 'error') return true
-  return Boolean(hasExplicitErrorObject(event))
-}
-
-function hasExplicitErrorObject(event: ParsedSseEvent): boolean {
-  const data = event.data
-  if (!data) return false
-  const response = objectValue(data.response)
-  return Boolean(objectValue(response?.error) || objectValue(data.error))
 }
 
 class PendingSseEventBuffer {
@@ -346,73 +348,4 @@ function trailingBytes(previousTail: Buffer, chunk: Buffer, length: number): Buf
 
 function bufferEndsWith(buffer: Buffer, suffix: Buffer): boolean {
   return buffer.length >= suffix.length && buffer.subarray(buffer.length - suffix.length).equals(suffix)
-}
-
-function parseSseEvent(rawText: string): ParsedSseEvent {
-  let eventName = ''
-  const dataLines: string[] = []
-  for (const line of rawText.split(/\r?\n|\r/)) {
-    if (line.startsWith('event:')) {
-      eventName = line.slice(6).trim()
-    } else if (line.startsWith('data:')) {
-      dataLines.push(line.slice(5).trimStart())
-    }
-  }
-  const dataText = dataLines.join('\n').trim()
-  if (!dataText || dataText === '[DONE]') {
-    return {
-      rawText,
-      eventName,
-      dataText,
-      dataParseError: false,
-      eventType: dataText === '[DONE]' ? '[DONE]' : eventName
-    }
-  }
-  try {
-    const data = JSON.parse(dataText) as Record<string, unknown>
-    const eventType = typeof data.type === 'string' ? data.type : eventName
-    const error = extractEventError(data)
-    return {
-      rawText,
-      eventName,
-      dataText,
-      data,
-      dataParseError: false,
-      eventType,
-      errorCode: typeof error?.code === 'string' ? error.code : undefined,
-      errorMessage: typeof error?.message === 'string' ? error.message : undefined
-    }
-  } catch {
-    return {
-      rawText,
-      eventName,
-      dataText,
-      dataParseError: true,
-      eventType: eventName
-    }
-  }
-}
-
-function extractEventError(data: Record<string, unknown>): Record<string, unknown> | undefined {
-  const response = objectValue(data.response)
-  const responseError = objectValue(response?.error)
-  if (responseError) return responseError
-  const error = objectValue(data.error)
-  if (error) return error
-  if (typeof data.type === 'string' && data.type === 'error' && (typeof data.code === 'string' || typeof data.message === 'string')) {
-    return data
-  }
-  return undefined
-}
-
-function isVisibleOutputEvent(event: ParsedSseEvent): boolean {
-  const data = event.data
-  if (!data) return false
-  return openAIStreamEventHasVisibleOutput(data, event.eventType)
-}
-
-function objectValue(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined
 }

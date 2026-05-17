@@ -1,5 +1,6 @@
 import { buildSystemAccountScopeClause, currentSystemAccountId, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { compatiblePagedTotal, takePageRows } from './query-utils.js'
 import { loadAccountNameMap, loadApiKeyNameMap, loadGroupNameMap, loadSystemAccountNameMap } from './repository-lookups.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
@@ -62,6 +63,7 @@ export interface UsageRecordListOptions {
 export interface UsageRecordListResult {
   items: UsageRecordSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }
@@ -153,13 +155,7 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
   const database = getRecordDatabase()
-  const totalRow = database
-    .prepare(`
-      SELECT COUNT(*) AS total
-      FROM usage_records ur
-      ${filters.clause}
-    `)
-    .get(...filters.params) as Record<string, unknown> | undefined
+  const offset = (listOptions.page - 1) * listOptions.pageSize
   const rows = database
     .prepare(`
       SELECT
@@ -193,11 +189,14 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
       ${orderClause}
       LIMIT ? OFFSET ?
     `)
-    .all(...filters.params, listOptions.pageSize, (listOptions.page - 1) * listOptions.pageSize) as Array<Record<string, unknown>>
-  const rowsWithNames = hydrateUsageRecordNames(rows)
+    .all(...filters.params, listOptions.pageSize + 1, offset) as Array<Record<string, unknown>>
+  const pageRows = takePageRows(rows, listOptions.pageSize)
+  const rowsWithNames = hydrateUsageRecordNames(pageRows.rows)
+  const items = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
   return {
-    items: rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames)),
-    total: Number(totalRow?.total ?? 0),
+    items,
+    total: compatiblePagedTotal(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
     page: listOptions.page,
     pageSize: listOptions.pageSize
   }

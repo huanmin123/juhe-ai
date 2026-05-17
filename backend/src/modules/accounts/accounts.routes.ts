@@ -8,6 +8,7 @@ import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { applyServerAccountConcurrencyToAccountList } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 import { testOpenAIAccount } from './account-test.service.js'
@@ -69,8 +70,13 @@ const accountListSortFields = new Set<AccountListSortField>([
   'notes'
 ])
 
-accountsRouter.get('/', (req, res) => {
-  res.json(ok(listAccountsPage(getRequestAccessScope(req.query.systemAccountId), parseAccountListOptions(req.query))))
+accountsRouter.get('/', async (req, res, next) => {
+  try {
+    const result = listAccountsPage(getRequestAccessScope(req.query.systemAccountId), parseAccountListOptions(req.query))
+    res.json(ok(await applyServerAccountConcurrencyToAccountList(result)))
+  } catch (error) {
+    next(error)
+  }
 })
 
 function parseAccountListOptions(query: Record<string, unknown>): AccountListOptions {

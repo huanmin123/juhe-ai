@@ -78,6 +78,7 @@ export interface OperationLogDetail extends OperationLogSummary {
 export interface OperationLogListResult {
   items: OperationLogSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }

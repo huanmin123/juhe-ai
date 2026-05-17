@@ -189,13 +189,29 @@ function cloneGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceGateway
 }
 
 function gatewayRuntimeCacheTtlMs(runtime: DbServiceGatewayRuntime): number {
-  const expiresAt = runtime.apiKey?.expires_at
-  if (!expiresAt) {
-    return gatewayRuntimeTtlMs
+  let ttlMs = gatewayRuntimeTtlMs
+  for (const expiresAt of runtimeCacheExpiryCandidates(runtime)) {
+    const expiresAtMs = Date.parse(expiresAt)
+    if (!Number.isFinite(expiresAtMs)) {
+      continue
+    }
+    ttlMs = Math.min(ttlMs, expiresAtMs - Date.now())
   }
-  const expiresAtMs = Date.parse(expiresAt)
-  if (!Number.isFinite(expiresAtMs)) {
-    return gatewayRuntimeTtlMs
+  return Math.max(1, ttlMs)
+}
+
+function runtimeCacheExpiryCandidates(runtime: DbServiceGatewayRuntime): string[] {
+  const candidates = [
+    runtime.apiKey?.expires_at ?? undefined,
+    runtime.groupAccess?.groupAuthorizationExpiresAt
+  ]
+  for (const account of runtime.accounts) {
+    candidates.push(
+      account.accountExpiresAt,
+      account.expiresAt,
+      account.accountAuthorizationExpiresAt,
+      account.groupAuthorizationExpiresAt
+    )
   }
-  return Math.max(1, Math.min(gatewayRuntimeTtlMs, expiresAtMs - Date.now()))
+  return candidates.filter((value): value is string => Boolean(value))
 }

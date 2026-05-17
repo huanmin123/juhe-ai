@@ -10,3 +10,19 @@ export function chunkValues<T>(values: T[], chunkSize: number): T[][] {
   }
   return chunks
 }
+
+export function takePageRows<T>(rows: T[], pageSize: number): { rows: T[]; hasMore: boolean } {
+  const size = Math.max(0, Math.trunc(pageSize))
+  const hasMore = rows.length > size
+  return {
+    rows: hasMore ? rows.slice(0, size) : rows,
+    hasMore
+  }
+}
+
+export function compatiblePagedTotal(page: number, pageSize: number, itemCount: number, hasMore: boolean): number {
+  const safePage = Math.max(1, Math.trunc(page))
+  const safePageSize = Math.max(0, Math.trunc(pageSize))
+  const safeItemCount = Math.max(0, Math.trunc(itemCount))
+  return (safePage - 1) * safePageSize + safeItemCount + (hasMore ? 1 : 0)
+}

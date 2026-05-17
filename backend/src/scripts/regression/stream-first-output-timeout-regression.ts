@@ -50,6 +50,27 @@ app.use(requestContextMiddleware)
 app.use('/v1', express.raw({ type: () => true, limit: '8mb' }), captureGatewayRawBody, openAIGatewayRouter)
 let scenarioCredentialIndex = 0
 
+function codexStreamHeaders(apiKey: string, turnId: string): Record<string, string> {
+  return {
+    authorization: `Bearer ${apiKey}`,
+    'content-type': 'application/json',
+    accept: 'text/event-stream',
+    'x-codex-turn-metadata': JSON.stringify({
+      turn_id: turnId,
+      session_id: `session-${turnId}`,
+      thread_id: `thread-${turnId}`
+    })
+  }
+}
+
+function genericStreamHeaders(apiKey: string): Record<string, string> {
+  return {
+    authorization: `Bearer ${apiKey}`,
+    'content-type': 'application/json',
+    accept: 'text/event-stream'
+  }
+}
+
 async function main(): Promise<void> {
   let appServer: http.Server | undefined
   let upstreamServer: http.Server | undefined
@@ -75,6 +96,7 @@ async function main(): Promise<void> {
     const overloadedBeforeOutputCredential = createScenarioCredential(upstreamBaseUrl, '容量错误未输出前重试')
     const slowDownCredential = createScenarioCredential(upstreamBaseUrl, 'slow_down 未输出前重试')
     const genericErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '未知 error 事件默认重试')
+    const nonCodexErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '非 Codex 未输出前不改写')
     const overloadedNoBoundaryCredential = createScenarioCredential(upstreamBaseUrl, '容量错误缺少收尾边界')
     const overloadedAfterOutputCredential = createScenarioCredential(upstreamBaseUrl, '输出后容量错误不拦截')
     const outputItemThenFailureCredential = createScenarioCredential(upstreamBaseUrl, 'output item 后失败')
@@ -87,11 +109,7 @@ async function main(): Promise<void> {
     const startedAt = Date.now()
     const response = await fetch(`${baseUrl}/v1/responses`, {
       method: 'POST',
-      headers: {
-        authorization: `Bearer ${noFirstChunkCredential.apiKey.key}`,
-        'content-type': 'application/json',
-        accept: 'text/event-stream'
-      },
+      headers: codexStreamHeaders(noFirstChunkCredential.apiKey.key, 'no-first-chunk'),
       body: JSON.stringify({
         model: 'gpt-4o-mini',
         input: 'no-first-chunk',
@@ -201,6 +219,10 @@ async function main(): Promise<void> {
       outputSeen: false
     })
 
+    const nonCodexErrorEventResult = await requestGenericStreamFailureBeforeOutput(baseUrl, nonCodexErrorEventCredential.apiKey.key, 'generic-error-event-before-output')
+    assert(nonCodexErrorEventResult.streamText.includes('internal_server_error'), `非 Codex 未输出前失败应保留原始错误码：${nonCodexErrorEventResult.streamText}`)
+    assert(!nonCodexErrorEventResult.streamText.includes('upstream_retryable_error'), `非 Codex 未输出前失败不应伪造 Codex 可重试错误：${nonCodexErrorEventResult.streamText}`)
+
     const overloadedNoBoundaryResult = await requestStreamFailureBeforeOutput(baseUrl, overloadedNoBoundaryCredential.apiKey.key, 'server-overloaded-before-output-no-boundary')
     assert(!overloadedNoBoundaryResult.streamText.includes('server_is_overloaded'), `EOF 尾包未输出前不应把原始容量错误发给客户端：${overloadedNoBoundaryResult.streamText}`)
     assert(overloadedNoBoundaryResult.streamText.includes('upstream_retryable_error'), `EOF 尾包未输出前应按通用兜底改写为可重试错误：${overloadedNoBoundaryResult.streamText}`)
@@ -229,7 +251,7 @@ async function main(): Promise<void> {
     assert(topLevelCodeMessageResult.streamText.includes('"code":"diagnostic_code"'), `普通事件的 code 字段应原样透传：${topLevelCodeMessageResult.streamText}`)
     assert(!topLevelCodeMessageResult.streamText.includes('upstream_retryable_error'), `普通事件顶层 code/message 不应误判为失败：${topLevelCodeMessageResult.streamText}`)
 
-    console.log('流式超时回归通过：首段等待、首段后无新数据、完整 SSE 事件等待、解析跳过后原样转发、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 通用兜底、未知 error 事件兜底、输出后通用流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、完整 SSE 事件等待、解析跳过后原样转发、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、非 Codex 不伪造可重试码、输出后通用流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -427,11 +449,7 @@ async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string)
   const startedAt = Date.now()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream'
-    },
+    headers: codexStreamHeaders(apiKey, 'first-chunk-then-idle'),
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       input: 'first-chunk-then-idle',
@@ -461,11 +479,7 @@ async function requestFragmentedSseEventTimeout(baseUrl: string, apiKey: string)
   const startedAt = Date.now()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream'
-    },
+    headers: codexStreamHeaders(apiKey, 'fragmented-sse-event-timeout'),
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       input: 'fragmented-sse-event-timeout',
@@ -495,11 +509,7 @@ async function requestParserSkippedRawForward(baseUrl: string, apiKey: string): 
   const startedAt = Date.now()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream'
-    },
+    headers: codexStreamHeaders(apiKey, 'parser-skipped-raw-forward'),
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       input: 'parser-skipped-raw-forward',
@@ -528,11 +538,7 @@ async function requestMissingTerminalEof(baseUrl: string, apiKey: string): Promi
 
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream'
-    },
+    headers: codexStreamHeaders(apiKey, 'missing-terminal-eof'),
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       input: 'missing-terminal-eof',
@@ -563,11 +569,7 @@ async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): P
   const startedAt = Date.now()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream'
-    },
+    headers: codexStreamHeaders(apiKey, 'heartbeat-then-completed'),
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       input: 'heartbeat-then-completed',
@@ -617,11 +619,38 @@ async function requestStreamFailureBeforeOutput(
   const startedAt = Date.now()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream'
-    },
+    headers: codexStreamHeaders(apiKey, scenario),
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: scenario,
+      stream: true
+    })
+  })
+  assert.equal(response.status, 200)
+  assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
+  return {
+    streamText: await response.text(),
+    durationMs: Date.now() - startedAt
+  }
+}
+
+async function requestGenericStreamFailureBeforeOutput(
+  baseUrl: string,
+  apiKey: string,
+  scenario: string
+): Promise<{ streamText: string; durationMs: number }> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 10,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const startedAt = Date.now()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: genericStreamHeaders(apiKey),
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       input: scenario,
@@ -663,11 +692,7 @@ async function requestStreamScenario(
   const startedAt = Date.now()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: {
-      authorization: `Bearer ${apiKey}`,
-      'content-type': 'application/json',
-      accept: 'text/event-stream'
-    },
+    headers: codexStreamHeaders(apiKey, scenario),
     body: JSON.stringify({
       model: 'gpt-4o-mini',
       input: scenario,
@@ -708,16 +733,23 @@ async function assertStreamInterceptAuditMetadata(
   }
 ): Promise<void> {
   const logs = repositories.listAuditLogs({ accountId, outcome: 'stream_failed', page: 1, pageSize: 20 })
-  const detail = logs.items
-    .map((item) => repositories.getAuditLogDetail(item.id))
-    .find((item) => item?.payloads.some((payload) => payload.partType === 'gateway_metadata'))
-  assert(detail, `未找到账号 ${accountId} 的流式拦截审计日志`)
-  const metadataPayload = detail.payloads.find((payload) => payload.partType === 'gateway_metadata')
-  assert(metadataPayload, '流式拦截审计日志缺少 gateway_metadata')
-  const payloadDetail = await repositories.getAuditLogPayload(detail.id, metadataPayload.id)
-  assert(payloadDetail?.bodyText, '流式拦截审计元信息缺少正文')
-  const body = JSON.parse(payloadDetail.bodyText) as { metadata?: Record<string, unknown> }
-  const metadata = body.metadata ?? {}
+  let metadata: Record<string, unknown> | undefined
+  for (const item of logs.items) {
+    const detail = repositories.getAuditLogDetail(item.id)
+    if (!detail) continue
+    for (const payload of detail.payloads) {
+      if (payload.partType !== 'gateway_metadata') continue
+      const payloadDetail = await repositories.getAuditLogPayload(detail.id, payload.id)
+      if (!payloadDetail?.bodyText) continue
+      const body = JSON.parse(payloadDetail.bodyText) as { metadata?: Record<string, unknown> }
+      if (body.metadata?.streamIntercepted === true) {
+        metadata = body.metadata
+        break
+      }
+    }
+    if (metadata) break
+  }
+  assert(metadata, `未找到账号 ${accountId} 的流式拦截审计日志`)
   assert.equal(metadata.streamIntercepted, true, '审计元信息应标记 streamIntercepted')
   assert.equal(metadata.fallbackReason, expected.fallbackReason, '审计元信息兜底原因不正确')
   assert.equal(metadata.upstreamErrorCode, expected.upstreamErrorCode, '审计元信息上游错误码不正确')

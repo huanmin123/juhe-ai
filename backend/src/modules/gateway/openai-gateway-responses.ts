@@ -16,6 +16,24 @@ export function sendGatewayJsonError(res: Response, statusCode: number, payload:
   res.status(statusCode).json(payload)
 }
 
+export function sendGatewayErrorResponse(res: Response, statusCode: number, payload: GatewayErrorPayload): void {
+  if (res.writableEnded || res.destroyed) {
+    return
+  }
+  if (!res.headersSent) {
+    sendGatewayJsonError(res, statusCode, payload)
+    return
+  }
+  const contentType = String(res.getHeader('content-type') ?? '')
+  if (isOpenAIStreamContentType(contentType)) {
+    const failureEvent = writeGatewayStreamFailureEvent(res, payload.error.message)
+    if (failureEvent) {
+      res.write(failureEvent)
+    }
+  }
+  res.end()
+}
+
 export function isOpenAIStreamContentType(contentType: string): boolean {
   return contentType.includes('text/event-stream') || contentType.includes('application/octet-stream')
 }

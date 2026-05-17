@@ -40,12 +40,7 @@ function Write-Utf8NoBom {
 Set-Location $repoRoot
 
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-  throw 'Node.js is required for packaging. Install Node.js 22.13.0+ (22.x) or 23.4.0+ first.'
-}
-
-node --input-type=module -e "import 'node:sqlite'" *> $null
-if ($LASTEXITCODE -ne 0) {
-  throw 'Node.js with node:sqlite support is required for local validation. Install Node.js 22.13.0+ (22.x) or 23.4.0+ or newer.'
+  throw 'Node.js LTS is required for packaging. Install Node.js 22.x LTS (>=22.13.0) or 24.x LTS (>=24.11.0) first.'
 }
 
 if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
@@ -55,6 +50,11 @@ if (-not (Get-Command pnpm -ErrorAction SilentlyContinue)) {
   } else {
     throw 'pnpm is required. Install pnpm or enable corepack first.'
   }
+}
+
+pnpm --filter juhe-ai-backend check:runtime
+if ($LASTEXITCODE -ne 0) {
+  throw 'Node.js runtime preflight failed.'
 }
 
 Write-Host '==> Building workspace'

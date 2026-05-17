@@ -227,7 +227,7 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import dayjs, { type Dayjs } from 'dayjs'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { api, type OperationLogListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -235,6 +235,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateTime } from '@/shared/formatters'
 import type { OperationLogChange, OperationLogDetail, OperationLogSummary, SystemAccountSummary } from '@/types/domain'
@@ -270,10 +271,7 @@ const pageStateCache = usePageStateCache<OperationLogsPageState>(undefined, defa
 const initialPageState = pageStateCache.read()
 const { isManagementView } = useScopedMenuView()
 
-const loading = ref(false)
 const detailLoading = ref(false)
-const mobileLoadingMore = ref(false)
-const records = ref<OperationLogSummary[]>([])
 const detail = ref<OperationLogDetail>()
 const detailOpen = ref(false)
 const systemAccounts = ref<SystemAccountSummary[]>([])
@@ -286,7 +284,33 @@ const traceIdFilter = ref(initialPageState.traceIdFilter)
 const actorSystemAccountFilter = ref(initialPageState.actorSystemAccountFilter)
 const affectedSystemAccountFilter = ref(initialPageState.affectedSystemAccountFilter)
 const operationScopeSystemAccountFilter = ref(initialPageState.operationScopeSystemAccountFilter)
-const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
+const {
+  items: records,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  pagination,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileRecords,
+  refreshMobile: refreshMobileRecords,
+  resetPagination
+} = useResponsivePagedList<OperationLogSummary, { forceOptions?: boolean }>({
+  pageSize,
+  initialPagination: initialPageState.pagination,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${range?.[1] ?? total - 1} 条操作日志，还有更多`
+    : `共 ${total} 条操作日志`,
+  fetchPage: async (options, pageState) => {
+    const [result] = await Promise.all([fetchRecords(pageState), loadSystemAccounts(options.forceOptions === true)])
+    return result
+  },
+  onError: (error) => {
+    console.error(error)
+    message.error('加载操作日志失败')
+  }
+})
 
 const detailActions: RowActionItem[] = [{ key: 'detail', label: '详情', icon: 'detail', tone: 'info' }]
 const moduleOptions = [
@@ -300,7 +324,8 @@ const moduleOptions = [
   { label: '代理', value: 'proxies' },
   { label: '系统设置', value: 'settings' },
   { label: '公告中心', value: 'announcements' },
-  { label: 'OpenAI OAuth', value: 'openai_oauth' }
+  { label: 'OpenAI OAuth', value: 'openai_oauth' },
+  { label: '表监控', value: 'table_monitor' }
 ]
 const actionOptions = [
   { label: '全部动作', value: 'all' },
@@ -326,7 +351,8 @@ const actionOptions = [
   { label: '恢复', value: 'restore' },
   { label: '重置密码', value: 'reset_password' },
   { label: '检测', value: 'test' },
-  { label: '测试改状态', value: 'test_status_changed' }
+  { label: '测试改状态', value: 'test_status_changed' },
+  { label: '清理使用记录', value: 'cleanup_usage_records' }
 ]
 
 const systemAccountOptions = computed(() => [
@@ -349,15 +375,6 @@ const activeFilterCount = computed(() => {
   if (isManagementView.value && operationScopeSystemAccountFilter.value !== allSystemAccountsValue) count += 1
   return count
 })
-const mobileHasMore = computed(() => records.value.length < pagination.total)
-const tablePagination = computed(() => ({
-  current: pagination.current,
-  pageSize: pagination.pageSize,
-  total: pagination.total,
-  hideOnSinglePage: true,
-  showSizeChanger: false,
-  showTotal: (total: number) => `共 ${total} 条操作日志`
-}))
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '模块', key: 'module', width: 120 },
@@ -394,12 +411,12 @@ const viewerColumns = [
 ]
 
 function applyFilters(): void {
-  pagination.current = 1
+  resetPagination()
   void loadData()
 }
 
 function refreshRecords(): void {
-  pagination.current = 1
+  resetPagination()
   void loadData({ forceOptions: true })
 }
 
@@ -413,8 +430,7 @@ function resetFilters(): void {
   actorSystemAccountFilter.value = defaults.actorSystemAccountFilter
   affectedSystemAccountFilter.value = defaults.affectedSystemAccountFilter
   operationScopeSystemAccountFilter.value = defaults.operationScopeSystemAccountFilter
-  pagination.current = defaults.pagination.current
-  pagination.pageSize = defaults.pagination.pageSize
+  resetPagination()
   pageStateCache.clear()
   void loadData()
 }
@@ -424,60 +440,11 @@ function handleCreatedAtRangeChange(): void {
   applyFilters()
 }
 
-function handleTableChange(paginationInfo: unknown): void {
-  if (!paginationInfo || typeof paginationInfo !== 'object') return
-  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
-  const nextCurrent = Number(next.current)
-  const nextPageSize = Number(next.pageSize)
-  pagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
-  pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
-  void loadData()
-}
-
-async function loadMoreMobileRecords(): Promise<void> {
-  if (!mobileHasMore.value || mobileLoadingMore.value) return
-  mobileLoadingMore.value = true
-  pagination.current += 1
-  try {
-    await loadData({ append: true, quiet: true })
-  } finally {
-    mobileLoadingMore.value = false
-  }
-}
-
-async function refreshMobileRecords(): Promise<void> {
-  pagination.current = 1
-  await loadData()
-}
-
-async function loadData(options: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}): Promise<void> {
-  if (!options.quiet) {
-    loading.value = true
-  }
-  try {
-    const [result] = await Promise.all([
-      fetchRecords(),
-      loadSystemAccounts(options.forceOptions === true)
-    ])
-    pagination.current = result.page
-    pagination.pageSize = result.pageSize
-    pagination.total = result.total
-    records.value = options.append ? [...records.value, ...result.items] : result.items
-  } catch (error) {
-    console.error(error)
-    message.error('加载操作日志失败')
-  } finally {
-    if (!options.quiet) {
-      loading.value = false
-    }
-  }
-}
-
-async function fetchRecords() {
+async function fetchRecords(pageState: { current: number; pageSize: number }) {
   const range = normalizeCreatedAtRange(createdAtRange.value)
   const params: OperationLogListParams = {
-    page: pagination.current,
-    pageSize: pagination.pageSize,
+    page: pageState.current,
+    pageSize: pageState.pageSize,
     keyword: keywordFilter.value.trim() || undefined,
     module: moduleFilter.value === 'all' ? undefined : moduleFilter.value,
     action: actionFilter.value === 'all' ? undefined : actionFilter.value,
@@ -534,7 +501,7 @@ function actionText(value: string): string {
 }
 
 function actionColor(value: string): string {
-  if (value.includes('delete') || value.includes('revoke') || value.includes('remove')) return 'red'
+  if (value.includes('delete') || value.includes('revoke') || value.includes('remove') || value.includes('cleanup')) return 'red'
   if (value.includes('create') || value.includes('publish') || value.includes('add')) return 'green'
   if (value.includes('test') || value.includes('refresh')) return 'cyan'
   if (value.includes('password') || value.includes('restore')) return 'orange'
@@ -624,12 +591,14 @@ const moduleTextMap: Record<string, string> = {
   openai_oauth: 'OpenAI OAuth',
   proxies: '代理',
   settings: '系统设置',
+  table_monitor: '表监控',
   system_accounts: '系统账户',
   system_teams: '系统团队'
 }
 const actionTextMap: Record<string, string> = {
   add_members: '添加成员',
   bind_group: '绑定分组',
+  cleanup_usage_records: '清理使用记录',
   create: '创建',
   create_account: '创建账户',
   create_from_code: '授权码创建账户',
@@ -662,7 +631,8 @@ const resourceTypeTextMap: Record<string, string> = {
   proxy: '代理',
   system_account: '系统账户',
   system_settings: '系统设置',
-  system_team: '系统团队'
+  system_team: '系统团队',
+  usage_records: '使用记录'
 }
 const relationTextMap: Record<string, string> = {
   affected: '受影响',

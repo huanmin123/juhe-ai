@@ -37,3 +37,17 @@ export interface TableStorageOverview {
   databases: DatabaseStorageSnapshotSummary[]
   tables: TableStorageSnapshotSummary[]
 }
+
+export interface UsageRecordsCleanupResult {
+  cutoffAt: string
+  deletedRows: number
+  batches: number
+  batchSize: number
+  maxBatches: number
+  hasMore: boolean
+  safetyCursor?: {
+    createdAt: string
+    id: string
+  }
+  blockedReason?: string
+}

@@ -7,6 +7,7 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
+import { applyServerAccountConcurrencyToGroups } from '../gateway/gateway-runtime-snapshot.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const groupsRouter = Router()
@@ -18,8 +19,13 @@ const groupSchema = z.object({
   enabled: z.boolean().optional()
 })
 
-groupsRouter.get('/', (req, res) => {
-  res.json(ok(listGroups(getRequestAccessScope(req.query.systemAccountId))))
+groupsRouter.get('/', async (req, res, next) => {
+  try {
+    const groups = listGroups(getRequestAccessScope(req.query.systemAccountId))
+    res.json(ok(await applyServerAccountConcurrencyToGroups(groups)))
+  } catch (error) {
+    next(error)
+  }
 })
 
 groupsRouter.post('/', mutationGuard({

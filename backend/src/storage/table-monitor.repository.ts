@@ -46,10 +46,37 @@ export interface TableStorageOverview {
   tables: TableStorageSnapshotSummary[]
 }
 
+export interface CollectTableStorageSnapshotOptions {
+  tableScanMode?: 'full' | 'cursor' | 'none'
+  maxTablesPerDatabase?: number
+  rowCountMode?: 'full' | 'none'
+}
+
+export interface CollectTableStorageSnapshotResult {
+  sampledAt: string
+  databaseSnapshots: number
+  tableSnapshots: number
+  tableScanMode: 'full' | 'cursor' | 'none'
+  rowCountMode: 'full' | 'none'
+}
+
 interface MonitoredDatabaseTarget {
   role: MonitoredDatabaseRole
   path: string
   database: DatabaseSync
+}
+
+interface PreparedTableMonitorTarget {
+  target: MonitoredDatabaseTarget
+  tables: string[]
+  indexesByTable: Map<string, string[]>
+  tableRows: TableStorageSnapshotSummary[]
+  cursorTableName?: string
+}
+
+interface TableScanSelection {
+  tableNames: string[]
+  cursorTableName?: string
 }
 
 interface ObjectSizeRow {
@@ -98,21 +125,48 @@ interface LatestDatabaseSnapshotRow {
 
 export const tableMonitorSampleRetentionDays = 30
 
-export function collectTableStorageSnapshot(sampledAt = nowIso()): void {
+export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
+  const tableScanMode = options.tableScanMode ?? 'full'
+  const rowCountMode = options.rowCountMode ?? 'full'
   const recordDatabase = getRecordDatabase()
   const targets: MonitoredDatabaseTarget[] = [
     { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },
     { role: 'records', path: runtimeConfig.recordDatabasePath, database: recordDatabase }
   ]
+  const preparedTargets: PreparedTableMonitorTarget[] = targets.map((target) => {
+    const tables = listTargetTables(target.database)
+    const indexesByTable = listIndexesByTable(target.database)
+    const tableSelection = selectTableScan(recordDatabase, target.role, tables, tableScanMode, options.maxTablesPerDatabase ?? 4)
+    const tableRows = collectTargetTableRows(target, sampledAt, tableSelection.tableNames, indexesByTable, rowCountMode)
+    return {
+      target,
+      tables,
+      indexesByTable,
+      tableRows,
+      cursorTableName: tableSelection.cursorTableName
+    }
+  })
+
   const transactionStarted = beginDatabaseTransaction(recordDatabase)
+  let tableSnapshots = 0
   try {
-    for (const target of targets) {
-      const tableRows = collectTargetTableRows(target, sampledAt)
-      insertDatabaseSnapshot(recordDatabase, target, sampledAt, tableRows)
-      insertTableSnapshots(recordDatabase, target, sampledAt, tableRows)
+    for (const prepared of preparedTargets) {
+      insertDatabaseSnapshot(recordDatabase, prepared.target, sampledAt, prepared.tables.length, countIndexes(prepared.indexesByTable))
+      insertTableSnapshots(recordDatabase, prepared.target, sampledAt, prepared.tableRows)
+      if (tableScanMode === 'cursor') {
+        recordTableScanCursor(recordDatabase, prepared.target.role, prepared.cursorTableName, sampledAt)
+      }
+      tableSnapshots += prepared.tableRows.length
     }
     cleanupOldTableStorageSnapshots(recordDatabase, sampledAt)
     commitDatabaseTransaction(recordDatabase, transactionStarted)
+    return {
+      sampledAt,
+      databaseSnapshots: targets.length,
+      tableSnapshots,
+      tableScanMode,
+      rowCountMode
+    }
   } catch (error) {
     rollbackDatabaseTransaction(recordDatabase, transactionStarted)
     throw error
@@ -141,17 +195,18 @@ export function getTableStorageOverview(input: { startAt?: string; endAt?: strin
   const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
   const tables = database
     .prepare(`
-      WITH latest_database_samples AS (
-        SELECT database_role, MAX(sampled_at) AS sampled_at
-        FROM database_storage_snapshots
+      WITH latest_table_samples AS (
+        SELECT database_role, table_name, MAX(sampled_at) AS sampled_at
+        FROM table_storage_snapshots
         WHERE sampled_at >= ?
           AND sampled_at <= ?
-        GROUP BY database_role
+        GROUP BY database_role, table_name
       )
       SELECT t.*
       FROM table_storage_snapshots t
-      INNER JOIN latest_database_samples latest
+      INNER JOIN latest_table_samples latest
         ON latest.database_role = t.database_role
+        AND latest.table_name = t.table_name
         AND latest.sampled_at = t.sampled_at
       ORDER BY t.total_bytes DESC, t.row_count DESC, t.table_name ASC
       LIMIT ?
@@ -199,11 +254,22 @@ export function cleanupTableStorageSnapshotsBefore(cutoffIso: string, limit = 10
     + deleteSnapshotRowsById(database, 'database_storage_snapshots', cutoffIso, limit)
 }
 
-function collectTargetTableRows(target: MonitoredDatabaseTarget, sampledAt: string): TableStorageSnapshotSummary[] {
-  const tables = listTargetTables(target.database)
-  const dbstatSizes = loadDbstatObjectSizes(target.database)
-  const indexesByTable = listIndexesByTable(target.database)
-  return tables.map((tableName) => {
+function collectTargetTableRows(
+  target: MonitoredDatabaseTarget,
+  sampledAt: string,
+  tableNames: string[],
+  indexesByTable: Map<string, string[]>,
+  rowCountMode: 'full' | 'none'
+): TableStorageSnapshotSummary[] {
+  const objectNames = new Set<string>()
+  for (const tableName of tableNames) {
+    objectNames.add(tableName)
+    for (const indexName of indexesByTable.get(tableName) ?? []) {
+      objectNames.add(indexName)
+    }
+  }
+  const dbstatSizes = loadDbstatObjectSizes(target.database, [...objectNames])
+  return tableNames.map((tableName) => {
     const tableSize = dbstatSizes.get(tableName)
     const indexNames = indexesByTable.get(tableName) ?? []
     const indexSizes = indexNames.map((indexName) => dbstatSizes.get(indexName)).filter((row): row is ObjectSizeRow => Boolean(row))
@@ -212,7 +278,7 @@ function collectTargetTableRows(target: MonitoredDatabaseTarget, sampledAt: stri
     const indexBytes = indexSizes.reduce((sum, row) => sum + Number(row.bytes ?? 0), 0)
     const indexPages = indexSizes.reduce((sum, row) => sum + Number(row.page_count ?? 0), 0)
     const totalBytes = tableBytes + indexBytes
-    const rowCount = countRows(target.database, tableName)
+    const rowCount = rowCountMode === 'full' ? countRows(target.database, tableName) : undefined
     const previous1h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 60)
     const previous24h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 24 * 60)
     return {
@@ -233,7 +299,7 @@ function collectTargetTableRows(target: MonitoredDatabaseTarget, sampledAt: stri
   })
 }
 
-function insertDatabaseSnapshot(database: DatabaseSync, target: MonitoredDatabaseTarget, sampledAt: string, tables: TableStorageSnapshotSummary[]): void {
+function insertDatabaseSnapshot(database: DatabaseSync, target: MonitoredDatabaseTarget, sampledAt: string, tableCount: number, indexCount: number): void {
   const pageSize = pragmaNumber(target.database, 'page_size')
   const pageCount = pragmaNumber(target.database, 'page_count')
   const freelistCount = pragmaNumber(target.database, 'freelist_count')
@@ -260,8 +326,8 @@ function insertDatabaseSnapshot(database: DatabaseSync, target: MonitoredDatabas
     freelistCount ?? null,
     usedBytes ?? null,
     freeBytes ?? null,
-    tables.length,
-    tables.reduce((sum, row) => sum + row.indexCount, 0),
+    tableCount,
+    indexCount,
     sampledAt
   )
 }
@@ -326,19 +392,101 @@ function listIndexesByTable(database: DatabaseSync): Map<string, string[]> {
   return result
 }
 
-function loadDbstatObjectSizes(database: DatabaseSync): Map<string, ObjectSizeRow> {
+function loadDbstatObjectSizes(database: DatabaseSync, objectNames: string[]): Map<string, ObjectSizeRow> {
+  const names = [...new Set(objectNames.filter(Boolean))]
+  if (names.length === 0) {
+    return new Map()
+  }
   try {
+    const placeholders = sqlPlaceholders(names.length)
     const rows = database
       .prepare(`
         SELECT name, SUM(pgsize) AS bytes, COUNT(*) AS page_count
         FROM dbstat
+        WHERE name IN (${placeholders})
         GROUP BY name
       `)
-      .all() as unknown as ObjectSizeRow[]
+      .all(...names) as unknown as ObjectSizeRow[]
     return new Map(rows.map((row) => [row.name, row]))
   } catch {
     return new Map()
   }
+}
+
+function countIndexes(indexesByTable: Map<string, string[]>): number {
+  let count = 0
+  for (const indexes of indexesByTable.values()) {
+    count += indexes.length
+  }
+  return count
+}
+
+function selectTableScan(
+  database: DatabaseSync,
+  databaseRole: MonitoredDatabaseRole,
+  tables: string[],
+  tableScanMode: 'full' | 'cursor' | 'none',
+  maxTables: number
+): TableScanSelection {
+  if (tableScanMode === 'none') {
+    return { tableNames: [] }
+  }
+  if (tableScanMode === 'full') {
+    return { tableNames: tables }
+  }
+  return selectCursorTableNames(database, databaseRole, tables, maxTables)
+}
+
+function selectCursorTableNames(
+  database: DatabaseSync,
+  databaseRole: MonitoredDatabaseRole,
+  tables: string[],
+  maxTables: number
+): TableScanSelection {
+  if (tables.length === 0 || maxTables <= 0) {
+    return { tableNames: [] }
+  }
+  const normalizedMaxTables = Math.min(Math.trunc(maxTables), tables.length)
+  if (normalizedMaxTables >= tables.length) {
+    return { tableNames: tables, cursorTableName: tables.at(-1) }
+  }
+
+  const cursor = latestTableScanCursor(database, databaseRole)
+  const cursorIndex = cursor ? tables.indexOf(cursor) : -1
+  const startIndex = cursorIndex >= 0 ? (cursorIndex + 1) % tables.length : 0
+  const selected = Array.from({ length: normalizedMaxTables }, (_value, offset) => tables[(startIndex + offset) % tables.length])
+  return { tableNames: selected, cursorTableName: selected.at(-1) }
+}
+
+function latestTableScanCursor(database: DatabaseSync, databaseRole: MonitoredDatabaseRole): string | undefined {
+  const row = database
+    .prepare(`
+      SELECT cursor_id
+      FROM stats_job_state
+      WHERE scope_type = 'table_monitor'
+        AND scope_id = ?
+        AND job_name = 'table_storage_snapshots'
+      LIMIT 1
+    `)
+    .get(databaseRole) as { cursor_id?: string | null } | undefined
+  return row?.cursor_id || undefined
+}
+
+function recordTableScanCursor(database: DatabaseSync, databaseRole: MonitoredDatabaseRole, tableName: string | undefined, sampledAt: string): void {
+  if (!tableName) return
+  database
+    .prepare(`
+      INSERT INTO stats_job_state (
+        scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, lag_seconds, updated_at
+      ) VALUES ('table_monitor', ?, 'table_storage_snapshots', ?, ?, ?, 0, ?)
+      ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+        cursor_created_at = excluded.cursor_created_at,
+        cursor_id = excluded.cursor_id,
+        last_success_at = excluded.last_success_at,
+        lag_seconds = 0,
+        updated_at = excluded.updated_at
+    `)
+    .run(databaseRole, sampledAt, tableName, sampledAt, sampledAt)
 }
 
 function countRows(database: DatabaseSync, tableName: string): number | undefined {

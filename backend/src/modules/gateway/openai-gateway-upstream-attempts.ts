@@ -1,0 +1,86 @@
+import type { Request } from 'express'
+
+import { getRequestLogger } from '../../shared/request-context.js'
+import type { GatewaySettings } from './account-error-policy.service.js'
+import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
+import {
+  isEffectiveOpenAIStreamRequest,
+  requestUpstream,
+  upstreamRequestTimeoutMs,
+  upstreamSocketTimeoutMs,
+  type GatewayUpstreamResponse
+} from './openai-gateway-upstream.js'
+
+interface PerformUpstreamRequestAttemptInput {
+  req: Request
+  account: UpstreamAccount
+  upstreamUrl: string
+  attemptIndex: number
+  auditAttemptIndex: number
+  headers: Headers
+  body?: Buffer | string
+  settings: GatewaySettings
+  attemptStartedAt: number
+  signal?: AbortSignal
+}
+
+export async function performUpstreamRequestAttempt(
+  input: PerformUpstreamRequestAttemptInput
+): Promise<GatewayUpstreamResponse> {
+  const {
+    req,
+    account,
+    upstreamUrl,
+    attemptIndex,
+    auditAttemptIndex,
+    headers,
+    body,
+    settings,
+    attemptStartedAt,
+    signal
+  } = input
+  const socketTimeoutMs = upstreamSocketTimeoutMs(req, settings, account)
+  const requestTimeoutMs = upstreamRequestTimeoutMs(req, settings, account)
+
+  getRequestLogger().info({
+    event: 'gateway_upstream_request_started',
+    accountId: account.id,
+    accountType: account.type,
+    accountStatus: account.status,
+    upstreamUrl,
+    attemptIndex,
+    auditAttemptIndex,
+    method: req.method,
+    stream: isEffectiveOpenAIStreamRequest(req, account),
+    requestBodyBytes: typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : body?.byteLength,
+    socketTimeoutMs,
+    requestTimeoutMs,
+    proxyEnabled: Boolean(account.proxyUrl)
+  }, '网关开始请求上游')
+
+  const response = await requestUpstream(upstreamUrl, {
+    method: req.method,
+    headers,
+    body,
+    proxyUrl: account.proxyUrl,
+    timeoutMs: socketTimeoutMs,
+    requestTimeoutMs,
+    signal
+  })
+
+  getRequestLogger().info({
+    event: 'gateway_upstream_response_received',
+    accountId: account.id,
+    accountType: account.type,
+    upstreamUrl,
+    attemptIndex,
+    auditAttemptIndex,
+    statusCode: response.status,
+    ok: response.ok,
+    contentType: response.headers.get('content-type'),
+    elapsedMs: Date.now() - attemptStartedAt,
+    stream: isEffectiveOpenAIStreamRequest(req, account)
+  }, '网关收到上游响应头')
+
+  return response
+}

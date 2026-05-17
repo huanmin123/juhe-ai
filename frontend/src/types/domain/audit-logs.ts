@@ -127,6 +127,7 @@ export interface AuditLogRuntime {
 export interface AuditLogListResult {
   items: AuditLogSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }

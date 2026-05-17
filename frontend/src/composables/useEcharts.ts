@@ -9,6 +9,10 @@ export function ensureChart(elementRef: Ref<HTMLDivElement | undefined>, chartRe
 
 export function ensureChartFromElement(element: HTMLDivElement | undefined, chartRef: EChartsInstanceRef): ECharts | undefined {
   if (!element) return undefined
+  if (chartRef.value && !chartRef.value.isDisposed() && chartRef.value.getDom() !== element) {
+    chartRef.value.dispose()
+    chartRef.value = undefined
+  }
   if (!chartRef.value || chartRef.value.isDisposed()) {
     chartRef.value = init(element)
   }

@@ -45,7 +45,7 @@
 
 环境要求：
 
-- Node.js `>= 22.13.0`（22.x）或 `>= 23.4.0`
+- Node.js 官方 LTS：`22.x >= 22.13.0` 或 `24.x >= 24.11.0`，且内置 SQLite 支持 FTS5
 - pnpm `>= 9.0.0`
 - Windows 推荐使用 PowerShell 7
 

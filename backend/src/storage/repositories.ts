@@ -238,8 +238,10 @@ export {
 export {
   cleanupExpiredSystemSessions,
   cleanupProcessedUsageRecordsBefore,
+  cleanupProcessedUsageRecordsBeforeWithResult,
   cleanupSystemMetricsBefore,
   cleanupUsageStatsBucketsBefore,
+  type ProcessedUsageRecordsCleanupBatchResult,
   type SystemMetricsRetentionCleanupResult,
   type UsageStatsRetentionCleanupResult
 } from './data-retention.repository.js'

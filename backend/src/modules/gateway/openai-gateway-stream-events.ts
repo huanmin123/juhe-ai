@@ -1,0 +1,343 @@
+import type { Request } from 'express'
+
+import {
+  getGatewayRequestBodyState,
+  type GatewayRawBodyRequest
+} from './openai-gateway-request-body.js'
+import {
+  extractUsage,
+  hasAnyUsageValue,
+  type ParsedUsage
+} from './openai-gateway-usage.js'
+
+export interface ParsedOpenAIStreamEvent {
+  rawText?: string
+  eventName: string
+  dataText: string
+  data?: Record<string, unknown>
+  dataParseError: boolean
+  eventType: string
+  errorCode?: string
+  errorMessage?: string
+}
+
+export interface OpenAIStreamEventClassification {
+  eventType: string
+  terminal: boolean
+  failed: boolean
+  visibleOutput: boolean
+  estimatedOutputTokens: number
+  usage: ParsedUsage
+  usageFound: boolean
+  errorCode?: string
+  errorMessage?: string
+}
+
+export function parseOpenAISseEventText(rawText: string): ParsedOpenAIStreamEvent {
+  let eventName = ''
+  const dataLines: string[] = []
+  for (const line of rawText.split(/\r?\n|\r/)) {
+    if (line.startsWith('event:')) {
+      eventName = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart())
+    }
+  }
+  return parseOpenAIStreamEventData(dataLines.join('\n').trim(), eventName, rawText)
+}
+
+export function parseOpenAIStreamEventData(
+  dataText: string,
+  eventName: string,
+  rawText?: string
+): ParsedOpenAIStreamEvent {
+  if (!dataText || dataText === '[DONE]') {
+    return {
+      rawText,
+      eventName,
+      dataText,
+      dataParseError: false,
+      eventType: dataText === '[DONE]' ? '[DONE]' : eventName
+    }
+  }
+
+  try {
+    const data = JSON.parse(dataText) as Record<string, unknown>
+    const eventType = typeof data.type === 'string' ? data.type : eventName
+    const error = extractOpenAIStreamEventError(data)
+    return {
+      rawText,
+      eventName,
+      dataText,
+      data,
+      dataParseError: false,
+      eventType,
+      errorCode: typeof error?.code === 'string' ? error.code : undefined,
+      errorMessage: typeof error?.message === 'string' ? error.message : undefined
+    }
+  } catch {
+    return {
+      rawText,
+      eventName,
+      dataText,
+      dataParseError: true,
+      eventType: eventName
+    }
+  }
+}
+
+export function classifyOpenAIStreamEvent(
+  event: ParsedOpenAIStreamEvent,
+  priorEstimatedOutputTokens = 0
+): OpenAIStreamEventClassification {
+  const data = event.data
+  const estimatedOutputTokens = data
+    ? estimateOpenAIStreamEventOutputTokens(data, event.eventType, priorEstimatedOutputTokens)
+    : 0
+  const visibleOutput = Boolean(data && (estimatedOutputTokens > 0 || openAIStreamEventHasVisibleOutput(data, event.eventType)))
+  const terminal = event.eventType === '[DONE]'
+    || event.eventType === 'response.completed'
+    || event.eventType === 'response.done'
+    || event.eventType === 'response.failed'
+  const failed = event.eventType === 'response.failed'
+  const usage = data ? extractEventUsage(data) : {}
+  const usageFound = hasAnyUsageValue(usage)
+
+  return {
+    eventType: event.eventType,
+    terminal,
+    failed,
+    visibleOutput,
+    estimatedOutputTokens,
+    usage,
+    usageFound,
+    errorCode: failed ? event.errorCode : undefined,
+    errorMessage: failed ? event.errorMessage : undefined
+  }
+}
+
+export function extractOpenAIStreamEventError(data: Record<string, unknown>): Record<string, unknown> | undefined {
+  const response = objectValue(data.response)
+  const responseError = objectValue(response?.error)
+  if (responseError) return responseError
+  const error = objectValue(data.error)
+  if (error) return error
+  if (typeof data.type === 'string' && data.type === 'error' && (typeof data.code === 'string' || typeof data.message === 'string')) {
+    return data
+  }
+  return undefined
+}
+
+export function isOpenAIStreamFailureEvent(event: ParsedOpenAIStreamEvent): boolean {
+  if (event.eventType === 'response.failed' || event.eventName === 'response.failed') return true
+  if (event.eventType === 'error' || event.eventName === 'error') return true
+  return Boolean(event.data && extractOpenAIStreamEventError(event.data))
+}
+
+export function isOpenAIStreamVisibleOutputEvent(event: ParsedOpenAIStreamEvent): boolean {
+  return Boolean(event.data && openAIStreamEventHasVisibleOutput(event.data, event.eventType))
+}
+
+export function openAIStreamEventHasVisibleOutput(event: Record<string, unknown>, eventType: string): boolean {
+  if (eventType.endsWith('.delta') && hasMeaningfulDelta(event.delta)) {
+    return true
+  }
+  if (eventType === 'response.output_item.added' || eventType === 'response.output_item.done') {
+    return estimateTokensFromOutputValue(event.item) > 0
+  }
+  if (eventType === 'response.completed' || eventType === 'response.done') {
+    return estimateTokensFromOutputValue((event.response as Record<string, unknown> | undefined)?.output) > 0
+  }
+  const choices = Array.isArray(event.choices) ? event.choices : []
+  return choices.some((choice) => {
+    if (typeof choice !== 'object' || choice === null) return false
+    const row = choice as Record<string, unknown>
+    if (hasNonEmptyString(row.text)) return true
+    const delta = objectValue(row.delta)
+    return Boolean(delta && hasMeaningfulChoiceDelta(delta))
+  })
+}
+
+export function estimateOpenAIRequestInputTokens(req: Request): number | undefined {
+  const bodyState = getGatewayRequestBodyState(req)
+  const rawBody = (req as GatewayRawBodyRequest).rawBody
+  const bodyTokens = estimateTokensFromRequestValue(req.body)
+  if (bodyTokens > 0) return bodyTokens
+
+  if (!rawBody || rawBody.length === 0) return undefined
+  if (bodyState?.isJson && bodyState.jsonParseStatus === 'parsed') return undefined
+  return estimateTokenCountFromByteLength(rawBody.length)
+}
+
+function estimateOpenAIStreamEventOutputTokens(event: Record<string, unknown>, eventType: string, priorEstimatedOutputTokens = 0): number {
+  let tokens = 0
+  if (eventType.endsWith('.delta')) {
+    tokens += estimateTokensFromOutputValue(event.delta)
+  }
+
+  const choices = Array.isArray(event.choices) ? event.choices : []
+  for (const choice of choices) {
+    if (typeof choice !== 'object' || choice === null) continue
+    const row = choice as Record<string, unknown>
+    tokens += estimateTokensFromOutputValue(row.text)
+    tokens += estimateTokensFromOutputValue(row.delta)
+  }
+
+  if (tokens === 0 && priorEstimatedOutputTokens === 0) {
+    if (eventType === 'response.output_item.done') {
+      tokens += estimateTokensFromOutputValue(event.item)
+    } else if (eventType === 'response.completed' || eventType === 'response.done') {
+      tokens += estimateTokensFromOutputValue((event.response as Record<string, unknown> | undefined)?.output)
+    }
+  }
+
+  return tokens
+}
+
+function hasMeaningfulChoiceDelta(delta: Record<string, unknown>): boolean {
+  return hasMeaningfulDelta(delta.content)
+    || hasMeaningfulDelta(delta.refusal)
+    || hasMeaningfulDelta(delta.reasoning_content)
+    || hasMeaningfulDelta(delta.audio)
+    || hasMeaningfulDelta(delta.tool_calls)
+    || hasMeaningfulDelta(delta.function_call)
+}
+
+function hasMeaningfulDelta(value: unknown): boolean {
+  if (hasNonEmptyString(value)) return true
+  if (Array.isArray(value)) return value.some(hasMeaningfulDelta)
+  if (typeof value !== 'object' || value === null) return false
+  return Object.entries(value as Record<string, unknown>)
+    .some(([key, child]) => key !== 'index' && key !== 'type' && key !== 'id' && hasMeaningfulDelta(child))
+}
+
+function estimateTokensFromRequestValue(value: unknown, key = ''): number {
+  if (typeof value === 'string') {
+    return shouldSkipEstimatedString(value, key) ? 0 : estimateTokenCountFromText(value)
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((total, item) => total + estimateTokensFromRequestValue(item, key), 0)
+  }
+  if (typeof value !== 'object' || value === null) {
+    return 0
+  }
+
+  let total = 0
+  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+    if (requestTokenEstimateSkippedKeys.has(childKey)) continue
+    total += estimateTokensFromRequestValue(childValue, childKey)
+  }
+  return total
+}
+
+function estimateTokensFromOutputValue(value: unknown, key = ''): number {
+  if (typeof value === 'string') {
+    return shouldSkipEstimatedString(value, key) ? 0 : estimateTokenCountFromText(value)
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((total, item) => total + estimateTokensFromOutputValue(item, key), 0)
+  }
+  if (typeof value !== 'object' || value === null) {
+    return 0
+  }
+
+  let total = 0
+  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+    if (outputTokenEstimateSkippedKeys.has(childKey)) continue
+    total += estimateTokensFromOutputValue(childValue, childKey)
+  }
+  return total
+}
+
+function estimateTokenCountFromText(text: string): number {
+  if (!text.trim()) return 0
+  let asciiLikeChars = 0
+  let cjkChars = 0
+  let otherChars = 0
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    if (isCjkCodePoint(code)) {
+      cjkChars += 1
+    } else if (code <= 0x7f) {
+      asciiLikeChars += 1
+    } else {
+      otherChars += 1
+    }
+  }
+  return Math.max(1, Math.ceil(asciiLikeChars / 4) + cjkChars + Math.ceil(otherChars / 2))
+}
+
+function estimateTokenCountFromByteLength(bytes: number): number | undefined {
+  return bytes > 0 ? Math.max(1, Math.ceil(bytes / 4)) : undefined
+}
+
+function shouldSkipEstimatedString(value: string, key: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) return true
+  if (key === 'url' && trimmed.startsWith('data:')) return true
+  return /^data:[^,]+;base64,/i.test(trimmed) || looksLikeLargeBase64Payload(trimmed, key)
+}
+
+function looksLikeLargeBase64Payload(value: string, key: string): boolean {
+  if (!binaryPayloadEstimateSkippedKeys.has(key)) return false
+  if (value.length < 512 || /\s/.test(value)) return false
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(normalized) && normalized.length % 4 === 0
+}
+
+function isCjkCodePoint(code: number): boolean {
+  return (code >= 0x3400 && code <= 0x9fff)
+    || (code >= 0xf900 && code <= 0xfaff)
+    || (code >= 0x20000 && code <= 0x2ebef)
+}
+
+const requestTokenEstimateSkippedKeys = new Set([
+  'model',
+  'stream',
+  'stream_options',
+  'metadata',
+  'user'
+])
+
+const binaryPayloadEstimateSkippedKeys = new Set([
+  'data',
+  'b64_json',
+  'file_data',
+  'audio',
+  'image'
+])
+
+const outputTokenEstimateSkippedKeys = new Set([
+  'object',
+  'model',
+  'status',
+  'created',
+  'created_at',
+  'sequence_number',
+  'output_index',
+  'content_index',
+  'item_id',
+  'id',
+  'index',
+  'type',
+  'role',
+  'finish_reason',
+  'logprobs',
+  'usage',
+  'error'
+])
+
+function extractEventUsage(event: Record<string, unknown>): ParsedUsage {
+  const response = objectValue(event.response)
+  return extractUsage(response?.usage ?? event.usage)
+}
+
+function objectValue(value: unknown): Record<string, unknown> | undefined {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function hasNonEmptyString(value: unknown): boolean {
+  return typeof value === 'string' && value.length > 0
+}

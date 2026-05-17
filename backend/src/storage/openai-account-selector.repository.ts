@@ -14,9 +14,11 @@ export interface OpenAIAccountSecret {
   accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'
   groupAccessType: 'owner' | 'authorized'
   accountAuthorizationId?: string
+  accountAuthorizationExpiresAt?: string
   accountAuthorizationSourceType?: ResourceAuthorizationSourceType
   accountAuthorizationSourceTeamId?: string
   groupAuthorizationId?: string
+  groupAuthorizationExpiresAt?: string
   groupAuthorizationSourceType?: ResourceAuthorizationSourceType
   groupAuthorizationSourceTeamId?: string
   name: string
@@ -43,6 +45,7 @@ export interface OpenAIAccountSecret {
   lastErrorMessage?: string
   streamFailureCount: number
   streamFailureWindowStartedAt?: string
+  accountExpiresAt?: string
   expiresAt?: string
   credentials: Record<string, unknown>
 }
@@ -51,6 +54,7 @@ export interface GroupUsageAccessMetadata {
   groupOwnerSystemAccountId: string
   groupAccessType: 'owner' | 'authorized'
   groupAuthorizationId?: string
+  groupAuthorizationExpiresAt?: string
   groupAuthorizationSourceType?: ResourceAuthorizationSourceType
   groupAuthorizationSourceTeamId?: string
 }
@@ -67,6 +71,7 @@ interface GroupAccountRow {
 
 type ResourceAuthorizationRow = {
   id: string
+  expires_at: string | null
   effective_source_type: ResourceAuthorizationSourceType | null
   effective_source_team_id: string | null
 }
@@ -122,6 +127,7 @@ export function findOpenAIAccountForGroup(
   const row = getDatabase()
     .prepare(`
       SELECT id, system_account_id, name, type, status, concurrency_limit, priority, super_priority_enabled, fallback_enabled, credentials_encrypted, proxy_profile_id, passthrough_enabled, error_policy_id, cooldown_until, last_error_message, stream_failure_count, stream_failure_window_started_at,
+        account_expires_at,
         NULL AS quality_score,
         NULL AS quality_state,
         NULL AS quality_ewma_first_token_ms
@@ -153,6 +159,7 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
     groupOwnerSystemAccountId: group.systemAccountId,
     groupAccessType: 'authorized',
     groupAuthorizationId: authorization.id,
+    groupAuthorizationExpiresAt: authorization.expires_at ?? undefined,
     groupAuthorizationSourceType: authorization.effective_source_type ?? undefined,
     groupAuthorizationSourceTeamId: authorization.effective_source_team_id ?? undefined
   }
@@ -192,6 +199,7 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
       .prepare(`
         SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
           accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
+          accounts.account_expires_at,
           NULL AS quality_score,
           NULL AS quality_state,
           NULL AS quality_ewma_first_token_ms
@@ -263,6 +271,7 @@ interface OpenAIAccountRow {
   last_error_message: string | null
   stream_failure_count: number
   stream_failure_window_started_at: string | null
+  account_expires_at: string | null
   quality_score?: number | null
   quality_state?: string | null
   quality_ewma_first_token_ms?: number | null
@@ -307,9 +316,11 @@ function openAIAccountSecretFromRow(
     accountAccessType: accountAccess.accountAccessType,
     groupAccessType: groupAccess.groupAccessType,
     accountAuthorizationId: accountAccess.accountAuthorizationId,
+    accountAuthorizationExpiresAt: accountAccess.accountAuthorizationExpiresAt,
     accountAuthorizationSourceType: accountAccess.accountAuthorizationSourceType,
     accountAuthorizationSourceTeamId: accountAccess.accountAuthorizationSourceTeamId,
     groupAuthorizationId: groupAccess.groupAuthorizationId,
+    groupAuthorizationExpiresAt: groupAccess.groupAuthorizationExpiresAt,
     groupAuthorizationSourceType: groupAccess.groupAuthorizationSourceType,
     groupAuthorizationSourceTeamId: groupAccess.groupAuthorizationSourceTeamId,
     name: row.name,
@@ -336,6 +347,7 @@ function openAIAccountSecretFromRow(
     lastErrorMessage: row.last_error_message ?? undefined,
     streamFailureCount: Math.max(0, Number(row.stream_failure_count ?? 0)),
     streamFailureWindowStartedAt: row.stream_failure_window_started_at ?? undefined,
+    accountExpiresAt: row.account_expires_at ?? undefined,
     expiresAt: typeof credentials.expires_at === 'string' ? credentials.expires_at : undefined,
     credentials
   }
@@ -434,7 +446,7 @@ function resolveOpenAIAccountAccess(
   callerSystemAccountId: string,
   groupAccess: GroupUsageAccessMetadata,
   boundAccountAuthorizationId?: string
-): { accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'; accountAuthorizationId?: string; accountAuthorizationSourceType?: ResourceAuthorizationSourceType; accountAuthorizationSourceTeamId?: string } | undefined {
+): { accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'; accountAuthorizationId?: string; accountAuthorizationExpiresAt?: string; accountAuthorizationSourceType?: ResourceAuthorizationSourceType; accountAuthorizationSourceTeamId?: string } | undefined {
   if (accountOwnerSystemAccountId === callerSystemAccountId) {
     return { accountAccessType: 'owner' }
   }
@@ -451,6 +463,7 @@ function resolveOpenAIAccountAccess(
     ? {
         accountAccessType: 'account_authorized',
         accountAuthorizationId: authorization.id,
+        accountAuthorizationExpiresAt: authorization.expires_at ?? undefined,
         accountAuthorizationSourceType: authorization.effective_source_type ?? undefined,
         accountAuthorizationSourceTeamId: authorization.effective_source_team_id ?? undefined
       }
@@ -481,7 +494,7 @@ function groupOwnerAndProvider(groupId: string): { systemAccountId: string } | u
 function activeResourceAuthorization(resourceType: 'account' | 'group', resourceId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
   const now = nowIso()
   return getDatabase()
-    .prepare("SELECT id, effective_source_type, effective_source_team_id FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
+    .prepare("SELECT id, expires_at, effective_source_type, effective_source_team_id FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
     .get(resourceType, resourceId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
 }
 

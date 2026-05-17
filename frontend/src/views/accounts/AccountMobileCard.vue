@@ -39,7 +39,7 @@
       </div>
       <div class="account-mobile-meta-item">
         <span>优先级</span>
-        <strong>{{ account.fallbackEnabled ? `${account.priority} / 备用` : account.priority }}</strong>
+        <strong>{{ priorityText }}</strong>
       </div>
       <div class="account-mobile-meta-item account-mobile-meta-wide">
         <span>用量(日)</span>
@@ -123,6 +123,10 @@ const proxyTooltip = computed(() => {
   return '代理配置不存在或当前不可见'
 })
 const proxyToneClass = computed(() => (props.account.proxyProfileUnavailable || props.proxy?.enabled === false ? 'proxy-error' : ''))
+const priorityText = computed(() => {
+  if (!props.account.fallbackEnabled) return String(props.account.priority)
+  return `${props.account.priority} / ${props.account.status === 'active' && props.account.schedulable ? '备用' : '备用暂停'}`
+})
 const actions = computed<RowActionItem[]>(() => {
   const list: RowActionItem[] = []
   if (props.canEdit) {

@@ -25,6 +25,7 @@ export const systemSettingKeys = [
   'statsAggregationMaxBatchesPerRun',
   'groupAccountStatsRefreshIntervalSeconds',
   'systemMetricsSampleIntervalSeconds',
+  'tableMonitorMaxTablesPerRun',
   'accountQualityRefreshIntervalSeconds',
   'accountQualityWindowMinutes',
   'cooldownAccountRetestEnabled',

@@ -116,12 +116,13 @@
 import { CopyOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
 import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
@@ -167,9 +168,6 @@ const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
 const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 3 })
 const initialPageState = pageStateCache.read()
 
-const loading = ref(false)
-const mobileLoadingMore = ref(false)
-const records = ref<UsageRecordSummary[]>([])
 const accountNameFilter = ref(initialPageState.accountNameFilter)
 const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseDateRange(initialPageState.dateRangeFilter))
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
@@ -179,7 +177,35 @@ const systemAccounts = ref<SystemAccountSummary[]>([])
 const systemAccountsLoaded = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>(initialPageState.sortState)
-const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
+const {
+  items: records,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  pagination,
+  tablePagination,
+  loadData,
+  loadMoreMobile: loadMoreMobileRecords,
+  refreshMobile: refreshMobileRecords,
+  resetPagination
+} = useResponsivePagedList<UsageRecordSummary, { forceOptions?: boolean }>({
+  pageSize,
+  initialPagination: initialPageState.pagination,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${range?.[1] ?? total - 1} 条使用记录，还有更多`
+    : `共 ${total} 条使用记录`,
+  fetchPage: async (options, pageState) => {
+    const [recordList] = await Promise.all([
+      fetchRecords(pageState),
+      loadSystemAccountOptions(options.forceOptions === true)
+    ])
+    return recordList
+  },
+  onError: (error) => {
+    console.error(error)
+    message.error('加载使用记录失败')
+  }
+})
 
 const resultOptions = [
   { label: '全部结果', value: 'all' },
@@ -199,15 +225,6 @@ const activeFilterCount = computed(() => {
 
 const filteredRecords = computed(() => records.value)
 const mobileRecords = computed(() => records.value)
-const mobileHasMore = computed(() => records.value.length < pagination.total)
-const tablePagination = computed(() => ({
-  current: pagination.current,
-  pageSize: pagination.pageSize,
-  total: pagination.total,
-  hideOnSinglePage: true,
-  showSizeChanger: false,
-  showTotal: (total: number) => `共 ${total} 条使用记录`
-}))
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -243,8 +260,7 @@ function resetFilters(): void {
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
   sortState.value = defaults.sortState
-  pagination.current = defaults.pagination.current
-  pagination.pageSize = defaults.pagination.pageSize
+  resetPagination()
   pageStateCache.clear()
   void loadData()
 }
@@ -285,61 +301,22 @@ function updatePaginationFromTable(paginationInfo: unknown): void {
 }
 
 function applyFilters(): void {
-  pagination.current = 1
+  resetPagination()
   void loadData()
 }
 
 function refreshRecords(): void {
-  pagination.current = 1
+  resetPagination()
   void loadData()
 }
 
-async function loadMoreMobileRecords(): Promise<void> {
-  if (!mobileHasMore.value || mobileLoadingMore.value) return
-  mobileLoadingMore.value = true
-  pagination.current += 1
-  try {
-    await loadData({ append: true, quiet: true })
-  } finally {
-    mobileLoadingMore.value = false
-  }
-}
-
-async function refreshMobileRecords(): Promise<void> {
-  pagination.current = 1
-  await loadData()
-}
-
-async function loadData(options: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}): Promise<void> {
-  if (!options.quiet) {
-    loading.value = true
-  }
-  try {
-    const [recordList] = await Promise.all([
-      fetchRecords(),
-      loadSystemAccountOptions(options.forceOptions === true)
-    ])
-    pagination.current = recordList.page
-    pagination.pageSize = recordList.pageSize
-    pagination.total = recordList.total
-    records.value = options.append ? [...records.value, ...recordList.items] : recordList.items
-  } catch (error) {
-    console.error(error)
-    message.error('加载使用记录失败')
-  } finally {
-    if (!options.quiet) {
-      loading.value = false
-    }
-  }
-}
-
-async function fetchRecords() {
+async function fetchRecords(pageState: { current: number; pageSize: number }) {
   const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
   const sortOrder = sortState.value.order === 'ascend' ? 'asc' : 'desc'
   const dateRange = dateRangeParam(dateRangeFilter.value)
   const params: UsageRecordListParams = {
-    page: pagination.current,
-    pageSize: pagination.pageSize,
+    page: pageState.current,
+    pageSize: pageState.pageSize,
     accountKeyword: accountNameFilter.value.trim() || undefined,
     startDate: dateRange?.[0],
     endDate: dateRange?.[1],

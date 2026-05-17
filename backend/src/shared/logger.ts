@@ -3,12 +3,11 @@ import {
   createWriteStream,
   existsSync,
   mkdirSync,
-  readdirSync,
   renameSync,
   statSync,
-  unlinkSync,
   type WriteStream
 } from 'node:fs'
+import { readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Writable } from 'node:stream'
 
@@ -29,6 +28,8 @@ class RotatingFileLogStream extends Writable {
   private readonly currentPath: string
   private stream: WriteStream
   private currentSize = 0
+  private cleanupRunning = false
+  private cleanupQueued = false
   private readonly protectedCurrentFileNames = new Set([
     'juhe-ai.log',
     'juhe-ai.worker.log',
@@ -45,8 +46,23 @@ class RotatingFileLogStream extends Writable {
   }
 
   cleanup(): void {
-    const rotatedFiles = this.listRotatedFiles()
-    const currentFileCount = this.listCurrentLogFiles().length
+    if (this.cleanupRunning) {
+      this.cleanupQueued = true
+      return
+    }
+    this.cleanupRunning = true
+    void this.cleanupAsync().finally(() => {
+      this.cleanupRunning = false
+      if (this.cleanupQueued) {
+        this.cleanupQueued = false
+        this.cleanup()
+      }
+    })
+  }
+
+  private async cleanupAsync(): Promise<void> {
+    const rotatedFiles = await this.listRotatedFiles()
+    const currentFileCount = (await this.listCurrentLogFiles()).length
     const maxRotatedFiles = Math.max(0, this.options.maxFiles - currentFileCount)
     const expiresBefore = Date.now() - this.options.retentionDays * 24 * 60 * 60 * 1000
     const expiredFiles = rotatedFiles.filter((file) => file.mtimeMs < expiresBefore)
@@ -57,7 +73,7 @@ class RotatingFileLogStream extends Writable {
 
     for (const file of [...expiredFiles, ...overflowFiles]) {
       try {
-        unlinkSync(file.path)
+        await unlink(file.path)
       } catch {
       }
     }
@@ -170,27 +186,41 @@ class RotatingFileLogStream extends Writable {
     return join(this.options.directory, `juhe-ai.${timestamp}.${randomUUID()}.log`)
   }
 
-  private listRotatedFiles(): Array<{ path: string; mtimeMs: number }> {
+  private async listRotatedFiles(): Promise<Array<{ path: string; mtimeMs: number }>> {
     try {
-      return readdirSync(this.options.directory)
-        .filter((fileName) => /^juhe-ai\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$/i.test(fileName))
-        .map((fileName) => {
-          const path = join(this.options.directory, fileName)
-          return { path, mtimeMs: statSync(path).mtimeMs }
-        })
+      const fileNames = await readdir(this.options.directory)
+      const files: Array<{ path: string; mtimeMs: number }> = []
+      for (const fileName of fileNames) {
+        if (!/^juhe-ai\.\d{8}T\d{6}Z\.[0-9a-f-]+\.log$/i.test(fileName)) {
+          continue
+        }
+        const path = join(this.options.directory, fileName)
+        try {
+          files.push({ path, mtimeMs: (await stat(path)).mtimeMs })
+        } catch {
+        }
+      }
+      return files
     } catch {
       return []
     }
   }
 
-  private listCurrentLogFiles(): Array<{ path: string; mtimeMs: number }> {
+  private async listCurrentLogFiles(): Promise<Array<{ path: string; mtimeMs: number }>> {
     try {
-      return readdirSync(this.options.directory)
-        .filter((fileName) => this.protectedCurrentFileNames.has(fileName))
-        .map((fileName) => {
-          const path = join(this.options.directory, fileName)
-          return { path, mtimeMs: statSync(path).mtimeMs }
-        })
+      const fileNames = await readdir(this.options.directory)
+      const files: Array<{ path: string; mtimeMs: number }> = []
+      for (const fileName of fileNames) {
+        if (!this.protectedCurrentFileNames.has(fileName)) {
+          continue
+        }
+        const path = join(this.options.directory, fileName)
+        try {
+          files.push({ path, mtimeMs: (await stat(path)).mtimeMs })
+        } catch {
+        }
+      }
+      return files
     } catch {
       return []
     }

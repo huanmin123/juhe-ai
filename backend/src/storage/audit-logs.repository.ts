@@ -5,6 +5,7 @@ import { createGunzip, gzipSync } from 'node:zlib'
 
 import { backendRoot } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { compatiblePagedTotal, takePageRows } from './query-utils.js'
 import { loadAccountNameMap, loadApiKeyNameMap, loadGroupNameMap, loadSystemAccountNameMap } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
@@ -202,6 +203,7 @@ export interface AuditLogPayloadReadOptions {
 export interface AuditLogListResult {
   items: AuditLogSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }
@@ -253,6 +255,7 @@ export interface AuditErrorGroupListOptions {
 export interface AuditErrorGroupListResult {
   items: AuditErrorGroupSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }
@@ -477,13 +480,6 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
   const page = normalizePage(options.page)
   const offset = (page - 1) * pageSize
   const database = getRecordDatabase()
-  const totalRow = database
-    .prepare(`
-      SELECT COUNT(*) AS total
-      FROM audit_logs al
-      ${filters.clause}
-    `)
-    .get(...filters.params) as AuditLogRow | undefined
   const rows = database
     .prepare(`
       SELECT
@@ -493,12 +489,15 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
       ORDER BY al.created_at DESC, al.id DESC
       LIMIT ? OFFSET ?
     `)
-    .all(...filters.params, pageSize, offset) as AuditLogRow[]
-  const rowsWithNames = hydrateAuditRows(rows)
+    .all(...filters.params, pageSize + 1, offset) as AuditLogRow[]
+  const pageRows = takePageRows(rows, pageSize)
+  const rowsWithNames = hydrateAuditRows(pageRows.rows)
   const systemAccountNames = loadSystemAccountNameMap()
+  const items = rowsWithNames.map((row) => auditLogSummaryFromRow(row, systemAccountNames))
   return {
-    items: rowsWithNames.map((row) => auditLogSummaryFromRow(row, systemAccountNames)),
-    total: Number(totalRow?.total ?? 0),
+    items,
+    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
     page,
     pageSize
   }
@@ -510,13 +509,6 @@ export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): 
   const page = normalizePage(options.page)
   const offset = (page - 1) * pageSize
   const database = getRecordDatabase()
-  const totalRow = database
-    .prepare(`
-      SELECT COUNT(*) AS total
-      FROM audit_error_groups aeg
-      ${filters.clause}
-    `)
-    .get(...filters.params) as AuditLogRow | undefined
   const rows = database
     .prepare(`
       SELECT
@@ -526,12 +518,15 @@ export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): 
       ORDER BY aeg.updated_at DESC, aeg.id DESC
       LIMIT ? OFFSET ?
     `)
-    .all(...filters.params, pageSize, offset) as AuditLogRow[]
-  const rowsWithNames = hydrateAuditRows(rows)
+    .all(...filters.params, pageSize + 1, offset) as AuditLogRow[]
+  const pageRows = takePageRows(rows, pageSize)
+  const rowsWithNames = hydrateAuditRows(pageRows.rows)
   const systemAccountNames = loadSystemAccountNameMap()
+  const items = rowsWithNames.map((row) => auditErrorGroupFromRow(row, systemAccountNames))
   return {
-    items: rowsWithNames.map((row) => auditErrorGroupFromRow(row, systemAccountNames)),
-    total: Number(totalRow?.total ?? 0),
+    items,
+    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
     page,
     pageSize
   }

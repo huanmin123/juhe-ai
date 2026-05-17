@@ -1,5 +1,5 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { sqlPlaceholders } from './query-utils.js'
+import { compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountsByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
@@ -91,6 +91,7 @@ export interface OperationLogListOptions {
 export interface OperationLogListResult {
   items: OperationLogSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }
@@ -334,13 +335,6 @@ function listOperationLogsWithFilters(filters: { clause: string; params: Operati
   const page = normalizeOperationLogPage(options.page)
   const offset = (page - 1) * pageSize
   const database = getRecordDatabase()
-  const totalRow = database
-    .prepare(`
-      SELECT COUNT(*) AS total
-      FROM operation_logs ol
-      ${filters.clause}
-    `)
-    .get(...filters.params) as OperationLogRow | undefined
   const rows = database
     .prepare(`
       SELECT ol.*
@@ -349,21 +343,24 @@ function listOperationLogsWithFilters(filters: { clause: string; params: Operati
       ORDER BY ol.created_at DESC, ol.id DESC
       LIMIT ? OFFSET ?
     `)
-    .all(...filters.params, pageSize, offset) as OperationLogRow[]
-  const systemAccountNames = loadSystemAccountNames(rows.flatMap((row) => [
+    .all(...filters.params, pageSize + 1, offset) as OperationLogRow[]
+  const pageRows = takePageRows(rows, pageSize)
+  const systemAccountNames = loadSystemAccountNames(pageRows.rows.flatMap((row) => [
     optionalString(row.actor_system_account_id),
     optionalString(row.operation_scope_system_account_id)
   ]))
   const viewerDetailLevels = viewerSystemAccountId
-    ? loadViewerDetailLevels(rows.map((row) => String(row.id)), viewerSystemAccountId)
+    ? loadViewerDetailLevels(pageRows.rows.map((row) => String(row.id)), viewerSystemAccountId)
     : new Map<string, OperationLogDetailLevel>()
+  const items = pageRows.rows.map((row) => {
+    const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
+    if (!viewerSystemAccountId) return summary
+    return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
+  })
   return {
-    items: rows.map((row) => {
-      const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
-      if (!viewerSystemAccountId) return summary
-      return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
-    }),
-    total: Number(totalRow?.total ?? 0),
+    items,
+    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
     page,
     pageSize
   }
@@ -387,21 +384,6 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
       WHERE system_account_id = ?
     ) visible ON visible.operation_log_id = ol.id
   `
-  const totalRow = database
-    .prepare(`
-      SELECT COALESCE(SUM(total), 0) AS total
-      FROM (
-        SELECT COUNT(*) AS total
-        FROM operation_logs ol
-        ${targetedVisibleJoin}
-        WHERE ${targetedClause}
-        UNION ALL
-        SELECT COUNT(*) AS total
-        FROM operation_logs ol
-        WHERE ${allUsersClause}
-      ) visible_counts
-    `)
-    .get(...targetedParams, ...allUsersParams) as OperationLogRow | undefined
   const rows = database
     .prepare(`
       SELECT *
@@ -418,18 +400,21 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
       ORDER BY created_at DESC, id DESC
       LIMIT ? OFFSET ?
     `)
-    .all(...targetedParams, ...allUsersParams, pageSize, offset) as OperationLogRow[]
-  const systemAccountNames = loadSystemAccountNames(rows.flatMap((row) => [
+    .all(...targetedParams, ...allUsersParams, pageSize + 1, offset) as OperationLogRow[]
+  const pageRows = takePageRows(rows, pageSize)
+  const systemAccountNames = loadSystemAccountNames(pageRows.rows.flatMap((row) => [
     optionalString(row.actor_system_account_id),
     optionalString(row.operation_scope_system_account_id)
   ]))
-  const viewerDetailLevels = loadViewerDetailLevels(rows.map((row) => String(row.id)), systemAccountId)
+  const viewerDetailLevels = loadViewerDetailLevels(pageRows.rows.map((row) => String(row.id)), systemAccountId)
+  const items = pageRows.rows.map((row) => {
+    const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
+    return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
+  })
   return {
-    items: rows.map((row) => {
-      const summary = operationLogSummaryFromRow(row, systemAccountNames, { includePayload: false })
-      return sanitizeOperationLogSummaryForViewer(summary, effectiveViewerDetailLevel(summary.detailLevel, viewerDetailLevels.get(summary.id), summary.visibilityScope))
-    }),
-    total: Number(totalRow?.total ?? 0),
+    items,
+    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
     page,
     pageSize
   }

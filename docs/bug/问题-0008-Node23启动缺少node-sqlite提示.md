@@ -29,7 +29,7 @@
 
 - 分支 / 版本：2026-05-14 本地开发版本。
 - 数据状态：与数据库内容无关，启动前模块加载阶段即可复现。
-- 系统 / Node 版本：Node.js v23.0.0 稳定复现；当前推荐 Node.js 22.13.0+（22.x）或 23.4.0+。
+- 系统 / Node 版本：Node.js v23.0.0 稳定复现；后续在 BUG-0011 中已改为只推荐官方 Node.js LTS，并补充 FTS5 能力预检。
 - 是否稳定复现：是。
 
 ## 根因分析
@@ -61,7 +61,7 @@
 
 ## 下次遇到
 
-- 先运行 `node --input-type=module -e "import 'node:sqlite'; console.log('node:sqlite ok')"`。
+- 先运行 `pnpm --filter juhe-ai-backend check:runtime`。
 - 重点看 `node -v` 和 `process.execPath`，确认实际启动的 Node 不是旧版本或非预期版本管理器路径。
 - 不要按 npm 依赖缺失排查；`node:sqlite` 是 Node.js 内置模块能力。
 

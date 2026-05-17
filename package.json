@@ -18,14 +18,16 @@
     "test:proxy-negative": "pnpm --filter juhe-ai-backend test:proxy-negative",
     "test:large-response": "pnpm --filter juhe-ai-backend test:large-response",
     "test:stream-first-output-timeout": "pnpm --filter juhe-ai-backend test:stream-first-output-timeout",
+    "test:codex-client-strategy": "pnpm --filter juhe-ai-backend test:codex-client-strategy",
     "test:db-service-worker-local": "pnpm --filter juhe-ai-backend test:db-service-worker-local",
     "test:disabled-account-state-guard": "pnpm --filter juhe-ai-backend test:disabled-account-state-guard",
     "test:account-list-stable-sort": "pnpm --filter juhe-ai-backend test:account-list-stable-sort",
     "test:gateway-runtime-cache": "pnpm --filter juhe-ai-backend test:gateway-runtime-cache",
+    "test:gateway-concurrency-snapshot": "pnpm --filter juhe-ai-backend test:gateway-concurrency-snapshot",
     "test:session-affinity": "pnpm --filter juhe-ai-backend test:session-affinity"
   },
   "engines": {
-    "node": ">=22.13.0 <23 || >=23.4.0",
+    "node": ">=22.13.0 <23 || >=24.11.0 <25",
     "pnpm": ">=9.0.0"
   },
   "description": "聚合 AI（`juhe-ai`）是一个轻量级 OpenAI 兼容中转、账号调度与 API Key 管理系统。",

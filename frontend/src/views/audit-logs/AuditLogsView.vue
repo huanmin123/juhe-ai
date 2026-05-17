@@ -241,7 +241,7 @@
 
 <script setup lang="ts">
 import { ArrowRightOutlined, CopyOutlined } from '@ant-design/icons-vue'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
@@ -253,6 +253,7 @@ import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AuditLogList from './AuditLogList.vue'
 import {
@@ -274,11 +275,8 @@ import {
   auditPayloadColumns
 } from './auditLogTableColumns'
 
-const loading = ref(false)
 const detailLoading = ref(false)
 const payloadLoadingId = ref('')
-const mobileLoadingMore = ref(false)
-const records = ref<AuditLogSummary[]>([])
 const runtime = ref<AuditLogRuntime>()
 const detail = ref<AuditLogDetail>()
 const selectedPayload = ref<AuditLogPayloadDetail>()
@@ -313,7 +311,38 @@ const outcomeFilter = ref<AuditOutcome | 'all'>(initialPageState.outcomeFilter)
 const pathFilter = ref(initialPageState.pathFilter)
 const statusCodeFilter = ref(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
-const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
+const {
+  items: records,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  pagination,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileRecords,
+  refreshMobile: refreshMobileRecords,
+  resetPagination
+} = useResponsivePagedList<AuditLogSummary, { forceOptions?: boolean }>({
+  pageSize,
+  initialPagination: initialPageState.pagination,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${range?.[1] ?? total - 1} 条审计日志，还有更多`
+    : `共 ${total} 条审计日志`,
+  fetchPage: async (options, pageState) => {
+    const [listResult, runtimeInfo] = await Promise.all([
+      fetchRecords(pageState),
+      api.auditLogs.runtime(),
+      loadSystemAccounts(options.forceOptions === true)
+    ])
+    runtime.value = runtimeInfo
+    return listResult
+  },
+  onError: (error) => {
+    console.error(error)
+    message.error('加载审计日志失败')
+  }
+})
 
 const outcomeOptions = auditOutcomeOptions
 const attemptColumns = auditAttemptColumns
@@ -328,16 +357,6 @@ const activeFilterCount = computed(() => {
   return count
 })
 
-const tablePagination = computed(() => ({
-  current: pagination.current,
-  pageSize: pagination.pageSize,
-  total: pagination.total,
-  hideOnSinglePage: true,
-  showSizeChanger: false,
-  showTotal: (total: number) => `共 ${total} 条审计日志`
-}))
-
-const mobileHasMore = computed(() => records.value.length < pagination.total)
 const selectedPayloadCurrentText = computed(() => {
   if (!selectedPayload.value) return ''
   return payloadContentTab.value === 'headers'
@@ -362,7 +381,7 @@ const selectedPayloadCanLoadMore = computed(() => Boolean(
 ))
 
 function applyFilters(): void {
-  pagination.current = 1
+  resetPagination()
   void loadData()
 }
 
@@ -377,77 +396,28 @@ function resetFilters(): void {
   pathFilter.value = defaults.pathFilter
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
-  pagination.current = defaults.pagination.current
-  pagination.pageSize = defaults.pagination.pageSize
+  resetPagination()
   pageStateCache.clear()
   void loadData()
 }
 
-async function loadData(options: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}): Promise<void> {
-  if (!options.quiet) {
-    loading.value = true
-  }
-  try {
-    const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, true)
-    const listParams = {
-      page: pagination.current,
-      pageSize: pagination.pageSize,
-      traceId: traceIdFilter.value || undefined,
-      outcome: outcomeFilter.value,
-      path: pathFilter.value || undefined,
-      statusCode: normalizedStatusCode(statusCodeFilter.value),
-      systemAccountId
-    }
-    const [listResult, runtimeInfo] = await Promise.all([
-      api.auditLogs.list(listParams),
-      api.auditLogs.runtime(),
-      loadSystemAccounts(options.forceOptions === true)
-    ])
-    pagination.current = listResult.page
-    pagination.pageSize = listResult.pageSize
-    pagination.total = listResult.total
-    records.value = options.append ? [...records.value, ...listResult.items] : listResult.items
-    runtime.value = runtimeInfo
-  } catch (error) {
-    console.error(error)
-    message.error('加载审计日志失败')
-  } finally {
-    if (!options.quiet) {
-      loading.value = false
-    }
-  }
+function fetchRecords(pageState: { current: number; pageSize: number }) {
+  const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, true)
+  return api.auditLogs.list({
+    page: pageState.current,
+    pageSize: pageState.pageSize,
+    traceId: traceIdFilter.value || undefined,
+    outcome: outcomeFilter.value,
+    path: pathFilter.value || undefined,
+    statusCode: normalizedStatusCode(statusCodeFilter.value),
+    systemAccountId
+  })
 }
 
 async function loadSystemAccounts(force = false): Promise<void> {
   if (!force && systemAccountsLoaded.value) return
   systemAccounts.value = await api.systemAccounts.list()
   systemAccountsLoaded.value = true
-}
-
-function handleTableChange(paginationInfo: unknown): void {
-  if (!paginationInfo || typeof paginationInfo !== 'object') return
-  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
-  const nextCurrent = Number(next.current)
-  const nextPageSize = Number(next.pageSize)
-  pagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
-  pagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : pageSize
-  void loadData()
-}
-
-async function loadMoreMobileRecords(): Promise<void> {
-  if (!mobileHasMore.value || mobileLoadingMore.value) return
-  mobileLoadingMore.value = true
-  pagination.current += 1
-  try {
-    await loadData({ append: true, quiet: true })
-  } finally {
-    mobileLoadingMore.value = false
-  }
-}
-
-async function refreshMobileRecords(): Promise<void> {
-  pagination.current = 1
-  await loadData()
 }
 
 async function openDetail(record: AuditLogSummary): Promise<void> {

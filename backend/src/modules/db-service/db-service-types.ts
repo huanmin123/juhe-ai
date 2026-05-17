@@ -19,6 +19,7 @@ export interface DbServiceRuntimeSnapshot {
 }
 
 export interface DbServiceServerRuntimeSnapshot {
+  accountConcurrency?: Record<string, number>
   worker?: {
     pid?: number
     ready: boolean
@@ -45,6 +46,8 @@ export interface DbServiceServerRuntimeSnapshot {
   gatewayAccountSideEffects?: Record<string, unknown>
   activeAuditCaptureCount?: number
 }
+
+export type DbServiceServerRuntimeSnapshotScope = 'full' | 'account_concurrency'
 
 export interface DbServiceRuntimeQueueSnapshot {
   queueLength?: number
@@ -235,6 +238,7 @@ export type DbServiceChildMessage =
   | {
     type: 'db_service_server_runtime_request'
     requestId: string
+    scope?: DbServiceServerRuntimeSnapshotScope
   }
   | {
     type: 'gateway_runtime_cache_invalidate'

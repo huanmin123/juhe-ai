@@ -4,9 +4,9 @@ import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
 
 import {
-  inspectOpenAIStreamText,
   parseOpenAIUsageFromJsonBuffer
 } from '../../modules/gateway/openai-gateway-usage.js'
+import { inspectOpenAIStreamText } from '../../modules/gateway/openai-gateway-stream-inspection.js'
 import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
 import { usageSummaryFromAggregate } from '../../storage/usage-stats-helpers.js'
 
@@ -308,13 +308,17 @@ const cachedUsageSummary = usageSummaryFromAggregate({
 })
 assert.equal(cachedUsageSummary.totalTokens, 1200)
 
-const gatewayRoutesSource = readSource('modules/gateway/openai-gateway.routes.ts')
-assert.match(gatewayRoutesSource, /function recordCompletedUpstreamAttempt/)
-assert.match(gatewayRoutesSource, /recordClientAbortedUpstreamAttempt/)
-assert.match(gatewayRoutesSource, /applyOpenAIStreamUsageFallback/)
-assert.match(gatewayRoutesSource, /gateway_stream_usage_estimated/)
-assert.match(gatewayRoutesSource, /errorMessage:\s*'上游响应体为空'/)
-assert.match(gatewayRoutesSource, /shouldRecordAbortedUpstreamAttempt/)
+const gatewayUsageRecordsSource = readSource('modules/gateway/openai-gateway-usage-records.ts')
+assert.match(gatewayUsageRecordsSource, /function recordCompletedUpstreamAttempt/)
+assert.match(gatewayUsageRecordsSource, /recordClientAbortedUpstreamAttempt/)
+
+const gatewayResponseFinalizationSource = readSource('modules/gateway/openai-gateway-response-finalization.ts')
+assert.match(gatewayResponseFinalizationSource, /applyOpenAIStreamUsageFallback/)
+assert.match(gatewayResponseFinalizationSource, /gateway_stream_usage_estimated/)
+assert.match(gatewayResponseFinalizationSource, /errorMessage:\s*'上游响应体为空'/)
+
+const gatewayFailureDispatchSource = readSource('modules/gateway/openai-gateway-failure-dispatch.ts')
+assert.match(gatewayFailureDispatchSource, /shouldRecordAbortedUpstreamAttempt/)
 
 const accountTestSource = readSource('modules/accounts/account-test.service.ts')
 assert.match(accountTestSource, /handleOpenAIGatewayRequest/)
@@ -337,9 +341,9 @@ assert.match(backgroundJobsSource, /settingsBoolean\('cooldownAccountRetestEnabl
 const oauthRoutesSource = readSource('modules/openai-oauth/openai-oauth.routes.ts')
 assert.doesNotMatch(oauthRoutesSource, /refreshOpenAIOAuthUsageSnapshot/)
 
-const gatewayRoutesSourceForOAuthUsage = readSource('modules/gateway/openai-gateway.routes.ts')
-assert.match(gatewayRoutesSourceForOAuthUsage, /persistOpenAICodexHeadersIfNeeded\(account,\s*upstreamResponse\.headers,\s*'gateway'\)/)
-assert.match(gatewayRoutesSourceForOAuthUsage, /persistOpenAICodexHeadersIfNeeded\(account,\s*response\.headers,\s*'gateway_error'\)/)
+const gatewayRoutesSource = readSource('modules/gateway/openai-gateway.routes.ts')
+assert.match(gatewayRoutesSource, /persistOpenAICodexHeadersIfNeeded\(account,\s*upstreamResponse\.headers,\s*'gateway'\)/)
+assert.match(gatewayFailureDispatchSource, /persistOpenAICodexHeadersIfNeeded\(account,\s*response\.headers,\s*'gateway_error'\)/)
 
 const repositoriesSource = readSource('storage/repositories.ts')
 assert.match(repositoriesSource, /status IN \('rate_limited', 'temporary_unavailable'\)/)
