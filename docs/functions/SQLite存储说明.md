@@ -130,7 +130,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `announcements`：保存平台公告，用户侧只读取最近 30 条已发布公告，管理员侧维护草稿、已发布和已下线公告。
 - `announcement_reads`：按 `announcement_id + system_account_id` 保存用户已读公告记录，支撑铃铛未读提醒跨刷新、跨浏览器保持一致。
 
-建议索引：
+当前索引重点：
 
 - `system_accounts(lower(username))`：保证用户账户大小写不敏感唯一，用户账户创建后不允许修改。
 - `system_accounts(lower(display_name))`：保证用户名称大小写不敏感唯一。
@@ -139,13 +139,13 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `groups(system_account_id, provider_code) WHERE is_default = 1`：保证同一用户同一供应商只有一个默认分组。
 - `api_keys(system_account_id, lower(name))`：保证同一用户下 API Key 名称唯一，密钥本身仍由 `key_hash` 兜底。
 - `proxy_profiles(lower(name))`：保证代理配置名称全局唯一。
-- 上述第一批新增业务唯一索引已直接落到本地 SQLite；若旧库已有重复记录，应先离线清理旧数据，再让最新 schema 正常建索引，不在启动路径保留跳过索引的兼容逻辑。
+- 业务唯一索引直接落到当前 schema；若本地旧库已有重复记录，应先离线清理旧数据或重建库，不在启动路径保留跳过索引的兼容逻辑。
 - `usage_records(system_account_id, created_at, id)`：统计 worker 增量扫描。
 - `usage_records(account_owner_system_account_id, account_id, created_at, id)`：账户所有者查看真实账户统一用量。
 - `usage_records(group_owner_system_account_id, group_id, created_at, id)`：分组所有者查看真实分组统一用量。
 - `usage_records(group_id, created_at, api_key_id)`：账号质量 worker 判断分组近 24 小时是否有真实网关请求，账号测试和后台探测不计入客户活跃。
-- `usage_records(account_owner_system_account_id, account_authorization_id, created_at, id)`：统计 worker 增量写账户授权缓存、授权日摘要和兼容月表。
-- `usage_records(group_owner_system_account_id, group_authorization_id, created_at, id)`：统计 worker 增量写分组授权缓存、授权日摘要和兼容月表。
+- `usage_records(account_owner_system_account_id, account_authorization_id, created_at, id)`：统计 worker 增量写账户授权缓存、授权日摘要和范围窗口表。
+- `usage_records(group_owner_system_account_id, group_authorization_id, created_at, id)`：统计 worker 增量写分组授权缓存、授权日摘要和范围窗口表。
 - `system_teams(name)`：保证团队名称唯一。
 - `system_teams(status, name)`：团队列表和授权对象选择器读取。
 - `system_team_members(team_id, system_account_id, status)`：校验团队成员有效性。
@@ -228,7 +228,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 代理延迟刷新 worker 固定每 1 分钟检测最多 20 个启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新，不提供系统设置项调整。
 - 授权账户调用需要同时写入调用方统计、调用方命中账户统计、真实账户统计、授权额度统计和授权报表：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；`我的用量` 按 `system_account_id + scope_type = caller_account + account_id` 读取本人对该账户的消耗；账户所有者的账户总用量按 `account_owner_system_account_id + scope_type = account + account_id` 聚合；授权额度按 `account_owner_system_account_id + account_authorization_id` 聚合；管理侧团队 / 用户消耗按授权范围窗口表直读，并过滤资源归属人自用消耗。
 - 授权分组调用需要同时写入调用方统计、真实分组统计、授权额度统计和授权报表：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权额度按 `group_owner_system_account_id + group_authorization_id` 聚合；管理侧团队 / 用户消耗按授权范围窗口表直读，并过滤资源归属人自用消耗。
-- 授权管理列表不展示额度和用量统计；团队 / 用户授权消耗明细只读取 `authorization_team_usage_range_windows` 和 `authorization_user_usage_range_windows`，其数据由 `authorization_team_usage_summary_daily` 和 `authorization_user_usage_summary_daily` 刷新而来。统计 worker 随 `usage_records` 游标增量写入日摘要，并预先写好 `all`、资源类型汇总和指定资源三种资源筛选行；接口只能按最近 31 天内日期范围和筛选条件直读一组窗口行，不能临时 `SUM usage_records`，也不能把 `usage_stats_daily/weekly/monthly` 或报表缓存再二次聚合。
+- `统一授权` / `授权操作` 关系列表不展示额度和用量统计；团队 / 用户授权消耗明细只读取 `authorization_team_usage_range_windows` 和 `authorization_user_usage_range_windows`，其数据由 `authorization_team_usage_summary_daily` 和 `authorization_user_usage_summary_daily` 刷新而来。统计 worker 随 `usage_records` 游标增量写入日摘要，并预先写好 `all`、资源类型汇总和指定资源三种资源筛选行；接口只能按最近 31 天内日期范围和筛选条件直读一组窗口行，不能临时 `SUM usage_records`，也不能把 `usage_stats_daily/weekly/monthly` 或报表缓存再二次聚合。
 - 统一授权可选美元成本额度保存在业务主表 `resource_authorization_grants.limits_json`，并同步到最终用户授权 `resource_authorizations.limits_json`；JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily`、`usage_stats_weekly`、`usage_stats_monthly` 和 `usage_quota_hourly_windows` 的 `account_authorization` / `group_authorization` 维度直读成本，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`，也不在请求内按小时桶求和。
 - 团队授权美元额度读取 `account_authorization_team` / `group_authorization_team` 作用域缓存，`scope_id = resource_id + ':' + team_id`，由统计 worker 随使用记录增量写入；网关不再枚举成员授权并求和。统计 worker 默认每 1 分钟增量推进并刷新额度小时窗口，网关额度判断带短 TTL 内存缓存，因此允许轻微超额，统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
 - API Key 列表展示累计用量，读取 `usage_stats_totals` 中 `scope_type = api_key` 的缓存，不使用今日 `usage_stats_daily` 口径；API Key 可选美元成本额度保存在 `api_keys.quota_limits_json`，JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily`、`usage_stats_weekly`、`usage_stats_monthly` 和 `usage_quota_hourly_windows` 的 API Key 维度直读成本，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`，也不在请求内按小时桶求和。
@@ -387,19 +387,14 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `error_message`
 - `sample_bucket`
 - `sample_reason`
-- `payload_policy`：`full`、`sampled_full`、`metadata_only`、`summary_only`、`hash_only`、`dropped`
-- `payload_capture_status`：`complete`、`partial`、`metadata_only`、`expired`、`overflow`、`dropped`
-- `request_headers_sha256`
-- `request_body_sha256`
-- `response_headers_sha256`
-- `response_body_sha256`
 - `attempt_count`
-- `payload_ref_count`
+- `payload_count`
+- `payload_bytes`
 - `raw_payload_bytes`
-- `stored_payload_bytes`
 - `compressed_payload_bytes`
 - `compression_saved_bytes`
 - `error_group_id`
+- `capture_status`：`complete`、`dropped`、`overflow`
 - `started_at`
 - `ended_at`
 - `duration_ms`
@@ -414,7 +409,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `account_id`
 - `account_owner_system_account_id`
 - `group_id`
-- `proxy_id`
+- `proxy_url`
 - `provider_code`
 - `upstream_method`
 - `upstream_url`
@@ -432,7 +427,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `id`
 - `audit_log_id`
 - `attempt_id`
-- `part_type`：`client_request`、`upstream_request`、`upstream_response`、`gateway_response`、`gateway_error`
+- `part_type`：`client_request`、`upstream_request`、`upstream_response`、`gateway_response`、`gateway_error`、`gateway_metadata`
 - `sequence_index`
 - `content_type`
 - `content_encoding`
@@ -631,7 +626,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 日志隔离和统计口径：
 
 - 使用记录页按 `usage_records.system_account_id` 查询，所以被授权用户只看自己的调用明细。
-- 资源所有者不按明细读取被授权用户的 `usage_records`，授权管理只读取后台 worker 按统一授权 ID、团队快照、用户和资源筛选写入的日摘要与范围窗口表。
+- 资源所有者不按明细读取被授权用户的 `usage_records`，授权消耗明细只读取后台 worker 按统一授权 ID、团队快照、用户和资源筛选写入的日摘要与范围窗口表。
 - 授权消耗统计必须过滤自用记录：账户授权按 `usage_records.system_account_id != account_owner_system_account_id`，分组授权按 `usage_records.system_account_id != group_owner_system_account_id`。
 - 账户真实总用量按 `account_owner_system_account_id + account_id` 聚合，所以自用和所有用户授权都会累计到同一个真实账户维度。
 - 分组真实总用量按 `group_owner_system_account_id + group_id` 聚合，所以自用和所有用户授权都会累计到同一个真实分组维度。
@@ -665,7 +660,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - 独立 background worker 不再注册 OAuth 额度快照主动刷新任务。
 - AI 账户管理页更多菜单不提供“刷新用量”按钮，快照缺失时显示“暂无快照”或“等待真实请求更新”。
 
-建议字段：
+当前字段：
 
 - `system_account_id`
 - `account_id`
@@ -682,7 +677,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 后台规则：
 
 - 后台 worker 只保留 OAuth Access Token 预刷新，不再为了额度快照发起模型请求。
-- 快照状态中的 `last_attempt_at`、`next_refresh_after` 和 `last_error_message` 只作为兼容旧库和排障字段保留，新链路不再主动维护刷新退避。
+- 快照状态中的 `last_attempt_at`、`next_refresh_after` 和 `last_error_message` 是当前排障字段；额度快照链路只做被动更新，不再维护后台主动刷新退避。
 - 收到 OAuth Codex 429 时，网关仍可从真实响应 header 或响应体里解析 reset 时间，并由账号错误处理链路写入限流或临时不可调用状态。
 
 ## 错误兜底策略

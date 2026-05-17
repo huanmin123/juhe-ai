@@ -39,12 +39,13 @@
 
 | 目录 / 文件 | 职责 | 变更规则 |
 | --- | --- | --- |
-| `backend/src/server.ts` | Web/API/网关主进程启动、全局中间件、健康检查、管理 API 挂载、网关挂载、前端静态资源兜底 | 只放应用装配和 worker 看护，不沉淀复杂业务逻辑，不直接执行后台任务 |
+| `backend/src/server.ts` | Web/API/网关主进程启动、全局中间件、健康检查、系统 API 反向代理、网关挂载、前端静态资源兜底 | 只放应用装配、DB service / worker 看护和请求入口，不沉淀复杂业务逻辑，不直接执行后台任务 |
 | `backend/src/config/` | 运行配置读取、路径解析和默认配置 | 新增环境变量时同步 `.env.example`、开发和部署文档 |
 | `backend/src/domain/` | 后端对外返回和跨模块共享的领域类型 | 新增或修改 API 结构时同步前端类型和文档 |
 | `backend/src/modules/` | 按业务模块组织 routes 和 service | routes 负责 HTTP 边界，service 负责业务副作用和外部请求 |
 | `backend/src/modules/gateway/` | OpenAI 兼容中转、账号选择、错误策略、SSE 透传和用量解析 | 不把网关细节泄漏成前端多套复杂选项 |
 | `backend/src/modules/background/` | 统计聚合、系统采样、账号质量缓存、冷却账号复测、运行日志索引、审计批量落库和数据清理等后台任务 | 任务注册和执行只允许在独立 background worker 进程内发生，不引入重型分布式队列；新增或调整任务先看 [后台任务使用说明](后台任务使用说明.md) |
+| `backend/src/modules/db-service/` | DB service 进程、内部系统 API app、HTTP 代理、IPC 操作和 supervisor | 系统管理 API 与高频 SQLite 读写只在 DB service 或 worker 内执行，主 Web 进程不能回退同步访问 SQLite |
 | `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
 | `backend/src/shared/` | 通用响应、跨模块小工具 | 只放稳定复用能力，不堆业务逻辑 |
 | `backend/src/scripts/maintenance/` | 生产或上线可用维护脚本 | 发布包统一调用 `backend/dist/scripts/maintenance/*.js`，脚本必须说明会改哪些数据 |
@@ -84,7 +85,8 @@
 
 ```mermaid
 flowchart LR
-  Client["前端管理页面"] --> Api["/__aisys__/api/* 路由"]
+  Client["前端管理页面"] --> Proxy["主进程 /__aisys__/api/* 代理"]
+  Proxy --> Api["DB service 内部系统 API"]
   Api --> Auth["登录态与权限中间件"]
   Auth --> Service["模块服务"]
   Service --> Repo["repository"]
@@ -92,7 +94,8 @@ flowchart LR
 ```
 
 - 未登录只允许访问登录、公开设置和健康检查等明确入口。
-- `/__aisys__/api/*` 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
+- `/__aisys__/api/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 API JSON body，不直接导入管理路由或 repository。
+- DB service 内部系统 API 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
 - routes 层负责解析参数、返回统一响应和 HTTP 状态；业务规则和副作用放到 service 或 repository。
 - repository 必须根据当前登录态或显式访问作用域过滤数据，避免普通用户读写其他系统账户资源。
 - 管理 API 响应、分页筛选、错误语义和权限摘要见 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
@@ -145,7 +148,7 @@ flowchart LR
 | 登录与权限 | `system_accounts`、`system_sessions` | 后台账号、角色、状态、密码哈希和登录会话 |
 | 设置 | `global_settings`、`system_settings` | 平台公开设置和系统账户级运行偏好 |
 | 供应商与资源 | `providers`、`accounts`、`proxy_profiles`、`error_policies` | 上游供应商、AI 账户、代理和账号错误策略 |
-| 团队、授权与分组 | `system_teams`、`system_team_members`、`resource_authorizations`、`groups`、`group_accounts` | 系统团队、团队成员、统一资源授权、分组和分组账号绑定 |
+| 团队、授权与分组 | `system_teams`、`system_team_members`、`resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`、`groups`、`group_accounts` | 系统团队、团队成员、授权操作、最终用户授权、授权来源、分组和分组账号绑定 |
 | 网关访问 | `api_keys` | 本地网关密钥、分组绑定、状态、过期和配额占位 |
 | 请求事实 | `usage_records` | 每次网关尝试的请求、响应、用量、错误和授权归属快照 |
 | 原始审计 | `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs`、`audit_error_groups` | 审计事件、上游尝试、payload 引用、压缩 blob 元数据和重复错误聚合 |
@@ -233,7 +236,7 @@ erDiagram
 
 - 后台任务必须由独立 background worker 进程注册和执行，主 Web 进程不得直接调用 `startBackgroundJobs()` 或导入具体任务实现。
 - 新增或调整后台定时任务、worker IPC 消息、队列 flush 或 worker 生命周期时，先按 [后台任务使用说明](后台任务使用说明.md) 执行。
-- 主 Web 进程只负责管理 API、网关请求、静态资源和必要的 worker 启动 / 看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
+- 主 Web 进程只负责系统 API 代理、网关请求、静态资源和必要的 DB service / worker 启动看护；即使使用 cron 或调度框架，调度器也必须运行在 worker 进程内。
 - 当前后台任务包括使用记录增量聚合、分组账户统计缓存刷新、授权到期扫描、系统指标采样、小时级指标聚合、OpenAI OAuth Access Token 保活、冷却账号复测、运行日志索引 flush、原始审计日志批量落库和统一表数据保留期清理。OpenAI OAuth 额度快照主动刷新已移除，改为真实请求或账户测试响应头被动更新。
 - 任务状态通过 `stats_job_state` 和相关快照表记录，便于后台显示统计滞后与刷新失败。
 - 请求链路产生的审计、运行日志索引或使用记录批量写入数据如需异步处理，应通过有界 IPC 或等价轻量通道投递到 worker；队列上限和丢弃策略不能反向阻塞网关请求。

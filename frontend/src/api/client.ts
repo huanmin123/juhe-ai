@@ -235,7 +235,6 @@ export interface AuthorizationUsageOverviewParams extends AuthorizationScopePara
   resourceId?: string
   granteeSystemAccountId?: string
   teamId?: string
-  statMonth?: string
   startDate?: string
   endDate?: string
 }

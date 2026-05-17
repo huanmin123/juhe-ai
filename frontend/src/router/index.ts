@@ -422,17 +422,7 @@ export const router = createRouter({
         public: true
       }
     },
-    ...menuRoutes,
-    {
-      path: '/system-teams',
-      redirect: '/authorization-teams',
-      meta: {
-        title: '授权团队',
-        description: '旧系统团队管理入口已迁移到授权团队。',
-        keepAlive: false,
-        roles: ['admin']
-      }
-    }
+    ...menuRoutes
   ]
 })
 

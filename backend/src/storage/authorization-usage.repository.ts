@@ -22,12 +22,6 @@ interface AuthorizationUsageFilters {
 
 type AuthorizationReportResourceType = 'all' | ResourceAuthorizationResourceType
 
-interface AuthorizationUsageMonth {
-  statMonth: string
-  startDate: string
-  endDate: string
-}
-
 interface ReportFilterKey {
   systemAccountId: string
   range: AccountUsageStatsRange
@@ -67,11 +61,10 @@ interface AuthorizationResourceInfo {
   ownerSystemAccountId: string
 }
 
-export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange | AuthorizationUsageMonth): AuthorizationTeamUsageOverview {
-  const normalizedRange = authorizationUsageRange(range)
-  const filterKey = authorizationReportFilterKey(filters, access, normalizedRange)
+export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): AuthorizationTeamUsageOverview {
+  const filterKey = authorizationReportFilterKey(filters, access, range)
   if (!filterKey) {
-    return emptyAuthorizationTeamUsageOverview(normalizedRange)
+    return emptyAuthorizationTeamUsageOverview(range)
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
@@ -130,11 +123,10 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
   }
 }
 
-export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange | AuthorizationUsageMonth): AuthorizationUserUsageOverview {
-  const normalizedRange = authorizationUsageRange(range)
-  const filterKey = authorizationReportFilterKey(filters, access, normalizedRange)
+export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): AuthorizationUserUsageOverview {
+  const filterKey = authorizationReportFilterKey(filters, access, range)
   if (!filterKey) {
-    return emptyAuthorizationUserUsageOverview(normalizedRange)
+    return emptyAuthorizationUserUsageOverview(range)
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
@@ -312,33 +304,6 @@ function emptyAuthorizationUserUsageOverview(range: AccountUsageStatsRange): Aut
     rows: [],
     userCount: 0
   }
-}
-
-function authorizationUsageRange(range: AccountUsageStatsRange | AuthorizationUsageMonth): AccountUsageStatsRange {
-  if ('days' in range && 'maxDays' in range) {
-    return range
-  }
-  const days = daysBetween(range.startDate, range.endDate)
-  return {
-    startDate: range.startDate,
-    endDate: range.endDate,
-    days,
-    maxDays: days
-  }
-}
-
-function daysBetween(startDate: string, endDate: string): number {
-  const start = dateFromKey(startDate)
-  const end = dateFromKey(endDate)
-  if (!start || !end || start > end) return 1
-  return Math.max(1, Math.floor((end.getTime() - start.getTime()) / (24 * 60 * 60 * 1000)) + 1)
-}
-
-function dateFromKey(value: string): Date | undefined {
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
-  if (!match) return undefined
-  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]))
-  return date.getFullYear() === Number(match[1]) && date.getMonth() === Number(match[2]) - 1 && date.getDate() === Number(match[3]) ? date : undefined
 }
 
 function userUsageSourceLabels(teamFilterId: string): string[] {

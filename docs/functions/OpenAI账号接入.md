@@ -9,7 +9,7 @@
 
 其他供应商保留架构扩展位，暂不开放页面和接口。
 
-对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 填本服务 `/v1`，例如开发环境 `http://127.0.0.1:3000/v1`；API Key 填 API 密钥页生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
+对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 API 密钥页生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
 单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据、持续有 raw chunk 但同样超过输出停顿上限仍没有形成完整 SSE 事件，或连接读取异常中断，服务端不换账号也不重新请求上游续写，而是按 OpenAI / Codex 可识别的失败事件结束本次 SSE，由客户端按自身上下文决定是否重试；调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
@@ -95,54 +95,32 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 - API Key 绑定一个自有分组；统一授权完成后也可以绑定个人授权或团队授权给自己的分组
 - 请求进入后只能使用该 API Key 对应分组内的账户
 
-## 页面优先级
+## 当前页面入口
 
-1. 供应商页：展示 OpenAI、支持的账户类型和模型价格目录
-2. 账户页：OpenAI OAuth / API Key 创建、编辑、状态切换和授权来源展示
-3. 分组页：维护分组基础信息、查看账户数量与聚合状态和授权来源展示
-4. 授权管理页：统一维护账户 / 分组授权、系统账户 / 团队授权对象和授权消耗聚合
-5. API Key 页：创建密钥并绑定自有分组，统一授权完成后可绑定授权分组
-6. 代理页：维护代理并给账户选择
-7. 使用记录页：先做空状态和列表结构
-8. 系统设置页：先做基础配置占位
+1. 供应商页：展示 OpenAI、支持的账户类型和模型价格目录。
+2. 账户页：OpenAI OAuth / API Key 创建、编辑、状态切换、测试、授权来源和 OAuth 额度进度展示。
+3. 分组页：维护分组基础信息、查看账户数量与聚合状态、绑定自有或授权账户。
+4. 统一授权页：统一维护账户 / 分组授权、系统账户 / 团队授权对象、授权到期和授权额度。
+5. 团队消耗明细 / 用户消耗明细：按日期范围查看授权团队和最终用户消耗。
+6. API Key 页：创建本地网关密钥并绑定自有分组或授权给自己的分组。
+7. 代理页：维护代理并给账户选择，支持手动代理检测和出口信息缓存。
+8. 使用记录页、用量统计页、AI 性能监控页、日志和审计页面：查看 OpenAI 网关请求事实、统计缓存、性能趋势和排障链路。
+9. 系统设置页：维护当前白名单内的网关、后台任务、操作日志和数据保留策略。
 
-## 接口优先级
+## 当前接口入口
 
-1. `GET /__aisys__/api/providers`
-2. `GET /__aisys__/api/providers/:code/models`
-3. `GET /__aisys__/api/accounts`
-4. `POST /__aisys__/api/accounts`
-5. `PATCH /__aisys__/api/accounts/:id`
-6. `DELETE /__aisys__/api/accounts/:id`
-7. `GET /__aisys__/api/groups`
-8. `POST /__aisys__/api/groups`
-9. `PATCH /__aisys__/api/groups/:id`
-10. `DELETE /__aisys__/api/groups/:id`
-11. `GET /__aisys__/api/authorizations`
-12. `POST /__aisys__/api/authorizations`
-13. `DELETE /__aisys__/api/authorizations/:id`
-14. `GET /__aisys__/api/authorizations/:id/usage`
-15. `GET /__aisys__/api/system-teams`
-16. `POST /__aisys__/api/system-teams`
-17. `PATCH /__aisys__/api/system-teams/:id`
-18. `POST /__aisys__/api/system-teams/:id/members`
-19. `DELETE /__aisys__/api/system-teams/:id/members/:memberId`
-20. `GET /__aisys__/api/api-keys`
-21. `POST /__aisys__/api/api-keys`
-22. `PATCH /__aisys__/api/api-keys/:id`
-23. `DELETE /__aisys__/api/api-keys/:id`
-24. `GET /__aisys__/api/proxies`
-25. `GET /__aisys__/api/proxies/options`
-26. `POST /__aisys__/api/proxies`
+- 系统后台 API 统一在 `/__aisys__/api/*` 下，用户侧接口使用 `/__aisys__/api/my-*`，管理侧接口使用 `/__aisys__/api/*` 并按需要求管理员权限。
+- OpenAI 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。
+- 授权消耗明细接口固定使用 `startDate=YYYY-MM-DD` 和 `endDate=YYYY-MM-DD` 日期范围参数，管理侧为 `/__aisys__/api/authorizations/usage/team-details`、`/__aisys__/api/authorizations/usage/user-details`，用户侧为 `/__aisys__/api/my-authorizations/usage/team-details`、`/__aisys__/api/my-authorizations/usage/user-details`。
+- 客户端网关入口是根路径和 `/v1/*`，不使用后台登录态，只使用本地 API Key。
 
-## 暂不做
+## 当前不包含
 
-- 其他供应商
-- 完整 OAuth 授权 callback
-- 非 OpenAI 兼容协议的专用网关
-- 复杂计费
-- 多租户用户体系
-- 自动账号健康检测
+- 其他供应商的页面创建和网关适配。
+- 非 OpenAI 兼容协议的专用客户端网关。
+- 重型计费结算系统。
+- 多实例 / 多租户商业化体系。
+- 账号质量主动探测；账号质量只来自真实请求统计和冷却到期后的恢复性复测。
 
 
 
@@ -202,7 +180,7 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 
 - 数据来源使用真实网关请求或账号测试返回的 Codex rate-limit 响应头：`x-codex-primary-used-percent`、`x-codex-primary-reset-after-seconds`、`x-codex-primary-window-minutes`、`x-codex-secondary-used-percent`、`x-codex-secondary-reset-after-seconds`、`x-codex-secondary-window-minutes`。后台不再为了额度快照主动探测。
 - 归一化规则：优先按 `window_minutes` 判断窗口，较小窗口映射为 `5h`，较大窗口映射为 `7d`；只有单侧窗口时，`<= 360` 分钟归为 `5h`，更长归为 `7d`；没有窗口长度时兼容旧语义，默认 primary 为 `7d`、secondary 为 `5h`。
-- 存储字段建议保存为账号运行态快照，并按 `system_account_id + account_id + kind` 隔离：`codex_5h_used_percent`、`codex_5h_reset_after_seconds`、`codex_5h_reset_at`、`codex_5h_window_minutes`、`codex_7d_used_percent`、`codex_7d_reset_after_seconds`、`codex_7d_reset_at`、`codex_7d_window_minutes`、`codex_usage_updated_at`、`last_attempt_at`、`last_success_at`、`next_refresh_after`、`refresh_status`、`last_error_message`。
+- 存储字段保存为账号运行态快照，并按 `system_account_id + account_id + kind` 隔离：`codex_5h_used_percent`、`codex_5h_reset_after_seconds`、`codex_5h_reset_at`、`codex_5h_window_minutes`、`codex_7d_used_percent`、`codex_7d_reset_after_seconds`、`codex_7d_reset_at`、`codex_7d_window_minutes`、`codex_usage_updated_at`、`last_attempt_at`、`last_success_at`、`next_refresh_after`、`refresh_status`、`last_error_message`。
 - 获取策略：列表只读已缓存快照，不因展示批量探测；新建 OAuth 账户不触发首次快照刷新，缺失或过期时等待真实请求或账户测试的响应头更新。
 - 后台策略：不再注册 OAuth 额度快照主动探测任务；后台只保留 Access Token 预刷新。
 - 429 处理：收到 OAuth Codex 429 时，先解析 header 里已耗尽窗口的 reset 时间；如果 header 不足，再解析响应体 `error.resets_at` 或 `error.resets_in_seconds`；计算出的时间写入账号 `rate_limited` 冷却截止时间，后台下次刷新不早于 reset 时间。
@@ -227,11 +205,11 @@ OpenAI OAuth 账户受上游 Codex/ChatGPT 使用窗口限制，常见窗口包�
 - 账户到期时间
 - 操作
 
-操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户、恢复正常和切换客户端，不再提供分散的授权管理入口，授权统一进入 `授权管理` 菜单维护。迁移流量用于人工处理上游返回状态码正常但内容异常、自动错误策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认把原账户改为临时不可调用，也可指定为停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接。手动启用只针对真正已停用的账户；停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度，也可由手动测试成功恢复；后台冷却复测默认开启，但只会在冷却时间到期后复测 `rate_limited`、`temporary_unavailable` 账号，失败则继续保持原状态。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；异常账户不会参与调度，仍保留编辑（状态锁定为异常）、删除、测试和“恢复异常”，其他管理动作隐藏，后端也同步拒绝异常账户直接刷新令牌或重新授权。测试入口只针对非停用账户；在非停用状态下，测试不受 `schedulable` 标记或冷却时间限制，只要账户仍绑定分组且凭据可读取，就固定测试当前账号。授权账户只保留使用相关操作，隐藏编辑、删除、授权管理和所有配置修改入口。测试会打开结果弹窗，可选择模型；弹窗终端区域展示测试过程、成败、模型返回内容，并在结束行内显示总耗时；状态码、请求 URL、代理、原始响应正文等排查字段统一通过完整 JSON 查看，不再额外展示测试结果表格。测试必须复用正常客户请求的网关调度、代理、OAuth 刷新、错误策略、用量解析和成本统计链路，并固定只测试当前账号；如果测试响应里带有 Codex rate-limit header，可作为副作用更新 OAuth 额度快照。
+操作区提供编辑、删除和“更多”菜单；更多菜单包含测试、迁移流量、停用/启用账户、恢复正常和切换客户端，不再提供分散的授权入口，授权关系统一到管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作` 维护。迁移流量用于人工处理上游返回状态码正常但内容异常、自动错误策略未识别的情况；弹窗展示当前账户、同分组可用目标账户和迁移后原账户状态，默认把原账户改为临时不可调用，也可指定为停用账户。该动作只影响后续请求，不主动打断当前正在输出的流式连接。手动启用只针对真正已停用的账户；停用态是人工硬边界，不能被账户测试、后台冷却复测、OAuth 刷新成功或网关异步错误处理自动恢复，也不能被这些后台路径改为临时不可调用。`限流中` 和 `临时不可调用` 可通过更多菜单的“恢复正常”手动清理冷却与最近错误并恢复调度，也可由手动测试成功恢复；后台冷却复测默认开启，但只会在冷却时间到期后复测 `rate_limited`、`temporary_unavailable` 账号，失败则继续保持原状态。`异常` 使用 `status = error` 作为统一硬状态，页面状态标签显示“异常”，tooltip 展示 `last_error_code` 对应的异常类型和 `last_error_message` 详情；异常账户不会参与调度，仍保留编辑（状态锁定为异常）、删除、测试和“恢复异常”，其他管理动作隐藏，后端也同步拒绝异常账户直接刷新令牌或重新授权。测试入口只针对非停用账户；在非停用状态下，测试不受 `schedulable` 标记或冷却时间限制，只要账户仍绑定分组且凭据可读取，就固定测试当前账号。授权账户只保留使用相关操作，隐藏编辑、删除和所有配置修改入口。测试会打开结果弹窗，可选择模型；弹窗终端区域展示测试过程、成败、模型返回内容，并在结束行内显示总耗时；状态码、请求 URL、代理、原始响应正文等排查字段统一通过完整 JSON 查看，不再额外展示测试结果表格。测试必须复用正常客户请求的网关调度、代理、OAuth 刷新、错误策略、用量解析和成本统计链路，并固定只测试当前账号；如果测试响应里带有 Codex rate-limit header，可作为副作用更新 OAuth 额度快照。
 
 ## 统一授权管理
 
-OpenAI 账户不再分别设计账户授权弹窗和分组授权弹窗，授权统一进入 `授权管理` 菜单。完整规则见 [系统团队与统一授权设计](系统团队与统一授权设计.md)。
+OpenAI 账户不再分别设计账户授权弹窗和分组授权弹窗，授权关系统一进入管理侧 `统一授权管理 / 统一授权` 或用户侧 `我的授权 / 授权操作`。完整规则见 [系统团队与统一授权设计](系统团队与统一授权设计.md)。
 
 - 授权资源支持 AI 账户和分组。
 - 授权对象支持系统账户和系统团队。
@@ -246,8 +224,8 @@ OpenAI 账户不再分别设计账户授权弹窗和分组授权弹窗，授权�
 ## 统计口径
 
 - 网关会记录调用方系统账户、账户所有者、分组所有者、统一授权 ID、授权对象类型、命中账户、API Key、分组、模型、状态、IP、首 token、总耗时、错误和 token。
-- 授权账户调用时，请求日志归实际调用方；账户真实用量按同一个 `account_id` 统一累计；授权管理用量按 `account_authorization_id` 或被授权用户聚合。
-- 授权分组调用时，请求日志归实际调用方；分组真实用量按同一个 `group_id` 统一累计；分组授权管理用量按 `group_authorization_id` 或被授权用户聚合。
+- 授权账户调用时，请求日志归实际调用方；账户真实用量按同一个 `account_id` 统一累计；授权消耗明细按 `account_authorization_id` 或被授权用户聚合。
+- 授权分组调用时，请求日志归实际调用方；分组真实用量按同一个 `group_id` 统一累计；授权消耗明细按 `group_authorization_id` 或被授权用户聚合。
 - OpenAI JSON 响应读取 `usage.input_tokens`、`usage.output_tokens` 和 `usage.input_tokens_details.cached_tokens`。
 - OpenAI SSE 响应读取 `response.completed` / `response.done` / `response.failed` 事件里的 `response.usage`。
 - 成本按 OpenAI 官方 API 价格表做轻量估算；没有覆盖的模型先只记 token。

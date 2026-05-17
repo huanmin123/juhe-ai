@@ -50,7 +50,6 @@ const authorizationUsageOverviewQuerySchema = z.object({
   resourceId: z.string().trim().min(1, '授权资源 ID 不能为空').optional(),
   granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
-  statMonth: z.string().trim().regex(/^\d{4}-\d{2}$/, '统计月份格式应为 YYYY-MM').optional(),
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
   endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
 })
@@ -122,8 +121,8 @@ authorizationsRouter.get('/usage/team-details', (req, res) => {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, statMonth, startDate, endDate, ...filters } = parsed.data
-  const range = normalizeAuthorizationUsageRange({ statMonth, startDate, endDate })
+  const { systemAccountId, startDate, endDate, ...filters } = parsed.data
+  const range = normalizeAuthorizationUsageRange({ startDate, endDate })
   res.json(ok(getAuthorizationTeamUsageOverview(filters, getRequestAccessScope(systemAccountId), range)))
 })
 
@@ -133,8 +132,8 @@ authorizationsRouter.get('/usage/user-details', (req, res) => {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, statMonth, startDate, endDate, ...filters } = parsed.data
-  const range = normalizeAuthorizationUsageRange({ statMonth, startDate, endDate })
+  const { systemAccountId, startDate, endDate, ...filters } = parsed.data
+  const range = normalizeAuthorizationUsageRange({ startDate, endDate })
   res.json(ok(getAuthorizationUserUsageOverview(filters, getRequestAccessScope(systemAccountId), range)))
 })
 
@@ -464,23 +463,13 @@ function normalizeAuthorizationListUsageRange(input: { startDate?: string; endDa
   return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
 }
 
-function normalizeAuthorizationUsageRange(input: { statMonth?: string; startDate?: string; endDate?: string }) {
+function normalizeAuthorizationUsageRange(input: { startDate?: string; endDate?: string }) {
   const timezone = usageStatsTimezone()
   const today = todayDateKey(timezone)
-  if (input.startDate || input.endDate) {
-    const startDate = input.startDate ?? input.endDate ?? today
-    const endDate = input.endDate ?? input.startDate ?? today
-    return normalizeAccountUsageStatsRange({ startDate, endDate }, timezone)
-  }
-  if (!input.statMonth) {
-    return normalizeAccountUsageStatsRange({ startDate: today, endDate: today }, timezone)
-  }
-  const requestedMonth = input.statMonth
-  const statMonth = /^\d{4}-\d{2}$/.test(requestedMonth) ? requestedMonth : today.slice(0, 7)
-  const [year, month] = statMonth.split('-').map(Number)
-  const days = Number.isFinite(year) && Number.isFinite(month) ? new Date(year, month, 0).getDate() : 31
+  const startDate = input.startDate ?? input.endDate ?? today
+  const endDate = input.endDate ?? input.startDate ?? today
   return normalizeAccountUsageStatsRange({
-    startDate: `${statMonth}-01`,
-    endDate: `${statMonth}-${String(days).padStart(2, '0')}`
+    startDate,
+    endDate
   }, timezone)
 }

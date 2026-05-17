@@ -559,13 +559,10 @@ function isRuntimeLogSearchPath(value: string | undefined): boolean {
   const path = value.split('?', 1)[0]?.replace(/\/+$/, '')
   return path === '/__aisys__/api/runtime-logs'
     || Boolean(path?.startsWith('/__aisys__/api/runtime-logs/'))
-    || path === '/api/runtime-logs'
-    || Boolean(path?.startsWith('/api/runtime-logs/'))
 }
 
 function isRuntimeLogSearchPathText(value: string): boolean {
   return value.includes('/__aisys__/api/runtime-logs')
-    || value.includes('/api/runtime-logs')
 }
 
 function compareGrepItems(left: OrderedRuntimeLogGrepItem, right: OrderedRuntimeLogGrepItem): number {

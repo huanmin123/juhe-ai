@@ -211,7 +211,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import dayjs, { type Dayjs } from 'dayjs'
+import type { Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -221,7 +221,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { formatDateKey, formatDateLabel, isDateKey, isMonthKey, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
+import { formatDateKey, formatDateLabel, isDateKey, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import type { AccountSummary, AuthorizationResourceType, AuthorizationUserUsageOverview, AuthorizationUserUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
@@ -406,7 +406,6 @@ function applyRouteFilters() {
   const resourceType = route.query.resourceType === 'account' || route.query.resourceType === 'group' ? route.query.resourceType : undefined
   const startDate = singleQueryValue(route.query.startDate)
   const endDate = singleQueryValue(route.query.endDate)
-  const statMonth = singleQueryValue(route.query.statMonth)
   Object.assign(filters, defaultFilters())
   dateRangeExplicit.value = false
   filters.teamId = teamId
@@ -421,15 +420,6 @@ function applyRouteFilters() {
   if (isDateKey(startDate) || isDateKey(endDate)) {
     dateRange.value = parseDateRange({ startDate, endDate })
     dateRangeExplicit.value = true
-    return
-  }
-  if (isMonthKey(statMonth)) {
-    const start = dayjs(`${statMonth}-01`).startOf('month')
-    dateRange.value = parseDateRange({
-      startDate: formatDateKey(start),
-      endDate: formatDateKey(start.endOf('month'))
-    })
-    dateRangeExplicit.value = true
   }
 }
 
@@ -441,7 +431,6 @@ function hasRouteFilters(): boolean {
     || singleQueryValue(route.query.resourceId)
     || singleQueryValue(route.query.startDate)
     || singleQueryValue(route.query.endDate)
-    || singleQueryValue(route.query.statMonth)
     || route.query.resourceType === 'account'
     || route.query.resourceType === 'group'
   )

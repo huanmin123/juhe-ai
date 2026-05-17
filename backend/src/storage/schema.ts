@@ -347,20 +347,12 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
   `)
 
-  ensureRecordTableColumns(database, 'accounts', {
-    last_error_code: 'TEXT'
-  })
 }
 
 export function applyRecordSchema(database: DatabaseSync): void {
   database.exec(`
     PRAGMA foreign_keys = ON;
     PRAGMA journal_mode = WAL;
-
-    DROP TABLE IF EXISTS authorization_team_usage_monthly;
-    DROP TABLE IF EXISTS authorization_team_usage_summary_monthly;
-    DROP TABLE IF EXISTS authorization_user_usage_monthly;
-    DROP TABLE IF EXISTS authorization_user_usage_summary_monthly;
 
     CREATE TABLE IF NOT EXISTS account_quality_minute_stats (
       account_id TEXT NOT NULL,
@@ -1509,74 +1501,6 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest ON table_storage_snapshots(database_role, table_name, sampled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)
-
-  ensureRecordTableColumns(database, 'usage_records', {
-    cache_read_cost_usd: 'REAL',
-    account_authorization_source_type: 'TEXT',
-    account_authorization_source_team_id: 'TEXT',
-    group_authorization_source_type: 'TEXT',
-    group_authorization_source_team_id: 'TEXT'
-  })
-  for (const tableName of [
-    'usage_stats_totals',
-    'usage_stats_minute',
-    'usage_stats_hourly',
-    'usage_stats_daily',
-    'usage_stats_weekly',
-    'usage_stats_monthly',
-    'authorization_team_usage_summary_daily',
-    'authorization_team_usage_range_windows',
-    'authorization_user_usage_summary_daily',
-    'authorization_user_usage_range_windows',
-    'usage_model_minute',
-    'usage_model_hourly',
-    'usage_model_daily',
-    'usage_model_weekly',
-    'usage_model_monthly',
-    'usage_overview_summary_windows',
-    'usage_overview_trend_windows',
-    'usage_model_rank_windows',
-    'usage_scope_range_windows'
-  ]) {
-    ensureRecordTableColumns(database, tableName, {
-      cache_read_cost_usd: 'REAL NOT NULL DEFAULT 0'
-    })
-  }
-  ensureRecordTableColumns(database, 'ai_performance_summary_windows', {
-    start_date: "TEXT NOT NULL DEFAULT ''",
-    end_date: "TEXT NOT NULL DEFAULT ''",
-    duration_ms_max: 'INTEGER NOT NULL DEFAULT 0',
-    first_token_ms_max: 'INTEGER NOT NULL DEFAULT 0'
-  })
-  for (const tableName of [
-    'usage_overview_summary_windows',
-    'usage_overview_trend_windows',
-    'usage_model_rank_windows',
-    'usage_error_rank_windows',
-    'system_metrics_trend_windows'
-  ]) {
-    ensureRecordTableColumns(database, tableName, {
-      start_date: "TEXT NOT NULL DEFAULT ''",
-      end_date: "TEXT NOT NULL DEFAULT ''"
-    })
-  }
-}
-
-function ensureRecordTableColumns(database: DatabaseSync, tableName: string, columns: Record<string, string>): void {
-  const table = quotedIdentifier(tableName)
-  const existingRows = database.prepare(`PRAGMA table_info(${table})`).all() as unknown as Array<{ name?: string }>
-  const existing = new Set(existingRows.map((row) => row.name).filter((name): name is string => Boolean(name)))
-  for (const [columnName, columnDefinition] of Object.entries(columns)) {
-    if (existing.has(columnName)) continue
-    database.exec(`ALTER TABLE ${table} ADD COLUMN ${quotedIdentifier(columnName)} ${columnDefinition}`)
-  }
-}
-
-function quotedIdentifier(value: string): string {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(value)) {
-    throw new Error(`非法 SQLite 标识符：${value}`)
-  }
-  return `"${value}"`
 }
 
 export function seedDefaults(database: DatabaseSync): void {
@@ -1609,8 +1533,6 @@ export function seedDefaults(database: DatabaseSync): void {
     globalStatement.run(key, JSON.stringify(value), now)
   }
 
-  database.prepare("DELETE FROM global_settings WHERE key IN ('loginTitle', 'loginSubtitle', 'loginBadge')").run()
-
   database
     .prepare(`
       INSERT OR IGNORE INTO providers (
@@ -1640,11 +1562,6 @@ export function seedDefaults(database: DatabaseSync): void {
   for (const [key, value] of DEFAULT_SYSTEM_SETTINGS) {
     statement.run('sys_admin', key, JSON.stringify(value), now)
   }
-  database.prepare(`
-    INSERT OR IGNORE INTO system_settings (system_account_id, key, value_json, updated_at)
-    VALUES ('sys_admin', 'usageStatsSchemaVersion', ?, ?)
-  `).run(JSON.stringify('2'), now)
-
 }
 
 function seedAdminDefaultOpenAIGroup(database: DatabaseSync, timestamp: string): void {
