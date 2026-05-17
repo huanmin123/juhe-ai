@@ -1,4 +1,4 @@
-import type { AccountUsageSummary, ResourceAuthorizationResourceType, ResourceAuthorizationSummary } from '../domain/types.js'
+import type { AccountUsageSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, nowIso } from './database.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
@@ -12,6 +12,11 @@ export function accountSystemAccountId(accountId: string): string | undefined {
 export function groupSystemAccountId(groupId: string): string | undefined {
   const row = getDatabase().prepare('SELECT system_account_id FROM groups WHERE id = ?').get(groupId) as unknown as { system_account_id?: string } | undefined
   return row?.system_account_id
+}
+
+export function groupOwnerAndProvider(groupId: string): { systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined {
+  const row = getDatabase().prepare('SELECT system_account_id, provider_code, name FROM groups WHERE id = ?').get(groupId) as unknown as { system_account_id?: string; provider_code?: ProviderCode; name?: string } | undefined
+  return row?.system_account_id && row.provider_code ? { systemAccountId: row.system_account_id, providerCode: row.provider_code, name: row.name } : undefined
 }
 
 export function activeAccountAuthorization(accountId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {

@@ -1,5 +1,5 @@
 import { runtimeConfig } from '../../config/runtime.js'
-import { upsertAccountUsageSnapshot } from '../../storage/repositories.js'
+import { enqueueRecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export interface OpenAICodexUsageSnapshot {
   primaryUsedPercent?: number
@@ -58,7 +58,8 @@ export function persistOpenAICodexUsageHeaders(accountId: string, headers?: Head
   if (!snapshot) return false
   const payload = buildOpenAICodexUsageSnapshotPayload(snapshot, new Date(), source)
   if (!Object.keys(payload).length) return false
-  upsertAccountUsageSnapshot({
+  enqueueRecordMaintenanceJob({
+    type: 'account_usage_snapshot_upsert',
     accountId,
     kind: 'openai_codex',
     source,

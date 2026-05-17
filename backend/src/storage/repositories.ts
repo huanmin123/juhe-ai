@@ -1,8 +1,8 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceSummary, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
-import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
+import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { hasAccountQualityScoreSort, normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
 import { accountCredentialsForList, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries, type AccountRowsPage } from './account-read.repository.js'
 import {
@@ -30,12 +30,17 @@ import {
   activeGroupAuthorization,
   activeResourceAuthorization,
   canManageResourceOwner,
+  groupOwnerAndProvider,
   isResourceAuthorizationExpired,
   resolveAccountSystemAccountId,
   sanitizeAuthorizationSourcesForViewer,
   usageScope
 } from './resource-authorization-helpers.js'
-import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap, loadSystemAccountsByIds, loadSystemTeamNameMap } from './repository-lookups.js'
+import {
+  normalizeResourceType
+} from './resource-authorization-list-helpers.js'
+import { listResourceAuthorizationSummaries, loadRuntimeAuthorizationForUserGrant, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
+import { loadSystemAccountNameMap, loadSystemAccountsByIds } from './repository-lookups.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
@@ -43,7 +48,7 @@ import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
-import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, numberFromUnknown, todayDateKey, usageStatsTimezone, usageSummaryFromAggregate } from './usage-stats-helpers.js'
+import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 import { loadUsageDailySeriesForScopeRequests } from './usage-window-loaders.js'
 import {
@@ -59,10 +64,6 @@ const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 const manualTrafficMigrationReason = '手动迁移流量'
 
 export type { AccountListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
-
-interface ResourceAuthorizationListOptions {
-  usageRange?: AccountUsageStatsRange
-}
 
 export class DuplicateAccountCredentialError extends Error {
   constructor() {
@@ -97,6 +98,9 @@ export {
 } from './announcements.repository.js'
 export {
   cleanupDeletedApiKeyRelatedRecordData,
+  type DeletedApiKeyRecordCleanupTarget
+} from './api-key-record-cleanup.js'
+export {
   createApiKeyRecord,
   deleteApiKey,
   deleteApiKeyWithRelatedCleanup,
@@ -369,22 +373,6 @@ function canScheduleAuthorizedAccount(input: {
   }
   const authorization = activeAccountAuthorization(input.accountId, input.systemAccountId)
   return authorization?.id === input.authorizationId
-}
-
-function canUseGroup(groupId: string, systemAccountId: string): boolean {
-  const group = groupOwnerAndProvider(groupId)
-  if (group?.systemAccountId === systemAccountId) return true
-  return Boolean(activeResourceAuthorization('group', groupId, systemAccountId))
-}
-
-function groupOwnerAndProvider(groupId: string): { systemAccountId: string; providerCode: ProviderCode; name?: string } | undefined {
-  const row = getDatabase().prepare('SELECT system_account_id, provider_code, name FROM groups WHERE id = ?').get(groupId) as unknown as { system_account_id?: string; provider_code?: ProviderCode; name?: string } | undefined
-  return row?.system_account_id && row.provider_code ? { systemAccountId: row.system_account_id, providerCode: row.provider_code, name: row.name } : undefined
-}
-
-function apiKeySystemAccountId(apiKeyId: string): string | undefined {
-  const row = getDatabase().prepare('SELECT system_account_id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { system_account_id?: string } | undefined
-  return row?.system_account_id
 }
 
 function globalProxyProfileId(proxyProfileId: string | undefined): string | undefined {
@@ -2069,15 +2057,7 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
 
 export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   expireDueResourceAuthorizations()
-  const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const grantRows = listResourceAuthorizationGrantOperationRows(filters, access)
-  const summaries = resourceAuthorizationGrantSummaries(grantRows, options.usageRange)
-    .sort(compareResourceAuthorizationOperations)
-  return summaries.map((summary) => withResourceAuthorizationPermissions(
-    sanitizeResourceAuthorizationSummaryForAccess(summary, access),
-    viewerSystemAccountId,
-    access
-  ))
+  return listResourceAuthorizationSummaries(filters, access, options)
 }
 
 export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
@@ -2265,24 +2245,6 @@ function normalizeSystemAccountIds(value: unknown): string[] {
   return typeof value === 'string' && value.trim() ? [value.trim()] : []
 }
 
-function normalizeResourceType(value: unknown): ResourceAuthorizationResourceType | undefined {
-  return value === 'account' || value === 'group' ? value : undefined
-}
-
-function normalizeSourceType(value: unknown): ResourceAuthorizationSourceType | undefined {
-  return value === 'manual' || value === 'team' ? value : undefined
-}
-
-function authorizationDirectionFilter(value: unknown): 'outbound' | 'inbound' | undefined {
-  return value === 'outbound' || value === 'inbound' ? value : undefined
-}
-
-function authorizationStatusFilter(value: unknown): AuthorizationStatus | undefined {
-  return value === 'active' || value === 'paused' || value === 'expired' || value === 'revoked'
-    ? value
-    : undefined
-}
-
 function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourceType, resourceId: string): string | undefined {
   return resourceType === 'account' ? accountSystemAccountId(resourceId) : groupOwnerAndProvider(resourceId)?.systemAccountId
 }
@@ -2297,93 +2259,6 @@ function activeTeamMemberRows(teamId: string, database = getDatabase()): SystemT
       AND system_accounts.status = 'active'
     ORDER BY system_team_members.joined_at ASC, system_team_members.id ASC
   `).all(teamId) as unknown as SystemTeamMemberRow[]
-}
-
-function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationGrantRow[] {
-  const clauses: string[] = []
-  const params: Array<string | number | null> = []
-  const grantId = optionalString(filters.id ?? filters.authorizationId ?? filters.authorization_id)
-  if (grantId) { clauses.push('rag.id = ?'); params.push(grantId) }
-  const resourceType = normalizeResourceType(filters.resourceType ?? filters.resource_type)
-  if (resourceType) { clauses.push('rag.resource_type = ?'); params.push(resourceType) }
-  const resourceId = optionalString(filters.resourceId ?? filters.resource_id)
-  if (resourceId) { clauses.push('rag.resource_id = ?'); params.push(resourceId) }
-  const granteeSystemAccountId = optionalString(filters.granteeSystemAccountId ?? filters.grantee_system_account_id)
-  if (granteeSystemAccountId) {
-    clauses.push('rag.grantee_type = ?')
-    params.push('system_account')
-    clauses.push('rag.grantee_system_account_id = ?')
-    params.push(granteeSystemAccountId)
-  }
-  const status = authorizationStatusFilter(filters.status)
-  if (status) { clauses.push('rag.status = ?'); params.push(status) }
-  const teamId = optionalString(filters.teamId ?? filters.team_id)
-  if (teamId) {
-    if (!canAccessAll(access)) {
-      clauses.push('EXISTS (SELECT 1 FROM system_team_members stm_scope WHERE stm_scope.team_id = ? AND stm_scope.system_account_id = ? AND stm_scope.status = \'active\')')
-      params.push(teamId, currentSystemAccountId(access))
-    }
-    clauses.push('rag.grantee_type = ?')
-    params.push('team')
-    clauses.push('rag.grantee_team_id = ?')
-    params.push(teamId)
-  }
-  const ownerSystemAccountId = optionalString(filters.resourceOwnerSystemAccountId ?? filters.resource_owner_system_account_id)
-  if (ownerSystemAccountId) {
-    clauses.push('rag.resource_owner_system_account_id = ?')
-    params.push(ownerSystemAccountId)
-  }
-  const scopeSystemAccountId = scopedSystemAccountId(access)
-  if (scopeSystemAccountId) {
-    clauses.push(`(rag.resource_owner_system_account_id = ? OR rag.grantee_system_account_id = ? OR EXISTS (
-      SELECT 1
-      FROM system_team_members stm_scope
-      WHERE stm_scope.team_id = rag.grantee_team_id
-        AND stm_scope.system_account_id = ?
-        AND stm_scope.status = 'active'
-    ))`)
-    params.push(scopeSystemAccountId, scopeSystemAccountId, scopeSystemAccountId)
-  } else if (!canAccessAll(access)) {
-    clauses.push(`(rag.resource_owner_system_account_id = ? OR rag.grantee_system_account_id = ? OR EXISTS (
-      SELECT 1
-      FROM system_team_members stm_scope
-      WHERE stm_scope.team_id = rag.grantee_team_id
-        AND stm_scope.system_account_id = ?
-        AND stm_scope.status = 'active'
-    ))`)
-    params.push(currentSystemAccountId(access), currentSystemAccountId(access), currentSystemAccountId(access))
-  }
-  const direction = authorizationDirectionFilter(filters.direction)
-  const directionSystemAccountId = scopeSystemAccountId ?? (!canAccessAll(access) ? currentSystemAccountId(access) : undefined)
-  if (direction && directionSystemAccountId) {
-    if (direction === 'outbound') {
-      clauses.push('rag.resource_owner_system_account_id = ?')
-      params.push(directionSystemAccountId)
-    } else {
-      clauses.push(`(rag.grantee_system_account_id = ? OR EXISTS (
-        SELECT 1
-        FROM system_team_members stm_direction
-        WHERE stm_direction.team_id = rag.grantee_team_id
-          AND stm_direction.system_account_id = ?
-          AND stm_direction.status = 'active'
-      ))`)
-      params.push(directionSystemAccountId, directionSystemAccountId)
-    }
-  }
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
-  return getDatabase().prepare(`SELECT rag.* FROM resource_authorization_grants rag ${where} ORDER BY CASE rag.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, rag.updated_at DESC, rag.created_at DESC, rag.id DESC`).all(...params) as unknown as ResourceAuthorizationGrantRow[]
-}
-
-function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationGrantRow, database = getDatabase()): ResourceAuthorizationRow | undefined {
-  if (!row.grantee_system_account_id) return undefined
-  return database.prepare(`
-    SELECT *
-    FROM resource_authorizations
-    WHERE resource_type = ?
-      AND resource_id = ?
-      AND grantee_system_account_id = ?
-    LIMIT 1
-  `).get(row.resource_type, row.resource_id, row.grantee_system_account_id) as unknown as ResourceAuthorizationRow | undefined
 }
 
 function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
@@ -2909,247 +2784,6 @@ function reactivateTeamGrantSources(teamId: string, access: AccessScope | undefi
 
 function deactivateAuthorizationIfNoActiveSources(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
   refreshResourceAuthorizationEffectiveSource(authorizationId, actor, now, database)
-}
-
-function resourceAuthorizationSummaries(rows: ResourceAuthorizationRow[], usageRange?: AccountUsageStatsRange): ResourceAuthorizationSummary[] {
-  const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
-  const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
-  const systemAccounts = loadSystemAccountsByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id]))
-  const teamNames = loadSystemTeamNameMap(rows.map((row) => row.effective_source_team_id ?? ''))
-  const sources = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.id))
-  const usage = loadResourceAuthorizationUsageSummaries(rows, usageRange ?? todayDateKey(usageStatsTimezone()))
-  const totalUsage = loadResourceAuthorizationUsageSummaries(rows)
-  return rows.map((row) => {
-    const owner = systemAccounts.get(row.resource_owner_system_account_id)
-    const grantee = systemAccounts.get(row.grantee_system_account_id)
-    const authorizationSources = sources.get(row.id) ?? []
-    return {
-      id: row.id,
-      resourceType: row.resource_type,
-      resourceId: row.resource_id,
-      resourceName: row.resource_type === 'account' ? accountNames.get(row.resource_id) : groupNames.get(row.resource_id),
-      resourceOwnerSystemAccountId: row.resource_owner_system_account_id,
-      resourceOwnerSystemAccountName: owner?.displayName ?? owner?.username,
-      granteeType: 'system_account',
-      granteeSystemAccountId: row.grantee_system_account_id,
-      granteeSystemAccountName: grantee?.displayName ?? grantee?.username,
-      granteeUsername: grantee?.username,
-      scope: 'use',
-      status: row.status,
-      remark: row.remark ?? undefined,
-      expiresAt: row.expires_at ?? undefined,
-      limits: parseRequestQuotaLimitsJson(row.limits_json),
-      modelPolicy: parseOptionalJsonObject(row.model_policy_json ?? undefined),
-      effectiveSourceType: row.effective_source_type ?? undefined,
-      effectiveSourceTeamId: row.effective_source_team_id ?? undefined,
-      effectiveSourceTeamName: row.effective_source_team_id ? teamNames.get(row.effective_source_team_id) : undefined,
-      activatedAt: row.activated_at ?? undefined,
-      lastSourceChangedAt: row.last_source_changed_at ?? undefined,
-      sources: authorizationSources,
-      authorizationSources,
-      usage: usage.get(row.id) ?? emptyAccountUsageSummary(),
-      lastUsedAt: totalUsage.get(row.id)?.lastUsedAt,
-      createdBy: row.created_by,
-      createdAt: row.created_at,
-      revokedBy: row.revoked_by ?? undefined,
-      revokedAt: row.revoked_at ?? undefined,
-      revokedReason: row.revoked_reason ?? undefined,
-      updatedAt: row.updated_at
-    }
-  })
-}
-
-function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow[], usageRange?: AccountUsageStatsRange): ResourceAuthorizationSummary[] {
-  const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
-  const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
-  const systemAccounts = loadSystemAccountsByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
-  const teamNames = loadSystemTeamNameMap(rows.map((row) => row.grantee_team_id ?? ''))
-  const usage = loadResourceAuthorizationGrantUsageSummaries(rows, usageRange ?? todayDateKey(usageStatsTimezone()))
-  const totalUsage = loadResourceAuthorizationGrantUsageSummaries(rows)
-  return rows.map((row) => {
-    const owner = systemAccounts.get(row.resource_owner_system_account_id)
-    const grantee = row.grantee_system_account_id ? systemAccounts.get(row.grantee_system_account_id) : undefined
-    const teamName = row.grantee_team_id ? teamNames.get(row.grantee_team_id) : undefined
-    const source = resourceAuthorizationGrantSourceSummary(row, teamName)
-    return {
-      id: row.id,
-      resourceType: row.resource_type,
-      resourceId: row.resource_id,
-      resourceName: row.resource_type === 'account' ? accountNames.get(row.resource_id) : groupNames.get(row.resource_id),
-      resourceOwnerSystemAccountId: row.resource_owner_system_account_id,
-      resourceOwnerSystemAccountName: owner?.displayName ?? owner?.username,
-      granteeType: row.grantee_type,
-      granteeSystemAccountId: row.grantee_system_account_id ?? undefined,
-      granteeSystemAccountName: grantee?.displayName ?? grantee?.username,
-      granteeUsername: grantee?.username,
-      granteeTeamId: row.grantee_team_id ?? undefined,
-      granteeTeamName: teamName,
-      scope: 'use',
-      status: row.status,
-      remark: row.remark ?? undefined,
-      expiresAt: row.expires_at ?? undefined,
-      limits: parseRequestQuotaLimitsJson(row.limits_json),
-      modelPolicy: parseOptionalJsonObject(row.model_policy_json ?? undefined),
-      effectiveSourceType: row.grantee_type === 'team' ? 'team' : 'manual',
-      effectiveSourceTeamId: row.grantee_team_id ?? undefined,
-      effectiveSourceTeamName: teamName,
-      activatedAt: row.created_at,
-      lastSourceChangedAt: row.updated_at,
-      sources: [source],
-      authorizationSources: [source],
-      usage: usage.get(row.id) ?? emptyAccountUsageSummary(),
-      lastUsedAt: totalUsage.get(row.id)?.lastUsedAt,
-      createdBy: row.created_by,
-      createdAt: row.created_at,
-      revokedBy: row.revoked_by ?? undefined,
-      revokedAt: row.revoked_at ?? undefined,
-      revokedReason: row.status === 'expired' ? 'authorization_expired' : row.status === 'revoked' ? 'authorization_revoked' : undefined,
-      updatedAt: row.updated_at
-    }
-  })
-}
-
-function resourceAuthorizationGrantSourceSummary(row: ResourceAuthorizationGrantRow, teamName: string | undefined): ResourceAuthorizationSourceSummary {
-  const sourceType: ResourceAuthorizationSourceType = row.grantee_type === 'team' ? 'team' : 'manual'
-  return {
-    id: row.id,
-    authorizationId: row.id,
-    sourceType,
-    sourceTeamId: row.grantee_team_id ?? undefined,
-    sourceTeamName: teamName,
-    status: row.status === 'active' || row.status === 'paused' ? 'active' as const : 'revoked' as const,
-    activatedAt: row.created_at,
-    endedAt: row.revoked_at ?? (row.status === 'expired' || row.status === 'revoked' ? row.updated_at : undefined),
-    endedReason: row.status === 'expired' ? 'authorization_expired' : row.status === 'revoked' ? 'authorization_revoked' : undefined,
-    createdBy: row.created_by,
-    createdAt: row.created_at,
-    revokedBy: row.revoked_by ?? undefined,
-    revokedAt: row.revoked_at ?? undefined,
-    updatedAt: row.updated_at
-  }
-}
-
-function compareResourceAuthorizationOperations(left: ResourceAuthorizationSummary, right: ResourceAuthorizationSummary): number {
-  const statusDelta = authorizationStatusSortWeight(left.status) - authorizationStatusSortWeight(right.status)
-  if (statusDelta !== 0) return statusDelta
-  const updatedDelta = Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-  if (Number.isFinite(updatedDelta) && updatedDelta !== 0) return updatedDelta
-  const createdDelta = Date.parse(right.createdAt) - Date.parse(left.createdAt)
-  if (Number.isFinite(createdDelta) && createdDelta !== 0) return createdDelta
-  return right.id.localeCompare(left.id)
-}
-
-function authorizationStatusSortWeight(status: AuthorizationStatus): number {
-  if (status === 'active') return 0
-  if (status === 'paused') return 1
-  if (status === 'expired') return 2
-  if (status === 'revoked') return 3
-  return 4
-}
-
-function sanitizeResourceAuthorizationSummaryForAccess(summary: ResourceAuthorizationSummary, access?: AccessScope): ResourceAuthorizationSummary {
-  if (canManageResourceOwner(summary.resourceOwnerSystemAccountId, access)) {
-    return summary
-  }
-  const sources = sanitizeAuthorizationSourcesForViewer(summary.authorizationSources ?? summary.sources, true) ?? []
-  return {
-    ...summary,
-    effectiveSourceTeamId: undefined,
-    effectiveSourceTeamName: undefined,
-    sources,
-    authorizationSources: sources,
-    createdBy: '',
-    revokedBy: undefined
-  }
-}
-
-function withResourceAuthorizationPermissions(summary: ResourceAuthorizationSummary, _viewerSystemAccountId: string | undefined, access?: AccessScope): ResourceAuthorizationSummary {
-  const canManage = canManageResourceOwner(summary.resourceOwnerSystemAccountId, access)
-  return {
-    ...summary,
-    permissions: {
-      canEdit: canManage,
-      canAuthorize: canManage
-    }
-  }
-}
-
-function loadResourceAuthorizationUsageSummaries(rows: ResourceAuthorizationRow[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
-  const accountScopes = rows
-    .filter((row) => row.resource_type === 'account')
-    .map((row) => usageScope(row.id, row.resource_owner_system_account_id, row.id))
-  const groupScopes = rows
-    .filter((row) => row.resource_type === 'group')
-    .map((row) => usageScope(row.id, row.resource_owner_system_account_id, row.id))
-  return new Map([
-    ...loadAccountAuthorizationUsageSummaries(accountScopes, statDateOrRange),
-    ...loadGroupAuthorizationUsageSummaries(groupScopes, statDateOrRange)
-  ])
-}
-
-function loadResourceAuthorizationGrantUsageSummaries(rows: ResourceAuthorizationGrantRow[], statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>): Map<string, AccountUsageSummary> {
-  const result = new Map<string, AccountUsageSummary>()
-  const userGrantRows = rows.filter((row) => row.grantee_type === 'system_account')
-  const runtimeRowsByGrant = runtimeAuthorizationRowsByGrantIds(userGrantRows)
-  const runtimeRows = [...runtimeRowsByGrant.values()].flat()
-  const runtimeUsage = loadResourceAuthorizationUsageSummaries(runtimeRows, statDateOrRange)
-  for (const row of userGrantRows) {
-    const runtime = runtimeRowsByGrant.get(row.id)?.[0]
-    result.set(row.id, runtime ? runtimeUsage.get(runtime.id) ?? emptyAccountUsageSummary() : emptyAccountUsageSummary())
-  }
-
-  const teamGrantRows = rows.filter((row) => row.grantee_type === 'team' && row.grantee_team_id)
-  const accountTeamScopes = teamGrantRows
-    .filter((row) => row.resource_type === 'account')
-    .map((row) => usageScope(row.id, row.resource_owner_system_account_id, authorizationGrantUsageScopeId(row)))
-  const groupTeamScopes = teamGrantRows
-    .filter((row) => row.resource_type === 'group')
-    .map((row) => usageScope(row.id, row.resource_owner_system_account_id, authorizationGrantUsageScopeId(row)))
-  const teamUsage = new Map([
-    ...loadAccountAuthorizationUsageSummaries(accountTeamScopes, statDateOrRange, 'account_authorization_team'),
-    ...loadGroupAuthorizationUsageSummaries(groupTeamScopes, statDateOrRange, 'group_authorization_team')
-  ])
-  for (const row of teamGrantRows) {
-    result.set(row.id, teamUsage.get(row.id) ?? emptyAccountUsageSummary())
-  }
-
-  return result
-}
-
-function runtimeAuthorizationRowsByGrantIds(rows: ResourceAuthorizationGrantRow[]): Map<string, ResourceAuthorizationRow[]> {
-  const result = new Map<string, ResourceAuthorizationRow[]>()
-  const database = getDatabase()
-  for (const row of rows) {
-    if (row.grantee_type === 'system_account' && row.grantee_system_account_id) {
-      const runtime = loadRuntimeAuthorizationForUserGrant(row, database)
-      result.set(row.id, runtime ? [runtime] : [])
-      continue
-    }
-    if (row.grantee_type === 'team' && row.grantee_team_id) {
-      const runtimeRows = database.prepare(`
-        SELECT DISTINCT ra.*
-        FROM resource_authorizations ra
-        INNER JOIN resource_authorization_sources ras
-          ON ras.authorization_id = ra.id
-          AND ras.source_type = 'team'
-          AND ras.source_team_id = ?
-        WHERE ra.resource_type = ?
-          AND ra.resource_id = ?
-          AND ra.resource_owner_system_account_id = ?
-        ORDER BY ra.created_at ASC, ra.id ASC
-      `).all(row.grantee_team_id, row.resource_type, row.resource_id, row.resource_owner_system_account_id) as unknown as ResourceAuthorizationRow[]
-      result.set(row.id, runtimeRows)
-      continue
-    }
-    result.set(row.id, [])
-  }
-  return result
-}
-
-function authorizationGrantUsageScopeId(row: ResourceAuthorizationGrantRow): string {
-  return row.grantee_type === 'team' && row.grantee_team_id
-    ? `${row.resource_id}:${row.grantee_team_id}`
-    : row.id
 }
 
 function loadResourceAuthorizationUsageDetail(

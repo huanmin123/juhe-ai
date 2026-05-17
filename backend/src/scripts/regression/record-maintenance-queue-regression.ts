@@ -33,6 +33,22 @@ try {
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'worker flush 后记录库维护队列应清空')
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().completedCount, completedBefore + 1, 'worker flush 应执行记录库维护任务')
 
+  seedAccount('acct_codex_snapshot', 'sys_admin')
+  recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'account_usage_snapshot_upsert',
+    id: 'recmaint_account_usage_snapshot',
+    accountId: 'acct_codex_snapshot',
+    kind: 'openai_codex',
+    source: 'regression',
+    snapshot: {
+      codex_usage_updated_at: '2000-01-01T00:00:00.000Z',
+      codex_5h_used_percent: 12
+    },
+    updatedAt: '2000-01-01T00:00:00.000Z'
+  })
+  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  assert.equal(accountUsageSnapshotCount('acct_codex_snapshot'), 1, 'worker 应能通过记录库维护队列写入账号用量快照')
+
   runtimeConfig.processRole = 'server'
   const pendingBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildUsageRecordsCleanupJob('server_ipc'))
@@ -72,4 +88,26 @@ function buildApiKeyCleanupJob(source: string) {
     apiKeyId: `key_${source}`,
     systemAccountId: 'sys_admin'
   }
+}
+
+function seedAccount(accountId: string, systemAccountId: string): void {
+  databaseModule.getDatabase()
+    .prepare(`
+      INSERT OR IGNORE INTO providers (id, code, name, description, enabled, base_url, account_types_json, capabilities_json, created_at, updated_at)
+      VALUES ('prov_openai', 'openai', 'OpenAI', NULL, 1, 'https://api.openai.com', '[]', '{}', ?, ?)
+    `)
+    .run('2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
+  databaseModule.getDatabase()
+    .prepare(`
+      INSERT INTO accounts (id, system_account_id, provider_code, name, type, status, credentials_encrypted, schedulable, created_at, updated_at)
+      VALUES (?, ?, 'openai', ?, 'oauth', 'active', ?, 1, ?, ?)
+    `)
+    .run(accountId, systemAccountId, accountId, '{}', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
+}
+
+function accountUsageSnapshotCount(accountId: string): number {
+  const row = databaseModule.getRecordDatabase()
+    .prepare('SELECT COUNT(*) AS total FROM account_usage_snapshots WHERE account_id = ?')
+    .get(accountId) as { total?: number } | undefined
+  return Number(row?.total ?? 0)
 }

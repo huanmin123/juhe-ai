@@ -3,7 +3,8 @@ import { errorLogFields, logger } from '../../shared/logger.js'
 import { newId, nowIso } from '../../storage/database.js'
 import {
   cleanupDeletedApiKeyRelatedRecordData,
-  cleanupProcessedUsageRecordsBeforeWithResult
+  cleanupProcessedUsageRecordsBeforeWithResult,
+  upsertAccountUsageSnapshot
 } from '../../storage/repositories.js'
 import { sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
 
@@ -21,6 +22,16 @@ export type RecordMaintenanceJob =
     cutoffAt: string
     batchSize: number
     maxBatches: number
+    createdAt?: string
+  }
+  | {
+    type: 'account_usage_snapshot_upsert'
+    id?: string
+    accountId: string
+    kind: 'openai_codex'
+    source?: string
+    snapshot: Record<string, unknown>
+    updatedAt?: string
     createdAt?: string
   }
 
@@ -210,6 +221,22 @@ function processRecordMaintenanceJob(job: RecordMaintenanceJob): void {
       }, '使用记录后台清理完成')
       return
     }
+    case 'account_usage_snapshot_upsert':
+      upsertAccountUsageSnapshot({
+        accountId: job.accountId,
+        kind: job.kind,
+        source: job.source,
+        snapshot: job.snapshot,
+        updatedAt: job.updatedAt
+      })
+      logger.info({
+        event: 'record_maintenance_account_usage_snapshot_upserted',
+        jobId: job.id,
+        accountId: job.accountId,
+        kind: job.kind,
+        source: job.source
+      }, '账号用量快照后台写入完成')
+      return
     default:
       assertNever(job)
   }
@@ -294,6 +321,17 @@ export function isRecordMaintenanceJob(value: unknown): value is RecordMaintenan
       && Number.isFinite(record.batchSize)
       && typeof record.maxBatches === 'number'
       && Number.isFinite(record.maxBatches)
+      && (record.id === undefined || typeof record.id === 'string')
+      && (record.createdAt === undefined || typeof record.createdAt === 'string')
+  }
+  if (record.type === 'account_usage_snapshot_upsert') {
+    return typeof record.accountId === 'string'
+      && record.kind === 'openai_codex'
+      && (record.source === undefined || typeof record.source === 'string')
+      && typeof record.snapshot === 'object'
+      && record.snapshot !== null
+      && !Array.isArray(record.snapshot)
+      && (record.updatedAt === undefined || typeof record.updatedAt === 'string')
       && (record.id === undefined || typeof record.id === 'string')
       && (record.createdAt === undefined || typeof record.createdAt === 'string')
   }
