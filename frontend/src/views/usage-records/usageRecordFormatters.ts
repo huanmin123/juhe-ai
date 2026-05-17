@@ -36,6 +36,12 @@ export function formatUnitPrice(value?: number): string {
   return typeof value === 'number' ? `$${value.toFixed(4)} / 1M Token` : '-'
 }
 
+export function formatCacheRate(record: UsageRecordSummary): string {
+  const inputTokens = record.inputTokens ?? 0
+  if (inputTokens <= 0) return '0.0%'
+  return `${(((record.cacheReadTokens ?? 0) / inputTokens) * 100).toFixed(1)}%`
+}
+
 export function formatDuration(value?: number): string {
   return typeof value === 'number' ? `${(value / 1000).toFixed(2)} s` : '-'
 }

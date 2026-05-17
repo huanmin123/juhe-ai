@@ -303,6 +303,8 @@ export interface AccountSummary {
   cooldownUntil?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  streamFailureCount?: number
+  streamFailureWindowStartedAt?: string
   localStatus?: AccountStatus
   localCooldownUntil?: string
   localLastErrorMessage?: string

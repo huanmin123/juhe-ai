@@ -27,8 +27,8 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="系统图标路径" extra="默认使用 /brand-icon.svg；也可上传 256KB 以内图片并以 Data URL 保存。">
-                <a-input v-model:value="globalForm.appIcon" placeholder="/brand-icon.svg" />
+              <a-form-item label="系统图标路径" extra="默认使用 /__aisys__/brand-icon.svg；也可上传 256KB 以内图片并以 Data URL 保存。">
+                <a-input v-model:value="globalForm.appIcon" placeholder="/__aisys__/brand-icon.svg" />
                 <a-space class="brand-icon-actions">
                   <a-upload accept="image/svg+xml,image/png,image/jpeg,image/webp" :before-upload="handleIconUpload" :show-upload-list="false">
                     <a-button>上传图标</a-button>

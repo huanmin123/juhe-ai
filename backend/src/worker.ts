@@ -95,7 +95,10 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
       queueBytes: auditRuntime.queueBytes,
       flushLastSuccessAt: auditRuntime.flushLastSuccessAt,
       flushLastError: auditRuntime.flushLastError,
-      droppedCount: auditRuntime.droppedSuccessCount + auditRuntime.droppedFailureCount + auditRuntime.droppedOverflowCount + auditRuntime.droppedOversizeCount,
+      droppedCount: auditRuntime.droppedSuccessCount
+        + auditRuntime.droppedFailureCount
+        + auditRuntime.droppedOverflowCount
+        + auditRuntime.droppedOversizeCount,
       droppedSuccessCount: auditRuntime.droppedSuccessCount,
       droppedFailureCount: auditRuntime.droppedFailureCount,
       droppedOverflowCount: auditRuntime.droppedOverflowCount,

@@ -18,7 +18,7 @@ import {
   insertSystemMetricsSample,
   latestUsageStatsLagSeconds,
   refreshGroupAccountStatsCache,
-  refreshUsageRankSnapshots
+  refreshUsageRankSnapshotsInStages
 } from '../../storage/usage-stats.repository.js'
 import { collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
@@ -422,7 +422,7 @@ async function readNetworkCounterSnapshot(): Promise<NetworkCounterSnapshot | un
 
 async function runUsageRankSnapshotsRefresh(): Promise<void> {
   try {
-    refreshUsageRankSnapshots()
+    await refreshUsageRankSnapshotsInStages({ yieldToEventLoop })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_rank_snapshots_refresh_failed' }), '用量排行快照刷新失败')
   }

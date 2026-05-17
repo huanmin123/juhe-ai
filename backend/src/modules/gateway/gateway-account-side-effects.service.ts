@@ -216,13 +216,13 @@ async function drainSideEffectQueue(): Promise<void> {
 
 async function executeAccountSideEffect(operation: AccountSideEffectOperation): Promise<void> {
   if (operation.type === 'apply_account_error_handling') {
-    const result = await requestDbService(operation, { fallbackToLocal: false })
+    const result = await requestDbService(operation)
     if (result.changed) {
       clearGatewayRuntimeCache()
     }
     return
   }
-  const result = await requestDbService(operation, { fallbackToLocal: false })
+  const result = await requestDbService(operation)
   if (result.triggered) {
     clearGatewayRuntimeCache()
   }

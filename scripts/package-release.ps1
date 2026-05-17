@@ -2,7 +2,7 @@ param(
   [string]$OutputDir = 'release',
   [string]$PackageName = 'juhe-ai-release',
   [ValidateSet('tar.gz', 'zip', 'both')][string]$ArchiveFormat = 'both',
-  [string]$FrontendApiBaseUrl = '/api',
+  [string]$FrontendApiBaseUrl = '/__aisys__/api',
   [string]$FrontendGatewayBaseUrl = '',
   [switch]$IncludeLocalEnv
 )

@@ -6,7 +6,7 @@
           class="feature-rules-alert"
           type="info"
           show-icon
-          message="特征规则由后端代码内置维护，只读展示用于排障；需要调整时应修改代码并补回归验证。"
+          message="上游错误响应特征规则由后端代码内置维护，只读展示用于排障；需要调整时应修改代码并补回归验证。"
         />
         <a-button :loading="loading" @click="loadRules">
           <template #icon>
@@ -16,76 +16,37 @@
         </a-button>
       </div>
 
-      <a-tabs v-model:active-key="activeTab" class="feature-rules-tabs">
-        <a-tab-pane key="stream" :tab="`流式事件特征（${streamRules.length}）`">
-          <a-skeleton v-if="loading" active :paragraph="{ rows: 5 }" />
-          <a-empty v-else-if="!streamRuleDisplayItems.length" description="当前没有内置流式事件特征规则" />
-          <a-collapse v-else class="feature-rule-collapse" ghost>
-            <a-collapse-panel v-for="rule in streamRuleDisplayItems" :key="rule.id">
-              <template #header>
-                <div class="feature-rule-header">
-                  <div class="feature-rule-heading">
-                    <div class="feature-rule-title">{{ rule.name }}</div>
-                    <div class="feature-rule-summary">{{ rule.description || '暂无描述' }}</div>
-                  </div>
-                  <a-space wrap>
-                    <a-tag :color="rule.enabled ? 'green' : 'default'">{{ rule.enabled ? '启用' : '停用' }}</a-tag>
-                    <a-tag color="purple">{{ rule.actionText }}</a-tag>
-                    <a-tag>{{ rule.endpoint }}</a-tag>
-                  </a-space>
-                </div>
-              </template>
-
-              <div class="feature-rule-body">
-                <a-descriptions bordered size="small" :column="2" class="feature-rule-descriptions">
-                  <a-descriptions-item label="规则 ID" :span="2">{{ rule.id }}</a-descriptions-item>
-                  <a-descriptions-item label="来源">{{ rule.source }}</a-descriptions-item>
-                  <a-descriptions-item label="供应商">{{ rule.provider }}</a-descriptions-item>
-                  <a-descriptions-item label="触发阶段">{{ rule.phaseText }}</a-descriptions-item>
-                  <a-descriptions-item label="处理动作">{{ rule.actionText }}</a-descriptions-item>
-                  <a-descriptions-item label="账号策略">{{ rule.accountPolicyText }}</a-descriptions-item>
-                  <a-descriptions-item label="为什么这样做" :span="2">{{ rule.rationale || '暂无记录' }}</a-descriptions-item>
-                </a-descriptions>
-                <pre class="feature-rule-json">{{ formatRuleJson(rule.rule) }}</pre>
+      <a-skeleton v-if="loading" active :paragraph="{ rows: 5 }" />
+      <a-empty v-else-if="!upstreamErrorRuleDisplayItems.length" description="当前没有内置上游错误响应特征规则" />
+      <a-collapse v-else class="feature-rule-collapse" ghost>
+        <a-collapse-panel v-for="rule in upstreamErrorRuleDisplayItems" :key="rule.id">
+          <template #header>
+            <div class="feature-rule-header">
+              <div class="feature-rule-heading">
+                <div class="feature-rule-title">{{ rule.name }}</div>
+                <div class="feature-rule-summary">{{ rule.description || '暂无描述' }}</div>
               </div>
-            </a-collapse-panel>
-          </a-collapse>
-        </a-tab-pane>
+              <a-space wrap>
+                <a-tag :color="rule.enabled ? 'green' : 'default'">{{ rule.enabled ? '启用' : '停用' }}</a-tag>
+                <a-tag color="purple">{{ rule.actionText }}</a-tag>
+                <a-tag>{{ rule.endpoint }}</a-tag>
+              </a-space>
+            </div>
+          </template>
 
-        <a-tab-pane key="upstream-error" :tab="`上游错误响应特征（${upstreamErrorRules.length}）`">
-          <a-skeleton v-if="loading" active :paragraph="{ rows: 5 }" />
-          <a-empty v-else-if="!upstreamErrorRuleDisplayItems.length" description="当前没有内置上游错误响应特征规则" />
-          <a-collapse v-else class="feature-rule-collapse" ghost>
-            <a-collapse-panel v-for="rule in upstreamErrorRuleDisplayItems" :key="rule.id">
-              <template #header>
-                <div class="feature-rule-header">
-                  <div class="feature-rule-heading">
-                    <div class="feature-rule-title">{{ rule.name }}</div>
-                    <div class="feature-rule-summary">{{ rule.description || '暂无描述' }}</div>
-                  </div>
-                  <a-space wrap>
-                    <a-tag :color="rule.enabled ? 'green' : 'default'">{{ rule.enabled ? '启用' : '停用' }}</a-tag>
-                    <a-tag color="purple">{{ rule.actionText }}</a-tag>
-                    <a-tag>{{ rule.endpoint }}</a-tag>
-                  </a-space>
-                </div>
-              </template>
-
-              <div class="feature-rule-body">
-                <a-descriptions bordered size="small" :column="2" class="feature-rule-descriptions">
-                  <a-descriptions-item label="规则 ID" :span="2">{{ rule.id }}</a-descriptions-item>
-                  <a-descriptions-item label="来源">{{ rule.source }}</a-descriptions-item>
-                  <a-descriptions-item label="供应商">{{ rule.provider }}</a-descriptions-item>
-                  <a-descriptions-item label="处理动作">{{ rule.actionText }}</a-descriptions-item>
-                  <a-descriptions-item label="账号策略">{{ rule.accountPolicyText }}</a-descriptions-item>
-                  <a-descriptions-item label="为什么这样做" :span="2">{{ rule.rationale || '暂无记录' }}</a-descriptions-item>
-                </a-descriptions>
-                <pre class="feature-rule-json">{{ formatRuleJson(rule.rule) }}</pre>
-              </div>
-            </a-collapse-panel>
-          </a-collapse>
-        </a-tab-pane>
-      </a-tabs>
+          <div class="feature-rule-body">
+            <a-descriptions bordered size="small" :column="2" class="feature-rule-descriptions">
+              <a-descriptions-item label="规则 ID" :span="2">{{ rule.id }}</a-descriptions-item>
+              <a-descriptions-item label="来源">{{ rule.source }}</a-descriptions-item>
+              <a-descriptions-item label="供应商">{{ rule.provider }}</a-descriptions-item>
+              <a-descriptions-item label="处理动作">{{ rule.actionText }}</a-descriptions-item>
+              <a-descriptions-item label="账号策略">{{ rule.accountPolicyText }}</a-descriptions-item>
+              <a-descriptions-item label="为什么这样做" :span="2">{{ rule.rationale || '暂无记录' }}</a-descriptions-item>
+            </a-descriptions>
+            <pre class="feature-rule-json">{{ formatRuleJson(rule.rule) }}</pre>
+          </div>
+        </a-collapse-panel>
+      </a-collapse>
     </a-card>
   </div>
 </template>
@@ -96,7 +57,7 @@ import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { StreamInterceptRuleCatalogItem, UpstreamErrorFeatureRuleCatalogItem } from '@/types/domain'
+import type { UpstreamErrorFeatureRuleCatalogItem } from '@/types/domain'
 
 interface FeatureRuleDisplayItem {
   id: string
@@ -107,33 +68,13 @@ interface FeatureRuleDisplayItem {
   provider: string
   endpoint: string
   actionText: string
-  phaseText?: string
   accountPolicyText: string
   rationale?: string
   rule: Record<string, unknown>
 }
 
-const activeTab = ref('stream')
 const loading = ref(false)
-const streamRules = ref<StreamInterceptRuleCatalogItem[]>([])
 const upstreamErrorRules = ref<UpstreamErrorFeatureRuleCatalogItem[]>([])
-
-const streamRuleDisplayItems = computed<FeatureRuleDisplayItem[]>(() =>
-  streamRules.value.map((rule) => ({
-    id: rule.id,
-    enabled: rule.enabled,
-    name: rule.name,
-    description: rule.description,
-    source: sourceText(rule.source),
-    provider: providerText(rule.provider),
-    endpoint: rule.endpoint,
-    actionText: streamActionText(rule.action),
-    phaseText: streamTriggerPhaseText(rule.triggerPhase),
-    accountPolicyText: accountPolicyText(rule.accountPolicy),
-    rationale: rule.rationale,
-    rule: rule.rule
-  }))
-)
 
 const upstreamErrorRuleDisplayItems = computed<FeatureRuleDisplayItem[]>(() =>
   upstreamErrorRules.value.map((rule) => ({
@@ -154,12 +95,7 @@ const upstreamErrorRuleDisplayItems = computed<FeatureRuleDisplayItem[]>(() =>
 async function loadRules() {
   loading.value = true
   try {
-    const [nextStreamRules, nextUpstreamErrorRules] = await Promise.all([
-      api.featureRules.streamInterceptRules(),
-      api.featureRules.upstreamErrorFeatureRules()
-    ])
-    streamRules.value = nextStreamRules
-    upstreamErrorRules.value = nextUpstreamErrorRules
+    upstreamErrorRules.value = await api.featureRules.upstreamErrorFeatureRules()
   } catch (error) {
     console.error(error)
     message.error('加载特征规则失败')
@@ -179,20 +115,6 @@ function providerText(provider: string): string {
   if (provider === 'openai') return 'OpenAI'
   if (provider === 'all') return '全部供应商'
   return provider
-}
-
-function streamTriggerPhaseText(phase: string): string {
-  if (phase === 'before_output') return '输出前'
-  if (phase === 'after_output') return '输出后'
-  if (phase === 'all') return '全部阶段'
-  return phase
-}
-
-function streamActionText(action: string): string {
-  if (action === 'client_retry') return '客户端重试'
-  if (action === 'server_replay') return '服务端重放'
-  if (action === 'custom_rewrite') return '自定义改写'
-  return action
 }
 
 function upstreamErrorActionText(action: string): string {
@@ -233,10 +155,6 @@ onMounted(() => {
 .feature-rules-alert {
   flex: 1 1 auto;
   border-radius: 12px;
-}
-
-.feature-rules-tabs {
-  min-width: 0;
 }
 
 .feature-rule-collapse {

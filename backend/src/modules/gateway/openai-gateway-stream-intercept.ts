@@ -1,36 +1,25 @@
-import { buildGatewayStreamFailureEvent } from './openai-gateway-responses.js'
 import {
-  isExecutableClientRetryStreamRule,
-  type StreamClientRetryInterceptRule,
-  type StreamInterceptRule,
-  type StreamInterceptRuleTriggerPhase
-} from './openai-gateway-stream-rules.js'
-
-export interface StreamInterceptContext {
-  provider: 'openai'
-  endpoint: string
-  streamOnly: boolean
-}
+  buildGatewayStreamFailureEvent,
+  gatewayStreamClientRetryErrorCode,
+  gatewayStreamClientRetryMessage
+} from './openai-gateway-responses.js'
+import { openAIStreamEventHasVisibleOutput } from './openai-gateway-usage.js'
 
 export interface StreamInterceptDecision {
-  ruleId: string
-  ruleName: string
-  action: StreamInterceptRule['action']
-  triggerPhase: StreamInterceptRuleTriggerPhase
+  reason: 'before_output_stream_failure'
+  action: 'client_retry'
+  triggerPhase: 'before_output'
   upstreamEventType: string
   upstreamErrorCode?: string
   upstreamErrorMessage?: string
   rewriteErrorCode: string
   rewriteMessage: string
-  accountPolicy: StreamInterceptRule['accountPolicy']
-  cooldownMinutes?: number
   outputSeen: boolean
 }
 
 export interface StreamInterceptorResult {
   chunks: Buffer[]
   intercepted?: StreamInterceptDecision
-  sideEffects: StreamInterceptDecision[]
   parserSkipped: boolean
 }
 
@@ -48,56 +37,41 @@ interface ParsedSseEvent {
 const maxBufferedSseEventBytes = 256 * 1024
 
 export class OpenAIStreamInterceptBuffer {
-  private pendingBuffer = Buffer.alloc(0)
+  private readonly pendingBuffer = new PendingSseEventBuffer()
   private parserSkipped = false
   private outputSeen = false
-  private readonly activeRules: StreamClientRetryInterceptRule[]
-
-  constructor(
-    rules: StreamInterceptRule[],
-    private readonly context: StreamInterceptContext
-  ) {
-    this.activeRules = rules.filter((rule): rule is StreamClientRetryInterceptRule => isExecutableClientRetryStreamRule(rule) && isRuleRelevantToContext(rule, context))
-  }
 
   pushChunk(chunk: Buffer): StreamInterceptorResult {
-    if (this.parserSkipped || this.activeRules.length === 0) {
+    if (this.parserSkipped) {
       return {
         chunks: [chunk],
-        sideEffects: [],
         parserSkipped: this.parserSkipped
       }
     }
 
-    this.pendingBuffer = Buffer.concat([this.pendingBuffer, chunk])
+    this.pendingBuffer.push(chunk)
     if (this.pendingBuffer.length > maxBufferedSseEventBytes) {
-      const buffered = this.pendingBuffer
-      this.pendingBuffer = Buffer.alloc(0)
+      const buffered = this.pendingBuffer.drain()
       this.parserSkipped = true
       return {
         chunks: [buffered],
-        sideEffects: [],
         parserSkipped: true
       }
     }
 
     const chunks: Buffer[] = []
-    const sideEffects: StreamInterceptDecision[] = []
 
     while (true) {
-      const boundary = findSseEventBoundary(this.pendingBuffer)
-      if (!boundary) break
-      const rawBuffer = this.pendingBuffer.subarray(0, boundary.endIndex)
-      this.pendingBuffer = this.pendingBuffer.subarray(boundary.endIndex)
+      const rawBuffer = this.pendingBuffer.shiftEvent()
+      if (!rawBuffer) break
       const rawText = rawBuffer.toString('utf8')
       const event = parseSseEvent(rawText)
-      const decision = matchStreamInterceptRule(this.activeRules, event, this.outputSeen)
+      const decision = buildBeforeOutputFailureDecision(event, this.outputSeen)
       if (decision) {
         chunks.push(buildGatewayStreamFailureEvent(decision.rewriteMessage, decision.rewriteErrorCode))
         return {
           chunks,
           intercepted: decision,
-          sideEffects,
           parserSkipped: this.parserSkipped
         }
       }
@@ -109,29 +83,25 @@ export class OpenAIStreamInterceptBuffer {
 
     return {
       chunks,
-      sideEffects,
       parserSkipped: this.parserSkipped
     }
   }
 
   flushPendingOnEof(): StreamInterceptorResult {
-    if (this.parserSkipped || this.activeRules.length === 0 || this.pendingBuffer.length === 0) {
+    if (this.parserSkipped || this.pendingBuffer.length === 0) {
       return {
         chunks: [],
-        sideEffects: [],
         parserSkipped: this.parserSkipped
       }
     }
 
-    const rawBuffer = ensureSseEventBoundary(this.pendingBuffer)
-    this.pendingBuffer = Buffer.alloc(0)
+    const rawBuffer = this.pendingBuffer.drainEnsuringBoundary()
     const event = parseSseEvent(rawBuffer.toString('utf8'))
-    const decision = matchStreamInterceptRule(this.activeRules, event, this.outputSeen)
+    const decision = buildBeforeOutputFailureDecision(event, this.outputSeen)
     if (decision) {
       return {
         chunks: [buildGatewayStreamFailureEvent(decision.rewriteMessage, decision.rewriteErrorCode)],
         intercepted: decision,
-        sideEffects: [],
         parserSkipped: this.parserSkipped
       }
     }
@@ -140,87 +110,216 @@ export class OpenAIStreamInterceptBuffer {
     }
     return {
       chunks: [rawBuffer],
-      sideEffects: [],
       parserSkipped: this.parserSkipped
     }
   }
 }
 
-function matchStreamInterceptRule(
-  rules: StreamClientRetryInterceptRule[],
-  event: ParsedSseEvent,
-  outputSeen: boolean
-): StreamInterceptDecision | undefined {
-  const rule = rules.find((item) => matchesStreamInterceptRule(item, event, outputSeen))
-  return rule ? buildDecision(rule, event, outputSeen) : undefined
-}
-
-function isRuleRelevantToContext(
-  rule: StreamInterceptRule,
-  context: StreamInterceptContext
-): boolean {
-  if (!rule.enabled) return false
-  if (rule.streamOnly && !context.streamOnly) return false
-  if (rule.provider !== 'all' && rule.provider !== context.provider) return false
-  if (rule.endpoint !== 'all' && !normalizeEndpoint(context.endpoint).endsWith(rule.endpoint)) return false
-  return true
-}
-
-function matchesStreamInterceptRule(
-  rule: StreamClientRetryInterceptRule,
-  event: ParsedSseEvent,
-  outputSeen: boolean
-): boolean {
-  if (!matchesTriggerPhase(rule.triggerPhase, outputSeen)) return false
-  if (!matchesEventTypes(rule.match.eventTypes, event)) return false
-  if (rule.match.errorCodes && rule.match.errorCodes.length > 0 && !rule.match.errorCodes.includes(event.errorCode ?? '')) return false
-  if (rule.match.messageKeywords && rule.match.messageKeywords.length > 0) {
-    const message = (event.errorMessage ?? event.dataText).toLowerCase()
-    if (!rule.match.messageKeywords.every((keyword) => message.includes(keyword.toLowerCase()))) return false
+function buildBeforeOutputFailureDecision(event: ParsedSseEvent, outputSeen: boolean): StreamInterceptDecision | undefined {
+  if (outputSeen || !isStreamFailureEvent(event)) {
+    return undefined
   }
-  if (rule.match.dataKeywords && rule.match.dataKeywords.length > 0) {
-    const dataText = event.dataText.toLowerCase()
-    if (!rule.match.dataKeywords.every((keyword) => dataText.includes(keyword.toLowerCase()))) return false
-  }
-  return true
-}
-
-function buildDecision(rule: StreamClientRetryInterceptRule, event: ParsedSseEvent, outputSeen: boolean): StreamInterceptDecision {
   return {
-    ruleId: rule.id,
-    ruleName: rule.name,
-    action: rule.action,
-    triggerPhase: rule.triggerPhase,
+    reason: 'before_output_stream_failure',
+    action: 'client_retry',
+    triggerPhase: 'before_output',
     upstreamEventType: event.eventType || event.eventName || 'message',
     upstreamErrorCode: event.errorCode,
     upstreamErrorMessage: event.errorMessage,
-    rewriteErrorCode: rule.clientRetry.rewriteErrorCode,
-    rewriteMessage: rule.clientRetry.rewriteMessage,
-    accountPolicy: rule.accountPolicy,
-    cooldownMinutes: rule.cooldownMinutes,
+    rewriteErrorCode: gatewayStreamClientRetryErrorCode,
+    rewriteMessage: event.errorMessage || gatewayStreamClientRetryMessage,
     outputSeen
   }
 }
 
-function matchesEventTypes(eventTypes: StreamInterceptRule['match']['eventTypes'], event: ParsedSseEvent): boolean {
-  if (eventTypes === 'all') return true
-  return eventTypes.includes(event.eventType) || eventTypes.includes(event.eventName)
+function isStreamFailureEvent(event: ParsedSseEvent): boolean {
+  if (event.eventType === 'response.failed' || event.eventName === 'response.failed') return true
+  if (event.eventType === 'error' || event.eventName === 'error') return true
+  return Boolean(hasExplicitErrorObject(event))
 }
 
-function matchesTriggerPhase(phase: StreamInterceptRuleTriggerPhase, outputSeen: boolean): boolean {
-  if (phase === 'all') return true
-  if (phase === 'before_output') return !outputSeen
-  return outputSeen
+function hasExplicitErrorObject(event: ParsedSseEvent): boolean {
+  const data = event.data
+  if (!data) return false
+  const response = objectValue(data.response)
+  return Boolean(objectValue(response?.error) || objectValue(data.error))
 }
 
-function normalizeEndpoint(endpoint: string): string {
-  const [path] = endpoint.split('?')
-  const trimmed = path.trim()
-  const methodPath = trimmed.match(/^[A-Z]+\s+(.+)$/)
-  return methodPath?.[1] ?? trimmed
+class PendingSseEventBuffer {
+  private chunks: Buffer[] = []
+  private headIndex = 0
+  private size = 0
+  private nextBoundaryEndIndex: number | undefined
+
+  get length(): number {
+    return this.size
+  }
+
+  push(chunk: Buffer): void {
+    if (chunk.length === 0) {
+      return
+    }
+    const previousSize = this.size
+    const previousTail = this.tail(3)
+    this.chunks.push(chunk)
+    this.size += chunk.length
+    if (this.nextBoundaryEndIndex === undefined) {
+      this.nextBoundaryEndIndex = findBoundaryEndAfterAppend(previousSize, previousTail, chunk)
+    }
+  }
+
+  shiftEvent(): Buffer | undefined {
+    if (this.nextBoundaryEndIndex === undefined) {
+      return undefined
+    }
+    const event = this.consumePrefix(this.nextBoundaryEndIndex)
+    this.nextBoundaryEndIndex = this.findBoundaryEndFromStart()
+    return event
+  }
+
+  drain(): Buffer {
+    const buffered = this.consumePrefix(this.size)
+    this.nextBoundaryEndIndex = undefined
+    return buffered
+  }
+
+  drainEnsuringBoundary(): Buffer {
+    const hasBoundary = this.endsWithBoundary()
+    const buffered = this.drain()
+    return hasBoundary
+      ? buffered
+      : Buffer.concat([buffered, sseEventBoundarySuffix], buffered.length + sseEventBoundarySuffix.length)
+  }
+
+  private consumePrefix(length: number): Buffer {
+    if (length <= 0 || this.size === 0) {
+      return Buffer.alloc(0)
+    }
+
+    const boundedLength = Math.min(length, this.size)
+    const first = this.chunks[this.headIndex]
+    if (first && boundedLength < first.length) {
+      const output = first.subarray(0, boundedLength)
+      this.chunks[this.headIndex] = first.subarray(boundedLength)
+      this.size -= boundedLength
+      return output
+    }
+    if (first && boundedLength === first.length) {
+      this.headIndex += 1
+      this.size -= boundedLength
+      this.compactConsumedChunks()
+      return first
+    }
+
+    const parts: Buffer[] = []
+    let remaining = boundedLength
+    while (remaining > 0) {
+      const current = this.chunks[this.headIndex]
+      if (!current) {
+        break
+      }
+      if (current.length <= remaining) {
+        parts.push(current)
+        remaining -= current.length
+        this.headIndex += 1
+      } else {
+        parts.push(current.subarray(0, remaining))
+        this.chunks[this.headIndex] = current.subarray(remaining)
+        remaining = 0
+      }
+    }
+
+    this.size -= boundedLength - remaining
+    this.compactConsumedChunks()
+    return parts.length === 1 ? parts[0] : Buffer.concat(parts, boundedLength - remaining)
+  }
+
+  private findBoundaryEndFromStart(): number | undefined {
+    let offset = 0
+    let tail: Buffer = Buffer.alloc(0)
+    for (let index = this.headIndex; index < this.chunks.length; index += 1) {
+      const chunk = this.chunks[index]
+      const boundary = findBoundaryEndInChunk(offset, tail, chunk)
+      if (boundary !== undefined) {
+        return boundary
+      }
+      offset += chunk.length
+      tail = trailingBytes(tail, chunk, 3)
+    }
+    return undefined
+  }
+
+  private tail(length: number): Buffer {
+    if (length <= 0 || this.size === 0) {
+      return Buffer.alloc(0)
+    }
+    const parts: Buffer[] = []
+    const targetLength = Math.min(length, this.size)
+    let remaining = targetLength
+    for (let index = this.chunks.length - 1; index >= this.headIndex && remaining > 0; index -= 1) {
+      const chunk = this.chunks[index]
+      const partLength = Math.min(chunk.length, remaining)
+      parts.unshift(chunk.subarray(chunk.length - partLength))
+      remaining -= partLength
+    }
+    return parts.length === 1 ? parts[0] : Buffer.concat(parts, targetLength - remaining)
+  }
+
+  private endsWithBoundary(): boolean {
+    const suffix = this.tail(4)
+    return bufferEndsWith(suffix, crlfcrlfBoundary)
+      || bufferEndsWith(suffix, lflfBoundary)
+      || bufferEndsWith(suffix, crcrBoundary)
+  }
+
+  private compactConsumedChunks(): void {
+    if (this.headIndex === 0) {
+      return
+    }
+    if (this.headIndex >= this.chunks.length) {
+      this.chunks = []
+      this.headIndex = 0
+      return
+    }
+    if (this.headIndex > 64 && this.headIndex * 2 > this.chunks.length) {
+      this.chunks = this.chunks.slice(this.headIndex)
+      this.headIndex = 0
+    }
+  }
 }
 
-function findSseEventBoundary(buffer: Buffer): { endIndex: number } | undefined {
+const crlfcrlfBoundary = Buffer.from('\r\n\r\n', 'utf8')
+const lflfBoundary = Buffer.from('\n\n', 'utf8')
+const crcrBoundary = Buffer.from('\r\r', 'utf8')
+const sseEventBoundarySuffix = lflfBoundary
+
+function findBoundaryEndAfterAppend(previousSize: number, previousTail: Buffer, chunk: Buffer): number | undefined {
+  return findBoundaryEndInChunk(previousSize, previousTail, chunk)
+}
+
+function findBoundaryEndInChunk(chunkOffset: number, previousTail: Buffer, chunk: Buffer): number | undefined {
+  const crossBoundary = findCrossChunkBoundaryEnd(chunkOffset, previousTail, chunk)
+  const inChunkBoundary = findSseEventBoundary(chunk)
+  const inChunkBoundaryEnd = inChunkBoundary ? chunkOffset + inChunkBoundary.endIndex : undefined
+  if (crossBoundary === undefined) return inChunkBoundaryEnd
+  if (inChunkBoundaryEnd === undefined) return crossBoundary
+  return Math.min(crossBoundary, inChunkBoundaryEnd)
+}
+
+function findCrossChunkBoundaryEnd(chunkOffset: number, previousTail: Buffer, chunk: Buffer): number | undefined {
+  if (previousTail.length === 0 || chunk.length === 0) {
+    return undefined
+  }
+  const prefix = chunk.subarray(0, Math.min(3, chunk.length))
+  const combined = Buffer.concat([previousTail, prefix], previousTail.length + prefix.length)
+  const boundary = findSseEventBoundary(combined)
+  if (!boundary || boundary.index >= previousTail.length || boundary.endIndex <= previousTail.length) {
+    return undefined
+  }
+  return chunkOffset - previousTail.length + boundary.endIndex
+}
+
+function findSseEventBoundary(buffer: Buffer): { index: number; endIndex: number } | undefined {
   const candidates = [
     boundaryCandidate(buffer, '\r\n\r\n'),
     boundaryCandidate(buffer, '\n\n'),
@@ -228,7 +327,7 @@ function findSseEventBoundary(buffer: Buffer): { endIndex: number } | undefined 
   ].filter((item): item is { index: number; length: number } => Boolean(item))
   if (!candidates.length) return undefined
   const first = candidates.sort((left, right) => left.index - right.index || right.length - left.length)[0]
-  return { endIndex: first.index + first.length }
+  return { index: first.index, endIndex: first.index + first.length }
 }
 
 function boundaryCandidate(buffer: Buffer, token: string): { index: number; length: number } | undefined {
@@ -237,12 +336,16 @@ function boundaryCandidate(buffer: Buffer, token: string): { index: number; leng
   return index >= 0 ? { index, length: token.length } : undefined
 }
 
-function ensureSseEventBoundary(buffer: Buffer): Buffer {
-  const text = buffer.toString('utf8')
-  if (text.endsWith('\r\n\r\n') || text.endsWith('\n\n') || text.endsWith('\r\r')) {
-    return buffer
+function trailingBytes(previousTail: Buffer, chunk: Buffer, length: number): Buffer {
+  if (chunk.length >= length) {
+    return chunk.subarray(chunk.length - length)
   }
-  return Buffer.concat([buffer, Buffer.from('\n\n', 'utf8')])
+  const combinedLength = Math.min(length, previousTail.length + chunk.length)
+  return Buffer.concat([previousTail, chunk], previousTail.length + chunk.length).subarray(previousTail.length + chunk.length - combinedLength)
+}
+
+function bufferEndsWith(buffer: Buffer, suffix: Buffer): boolean {
+  return buffer.length >= suffix.length && buffer.subarray(buffer.length - suffix.length).equals(suffix)
 }
 
 function parseSseEvent(rawText: string): ParsedSseEvent {
@@ -294,34 +397,18 @@ function extractEventError(data: Record<string, unknown>): Record<string, unknow
   const response = objectValue(data.response)
   const responseError = objectValue(response?.error)
   if (responseError) return responseError
-  return objectValue(data.error)
+  const error = objectValue(data.error)
+  if (error) return error
+  if (typeof data.type === 'string' && data.type === 'error' && (typeof data.code === 'string' || typeof data.message === 'string')) {
+    return data
+  }
+  return undefined
 }
 
 function isVisibleOutputEvent(event: ParsedSseEvent): boolean {
   const data = event.data
   if (!data) return false
-  if (event.eventType.endsWith('.delta') && hasMeaningfulDelta(data.delta)) return true
-  if (event.eventType === 'response.output_item.added' || event.eventType === 'response.output_item.done') return true
-  const choices = Array.isArray(data.choices) ? data.choices : []
-  return choices.some((choice) => {
-    if (typeof choice !== 'object' || choice === null) return false
-    const row = choice as Record<string, unknown>
-    if (hasNonEmptyString(row.text)) return true
-    const delta = objectValue(row.delta)
-    return Boolean(delta && hasMeaningfulDelta(delta))
-  })
-}
-
-function hasMeaningfulDelta(value: unknown): boolean {
-  if (hasNonEmptyString(value)) return true
-  if (Array.isArray(value)) return value.some(hasMeaningfulDelta)
-  if (typeof value !== 'object' || value === null) return false
-  return Object.entries(value as Record<string, unknown>)
-    .some(([key, child]) => key !== 'index' && key !== 'type' && key !== 'id' && hasMeaningfulDelta(child))
-}
-
-function hasNonEmptyString(value: unknown): boolean {
-  return typeof value === 'string' && value.length > 0
+  return openAIStreamEventHasVisibleOutput(data, event.eventType)
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {

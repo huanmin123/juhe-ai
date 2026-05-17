@@ -20,8 +20,12 @@ export function isOpenAIStreamContentType(contentType: string): boolean {
   return contentType.includes('text/event-stream') || contentType.includes('application/octet-stream')
 }
 
-export function writeGatewayStreamFailureEvent(res: Response, message: string): Buffer | undefined {
-  return buildGatewayStreamFailureEvent(message)
+export const gatewayStreamClientRetryErrorCode = 'upstream_retryable_error'
+
+export const gatewayStreamClientRetryMessage = 'Upstream returned a retryable stream failure before output. Please retry.'
+
+export function writeGatewayStreamFailureEvent(res: Response, message: string, code?: string): Buffer | undefined {
+  return buildGatewayStreamFailureEvent(message, code)
 }
 
 export function buildGatewayStreamFailureEvent(message: string, code = gatewayStreamFailureCode(message)): Buffer {

@@ -108,32 +108,32 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 ## 接口优先级
 
-1. `GET /api/providers`
-2. `GET /api/providers/:code/models`
-3. `GET /api/accounts`
-4. `POST /api/accounts`
-5. `PATCH /api/accounts/:id`
-6. `DELETE /api/accounts/:id`
-7. `GET /api/groups`
-8. `POST /api/groups`
-9. `PATCH /api/groups/:id`
-10. `DELETE /api/groups/:id`
-11. `GET /api/authorizations`
-12. `POST /api/authorizations`
-13. `DELETE /api/authorizations/:id`
-14. `GET /api/authorizations/:id/usage`
-15. `GET /api/system-teams`
-16. `POST /api/system-teams`
-17. `PATCH /api/system-teams/:id`
-18. `POST /api/system-teams/:id/members`
-19. `DELETE /api/system-teams/:id/members/:memberId`
-20. `GET /api/api-keys`
-21. `POST /api/api-keys`
-22. `PATCH /api/api-keys/:id`
-23. `DELETE /api/api-keys/:id`
-24. `GET /api/proxies`
-25. `GET /api/proxies/options`
-26. `POST /api/proxies`
+1. `GET /__aisys__/api/providers`
+2. `GET /__aisys__/api/providers/:code/models`
+3. `GET /__aisys__/api/accounts`
+4. `POST /__aisys__/api/accounts`
+5. `PATCH /__aisys__/api/accounts/:id`
+6. `DELETE /__aisys__/api/accounts/:id`
+7. `GET /__aisys__/api/groups`
+8. `POST /__aisys__/api/groups`
+9. `PATCH /__aisys__/api/groups/:id`
+10. `DELETE /__aisys__/api/groups/:id`
+11. `GET /__aisys__/api/authorizations`
+12. `POST /__aisys__/api/authorizations`
+13. `DELETE /__aisys__/api/authorizations/:id`
+14. `GET /__aisys__/api/authorizations/:id/usage`
+15. `GET /__aisys__/api/system-teams`
+16. `POST /__aisys__/api/system-teams`
+17. `PATCH /__aisys__/api/system-teams/:id`
+18. `POST /__aisys__/api/system-teams/:id/members`
+19. `DELETE /__aisys__/api/system-teams/:id/members/:memberId`
+20. `GET /__aisys__/api/api-keys`
+21. `POST /__aisys__/api/api-keys`
+22. `PATCH /__aisys__/api/api-keys/:id`
+23. `DELETE /__aisys__/api/api-keys/:id`
+24. `GET /__aisys__/api/proxies`
+25. `GET /__aisys__/api/proxies/options`
+26. `POST /__aisys__/api/proxies`
 
 ## 暂不做
 
@@ -172,7 +172,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 - API Key 账户使用 `credentials.api_key` 作为上游 Bearer token。
 - OAuth 账户使用 `credentials.access_token` 作为上游 Bearer token。
-- API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`，承接通用 OpenAI `/v1/*` 兼容请求。
+- API Key 账户继续按账户 `base_url` 转发，默认指向 `https://api.openai.com/v1`，承接客户端网关 `/*` 和 `/v1/*` 兼容请求；OpenAI API Key 上游仍归一到 `/v1/*`。
 - OAuth 账户不把 `access_token` 当作官方 OpenAI API Key 打到 `api.openai.com/v1`；真实转发走 ChatGPT / Codex backend 专用链路 `https://chatgpt.com/backend-api/codex`。
 - OAuth Codex 网关当前支持 Codex 原生 `POST /responses` 和 `POST /responses/compact`，暂不做 `/chat/completions` 到 Responses 的重型协议翻译。
 - `GET /v1/models` 由本地 OpenAI 模型价格目录返回，不依赖某个上游账号是否可调度，避免 OAuth-only 分组在客户端初始化阶段失败。

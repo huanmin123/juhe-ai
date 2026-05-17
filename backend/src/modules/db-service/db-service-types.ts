@@ -1,4 +1,6 @@
+import type { AccountSummary } from '../../domain/types.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
+import type { RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.service.js'
@@ -7,11 +9,56 @@ export interface DbServiceRuntimeSnapshot {
   pid: number
   ready: boolean
   processRole: 'db-service'
+  httpHost?: string
+  httpPort?: number
   pendingRequestCount: number
   handledRequestCount: number
   failedRequestCount: number
   lastRequestAt?: string
   lastError?: string
+}
+
+export interface DbServiceServerRuntimeSnapshot {
+  worker?: {
+    pid?: number
+    ready: boolean
+    pendingMessageCount: number
+    pendingMessageBytes?: number
+    snapshot?: {
+      pid: number
+      ready: boolean
+      usageRecordQueue: DbServiceRuntimeQueueSnapshot
+      auditLogQueue: DbServiceRuntimeQueueSnapshot
+      runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
+    }
+  }
+  dbService?: {
+    pid?: number
+    ready: boolean
+    pendingRequestCount: number
+    timedOutRequestCount: number
+    failedRequestCount: number
+    unavailableCircuitOpenUntil?: string
+    httpHost?: string
+    httpPort?: number
+  }
+  gatewayAccountSideEffects?: Record<string, unknown>
+  activeAuditCaptureCount?: number
+}
+
+export interface DbServiceRuntimeQueueSnapshot {
+  queueLength?: number
+  queueBytes?: number
+  flushLastSuccessAt?: string
+  flushLastError?: string
+  droppedCount?: number
+  droppedSuccessCount?: number
+  droppedFailureCount?: number
+  droppedOverflowCount?: number
+  droppedOversizeCount?: number
+  retainedOverflowWarningCount?: number
+  flushFailureCount?: number
+  [key: string]: unknown
 }
 
 export interface DbServiceGatewayRuntime {
@@ -21,7 +68,14 @@ export interface DbServiceGatewayRuntime {
   accounts: OpenAIAccountSecret[]
 }
 
+export type DbServiceOpenAIOAuthRefreshAccount = Pick<AccountSummary, 'id' | 'providerCode' | 'type' | 'credentials' | 'status' | 'name' | 'proxyProfileId'> & {
+  proxyUrl?: string
+}
+
 export type DbServiceOperation =
+  | {
+    type: 'list_public_global_settings'
+  }
   | {
     type: 'validate_gateway_api_key'
     key: string
@@ -68,6 +122,10 @@ export type DbServiceOperation =
     credentials: Record<string, unknown>
   }
   | {
+    type: 'find_openai_oauth_account_for_refresh'
+    accountId: string
+  }
+  | {
     type: 'persist_openai_codex_usage_headers'
     accountId: string
     headers: Record<string, string>
@@ -104,10 +162,18 @@ export type DbServiceOperation =
     type: 'clear_gateway_runtime_cache'
   }
   | {
+    type: 'list_runtime_logs'
+    options: RuntimeLogListOptions
+  }
+  | {
+    type: 'get_runtime_log_facets'
+  }
+  | {
     type: 'status'
   }
 
 export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOperation> =
+  T extends { type: 'list_public_global_settings' } ? Record<string, unknown> :
   T extends { type: 'validate_gateway_api_key' } ? GatewayApiKeyRow | undefined :
   T extends { type: 'read_gateway_settings' } ? GatewaySettings :
   T extends { type: 'resolve_group_usage_access' } ? GroupUsageAccessMetadata | undefined :
@@ -117,11 +183,14 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'check_authorization_quota' } ? AuthorizationQuotaDecision :
   T extends { type: 'check_authorization_quota_batch' } ? AuthorizationQuotaDecision[] :
   T extends { type: 'update_openai_oauth_credentials' } ? { updated: boolean } :
+  T extends { type: 'find_openai_oauth_account_for_refresh' } ? DbServiceOpenAIOAuthRefreshAccount | undefined :
   T extends { type: 'persist_openai_codex_usage_headers' } ? { persisted: boolean } :
   T extends { type: 'apply_account_error_handling' } ? AccountErrorHandlingResult :
   T extends { type: 'record_account_stream_failure' } ? { count: number; triggered: boolean } :
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
+  T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :
+  T extends { type: 'get_runtime_log_facets' } ? RuntimeLogFacets :
   T extends { type: 'status' } ? DbServiceRuntimeSnapshot :
   unknown
 
@@ -131,11 +200,25 @@ export type DbServiceParentMessage =
     requestId: string
     operation: DbServiceOperation
   }
+  | {
+    type: 'db_service_server_runtime_response'
+    requestId: string
+    ok: true
+    result: DbServiceServerRuntimeSnapshot
+  }
+  | {
+    type: 'db_service_server_runtime_response'
+    requestId: string
+    ok: false
+    errorMessage: string
+  }
 
 export type DbServiceChildMessage =
   | {
     type: 'db_service_ready'
     pid: number
+    httpHost?: string
+    httpPort?: number
   }
   | {
     type: 'db_service_response'
@@ -148,4 +231,8 @@ export type DbServiceChildMessage =
     requestId: string
     ok: false
     errorMessage: string
+  }
+  | {
+    type: 'db_service_server_runtime_request'
+    requestId: string
   }

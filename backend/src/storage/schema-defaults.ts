@@ -8,7 +8,7 @@ export const DEFAULT_OPENAI_GROUP = {
 
 export const DEFAULT_GLOBAL_SETTINGS = [
   ['appName', '聚合 AI'],
-  ['appIcon', '/brand-icon.svg']
+  ['appIcon', '/__aisys__/brand-icon.svg']
 ] as const
 
 export const OPENAI_PROVIDER_SEED = {

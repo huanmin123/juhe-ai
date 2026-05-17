@@ -11,9 +11,8 @@ import {
   type AuditLogListOptions,
   type AuditOutcome
 } from '../../storage/repositories.js'
-import { getActiveAuditCaptureCount } from '../gateway/audit-capture.service.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
-import { getBackgroundWorkerState, requestBackgroundWorkerSnapshot } from '../background/background-ipc.js'
+import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 
 export const auditLogsRouter = Router()
 
@@ -28,7 +27,8 @@ auditLogsRouter.get('/', (req, res) => {
 })
 
 auditLogsRouter.get('/runtime', async (_req, res) => {
-  const workerSnapshot = await requestBackgroundWorkerSnapshot()
+  const serverRuntime = await requestServerRuntimeSnapshot()
+  const workerSnapshot = serverRuntime?.worker?.snapshot
   const auditLogQueue = workerSnapshot?.auditLogQueue
   res.json(ok({
     queueLength: auditLogQueue?.queueLength ?? 0,
@@ -39,11 +39,11 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
     droppedFailureCount: auditLogQueue?.droppedFailureCount ?? 0,
     droppedOverflowCount: auditLogQueue?.droppedOverflowCount ?? 0,
     droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? auditLogQueue?.droppedCount ?? 0,
-    activeCaptureCount: getActiveAuditCaptureCount(),
+    activeCaptureCount: serverRuntime?.activeAuditCaptureCount ?? 0,
     worker: {
-      pid: workerSnapshot?.pid ?? getBackgroundWorkerState().pid,
-      ready: workerSnapshot?.ready ?? getBackgroundWorkerState().ready,
-      pendingMessageCount: getBackgroundWorkerState().pendingMessageCount
+      pid: workerSnapshot?.pid ?? serverRuntime?.worker?.pid,
+      ready: workerSnapshot?.ready ?? serverRuntime?.worker?.ready ?? false,
+      pendingMessageCount: serverRuntime?.worker?.pendingMessageCount ?? 0
     },
     settings: readAuditLogSettings()
   }))

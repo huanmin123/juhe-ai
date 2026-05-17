@@ -40,6 +40,7 @@ function startWorkerProcess(): void {
       JUHE_AI_PROCESS_ROLE: 'worker'
     },
     execArgv: entry.execArgv,
+    serialization: 'advanced',
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   })
 

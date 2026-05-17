@@ -1,15 +1,8 @@
 import { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
-import {
-  getRuntimeLogFacets,
-  listRuntimeLogs,
-  type RuntimeLogLevel,
-  type RuntimeLogListOptions
-} from '../../storage/runtime-logs.repository.js'
-import { getBackgroundWorkerState, requestBackgroundWorkerSnapshot } from '../background/background-ipc.js'
-import { getDbServiceState, requestDbService } from '../db-service/db-service-ipc.js'
-import { getGatewayAccountSideEffectState } from '../gateway/gateway-account-side-effects.service.js'
+import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
+import { requestDbService, requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
 
 export const runtimeLogsRouter = Router()
@@ -20,65 +13,77 @@ runtimeLogsRouter.use((req, res, next) => {
   next()
 })
 
-runtimeLogsRouter.get('/', async (req, res) => {
-  const startedAt = performance.now()
-  const result = listRuntimeLogs(parseRuntimeLogListOptions(req.query))
-  const workerSnapshot = await requestBackgroundWorkerSnapshot()
-  res.json(ok({
-    ...result,
-    elapsedMs: Math.round(performance.now() - startedAt),
-    retentionDays: workerSnapshot?.runtimeLogIndexQueue.retentionDays ?? 3
-  }))
+runtimeLogsRouter.get('/', async (req, res, next) => {
+  try {
+    const startedAt = performance.now()
+    const [result, serverRuntime] = await Promise.all([
+      requestDbService({
+        type: 'list_runtime_logs',
+        options: parseRuntimeLogListOptions(req.query)
+      }),
+      requestServerRuntimeSnapshot()
+    ])
+    res.json(ok({
+      ...result,
+      elapsedMs: Math.round(performance.now() - startedAt),
+      retentionDays: serverRuntime?.worker?.snapshot?.runtimeLogIndexQueue.retentionDays ?? 3
+    }))
+  } catch (error) {
+    next(error)
+  }
 })
 
-runtimeLogsRouter.get('/facets', async (_req, res) => {
-  const [workerSnapshot, dbServiceSnapshot] = await Promise.all([
-    requestBackgroundWorkerSnapshot(),
-    requestDbService({ type: 'status' }, { timeoutMs: 1000, fallbackToLocal: false }).catch(() => undefined)
-  ])
-  const dbServiceState = getDbServiceState()
-  const workerState = getBackgroundWorkerState()
-  const gatewayAccountSideEffects = getGatewayAccountSideEffectState()
-  res.json(ok({
-    ...getRuntimeLogFacets(),
-    runtime: workerSnapshot?.runtimeLogIndexQueue ?? {
-      queueLength: 0,
-      droppedCount: 0,
-      retentionDays: 3
-    },
-    worker: {
-      pid: workerSnapshot?.pid ?? workerState.pid,
-      ready: workerSnapshot?.ready ?? workerState.ready,
-      pendingMessageCount: workerState.pendingMessageCount
-    },
-    dbService: {
-      pid: dbServiceSnapshot?.pid ?? dbServiceState.pid,
-      ready: dbServiceSnapshot?.ready ?? dbServiceState.ready,
-      pendingRequestCount: dbServiceState.pendingRequestCount,
-      timedOutRequestCount: dbServiceState.timedOutRequestCount,
-      failedRequestCount: dbServiceState.failedRequestCount,
-      fallbackCircuitOpenUntil: dbServiceState.fallbackCircuitOpenUntil,
-      localFallbackActiveCount: dbServiceState.localFallbackActiveCount,
-      localFallbackQueuedCount: dbServiceState.localFallbackQueuedCount,
-      localFallbackRequestCount: dbServiceState.localFallbackRequestCount,
-      localFallbackBypassedGuardCount: dbServiceState.localFallbackBypassedGuardCount,
-      handledRequestCount: dbServiceSnapshot?.handledRequestCount,
-      lastRequestAt: dbServiceSnapshot?.lastRequestAt,
-      lastError: dbServiceSnapshot?.lastError
-    },
-    grep: getRuntimeLogGrepRuntime(),
-    gatewayAccountSideEffects: {
-      queueLength: gatewayAccountSideEffects.queueLength,
-      processing: gatewayAccountSideEffects.processing,
-      enqueuedCount: gatewayAccountSideEffects.enqueuedCount,
-      completedCount: gatewayAccountSideEffects.completedCount,
-      failedAttemptCount: gatewayAccountSideEffects.failedAttemptCount,
-      droppedCount: gatewayAccountSideEffects.droppedCount,
-      expiredCount: gatewayAccountSideEffects.expiredCount,
-      localSuppressedAccountCount: gatewayAccountSideEffects.localSuppressedAccountCount,
-      nextAttemptAt: gatewayAccountSideEffects.nextAttemptAt
-    }
-  }))
+runtimeLogsRouter.get('/facets', async (_req, res, next) => {
+  try {
+    const [serverRuntime, dbServiceSnapshot, facets] = await Promise.all([
+      requestServerRuntimeSnapshot(),
+      requestDbService({ type: 'status' }, { timeoutMs: 1000 }).catch(() => undefined),
+      requestDbService({ type: 'get_runtime_log_facets' })
+    ])
+    const workerSnapshot = serverRuntime?.worker?.snapshot
+    const dbServiceState = serverRuntime?.dbService
+    const gatewayAccountSideEffects = serverRuntime?.gatewayAccountSideEffects ?? {}
+    res.json(ok({
+      ...facets,
+      runtime: workerSnapshot?.runtimeLogIndexQueue ?? {
+        queueLength: 0,
+        droppedCount: 0,
+        retentionDays: 3
+      },
+      worker: {
+        pid: workerSnapshot?.pid ?? serverRuntime?.worker?.pid,
+        ready: workerSnapshot?.ready ?? serverRuntime?.worker?.ready ?? false,
+        pendingMessageCount: serverRuntime?.worker?.pendingMessageCount ?? 0
+      },
+      dbService: {
+        pid: dbServiceSnapshot?.pid ?? dbServiceState?.pid,
+        ready: dbServiceSnapshot?.ready ?? dbServiceState?.ready ?? false,
+        pendingRequestCount: dbServiceState?.pendingRequestCount ?? dbServiceSnapshot?.pendingRequestCount ?? 0,
+        timedOutRequestCount: dbServiceState?.timedOutRequestCount ?? 0,
+        failedRequestCount: dbServiceState?.failedRequestCount ?? dbServiceSnapshot?.failedRequestCount ?? 0,
+        unavailableCircuitOpenUntil: dbServiceState?.unavailableCircuitOpenUntil,
+        httpHost: dbServiceSnapshot?.httpHost ?? dbServiceState?.httpHost,
+        httpPort: dbServiceSnapshot?.httpPort ?? dbServiceState?.httpPort,
+        handledRequestCount: dbServiceSnapshot?.handledRequestCount,
+        lastRequestAt: dbServiceSnapshot?.lastRequestAt,
+        lastError: dbServiceSnapshot?.lastError
+      },
+      grep: getRuntimeLogGrepRuntime(),
+      gatewayAccountSideEffects: {
+        queueLength: numberField(gatewayAccountSideEffects, 'queueLength'),
+        processing: booleanField(gatewayAccountSideEffects, 'processing'),
+        enqueuedCount: numberField(gatewayAccountSideEffects, 'enqueuedCount'),
+        completedCount: numberField(gatewayAccountSideEffects, 'completedCount'),
+        failedAttemptCount: numberField(gatewayAccountSideEffects, 'failedAttemptCount'),
+        droppedCount: numberField(gatewayAccountSideEffects, 'droppedCount'),
+        expiredCount: numberField(gatewayAccountSideEffects, 'expiredCount'),
+        localSuppressedAccountCount: numberField(gatewayAccountSideEffects, 'localSuppressedAccountCount'),
+        nextAttemptAt: stringField(gatewayAccountSideEffects, 'nextAttemptAt')
+      }
+    }))
+  } catch (error) {
+    next(error)
+  }
 })
 
 runtimeLogsRouter.get('/grep', async (req, res, next) => {
@@ -162,4 +167,18 @@ function numberQueryValue(value: unknown): number | undefined {
 function optionalQueryText(value: unknown): string | undefined {
   const text = Array.isArray(value) ? value[0] : value
   return typeof text === 'string' && text.trim() ? text.trim() : undefined
+}
+
+function numberField(record: Record<string, unknown>, key: string): number {
+  const value = record[key]
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0
+}
+
+function booleanField(record: Record<string, unknown>, key: string): boolean {
+  return record[key] === true
+}
+
+function stringField(record: Record<string, unknown>, key: string): string | undefined {
+  const value = record[key]
+  return typeof value === 'string' ? value : undefined
 }

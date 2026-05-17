@@ -1,4 +1,4 @@
-import { Router, type Request, type Response } from 'express'
+import { Router, type NextFunction, type Request, type Response } from 'express'
 
 import { tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import { bindRequestContextFields, createTraceId, getRequestLogger, getTraceId } from '../../shared/request-context.js'
@@ -31,12 +31,12 @@ import {
   emptyUsage,
   extractClientIp,
   headersToObject,
+  applyOpenAIStreamUsageFallback,
   parseOpenAIUsageFromJsonBuffer,
   parseOpenAIUsageFromJsonTextFragment,
   requestEndpoint,
   requestModel,
   extractBearerToken,
-  isOpenAIStreamServerOverloadedErrorCode,
   type ParsedUsage,
   type UpstreamAttempt
 } from './openai-gateway-usage.js'
@@ -66,7 +66,7 @@ import {
   writeGatewayStreamFailureEvent
 } from './openai-gateway-responses.js'
 import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
-import { pipeUpstreamStream } from './openai-gateway-stream.js'
+import { pipeUpstreamStream, type StreamFailureContext } from './openai-gateway-stream.js'
 import type { StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
 import {
   matchUpstreamErrorFeatureRule,
@@ -110,8 +110,36 @@ export interface OpenAIGatewayHandleOptions {
   exposeUpstreamDiagnostics?: boolean
 }
 
-openAIGatewayRouter.all('/*', async (req, res) => {
-  await handleOpenAIGatewayRequest(req, res)
+function handleGatewayDbServiceUnavailable(error: unknown, req: Request, res: Response, next: NextFunction): void {
+  const message = dbServiceUnavailableMessage(error)
+  if (!message || res.headersSent) {
+    next(error)
+    return
+  }
+
+  getRequestLogger().error(errorLogFields(error, {
+    event: 'gateway_db_service_unavailable',
+    endpoint: `${req.method.toUpperCase()} ${requestEndpoint(req)}`
+  }), '网关 DB service 不可用')
+
+  sendGatewayErrorResponse(res, 503, gatewayErrorPayload(message, 'service_unavailable'))
+}
+
+function dbServiceUnavailableMessage(error: unknown): string | undefined {
+  if (!(error instanceof Error)) {
+    return undefined
+  }
+  return /^DB service (暂时不可用|未就绪|请求超时|已退出)/.test(error.message)
+    ? error.message
+    : undefined
+}
+
+openAIGatewayRouter.all('*', async (req, res, next) => {
+  try {
+    await handleOpenAIGatewayRequest(req, res)
+  } catch (error) {
+    handleGatewayDbServiceUnavailable(error, req, res, next)
+  }
 })
 
 export async function handleOpenAIGatewayRequest(
@@ -465,12 +493,8 @@ export async function handleOpenAIGatewayRequest(
             res,
             activeGatewaySettings,
             startedAt,
-            (message, errorCode) => handleStreamFailure(account, message, activeGatewaySettings, errorCode),
-            abortController.signal,
-            {
-              endpoint,
-              onStreamIntercept: (decision) => handleStreamIntercept(account, decision, activeGatewaySettings)
-            }
+            (message, errorCode, context) => handleStreamFailure(account, message, activeGatewaySettings, errorCode, context),
+            abortController.signal
           )
         } catch (error) {
           if (isUpstreamRequestAbortedError(error) || abortController.signal.aborted) {
@@ -507,6 +531,22 @@ export async function handleOpenAIGatewayRequest(
         }
         firstTokenMs = streamResult.firstTokenMs
         responseBodyText = streamResult.responseBodyText
+        const streamUsageFallback = applyOpenAIStreamUsageFallback(req, streamResult.usage, {
+          outputReceived: streamResult.outputReceived,
+          estimatedOutputTokens: streamResult.estimatedOutputTokens
+        })
+        if (streamUsageFallback.estimated) {
+          logger.warn({
+            event: 'gateway_stream_usage_estimated',
+            accountId: account.id,
+            endpoint,
+            model: requestModel(req),
+            completed: streamResult.completed,
+            outputReceived: streamResult.outputReceived,
+            estimatedInputTokens: streamUsageFallback.estimatedInputTokens,
+            estimatedOutputTokens: streamUsageFallback.estimatedOutputTokens
+          }, '上游流式响应缺少 usage，网关已按可见输出估算 token 成本')
+        }
         if (streamResult.streamIntercept) {
           auditCapture.addGatewayMetadata({
             label: 'stream_intercept',
@@ -537,7 +577,7 @@ export async function handleOpenAIGatewayRequest(
             stream: isEffectiveOpenAIStreamRequest(req, account),
             firstTokenMs: streamResult.firstTokenMs,
             startedAt,
-            usage: streamResult.usage,
+            usage: streamUsageFallback.usage,
             errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
             requestSnapshot,
             responseSnapshot: buildUsageResponseSnapshot({
@@ -564,7 +604,7 @@ export async function handleOpenAIGatewayRequest(
           })
           return
         }
-        usage = streamResult.usage
+        usage = streamUsageFallback.usage
       } else {
         if (abortController.signal.aborted) {
           throw new UpstreamRequestAbortedError('请求已取消', true)
@@ -1365,6 +1405,21 @@ async function fetchFirstAvailableUpstream(
               forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
               applyAccountErrorHandlingWithCacheInvalidation(account, failureInput)
             } else {
+              if (attemptIndex < retryAttempts) {
+                getRequestLogger().warn({
+                  event: 'gateway_upstream_same_account_retry_scheduled',
+                  accountId: account.id,
+                  accountName: account.name,
+                  accountType: account.type,
+                  upstreamUrl,
+                  attemptIndex,
+                  nextAttemptIndex: attemptIndex + 1,
+                  statusCode: response.status,
+                  retryIntervalSeconds: settings.temporaryUnschedulableRetryIntervalSeconds
+                }, '上游未知失败未命中策略，先按临时不可调用标准同账号重试')
+                await waitBeforeTemporaryUnschedulableRetry(settings)
+                continue
+              }
               deferUnknownAccountFailureOrRejectRequest(deferredAccountFailures, {
                 account,
                 input: failureInput,
@@ -1621,11 +1676,25 @@ function applyAccountErrorHandlingWithCacheInvalidation(
   })
 }
 
-function handleStreamFailure(account: UpstreamAccount, reason: string, settings: GatewaySettings, errorCode?: string): void {
+function handleStreamFailure(
+  account: UpstreamAccount,
+  reason: string,
+  settings: GatewaySettings,
+  errorCode: string | undefined,
+  context: StreamFailureContext
+): void {
   if (!settings.streamCircuitBreakerEnabled) {
     return
   }
-  if (isOpenAIStreamServerOverloadedErrorCode(errorCode)) {
+  if (!context.outputReceived) {
+    getRequestLogger().warn({
+      event: 'gateway_stream_failure_account_side_effect_deferred',
+      accountId: account.id,
+      accountName: account.name,
+      errorCode,
+      reason,
+      downstreamBytesWritten: context.downstreamBytesWritten
+    }, '流式失败发生在可见输出前，暂不累计账号流失败计数')
     return
   }
 
@@ -1642,32 +1711,10 @@ function handleStreamFailure(account: UpstreamAccount, reason: string, settings:
   })
 }
 
-function handleStreamIntercept(account: UpstreamAccount, decision: StreamInterceptDecision, settings: GatewaySettings): void {
-  if (decision.accountPolicy === 'none') {
-    return
-  }
-
-  const cooldownMinutes = decision.cooldownMinutes ?? settings.defaultTemporaryUnschedulableMinutes
-  enqueueGatewayStreamFailureSideEffect({
-    type: 'record_account_stream_failure',
-    input: {
-      accountId: account.id,
-      thresholdCount: 1,
-      thresholdWindowMinutes: Math.max(1, settings.streamFailureThresholdWindowMinutes),
-      action: 'cooldown',
-      cooldownMinutes,
-      reason: decision.upstreamErrorMessage
-        ? `命中流式特征规则 ${decision.ruleName}：${decision.upstreamErrorMessage}`
-        : `命中流式特征规则 ${decision.ruleName}`
-    }
-  })
-}
-
 function streamInterceptAuditMetadata(decision: StreamInterceptDecision): Record<string, unknown> {
   return {
     streamIntercepted: true,
-    interceptRuleId: decision.ruleId,
-    interceptRuleName: decision.ruleName,
+    fallbackReason: decision.reason,
     interceptAction: decision.action,
     triggerPhase: decision.triggerPhase,
     upstreamEventType: decision.upstreamEventType,
@@ -1675,9 +1722,7 @@ function streamInterceptAuditMetadata(decision: StreamInterceptDecision): Record
     upstreamErrorMessage: decision.upstreamErrorMessage,
     rewriteErrorCode: decision.rewriteErrorCode,
     rewriteMessage: decision.rewriteMessage,
-    outputSeen: decision.outputSeen,
-    accountPolicy: decision.accountPolicy,
-    cooldownMinutes: decision.cooldownMinutes
+    outputSeen: decision.outputSeen
   }
 }
 
@@ -1703,7 +1748,7 @@ function clearAccountStreamFailureStateWithCacheInvalidation(accountId: string):
   void requestDbService({
     type: 'clear_account_stream_failure_state',
     accountId
-  }, { fallbackToLocal: false }).then((result) => {
+  }).then((result) => {
     if (result.changed) {
       clearGatewayRuntimeCache()
     }
@@ -1743,7 +1788,7 @@ function persistOpenAICodexHeadersIfNeeded(account: UpstreamAccount, headers: He
     accountId: account.id,
     headers: headersToObject(headers),
     source
-  }, { fallbackToLocal: false }).catch((error) => {
+  }).catch((error) => {
     logger.warn(errorLogFields(error, {
       event: 'gateway_codex_usage_snapshot_side_effect_failed',
       accountId: account.id,

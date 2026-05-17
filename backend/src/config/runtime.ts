@@ -8,6 +8,8 @@ export interface RuntimeConfig {
   processRole: ProcessRole
   host: string
   port: number
+  dbServiceHttpHost: string
+  dbServiceHttpPort: number
   databasePath: string
   recordDatabasePath: string
   secret: string
@@ -44,6 +46,8 @@ export const runtimeConfig: RuntimeConfig = {
   processRole: processRoleConfig('JUHE_AI_PROCESS_ROLE', 'server'),
   host: stringConfig('JUHE_AI_HOST', '127.0.0.1'),
   port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
+  dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
+  dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai.sqlite3')),
   recordDatabasePath: pathConfig('JUHE_AI_RECORD_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai-records.sqlite3')),
   secret: stringConfig('JUHE_AI_SECRET', 'juhe-ai-dev-secret-change-me'),

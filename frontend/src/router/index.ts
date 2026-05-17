@@ -351,7 +351,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/feature-rules/FeatureRulesView.vue'),
     meta: {
       title: '特征规则',
-      description: '只读查看网关内置流式事件和上游错误响应特征规则，用于排障和审计解释。',
+      description: '只读查看网关内置上游错误响应特征规则，用于排障和审计解释。',
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
@@ -402,7 +402,7 @@ export const menuRoutes: RouteRecordRaw[] = [
 ]
 
 export const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes: [
     {
       path: '/',

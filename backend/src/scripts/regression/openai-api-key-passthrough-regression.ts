@@ -2,6 +2,11 @@ import { strict as assert } from 'node:assert'
 import { EventEmitter } from 'node:events'
 
 import { requestModel } from '../../modules/gateway/openai-gateway-usage.js'
+import {
+  buildOpenAICodexUpstreamUrls,
+  buildUpstreamUrl,
+  isOpenAIModelsRequest
+} from '../../modules/gateway/openai-gateway-route-helpers.js'
 import { buildUpstreamHeaders, buildUpstreamRequestBody, isEffectiveOpenAIStreamRequest } from '../../modules/gateway/openai-gateway-upstream.js'
 import {
   createGatewayRequestBodyState,
@@ -25,6 +30,8 @@ async function main(): Promise<void> {
   testApiKeyHeaderFiltering()
   testOpenAIAccountHeadersAreNotClientOrCredentialControlled()
   testOpenAIBetaPreservedFromClient()
+  testOpenAIUpstreamUrlNormalization()
+  testOpenAIClientPathCompatibility()
   testJsonBodyFallbackWhenPassthroughDisabled()
   testLargeJsonBodyParsedForGatewayMetadata()
   await testLargeJsonBodyParsedByGatewayWorker()
@@ -140,6 +147,36 @@ function testOpenAIBetaPreservedFromClient(): void {
   assert.equal(clientHeaders.get('openai-beta'), 'assistants=v2')
 }
 
+function testOpenAIUpstreamUrlNormalization(): void {
+  assert.equal(buildUpstreamUrl('https://api.openai.com', '/responses'), 'https://api.openai.com/v1/responses')
+  assert.equal(buildUpstreamUrl('https://api.openai.com', '/v1/responses'), 'https://api.openai.com/v1/responses')
+  assert.equal(buildUpstreamUrl('https://api.openai.com/v1', '/responses'), 'https://api.openai.com/v1/responses')
+  assert.equal(buildUpstreamUrl('https://api.openai.com/v1', '/v1/responses'), 'https://api.openai.com/v1/responses')
+  assert.equal(buildUpstreamUrl('https://example.com/openai/v1', '/responses?stream=true'), 'https://example.com/openai/v1/responses?stream=true')
+  assert.equal(buildUpstreamUrl('https://example.com/openai/v1/', 'v1/chat/completions'), 'https://example.com/openai/v1/chat/completions')
+}
+
+function testOpenAIClientPathCompatibility(): void {
+  assert.equal(isOpenAIModelsRequest(createRequest(undefined, {}, undefined, '/models', 'GET')), true)
+  assert.equal(isOpenAIModelsRequest(createRequest(undefined, {}, undefined, '/v1/models', 'GET')), true)
+  assert.equal(buildUpstreamUrl('https://api.openai.com', '/models'), 'https://api.openai.com/v1/models')
+  assert.equal(buildUpstreamUrl('https://api.openai.com/v1', '/models?limit=20'), 'https://api.openai.com/v1/models?limit=20')
+  assert.equal(buildUpstreamUrl('https://api.openai.com', '/chat/completions'), 'https://api.openai.com/v1/chat/completions')
+  assert.equal(buildUpstreamUrl('https://api.openai.com/v1', '/v1/images/generations'), 'https://api.openai.com/v1/images/generations')
+  assert.deepEqual(
+    buildOpenAICodexUpstreamUrls(createRequest({ input: 'hello' }, {}, undefined, '/responses')),
+    ['https://chatgpt.com/backend-api/codex/responses']
+  )
+  assert.deepEqual(
+    buildOpenAICodexUpstreamUrls(createRequest({ input: 'hello' }, {}, undefined, '/v1/responses')),
+    ['https://chatgpt.com/backend-api/codex/responses']
+  )
+  assert.deepEqual(
+    buildOpenAICodexUpstreamUrls(createRequest({ input: 'hello' }, {}, undefined, '/chat/completions')),
+    []
+  )
+}
+
 function testJsonBodyFallbackWhenPassthroughDisabled(): void {
   const req = createRequest({ model: 'gpt-5.4', input: 'hello' }, { accept: 'application/json' })
   const body = buildUpstreamRequestBody(req, false)
@@ -164,8 +201,10 @@ function testLargeJsonBodyParsedForGatewayMetadata(): void {
   req.gatewayRequestBody = createGatewayRequestBodyState({
     rawBody,
     contentType: 'application/json',
-    jsonParseStatus: 'parsed'
+    jsonParseStatus: 'parsed',
+    parsedBody: body
   })
+  req.body = undefined
 
   const upstreamBody = buildUpstreamRequestBody(req, true)
 
@@ -192,6 +231,8 @@ async function testLargeJsonBodyParsedByGatewayWorker(): Promise<void> {
   assert.equal(nextCalled, true)
   assert.equal((req.body as { model?: string }).model, 'gpt-5.4')
   assert.equal((req.body as { stream?: boolean }).stream, true)
+  assert.equal(req.gatewayRequestBody?.model, 'gpt-5.4')
+  assert.equal(req.gatewayRequestBody?.stream, true)
   assert.equal(requestModel(req), 'gpt-5.4')
   assert.equal(isEffectiveOpenAIStreamRequest(req, { type: 'api_key' }), true)
 
@@ -224,12 +265,16 @@ async function testLargeJsonBodyWorkerStopsWhenClientAborts(): Promise<void> {
 function createRequest(
   body: unknown,
   headers: Record<string, string | string[] | undefined> = {},
-  rawBody = Buffer.from(JSON.stringify(body ?? {}))
+  rawBody = Buffer.from(JSON.stringify(body ?? {})),
+  pathAndQuery = '/v1/responses',
+  method = 'POST'
 ): TestRequest {
+  const queryIndex = pathAndQuery.indexOf('?')
+  const path = queryIndex >= 0 ? pathAndQuery.slice(0, queryIndex) : pathAndQuery
   return Object.assign(new EventEmitter(), {
-    method: 'POST',
-    originalUrl: '/v1/responses',
-    path: '/v1/responses',
+    method,
+    originalUrl: pathAndQuery,
+    path: path || '/',
     headers,
     body,
     rawBody

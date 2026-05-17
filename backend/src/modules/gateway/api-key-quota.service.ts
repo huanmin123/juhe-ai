@@ -1,4 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { getRecordDatabase } from '../../storage/database.js'
 import type { GatewayApiKeyRow } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
@@ -25,6 +26,7 @@ const apiKeyQuotaCache = createAppCache<string, ApiKeyQuotaCacheEntry>({
 })
 
 export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date()): ApiKeyQuotaDecision {
+  assertLocalGatewayDatabaseAccess('checkGatewayApiKeyQuota')
   const quotaLimits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
   if (!hasEnabledRequestQuotaLimit(quotaLimits)) {
     return { allowed: true }
@@ -69,5 +71,11 @@ export function invalidateApiKeyQuotaCacheById(id: string): void {
     if (cacheKey.includes(`\u0000${id}\u0000`)) {
       apiKeyQuotaCache.delete(cacheKey)
     }
+  }
+}
+
+function assertLocalGatewayDatabaseAccess(operation: string): void {
+  if (runtimeConfig.processRole === 'server') {
+    throw new Error(`server 角色禁止直接同步读取 SQLite：${operation} 必须通过 DB service`)
   }
 }

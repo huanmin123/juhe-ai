@@ -46,13 +46,13 @@ const app = express()
 app.use(requestContextMiddleware)
 app.use(cors({ credentials: true, origin: true }))
 app.use(express.json({ limit: '2mb' }))
-app.use('/api/auth', authRouter)
-app.use('/api/settings/public', (_req, res) => {
+app.use('/__aisys__/api/auth', authRouter)
+app.use('/__aisys__/api/settings/public', (_req, res) => {
   res.json(ok(repositories.listPublicGlobalSettings()))
 })
-app.use('/api', requireAuth)
-app.use('/api/my-accounts', forceSelfAccessScope, accountsRouter)
-app.use('/api/accounts', requireAdmin, accountsRouter)
+app.use('/__aisys__/api', requireAuth)
+app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
+app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
 
 interface ApiEnvelope<T> {
   data: T
@@ -104,7 +104,7 @@ async function main(): Promise<void> {
     const disabled = repositories.updateAccount(account.id, { status: 'disabled' }, access)
     assert(disabled?.status === 'disabled' && disabled.schedulable === false, '测试账户停用失败')
 
-    const apiTestResponse = await fetch(`${baseUrl}/api/accounts/${account.id}/test`, {
+    const apiTestResponse = await fetch(`${baseUrl}/__aisys__/api/accounts/${account.id}/test`, {
       method: 'POST',
       headers: { cookie: adminCookie, 'content-type': 'application/json' },
       body: JSON.stringify({ model: 'gpt-4o-mini', prompt: 'hi' })
@@ -294,10 +294,10 @@ function assertAccountErrorCode(accountId: string, code: string, message: string
 }
 
 async function login(baseUrl: string): Promise<string> {
-  const captcha = await getEnvelope<{ captchaId: string; image: string }>(baseUrl, '/api/auth/captcha')
+  const captcha = await getEnvelope<{ captchaId: string; image: string }>(baseUrl, '/__aisys__/api/auth/captcha')
   const captchaCode = parseCaptchaCode(captcha.image)
   assert(captchaCode, '无法解析登录验证码')
-  const response = await fetch(`${baseUrl}/api/auth/login`, {
+  const response = await fetch(`${baseUrl}/__aisys__/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({

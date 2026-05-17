@@ -185,7 +185,7 @@ function normalizeClientIp(value?: string): string | undefined {
 }
 
 function isHealthPath(path: string): boolean {
-  return path === '/health' || path === '/api/health'
+  return path === '/__aisys__/health' || path === '/__aisys__/api/health'
 }
 
 export function sanitizeUrlForLog(value: string): string {

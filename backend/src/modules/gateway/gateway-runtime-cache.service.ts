@@ -1,4 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import {
   listOpenAIAccountsForGroup,
   resolveGroupUsageAccessMetadata,
@@ -31,6 +32,7 @@ const openAIAccountsCache = createAppCache<string, OpenAIAccountSecret[]>({
 })
 
 export function readCachedGatewaySettings(): GatewaySettings {
+  assertLocalGatewayDatabaseAccess('readCachedGatewaySettings')
   const cached = gatewaySettingsCache.get('current')
   if (cached) {
     return cached
@@ -45,6 +47,7 @@ export async function readCachedGatewaySettingsAsync(): Promise<GatewaySettings>
 }
 
 export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
+  assertLocalGatewayDatabaseAccess('resolveCachedGroupUsageAccessMetadata')
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = groupUsageAccessCache.get(cacheKey)
   if (cached !== undefined) {
@@ -64,6 +67,7 @@ export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string
 }
 
 export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountId: string): OpenAIAccountSecret[] {
+  assertLocalGatewayDatabaseAccess('listCachedOpenAIAccountsForGroup')
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = openAIAccountsCache.get(cacheKey)
   if (cached) {
@@ -96,6 +100,12 @@ export function clearGatewayRuntimeCacheLocal(): void {
 
 function gatewayCacheKey(groupId: string, systemAccountId: string): string {
   return `${groupId}:${systemAccountId}`
+}
+
+function assertLocalGatewayDatabaseAccess(operation: string): void {
+  if (runtimeConfig.processRole === 'server') {
+    throw new Error(`server 角色禁止直接同步读取 SQLite：${operation} 必须通过 DB service`)
+  }
 }
 
 function cloneOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAccountSecret {

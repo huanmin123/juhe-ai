@@ -26,7 +26,8 @@ interface UsageRecordFlushOptions {
 
 export function enqueueUsageRecord(input: UsageRecordInput): void {
   const queuedInput = normalizeUsageRecordInput(input)
-  if (runtimeConfig.processRole === 'server' && sendUsageRecordsToWorker([queuedInput])) {
+  if (runtimeConfig.processRole === 'server') {
+    sendUsageRecordsToWorker([queuedInput])
     return
   }
 
@@ -34,12 +35,14 @@ export function enqueueUsageRecord(input: UsageRecordInput): void {
 }
 
 export function enqueueUsageRecordsLocal(inputs: UsageRecordInput[]): void {
+  assertLocalUsageRecordWriteAllowed('enqueueUsageRecordsLocal')
   for (const input of inputs) {
     enqueueUsageRecordLocal(normalizeUsageRecordInput(input))
   }
 }
 
 function enqueueUsageRecordLocal(input: UsageRecordInput): void {
+  assertLocalUsageRecordWriteAllowed('enqueueUsageRecordLocal')
   pendingUsageRecords.push(input)
   if (pendingUsageRecords.length > usageRecordMaxPending) {
     const overflowCount = pendingUsageRecords.length - usageRecordMaxPending
@@ -56,6 +59,9 @@ function enqueueUsageRecordLocal(input: UsageRecordInput): void {
 }
 
 export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): void {
+  if (runtimeConfig.processRole === 'server') {
+    return
+  }
   if (flushing || pendingUsageRecords.length === 0) {
     return
   }
@@ -138,6 +144,9 @@ function exitAfterUsageRecordFlush(exitCode: number): never {
 }
 
 function scheduleUsageRecordFlush(delayMs: number): void {
+  if (runtimeConfig.processRole === 'server') {
+    return
+  }
   if (flushTimer || flushing) {
     return
   }
@@ -157,4 +166,10 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
 
 function normalizeMaxBatches(value: number | undefined): number {
   return typeof value === 'number' && Number.isFinite(value) ? Math.max(1, Math.trunc(value)) : Number.POSITIVE_INFINITY
+}
+
+function assertLocalUsageRecordWriteAllowed(operation: string): void {
+  if (runtimeConfig.processRole === 'server') {
+    throw new Error(`server 角色禁止直接同步写入 SQLite：${operation} 必须投递 background worker`)
+  }
 }

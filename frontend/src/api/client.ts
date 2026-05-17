@@ -43,7 +43,6 @@ import type {
   RuntimeLogLevel,
   RuntimeLogGrepResult,
   RuntimeLogSearchResult,
-  StreamInterceptRuleCatalogItem,
   UpstreamErrorFeatureRuleCatalogItem,
   SystemTeamMemberSummary,
   SystemTeamPrincipalSummary,
@@ -150,11 +149,9 @@ export interface AuditLogListParams extends ListParams {
   outcome?: AuditOutcome | 'all'
   statusCode?: number
   path?: string
-  model?: string
   apiKeyId?: string
   groupId?: string
   accountId?: string
-  clientIp?: string
   errorGroupId?: string
   limit?: number
 }
@@ -267,8 +264,8 @@ const http = axios.create({
 
 function normalizeApiBaseUrl(value?: string): string {
   const text = value?.trim()
-  if (!text) return '/api'
-  return text.replace(/\/+$/, '') || '/api'
+  if (!text) return '/__aisys__/api'
+  return text.replace(/\/+$/, '') || '/__aisys__/api'
 }
 
 async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T> {
@@ -475,7 +472,6 @@ export const api = {
     aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params, false) }))
   },
   featureRules: {
-    streamInterceptRules: () => unwrap<StreamInterceptRuleCatalogItem[]>(http.get('/feature-rules/stream-intercept-rules')),
     upstreamErrorFeatureRules: () => unwrap<UpstreamErrorFeatureRuleCatalogItem[]>(http.get('/feature-rules/upstream-error-feature-rules'))
   },
   settings: {

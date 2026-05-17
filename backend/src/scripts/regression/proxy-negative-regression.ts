@@ -58,19 +58,19 @@ app.use(requestContextMiddleware)
 app.use(cors({ credentials: true, origin: true }))
 app.use('/v1', express.raw({ type: () => true, limit: gatewayRawBodyLimit }), captureGatewayRawBody, openAIGatewayRouter)
 app.use(express.json({ limit: '2mb' }))
-app.use('/api/auth', authRouter)
-app.use('/api/settings/public', (_req, res) => {
+app.use('/__aisys__/api/auth', authRouter)
+app.use('/__aisys__/api/settings/public', (_req, res) => {
   res.json(ok(repositories.listPublicGlobalSettings()))
 })
-app.use('/api', requireAuth)
-app.use('/api/my-accounts', forceSelfAccessScope, accountsRouter)
-app.use('/api/my-groups', forceSelfAccessScope, groupsRouter)
-app.use('/api/my-api-keys', forceSelfAccessScope, apiKeysRouter)
-app.use('/api/accounts', requireAdmin, accountsRouter)
-app.use('/api/groups', requireAdmin, groupsRouter)
-app.use('/api/api-keys', requireAdmin, apiKeysRouter)
-app.use('/api/proxies', proxiesRouter)
-app.use('/api/usage-records', requireAdmin, usageRecordsRouter)
+app.use('/__aisys__/api', requireAuth)
+app.use('/__aisys__/api/my-accounts', forceSelfAccessScope, accountsRouter)
+app.use('/__aisys__/api/my-groups', forceSelfAccessScope, groupsRouter)
+app.use('/__aisys__/api/my-api-keys', forceSelfAccessScope, apiKeysRouter)
+app.use('/__aisys__/api/accounts', requireAdmin, accountsRouter)
+app.use('/__aisys__/api/groups', requireAdmin, groupsRouter)
+app.use('/__aisys__/api/api-keys', requireAdmin, apiKeysRouter)
+app.use('/__aisys__/api/proxies', proxiesRouter)
+app.use('/__aisys__/api/usage-records', requireAdmin, usageRecordsRouter)
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
@@ -136,14 +136,14 @@ async function main(): Promise<void> {
     const baseUrl = `http://127.0.0.1:${appAddress.port}`
 
     const adminCookie = await login(baseUrl)
-    const proxy = await postEnvelope<ProxyProfileSummary>(baseUrl, '/api/proxies', adminCookie, {
+    const proxy = await postEnvelope<ProxyProfileSummary>(baseUrl, '/__aisys__/api/proxies', adminCookie, {
       name: '回归停用代理',
       type: 'http',
       host: '127.0.0.1',
       port: 9,
       enabled: true
     })
-    const account = await postEnvelope<AccountSummary>(baseUrl, '/api/accounts', adminCookie, {
+    const account = await postEnvelope<AccountSummary>(baseUrl, '/__aisys__/api/accounts', adminCookie, {
       providerCode: 'openai',
       name: '代理负向回归账户',
       type: 'api_key',
@@ -155,30 +155,30 @@ async function main(): Promise<void> {
       status: 'active',
       schedulable: true
     })
-    const group = await postEnvelope<GroupSummary>(baseUrl, '/api/groups', adminCookie, {
+    const group = await postEnvelope<GroupSummary>(baseUrl, '/__aisys__/api/groups', adminCookie, {
       name: '代理负向回归分组',
       providerCode: 'openai',
       enabled: true
     })
-    await postEnvelope<AccountSummary>(baseUrl, `/api/accounts/${account.id}/group`, adminCookie, { groupId: group.id })
-    const apiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/api/api-keys', adminCookie, {
+    await postEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}/group`, adminCookie, { groupId: group.id })
+    const apiKey = await postEnvelope<ApiKeySummary>(baseUrl, '/__aisys__/api/api-keys', adminCookie, {
       name: '代理负向回归 Key',
       groupId: group.id,
       status: 'active'
     })
     assert(apiKey.key, '临时 API Key 未返回明文密钥')
 
-    await patchEnvelope<ProxyProfileSummary>(baseUrl, `/api/proxies/${proxy.id}`, adminCookie, { enabled: false })
+    await patchEnvelope<ProxyProfileSummary>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, { enabled: false })
     gatewayCache.clearGatewayRuntimeCache()
 
-    const testResult = await postEnvelope<AccountTestResult>(baseUrl, `/api/accounts/${account.id}/test`, adminCookie, {
+    const testResult = await postEnvelope<AccountTestResult>(baseUrl, `/__aisys__/api/accounts/${account.id}/test`, adminCookie, {
       model: 'gpt-4o-mini',
       prompt: 'hi'
     })
     assert(testResult.success === false, '账户测试在代理停用后不应成功')
     assert(testResult.proxyUrl === '[configured]', '账户测试失败结果应保留代理已配置标记')
     assert(testResult.message.includes('代理不存在或已停用'), `账户测试错误信息异常：${testResult.message}`)
-    await patchEnvelope<AccountSummary>(baseUrl, `/api/accounts/${account.id}`, adminCookie, {
+    await patchEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie, {
       status: 'active',
       schedulable: true,
       clearFailureState: true
@@ -203,8 +203,8 @@ async function main(): Promise<void> {
     usageRecordQueue.flushAllUsageRecordQueue()
     await waitForUsageRecord(baseUrl, adminCookie, apiKey.id, account.id)
 
-    await patchEnvelope<ProxyProfileSummary>(baseUrl, `/api/proxies/${proxy.id}`, adminCookie, { enabled: true })
-    await deleteNoContent(baseUrl, `/api/proxies/${proxy.id}`, adminCookie, 409)
+    await patchEnvelope<ProxyProfileSummary>(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, { enabled: true })
+    await deleteNoContent(baseUrl, `/__aisys__/api/proxies/${proxy.id}`, adminCookie, 409)
 
     console.log('代理负向回归通过：停用代理阻止账户测试，网关请求失败，没有直连上游，使用中的代理不能删除')
   } finally {
@@ -263,10 +263,10 @@ function captureGatewayRawBody(req: RawBodyRequest, _res: ExpressResponse, next:
 }
 
 async function login(baseUrl: string): Promise<string> {
-  const captcha = await getEnvelope<{ captchaId: string; image: string }>(baseUrl, '/api/auth/captcha')
+  const captcha = await getEnvelope<{ captchaId: string; image: string }>(baseUrl, '/__aisys__/api/auth/captcha')
   const captchaCode = parseCaptchaCode(captcha.image)
   assert(captchaCode, '无法解析登录验证码')
-  const response = await fetch(`${baseUrl}/api/auth/login`, {
+  const response = await fetch(`${baseUrl}/__aisys__/api/auth/login`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -291,7 +291,7 @@ function parseCaptchaCode(image: string): string {
 async function waitForUsageRecord(baseUrl: string, cookie: string, apiKeyId: string, accountId: string): Promise<void> {
   const startedAt = Date.now()
   while (Date.now() - startedAt < 5000) {
-    const result = await getEnvelope<UsageRecordListResult>(baseUrl, '/api/usage-records?page=1&pageSize=20&result=failed', cookie)
+    const result = await getEnvelope<UsageRecordListResult>(baseUrl, '/__aisys__/api/usage-records?page=1&pageSize=20&result=failed', cookie)
     if (result.items.some((record) => (
       record.apiKeyId === apiKeyId
       && record.accountId === accountId

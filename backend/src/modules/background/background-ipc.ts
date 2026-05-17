@@ -56,11 +56,94 @@ interface BackgroundWorkerState {
   pendingMessageBytes: number
 }
 
+class HeadIndexedQueue<T> {
+  private items: T[] = []
+  private headIndex = 0
+
+  get length(): number {
+    return this.items.length - this.headIndex
+  }
+
+  push(item: T): void {
+    this.items.push(item)
+  }
+
+  unshift(item: T): void {
+    if (this.headIndex > 0) {
+      this.headIndex -= 1
+      this.items[this.headIndex] = item
+      return
+    }
+    this.items.unshift(item)
+  }
+
+  shift(): T | undefined {
+    if (this.length <= 0) {
+      return undefined
+    }
+    const item = this.items[this.headIndex]
+    this.headIndex += 1
+    this.compactConsumedItems()
+    return item
+  }
+
+  at(index: number): T | undefined {
+    if (index < 0 || index >= this.length) {
+      return undefined
+    }
+    return this.items[this.headIndex + index]
+  }
+
+  set(index: number, item: T): void {
+    if (index < 0 || index >= this.length) {
+      return
+    }
+    this.items[this.headIndex + index] = item
+  }
+
+  findIndex(predicate: (item: T) => boolean): number {
+    for (let index = 0; index < this.length; index += 1) {
+      const item = this.at(index)
+      if (item !== undefined && predicate(item)) {
+        return index
+      }
+    }
+    return -1
+  }
+
+  removeAt(index: number): T | undefined {
+    if (index < 0 || index >= this.length) {
+      return undefined
+    }
+    const physicalIndex = this.headIndex + index
+    if (physicalIndex === this.headIndex) {
+      return this.shift()
+    }
+    const [item] = this.items.splice(physicalIndex, 1)
+    return item
+  }
+
+  private compactConsumedItems(): void {
+    if (this.headIndex === 0) {
+      return
+    }
+    if (this.headIndex >= this.items.length) {
+      this.items = []
+      this.headIndex = 0
+      return
+    }
+    if (this.headIndex > 64 && this.headIndex * 2 > this.items.length) {
+      this.items = this.items.slice(this.headIndex)
+      this.headIndex = 0
+    }
+  }
+}
+
 let workerProcess: ChildProcess | undefined
 let workerReady = false
 let workerPid: number | undefined
-let usageRecordMessageQueue: Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>[] = []
-let regularWorkerMessageQueue: BackgroundWorkerMessage[] = []
+const usageRecordMessageQueue = new HeadIndexedQueue<Extract<BackgroundWorkerMessage, { type: 'background_worker_usage_records' }>>()
+const regularWorkerMessageQueue = new HeadIndexedQueue<BackgroundWorkerMessage>()
 let usageRecordMessageQueueBytes = 0
 let regularWorkerMessageQueueBytes = 0
 let sendingMessage = false
@@ -97,7 +180,7 @@ export function attachBackgroundWorkerProcess(child: ChildProcess): void {
 }
 
 export function sendUsageRecordsToWorker(items: UsageRecordInput[]): boolean {
-  if (runtimeConfig.processRole === 'worker' || !workerProcess || !workerReady) {
+  if (runtimeConfig.processRole === 'worker') {
     return false
   }
 
@@ -108,7 +191,7 @@ export function sendUsageRecordsToWorker(items: UsageRecordInput[]): boolean {
 }
 
 export function sendAuditLogsToWorker(items: AuditLogInput[]): boolean {
-  if (runtimeConfig.processRole === 'worker' || !workerProcess || !workerReady) {
+  if (runtimeConfig.processRole === 'worker') {
     return false
   }
 
@@ -268,6 +351,16 @@ function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
 }
 
 function enforceWorkerMessageQueueLimits(): void {
+  while (usageRecordMessageQueue.length > maxPendingMessages || usageRecordMessageQueueBytes > maxPendingMessageBytes) {
+    const dropped = usageRecordMessageQueue.shift()
+    if (!dropped) {
+      break
+    }
+    usageRecordMessageQueueBytes = Math.max(0, usageRecordMessageQueueBytes - estimateWorkerMessageBytes(dropped))
+    pendingPendingMessagesWarningCount += 1
+    process.stderr.write(`[background-worker] 消息队列已满，已丢弃 ${describeDroppedWorkerMessage(dropped)} ${pendingPendingMessagesWarningCount} 次\n`)
+  }
+
   while (regularWorkerMessageQueue.length > maxPendingMessages || regularWorkerMessageQueueBytes > maxPendingMessageBytes) {
     const dropped = shiftDroppableRegularWorkerMessage()
     if (!dropped) {
@@ -299,7 +392,7 @@ function shiftSuccessAuditWorkerMessage(): BackgroundWorkerMessage | undefined {
   const messageIndex = regularWorkerMessageQueue.findIndex((message) => message.type === 'background_worker_audit_logs' && message.items.some(isSuccessAuditSample))
   if (messageIndex < 0) return undefined
 
-  const message = regularWorkerMessageQueue[messageIndex]
+  const message = regularWorkerMessageQueue.at(messageIndex)
   if (!message || message.type !== 'background_worker_audit_logs') return undefined
 
   const droppedItems = message.items.filter(isSuccessAuditSample)
@@ -310,13 +403,13 @@ function shiftSuccessAuditWorkerMessage(): BackgroundWorkerMessage | undefined {
 
   const originalBytes = estimateWorkerMessageBytes(message)
   const retainedMessage: BackgroundWorkerMessage = { ...message, items: retainedItems }
-  regularWorkerMessageQueue[messageIndex] = retainedMessage
+  regularWorkerMessageQueue.set(messageIndex, retainedMessage)
   regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - originalBytes + estimateWorkerMessageBytes(retainedMessage))
   return { ...message, items: droppedItems }
 }
 
 function removeRegularWorkerMessageAt(index: number): BackgroundWorkerMessage | undefined {
-  const [message] = regularWorkerMessageQueue.splice(index, 1)
+  const message = regularWorkerMessageQueue.removeAt(index)
   if (message) {
     regularWorkerMessageQueueBytes = Math.max(0, regularWorkerMessageQueueBytes - estimateWorkerMessageBytes(message))
   }
@@ -364,11 +457,36 @@ function estimateAuditLogBytes(input: AuditLogInput): number {
 }
 
 function estimateJsonBytes(value: unknown): number {
-  try {
-    return Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8')
-  } catch {
-    return 1024
+  return estimateJsonLikeBytes(value)
+}
+
+function estimateJsonLikeBytes(value: unknown, seen = new WeakSet<object>()): number {
+  if (value === null || value === undefined) return 4
+  if (typeof value === 'string') return Buffer.byteLength(value, 'utf8') + 2
+  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
+    return String(value).length
   }
+  if (Buffer.isBuffer(value)) return value.byteLength
+  if (value instanceof Date) return value.toISOString().length + 2
+  if (Array.isArray(value)) {
+    if (seen.has(value)) return 16
+    seen.add(value)
+    let bytes = 2
+    for (const item of value) {
+      bytes += estimateJsonLikeBytes(item, seen) + 1
+    }
+    return bytes
+  }
+  if (typeof value === 'object') {
+    if (seen.has(value)) return 16
+    seen.add(value)
+    let bytes = 2
+    for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+      bytes += Buffer.byteLength(key, 'utf8') + 3 + estimateJsonLikeBytes(item, seen) + 1
+    }
+    return bytes
+  }
+  return 16
 }
 
 function finishPendingRequest(requestId: string, snapshot: BackgroundWorkerRuntimeSnapshot | undefined): void {

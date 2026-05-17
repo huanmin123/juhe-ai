@@ -84,7 +84,8 @@ export function recordDroppedAuditCapture(input: {
 
 export function enqueueAuditLog(input: AuditLogInput): void {
   const queuedInput = normalizeAuditLogInput(input)
-  if (runtimeConfig.processRole === 'server' && sendAuditLogsToWorker([queuedInput])) {
+  if (runtimeConfig.processRole === 'server') {
+    sendAuditLogsToWorker([queuedInput])
     return
   }
 
@@ -92,12 +93,14 @@ export function enqueueAuditLog(input: AuditLogInput): void {
 }
 
 export function enqueueAuditLogsLocal(inputs: AuditLogInput[]): void {
+  assertLocalAuditLogWriteAllowed('enqueueAuditLogsLocal')
   for (const input of inputs) {
     enqueueAuditLogLocal(normalizeAuditLogInput(input))
   }
 }
 
 function enqueueAuditLogLocal(input: AuditLogInput): void {
+  assertLocalAuditLogWriteAllowed('enqueueAuditLogLocal')
   const settings = readAuditLogSettings()
   if (!settings.enabled) {
     return
@@ -119,6 +122,9 @@ function enqueueAuditLogLocal(input: AuditLogInput): void {
 }
 
 export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
+  if (runtimeConfig.processRole === 'server') {
+    return
+  }
   if (flushing || pendingAuditLogs.length === 0) return
 
   if (flushTimer) {
@@ -225,6 +231,9 @@ function recordDrop(item: QueuedAuditLog, reason: 'overflow' | 'oversize'): void
 }
 
 function scheduleAuditLogFlush(delayMs: number): void {
+  if (runtimeConfig.processRole === 'server') {
+    return
+  }
   if (delayMs <= 0 && flushTimer) {
     clearTimeout(flushTimer)
     flushTimer = undefined
@@ -241,9 +250,25 @@ function estimateAuditLogBytes(input: AuditLogInput): number {
   return input.payloads.reduce((sum, payload) => {
     const body = payload.body
     const bodyBytes = Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0
-    const headerBytes = payload.headers ? Buffer.byteLength(JSON.stringify(payload.headers), 'utf8') : 0
+    const headerBytes = payload.headers ? estimateHeadersBytes(payload.headers) : 0
     return sum + bodyBytes + headerBytes + 512
   }, 1024 + input.attempts.length * 512)
+}
+
+function estimateHeadersBytes(headers: Record<string, string | string[]>): number {
+  let bytes = 2
+  for (const [name, value] of Object.entries(headers)) {
+    bytes += Buffer.byteLength(name, 'utf8') + 4
+    if (Array.isArray(value)) {
+      bytes += 2
+      for (const item of value) {
+        bytes += Buffer.byteLength(item, 'utf8') + 3
+      }
+    } else {
+      bytes += Buffer.byteLength(value, 'utf8') + 2
+    }
+  }
+  return bytes
 }
 
 function sumQueuedBytes(items: QueuedAuditLog[]): number {
@@ -263,5 +288,11 @@ function normalizeAuditLogInput(input: AuditLogInput): AuditLogInput {
       id: payload.id ?? `audpay_${Date.now()}_${randomUUID()}`
     })),
     createdAt: input.createdAt ?? nowIso()
+  }
+}
+
+function assertLocalAuditLogWriteAllowed(operation: string): void {
+  if (runtimeConfig.processRole === 'server') {
+    throw new Error(`server 角色禁止直接同步写入 SQLite：${operation} 必须投递 background worker`)
   }
 }

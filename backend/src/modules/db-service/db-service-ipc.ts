@@ -8,7 +8,8 @@ import type {
   DbServiceOperation,
   DbServiceOperationResult,
   DbServiceParentMessage,
-  DbServiceRuntimeSnapshot
+  DbServiceRuntimeSnapshot,
+  DbServiceServerRuntimeSnapshot
 } from './db-service-types.js'
 
 interface PendingRequest {
@@ -17,49 +18,48 @@ interface PendingRequest {
   timeout: NodeJS.Timeout
 }
 
+class DbServiceOperationFailedError extends Error {
+}
+
 interface DbServiceState {
   pid?: number
   ready: boolean
+  httpHost?: string
+  httpPort?: number
   lastSnapshot?: DbServiceRuntimeSnapshot
   pendingRequestCount: number
   timedOutRequestCount: number
   failedRequestCount: number
-  fallbackCircuitOpenUntil?: string
-  localFallbackActiveCount: number
-  localFallbackQueuedCount: number
-  localFallbackRequestCount: number
-  localFallbackBypassedGuardCount: number
-}
-
-interface LocalFallbackWaiter {
-  resolve: (guarded: boolean) => void
-  timeout: NodeJS.Timeout
+  unavailableCircuitOpenUntil?: string
 }
 
 const requestTimeoutMs = 1500
 const invalidateTimeoutMs = 500
 const maxPendingRequests = 1000
-const fallbackCircuitOpenMs = 3000
-const maxLocalFallbackActiveRequests = 4
-const maxLocalFallbackQueuedRequests = 256
-const localFallbackGuardWaitMs = 5000
+const unavailableCircuitOpenMs = 3000
 
 let dbServiceProcess: ChildProcess | undefined
 let dbServiceReady = false
 let dbServicePid: number | undefined
+let dbServiceHttpHost: string | undefined
+let dbServiceHttpPort: number | undefined
 let pendingRequests = new Map<string, PendingRequest>()
+let pendingServerRuntimeRequests = new Map<string, PendingServerRuntimeRequest>()
 let timedOutRequestCount = 0
 let failedRequestCount = 0
 let lastSnapshot: DbServiceRuntimeSnapshot | undefined
-let fallbackCircuitOpenUntilMs = 0
-let localFallbackActiveCount = 0
-let localFallbackRequestCount = 0
-let localFallbackBypassedGuardCount = 0
-const localFallbackQueue: LocalFallbackWaiter[] = []
+let unavailableCircuitOpenUntilMs = 0
+
+interface PendingServerRuntimeRequest {
+  resolve: (snapshot: DbServiceServerRuntimeSnapshot | undefined) => void
+  timeout: NodeJS.Timeout
+}
 
 export function attachDbServiceProcess(child: ChildProcess): void {
   dbServiceProcess = child
   dbServicePid = child.pid ?? undefined
+  dbServiceHttpHost = undefined
+  dbServiceHttpPort = undefined
   dbServiceReady = false
 
   child.removeAllListeners('message')
@@ -69,6 +69,8 @@ export function attachDbServiceProcess(child: ChildProcess): void {
       dbServiceProcess = undefined
       dbServiceReady = false
       dbServicePid = undefined
+      dbServiceHttpHost = undefined
+      dbServiceHttpPort = undefined
       failPendingRequests(new Error('DB service 已退出'))
     }
   })
@@ -76,19 +78,19 @@ export function attachDbServiceProcess(child: ChildProcess): void {
 
 export async function requestDbService<T extends DbServiceOperation>(
   operation: T,
-  options: { timeoutMs?: number; fallbackToLocal?: boolean } = {}
+  options: { timeoutMs?: number } = {}
 ): Promise<DbServiceOperationResult<T>> {
   if (runtimeConfig.processRole !== 'server') {
     return await runLocalDbServiceOperation(operation)
   }
 
-  if (fallbackCircuitOpenUntilMs > Date.now()) {
-    return await fallbackDbServiceOperation(operation, options.fallbackToLocal !== false, 'DB service 降级熔断窗口内')
+  if (unavailableCircuitOpenUntilMs > Date.now()) {
+    throw new Error('DB service 暂时不可用，请稍后重试')
   }
 
   if (!dbServiceProcess || !dbServiceReady || pendingRequests.size >= maxPendingRequests) {
-    openFallbackCircuit()
-    return await fallbackDbServiceOperation(operation, options.fallbackToLocal !== false, 'DB service 未就绪或请求队列已满')
+    openUnavailableCircuit()
+    throw new Error('DB service 未就绪或请求队列已满')
   }
 
   const requestId = randomUUID()
@@ -120,15 +122,17 @@ export async function requestDbService<T extends DbServiceOperation>(
     })
   } catch (error) {
     failedRequestCount += 1
-    openFallbackCircuit()
-    return await fallbackDbServiceOperation(operation, options.fallbackToLocal !== false, error)
+    if (!(error instanceof DbServiceOperationFailedError)) {
+      openUnavailableCircuit()
+    }
+    throw error
   }
 }
 
 export function clearDbServiceGatewayRuntimeCache(): void {
   void requestDbService(
     { type: 'clear_gateway_runtime_cache' },
-    { timeoutMs: invalidateTimeoutMs, fallbackToLocal: false }
+    { timeoutMs: invalidateTimeoutMs }
   ).catch((error) => {
     logger.warn(errorLogFields(error, {
       event: 'db_service_cache_invalidation_failed'
@@ -140,16 +144,53 @@ export function getDbServiceState(): DbServiceState {
   return {
     pid: dbServicePid,
     ready: dbServiceReady,
+    httpHost: dbServiceHttpHost,
+    httpPort: dbServiceHttpPort,
     lastSnapshot,
     pendingRequestCount: pendingRequests.size,
     timedOutRequestCount,
     failedRequestCount,
-    fallbackCircuitOpenUntil: fallbackCircuitOpenUntilMs > Date.now() ? new Date(fallbackCircuitOpenUntilMs).toISOString() : undefined,
-    localFallbackActiveCount,
-    localFallbackQueuedCount: localFallbackQueue.length,
-    localFallbackRequestCount,
-    localFallbackBypassedGuardCount
+    unavailableCircuitOpenUntil: unavailableCircuitOpenUntilMs > Date.now() ? new Date(unavailableCircuitOpenUntilMs).toISOString() : undefined
   }
+}
+
+export async function requestServerRuntimeSnapshot(timeoutMs = 1000): Promise<DbServiceServerRuntimeSnapshot | undefined> {
+  if (runtimeConfig.processRole !== 'db-service' || !process.send) {
+    return undefined
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<DbServiceServerRuntimeSnapshot | undefined>((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingServerRuntimeRequests.delete(requestId)
+      resolve(undefined)
+    }, timeoutMs)
+    pendingServerRuntimeRequests.set(requestId, { resolve, timeout })
+    process.send?.({
+      type: 'db_service_server_runtime_request',
+      requestId
+    } satisfies DbServiceChildMessage)
+  })
+}
+
+export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
+  if (typeof message !== 'object' || message === null || Array.isArray(message)) {
+    return false
+  }
+
+  const record = message as Partial<DbServiceParentMessage> & Record<string, unknown>
+  if (record.type !== 'db_service_server_runtime_response' || typeof record.requestId !== 'string') {
+    return false
+  }
+
+  const pending = pendingServerRuntimeRequests.get(record.requestId)
+  if (!pending) {
+    return true
+  }
+  clearTimeout(pending.timeout)
+  pendingServerRuntimeRequests.delete(record.requestId)
+  pending.resolve(record.ok === true ? record.result as DbServiceServerRuntimeSnapshot : undefined)
+  return true
 }
 
 function handleDbServiceMessage(message: unknown): void {
@@ -161,12 +202,31 @@ function handleDbServiceMessage(message: unknown): void {
   switch (record.type) {
     case 'db_service_ready':
       dbServiceReady = true
-      fallbackCircuitOpenUntilMs = 0
+      unavailableCircuitOpenUntilMs = 0
       dbServicePid = typeof record.pid === 'number' ? record.pid : dbServicePid
+      dbServiceHttpHost = typeof record.httpHost === 'string' ? record.httpHost : dbServiceHttpHost
+      dbServiceHttpPort = typeof record.httpPort === 'number' ? record.httpPort : dbServiceHttpPort
+      lastSnapshot = {
+        pid: dbServicePid ?? 0,
+        ready: true,
+        processRole: 'db-service',
+        httpHost: dbServiceHttpHost,
+        httpPort: dbServiceHttpPort,
+        pendingRequestCount: pendingRequests.size,
+        handledRequestCount: lastSnapshot?.handledRequestCount ?? 0,
+        failedRequestCount: lastSnapshot?.failedRequestCount ?? 0,
+        lastRequestAt: lastSnapshot?.lastRequestAt,
+        lastError: lastSnapshot?.lastError
+      }
       break
     case 'db_service_response':
       if (typeof record.requestId !== 'string') break
       finishPendingRequest(record.requestId, record)
+      break
+    case 'db_service_server_runtime_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
+        void respondToServerRuntimeRequest(record.requestId)
+      }
       break
     default:
       break
@@ -190,7 +250,7 @@ function finishPendingRequest(requestId: string, response: Partial<DbServiceChil
     return
   }
 
-  pending.reject(new Error(typeof response.errorMessage === 'string' ? response.errorMessage : 'DB service 请求失败'))
+  pending.reject(new DbServiceOperationFailedError(typeof response.errorMessage === 'string' ? response.errorMessage : 'DB service 请求失败'))
 }
 
 function failPendingRequests(error: Error): void {
@@ -201,74 +261,8 @@ function failPendingRequests(error: Error): void {
   }
 }
 
-async function fallbackDbServiceOperation<T extends DbServiceOperation>(
-  operation: T,
-  fallbackToLocal: boolean,
-  reason: unknown
-): Promise<DbServiceOperationResult<T>> {
-  if (!fallbackToLocal) {
-    throw reason instanceof Error ? reason : new Error(String(reason))
-  }
-  if (operation.type !== 'status') {
-    logger.warn(errorLogFields(reason, {
-      event: 'db_service_fallback_to_local',
-      operationType: operation.type,
-      activeFallbackCount: localFallbackActiveCount,
-      queuedFallbackCount: localFallbackQueue.length
-    }), 'DB service 不可用，临时降级到主进程本地读取')
-  }
-  return await runGuardedLocalDbServiceOperation(operation)
-}
-
-async function runGuardedLocalDbServiceOperation<T extends DbServiceOperation>(operation: T): Promise<DbServiceOperationResult<T>> {
-  const guarded = await acquireLocalFallbackSlot()
-  try {
-    localFallbackRequestCount += 1
-    return await runLocalDbServiceOperation(operation)
-  } finally {
-    if (guarded) {
-      releaseLocalFallbackSlot()
-    }
-  }
-}
-
-function acquireLocalFallbackSlot(): Promise<boolean> {
-  if (localFallbackActiveCount < maxLocalFallbackActiveRequests) {
-    localFallbackActiveCount += 1
-    return Promise.resolve(true)
-  }
-  if (localFallbackQueue.length >= maxLocalFallbackQueuedRequests) {
-    localFallbackBypassedGuardCount += 1
-    return Promise.resolve(false)
-  }
-  return new Promise((resolve) => {
-    const waiter: LocalFallbackWaiter = {
-      resolve,
-      timeout: setTimeout(() => {
-        const index = localFallbackQueue.indexOf(waiter)
-        if (index >= 0) {
-          localFallbackQueue.splice(index, 1)
-        }
-        localFallbackBypassedGuardCount += 1
-        resolve(false)
-      }, localFallbackGuardWaitMs)
-    }
-    localFallbackQueue.push(waiter)
-  })
-}
-
-function releaseLocalFallbackSlot(): void {
-  const waiter = localFallbackQueue.shift()
-  if (waiter) {
-    clearTimeout(waiter.timeout)
-    waiter.resolve(true)
-    return
-  }
-  localFallbackActiveCount = Math.max(0, localFallbackActiveCount - 1)
-}
-
-function openFallbackCircuit(): void {
-  fallbackCircuitOpenUntilMs = Math.max(fallbackCircuitOpenUntilMs, Date.now() + fallbackCircuitOpenMs)
+function openUnavailableCircuit(): void {
+  unavailableCircuitOpenUntilMs = Math.max(unavailableCircuitOpenUntilMs, Date.now() + unavailableCircuitOpenMs)
 }
 
 function isRuntimeSnapshot(value: unknown): value is DbServiceRuntimeSnapshot {
@@ -281,4 +275,73 @@ function isRuntimeSnapshot(value: unknown): value is DbServiceRuntimeSnapshot {
 async function runLocalDbServiceOperation<T extends DbServiceOperation>(operation: T): Promise<DbServiceOperationResult<T>> {
   const { handleDbServiceOperation } = await import('./db-service-handlers.js')
   return await handleDbServiceOperation(operation)
+}
+
+async function respondToServerRuntimeRequest(requestId: string): Promise<void> {
+  const child = dbServiceProcess
+  if (!child) {
+    return
+  }
+
+  try {
+    const snapshot = await buildServerRuntimeSnapshot()
+    child.send?.({
+      type: 'db_service_server_runtime_response',
+      requestId,
+      ok: true,
+      result: snapshot
+    } satisfies DbServiceParentMessage)
+  } catch (error) {
+    child.send?.({
+      type: 'db_service_server_runtime_response',
+      requestId,
+      ok: false,
+      errorMessage: error instanceof Error ? error.message : String(error)
+    } satisfies DbServiceParentMessage)
+  }
+}
+
+async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
+  const [
+    backgroundIpc,
+    gatewaySideEffects,
+    auditCapture
+  ] = await Promise.all([
+    import('../background/background-ipc.js'),
+    import('../gateway/gateway-account-side-effects.service.js'),
+    import('../gateway/audit-capture.service.js')
+  ])
+  const workerSnapshot = await backgroundIpc.requestBackgroundWorkerSnapshot(1000).catch(() => undefined)
+  const workerState = backgroundIpc.getBackgroundWorkerState()
+  const dbServiceState = getDbServiceState()
+
+  return {
+    worker: {
+      pid: workerSnapshot?.pid ?? workerState.pid,
+      ready: workerSnapshot?.ready ?? workerState.ready,
+      pendingMessageCount: workerState.pendingMessageCount,
+      pendingMessageBytes: workerState.pendingMessageBytes,
+      snapshot: workerSnapshot
+        ? {
+          pid: workerSnapshot.pid,
+          ready: workerSnapshot.ready,
+          usageRecordQueue: { ...workerSnapshot.usageRecordQueue },
+          auditLogQueue: { ...workerSnapshot.auditLogQueue },
+          runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue }
+        }
+        : undefined
+    },
+    dbService: {
+      pid: dbServiceState.pid,
+      ready: dbServiceState.ready,
+      pendingRequestCount: dbServiceState.pendingRequestCount,
+      timedOutRequestCount,
+      failedRequestCount,
+      unavailableCircuitOpenUntil: dbServiceState.unavailableCircuitOpenUntil,
+      httpHost: dbServiceState.httpHost,
+      httpPort: dbServiceState.httpPort
+    },
+    gatewayAccountSideEffects: { ...gatewaySideEffects.getGatewayAccountSideEffectState() },
+    activeAuditCaptureCount: auditCapture.getActiveAuditCaptureCount()
+  }
 }

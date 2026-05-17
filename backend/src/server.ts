@@ -4,40 +4,13 @@ import { resolve } from 'node:path'
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
 
-import { accountsRouter } from './modules/accounts/accounts.routes.js'
-import { announcementsRouter } from './modules/announcements/announcements.routes.js'
-import { forceSelfAccessScope, requireAdmin, requireAuth } from './modules/auth/auth.middleware.js'
-import { authRouter } from './modules/auth/auth.routes.js'
 import { startBackgroundWorkerSupervisor } from './modules/background/background-worker-supervisor.js'
+import { createDbServiceHttpProxy } from './modules/db-service/db-service-http-proxy.js'
 import { startDbServiceSupervisor } from './modules/db-service/db-service-supervisor.js'
-import { apiKeysRouter } from './modules/api-keys/api-keys.routes.js'
-import { auditLogsRouter } from './modules/audit-logs/audit-logs.routes.js'
-import { authorizationOptionsRouter } from './modules/authorization-options/authorization-options.routes.js'
-import { authorizationsRouter } from './modules/authorizations/authorizations.routes.js'
-import { errorPoliciesRouter } from './modules/error-policies/error-policies.routes.js'
-import { featureRulesRouter } from './modules/feature-rules/feature-rules.routes.js'
-import { groupsRouter } from './modules/groups/groups.routes.js'
-import { providersRouter } from './modules/providers/providers.routes.js'
-import { proxiesRouter } from './modules/proxies/proxies.routes.js'
-import { runtimeLogsRouter } from './modules/runtime-logs/runtime-logs.routes.js'
-import { settingsRouter } from './modules/settings/settings.routes.js'
-import { statsRouter } from './modules/stats/stats.routes.js'
-import { systemAccountsRouter } from './modules/system-accounts/system-accounts.routes.js'
-import { myTeamsRouter, systemTeamsRouter } from './modules/system-teams/system-teams.routes.js'
-import { tableMonitorRouter } from './modules/table-monitor/table-monitor.routes.js'
-import { usageRecordsRouter } from './modules/usage-records/usage-records.routes.js'
 import { openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
-import {
-  type GatewayRawBodyRequest
-} from './modules/gateway/openai-gateway-request-body.js'
 import { captureGatewayRawBody } from './modules/gateway/openai-gateway-request-body-middleware.js'
-import { myOperationLogsRouter, operationLogsRouter } from './modules/operation-logs/operation-logs.routes.js'
 import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
-import { openAIOAuthRouter } from './modules/openai-oauth/openai-oauth.routes.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
-import { getBusinessDatabase, getRecordDatabase } from './storage/database.js'
-import { listPublicGlobalSettings } from './storage/repositories.js'
-import { ok } from './shared/http.js'
 import { installProcessLogHandlers, logger } from './shared/logger.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
@@ -48,7 +21,10 @@ const host = runtimeConfig.host
 const port = runtimeConfig.port
 const frontendDistPath = resolve(backendRoot, '..', 'frontend', 'dist')
 const frontendIndexPath = resolve(frontendDistPath, 'index.html')
+const systemPrefix = '/__aisys__'
+const systemApiPrefix = `${systemPrefix}/api`
 const gatewayRawBodyLimit = '64mb'
+const dbServiceHttpProxy = createDbServiceHttpProxy()
 
 type BodyParserError = Error & { status?: number; statusCode?: number; type?: string; received?: number; length?: number; limit?: number }
 
@@ -99,70 +75,27 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
   })
 }
 
-getBusinessDatabase()
-getRecordDatabase()
 installProcessLogHandlers()
 setRuntimeLogLineSink((line) => sendRuntimeLogLineToWorker(line))
+startDbServiceSupervisor()
+startBackgroundWorkerSupervisor()
 
 app.use(requestContextMiddleware)
 app.use(cors({ credentials: true, origin: true }))
-app.use('/v1', express.raw({ type: () => true, limit: gatewayRawBodyLimit }), handleGatewayRawBodyError, captureGatewayRawBody, openAIGatewayRouter)
-app.use(express.json({
-  limit: '2mb',
-  verify: (req, _res, buffer) => {
-    ;(req as GatewayRawBodyRequest).rawBody = Buffer.from(buffer)
-  }
-}))
 
-app.get('/health', (_req, res) => {
+app.get(`${systemPrefix}/health`, (_req, res) => {
   res.json({ status: 'ok', service: 'juhe-ai' })
 })
 
-app.get('/api/health', (_req, res) => {
-	res.json({ status: 'ok', service: 'juhe-ai' })
-})
-
-app.use('/api/auth', authRouter)
-app.get('/api/settings/public', (_req, res) => {
-  res.json(ok(listPublicGlobalSettings()))
-})
-
-app.use('/api', requireAuth)
-app.use('/api/announcements', announcementsRouter)
-app.use('/api/my-accounts', forceSelfAccessScope, accountsRouter)
-app.use('/api/my-groups', forceSelfAccessScope, groupsRouter)
-app.use('/api/my-api-keys', forceSelfAccessScope, apiKeysRouter)
-app.use('/api/my-authorization-options', forceSelfAccessScope, authorizationOptionsRouter)
-app.use('/api/my-authorizations', forceSelfAccessScope, authorizationsRouter)
-app.use('/api/my-openai-oauth', forceSelfAccessScope, openAIOAuthRouter)
-app.use('/api/my-usage-records', forceSelfAccessScope, usageRecordsRouter)
-app.use('/api/my-stats', forceSelfAccessScope, statsRouter)
-app.use('/api/my-operation-logs', forceSelfAccessScope, myOperationLogsRouter)
-app.use('/api/providers', requireAdmin, providersRouter)
-app.use('/api/error-policies', errorPoliciesRouter)
-app.use('/api/feature-rules', requireAdmin, featureRulesRouter)
-app.use('/api/accounts', requireAdmin, accountsRouter)
-app.use('/api/groups', requireAdmin, groupsRouter)
-app.use('/api/api-keys', requireAdmin, apiKeysRouter)
-app.use('/api/authorization-options', requireAdmin, authorizationOptionsRouter)
-app.use('/api/authorizations', requireAdmin, authorizationsRouter)
-app.use('/api/openai-oauth', requireAdmin, openAIOAuthRouter)
-app.use('/api/proxies', proxiesRouter)
-app.use('/api/usage-records', requireAdmin, usageRecordsRouter)
-app.use('/api/operation-logs', requireAdmin, operationLogsRouter)
-app.use('/api/audit-logs', requireAdmin, auditLogsRouter)
-app.use('/api/runtime-logs', requireAdmin, runtimeLogsRouter)
-app.use('/api/stats', requireAdmin, statsRouter)
-app.use('/api/table-monitor', requireAdmin, tableMonitorRouter)
-app.use('/api/settings', settingsRouter)
-app.use('/api/system-accounts', systemAccountsRouter)
-app.use('/api/my-teams', forceSelfAccessScope, myTeamsRouter)
-app.use('/api/system-teams', systemTeamsRouter)
+app.use(systemApiPrefix, dbServiceHttpProxy)
 
 if (existsSync(frontendIndexPath)) {
-  app.use(express.static(frontendDistPath))
-  app.get('*', (req, res, next) => {
-    if (req.path === '/health' || req.path.startsWith('/api') || req.path.startsWith('/v1')) {
+  app.get(systemPrefix, (_req, res) => {
+    res.redirect(302, `${systemPrefix}/`)
+  })
+  app.use(systemPrefix, express.static(frontendDistPath))
+  app.get(`${systemPrefix}/*`, (req, res, next) => {
+    if (req.path === `${systemPrefix}/health` || req.path === systemApiPrefix || req.path.startsWith(`${systemApiPrefix}/`)) {
       next()
       return
     }
@@ -170,6 +103,12 @@ if (existsSync(frontendIndexPath)) {
     res.sendFile(frontendIndexPath)
   })
 }
+
+app.use(systemPrefix, (_req, res) => {
+  res.status(404).json({ message: '资源不存在' })
+})
+
+app.use(express.raw({ type: () => true, limit: gatewayRawBodyLimit }), handleGatewayRawBodyError, captureGatewayRawBody, openAIGatewayRouter)
 
 app.use((_req, res) => {
   res.status(404).json({ message: '资源不存在' })
@@ -200,8 +139,6 @@ const server = app.listen(port, host, () => {
     port,
     logDirectory: runtimeConfig.log.fileEnabled ? runtimeConfig.log.directory : undefined
   }, `juhe-ai 后端已监听 http://${host}:${port}`)
-  startDbServiceSupervisor()
-  startBackgroundWorkerSupervisor()
 })
 
 server.on('error', (error: NodeJS.ErrnoException) => {

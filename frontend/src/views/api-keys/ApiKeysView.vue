@@ -551,16 +551,16 @@ async function copyCreatedKey() {
 }
 
 function inferGatewayBaseUrl() {
-  if (typeof window === 'undefined') return 'http://127.0.0.1:3000/v1'
+  if (typeof window === 'undefined') return 'http://127.0.0.1:3000'
   if (import.meta.env.DEV) {
-    return `${window.location.protocol}//${window.location.hostname}:3000/v1`
+    return `${window.location.protocol}//${window.location.hostname}:3000`
   }
-  return `${window.location.origin}/v1`
+  return window.location.origin
 }
 
 function normalizeGatewayBaseUrl(value: string) {
   const trimmed = value.trim().replace(/\/+$/, '')
-  return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`
+  return trimmed || inferGatewayBaseUrl()
 }
 
 async function removeApiKey(id: string) {

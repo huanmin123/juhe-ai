@@ -20,9 +20,11 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, backgroundIpc, usageRecordQueue] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../modules/background/background-ipc.js'),
+  import('../../modules/gateway/usage-record-queue.service.js')
 ])
 const auditCapture = await import('../../modules/gateway/audit-capture.service.js')
 const auditQueue = await import('../../modules/audit-logs/audit-log-queue.service.js')
@@ -71,15 +73,16 @@ try {
   assert.equal(rejectedEvents.items[0]?.captureStatus, 'overflow', '请求体被网关拒绝时应标记为 overflow')
 
   const previousProcessRole = runtimeConfig.processRole
+  const pendingWorkerMessagesBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
   runtimeConfig.processRole = 'server'
   try {
     auditQueue.enqueueAuditLog({
-      ...auditLog('audit_server_no_worker_fallback', 'trace-server-no-worker-fallback', JSON.stringify({ error: 'worker unavailable' })),
+      ...auditLog('audit_server_no_worker_ipc', 'trace-server-no-worker-ipc', JSON.stringify({ error: 'worker unavailable' })),
       auditOutcome: 'gateway_failed',
       finalStatusCode: 502,
       errorPhase: 'gateway',
       errorCode: 'worker_unavailable',
-      errorMessage: 'worker 不可用时应回落到本地审计队列',
+      errorMessage: 'worker 未就绪时主进程只能投递 IPC 队列，不能本地 SQLite 写入',
       attempts: [],
       payloads: []
     })
@@ -87,7 +90,31 @@ try {
   } finally {
     runtimeConfig.processRole = previousProcessRole
   }
-  assert.equal(repositories.listAuditLogs({ traceId: 'trace-server-no-worker-fallback' }).total, 1, 'server 无可用 worker 时审计日志应回落本地队列写入')
+  assert.equal(repositories.listAuditLogs({ traceId: 'trace-server-no-worker-ipc' }).total, 0, 'server 无可用 worker 时审计日志不能回落本地队列写入')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, pendingWorkerMessagesBefore + 1, 'server 无可用 worker 时审计日志应进入 IPC 待投递队列')
+
+  const pendingUsageWorkerMessagesBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
+  const localUsageQueueLengthBefore = usageRecordQueue.getUsageRecordQueueRuntime().queueLength
+  runtimeConfig.processRole = 'server'
+  try {
+    usageRecordQueue.enqueueUsageRecord({
+      traceId: 'trace-usage-server-no-worker-ipc',
+      systemAccountId: 'sys_admin',
+      groupId: 'group_default',
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      success: false,
+      statusCode: 503,
+      errorCode: 'worker_unavailable',
+      errorMessage: 'worker 未就绪时主进程只能投递 IPC 队列，不能本地 SQLite 写入'
+    })
+    usageRecordQueue.flushAllUsageRecordQueue()
+  } finally {
+    runtimeConfig.processRole = previousProcessRole
+  }
+  assert.equal(repositories.listUsageRecords(undefined, { pageSize: 10 }).items.some((item) => item.traceId === 'trace-usage-server-no-worker-ipc'), false, 'server 无可用 worker 时使用记录不能回落本地队列写入')
+  assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, localUsageQueueLengthBefore, 'server 无可用 worker 时使用记录不能进入本地待写队列')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, pendingUsageWorkerMessagesBefore + 1, 'server 无可用 worker 时使用记录应进入 IPC 待投递队列')
 
   repositories.createAuditLogsBatch([
     {

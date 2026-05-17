@@ -8,6 +8,7 @@ export default defineConfig(function (_a) {
     var env = loadEnv(mode, fileURLToPath(new URL('.', import.meta.url)), '');
     var backendTarget = env.VITE_JUHE_AI_BACKEND_TARGET || 'http://127.0.0.1:3000';
     return {
+        base: '/__aisys__/',
         plugins: [
             vue(),
             Components({
@@ -60,7 +61,7 @@ export default defineConfig(function (_a) {
         server: {
             port: 5173,
             proxy: {
-                '^/api(/|$)': backendTarget,
+                '^/__aisys__/api(/|$)': backendTarget,
                 '/v1': backendTarget
             }
         }

@@ -14,6 +14,8 @@ export interface GatewayRequestBodyState {
   isJson: boolean
   jsonParseStatus: GatewayJsonBodyParseStatus
   jsonParseWarningBytes: number
+  model?: string
+  stream?: boolean
 }
 
 export type GatewayRawBodyRequest = Request & {
@@ -29,14 +31,20 @@ export function createGatewayRequestBodyState(input: {
   rawBody: Buffer
   contentType: unknown
   jsonParseStatus: GatewayJsonBodyParseStatus
+  parsedBody?: unknown
 }): GatewayRequestBodyState {
   const contentType = String(input.contentType ?? '')
+  const parsedBody = typeof input.parsedBody === 'object' && input.parsedBody !== null
+    ? input.parsedBody as Record<string, unknown>
+    : undefined
   return {
     rawBodyBytes: input.rawBody.length,
     contentType,
     isJson: isGatewayJsonContentType(contentType),
     jsonParseStatus: input.jsonParseStatus,
-    jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes
+    jsonParseWarningBytes: gatewayJsonBodyLargeWarningBytes,
+    model: typeof parsedBody?.model === 'string' ? parsedBody.model : undefined,
+    stream: typeof parsedBody?.stream === 'boolean' ? parsedBody.stream : undefined
   }
 }
 
@@ -55,8 +63,8 @@ export function buildGatewayRequestBodySummary(req: Request): Record<string, unk
       contentType: state.contentType,
       jsonParseStatus: state.jsonParseStatus,
       jsonParseWarningBytes: state.jsonParseWarningBytes,
-      model: typeof req.body?.model === 'string' ? req.body.model : undefined,
-      stream: typeof req.body?.stream === 'boolean' ? req.body.stream : undefined
+      model: state.model ?? (typeof req.body?.model === 'string' ? req.body.model : undefined),
+      stream: state.stream ?? (typeof req.body?.stream === 'boolean' ? req.body.stream : undefined)
     }
   }
 }

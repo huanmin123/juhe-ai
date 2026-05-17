@@ -11,8 +11,9 @@ export function setRuntimeLogLineSink(sink?: RuntimeLogLineSink): void {
     return
   }
 
-  while (pendingRuntimeLogLines.length > 0) {
-    runtimeLogLineSink(pendingRuntimeLogLines.shift() ?? '')
+  const lines = pendingRuntimeLogLines.splice(0, pendingRuntimeLogLines.length)
+  for (const line of lines) {
+    runtimeLogLineSink(line)
   }
 }
 

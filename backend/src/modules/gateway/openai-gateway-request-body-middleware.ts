@@ -38,10 +38,11 @@ export async function captureGatewayRawBody(
         }, '网关大 JSON 请求体进入异步兼容解析')
       }
       try {
-        req.body = rawBody.length > gatewayJsonBodyLargeWarningBytes
+        const parsedBody = rawBody.length > gatewayJsonBodyLargeWarningBytes
           ? await parseLargeGatewayJsonBody(req, res, rawBody)
           : JSON.parse(rawBody.toString('utf8')) as unknown
-        req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'parsed' })
+        req.body = parsedBody
+        req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'parsed', parsedBody })
       } catch {
         req.gatewayRequestBody = createGatewayRequestBodyState({ rawBody, contentType, jsonParseStatus: 'invalid_json' })
         req.body = undefined

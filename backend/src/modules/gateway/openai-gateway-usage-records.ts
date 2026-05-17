@@ -11,6 +11,7 @@ import {
   buildGatewayErrorResponseSnapshot,
   buildUsageResponseSnapshot,
   requestModel,
+  requestStream,
   type UsageRequestSnapshot
 } from './openai-gateway-usage.js'
 import type { GatewayErrorPayload } from './openai-gateway-responses.js'
@@ -118,7 +119,7 @@ export function recordFailedUpstreamAttempt(
     endpoint: usageContext.endpoint,
     providerCode: 'openai',
     model: requestModel(req),
-    stream: req.body?.stream === true,
+    stream: requestStream(req),
     statusCode: input.statusCode,
     success: false,
     durationMs: Date.now() - input.startedAt,
@@ -169,7 +170,7 @@ export function recordGatewayFailure(
     endpoint: usageContext.endpoint,
     providerCode: 'openai',
     model: requestModel(req),
-    stream: req.body?.stream === true,
+    stream: requestStream(req),
     statusCode: input.statusCode,
     success: false,
     durationMs: Date.now() - input.startedAt,

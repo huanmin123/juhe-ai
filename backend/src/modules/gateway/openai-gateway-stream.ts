@@ -8,10 +8,13 @@ import {
   readStreamChunkWithAbort,
   readStreamChunkWithTimeout
 } from './openai-gateway-upstream.js'
-import { gatewayStreamFailureCode, writeGatewayStreamFailureEvent } from './openai-gateway-responses.js'
+import {
+  gatewayStreamClientRetryErrorCode,
+  gatewayStreamFailureCode,
+  writeGatewayStreamFailureEvent
+} from './openai-gateway-responses.js'
 import { closeAsyncIterator, endResponse, LimitedBufferCapture, writeResponseChunk } from './openai-gateway-body.js'
 import { OpenAIStreamInterceptBuffer, type StreamInterceptDecision } from './openai-gateway-stream-intercept.js'
-import { openAIStreamInterceptRules } from './openai-gateway-stream-rules.js'
 
 export interface StreamPipeResult {
   completed: boolean
@@ -19,15 +22,17 @@ export interface StreamPipeResult {
   errorCode?: string
   firstTokenMs?: number
   usage: ParsedUsage
+  outputReceived: boolean
+  estimatedOutputTokens?: number
   responseBodyText?: string
   auditResponseBody?: Buffer
   auditUpstreamBody?: Buffer
   streamIntercept?: StreamInterceptDecision
 }
 
-export interface StreamPipeOptions {
-  endpoint?: string
-  onStreamIntercept?: (decision: StreamInterceptDecision) => void
+export interface StreamFailureContext {
+  downstreamBytesWritten: number
+  outputReceived: boolean
 }
 
 const streamDiagnosticCaptureBytes = 256 * 1024
@@ -40,17 +45,12 @@ export async function pipeUpstreamStream(
   res: Response,
   settings: GatewaySettings,
   startedAt: number,
-  handleStreamFailure: (reason: string, errorCode?: string) => void,
-  signal?: AbortSignal,
-  options: StreamPipeOptions = {}
+  handleStreamFailure: (reason: string, errorCode: string | undefined, context: StreamFailureContext) => void,
+  signal?: AbortSignal
 ): Promise<StreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
   const inspector = new OpenAIStreamInspector()
-  const interceptor = new OpenAIStreamInterceptBuffer(openAIStreamInterceptRules, {
-    provider: 'openai',
-    endpoint: options.endpoint ?? '',
-    streamOnly: true
-  })
+  const interceptor = new OpenAIStreamInterceptBuffer()
   const responseCapture = new LimitedBufferCapture(streamAuditCaptureBytes)
   const upstreamCapture = new LimitedBufferCapture(streamAuditCaptureBytes)
   const diagnosticCapture = new LimitedBufferCapture(streamDiagnosticCaptureBytes)
@@ -118,10 +118,7 @@ export async function pipeUpstreamStream(
         interceptParserSkipLogged = true
         streamLogger.warn({
           event: 'gateway_stream_intercept_parser_skipped'
-        }, '网关流式特征拦截解析超过上限，已停止拦截并继续原样转发')
-      }
-      for (const decision of interceptResult.sideEffects) {
-        options.onStreamIntercept?.(decision)
+        }, '网关流式兜底解析超过上限，已停止改写判断并继续原样转发')
       }
       let latestInspection = inspector.snapshot()
       let chunkSseEventCount = 0
@@ -196,7 +193,6 @@ export async function pipeUpstreamStream(
         }, '网关流式响应进度摘要')
       }
       if (interceptResult.intercepted) {
-        options.onStreamIntercept?.(interceptResult.intercepted)
         await closeAsyncIterator(iterator)
         endResponse(res)
         const decision = interceptResult.intercepted
@@ -208,16 +204,14 @@ export async function pipeUpstreamStream(
           chunkCount: chunkIndex,
           totalUpstreamBytes,
           totalResponseBytes,
-          ruleId: decision.ruleId,
-          ruleName: decision.ruleName,
           action: decision.action,
+          reason: decision.reason,
           upstreamEventType: decision.upstreamEventType,
           upstreamErrorCode: decision.upstreamErrorCode,
           rewriteErrorCode: decision.rewriteErrorCode,
-          accountPolicy: decision.accountPolicy,
           outputSeen: decision.outputSeen
         }, '网关已拦截上游流式错误并改写为客户端可重试事件')
-        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision)
+        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens)
       }
     }
 
@@ -226,10 +220,7 @@ export async function pipeUpstreamStream(
       interceptParserSkipLogged = true
       streamLogger.warn({
         event: 'gateway_stream_intercept_parser_skipped'
-      }, '网关流式特征拦截解析超过上限，已停止拦截并继续原样转发')
-    }
-    for (const decision of eofInterceptResult.sideEffects) {
-      options.onStreamIntercept?.(decision)
+      }, '网关流式兜底解析超过上限，已停止改写判断并继续原样转发')
     }
     if (eofInterceptResult.chunks.length > 0 || eofInterceptResult.intercepted) {
       let latestInspection = inspector.snapshot()
@@ -268,7 +259,6 @@ export async function pipeUpstreamStream(
         }
       }
       if (eofInterceptResult.intercepted) {
-        options.onStreamIntercept?.(eofInterceptResult.intercepted)
         endResponse(res)
         const decision = eofInterceptResult.intercepted
         const message = decision.upstreamErrorMessage ?? decision.rewriteMessage
@@ -279,17 +269,15 @@ export async function pipeUpstreamStream(
           chunkCount: chunkIndex,
           totalUpstreamBytes,
           totalResponseBytes,
-          ruleId: decision.ruleId,
-          ruleName: decision.ruleName,
           action: decision.action,
+          reason: decision.reason,
           upstreamEventType: decision.upstreamEventType,
           upstreamErrorCode: decision.upstreamErrorCode,
           rewriteErrorCode: decision.rewriteErrorCode,
-          accountPolicy: decision.accountPolicy,
           outputSeen: decision.outputSeen,
           eofPendingFlush: true
         }, '网关已在上游 EOF 时拦截未收尾流式错误并改写为客户端可重试事件')
-        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision)
+        return streamResult(false, message, errorCode, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, decision, latestInspection.outputReceived, latestInspection.estimatedOutputTokens)
       }
     }
   } catch (error) {
@@ -343,17 +331,17 @@ export async function pipeUpstreamStream(
         elapsedMs: Date.now() - startedAt,
         rawMessage
       }, '网关已收到终止事件，忽略终止后的流式异常')
-      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture)
+      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
     }
     const message = inspection.errorMessage ?? rawMessage
-    const errorCode = inspection.errorCode ?? gatewayStreamFailureCode(message)
-    handleStreamFailure(message, errorCode)
+    const errorCode = streamClientFailureCode(inspection.errorCode ?? gatewayStreamFailureCode(message), inspection.outputReceived)
+    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
     if (!inspection.failedReceived) {
       streamLogger.warn({
         event: 'gateway_stream_failure_event_writing',
         message
       }, '网关准备补发 response.failed')
-      const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message)
+      const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode)
       if (failureEvent) {
         responseCapture.push(failureEvent)
         diagnosticCapture.push(failureEvent)
@@ -372,7 +360,7 @@ export async function pipeUpstreamStream(
       }
     }
     endResponse(res)
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture)
+    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
   } finally {
     res.off('close', closeIterator)
   }
@@ -382,9 +370,9 @@ export async function pipeUpstreamStream(
     endResponse(res)
     const success = completed && !inspection.failedReceived
     const message = success ? '已完成' : (inspection.errorMessage ?? '上游流式响应失败')
-    const errorCode = success ? undefined : inspection.errorCode ?? gatewayStreamFailureCode(message)
+    const errorCode = success ? undefined : streamClientFailureCode(inspection.errorCode ?? gatewayStreamFailureCode(message), inspection.outputReceived)
     if (!success) {
-      handleStreamFailure(message, errorCode)
+      handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
     }
     streamLogger.warn({
       event: 'gateway_stream_completed_with_parser_skipped',
@@ -398,12 +386,12 @@ export async function pipeUpstreamStream(
       failedReceived: inspection.failedReceived,
       skipReason: inspection.skipReason
     }, '网关流式解析已跳过，按原始转发结果结束')
-    return streamResult(success, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture)
+    return streamResult(success, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
   }
   if (!inspection.terminalReceived) {
     const message = '上游流在 OpenAI 终止事件前结束'
-    const errorCode = gatewayStreamFailureCode(message)
-    handleStreamFailure(message, errorCode)
+    const errorCode = streamClientFailureCode(gatewayStreamFailureCode(message), inspection.outputReceived)
+    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
     streamLogger.warn({
       event: 'gateway_stream_missing_terminal',
       elapsedMs: Date.now() - startedAt,
@@ -414,7 +402,7 @@ export async function pipeUpstreamStream(
       sseEventTypeCounts: inspection.eventTypeCounts,
       recentSseEventTypes: inspection.recentEventTypes
     }, '上游 EOF 前未收到 OpenAI 终止事件')
-    const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message)
+    const failureEvent = await writeGatewayStreamFailureEventWithBackpressure(res, message, errorCode)
     if (failureEvent) {
       responseCapture.push(failureEvent)
       diagnosticCapture.push(failureEvent)
@@ -430,15 +418,15 @@ export async function pipeUpstreamStream(
       }, '网关因缺少终止事件补发 response.failed 失败或响应已结束')
     }
     endResponse(res)
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture)
+    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
   }
 
   endResponse(res)
 
   if (!completed || inspection.failedReceived) {
     const message = inspection.errorMessage ?? '上游流式响应失败'
-    const errorCode = inspection.errorCode ?? gatewayStreamFailureCode(message)
-    handleStreamFailure(message, errorCode)
+    const errorCode = streamClientFailureCode(inspection.errorCode ?? gatewayStreamFailureCode(message), inspection.outputReceived)
+    handleStreamFailure(message, errorCode, streamFailureContext(totalResponseBytes, inspection.outputReceived))
     streamLogger.warn({
       event: 'gateway_stream_finished_failed',
       completed,
@@ -453,7 +441,7 @@ export async function pipeUpstreamStream(
       sseEventTypeCounts: inspection.eventTypeCounts,
       recentSseEventTypes: inspection.recentEventTypes
     }, '网关流式响应以失败结束')
-    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture)
+    return streamResult(false, message, errorCode, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
   }
 
   streamLogger.info({
@@ -469,7 +457,7 @@ export async function pipeUpstreamStream(
     outputReceived: inspection.outputReceived,
     outputEventCount: inspection.outputEventCount
   }, '网关流式响应已成功结束')
-  return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture)
+  return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
 }
 
 function readNextStreamChunk(
@@ -581,6 +569,17 @@ function streamSseEventTimeoutMessage(timeoutSeconds: number): string {
   return `上游流式响应 ${timeoutSeconds}s 内未形成完整 SSE 事件`
 }
 
+function streamFailureContext(downstreamBytesWritten: number, outputReceived: boolean): StreamFailureContext {
+  return {
+    downstreamBytesWritten,
+    outputReceived
+  }
+}
+
+function streamClientFailureCode(errorCode: string, outputReceived: boolean): string {
+  return outputReceived ? errorCode : gatewayStreamClientRetryErrorCode
+}
+
 function streamResult(
   completed: boolean,
   message: string,
@@ -590,7 +589,9 @@ function streamResult(
   responseCapture: LimitedBufferCapture,
   upstreamCapture: LimitedBufferCapture,
   diagnosticCapture: LimitedBufferCapture,
-  streamIntercept?: StreamInterceptDecision
+  streamIntercept?: StreamInterceptDecision,
+  outputReceived = false,
+  estimatedOutputTokens?: number
 ): StreamPipeResult {
   return {
     completed,
@@ -598,6 +599,8 @@ function streamResult(
     errorCode,
     firstTokenMs,
     usage,
+    outputReceived,
+    estimatedOutputTokens,
     responseBodyText: diagnosticCapture.toDiagnosticText(),
     auditResponseBody: responseCapture.completeBuffer(),
     auditUpstreamBody: upstreamCapture.completeBuffer(),
@@ -605,8 +608,8 @@ function streamResult(
   }
 }
 
-async function writeGatewayStreamFailureEventWithBackpressure(res: Response, message: string): Promise<Buffer | undefined> {
-  const buffer = writeGatewayStreamFailureEvent(res, message)
+async function writeGatewayStreamFailureEventWithBackpressure(res: Response, message: string, code?: string): Promise<Buffer | undefined> {
+  const buffer = writeGatewayStreamFailureEvent(res, message, code)
   if (!buffer) {
     return undefined
   }

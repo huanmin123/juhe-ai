@@ -213,6 +213,16 @@ async function testInvalidBodyRejection(): Promise<void> {
     const req = createRequest('/v1/responses', undefined, { 'content-type': 'application/json' }, '{not-json')
     await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   }, OpenAIOAuthCodexAdapterError)
+
+  await assert.rejects(async () => {
+    const rawBodyText = JSON.stringify({
+      model: 'gpt-5.3-codex',
+      input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes),
+      instructions: { text: 'invalid' }
+    })
+    const req = createRequest('/v1/responses', undefined, { 'content-type': 'application/json' }, rawBodyText)
+    await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
+  }, OpenAIOAuthCodexAdapterError)
 }
 
 async function testLargeBodyCompatibility(): Promise<void> {
@@ -221,7 +231,13 @@ async function testLargeBodyCompatibility(): Promise<void> {
     input: 'x'.repeat(gatewayJsonBodyLargeWarningBytes),
     store: true,
     stream: false,
-    metadata: { session_id: 'large-body-session' }
+    metadata: { session_id: 'large-body-session' },
+    tools: [{ type: 'web_search_preview_2025_03_11' }],
+    tool_choice: {
+      type: 'allowed_tools',
+      tools: [{ type: 'web_search_preview' }]
+    },
+    service_tier: 'priority'
   }
   const rawBodyText = JSON.stringify(requestBody)
   assert.ok(Buffer.byteLength(rawBodyText) > gatewayJsonBodyLargeWarningBytes)
@@ -238,7 +254,11 @@ async function testLargeBodyCompatibility(): Promise<void> {
 
   assert.equal(body.store, false)
   assert.equal(body.stream, true)
+  assert.equal(body.instructions, '')
   assert.equal(body.metadata, undefined)
+  assert.equal((body.tools as Array<Record<string, unknown>>)[0].type, 'web_search')
+  assert.equal(((body.tool_choice as { tools?: Array<Record<string, unknown>> }).tools ?? [])[0]?.type, 'web_search')
+  assert.equal(body.service_tier, 'priority')
   assert.equal(input[0]?.content?.[0]?.text, requestBody.input)
   assert.equal(parts.headers.get('accept'), 'text/event-stream')
 }

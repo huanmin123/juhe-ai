@@ -1,3 +1,4 @@
+import { runtimeConfig } from '../../config/runtime.js'
 import { upsertAccountUsageSnapshot } from '../../storage/repositories.js'
 
 export interface OpenAICodexUsageSnapshot {
@@ -52,6 +53,7 @@ export function parseOpenAICodexUsageHeaders(headers?: HeaderInput): OpenAICodex
 }
 
 export function persistOpenAICodexUsageHeaders(accountId: string, headers?: HeaderInput, source = 'gateway'): boolean {
+  assertLocalGatewayDatabaseAccess('persistOpenAICodexUsageHeaders')
   const snapshot = parseOpenAICodexUsageHeaders(headers)
   if (!snapshot) return false
   const payload = buildOpenAICodexUsageSnapshotPayload(snapshot, new Date(), source)
@@ -235,4 +237,10 @@ function numberValue(value: unknown): number | undefined {
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
   return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+}
+
+function assertLocalGatewayDatabaseAccess(operation: string): void {
+  if (runtimeConfig.processRole === 'server') {
+    throw new Error(`server 角色禁止直接同步访问 SQLite：${operation} 必须通过 DB service`)
+  }
 }

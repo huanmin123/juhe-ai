@@ -1,4 +1,5 @@
 import type { AccountStatus } from '../../domain/types.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { clearAccountFailureState, getSettings, markAccountCooldown, markAccountDisabledByFailure } from '../../storage/repositories.js'
 import { calculateOpenAICodexRateLimitResetAt } from './openai-codex-usage.service.js'
 
@@ -37,6 +38,7 @@ export interface AccountErrorHandlingResult {
 }
 
 export function readGatewaySettings(): GatewaySettings {
+  assertLocalGatewayDatabaseAccess('readGatewaySettings')
   const settings = getSettings()
   return {
     defaultTemporaryUnschedulableMinutes: numberSetting(settings.defaultTemporaryUnschedulableMinutes, 5, 1, 1440),
@@ -61,6 +63,7 @@ export function applyAccountErrorHandling(
     settings?: GatewaySettings
   }
 ): AccountErrorHandlingResult {
+  assertLocalGatewayDatabaseAccess('applyAccountErrorHandling')
   if (account.status === 'disabled' || account.status === 'error') {
     return { action: 'none', changed: false, accountStatus: account.status }
   }
@@ -357,4 +360,10 @@ function numberSetting(value: unknown, fallback: number, min: number, max: numbe
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   if (!Number.isFinite(number)) return fallback
   return Math.min(Math.max(Math.trunc(number), min), max)
+}
+
+function assertLocalGatewayDatabaseAccess(operation: string): void {
+  if (runtimeConfig.processRole === 'server') {
+    throw new Error(`server 角色禁止直接同步访问 SQLite：${operation} 必须通过 DB service`)
+  }
 }

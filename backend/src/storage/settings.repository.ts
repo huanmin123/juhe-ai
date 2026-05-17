@@ -53,7 +53,10 @@ const SYSTEM_SETTING_KEYS = new Set<string>(systemSettingKeys)
 
 export function listGlobalSettings(): Record<string, unknown> {
   const rows = getDatabase().prepare('SELECT key, value_json, updated_at FROM global_settings ORDER BY key ASC').all() as unknown as Array<GlobalSettingRow>
-  return Object.fromEntries(rows.map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
+  return Object.fromEntries(rows.map((row) => {
+    const value = JSON.parse(row.value_json) as unknown
+    return [row.key, normalizeGlobalSettingValue(row.key, value)]
+  }))
 }
 
 export function listPublicGlobalSettings(): Record<string, unknown> {
@@ -71,7 +74,16 @@ export function updateGlobalSettings(input: Record<string, unknown>): Record<str
 
 function pickGlobalSettings(input: Record<string, unknown>): Record<string, unknown> {
   const allowedKeys = new Set(['appName', 'appIcon'])
-  return Object.fromEntries(Object.entries(input).filter(([key]) => allowedKeys.has(key)))
+  return Object.fromEntries(Object.entries(input)
+    .filter(([key]) => allowedKeys.has(key))
+    .map(([key, value]) => [key, normalizeGlobalSettingValue(key, value)]))
+}
+
+function normalizeGlobalSettingValue(key: string, value: unknown): unknown {
+  if (key === 'appIcon' && (value === '/brand-icon.svg' || value === '/__jhsys/brand-icon.svg')) {
+    return '/__aisys__/brand-icon.svg'
+  }
+  return value
 }
 
 export function getSettings(): Record<string, unknown> {

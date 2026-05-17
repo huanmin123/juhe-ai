@@ -61,6 +61,7 @@ const responsesStreamInspection = inspectOpenAIStreamText([
 ].join('\n'))
 assert.equal(responsesStreamInspection.terminalReceived, true)
 assert.equal(responsesStreamInspection.outputReceived, true)
+assert.equal(responsesStreamInspection.estimatedOutputTokens, 1)
 assert.deepEqual(defined(responsesStreamInspection.usage), defined(responsesUsage))
 
 const chatStreamInspection = inspectOpenAIStreamText([
@@ -73,7 +74,54 @@ const chatStreamInspection = inspectOpenAIStreamText([
 ].join('\n'))
 assert.equal(chatStreamInspection.terminalReceived, true)
 assert.equal(chatStreamInspection.outputReceived, true)
+assert.equal(chatStreamInspection.estimatedOutputTokens, 1)
 assert.deepEqual(defined(chatStreamInspection.usage), defined(chatUsage))
+
+const failedAfterOutputStreamInspection = inspectOpenAIStreamText([
+  'event: response.output_text.delta',
+  'data: {"type":"response.output_text.delta","delta":"hello"}',
+  '',
+  'event: response.failed',
+  'data: {"type":"response.failed","response":{"status":"failed","error":{"code":"server_is_overloaded","message":"busy"}}}',
+  ''
+].join('\n'))
+assert.equal(failedAfterOutputStreamInspection.terminalReceived, true)
+assert.equal(failedAfterOutputStreamInspection.failedReceived, true)
+assert.equal(failedAfterOutputStreamInspection.outputReceived, true)
+assert.equal(failedAfterOutputStreamInspection.estimatedOutputTokens, 2)
+assert.deepEqual(defined(failedAfterOutputStreamInspection.usage), {})
+
+const outputItemAddedOnlyInspection = inspectOpenAIStreamText([
+  'event: response.output_item.added',
+  'data: {"type":"response.output_item.added","output_index":0,"item":{"id":"item_1","type":"message","status":"in_progress"}}',
+  ''
+].join('\n'))
+assert.equal(outputItemAddedOnlyInspection.outputReceived, false)
+assert.equal(outputItemAddedOnlyInspection.estimatedOutputTokens, undefined)
+
+const outputItemDoneOnlyInspection = inspectOpenAIStreamText([
+  'event: response.output_item.done',
+  'data: {"type":"response.output_item.done","output_index":0,"item":{"id":"item_1","type":"message","status":"completed","content":[{"type":"output_text","text":"hello world"}]}}',
+  ''
+].join('\n'))
+assert.equal(outputItemDoneOnlyInspection.outputReceived, true)
+assert.equal(outputItemDoneOnlyInspection.estimatedOutputTokens, 3)
+
+const audioBase64DeltaInspection = inspectOpenAIStreamText([
+  'event: response.audio.delta',
+  `data: {"type":"response.audio.delta","delta":{"data":"${'QUFB'.repeat(160)}","transcript":"hi"}}`,
+  ''
+].join('\n'))
+assert.equal(audioBase64DeltaInspection.outputReceived, true)
+assert.equal(audioBase64DeltaInspection.estimatedOutputTokens, 1)
+
+const textBase64LikeDeltaInspection = inspectOpenAIStreamText([
+  'event: response.output_text.delta',
+  `data: {"type":"response.output_text.delta","delta":"${'QUFB'.repeat(160)}"}`,
+  ''
+].join('\n'))
+assert.equal(textBase64LikeDeltaInspection.outputReceived, true)
+assert.equal(textBase64LikeDeltaInspection.estimatedOutputTokens, 160)
 
 const oversizedStreamInspection = inspectOpenAIStreamText(`data: ${'x'.repeat(300 * 1024)}`)
 assert.equal(oversizedStreamInspection.skipped, true)
@@ -251,7 +299,8 @@ assert.equal(cachedUsageSummary.totalTokens, 1200)
 const gatewayRoutesSource = readSource('modules/gateway/openai-gateway.routes.ts')
 assert.match(gatewayRoutesSource, /function recordCompletedUpstreamAttempt/)
 assert.match(gatewayRoutesSource, /recordClientAbortedUpstreamAttempt/)
-assert.match(gatewayRoutesSource, /usage:\s*streamResult\.usage/)
+assert.match(gatewayRoutesSource, /applyOpenAIStreamUsageFallback/)
+assert.match(gatewayRoutesSource, /gateway_stream_usage_estimated/)
 assert.match(gatewayRoutesSource, /errorMessage:\s*'上游响应体为空'/)
 assert.match(gatewayRoutesSource, /shouldRecordAbortedUpstreamAttempt/)
 

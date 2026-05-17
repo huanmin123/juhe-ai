@@ -1,4 +1,5 @@
 import type { AccountSummary } from '../../domain/types.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import {
   clearAccountFailureState,
@@ -11,6 +12,7 @@ import {
 } from '../../storage/repositories.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
+import type { DbServiceOpenAIOAuthRefreshAccount } from '../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import {
   buildOpenAIOAuthCredentials,
@@ -46,7 +48,12 @@ const refreshFailureStateByAccountId = new Map<string, { count: number; backoffU
 const refreshQueueByAccountId = new Map<string, Promise<void>>()
 let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthToken
 
-type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerCode' | 'proxyProfileId' | 'status' | 'name'>>
+type RefreshableOpenAIOAuthAccount = Pick<AccountSummary, 'id' | 'type' | 'credentials'> & Partial<Pick<AccountSummary, 'providerCode' | 'proxyProfileId' | 'status' | 'name'>> & {
+  proxyUrl?: string
+}
+type OpenAIOAuthRefreshAccount = RefreshableOpenAIOAuthAccount & Partial<Pick<AccountSummary, 'systemAccountId' | 'concurrencyLimit' | 'currentConcurrency' | 'priority' | 'superPriorityEnabled' | 'fallbackEnabled' | 'passthroughEnabled' | 'schedulable' | 'todayUsage' | 'usage' | 'permissions'>> & {
+  proxyUrl?: string
+}
 type OpenAIOAuthTokenRefresher = (input: { refreshToken: string; clientId?: string; proxyUrl?: string; signal?: AbortSignal }) => Promise<OpenAITokenInfo>
 type OpenAIOAuthAccountRefreshCallOptions = {
   access?: AccessScope
@@ -75,7 +82,8 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
   account: RefreshableOpenAIOAuthAccount,
   options: OpenAIOAuthAccountRefreshCallOptions
 ): Promise<AccountSummary | RefreshedOpenAIOAuthAccount> {
-  let current = findLatestRefreshableOpenAIOAuthAccount(account.id, options.access)
+  const persistMode = effectivePersistMode(options)
+  let current = await findLatestRefreshableOpenAIOAuthAccount(account, options, persistMode)
   let retryWithLatestRefreshToken = false
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
@@ -102,14 +110,14 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
       const tokenInfo = await openAIOAuthTokenRefresher({
         refreshToken,
         clientId: stringCredential(credentials, 'client_id'),
-        proxyUrl: current.proxyProfileId ? resolveProxyUrlForProfile(current.proxyProfileId) : undefined,
+        proxyUrl: resolveRefreshProxyUrl(current, persistMode),
         signal: options.signal
       })
       const nextCredentials = {
         ...credentials,
         ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken })
       }
-      if (options.persistMode === 'db-service') {
+      if (persistMode === 'db-service') {
         const updated = await persistOpenAIOAuthCredentialsViaDbService(current.id, nextCredentials)
         if (!updated) {
           throw new Error('OpenAI OAuth 账户不存在或无法更新')
@@ -127,7 +135,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
       }
       return finalizeSuccessfulTokenRefresh(updated, options)
     } catch (error) {
-      const recovered = tryRecoverOpenAIOAuthRefreshRace(current, options.access)
+      const recovered = await tryRecoverOpenAIOAuthRefreshRace(current, options, persistMode)
       if (isRecoverableOpenAIOAuthRefreshRaceError(error) && recovered.result === 'fresh') {
         logger.info({
           event: 'openai_oauth_access_token_refresh_race_recovered',
@@ -291,12 +299,24 @@ function cleanupRefreshFailureBackoff(now: number): void {
   }
 }
 
-function findLatestRefreshableOpenAIOAuthAccount(accountId: string, access?: AccessScope): AccountSummary | undefined {
-  const account = findAccountForTest(accountId, access)
-  if (!account || account.providerCode !== 'openai' || account.type !== 'oauth') {
+async function findLatestRefreshableOpenAIOAuthAccount(
+  account: RefreshableOpenAIOAuthAccount,
+  options: OpenAIOAuthAccountRefreshCallOptions,
+  persistMode: 'sync' | 'db-service'
+): Promise<OpenAIOAuthRefreshAccount | undefined> {
+  if (persistMode === 'db-service') {
+    const latest = await requestDbService({
+      type: 'find_openai_oauth_account_for_refresh',
+      accountId: account.id
+    })
+    return latest ? normalizeDbServiceRefreshAccount(latest) : undefined
+  }
+
+  const latest = findAccountForTest(account.id, options.access)
+  if (!latest || latest.providerCode !== 'openai' || latest.type !== 'oauth') {
     return undefined
   }
-  return account
+  return latest
 }
 
 async function runWithAccountRefreshLock<T>(accountId: string, task: () => Promise<T>): Promise<T> {
@@ -318,8 +338,8 @@ async function runWithAccountRefreshLock<T>(accountId: string, task: () => Promi
   }
 }
 
-function finalizeSuccessfulTokenRefresh(account: AccountSummary, options: OpenAIOAuthAccountRefreshCallOptions = {}): AccountSummary | RefreshedOpenAIOAuthAccount {
-  if (options.persistMode === 'db-service') {
+function finalizeSuccessfulTokenRefresh(account: OpenAIOAuthRefreshAccount, options: OpenAIOAuthAccountRefreshCallOptions = {}): AccountSummary | RefreshedOpenAIOAuthAccount {
+  if (effectivePersistMode(options) === 'db-service') {
     clearGatewayRuntimeCache()
     return account
   }
@@ -328,17 +348,18 @@ function finalizeSuccessfulTokenRefresh(account: AccountSummary, options: OpenAI
     return account
   }
   const updated = account.status !== 'disabled' && account.status !== 'error'
-    ? clearAccountFailureState(account.id, options.access) ?? account
+    ? clearAccountFailureState(account.id, options.access) ?? account as AccountSummary
     : account
   clearGatewayRuntimeCache()
   return updated
 }
 
-function tryRecoverOpenAIOAuthRefreshRace(
-  usedAccount: AccountSummary,
-  access?: AccessScope
-): { result: 'fresh' | 'retry'; account: AccountSummary } | { result: 'none' } {
-  const latest = findLatestRefreshableOpenAIOAuthAccount(usedAccount.id, access)
+async function tryRecoverOpenAIOAuthRefreshRace(
+  usedAccount: OpenAIOAuthRefreshAccount,
+  options: OpenAIOAuthAccountRefreshCallOptions,
+  persistMode: 'sync' | 'db-service'
+): Promise<{ result: 'fresh' | 'retry'; account: OpenAIOAuthRefreshAccount } | { result: 'none' }> {
+  const latest = await findLatestRefreshableOpenAIOAuthAccount(usedAccount, options, persistMode)
   if (!latest) {
     return { result: 'none' }
   }
@@ -356,6 +377,24 @@ function tryRecoverOpenAIOAuthRefreshRace(
     return { result: 'retry', account: latest }
   }
   return { result: 'none' }
+}
+
+function normalizeDbServiceRefreshAccount(account: DbServiceOpenAIOAuthRefreshAccount): OpenAIOAuthRefreshAccount {
+  return {
+    ...account,
+    proxyUrl: account.proxyUrl
+  }
+}
+
+function resolveRefreshProxyUrl(account: OpenAIOAuthRefreshAccount, persistMode: 'sync' | 'db-service'): string | undefined {
+  if (account.proxyUrl || persistMode === 'db-service') {
+    return account.proxyUrl
+  }
+  return account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
+}
+
+function effectivePersistMode(options: OpenAIOAuthAccountRefreshCallOptions): 'sync' | 'db-service' {
+  return options.persistMode ?? (runtimeConfig.processRole === 'server' ? 'db-service' : 'sync')
 }
 
 function isRecoverableOpenAIOAuthRefreshRaceError(error: unknown): boolean {

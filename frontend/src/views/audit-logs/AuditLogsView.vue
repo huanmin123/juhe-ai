@@ -6,33 +6,45 @@
       filter-title="审计筛选"
       :active-filter-count="activeFilterCount"
       :refresh-loading="loading"
-      @refresh="loadData"
+      @refresh="refreshRecords"
       @reset="resetFilters"
       @search="applyFilters"
     >
       <template #inline-filters>
         <a-select v-model:value="outcomeFilter" class="toolbar-select audit-outcome-filter responsive-list-inline-filter" :options="outcomeOptions" @change="applyFilters" />
+        <SystemPrincipalSelect
+          v-model:value="systemAccountFilter"
+          :accounts="systemAccounts"
+          :active-only="false"
+          include-all
+          all-label="全部用户"
+          class="toolbar-select audit-user-filter responsive-list-inline-filter"
+          placeholder="筛选用户"
+          @change="applyFilters"
+        />
         <a-input v-model:value="pathFilter" allow-clear class="toolbar-select audit-path-filter responsive-list-inline-filter" placeholder="接口路径" @press-enter="applyFilters" />
         <a-input v-model:value="statusCodeFilter" allow-clear class="toolbar-select audit-status-filter responsive-list-inline-filter" placeholder="状态码" @press-enter="applyFilters" />
-        <a-input v-model:value="modelFilter" allow-clear class="toolbar-select audit-model-filter responsive-list-inline-filter" placeholder="模型" @press-enter="applyFilters" />
-        <a-input v-model:value="clientIpFilter" allow-clear class="toolbar-select audit-client-ip-filter responsive-list-inline-filter" placeholder="客户端 IP" @press-enter="applyFilters" />
       </template>
       <template #filters>
         <a-form layout="vertical">
           <a-form-item label="结果">
             <a-select v-model:value="outcomeFilter" :options="outcomeOptions" />
           </a-form-item>
+          <a-form-item label="用户">
+            <SystemPrincipalSelect
+              v-model:value="systemAccountFilter"
+              :accounts="systemAccounts"
+              :active-only="false"
+              include-all
+              all-label="全部用户"
+              placeholder="筛选用户"
+            />
+          </a-form-item>
           <a-form-item label="接口路径">
             <a-input v-model:value="pathFilter" allow-clear placeholder="/v1/responses" />
           </a-form-item>
           <a-form-item label="状态码">
             <a-input v-model:value="statusCodeFilter" allow-clear placeholder="401 / 503" />
-          </a-form-item>
-          <a-form-item label="模型">
-            <a-input v-model:value="modelFilter" allow-clear placeholder="模型名称" />
-          </a-form-item>
-          <a-form-item label="客户端 IP">
-            <a-input v-model:value="clientIpFilter" allow-clear placeholder="IP 地址" />
           </a-form-item>
         </a-form>
       </template>
@@ -233,13 +245,15 @@ import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
+import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, SystemAccountSummary } from '@/types/domain'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import ReadonlyCodeViewer from '@/components/ReadonlyCodeViewer.vue'
 import RowActions from '@/components/RowActions.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AuditLogList from './AuditLogList.vue'
 import {
   captureStatusText,
@@ -271,35 +285,34 @@ const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
 const payloadContentTab = ref<'headers' | 'body'>('body')
 const payloadCodeViewer = ref<{ copyDisplayText: () => Promise<void> }>()
+const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccountsLoaded = ref(false)
 
 const pageSize = 100
 type AuditLogsPageState = {
-  clientIpFilter: string
-  modelFilter: string
   outcomeFilter: AuditOutcome | 'all'
   pagination: { current: number; pageSize: number }
   pathFilter: string
   statusCodeFilter: string
+  systemAccountFilter: string
   traceIdFilter: string
 }
 const defaultAuditLogsPageState = (): AuditLogsPageState => ({
-  clientIpFilter: '',
-  modelFilter: '',
   outcomeFilter: 'all',
   pagination: { current: 1, pageSize },
   pathFilter: '',
   statusCodeFilter: '',
+  systemAccountFilter: allSystemAccountsValue,
   traceIdFilter: ''
 })
-const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState)
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 2 })
 const initialPageState = pageStateCache.read()
 
 const traceIdFilter = ref(initialPageState.traceIdFilter)
 const outcomeFilter = ref<AuditOutcome | 'all'>(initialPageState.outcomeFilter)
 const pathFilter = ref(initialPageState.pathFilter)
 const statusCodeFilter = ref(initialPageState.statusCodeFilter)
-const modelFilter = ref(initialPageState.modelFilter)
-const clientIpFilter = ref(initialPageState.clientIpFilter)
+const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const pagination = reactive({ current: initialPageState.pagination.current, pageSize: initialPageState.pagination.pageSize, total: 0 })
 
 const outcomeOptions = auditOutcomeOptions
@@ -309,10 +322,9 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (traceIdFilter.value.trim()) count += 1
   if (outcomeFilter.value !== 'all') count += 1
+  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
   if (pathFilter.value.trim()) count += 1
   if (statusCodeFilter.value.trim()) count += 1
-  if (modelFilter.value.trim()) count += 1
-  if (clientIpFilter.value.trim()) count += 1
   return count
 })
 
@@ -354,25 +366,29 @@ function applyFilters(): void {
   void loadData()
 }
 
+function refreshRecords(): void {
+  void loadData({ forceOptions: true })
+}
+
 function resetFilters(): void {
   const defaults = defaultAuditLogsPageState()
   traceIdFilter.value = defaults.traceIdFilter
   outcomeFilter.value = defaults.outcomeFilter
   pathFilter.value = defaults.pathFilter
   statusCodeFilter.value = defaults.statusCodeFilter
-  modelFilter.value = defaults.modelFilter
-  clientIpFilter.value = defaults.clientIpFilter
+  systemAccountFilter.value = defaults.systemAccountFilter
   pagination.current = defaults.pagination.current
   pagination.pageSize = defaults.pagination.pageSize
   pageStateCache.clear()
   void loadData()
 }
 
-async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Promise<void> {
+async function loadData(options: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}): Promise<void> {
   if (!options.quiet) {
     loading.value = true
   }
   try {
+    const systemAccountId = selectedSystemAccountId(systemAccountFilter.value, true)
     const listParams = {
       page: pagination.current,
       pageSize: pagination.pageSize,
@@ -380,12 +396,12 @@ async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Pr
       outcome: outcomeFilter.value,
       path: pathFilter.value || undefined,
       statusCode: normalizedStatusCode(statusCodeFilter.value),
-      model: modelFilter.value || undefined,
-      clientIp: clientIpFilter.value || undefined
+      systemAccountId
     }
     const [listResult, runtimeInfo] = await Promise.all([
       api.auditLogs.list(listParams),
-      api.auditLogs.runtime()
+      api.auditLogs.runtime(),
+      loadSystemAccounts(options.forceOptions === true)
     ])
     pagination.current = listResult.page
     pagination.pageSize = listResult.pageSize
@@ -400,6 +416,12 @@ async function loadData(options: { append?: boolean; quiet?: boolean } = {}): Pr
       loading.value = false
     }
   }
+}
+
+async function loadSystemAccounts(force = false): Promise<void> {
+  if (!force && systemAccountsLoaded.value) return
+  systemAccounts.value = await api.systemAccounts.list()
+  systemAccountsLoaded.value = true
 }
 
 function handleTableChange(paginationInfo: unknown): void {
@@ -492,12 +514,11 @@ function payloadActions(payloadId: string): RowActionItem[] {
 
 function snapshotPageState(): AuditLogsPageState {
   return {
-    clientIpFilter: clientIpFilter.value,
-    modelFilter: modelFilter.value,
     outcomeFilter: outcomeFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     pathFilter: pathFilter.value,
     statusCodeFilter: statusCodeFilter.value,
+    systemAccountFilter: systemAccountFilter.value,
     traceIdFilter: traceIdFilter.value
   }
 }
@@ -520,12 +541,8 @@ onMounted(loadData)
   width: 108px;
 }
 
-.audit-model-filter {
-  width: 180px;
-}
-
-.audit-client-ip-filter {
-  width: 150px;
+.audit-user-filter {
+  width: 190px;
 }
 
 .attempt-account-cell,

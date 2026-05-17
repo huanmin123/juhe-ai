@@ -1,12 +1,19 @@
 import {
   clearGatewayApiKeyValidationCache,
   clearAccountStreamFailureState,
+  findAccountForTest,
   listOpenAIAccountsForGroup,
+  listPublicGlobalSettings,
   recordAccountStreamFailure,
   resolveGroupUsageAccessMetadata,
+  resolveProxyUrlForProfile,
   updateAccount,
   validateGatewayApiKey
 } from '../../storage/repositories.js'
+import {
+  getRuntimeLogFacets,
+  listRuntimeLogs
+} from '../../storage/runtime-logs.repository.js'
 import {
   clearGatewayRuntimeCacheLocal,
   readCachedGatewaySettings,
@@ -27,6 +34,7 @@ let failedRequestCount = 0
 let pendingRequestCount = 0
 let lastRequestAt: string | undefined
 let lastError: string | undefined
+let dbServiceHttpEndpoint: { host: string; port: number } | undefined
 
 export async function handleDbServiceOperation<T extends DbServiceOperation>(operation: T): Promise<DbServiceOperationResult<T>> {
   pendingRequestCount += 1
@@ -50,6 +58,8 @@ export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRunti
     pid,
     ready: true,
     processRole: 'db-service',
+    httpHost: dbServiceHttpEndpoint?.host,
+    httpPort: dbServiceHttpEndpoint?.port,
     pendingRequestCount,
     handledRequestCount,
     failedRequestCount,
@@ -58,8 +68,14 @@ export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRunti
   }
 }
 
+export function setDbServiceHttpEndpoint(endpoint: { host: string; port: number }): void {
+  dbServiceHttpEndpoint = endpoint
+}
+
 function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
   switch (operation.type) {
+    case 'list_public_global_settings':
+      return listPublicGlobalSettings()
     case 'validate_gateway_api_key':
       return validateGatewayApiKey(operation.key)
     case 'read_gateway_settings':
@@ -89,6 +105,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       }
       return { updated: Boolean(updated) }
     }
+    case 'find_openai_oauth_account_for_refresh':
+      return findOpenAIOAuthAccountForRefresh(operation.accountId)
     case 'persist_openai_codex_usage_headers':
       return {
         persisted: persistOpenAICodexUsageHeaders(operation.accountId, operation.headers, operation.source)
@@ -120,10 +138,25 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       clearApiKeyQuotaCache()
       clearAuthorizationQuotaCache()
       return { cleared: true }
+    case 'list_runtime_logs':
+      return listRuntimeLogs(operation.options)
+    case 'get_runtime_log_facets':
+      return getRuntimeLogFacets()
     case 'status':
       return buildDbServiceRuntimeSnapshot()
     default:
       return assertNever(operation)
+  }
+}
+
+function findOpenAIOAuthAccountForRefresh(accountId: string): unknown {
+  const account = findAccountForTest(accountId)
+  if (!account || account.providerCode !== 'openai' || account.type !== 'oauth') {
+    return undefined
+  }
+  return {
+    ...account,
+    proxyUrl: account.proxyProfileId ? resolveProxyUrlForProfile(account.proxyProfileId) : undefined
   }
 }
 

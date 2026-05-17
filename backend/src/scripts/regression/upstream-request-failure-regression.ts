@@ -154,6 +154,31 @@ async function main(): Promise<void> {
     assert.equal(instructionsRequiredUpstreamHitCount, 1, `Instructions are required 特征应首个账号命中后停止，实际上游命中 ${instructionsRequiredUpstreamHitCount} 次`)
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, 'Instructions are required 特征不应本地屏蔽账号')
 
+    settingsRepository.updateSettings({
+      temporaryUnschedulableRetryAttempts: 2,
+      temporaryUnschedulableRetryIntervalSeconds: 0
+    })
+    gatewayCache.clearGatewayRuntimeCache()
+    currentScenario = 'unknown_failure_same_account_retry'
+    const transientResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'transient 502 should retry same account' }],
+        stream: false
+      })
+    })
+    const transientResponseText = await transientResponse.text()
+
+    assert.equal(transientResponse.status, 200, `未知非 2xx 失败应先同账号重试并在恢复后成功，实际 HTTP ${transientResponse.status}: ${transientResponseText}`)
+    assert.equal(transient502UpstreamHitCount, 3, `未知非 2xx 失败应在同账号上重试两次后成功，实际上游命中 ${transient502UpstreamHitCount} 次`)
+    assert.equal(transientResponseText, transient502SuccessBody, `同账号重试成功响应体异常：${transientResponseText}`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '未知非 2xx 失败同账号重试成功前不应本地屏蔽账号')
+
     usageRecordQueue.flushAllUsageRecordQueue()
     const accounts = repositories.listAccounts()
     for (const account of [firstAccount, secondAccount]) {
@@ -165,7 +190,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('请求级上游失败回归通过：工具输出缺失和 Instructions are required 特征直接返回客户端；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
+    console.log('请求级上游失败回归通过：工具输出缺失和 Instructions are required 特征直接返回客户端；未知非 2xx 失败先同账号重试；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -180,12 +205,13 @@ async function main(): Promise<void> {
   }
 }
 
-type RegressionScenario = 'tool_output_missing_feature' | 'same_signature_confirmation' | 'instructions_required_feature'
+type RegressionScenario = 'tool_output_missing_feature' | 'same_signature_confirmation' | 'instructions_required_feature' | 'unknown_failure_same_account_retry'
 
 let currentScenario: RegressionScenario = 'tool_output_missing_feature'
 let toolOutputMissingUpstreamHitCount = 0
 let sameSignatureUpstreamHitCount = 0
 let instructionsRequiredUpstreamHitCount = 0
+let transient502UpstreamHitCount = 0
 const toolOutputMissingRejectedRequestMessage = 'No tool output found for function call fc_request_failure_regression.'
 const toolOutputMissingRejectedRequestBody = JSON.stringify({
   error: {
@@ -210,9 +236,32 @@ const instructionsRequiredRejectedRequestBody = JSON.stringify({
     code: null
   }
 })
+const transient502SuccessBody = JSON.stringify({
+  id: 'chatcmpl-transient-502-regression',
+  object: 'chat.completion',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok' },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+})
 
 function createRejectedRequestUpstream(): http.Server {
   return http.createServer((_req, res) => {
+    if (currentScenario === 'unknown_failure_same_account_retry') {
+      transient502UpstreamHitCount += 1
+      if (transient502UpstreamHitCount <= 2) {
+        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { message: 'transient upstream error', type: 'server_error', code: 'bad_gateway' } }))
+        return
+      }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(transient502SuccessBody)
+      return
+    }
     if (currentScenario === 'instructions_required_feature') {
       instructionsRequiredUpstreamHitCount += 1
       res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })

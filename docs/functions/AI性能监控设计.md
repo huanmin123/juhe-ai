@@ -17,10 +17,10 @@
 
 | 入口 | 当前路由 | 当前接口 | 可见范围 |
 | --- | --- | --- | --- |
-| 用户侧 | `/my-ai-performance` | `GET /api/my-stats/ai-performance` | 当前登录系统账户名下的自有 AI 账户 |
-| 用户侧账户选项 | `/my-ai-performance` | `GET /api/my-stats/ai-performance/accounts` | 当前登录系统账户名下的自有 AI 账户基础选项 |
-| 管理侧 | `/ai-performance` | `GET /api/stats/ai-performance` | 全部用户或指定系统账户名下的自有 AI 账户 |
-| 管理侧账户选项 | `/ai-performance` | `GET /api/stats/ai-performance/accounts` | 全部用户或指定系统账户名下的自有 AI 账户基础选项 |
+| 用户侧 | `/my-ai-performance` | `GET /__aisys__/api/my-stats/ai-performance` | 当前登录系统账户名下的自有 AI 账户 |
+| 用户侧账户选项 | `/my-ai-performance` | `GET /__aisys__/api/my-stats/ai-performance/accounts` | 当前登录系统账户名下的自有 AI 账户基础选项 |
+| 管理侧 | `/ai-performance` | `GET /__aisys__/api/stats/ai-performance` | 全部用户或指定系统账户名下的自有 AI 账户 |
+| 管理侧账户选项 | `/ai-performance` | `GET /__aisys__/api/stats/ai-performance/accounts` | 全部用户或指定系统账户名下的自有 AI 账户基础选项 |
 
 权限规则：
 
@@ -124,10 +124,10 @@
 当前接口：
 
 ```text
-GET /api/my-stats/ai-performance
-GET /api/my-stats/ai-performance/accounts
-GET /api/stats/ai-performance
-GET /api/stats/ai-performance/accounts
+GET /__aisys__/api/my-stats/ai-performance
+GET /__aisys__/api/my-stats/ai-performance/accounts
+GET /__aisys__/api/stats/ai-performance
+GET /__aisys__/api/stats/ai-performance/accounts
 ```
 
 查询参数：

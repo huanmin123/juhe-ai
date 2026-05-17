@@ -1,7 +1,12 @@
 import type { IncomingHttpHeaders } from 'node:http'
 import type { Request } from 'express'
 
-import { buildGatewayRequestBodySummary } from './openai-gateway-request-body.js'
+import {
+  buildGatewayRequestBodySummary,
+  gatewayJsonBodyLargeWarningBytes,
+  getGatewayRequestBodyState,
+  type GatewayRawBodyRequest
+} from './openai-gateway-request-body.js'
 
 export interface UpstreamAttempt {
   accountId: string
@@ -54,6 +59,7 @@ export interface OpenAIStreamInspection {
   failedReceived: boolean
   outputReceived: boolean
   outputEventCount: number
+  estimatedOutputTokens?: number
   eventCount: number
   eventTypeCounts: Record<string, number>
   lastEventType?: string
@@ -75,6 +81,13 @@ export interface OpenAIStreamEventSummary {
   parseError?: boolean
 }
 
+export interface OpenAIStreamUsageFallbackResult {
+  usage: ParsedUsage
+  estimated: boolean
+  estimatedInputTokens?: number
+  estimatedOutputTokens?: number
+}
+
 export function extractBearerToken(authorization?: string): string | undefined {
   if (!authorization) return undefined
   const match = authorization.match(/^Bearer\s+(.+)$/i)
@@ -89,7 +102,13 @@ export function extractClientIp(req: Request): string | undefined {
 }
 
 export function requestModel(req: Request): string | undefined {
-  return typeof req.body?.model === 'string' ? req.body.model : undefined
+  const bodyState = getGatewayRequestBodyState(req)
+  return bodyState?.model ?? (typeof req.body?.model === 'string' ? req.body.model : undefined)
+}
+
+export function requestStream(req: Request): boolean {
+  const bodyState = getGatewayRequestBodyState(req)
+  return bodyState?.stream ?? req.body?.stream === true
 }
 
 export function requestEndpoint(req: Request): string {
@@ -207,6 +226,47 @@ export function parseOpenAIUsageFromJsonTextFragment(text?: string): ParsedUsage
 
 export function parseOpenAIUsageFromSseText(text: string): ParsedUsage {
   return inspectOpenAIStreamText(text).usage
+}
+
+export function applyOpenAIStreamUsageFallback(
+  req: Request,
+  usage: ParsedUsage,
+  input: {
+    outputReceived: boolean
+    estimatedOutputTokens?: number
+  }
+): OpenAIStreamUsageFallbackResult {
+  if (!input.outputReceived || (usage.inputTokens !== undefined && usage.outputTokens !== undefined)) {
+    return { usage, estimated: false }
+  }
+
+  const nextUsage: ParsedUsage = { ...usage }
+  let estimated = false
+  let estimatedInputTokens: number | undefined
+  let estimatedOutputTokens: number | undefined
+
+  if (nextUsage.inputTokens === undefined) {
+    const inputTokens = estimateOpenAIRequestInputTokens(req)
+    if (inputTokens !== undefined) {
+      nextUsage.inputTokens = inputTokens
+      estimatedInputTokens = inputTokens
+      estimated = true
+    }
+  }
+
+  if (nextUsage.outputTokens === undefined) {
+    const outputTokens = Math.max(1, input.estimatedOutputTokens ?? 0)
+    nextUsage.outputTokens = outputTokens
+    estimatedOutputTokens = outputTokens
+    estimated = true
+  }
+
+  return {
+    usage: nextUsage,
+    estimated,
+    estimatedInputTokens,
+    estimatedOutputTokens
+  }
 }
 
 export function inspectOpenAIStreamText(text: string): OpenAIStreamInspection {
@@ -333,10 +393,14 @@ export class OpenAIStreamInspector {
       let output = false
       let terminal = false
       let failed = false
-      if (openAIStreamEventHasOutput(event, eventType)) {
+      const estimatedOutputTokens = estimateOpenAIStreamEventOutputTokens(event, eventType, this.inspection.estimatedOutputTokens ?? 0)
+      if (estimatedOutputTokens > 0 || openAIStreamEventHasVisibleOutput(event, eventType)) {
         this.inspection.outputReceived = true
         this.inspection.outputEventCount += 1
         output = true
+      }
+      if (estimatedOutputTokens > 0) {
+        this.inspection.estimatedOutputTokens = (this.inspection.estimatedOutputTokens ?? 0) + estimatedOutputTokens
       }
       if (eventType === 'response.completed' || eventType === 'response.done') {
         this.inspection.terminalReceived = true
@@ -408,13 +472,15 @@ const streamInspectorMaxLineBytes = 256 * 1024
 const streamInspectorMaxEventBytes = 512 * 1024
 const streamInspectorRecentEventLimit = 20
 
-export function isOpenAIStreamServerOverloadedErrorCode(code?: string): boolean {
-  return code === 'server_is_overloaded' || code === 'slow_down'
-}
-
-function openAIStreamEventHasOutput(event: Record<string, unknown>, eventType: string): boolean {
+export function openAIStreamEventHasVisibleOutput(event: Record<string, unknown>, eventType: string): boolean {
   if (eventType.endsWith('.delta') && hasMeaningfulDelta(event.delta)) {
     return true
+  }
+  if (eventType === 'response.output_item.added' || eventType === 'response.output_item.done') {
+    return estimateTokensFromOutputValue(event.item) > 0
+  }
+  if (eventType === 'response.completed' || eventType === 'response.done') {
+    return estimateTokensFromOutputValue((event.response as Record<string, unknown> | undefined)?.output) > 0
   }
   const choices = Array.isArray(event.choices) ? event.choices : []
   return choices.some((choice) => {
@@ -424,6 +490,31 @@ function openAIStreamEventHasOutput(event: Record<string, unknown>, eventType: s
     const delta = typeof row.delta === 'object' && row.delta !== null ? row.delta as Record<string, unknown> : undefined
     return Boolean(delta && hasMeaningfulChoiceDelta(delta))
   })
+}
+
+function estimateOpenAIStreamEventOutputTokens(event: Record<string, unknown>, eventType: string, priorEstimatedOutputTokens = 0): number {
+  let tokens = 0
+  if (eventType.endsWith('.delta')) {
+    tokens += estimateTokensFromOutputValue(event.delta)
+  }
+
+  const choices = Array.isArray(event.choices) ? event.choices : []
+  for (const choice of choices) {
+    if (typeof choice !== 'object' || choice === null) continue
+    const row = choice as Record<string, unknown>
+    tokens += estimateTokensFromOutputValue(row.text)
+    tokens += estimateTokensFromOutputValue(row.delta)
+  }
+
+  if (tokens === 0 && priorEstimatedOutputTokens === 0) {
+    if (eventType === 'response.output_item.done') {
+      tokens += estimateTokensFromOutputValue(event.item)
+    } else if (eventType === 'response.completed' || eventType === 'response.done') {
+      tokens += estimateTokensFromOutputValue((event.response as Record<string, unknown> | undefined)?.output)
+    }
+  }
+
+  return tokens
 }
 
 function hasMeaningfulChoiceDelta(delta: Record<string, unknown>): boolean {
@@ -442,6 +533,133 @@ function hasMeaningfulDelta(value: unknown): boolean {
   return Object.entries(value as Record<string, unknown>)
     .some(([key, child]) => key !== 'index' && key !== 'type' && key !== 'id' && hasMeaningfulDelta(child))
 }
+
+function estimateOpenAIRequestInputTokens(req: Request): number | undefined {
+  const bodyState = getGatewayRequestBodyState(req)
+  const rawBody = (req as GatewayRawBodyRequest).rawBody
+  const bodyTokens = estimateTokensFromRequestValue(req.body)
+  if (bodyTokens > 0) return bodyTokens
+
+  if (!rawBody || rawBody.length === 0) return undefined
+  if (bodyState?.isJson && bodyState.jsonParseStatus === 'parsed') return undefined
+  return estimateTokenCountFromByteLength(rawBody.length)
+}
+
+function estimateTokensFromRequestValue(value: unknown, key = ''): number {
+  if (typeof value === 'string') {
+    return shouldSkipEstimatedString(value, key) ? 0 : estimateTokenCountFromText(value)
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((total, item) => total + estimateTokensFromRequestValue(item, key), 0)
+  }
+  if (typeof value !== 'object' || value === null) {
+    return 0
+  }
+
+  let total = 0
+  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+    if (requestTokenEstimateSkippedKeys.has(childKey)) continue
+    total += estimateTokensFromRequestValue(childValue, childKey)
+  }
+  return total
+}
+
+function estimateTokensFromOutputValue(value: unknown, key = ''): number {
+  if (typeof value === 'string') {
+    return shouldSkipEstimatedString(value, key) ? 0 : estimateTokenCountFromText(value)
+  }
+  if (Array.isArray(value)) {
+    return value.reduce((total, item) => total + estimateTokensFromOutputValue(item, key), 0)
+  }
+  if (typeof value !== 'object' || value === null) {
+    return 0
+  }
+
+  let total = 0
+  for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
+    if (outputTokenEstimateSkippedKeys.has(childKey)) continue
+    total += estimateTokensFromOutputValue(childValue, childKey)
+  }
+  return total
+}
+
+function estimateTokenCountFromText(text: string): number {
+  if (!text.trim()) return 0
+  let asciiLikeChars = 0
+  let cjkChars = 0
+  let otherChars = 0
+  for (const char of text) {
+    const code = char.codePointAt(0) ?? 0
+    if (isCjkCodePoint(code)) {
+      cjkChars += 1
+    } else if (code <= 0x7f) {
+      asciiLikeChars += 1
+    } else {
+      otherChars += 1
+    }
+  }
+  return Math.max(1, Math.ceil(asciiLikeChars / 4) + cjkChars + Math.ceil(otherChars / 2))
+}
+
+function estimateTokenCountFromByteLength(bytes: number): number | undefined {
+  return bytes > 0 ? Math.max(1, Math.ceil(bytes / 4)) : undefined
+}
+
+function shouldSkipEstimatedString(value: string, key: string): boolean {
+  const trimmed = value.trim()
+  if (!trimmed) return true
+  if (key === 'url' && trimmed.startsWith('data:')) return true
+  return /^data:[^,]+;base64,/i.test(trimmed) || looksLikeLargeBase64Payload(trimmed, key)
+}
+
+function looksLikeLargeBase64Payload(value: string, key: string): boolean {
+  if (!binaryPayloadEstimateSkippedKeys.has(key)) return false
+  if (value.length < 512 || /\s/.test(value)) return false
+  const normalized = value.replace(/-/g, '+').replace(/_/g, '/')
+  return /^[A-Za-z0-9+/]+={0,2}$/.test(normalized) && normalized.length % 4 === 0
+}
+
+function isCjkCodePoint(code: number): boolean {
+  return (code >= 0x3400 && code <= 0x9fff)
+    || (code >= 0xf900 && code <= 0xfaff)
+    || (code >= 0x20000 && code <= 0x2ebef)
+}
+
+const requestTokenEstimateSkippedKeys = new Set([
+  'model',
+  'stream',
+  'stream_options',
+  'metadata',
+  'user'
+])
+
+const binaryPayloadEstimateSkippedKeys = new Set([
+  'data',
+  'b64_json',
+  'file_data',
+  'audio',
+  'image'
+])
+
+const outputTokenEstimateSkippedKeys = new Set([
+  'object',
+  'model',
+  'status',
+  'created',
+  'created_at',
+  'sequence_number',
+  'output_index',
+  'content_index',
+  'item_id',
+  'id',
+  'index',
+  'type',
+  'role',
+  'finish_reason',
+  'logprobs',
+  'usage',
+  'error'
+])
 
 function firstHeaderValue(value?: string): string | undefined {
   return value?.split(',').map((item) => item.trim()).find(Boolean)

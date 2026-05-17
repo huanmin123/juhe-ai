@@ -10,7 +10,7 @@ export interface AppBrandSettings {
 
 export const defaultAppBrand: AppBrandSettings = {
   appName: '聚合 AI',
-  appIcon: '/brand-icon.svg'
+  appIcon: '/__aisys__/brand-icon.svg'
 }
 
 export const appBrand = reactive<AppBrandSettings>({ ...defaultAppBrand })

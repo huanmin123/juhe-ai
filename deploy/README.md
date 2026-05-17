@@ -46,18 +46,18 @@ Windows：
 
 ```powershell
 pwsh .\start.ps1
-Invoke-WebRequest http://127.0.0.1:3000/health
-Invoke-WebRequest http://127.0.0.1:3000/api/health
-Invoke-WebRequest http://127.0.0.1:3000/
+Invoke-WebRequest http://127.0.0.1:3000/__aisys__/health
+Invoke-WebRequest http://127.0.0.1:3000/__aisys__/api/health
+Invoke-WebRequest http://127.0.0.1:3000/__aisys__/
 ```
 
 macOS/Linux：
 
 ```bash
 bash ./start.sh
-curl -i http://127.0.0.1:3000/health
-curl -i http://127.0.0.1:3000/api/health
-curl -I http://127.0.0.1:3000/
+curl -i http://127.0.0.1:3000/__aisys__/health
+curl -i http://127.0.0.1:3000/__aisys__/api/health
+curl -I http://127.0.0.1:3000/__aisys__/
 ```
 
 ## 备份

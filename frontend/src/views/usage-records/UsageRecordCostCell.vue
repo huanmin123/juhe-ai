@@ -17,6 +17,10 @@
             <span>缓存读取成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.cacheReadCostUsd) }}</span>
           </div>
+          <div class="cost-detail-row">
+            <span>缓存率</span>
+            <span class="cost-detail-value">{{ formatCacheRate(record) }}</span>
+          </div>
           <div v-if="showInputImageCost" class="cost-detail-row">
             <span>图片输入成本</span>
             <span class="cost-detail-value">{{ formatCost(costBreakdown.inputImageCostUsd) }}</span>
@@ -66,7 +70,7 @@ import { computed } from 'vue'
 import { InfoCircleOutlined } from '@ant-design/icons-vue'
 
 import type { UsageRecordSummary } from '@/types/domain'
-import { formatCost, formatUnitPrice } from './usageRecordFormatters'
+import { formatCacheRate, formatCost, formatUnitPrice } from './usageRecordFormatters'
 
 const props = defineProps<{
   record: UsageRecordSummary

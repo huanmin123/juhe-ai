@@ -11,6 +11,7 @@ import {
   type OpenAIOAuthCodexIdentity
 } from './openai-oauth-codex-adapter.js'
 import { type GatewayRawBodyRequest } from './openai-gateway-request-body.js'
+import { requestStream } from './openai-gateway-usage.js'
 
 export interface GatewayUpstreamResponse {
   readonly status: number
@@ -181,7 +182,7 @@ export function isEffectiveOpenAIStreamRequest(req: Request, account?: { type?: 
   if (account?.type === 'oauth') {
     return !isOpenAIOAuthCodexCompactRequest(req)
   }
-  return req.body?.stream === true
+  return requestStream(req)
 }
 
 export function buildUpstreamRequestBody(req: Request, passthroughEnabled: boolean): Buffer | string | undefined {

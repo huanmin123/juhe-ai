@@ -6,19 +6,12 @@ import { listProviderModelPricing } from '../model-pricing/model-pricing.service
 export type UpstreamAccount = OpenAIAccountSecret
 
 export function buildUpstreamUrl(baseUrl: string, pathAndQuery: string): string {
-  const normalizedBase = baseUrl.trim().replace(/\/+$/, '')
-  const requestPath = pathAndQuery.startsWith('/') ? pathAndQuery : `/${pathAndQuery}`
-  const normalizedPath = normalizedBase.endsWith('/v1') ? requestPath.replace(/^\/v1/, '') || '/' : requestPath
-  return `${normalizedBase}${normalizedPath}`
+  const normalizedBase = normalizeOpenAIBaseUrl(baseUrl)
+  return `${normalizedBase}${openAIPathSuffix(pathAndQuery)}`
 }
 
 export function buildUpstreamUrls(baseUrl: string, pathAndQuery: string): string[] {
-  const primary = buildUpstreamUrl(baseUrl, pathAndQuery)
-  const fallbackBase = baseUrl.trim().replace(/\/+$/, '')
-  const fallback = fallbackBase.endsWith('/v1')
-    ? `${fallbackBase}${(pathAndQuery.startsWith('/') ? pathAndQuery : `/${pathAndQuery}`).replace(/^\/v1/, '') || '/'}`
-    : `${fallbackBase}${pathAndQuery.startsWith('/v1') ? pathAndQuery.replace(/^\/v1/, '') || '/' : pathAndQuery}`
-  return [...new Set([primary, fallback])]
+  return [buildUpstreamUrl(baseUrl, pathAndQuery)]
 }
 
 export function buildUpstreamUrlsForAccount(account: UpstreamAccount, req: Request): string[] {
@@ -49,6 +42,18 @@ export function splitPathAndQuery(pathAndQuery: string): { path: string; query: 
     path: pathAndQuery.slice(0, queryIndex),
     query: pathAndQuery.slice(queryIndex)
   }
+}
+
+function normalizeOpenAIBaseUrl(baseUrl: string): string {
+  const normalizedBase = baseUrl.trim().replace(/\/+$/, '')
+  return normalizedBase.endsWith('/v1') ? normalizedBase : `${normalizedBase}/v1`
+}
+
+function openAIPathSuffix(pathAndQuery: string): string {
+  const { path, query } = splitPathAndQuery(pathAndQuery)
+  const requestPath = path.startsWith('/') ? path : `/${path}`
+  const pathWithoutVersion = requestPath.replace(/^\/v1(?=\/|$)/, '') || '/'
+  return `${pathWithoutVersion === '/' ? '' : pathWithoutVersion}${query}`
 }
 
 export function isOpenAIModelsRequest(req: Request): boolean {

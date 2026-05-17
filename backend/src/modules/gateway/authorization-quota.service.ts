@@ -1,4 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
+import { runtimeConfig } from '../../config/runtime.js'
 import { getDatabase, getRecordDatabase } from '../../storage/database.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
@@ -45,6 +46,7 @@ export function checkGatewayAuthorizationQuota(input: {
   account?: OpenAIAccountSecret
   now?: Date
 }): AuthorizationQuotaDecision {
+  assertLocalGatewayDatabaseAccess('checkGatewayAuthorizationQuota')
   const now = input.now ?? new Date()
   const checks: AuthorizationQuotaCheck[] = []
   if (input.groupAccess.groupAuthorizationId) {
@@ -94,6 +96,7 @@ export function checkGatewayAuthorizationQuotaByIds(input: {
   accountAuthorizationId?: string
   now?: Date
 }): AuthorizationQuotaDecision {
+  assertLocalGatewayDatabaseAccess('checkGatewayAuthorizationQuotaByIds')
   const now = input.now ?? new Date()
   const checks: AuthorizationQuotaCheck[] = []
   if (input.groupAuthorizationId) {
@@ -200,4 +203,10 @@ function teamAuthorizationScopeType(scopeType: 'account_authorization' | 'group_
 
 function teamAuthorizationResourceId(row: TeamAuthorizationQuotaRow): string {
   return row.resource_id
+}
+
+function assertLocalGatewayDatabaseAccess(operation: string): void {
+  if (runtimeConfig.processRole === 'server') {
+    throw new Error(`server 角色禁止直接同步读取 SQLite：${operation} 必须通过 DB service`)
+  }
 }

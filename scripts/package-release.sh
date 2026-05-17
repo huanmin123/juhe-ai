@@ -4,7 +4,7 @@ set -euo pipefail
 OUTPUT_DIR="release"
 PACKAGE_NAME="juhe-ai-release"
 ARCHIVE_FORMAT="both"
-FRONTEND_API_BASE_URL="/api"
+FRONTEND_API_BASE_URL="/__aisys__/api"
 FRONTEND_GATEWAY_BASE_URL=""
 INCLUDE_LOCAL_ENV="0"
 
@@ -16,7 +16,7 @@ Options:
   --output-dir <dir>                 Output directory. Default: release
   --package-name <name>              Package folder/archive name. Default: juhe-ai-release
   --archive-format <tar.gz|zip|both> Archive format. Default: both
-  --frontend-api-base-url <url>      Frontend API base URL injected at build time. Default: /api
+  --frontend-api-base-url <url>      Frontend API base URL injected at build time. Default: /__aisys__/api
   --frontend-gateway-base-url <url>  Frontend gateway base URL injected at build time. Default: infer from browser origin
   --include-local-env                Copy local backend/.env and frontend/.env as .env.example.local
   -h, --help                         Show this help

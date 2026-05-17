@@ -12,7 +12,7 @@ import type {
 } from '../../storage/repositories.js'
 import { enqueueAuditLog } from '../audit-logs/audit-log-queue.service.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
-import { headersToObject, requestModel } from './openai-gateway-usage.js'
+import { headersToObject, requestModel, requestStream } from './openai-gateway-usage.js'
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
@@ -250,7 +250,7 @@ export class AuditCaptureContext {
       path: this.req.originalUrl.split('?')[0] || this.req.path,
       queryString: this.req.originalUrl.includes('?') ? this.req.originalUrl.split('?').slice(1).join('?') : undefined,
       model: requestModel(this.req),
-      stream: this.req.body?.stream === true,
+      stream: requestStream(this.req),
       clientIp: this.clientIp,
       userAgent: this.req.header('user-agent'),
       auditOutcome: outcome,
@@ -339,6 +339,22 @@ function sampleBucketForTraceId(traceId: string): number {
 function estimatePayloadBytes(payload: Omit<AuditLogPayloadInput, 'sequenceIndex'>): number {
   const body = payload.body
   const bodyBytes = Buffer.isBuffer(body) ? body.byteLength : typeof body === 'string' ? Buffer.byteLength(body, 'utf8') : 0
-  const headerBytes = payload.headers ? Buffer.byteLength(JSON.stringify(payload.headers), 'utf8') : 0
+  const headerBytes = payload.headers ? estimateHeadersBytes(payload.headers) : 0
   return bodyBytes + headerBytes + 512
+}
+
+function estimateHeadersBytes(headers: Record<string, string | string[]>): number {
+  let bytes = 2
+  for (const [name, value] of Object.entries(headers)) {
+    bytes += Buffer.byteLength(name, 'utf8') + 4
+    if (Array.isArray(value)) {
+      bytes += 2
+      for (const item of value) {
+        bytes += Buffer.byteLength(item, 'utf8') + 3
+      }
+    } else {
+      bytes += Buffer.byteLength(value, 'utf8') + 2
+    }
+  }
+  return bytes
 }

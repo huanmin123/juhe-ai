@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { estimateProviderCacheReadCostUsd } from '../modules/model-pricing/model-pricing.service.js'
 import { getDatabase } from './database.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
@@ -92,6 +93,7 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
   if (isDeletedApiKeyRecord(database, row)) {
     return
   }
+  persistEstimatedCacheReadCost(database, row)
 
   const timeKeys = usageStatsTimeKeys(database, row)
   for (const entry of usageStatsEntries(row)) {
@@ -156,6 +158,22 @@ function usageStatsTimeKeys(database: DatabaseSync, row: UsageStatsRecordRow): U
     statWeek: weekKey(createdAt, timezone),
     statMonth: monthKey(createdAt, timezone)
   }
+}
+
+function persistEstimatedCacheReadCost(database: DatabaseSync, row: UsageStatsRecordRow): void {
+  if (row.cache_read_cost_usd !== null && row.cache_read_cost_usd !== undefined) {
+    return
+  }
+  const cacheReadCostUsd = estimateProviderCacheReadCostUsd({
+    providerCode: row.provider_code ?? '',
+    model: row.model ?? undefined,
+    cacheReadTokens: row.cache_read_tokens ?? undefined
+  }) ?? 0
+  if (cacheReadCostUsd <= 0) {
+    return
+  }
+  database.prepare('UPDATE usage_records SET cache_read_cost_usd = ? WHERE id = ?').run(cacheReadCostUsd, row.id)
+  row.cache_read_cost_usd = cacheReadCostUsd
 }
 
 function upsertUsageStatsEntry(database: DatabaseSync, entry: UsageStatsEntry, timeKeys: UsageStatsTimeKeys, updatedAt: string): void {

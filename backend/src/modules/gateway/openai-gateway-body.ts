@@ -268,6 +268,7 @@ export class LimitedBufferCapture {
 
 class RollingBufferCapture {
   private chunks: Buffer[] = []
+  private headIndex = 0
   private size = 0
 
   constructor(private readonly limitBytes: number) {}
@@ -278,6 +279,7 @@ class RollingBufferCapture {
     }
     if (buffer.length >= this.limitBytes) {
       this.chunks = [buffer.subarray(buffer.length - this.limitBytes)]
+      this.headIndex = 0
       this.size = this.limitBytes
       return
     }
@@ -288,25 +290,45 @@ class RollingBufferCapture {
   }
 
   toText(): string | undefined {
-    if (this.chunks.length === 0) {
+    if (this.size === 0) {
       return undefined
     }
-    return Buffer.concat(this.chunks, this.size).toString('utf8')
+    return Buffer.concat(this.activeChunks(), this.size).toString('utf8')
   }
 
   private trimOverflow(): void {
     let overflow = this.size - this.limitBytes
-    while (overflow > 0 && this.chunks.length > 0) {
-      const first = this.chunks[0]
+    while (overflow > 0 && this.headIndex < this.chunks.length) {
+      const first = this.chunks[this.headIndex]
       if (first.length <= overflow) {
-        this.chunks.shift()
+        this.headIndex += 1
         this.size -= first.length
         overflow -= first.length
       } else {
-        this.chunks[0] = first.subarray(overflow)
+        this.chunks[this.headIndex] = first.subarray(overflow)
         this.size -= overflow
         overflow = 0
       }
+    }
+    this.compactConsumedChunks()
+  }
+
+  private activeChunks(): Buffer[] {
+    return this.headIndex === 0 ? this.chunks : this.chunks.slice(this.headIndex)
+  }
+
+  private compactConsumedChunks(): void {
+    if (this.headIndex === 0) {
+      return
+    }
+    if (this.headIndex >= this.chunks.length) {
+      this.chunks = []
+      this.headIndex = 0
+      return
+    }
+    if (this.headIndex > 64 && this.headIndex * 2 > this.chunks.length) {
+      this.chunks = this.chunks.slice(this.headIndex)
+      this.headIndex = 0
     }
   }
 }

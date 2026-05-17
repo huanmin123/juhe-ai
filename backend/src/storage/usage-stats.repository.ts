@@ -493,22 +493,30 @@ interface UsageErrorWindowAggregate {
   errorCount: number
 }
 
+interface UsageRankSnapshotContext {
+  timezone: string
+  updatedAt: string
+  snapshotAt: string
+  ranges: AccountUsageStatsRange[]
+  todayKey: string
+  earliestDate: string
+  overviewScopes: Array<{ systemAccountId: string; scopeId: string }>
+  uniqueSystemAccountIds: string[]
+}
+
+interface UsageRankSnapshotStage {
+  name: string
+  run: (database: DatabaseSync, context: UsageRankSnapshotContext) => void
+}
+
 export function refreshUsageRankSnapshots(): void {
   const database = getRecordDatabase()
-  const timezone = usageStatsTimezone()
-  const updatedAt = nowIso()
-  const snapshotAt = updatedAt
+  const context = createUsageRankSnapshotContext(database)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    refreshAccountLast7dRequestRankSnapshot(database, snapshotAt, updatedAt, timezone)
-    refreshCallerAccountLast7dRequestRankSnapshot(database, snapshotAt, updatedAt, timezone)
-    refreshApiKeyCurrentMonthCostRankSnapshot(database, snapshotAt, updatedAt, timezone)
-    refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'account_authorization', snapshotAt, updatedAt, timezone)
-    refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'group_authorization', snapshotAt, updatedAt, timezone)
-    refreshUsageOverviewWindowSnapshots(database, updatedAt, timezone)
-    refreshUsageQuotaHourlyWindowSnapshots(database, updatedAt, timezone)
-    refreshUsageScopeRangeWindowSnapshots(database, updatedAt, timezone)
-    refreshAuthorizationUsageRangeWindowSnapshots(database, updatedAt, timezone)
+    for (const stage of usageRankSnapshotStages()) {
+      stage.run(database, context)
+    }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -516,31 +524,151 @@ export function refreshUsageRankSnapshots(): void {
   }
 }
 
-function refreshUsageOverviewWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
-  database.prepare('DELETE FROM usage_overview_summary_windows').run()
-  database.prepare('DELETE FROM usage_overview_trend_windows').run()
-  database.prepare('DELETE FROM usage_model_rank_windows').run()
-  database.prepare('DELETE FROM usage_error_rank_windows').run()
-  database.prepare('DELETE FROM ai_performance_summary_windows').run()
-  database.prepare('DELETE FROM system_metrics_trend_windows').run()
+export async function refreshUsageRankSnapshotsInStages(options: {
+  yieldToEventLoop?: () => Promise<void>
+} = {}): Promise<void> {
+  const database = getRecordDatabase()
+  const context = createUsageRankSnapshotContext(database)
+  const stages = usageRankSnapshotStages()
+  const yieldToEventLoop = options.yieldToEventLoop ?? defaultUsageSnapshotYield
+  for (let index = 0; index < stages.length; index += 1) {
+    const transactionStarted = beginDatabaseTransaction(database)
+    try {
+      stages[index].run(database, context)
+      commitDatabaseTransaction(database, transactionStarted)
+    } catch (error) {
+      rollbackDatabaseTransaction(database, transactionStarted)
+      throw error
+    }
+    if (index < stages.length - 1) {
+      await yieldToEventLoop()
+    }
+  }
+}
 
-  const scopes = usageOverviewSnapshotScopes(database)
+function createUsageRankSnapshotContext(database: DatabaseSync): UsageRankSnapshotContext {
+  const timezone = usageStatsTimezone()
+  const updatedAt = nowIso()
   const ranges = fixedUsageStatsRanges(timezone)
   const todayKey = dateKey(new Date(), timezone)
   const earliestDate = ranges[0]?.startDate ?? todayKey
-  const uniqueSystemAccountIds = [...new Set(scopes.map((scope) => scope.systemAccountId).filter((id) => id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID))]
-  for (const scope of scopes) {
-    refreshUsageOverviewSummaryWindows(database, scope, ranges, earliestDate, todayKey, updatedAt)
-    refreshUsageOverviewTrendWindows(database, scope, ranges, earliestDate, todayKey, updatedAt)
+  const overviewScopes = usageOverviewSnapshotScopes(database)
+  const uniqueSystemAccountIds = [...new Set(overviewScopes.map((scope) => scope.systemAccountId).filter((id) => id !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID))]
+  return {
+    timezone,
+    updatedAt,
+    snapshotAt: updatedAt,
+    ranges,
+    todayKey,
+    earliestDate,
+    overviewScopes,
+    uniqueSystemAccountIds
   }
-  for (const systemAccountId of [...uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
-    refreshUsageModelRankWindows(database, systemAccountId, ranges, earliestDate, todayKey, updatedAt)
-    refreshUsageErrorRankWindows(database, systemAccountId, ranges, earliestDate, todayKey, updatedAt)
+}
+
+function usageRankSnapshotStages(): UsageRankSnapshotStage[] {
+  return [
+    {
+      name: 'account_last7d_request_rank',
+      run: (database, context) => refreshAccountLast7dRequestRankSnapshot(database, context.snapshotAt, context.updatedAt, context.timezone)
+    },
+    {
+      name: 'caller_account_last7d_request_rank',
+      run: (database, context) => refreshCallerAccountLast7dRequestRankSnapshot(database, context.snapshotAt, context.updatedAt, context.timezone)
+    },
+    {
+      name: 'api_key_current_month_cost_rank',
+      run: (database, context) => refreshApiKeyCurrentMonthCostRankSnapshot(database, context.snapshotAt, context.updatedAt, context.timezone)
+    },
+    {
+      name: 'account_authorization_current_month_cost_rank',
+      run: (database, context) => refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'account_authorization', context.snapshotAt, context.updatedAt, context.timezone)
+    },
+    {
+      name: 'group_authorization_current_month_cost_rank',
+      run: (database, context) => refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'group_authorization', context.snapshotAt, context.updatedAt, context.timezone)
+    },
+    {
+      name: 'usage_overview_summary_windows',
+      run: refreshUsageOverviewSummaryWindowSnapshots
+    },
+    {
+      name: 'usage_overview_trend_windows',
+      run: refreshUsageOverviewTrendWindowSnapshots
+    },
+    {
+      name: 'usage_model_rank_windows',
+      run: refreshUsageModelRankWindowSnapshots
+    },
+    {
+      name: 'usage_error_rank_windows',
+      run: refreshUsageErrorRankWindowSnapshots
+    },
+    {
+      name: 'ai_performance_summary_windows',
+      run: refreshAiPerformanceSummaryWindowSnapshots
+    },
+    {
+      name: 'system_metrics_trend_windows',
+      run: refreshSystemMetricsTrendWindowSnapshotsStage
+    },
+    {
+      name: 'usage_quota_hourly_windows',
+      run: (database, context) => refreshUsageQuotaHourlyWindowSnapshots(database, context.updatedAt, context.timezone)
+    },
+    {
+      name: 'usage_scope_range_windows',
+      run: (database, context) => refreshUsageScopeRangeWindowSnapshots(database, context.updatedAt, context.timezone)
+    },
+    {
+      name: 'authorization_usage_range_windows',
+      run: (database, context) => refreshAuthorizationUsageRangeWindowSnapshots(database, context.updatedAt, context.timezone)
+    }
+  ]
+}
+
+function refreshUsageOverviewSummaryWindowSnapshots(database: DatabaseSync, context: UsageRankSnapshotContext): void {
+  database.prepare('DELETE FROM usage_overview_summary_windows').run()
+  for (const scope of context.overviewScopes) {
+    refreshUsageOverviewSummaryWindows(database, scope, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
   }
-  for (const systemAccountId of [...uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
-    refreshAiPerformanceSummaryWindows(database, systemAccountId, ranges, earliestDate, todayKey, updatedAt)
+}
+
+function refreshUsageOverviewTrendWindowSnapshots(database: DatabaseSync, context: UsageRankSnapshotContext): void {
+  database.prepare('DELETE FROM usage_overview_trend_windows').run()
+  for (const scope of context.overviewScopes) {
+    refreshUsageOverviewTrendWindows(database, scope, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
   }
-  refreshSystemMetricsTrendWindows(database, ranges, earliestDate, todayKey, updatedAt)
+}
+
+function refreshUsageModelRankWindowSnapshots(database: DatabaseSync, context: UsageRankSnapshotContext): void {
+  database.prepare('DELETE FROM usage_model_rank_windows').run()
+  for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    refreshUsageModelRankWindows(database, systemAccountId, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
+  }
+}
+
+function refreshUsageErrorRankWindowSnapshots(database: DatabaseSync, context: UsageRankSnapshotContext): void {
+  database.prepare('DELETE FROM usage_error_rank_windows').run()
+  for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    refreshUsageErrorRankWindows(database, systemAccountId, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
+  }
+}
+
+function refreshAiPerformanceSummaryWindowSnapshots(database: DatabaseSync, context: UsageRankSnapshotContext): void {
+  database.prepare('DELETE FROM ai_performance_summary_windows').run()
+  for (const systemAccountId of [...context.uniqueSystemAccountIds, GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
+    refreshAiPerformanceSummaryWindows(database, systemAccountId, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
+  }
+}
+
+function refreshSystemMetricsTrendWindowSnapshotsStage(database: DatabaseSync, context: UsageRankSnapshotContext): void {
+  database.prepare('DELETE FROM system_metrics_trend_windows').run()
+  refreshSystemMetricsTrendWindows(database, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
+}
+
+function defaultUsageSnapshotYield(): Promise<void> {
+  return new Promise((resolve) => setImmediate(resolve))
 }
 
 function usageOverviewSnapshotScopes(database: DatabaseSync): Array<{ systemAccountId: string; scopeId: string }> {

@@ -11,6 +11,7 @@ const gatewayKeyTestTimeoutMs = 30_000
 const streamRequestTimeoutMs = 240_000
 const usageRecordPollTimeoutMs = 15_000
 const temporaryResourcePrefix = '回归'
+const systemApiPrefix = '/__aisys__/api'
 
 let sessionCookie = ''
 
@@ -153,7 +154,7 @@ async function main(): Promise<void> {
     await loginAsAdmin()
     summary.push('登录通过')
 
-    const settings = await getEnvelope<SystemSettings>('/api/settings')
+    const settings = await getEnvelope<SystemSettings>(apiPath('/settings'))
     assert(typeof settings.defaultTemporaryUnschedulableMinutes === 'number', '系统设置缺少 defaultTemporaryUnschedulableMinutes')
     assert(typeof settings.temporaryUnschedulableRetryIntervalSeconds === 'number', '系统设置缺少 temporaryUnschedulableRetryIntervalSeconds')
     assert(typeof settings.temporaryUnschedulableRetryAttempts === 'number', '系统设置缺少 temporaryUnschedulableRetryAttempts')
@@ -190,7 +191,7 @@ async function main(): Promise<void> {
     assertExactSettingKeys(settings)
     summary.push('系统设置检查通过')
 
-    const accounts = await getEnvelope<AccountSummary[]>('/api/accounts')
+    const accounts = await getEnvelope<AccountSummary[]>(apiPath('/accounts'))
     assert(accounts.length > 0, '账户列表为空')
     const selectedAccount = accountName
       ? await testNamedAccount(accounts, accountName)
@@ -260,7 +261,7 @@ async function main(): Promise<void> {
     assert(responseRecords.some((record) => typeof record.inputTokens === 'number' && typeof record.outputTokens === 'number' && typeof record.costUsd === 'number'), '找不到本次 responses token/cost 使用记录')
     summary.push('使用记录检查通过')
 
-    const auditRuntime = await getEnvelope<Record<string, unknown>>('/api/audit-logs/runtime')
+    const auditRuntime = await getEnvelope<Record<string, unknown>>(apiPath('/audit-logs/runtime'))
     assert(typeof auditRuntime.queueLength === 'number', '审计运行态缺少 queueLength')
     assert(typeof auditRuntime.activeCaptureCount === 'number', '审计运行态缺少 activeCaptureCount')
     assert(typeof auditRuntime.settings === 'object' && auditRuntime.settings !== null, '审计运行态缺少 settings')
@@ -276,15 +277,15 @@ async function main(): Promise<void> {
 }
 
 async function checkHealth(): Promise<void> {
-  const health = await requestJson<Record<string, unknown>>('/api/health')
+  const health = await requestJson<Record<string, unknown>>('/__aisys__/health')
   assert(health.status === 'ok', `健康检查失败：${JSON.stringify(health)}`)
 }
 
 async function loginAsAdmin(): Promise<void> {
-  const captcha = await getEnvelope<{ captchaId: string; image: string }>('/api/auth/captcha')
+  const captcha = await getEnvelope<{ captchaId: string; image: string }>(apiPath('/auth/captcha'))
   const captchaCode = parseCaptchaCode(captcha.image)
   assert(captchaCode, '无法解析登录验证码')
-  const loginResult = await requestJson<ApiEnvelope<{ role?: string; username?: string }>>('/api/auth/login', {
+  const loginResult = await requestJson<ApiEnvelope<{ role?: string; username?: string }>>(apiPath('/auth/login'), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
@@ -309,7 +310,7 @@ async function createTemporaryGatewayKeyForAccount(
 ): Promise<ApiKeySummary & { key: string }> {
   const ownerScope = ownerScopeQuery(resourceState)
   const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)
-  const group = await postEnvelope<GroupSummary>(`/api/groups${ownerScope}`, {
+  const group = await postEnvelope<GroupSummary>(apiPath(`/groups${ownerScope}`), {
     name: `${temporaryResourcePrefix}-OpenAI-${stamp}`,
     providerCode: account.providerCode,
     description: '真实网关链路临时烟测分组',
@@ -317,8 +318,8 @@ async function createTemporaryGatewayKeyForAccount(
   })
   resourceState.temporaryGroupId = group.id
 
-  await postEnvelope<AccountSummary>(`/api/accounts/${account.id}/group${ownerScope}`, { groupId: group.id })
-  const apiKey = await postEnvelope<ApiKeySummary>(`/api/api-keys${ownerScope}`, {
+  await postEnvelope<AccountSummary>(apiPath(`/accounts/${account.id}/group${ownerScope}`), { groupId: group.id })
+  const apiKey = await postEnvelope<ApiKeySummary>(apiPath(`/api-keys${ownerScope}`), {
     name: `${temporaryResourcePrefix}-Key-${stamp}`,
     groupId: group.id,
     status: 'active',
@@ -354,7 +355,7 @@ async function waitForSmokeUsageRecords(resourceState: SmokeResourceState): Prom
 async function fetchSmokeUsageRecords(resourceState: SmokeResourceState): Promise<UsageRecordSummary[]> {
   const scopeQuery = ownerScopeQuery(resourceState)
   const separator = scopeQuery.includes('?') ? '&' : '?'
-  const result = await getEnvelope<UsageRecordListResult>(`/api/usage-records${scopeQuery}${separator}page=1&pageSize=200`)
+  const result = await getEnvelope<UsageRecordListResult>(apiPath(`/usage-records${scopeQuery}${separator}page=1&pageSize=200`))
   return result.items
 }
 
@@ -364,13 +365,13 @@ async function cleanupSmokeResources(resourceState: SmokeResourceState): Promise
   if (!ownerScope) return
 
   if (resourceState.temporaryApiKeyId) {
-    await ignoreCleanupError(() => requestNoContent(`/api/api-keys/${resourceState.temporaryApiKeyId}${ownerScope}`, { method: 'DELETE' }))
+    await ignoreCleanupError(() => requestNoContent(apiPath(`/api-keys/${resourceState.temporaryApiKeyId}${ownerScope}`), { method: 'DELETE' }))
   }
   if (resourceState.accountId && resourceState.originalGroupId) {
-    await ignoreCleanupError(() => postEnvelope<AccountSummary>(`/api/accounts/${resourceState.accountId}/group${ownerScope}`, { groupId: resourceState.originalGroupId }))
+    await ignoreCleanupError(() => postEnvelope<AccountSummary>(apiPath(`/accounts/${resourceState.accountId}/group${ownerScope}`), { groupId: resourceState.originalGroupId }))
   }
   if (resourceState.temporaryGroupId) {
-    await ignoreCleanupError(() => requestNoContent(`/api/groups/${resourceState.temporaryGroupId}${ownerScope}`, { method: 'DELETE' }))
+    await ignoreCleanupError(() => requestNoContent(apiPath(`/groups/${resourceState.temporaryGroupId}${ownerScope}`), { method: 'DELETE' }))
   }
 }
 
@@ -416,7 +417,7 @@ async function selectFirstUsableOpenAIAccount(accounts: AccountSummary[]): Promi
 
 async function testAccount(account: AccountSummary): Promise<AccountTestResult> {
   assert(account.ownerSystemAccountId, `账户 ${account.name} 缺少 ownerSystemAccountId`)
-  return postEnvelope<AccountTestResult>(`/api/accounts/${account.id}/test?systemAccountId=${encodeURIComponent(account.ownerSystemAccountId)}`, {
+  return postEnvelope<AccountTestResult>(apiPath(`/accounts/${account.id}/test?systemAccountId=${encodeURIComponent(account.ownerSystemAccountId)}`), {
     model,
     prompt
   }, accountTestTimeoutMs)
@@ -519,6 +520,10 @@ async function requestText(path: string, init?: RequestInit, timeoutMs = default
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '')
+}
+
+function apiPath(path: string): string {
+  return `${systemApiPrefix}${path.startsWith('/') ? path : `/${path}`}`
 }
 
 async function fetchWithTimeout(path: string, init?: RequestInit, timeoutMs = defaultRequestTimeoutMs): Promise<Response> {

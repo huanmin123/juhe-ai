@@ -22,7 +22,7 @@
 
 - 后端是 `juhe-ai` 的管理 API、OpenAI 兼容中转网关、账号调度、凭据处理、使用记录、原始审计日志、统计聚合和后台任务承载层。
 - 当前后端已覆盖 OpenAI 供应商、系统账户、系统团队、统一授权、AI 账户、分组、API Key、代理、使用记录、原始审计日志、统计缓存、系统设置、后台 worker、DB service 和 OpenAI OAuth/API Key 账号接入闭环。
-- 后端只暴露两类入口：管理面 `/api/*` 和 OpenAI 兼容网关 `/v1/*`；客户端不直接访问上游账号凭据。
+- 后端只暴露两类入口：系统管理面 `/__aisys__/api/*` 和 OpenAI 兼容网关 `/*` / `/v1/*`；客户端不直接访问上游账号凭据。
 - 后端是业务事实源；前端不传系统账户归属字段，不自行决定数据隔离、调度状态或敏感字段展示。
 
 ## 3. 技术边界
@@ -32,7 +32,7 @@
 - Web 框架：`Express`。
 - 存储：Node 内置 `node:sqlite`，默认拆为业务库 `backend/data/juhe-ai.sqlite3` 和记录库 `backend/data/juhe-ai-records.sqlite3`。
 - 配置：只读取 `backend/.env`，相对路径按 `backend/` 目录解析。
-- 网关协议：对外统一兼容 OpenAI `/v1/*`，当前只启用 OpenAI 供应商适配。
+- 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口，当前只启用 OpenAI 供应商适配。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
 
 ## 4. 目录规划
@@ -76,7 +76,7 @@
 | 原始审计日志 | `modules/audit-logs/` | 审计查询、内存队列、终态入队和批量落库 |
 | 统计与监控 | `modules/stats/`、`modules/background/` | 统计缓存读取、增量聚合和系统指标采样 |
 | 设置 | `modules/settings/` | 全局设置和系统账户级设置读写 |
-| 网关 | `modules/gateway/openai-gateway.routes.ts` | `/v1/*` 入口、账号调度、运行态并发占用、上游转发、使用记录写入和审计上下文捕获 |
+| 网关 | `modules/gateway/openai-gateway.routes.ts` | `/*` / `/v1/*` 入口、账号调度、运行态并发占用、上游转发、使用记录写入和审计上下文捕获 |
 
 ## 5. 请求分层
 
@@ -84,7 +84,7 @@
 
 ```mermaid
 flowchart LR
-  Client["前端管理页面"] --> Api["/api/* 路由"]
+  Client["前端管理页面"] --> Api["/__aisys__/api/* 路由"]
   Api --> Auth["登录态与权限中间件"]
   Auth --> Service["模块服务"]
   Service --> Repo["repository"]
@@ -92,7 +92,7 @@ flowchart LR
 ```
 
 - 未登录只允许访问登录、公开设置和健康检查等明确入口。
-- `/api/*` 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
+- `/__aisys__/api/*` 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
 - routes 层负责解析参数、返回统一响应和 HTTP 状态；业务规则和副作用放到 service 或 repository。
 - repository 必须根据当前登录态或显式访问作用域过滤数据，避免普通用户读写其他系统账户资源。
 - 管理 API 响应、分页筛选、错误语义和权限摘要见 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
@@ -101,7 +101,7 @@ flowchart LR
 
 ```mermaid
 flowchart LR
-  Client["OpenAI 兼容客户端"] --> Gateway["/v1/*"]
+  Client["OpenAI 兼容客户端"] --> Gateway["/* / /v1/*"]
   Gateway --> Key["校验本地 API Key"]
   Key --> Group["定位绑定分组"]
   Group --> Account["选择可调度账号"]
@@ -244,7 +244,7 @@ erDiagram
 ## 9. 开发约束
 
 - 新管理接口：先确认模块归属，再补 route、repository、领域类型、前端 API 和文档。
-- 新网关能力：先确认是否改变 `/v1/*` 主链路、错误策略、调度规则或使用记录字段。
+- 新网关能力：先确认是否改变 `/*` / `/v1/*` 客户端入口、OpenAI `/v1` 上游归一化、错误策略、调度规则或使用记录字段。
 - 新审计能力：先确认是否改变原始审计采样、队列、终态入队、SSE 结束后入队或 payload 加密边界。
 - 新数据库字段：先写清默认值、数据清洗方案、敏感边界和索引需求。
 - 新接口契约或权限变化：先确认 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
