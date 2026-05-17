@@ -1,6 +1,7 @@
 import type { AccountSummary } from '../../domain/types.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OperationLogInput } from '../../storage/repositories.js'
 import type { RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
+import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.service.js'
@@ -30,6 +31,7 @@ export interface DbServiceServerRuntimeSnapshot {
       ready: boolean
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
       operationLogQueue: DbServiceRuntimeQueueSnapshot
+      recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
       auditLogQueue: DbServiceRuntimeQueueSnapshot
       runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
     }
@@ -247,4 +249,8 @@ export type DbServiceChildMessage =
   | {
     type: 'background_worker_operation_logs'
     items: OperationLogInput[]
+  }
+  | {
+    type: 'background_worker_record_maintenance'
+    items: RecordMaintenanceJob[]
   }

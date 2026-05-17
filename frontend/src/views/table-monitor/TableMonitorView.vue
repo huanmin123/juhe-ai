@@ -43,7 +43,7 @@
       v-model:open="cleanupModalOpen"
       title="清理使用记录"
       width="560px"
-      ok-text="清理"
+      ok-text="提交清理"
       cancel-text="取消"
       :confirm-loading="cleanupSubmitting"
       :ok-button-props="{ danger: true, disabled: cleanupSubmitting || !cleanupCutoffAt }"
@@ -53,7 +53,7 @@
         show-icon
         type="warning"
         message="只清理已完成统计聚合的使用记录"
-        description="系统会保留最近 1 天数据，并同时按统计游标限制可删除范围，避免授权消耗、统计缓存和账号质量统计断裂。删除后 SQLite 文件大小不会立即变小，释放出的空闲页会留在库内供后续新增数据复用；只有需要归还磁盘时，才需要停服执行 VACUUM。"
+        description="系统会提交后台任务分批清理，保留最近 1 天数据，并同时按统计游标限制可删除范围，避免授权消耗、统计缓存和账号质量统计断裂。删除后 SQLite 文件大小不会立即变小，释放出的空闲页会留在库内供后续新增数据复用；只有需要归还磁盘时，才需要停服执行 VACUUM。"
       />
       <a-form class="cleanup-form" layout="vertical">
         <a-form-item label="清理这个时间之前的 usage_records" required>
@@ -271,6 +271,7 @@ const historyCards = computed(() => {
 
 const cleanupResultType = computed(() => {
   if (!cleanupResult.value) return 'info'
+  if (cleanupResult.value.queued) return 'info'
   if (cleanupResult.value.blockedReason) return 'warning'
   return cleanupResult.value.deletedRows > 0 ? 'success' : 'info'
 })
@@ -278,6 +279,7 @@ const cleanupResultType = computed(() => {
 const cleanupResultMessage = computed(() => {
   const result = cleanupResult.value
   if (!result) return ''
+  if (result.queued) return '后台清理任务已提交'
   if (result.blockedReason) return '本次未清理'
   return result.deletedRows > 0
     ? `已清理 ${formatInteger(result.deletedRows)} 条使用记录`
@@ -288,6 +290,15 @@ const cleanupResultDescription = computed(() => {
   const result = cleanupResult.value
   if (!result) return ''
   if (result.blockedReason) return result.blockedReason
+  if (result.queued) {
+    const details = [
+      `截止时间：${formatDateTime(result.cutoffAt)}`,
+      result.submittedAt ? `提交时间：${formatDateTime(result.submittedAt)}` : undefined,
+      result.jobId ? `任务：${result.jobId}` : undefined,
+      'worker 会在后台分批清理，稍后刷新表监控可查看记录库变化。'
+    ].filter((item): item is string => Boolean(item))
+    return details.join('；')
+  }
   const details = [
     `截止时间：${formatDateTime(result.cutoffAt)}`,
     result.safetyCursor?.createdAt ? `安全游标：${formatDateTime(result.safetyCursor.createdAt)}` : undefined,
@@ -334,7 +345,9 @@ async function submitUsageRecordsCleanup() {
       maxBatches: 100
     })
     cleanupResult.value = result
-    if (result.deletedRows > 0) {
+    if (result.queued) {
+      message.success('使用记录清理任务已提交后台')
+    } else if (result.deletedRows > 0) {
       message.success(`已清理 ${formatInteger(result.deletedRows)} 条使用记录`)
       await loadData()
     } else if (result.blockedReason) {

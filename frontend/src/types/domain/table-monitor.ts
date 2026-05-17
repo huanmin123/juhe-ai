@@ -45,6 +45,9 @@ export interface UsageRecordsCleanupResult {
   batchSize: number
   maxBatches: number
   hasMore: boolean
+  queued?: boolean
+  jobId?: string
+  submittedAt?: string
   safetyCursor?: {
     createdAt: string
     id: string

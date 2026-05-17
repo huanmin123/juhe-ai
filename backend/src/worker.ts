@@ -11,6 +11,12 @@ import {
   getOperationLogQueueRuntime,
   installOperationLogQueueShutdownHooks
 } from './modules/operation-logs/operation-log-queue.service.js'
+import {
+  enqueueRecordMaintenanceJobsLocal,
+  getRecordMaintenanceQueueRuntime,
+  installRecordMaintenanceQueueShutdownHooks,
+  isRecordMaintenanceJob
+} from './modules/record-maintenance/record-maintenance-queue.service.js'
 import { startRuntimeLogFileImport } from './modules/runtime-logs/runtime-log-file-import.service.js'
 import {
   enqueueRuntimeLogLineLocal,
@@ -30,6 +36,7 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_usage_records'; items: unknown[] }
   | { type: 'background_worker_audit_logs'; items: unknown[] }
   | { type: 'background_worker_operation_logs'; items: unknown[] }
+  | { type: 'background_worker_record_maintenance'; items: unknown[] }
   | { type: 'background_worker_runtime_log_line'; line: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
 
@@ -39,6 +46,7 @@ installProcessLogHandlers()
 startLogMaintenance()
 installUsageRecordQueueShutdownHooks()
 installOperationLogQueueShutdownHooks()
+installRecordMaintenanceQueueShutdownHooks()
 installRuntimeLogIndexQueueShutdownHooks()
 process.once('beforeExit', flushAllAuditLogQueue)
 process.once('exit', flushAllAuditLogQueue)
@@ -60,6 +68,9 @@ process.on('message', (message: unknown) => {
       break
     case 'background_worker_operation_logs':
       enqueueOperationLogsLocal(message.items as Parameters<typeof enqueueOperationLogsLocal>[0])
+      break
+    case 'background_worker_record_maintenance':
+      enqueueRecordMaintenanceJobsLocal(message.items.filter(isRecordMaintenanceJob))
       break
     case 'background_worker_runtime_log_line':
       if (typeof message.line === 'string') {
@@ -101,6 +112,7 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     processRole: 'worker',
     usageRecordQueue: queueRuntime(getUsageRecordQueueRuntime()),
     operationLogQueue: queueRuntime(getOperationLogQueueRuntime()),
+    recordMaintenanceQueue: queueRuntime(getRecordMaintenanceQueueRuntime()),
     auditLogQueue: queueRuntime({
       queueLength: auditRuntime.queueLength,
       queueBytes: auditRuntime.queueBytes,

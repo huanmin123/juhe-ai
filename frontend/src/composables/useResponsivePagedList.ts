@@ -77,13 +77,12 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
     }
     try {
       const result = await options.fetchPage(loadOptions, pagination)
-      const loadedCount = loadOptions.append ? items.value.length + result.items.length : result.items.length
-      pagination.current = result.page
-      pagination.pageSize = result.pageSize
-      pagination.total = result.total
-      hasMore.value = typeof result.hasMore === 'boolean' ? result.hasMore : loadedCount < result.total
-      currentPageCount.value = result.items.length
-      items.value = loadOptions.append ? [...items.value, ...result.items] : result.items
+      if (!loadOptions.append && result.page > 1 && result.items.length === 0 && result.hasMore === false) {
+        pagination.current = 1
+        applyPageResult(await options.fetchPage(loadOptions, pagination), loadOptions)
+      } else {
+        applyPageResult(result, loadOptions)
+      }
       return true
     } catch (error) {
       options.onError?.(error)
@@ -93,6 +92,16 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
         loading.value = false
       }
     }
+  }
+
+  function applyPageResult(result: ResponsivePagedListResult<T>, loadOptions: ResponsivePagedListLoadOptions & ExtraOptions): void {
+    const loadedCount = loadOptions.append ? items.value.length + result.items.length : result.items.length
+    pagination.current = result.page
+    pagination.pageSize = result.pageSize
+    pagination.total = result.total
+    hasMore.value = typeof result.hasMore === 'boolean' ? result.hasMore : loadedCount < result.total
+    currentPageCount.value = result.items.length
+    items.value = loadOptions.append ? [...items.value, ...result.items] : result.items
   }
 
   function handleTableChange(paginationInfo: unknown): void {

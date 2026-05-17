@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
+import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export interface BackgroundWorkerQueueRuntime {
   queueLength: number
@@ -31,6 +32,7 @@ export interface BackgroundWorkerRuntimeSnapshot {
   processRole: 'worker'
   usageRecordQueue: BackgroundWorkerQueueRuntime
   operationLogQueue: BackgroundWorkerQueueRuntime
+  recordMaintenanceQueue: BackgroundWorkerQueueRuntime
   auditLogQueue: BackgroundWorkerQueueRuntime
   runtimeLogIndexQueue: BackgroundWorkerRuntimeLogQueueRuntime
 }
@@ -40,6 +42,7 @@ type BackgroundWorkerMessage =
   | { type: 'background_worker_usage_records'; items: UsageRecordInput[] }
   | { type: 'background_worker_audit_logs'; items: AuditLogInput[] }
   | { type: 'background_worker_operation_logs'; items: OperationLogInput[] }
+  | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
   | { type: 'background_worker_runtime_log_line'; line: string }
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
@@ -211,6 +214,17 @@ export function sendOperationLogsToWorker(items: OperationLogInput[]): boolean {
 
   return sendBackgroundWorkerMessage({
     type: 'background_worker_operation_logs',
+    items
+  })
+}
+
+export function sendRecordMaintenanceJobsToWorker(items: RecordMaintenanceJob[]): boolean {
+  if (runtimeConfig.processRole === 'worker') {
+    return false
+  }
+
+  return sendBackgroundWorkerMessage({
+    type: 'background_worker_record_maintenance',
     items
   })
 }
@@ -399,7 +413,7 @@ function shiftDroppableRegularWorkerMessage(): BackgroundWorkerMessage | undefin
     return removeRegularWorkerMessageAt(runtimeLogIndex)
   }
 
-  const nonAuditIndex = regularWorkerMessageQueue.findIndex((message) => message.type !== 'background_worker_audit_logs' && message.type !== 'background_worker_operation_logs')
+  const nonAuditIndex = regularWorkerMessageQueue.findIndex((message) => message.type !== 'background_worker_audit_logs' && message.type !== 'background_worker_operation_logs' && message.type !== 'background_worker_record_maintenance')
   if (nonAuditIndex >= 0) {
     return removeRegularWorkerMessageAt(nonAuditIndex)
   }
@@ -457,6 +471,8 @@ function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
     case 'background_worker_audit_logs':
       return message.items.reduce((sum, item) => sum + estimateAuditLogBytes(item), 128)
     case 'background_worker_operation_logs':
+      return message.items.reduce((sum, item) => sum + estimateJsonBytes(item) + 256, 128)
+    case 'background_worker_record_maintenance':
       return message.items.reduce((sum, item) => sum + estimateJsonBytes(item) + 256, 128)
     case 'background_worker_status_request':
     case 'background_worker_status_response':

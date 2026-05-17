@@ -4,10 +4,10 @@ import { z } from 'zod'
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { nowIso } from '../../storage/database.js'
-import { cleanupProcessedUsageRecordsBeforeWithResult } from '../../storage/repositories.js'
 import { getTableStorageOverview, listTableStorageHistory, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
 import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
+import { enqueueRecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export const tableMonitorRouter = Router()
 
@@ -42,6 +42,9 @@ interface UsageRecordsCleanupResult {
   batchSize: number
   maxBatches: number
   hasMore: boolean
+  queued: boolean
+  jobId?: string
+  submittedAt?: string
   safetyCursor?: {
     createdAt: string
     id: string
@@ -90,64 +93,34 @@ tableMonitorRouter.post('/usage-records/cleanup', mutationGuard({
     return
   }
 
-  const result = cleanupUsageRecordsBefore({
+  const batchSize = parsed.data.batchSize ?? defaultCleanupBatchSize
+  const maxBatches = parsed.data.maxBatches ?? defaultCleanupMaxBatches
+  const job = enqueueRecordMaintenanceJob({
+    type: 'usage_records_cleanup',
     cutoffAt: cutoff.iso,
-    batchSize: parsed.data.batchSize ?? defaultCleanupBatchSize,
-    maxBatches: parsed.data.maxBatches ?? defaultCleanupMaxBatches
+    batchSize,
+    maxBatches
   })
+  const result: UsageRecordsCleanupResult = {
+    cutoffAt: cutoff.iso,
+    deletedRows: 0,
+    batches: 0,
+    batchSize,
+    maxBatches,
+    hasMore: false,
+    queued: true,
+    jobId: job.id,
+    submittedAt: job.createdAt ?? nowIso()
+  }
 
-  if (result.deletedRows > 0) {
-    try {
-      recordUsageRecordsCleanupOperation(result, req)
-    } catch (error) {
-      logger.warn(errorLogFields(error, { event: 'table_monitor_usage_records_cleanup_operation_log_failed' }), '表监控使用记录清理操作日志写入失败')
-    }
+  try {
+    recordUsageRecordsCleanupOperation(result, req)
+  } catch (error) {
+    logger.warn(errorLogFields(error, { event: 'table_monitor_usage_records_cleanup_operation_log_failed' }), '表监控使用记录清理操作日志写入失败')
   }
 
   res.json(ok(result))
 })
-
-function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number; maxBatches: number }): UsageRecordsCleanupResult {
-  let deletedRows = 0
-  let batches = 0
-  let hasMore = false
-  let safetyCursor: UsageRecordsCleanupResult['safetyCursor']
-  let blockedReason: string | undefined
-
-  for (let index = 0; index < input.maxBatches; index += 1) {
-    const batch = cleanupProcessedUsageRecordsBeforeWithResult(input.cutoffAt, input.batchSize)
-    if (batch.safetyCursorCreatedAt && batch.safetyCursorId) {
-      safetyCursor = {
-        createdAt: batch.safetyCursorCreatedAt,
-        id: batch.safetyCursorId
-      }
-    }
-    if (batch.blockedReason) {
-      blockedReason = batch.blockedReason
-      hasMore = false
-      break
-    }
-    deletedRows += batch.deletedRows
-    hasMore = batch.hasMore
-    if (batch.deletedRows > 0) {
-      batches += 1
-    }
-    if (batch.deletedRows === 0 || !batch.hasMore) {
-      break
-    }
-  }
-
-  return {
-    cutoffAt: input.cutoffAt,
-    deletedRows,
-    batches,
-    batchSize: input.batchSize,
-    maxBatches: input.maxBatches,
-    hasMore,
-    safetyCursor,
-    blockedReason
-  }
-}
 
 function normalizeCleanupCutoff(value: string): { iso: string; time: number } | undefined {
   const time = Date.parse(value)
@@ -162,23 +135,22 @@ function recordUsageRecordsCleanupOperation(result: UsageRecordsCleanupResult, r
     resourceType: 'usage_records',
     resourceId: 'usage_records',
     resourceName: 'usage_records',
-    summary: `清理使用记录：删除 ${result.deletedRows} 条`,
+    summary: `提交使用记录清理任务：${result.jobId ?? result.cutoffAt}`,
     detailLevel: 'full',
     visibilityScope: 'admin_only',
     changes: [
       safeChange('cutoffAt', '清理截止时间', undefined, result.cutoffAt),
-      safeChange('deletedRows', '删除行数', undefined, result.deletedRows),
-      safeChange('batches', '清理批次', undefined, result.batches),
-      safeChange('safetyCursorCreatedAt', '安全游标时间', undefined, result.safetyCursor?.createdAt)
+      safeChange('batchSize', '单批数量', undefined, result.batchSize),
+      safeChange('maxBatches', '最大批次', undefined, result.maxBatches),
+      safeChange('jobId', '后台任务', undefined, result.jobId)
     ],
     metadata: {
       cutoffAt: result.cutoffAt,
-      deletedRows: result.deletedRows,
-      batches: result.batches,
       batchSize: result.batchSize,
       maxBatches: result.maxBatches,
-      hasMore: result.hasMore,
-      safetyCursor: result.safetyCursor
+      queued: result.queued,
+      jobId: result.jobId,
+      submittedAt: result.submittedAt
     }
   }, req)
 }

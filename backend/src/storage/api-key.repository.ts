@@ -260,9 +260,14 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   return next
 }
 
+export interface ApiKeyDeleteCleanupTarget {
+  apiKeyId: string
+  systemAccountId: string
+}
+
 export interface ApiKeyDeleteResult {
   deleted: boolean
-  cleanupRelatedData: () => void
+  cleanupTarget?: ApiKeyDeleteCleanupTarget
 }
 
 export function deleteApiKey(id: string, access?: AccessScope): boolean {
@@ -274,7 +279,7 @@ export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope)
   const database = getDatabase()
   const row = database.prepare(`SELECT id, system_account_id FROM api_keys WHERE id = ?${scope.clause}`).get(id, ...scope.params) as unknown as ApiKeyDeleteRow | undefined
   if (!row) {
-    return { deleted: false, cleanupRelatedData: () => {} }
+    return { deleted: false }
   }
 
   const transactionStarted = beginDatabaseTransaction(database)
@@ -286,7 +291,12 @@ export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope)
     }
     return {
       deleted: result.changes > 0,
-      cleanupRelatedData: result.changes > 0 ? () => deleteApiKeyRelatedData(row) : () => {}
+      cleanupTarget: result.changes > 0
+        ? {
+          apiKeyId: row.id,
+          systemAccountId: row.system_account_id
+        }
+        : undefined
     }
   } catch (error) {
     try {
@@ -295,6 +305,13 @@ export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope)
     }
     throw error
   }
+}
+
+export function cleanupDeletedApiKeyRelatedRecordData(input: { apiKeyId: string; systemAccountId: string }): void {
+  deleteApiKeyRelatedData({
+    id: input.apiKeyId,
+    system_account_id: input.systemAccountId
+  })
 }
 
 function deleteApiKeyRelatedData(row: ApiKeyDeleteRow): void {

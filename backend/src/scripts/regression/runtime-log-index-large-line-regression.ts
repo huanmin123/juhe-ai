@@ -44,6 +44,11 @@ try {
   assert(large.items[0]?.rawJson.includes('[truncated]'), '超长日志 rawJson 应带截断标记')
   assert((large.items[0]?.rawJson.length ?? 0) < 140 * 1024, '超长日志 rawJson 应在索引前截断')
 
+  const facets = runtimeLogsRepository.getRuntimeLogFacets()
+  assert.equal(facets.totalIndexed, 2, '运行日志 facets 应读取预聚合总量')
+  assert.equal(facets.levels.find((item) => item.value === 'info')?.count, 2, '运行日志 facets 应维护 level 预聚合')
+  assert(facets.events.includes('normal_runtime_log_event'), '运行日志 facets 应维护事件列表')
+
   console.log('运行日志索引超长行回归通过：超长日志不再同步完整解析，仍保留截断原文搜索')
 } finally {
   try {

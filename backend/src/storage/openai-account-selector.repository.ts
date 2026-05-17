@@ -3,6 +3,7 @@ import { buildSystemAccountScopeClause, currentSystemAccountId } from './access-
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile } from './proxy.repository.js'
+import { activeResourceAuthorization, groupSystemAccountId } from './resource-authorization-helpers.js'
 import { getSettings } from './settings.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
 
@@ -67,13 +68,6 @@ interface GroupAccountRow {
   local_last_error_message?: string | null
   local_super_priority_enabled?: number | null
   local_fallback_enabled?: number | null
-}
-
-type ResourceAuthorizationRow = {
-  id: string
-  expires_at: string | null
-  effective_source_type: ResourceAuthorizationSourceType | null
-  effective_source_team_id: string | null
 }
 
 export function selectOpenAIAccountForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret | undefined {
@@ -148,15 +142,15 @@ export function findOpenAIAccountForGroup(
 }
 
 export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
-  const group = groupOwnerAndProvider(groupId)
-  if (!group) return undefined
-  if (group.systemAccountId === systemAccountId) {
-    return { groupOwnerSystemAccountId: group.systemAccountId, groupAccessType: 'owner' }
+  const groupOwnerSystemAccountId = groupSystemAccountId(groupId)
+  if (!groupOwnerSystemAccountId) return undefined
+  if (groupOwnerSystemAccountId === systemAccountId) {
+    return { groupOwnerSystemAccountId, groupAccessType: 'owner' }
   }
   const authorization = activeResourceAuthorization('group', groupId, systemAccountId)
   if (!authorization) return undefined
   return {
-    groupOwnerSystemAccountId: group.systemAccountId,
+    groupOwnerSystemAccountId,
     groupAccessType: 'authorized',
     groupAuthorizationId: authorization.id,
     groupAuthorizationExpiresAt: authorization.expires_at ?? undefined,
@@ -484,18 +478,6 @@ function canScheduleAuthorizedAccount(input: {
   }
   const authorization = activeResourceAuthorization('account', input.accountId, input.systemAccountId)
   return authorization?.id === input.authorizationId
-}
-
-function groupOwnerAndProvider(groupId: string): { systemAccountId: string } | undefined {
-  const row = getDatabase().prepare('SELECT system_account_id FROM groups WHERE id = ?').get(groupId) as unknown as { system_account_id?: string } | undefined
-  return row?.system_account_id ? { systemAccountId: row.system_account_id } : undefined
-}
-
-function activeResourceAuthorization(resourceType: 'account' | 'group', resourceId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
-  const now = nowIso()
-  return getDatabase()
-    .prepare("SELECT id, expires_at, effective_source_type, effective_source_team_id FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
-    .get(resourceType, resourceId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
 }
 
 function disableExpiredAccountsForSelection(systemAccountId: string): void {

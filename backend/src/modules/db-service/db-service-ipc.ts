@@ -246,6 +246,11 @@ function handleDbServiceMessage(message: unknown): void {
         void forwardOperationLogsToWorker(record.items)
       }
       break
+    case 'background_worker_record_maintenance':
+      if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
+        void forwardRecordMaintenanceJobsToWorker(record.items)
+      }
+      break
     default:
       break
   }
@@ -373,6 +378,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           ready: workerSnapshot.ready,
           usageRecordQueue: { ...workerSnapshot.usageRecordQueue },
           operationLogQueue: { ...workerSnapshot.operationLogQueue },
+          recordMaintenanceQueue: { ...workerSnapshot.recordMaintenanceQueue },
           auditLogQueue: { ...workerSnapshot.auditLogQueue },
           runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue }
         }
@@ -411,5 +417,14 @@ async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {
   const operationLogs = items.filter(operationLogQueue.isOperationLogInput)
   if (operationLogs.length > 0) {
     backgroundIpc.sendOperationLogsToWorker(operationLogs)
+  }
+}
+
+async function forwardRecordMaintenanceJobsToWorker(items: unknown[]): Promise<void> {
+  const backgroundIpc = await import('../background/background-ipc.js')
+  const recordMaintenanceQueue = await import('../record-maintenance/record-maintenance-queue.service.js')
+  const jobs = items.filter(recordMaintenanceQueue.isRecordMaintenanceJob)
+  if (jobs.length > 0) {
+    backgroundIpc.sendRecordMaintenanceJobsToWorker(jobs)
   }
 }

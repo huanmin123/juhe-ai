@@ -96,6 +96,7 @@ export {
   type AnnouncementInput
 } from './announcements.repository.js'
 export {
+  cleanupDeletedApiKeyRelatedRecordData,
   createApiKeyRecord,
   deleteApiKey,
   deleteApiKeyWithRelatedCleanup,

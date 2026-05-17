@@ -9,6 +9,7 @@ import { bodyField, mutationGuard, normalizedText, queryField } from '../dedupli
 import { clearApiKeyQuotaCache, invalidateApiKeyQuotaCacheById } from '../gateway/api-key-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { enqueueRecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export const apiKeysRouter = Router()
 
@@ -180,7 +181,13 @@ apiKeysRouter.delete('/:id', (req, res) => {
       return {
         result: true,
         afterCommit: () => {
-          deleteResult.cleanupRelatedData()
+          if (deleteResult.cleanupTarget) {
+            enqueueRecordMaintenanceJob({
+              type: 'api_key_related_cleanup',
+              apiKeyId: deleteResult.cleanupTarget.apiKeyId,
+              systemAccountId: deleteResult.cleanupTarget.systemAccountId
+            })
+          }
           clearGatewayRuntimeCache()
           invalidateApiKeyQuotaCacheById(req.params.id)
         },

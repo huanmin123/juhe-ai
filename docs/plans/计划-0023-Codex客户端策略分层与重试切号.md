@@ -133,6 +133,7 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 | 命令类验证 | 后端类型检查 | `pnpm --filter juhe-ai-backend typecheck` | 类型通过 | 已通过 | 2026-05-18 执行通过 |
 | 功能主流程 | Codex turn 前 3 次失败 | `pnpm --filter juhe-ai-backend test:codex-client-strategy` | 返回 Codex 可重试事件并记录 turn 失败账号 | 已通过 | 纯逻辑回归覆盖失败计数与账号记录 |
 | 功能主流程 | Codex turn 第 4 次切号 | `pnpm --filter juhe-ai-backend test:codex-client-strategy` | 候选账号避让前序失败账号，不升级到全部客户端 | 已通过 | 3 次失败后第 4 次候选账号排序为未失败账号优先 |
+| e2e 模拟 | 临时库假账号 + mock 上游第 4 次切号 | `pnpm --filter juhe-ai-backend test:smoke:mock` | 前 3 次命中失败账号，第 4 次命中备用账号；非 Codex 和终止类错误不切号 | 已通过 | 2026-05-18 新增并执行通过，不依赖真实账户 |
 | 异常与边界 | 缺少 `x-codex-turn-metadata` 或缺 `turn_id` | `pnpm --filter juhe-ai-backend test:codex-client-strategy` | 不触发 Codex turn 策略，不做 session fallback | 已通过 | `session_id` / `x-client-request-id` 不能单独升级为 Codex |
 | 回归场景 | 非 Codex OpenAI-compatible 客户端 | `pnpm --filter juhe-ai-backend test:stream-first-output-timeout` | 不被 Codex 可重试码和第 4 次切号逻辑影响 | 已通过 | 非 Codex Responses SSE 保留原始错误码，不伪造 `upstream_retryable_error` |
 | 回归场景 | OAuth Codex adapter | `pnpm --filter juhe-ai-backend test:openai-oauth-codex-adapter` | OAuth adapter 原有 header/body/session 规则不退化 | 已通过 | 2026-05-18 执行通过 |
@@ -165,7 +166,7 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 
 - 类型检查：已执行，命令：`pnpm --filter juhe-ai-backend typecheck`，结果通过。
 - 构建：未执行，本次以类型检查和定向回归验证为准。
-- 单项验证：已执行，命令：`pnpm --filter juhe-ai-backend test:codex-client-strategy`、`pnpm --filter juhe-ai-backend test:stream-first-output-timeout`、`pnpm --filter juhe-ai-backend test:openai-oauth-codex-adapter`，结果均通过。
+- 单项验证：已执行，命令：`pnpm --filter juhe-ai-backend test:codex-client-strategy`、`pnpm --filter juhe-ai-backend test:stream-first-output-timeout`、`pnpm --filter juhe-ai-backend test:smoke:mock`、`pnpm --filter juhe-ai-backend test:openai-oauth-codex-adapter`，结果均通过。
 - 手动验证：未执行真实 Codex 客户端现场复现。
 - 测试项结果：代码行为和文档项已通过。
 - 未验证项：真实 Codex 客户端现场复现、真实上游多账号切号、服务重启状态丢失后的实际体验；状态丢失的设计行为为回到普通错误路径，不做不精确 fallback。
@@ -183,5 +184,5 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 - 完成时间：2026-05-18
 - 实际完成内容：完成 Codex 客户端策略分层、turn 级失败状态缓存、3 次失败后第 4 次账号避让、Codex-only 可重试流式失败改写，以及非 Codex 不伪造可重试码的回归覆盖。
 - 主要改动位置：`backend/src/modules/gateway/openai-gateway-client-strategy.ts`、`backend/src/modules/gateway/openai-gateway-codex-turn-retry.service.ts`、`backend/src/modules/gateway/openai-gateway-request-preflight.ts`、`backend/src/modules/gateway/openai-gateway-stream.ts`、`backend/src/scripts/regression/codex-client-strategy-regression.ts`、`docs/plans/计划-0023-Codex客户端策略分层与重试切号.md`、`docs/functions/流式中断与客户端重试调研.md`、`docs/functions/网关异常重试与兜底策略.md`。
-- 验证结果：`test:codex-client-strategy`、`test:stream-first-output-timeout`、`test:openai-oauth-codex-adapter`、`typecheck` 均通过。
+- 验证结果：`test:codex-client-strategy`、`test:stream-first-output-timeout`、`test:smoke:mock`、`test:openai-oauth-codex-adapter`、`typecheck` 均通过。
 - 后续建议：后续接入其他客户端时新增独立 profile，并补各自协议的失败事件和回归；不要复用 Codex turn_id 或 `upstream_retryable_error` 语义。
