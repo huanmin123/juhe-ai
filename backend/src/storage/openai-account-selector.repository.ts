@@ -493,8 +493,6 @@ function disableExpiredAccountsForSelection(systemAccountId: string): void {
       UPDATE accounts
       SET status = 'disabled',
           schedulable = 0,
-          super_priority_enabled = 0,
-          fallback_enabled = 0,
           cooldown_until = NULL,
           last_error_code = NULL,
           last_error_message = ?,

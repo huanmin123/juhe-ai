@@ -148,19 +148,21 @@ try {
   )
 
   const migration = repositories.migrateAccountTraffic({
-    sourceAccountId: fallbackAccount.id,
+    sourceAccountId: normalAccount.id,
     targetAccountId: granteeOwnedAccount.id,
     sourceStatus: 'temporary_unavailable'
   }, granteeAccess)
   assert.equal(migration?.sourceAccount.status, 'temporary_unavailable', '授权账户迁移应把源账户置为被授权人本地临时不可调用')
+  assert.equal(migration?.sourceAccount.fallbackEnabled, true, '授权账户本地临时不可调用后应保留本地降级备用')
   assert.equal(migration?.targetAccount.id, granteeOwnedAccount.id, '授权账户迁移应允许切到被授权人自己的同分组可用账户')
-  assert.equal(repositories.listAccounts(ownerAccess).find((account) => account.id === fallbackAccount.id)?.status, 'active', '授权账户迁移不应修改所有者原账户状态')
-  assert.equal(repositories.listAccounts(otherGranteeAccess).find((account) => account.id === fallbackAccount.id)?.status, 'active', '授权账户迁移不应影响其他被授权人')
-  assert(!repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id).some((account) => account.id === fallbackAccount.id), '本地迁移后的授权账户不应继续参与被授权人调度')
-  assert(repositories.listOpenAIAccountsForGroup(otherGranteeGroup.id, otherGrantee.id).some((account) => account.id === fallbackAccount.id), '本地迁移后不应移除其他被授权人的同账号调度')
-  const restored = repositories.updateAuthorizedAccountBindingDispatch(fallbackAccount.id, { clearFailureState: true }, granteeAccess)
+  assert.equal(repositories.listAccounts(ownerAccess).find((account) => account.id === normalAccount.id)?.status, 'active', '授权账户迁移不应修改所有者原账户状态')
+  assert.equal(repositories.listAccounts(otherGranteeAccess).find((account) => account.id === normalAccount.id)?.status, 'active', '授权账户迁移不应影响其他被授权人')
+  assert(!repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id).some((account) => account.id === normalAccount.id), '本地迁移后的授权账户不应继续参与被授权人调度')
+  assert(repositories.listOpenAIAccountsForGroup(otherGranteeGroup.id, otherGrantee.id).some((account) => account.id === normalAccount.id), '本地迁移后不应移除其他被授权人的同账号调度')
+  const restored = repositories.updateAuthorizedAccountBindingDispatch(normalAccount.id, { clearFailureState: true }, granteeAccess)
   assert.equal(restored?.status, 'active', '被授权人应能恢复自己本地临时不可调用的授权账户')
-  assert(repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id).some((account) => account.id === fallbackAccount.id), '恢复后授权账户应重新参与被授权人调度')
+  assert.equal(restored?.fallbackEnabled, true, '恢复后应继续保留被授权人的本地降级备用')
+  assert(repositories.listOpenAIAccountsForGroup(granteeGroup.id, grantee.id).some((account) => account.id === normalAccount.id), '恢复后授权账户应重新参与被授权人调度')
 
   const granteeAccounts = repositories.listAccounts(granteeAccess)
   const granteeSuperAccount = granteeAccounts.find((account) => account.id === superAccount.id)

@@ -64,20 +64,14 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
   const items: AccountMenuItem[] = []
   if (isAuthorizedAccount(account)) {
     if (account.status === 'error') {
+      pushDispatchFlagItems(items, account)
       return items.map(normalizeAccountMenuItem)
     }
     if (account.boundGroupId && account.localStatus && account.localStatus !== 'active') {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
+    pushDispatchFlagItems(items, account)
     if (account.status === 'active') {
-      items.push({
-        key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
-        label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'
-      })
-      items.push({
-        key: account.fallbackEnabled ? 'fallback-off' : 'fallback-on',
-        label: account.fallbackEnabled ? '取消降级备用' : '降级备用'
-      })
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
     }
     return items.map(normalizeAccountMenuItem)
@@ -89,6 +83,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     if (canRestoreException(account)) {
       items.push({ key: 'restore-normal', label: '恢复异常' })
     }
+    pushDispatchFlagItems(items, account)
     return items.map(normalizeAccountMenuItem)
   }
   if (canUseAccountActions(account)) {
@@ -99,16 +94,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     if (isTemporaryAccountStatus(account)) {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
-    if (account.status === 'active') {
-      items.push({
-        key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
-        label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'
-      })
-      items.push({
-        key: account.fallbackEnabled ? 'fallback-off' : 'fallback-on',
-        label: account.fallbackEnabled ? '取消降级备用' : '降级备用'
-      })
-    }
+    pushDispatchFlagItems(items, account)
     items.push({ key: 'migrate-traffic', label: '迁移流量' })
     items.push({
       key: 'toggle-status',
@@ -119,6 +105,21 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
     })
   }
   return items.map(normalizeAccountMenuItem)
+}
+
+function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountSummary): void {
+  if (account.status === 'active' || account.superPriorityEnabled) {
+    items.push({
+      key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
+      label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'
+    })
+  }
+  if (account.status === 'active' || account.fallbackEnabled) {
+    items.push({
+      key: account.fallbackEnabled ? 'fallback-off' : 'fallback-on',
+      label: account.fallbackEnabled ? '取消降级备用' : '降级备用'
+    })
+  }
 }
 
 function normalizeAccountMenuItem(item: AccountMenuItem): AccountMenuItem {

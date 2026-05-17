@@ -90,7 +90,8 @@ async function main(): Promise<void> {
         base_url: 'http://127.0.0.1:9/v1'
       },
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      superPriorityEnabled: true
     }, access)
     const group = repositories.createGroup({
       name: '停用账户状态保护回归分组',
@@ -103,6 +104,7 @@ async function main(): Promise<void> {
     assert(staleGatewayAccount?.status === 'active', '停用前应能读取到完整网关账号对象')
     const disabled = repositories.updateAccount(account.id, { status: 'disabled' }, access)
     assert(disabled?.status === 'disabled' && disabled.schedulable === false, '测试账户停用失败')
+    assertAccountDispatchFlags(account.id, true, false, '停用账户应保留用户设置的超级优先')
 
     const apiTestResponse = await fetch(`${baseUrl}/__aisys__/api/accounts/${account.id}/test`, {
       method: 'POST',
@@ -113,6 +115,7 @@ async function main(): Promise<void> {
     assert(apiTestResponse.status === 400, `停用账户测试接口应拒绝，实际 HTTP ${apiTestResponse.status}: ${apiTestText}`)
     assert(apiTestText.includes('账户已停用'), `停用账户测试接口错误信息异常：${apiTestText}`)
     assertAccountStatus(account.id, 'disabled', false, '测试接口不应改变停用状态')
+    assertAccountDispatchFlags(account.id, true, false, '测试接口不应清理停用账户调度标记')
 
     const latestDisabled = repositories.findAccountForTest(account.id, access)
     assert(latestDisabled, '停用测试账户不存在')
@@ -131,6 +134,9 @@ async function main(): Promise<void> {
     const clearResult = repositories.clearAccountFailureState(account.id, access)
     assert(clearResult?.status === 'disabled', '清理失败态不应恢复停用账户')
     assertAccountStatus(account.id, 'disabled', false, '清理失败态不应改变停用状态')
+    assertAccountDispatchFlags(account.id, true, false, '清理失败态不应清理停用账户调度标记')
+    const disabledFlagCleared = repositories.updateAccount(account.id, { superPriorityEnabled: false }, access)
+    assert(disabledFlagCleared?.superPriorityEnabled === false, '停用账户应允许用户手动取消超级优先')
 
     const errorHandlingResult = applyAccountErrorHandling({
       id: account.id,
@@ -187,7 +193,8 @@ async function main(): Promise<void> {
         base_url: 'http://127.0.0.1:9/v1'
       },
       status: 'active',
-      schedulable: true
+      schedulable: true,
+      fallbackEnabled: true
     }, access)
     const errorBound = repositories.setAccountGroup(errorAccount.id, group.id, access)
     assert(errorBound?.boundGroupId === group.id, '异常测试账户未绑定分组')
@@ -195,6 +202,7 @@ async function main(): Promise<void> {
     assert(staleActiveErrorGatewayAccount?.status === 'active', '异常前应能读取到完整网关账号对象')
     const markedError = repositories.markAccountException(errorAccount.id, 'oauth_token_refresh_failed', '模拟异常')
     assert(markedError?.status === 'error' && markedError.schedulable === false, '异常测试账户标记失败')
+    assertAccountDispatchFlags(errorAccount.id, false, true, '异常账户应保留用户设置的降级备用')
     assertAccountErrorCode(errorAccount.id, 'oauth_token_refresh_failed', '异常账户应保留初始异常类型')
     const staleErrorGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, errorAccount.id, 'sys_admin', { ignoreAvailability: true })
     assert(staleErrorGatewayAccount?.status === 'error', '异常账户应能被测试链路按指定账号读取')
@@ -208,6 +216,7 @@ async function main(): Promise<void> {
     })
     assert(successOnErrorResult.changed === false, '异常账户测试成功不应自动恢复，请使用恢复异常')
     assertAccountStatus(errorAccount.id, 'error', false, '成功回写不应自动恢复异常账户')
+    assertAccountDispatchFlags(errorAccount.id, false, true, '成功回写不应清理异常账户调度标记')
     assertAccountErrorCode(errorAccount.id, 'oauth_token_refresh_failed', '成功回写不应清理异常类型')
 
     const staleFailureOnErrorResult = await handleDbServiceOperation({
@@ -247,6 +256,9 @@ async function main(): Promise<void> {
 
     const editedError = repositories.updateAccount(errorAccount.id, { name: '异常账户编辑后仍不可调度', status: 'error', schedulable: true }, access)
     assert(editedError?.status === 'error' && editedError.schedulable === false, '编辑异常账户不应把调度标记打开')
+    assert(editedError?.fallbackEnabled === true, '编辑异常账户不应清理降级备用')
+    const errorFlagCleared = repositories.updateAccount(errorAccount.id, { fallbackEnabled: false }, access)
+    assert(errorFlagCleared?.fallbackEnabled === false, '异常账户应允许用户手动取消降级备用')
     let statusChangeBlocked = false
     try {
       repositories.updateAccount(errorAccount.id, { status: 'temporary_unavailable' }, access)
@@ -285,6 +297,13 @@ function assertAccountStatus(accountId: string, status: string, schedulable: boo
   assert(account, `${message}：账户不存在`)
   assert(account.status === status, `${message}：实际状态 ${account.status}`)
   assert(account.schedulable === schedulable, `${message}：实际调度标记 ${account.schedulable}`)
+}
+
+function assertAccountDispatchFlags(accountId: string, superPriorityEnabled: boolean, fallbackEnabled: boolean, message: string): void {
+  const account = repositories.listAccounts().find((item: AccountSummary) => item.id === accountId)
+  assert(account, `${message}：账户不存在`)
+  assert(account.superPriorityEnabled === superPriorityEnabled, `${message}：实际超级优先 ${account.superPriorityEnabled}`)
+  assert(account.fallbackEnabled === fallbackEnabled, `${message}：实际降级备用 ${account.fallbackEnabled}`)
 }
 
 function assertAccountErrorCode(accountId: string, code: string, message: string): void {

@@ -8,17 +8,17 @@
       </template>
       <span class="status-tag-group">
         <StatusTag class="status-tag" :color="accountStatusColor(account)" :label="accountStatusText(account)" />
-        <StatusTag v-if="account.superPriorityEnabled" class="status-tag priority-tag" color="gold" label="超级优先" />
-        <StatusTag v-if="account.fallbackEnabled" class="status-tag priority-tag" color="purple" label="降级备用" />
+        <StatusTag v-if="account.superPriorityEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'gold' : 'default'" :label="dispatchFlagActive ? '超级优先' : '超级优先暂停'" />
+        <StatusTag v-if="account.fallbackEnabled" class="status-tag priority-tag" :color="dispatchFlagActive ? 'purple' : 'default'" :label="dispatchFlagActive ? '降级备用' : '备用暂停'" />
       </span>
     </a-tooltip>
     <span v-else class="status-tag-group">
       <StatusTag class="status-tag" :color="accountStatusColor(account)" :label="accountStatusText(account)" />
-      <a-tooltip v-if="account.superPriorityEnabled" title="超级优先：下次调度优先使用此账户">
-        <StatusTag class="status-tag priority-tag" color="gold" label="超级优先" />
+      <a-tooltip v-if="account.superPriorityEnabled" :title="superPriorityTooltip">
+        <StatusTag class="status-tag priority-tag" :color="dispatchFlagActive ? 'gold' : 'default'" :label="dispatchFlagActive ? '超级优先' : '超级优先暂停'" />
       </a-tooltip>
-      <a-tooltip v-if="account.fallbackEnabled" title="降级备用：仅在同分组其他可用账户都不可用时使用">
-        <StatusTag class="status-tag priority-tag" color="purple" label="降级备用" />
+      <a-tooltip v-if="account.fallbackEnabled" :title="fallbackTooltip">
+        <StatusTag class="status-tag priority-tag" :color="dispatchFlagActive ? 'purple' : 'default'" :label="dispatchFlagActive ? '降级备用' : '备用暂停'" />
       </a-tooltip>
     </span>
   </div>
@@ -35,13 +35,23 @@ const props = defineProps<{
   account: AccountSummary
 }>()
 
+const dispatchFlagActive = computed(() => props.account.status === 'active' && props.account.schedulable)
+const superPriorityTooltip = computed(() => dispatchFlagActive.value
+  ? '超级优先：下次调度优先使用此账户'
+  : '超级优先已保留；账户恢复正常并参与调度后自动生效'
+)
+const fallbackTooltip = computed(() => dispatchFlagActive.value
+  ? '降级备用：仅在同分组其他可用账户都不可用时使用'
+  : '降级备用已保留；账户恢复正常并参与调度后自动生效'
+)
+
 const tooltipLines = computed(() => {
   const lines = accountStatusTooltipLines(props.account)
   if (props.account.superPriorityEnabled) {
-    lines.push('超级优先：下次调度优先使用此账户')
+    lines.push(superPriorityTooltip.value)
   }
   if (props.account.fallbackEnabled) {
-    lines.push('降级备用：仅在同分组其他可用账户都不可用时使用')
+    lines.push(fallbackTooltip.value)
   }
   return lines
 })

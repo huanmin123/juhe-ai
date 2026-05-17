@@ -109,10 +109,11 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     if (!canUseAccountActions(account)) {
       if (!isAuthorizedAccount(account)) {
-        message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试和恢复异常' : '授权账户仅可使用，不能执行管理操作')
-        return
-      }
-      if (!['restore-normal', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic'].includes(key)) {
+        if (!['super-priority-off', 'fallback-off'].includes(key)) {
+          message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、恢复异常和取消调度标记' : '授权账户仅可使用，不能执行管理操作')
+          return
+        }
+      } else if (!['restore-normal', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic'].includes(key)) {
         message.warning('授权账户仅支持使用侧调度操作')
         return
       }
