@@ -1,5 +1,5 @@
 import type { AccountSummary } from '../../domain/types.js'
-import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
+import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OperationLogInput } from '../../storage/repositories.js'
 import type { RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
@@ -29,6 +29,7 @@ export interface DbServiceServerRuntimeSnapshot {
       pid: number
       ready: boolean
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
+      operationLogQueue: DbServiceRuntimeQueueSnapshot
       auditLogQueue: DbServiceRuntimeQueueSnapshot
       runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
     }
@@ -242,4 +243,8 @@ export type DbServiceChildMessage =
   }
   | {
     type: 'gateway_runtime_cache_invalidate'
+  }
+  | {
+    type: 'background_worker_operation_logs'
+    items: OperationLogInput[]
   }

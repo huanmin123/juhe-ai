@@ -126,6 +126,7 @@ interface UsageRecordSummary {
 interface UsageRecordListResult {
   items: UsageRecordSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }
@@ -292,17 +293,22 @@ async function main(): Promise<void> {
     summary.push('API Key 分页筛选检查通过')
 
     const userAUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/my-usage-records?systemAccountId=${seed.userBId}&page=1&pageSize=2`, seed.userACookie)
-    assert(userAUsage.total === 3, `用户 A 使用记录总数异常：${userAUsage.total}`)
     assert(userAUsage.items.length === 2, `用户 A 使用记录分页数量异常：${userAUsage.items.length}`)
-    assert(userAUsage.items.every((record) => record.systemAccountId === undefined || record.systemAccountId === seed.userAId), '用户 A 的 my-usage-records 返回了其他用户记录')
+    assert(userAUsage.hasMore === true, '用户 A 使用记录第一页应提示还有更多')
+    const userAUsagePage2 = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/my-usage-records?systemAccountId=${seed.userBId}&page=2&pageSize=2`, seed.userACookie)
+    assert(userAUsagePage2.items.length === 1, `用户 A 使用记录第二页数量异常：${userAUsagePage2.items.length}`)
+    assert(userAUsagePage2.hasMore === false, '用户 A 使用记录第二页不应还有更多')
+    const userAUsageItems = [...userAUsage.items, ...userAUsagePage2.items]
+    assert(userAUsageItems.every((record) => record.systemAccountId === undefined || record.systemAccountId === seed.userAId), '用户 A 的 my-usage-records 返回了其他用户记录')
     summary.push('我的使用记录自有作用域检查通过')
 
     const userBUsagePage1 = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/usage-records?systemAccountId=${seed.userBId}&accountKeyword=${encodeURIComponent('用户 B')}&page=1&pageSize=2`, seed.adminCookie)
-    assert(userBUsagePage1.total === 3, `管理使用记录按用户 B 查询总数异常：${userBUsagePage1.total}`)
     assert(userBUsagePage1.items.length === 2, `管理使用记录分页第一页数量异常：${userBUsagePage1.items.length}`)
+    assert(userBUsagePage1.hasMore === true, '管理使用记录第一页应提示还有更多')
     assert(userBUsagePage1.items.every((record) => record.systemAccountId === seed.userBId), '管理使用记录按用户 B 查询返回了其他用户记录')
     const userBUsagePage2 = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/usage-records?systemAccountId=${seed.userBId}&accountKeyword=${encodeURIComponent('用户 B')}&page=2&pageSize=2`, seed.adminCookie)
     assert(userBUsagePage2.items.length === 1, `管理使用记录分页第二页数量异常：${userBUsagePage2.items.length}`)
+    assert(userBUsagePage2.hasMore === false, '管理使用记录第二页不应还有更多')
     const failedUserBUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/usage-records?systemAccountId=${seed.userBId}&result=failed&statusCode=429&page=1&pageSize=10`, seed.adminCookie)
     assert(failedUserBUsage.total === 1 && failedUserBUsage.items[0]?.statusCode === 429 && failedUserBUsage.items[0]?.success === false, '管理使用记录失败状态码筛选异常')
     const modelFilteredUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/usage-records?systemAccountId=${seed.userBId}&model=${encodeURIComponent('scope-model-c')}&page=1&pageSize=10`, seed.adminCookie)

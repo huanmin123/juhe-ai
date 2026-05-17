@@ -277,6 +277,25 @@ export function createOperationLog(input: OperationLogInput): OperationLogSummar
   }, new Map())
 }
 
+export function createOperationLogsBatch(inputs: OperationLogInput[]): void {
+  if (inputs.length === 0) return
+
+  const database = getRecordDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    for (const input of inputs) {
+      createOperationLog(input)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    try {
+      rollbackDatabaseTransaction(database, transactionStarted)
+    } catch {
+    }
+    throw error
+  }
+}
+
 export function listOperationLogs(options: OperationLogListOptions = {}): OperationLogListResult {
   const filters = buildOperationLogFilters(options)
   return listOperationLogsWithFilters(filters, options)

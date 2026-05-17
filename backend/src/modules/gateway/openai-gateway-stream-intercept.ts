@@ -131,7 +131,7 @@ export class OpenAIStreamInterceptBuffer {
 }
 
 function buildBeforeOutputFailureDecision(event: ParsedOpenAIStreamEvent, outputSeen: boolean): StreamInterceptDecision | undefined {
-  if (outputSeen || !isOpenAIStreamFailureEvent(event)) {
+  if (outputSeen || !isOpenAIStreamFailureEvent(event) || isCodexTerminalStreamFailureCode(event.errorCode)) {
     return undefined
   }
   return {
@@ -146,6 +146,18 @@ function buildBeforeOutputFailureDecision(event: ParsedOpenAIStreamEvent, output
     outputSeen
   }
 }
+
+export function isCodexTerminalStreamFailureCode(errorCode: string | undefined): boolean {
+  return Boolean(errorCode && codexTerminalStreamFailureCodes.has(errorCode))
+}
+
+const codexTerminalStreamFailureCodes = new Set([
+  'context_length_exceeded',
+  'insufficient_quota',
+  'usage_not_included',
+  'invalid_prompt',
+  'cyber_policy'
+])
 
 class PendingSseEventBuffer {
   private chunks: Buffer[] = []

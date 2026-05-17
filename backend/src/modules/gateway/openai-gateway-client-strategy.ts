@@ -120,18 +120,18 @@ function parseCodexTurnMetadata(value: string | undefined): (Required<Pick<Codex
   if (!rawValue) {
     return undefined
   }
-  const parsed = parseJsonObject(rawValue) ?? parseJsonObject(decodeURIComponentSafely(rawValue))
+  const parsed = parseJsonObject(rawValue)
   if (!parsed) {
     return undefined
   }
-  const turnId = stringValue(parsed.turn_id) ?? stringValue(parsed.turnId)
+  const turnId = stringValue(parsed.turn_id)
   if (!turnId) {
     return undefined
   }
   return {
     turnId,
-    sessionId: stringValue(parsed.session_id) ?? stringValue(parsed.sessionId),
-    threadId: stringValue(parsed.thread_id) ?? stringValue(parsed.threadId)
+    sessionId: stringValue(parsed.session_id),
+    threadId: stringValue(parsed.thread_id)
   }
 }
 
@@ -144,14 +144,6 @@ function parseJsonObject(value: string | undefined): Record<string, unknown> | u
     return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
       ? parsed as Record<string, unknown>
       : undefined
-  } catch {
-    return undefined
-  }
-}
-
-function decodeURIComponentSafely(value: string): string | undefined {
-  try {
-    return decodeURIComponent(value)
   } catch {
     return undefined
   }

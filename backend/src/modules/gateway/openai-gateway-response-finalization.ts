@@ -19,6 +19,7 @@ import {
   forgetOpenAIAccountForSession
 } from './openai-gateway-session-affinity.service.js'
 import {
+  gatewayStreamClientRetryErrorCode,
   gatewayErrorPayload,
   sendGatewayErrorResponse
 } from './openai-gateway-responses.js'
@@ -213,7 +214,7 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       metadata: streamInterceptAuditMetadata(streamResult.streamIntercept)
     })
   }
-  if (!streamResult.completed && !streamResult.outputReceived && clientStrategy?.allowCodexTurnAccountAvoidance) {
+  if (shouldRememberCodexTurnStreamFailure(streamResult, clientStrategy)) {
     const codexTurnFailure = rememberCodexTurnStreamFailure(clientStrategy, account.id, {
       errorCode: streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode,
       message: streamResult.message
@@ -284,6 +285,21 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     responseBodyText: streamResult.responseBodyText,
     errorPayload: {}
   }
+}
+
+type GatewayStreamPipeResult = Awaited<ReturnType<typeof pipeUpstreamStream>>
+
+function shouldRememberCodexTurnStreamFailure(
+  streamResult: GatewayStreamPipeResult,
+  clientStrategy: OpenAIGatewayClientStrategyContext | undefined
+): clientStrategy is OpenAIGatewayClientStrategyContext {
+  return !streamResult.completed
+    && !streamResult.outputReceived
+    && clientStrategy?.allowCodexTurnAccountAvoidance === true
+    && (
+      streamResult.errorCode === gatewayStreamClientRetryErrorCode
+      || streamResult.streamIntercept?.rewriteErrorCode === gatewayStreamClientRetryErrorCode
+    )
 }
 
 export async function handleNonStreamUpstreamResponse(input: HandleUpstreamResponseInput): Promise<UpstreamResponseHandlingResult> {

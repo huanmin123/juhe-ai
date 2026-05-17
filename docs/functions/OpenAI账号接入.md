@@ -11,7 +11,7 @@
 
 对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 API 密钥页生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
-单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据、持续有 raw chunk 但同样超过输出停顿上限仍没有形成完整 SSE 事件，或连接读取异常中断，服务端不换账号也不重新请求上游续写。当前运行时会使用 OpenAI Responses 形态的失败事件结束本次 SSE，这是兼容 Codex / OpenAI Responses 的历史兜底；后续新增或调整客户端自动重试、失败事件格式和 Codex turn 级切号时，必须先做客户端策略分层，不能把 Codex 行为继续写成全部 OpenAI-compatible 客户端通用行为。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
+单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据、持续有 raw chunk 但同样超过输出停顿上限仍没有形成完整 SSE 事件，或连接读取异常中断，服务端不换账号也不重新请求上游续写。当前运行时按客户端策略处理可见输出前失败：只有命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时，才写出 Codex 可重试的 `response.failed/upstream_retryable_error`，并在同一 turn 第 4 次失败链路上避让已失败账号；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
 ## OpenAI 供应商定义
 

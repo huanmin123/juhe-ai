@@ -3,9 +3,8 @@ import type { Request } from 'express'
 import { errorLogFields } from '../../shared/logger.js'
 import { getRequestContext, getRequestLogger } from '../../shared/request-context.js'
 import type { AccessScope } from '../../storage/access-scope.js'
-import { runInDatabaseTransaction } from '../../storage/database.js'
+import { nowIso, runInDatabaseTransaction } from '../../storage/database.js'
 import {
-  createOperationLog,
   getSettings,
   type OperationLogChange,
   type OperationLogInput,
@@ -15,6 +14,7 @@ import {
   type SystemAccountRole
 } from '../../storage/repositories.js'
 import { getRequestAuthContext } from '../auth/request-context.js'
+import { enqueueOperationLog } from './operation-log-queue.service.js'
 
 export type OperationLogRecordInput = Omit<OperationLogInput, 'actorSystemAccountId' | 'actorUsername' | 'actorDisplayName' | 'actorRole'> & {
   actorSystemAccountId?: string
@@ -46,6 +46,16 @@ const sensitiveFieldNames = new Set([
 ])
 
 export function recordOperationLog(input: OperationLogRecordInput, req?: Request): void {
+  try {
+    recordOperationLogUnsafe(input, req)
+  } catch (error) {
+    getRequestLogger().warn(errorLogFields(error, {
+      event: 'operation_log_enqueue_failed'
+    }), '操作日志入队失败')
+  }
+}
+
+function recordOperationLogUnsafe(input: OperationLogRecordInput, req?: Request): void {
   const actor = getRequestAuthContext()
   const requestContext = getRequestContext()
   const actorSystemAccountId = input.actorSystemAccountId ?? actor?.systemAccountId
@@ -59,7 +69,7 @@ export function recordOperationLog(input: OperationLogRecordInput, req?: Request
   }
 
   const requestPath = input.path ?? (req ? `${req.baseUrl}${req.path}` : requestContext?.path)
-  createOperationLog({
+  enqueueOperationLog({
     ...input,
     actorSystemAccountId,
     actorUsername: input.actorUsername ?? actor?.username,
@@ -72,21 +82,23 @@ export function recordOperationLog(input: OperationLogRecordInput, req?: Request
     userAgent: input.userAgent ?? req?.header('user-agent'),
     changes: sanitizeOperationChanges(input.changes ?? [], operationLogMaxChangesPerRecord(settings)),
     targets: input.targets,
-    viewers: input.viewers
+    viewers: input.viewers,
+    createdAt: input.createdAt ?? nowIso()
   })
 }
 
 export function runLoggedOperation<T>(operation: () => LoggedOperationResult<T>, req?: Request): T {
   let afterCommit: (() => void) | undefined
+  let logs: OperationLogRecordInput[] = []
   const result = runInDatabaseTransaction(() => {
     const outcome = operation()
-    const logs = Array.isArray(outcome.log) ? outcome.log : outcome.log ? [outcome.log] : []
-    for (const log of logs) {
-      recordOperationLog(log, req)
-    }
+    logs = Array.isArray(outcome.log) ? outcome.log : outcome.log ? [outcome.log] : []
     afterCommit = outcome.afterCommit
     return outcome.result
   })
+  for (const log of logs) {
+    recordOperationLog(log, req)
+  }
   runAfterCommitEffect(afterCommit)
   return result
 }

@@ -241,6 +241,11 @@ function handleDbServiceMessage(message: unknown): void {
         void clearServerGatewayRuntimeCache()
       }
       break
+    case 'background_worker_operation_logs':
+      if (runtimeConfig.processRole === 'server' && Array.isArray(record.items)) {
+        void forwardOperationLogsToWorker(record.items)
+      }
+      break
     default:
       break
   }
@@ -367,6 +372,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           pid: workerSnapshot.pid,
           ready: workerSnapshot.ready,
           usageRecordQueue: { ...workerSnapshot.usageRecordQueue },
+          operationLogQueue: { ...workerSnapshot.operationLogQueue },
           auditLogQueue: { ...workerSnapshot.auditLogQueue },
           runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue }
         }
@@ -397,4 +403,13 @@ async function buildServerAccountConcurrencySnapshot(): Promise<DbServiceServerR
 async function clearServerGatewayRuntimeCache(): Promise<void> {
   const gatewayCache = await import('../gateway/gateway-runtime-cache.service.js')
   gatewayCache.clearGatewayRuntimeCacheLocal()
+}
+
+async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {
+  const backgroundIpc = await import('../background/background-ipc.js')
+  const operationLogQueue = await import('../operation-logs/operation-log-queue.service.js')
+  const operationLogs = items.filter(operationLogQueue.isOperationLogInput)
+  if (operationLogs.length > 0) {
+    backgroundIpc.sendOperationLogsToWorker(operationLogs)
+  }
 }

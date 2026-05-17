@@ -9,6 +9,11 @@ export function accountSystemAccountId(accountId: string): string | undefined {
   return row?.system_account_id
 }
 
+export function groupSystemAccountId(groupId: string): string | undefined {
+  const row = getDatabase().prepare('SELECT system_account_id FROM groups WHERE id = ?').get(groupId) as unknown as { system_account_id?: string } | undefined
+  return row?.system_account_id
+}
+
 export function activeAccountAuthorization(accountId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
   return activeResourceAuthorization('account', accountId, granteeSystemAccountId)
 }

@@ -24,12 +24,14 @@ function main(): void {
   clearCodexTurnRetryStateForTest()
   testCodexTurnProfileRequiresPreciseTurnId()
   testSessionOnlyDoesNotBecomeCodex()
+  testInvalidTurnMetadataDoesNotBecomeCodex()
+  testNonCodexMetadataShapesDoNotFallback()
   testRawBodyHashIsPartOfTurnStateKey()
   testFourthCodexRetryAvoidsFailedAccounts()
   testAllFailedAccountsBypassAvoidance()
   testMissingTurnStateDoesNotAvoidAccounts()
   testNonResponsesStreamDoesNotUseCodexProfile()
-  console.log('Codex 客户端策略回归通过：精确 turn_id 识别、无 fallback、body hash 隔离、第 4 次 turn 级切号、状态丢失不避让和非 Responses 隔离符合预期')
+  console.log('Codex 客户端策略回归通过：精确 turn_id 识别、无 fallback、非法/非 Codex metadata 不升级、body hash 隔离、第 4 次 turn 级切号、状态丢失不避让和非 Responses 隔离符合预期')
 }
 
 function testCodexTurnProfileRequiresPreciseTurnId(): void {
@@ -71,6 +73,45 @@ function testSessionOnlyDoesNotBecomeCodex(): void {
   assert.equal(strategy.clientProfile, 'generic_openai')
   assert.equal(strategy.codexTurn, undefined)
   assert.equal(strategy.allowCodexStreamClientRetry, false)
+}
+
+function testInvalidTurnMetadataDoesNotBecomeCodex(): void {
+  const strategy = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', {
+    model: 'gpt-5.3-codex',
+    input: 'hello',
+    stream: true
+  }, {
+    'x-codex-turn-metadata': '{not-json',
+    'user-agent': 'codex_cli_rs/0.125.0'
+  }), identity)
+
+  assert.equal(strategy.clientProfile, 'generic_openai')
+  assert.equal(strategy.codexTurn, undefined)
+  assert.equal(strategy.allowCodexTurnAccountAvoidance, false)
+}
+
+function testNonCodexMetadataShapesDoNotFallback(): void {
+  const cases: Array<[string, string]> = [
+    ['camelCase turnId', JSON.stringify({ turnId: 'turn_camel' })],
+    ['url encoded json', encodeURIComponent(JSON.stringify({ turn_id: 'turn_encoded' }))],
+    ['array json', JSON.stringify([{ turn_id: 'turn_array' }])]
+  ]
+
+  for (const [label, metadata] of cases) {
+    const strategy = resolveOpenAIGatewayClientStrategy(createRequest('/v1/responses', {
+      model: 'gpt-5.3-codex',
+      input: label,
+      stream: true
+    }, {
+      'x-codex-turn-metadata': metadata,
+      'user-agent': 'codex_cli_rs/0.125.0'
+    }), identity)
+
+    assert.equal(strategy.clientProfile, 'generic_openai', label)
+    assert.equal(strategy.codexTurn, undefined, label)
+    assert.equal(strategy.allowCodexStreamClientRetry, false, label)
+    assert.equal(strategy.allowCodexTurnAccountAvoidance, false, label)
+  }
 }
 
 function testRawBodyHashIsPartOfTurnStateKey(): void {

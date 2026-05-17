@@ -28,6 +28,7 @@ import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refre
 import { flushUsageRecordQueue } from '../gateway/usage-record-queue.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
+import { refreshRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { WorkerScheduler } from './worker-scheduler.js'
 
@@ -277,6 +278,7 @@ async function runCooldownAccountRetest(): Promise<void> {
 async function runRuntimeLogIndexMaintenance(): Promise<void> {
   try {
     flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
+    refreshRuntimeLogFacetSnapshots()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_runtime_log_index_maintenance_failed' }), '运行日志索引维护失败')
   }
@@ -341,7 +343,7 @@ async function runTableStorageMonitor(): Promise<void> {
     collectTableStorageSnapshot(nowIso(), {
       tableScanMode: 'cursor',
       maxTablesPerDatabase: settingsNumber('tableMonitorMaxTablesPerRun', 4, 0, 100),
-      rowCountMode: 'none'
+      rowCountMode: 'full'
     })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_table_storage_monitor_failed' }), '表数据监控采样失败')

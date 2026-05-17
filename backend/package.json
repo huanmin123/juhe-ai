@@ -21,6 +21,7 @@
     "test:account-list-stable-sort": "tsx src/scripts/regression/account-list-stable-sort-regression.ts",
     "test:session-affinity": "tsx src/scripts/regression/session-affinity-regression.ts",
     "test:audit-log-retention": "tsx src/scripts/regression/audit-log-retention-regression.ts",
+    "test:operation-log-queue": "tsx src/scripts/regression/operation-log-queue-regression.ts",
     "test:usage-pricing": "tsx src/scripts/regression/usage-pricing-regression.ts",
     "test:openai-oauth-codex-adapter": "tsx src/scripts/regression/openai-oauth-codex-adapter-regression.ts",
     "test:openai-oauth-access-token-refresh": "tsx src/scripts/regression/openai-oauth-access-token-refresh-regression.ts",

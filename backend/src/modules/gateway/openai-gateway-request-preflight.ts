@@ -129,10 +129,12 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId,
     endpoint
   })
-  auditCapture.addGatewayMetadata({
-    label: 'client_strategy',
-    metadata: openAIGatewayClientStrategyAuditMetadata(clientStrategy)
-  })
+  if (clientStrategy.clientProfile === 'codex') {
+    auditCapture.addGatewayMetadata({
+      label: 'client_strategy',
+      metadata: openAIGatewayClientStrategyAuditMetadata(clientStrategy)
+    })
+  }
   if (!groupAccess) {
     const statusCode = 403
     const responsePayload = gatewayErrorPayload('API Key 绑定的分组授权不可用', 'forbidden')

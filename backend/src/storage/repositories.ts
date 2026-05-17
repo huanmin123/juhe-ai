@@ -202,6 +202,7 @@ export {
 export {
   cleanupOperationLogsBefore,
   createOperationLog,
+  createOperationLogsBatch,
   getOperationLogDetail,
   getOperationLogDetailForViewer,
   listOperationLogs,

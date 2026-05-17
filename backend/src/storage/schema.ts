@@ -662,6 +662,31 @@ export function applyRecordSchema(database: DatabaseSync): void {
       tokenize = 'trigram'
     );
 
+    CREATE TABLE IF NOT EXISTS runtime_log_facet_summary (
+      bucket_key TEXT PRIMARY KEY,
+      total_count INTEGER NOT NULL DEFAULT 0,
+      earliest_time TEXT,
+      latest_time TEXT,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS runtime_log_level_facets (
+      bucket_key TEXT NOT NULL,
+      level TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (bucket_key, level)
+    );
+
+    CREATE TABLE IF NOT EXISTS runtime_log_event_facets (
+      bucket_key TEXT NOT NULL,
+      event TEXT NOT NULL,
+      count INTEGER NOT NULL DEFAULT 0,
+      latest_time TEXT,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (bucket_key, event)
+    );
+
     CREATE TABLE IF NOT EXISTS account_usage_snapshots (
       system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
       account_id TEXT NOT NULL,
@@ -1445,6 +1470,8 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_event_time ON runtime_logs(event, time DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_runtime_logs_created_at ON runtime_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_runtime_log_file_cursors_updated ON runtime_log_file_cursors(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_runtime_log_facet_summary_latest ON runtime_log_facet_summary(latest_time);
+    CREATE INDEX IF NOT EXISTS idx_runtime_log_event_facets_latest ON runtime_log_event_facets(latest_time DESC, event);
     CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_kind ON account_usage_snapshots(kind, updated_at);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_minute_scope_minute ON usage_stats_minute(system_account_id, scope_type, scope_id, stat_minute);
     CREATE INDEX IF NOT EXISTS idx_usage_stats_minute_minute ON usage_stats_minute(stat_minute);

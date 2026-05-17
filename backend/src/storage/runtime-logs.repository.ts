@@ -86,10 +86,13 @@ export interface RuntimeLogFileCursorInput {
 
 type RuntimeLogRow = Record<string, unknown>
 type RuntimeLogFilterValue = string | number
+type RuntimeLogFacetInput = { time: string; level: string; event?: string }
 
 const runtimeLogDefaultPageSize = 100
 const runtimeLogMaxPageSize = 100
 export const runtimeLogIndexRetentionDays = 3
+const runtimeLogFacetBucketKey = 'current'
+const runtimeLogFacetMaxEvents = 80
 
 export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
   if (inputs.length === 0) return
@@ -108,16 +111,18 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
 
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const facetRows: RuntimeLogFacetInput[] = []
     for (const input of inputs) {
       const id = input.id ?? newId('rtlog')
       const createdAt = input.createdAt ?? nowIso()
+      const level = normalizeLevel(input.level)
       const result = insertLog.run(
         id,
         input.logFile ?? null,
         integerOrNull(input.logOffset),
         integerOrNull(input.lineNumber),
         input.time,
-        normalizeLevel(input.level),
+        level,
         input.traceId ?? null,
         input.event ?? null,
         input.message ?? null,
@@ -128,6 +133,7 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
       if (Number(result.changes ?? 0) === 0) {
         continue
       }
+      facetRows.push({ time: input.time, level, event: input.event })
       insertSearch.run(
         id,
         input.traceId ?? '',
@@ -137,6 +143,7 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
         input.rawJson
       )
     }
+    incrementRuntimeLogFacetSnapshots(database, facetRows)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -189,41 +196,117 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
 }
 
 export function getRuntimeLogFacets(): RuntimeLogFacets {
-  const cutoff = retentionCutoffIso()
   const database = getRecordDatabase()
   const range = database
-    .prepare(`
-      SELECT MIN(time) AS earliest_indexed_at, MAX(time) AS latest_indexed_at, COUNT(*) AS total_indexed
-      FROM runtime_logs
-      WHERE time >= ?
-    `)
-    .get(cutoff) as RuntimeLogRow | undefined
+    .prepare('SELECT earliest_time, latest_time, total_count FROM runtime_log_facet_summary WHERE bucket_key = ?')
+    .get(runtimeLogFacetBucketKey) as RuntimeLogRow | undefined
   const levels = database
     .prepare(`
-      SELECT level AS value, COUNT(*) AS count
-      FROM runtime_logs
-      WHERE time >= ?
-      GROUP BY level
+      SELECT level AS value, count
+      FROM runtime_log_level_facets
+      WHERE bucket_key = ? AND count > 0
       ORDER BY count DESC, level ASC
     `)
-    .all(cutoff) as RuntimeLogRow[]
+    .all(runtimeLogFacetBucketKey) as RuntimeLogRow[]
   const events = database
     .prepare(`
       SELECT event
-      FROM runtime_logs
-      WHERE time >= ? AND event IS NOT NULL AND event <> ''
-      GROUP BY event
-      ORDER BY MAX(time) DESC, event ASC
-      LIMIT 80
+      FROM runtime_log_event_facets
+      WHERE bucket_key = ? AND count > 0
+      ORDER BY latest_time DESC, event ASC
+      LIMIT ?
     `)
-    .all(cutoff) as RuntimeLogRow[]
+    .all(runtimeLogFacetBucketKey, runtimeLogFacetMaxEvents) as RuntimeLogRow[]
   return {
     retentionDays: runtimeLogIndexRetentionDays,
-    earliestIndexedAt: optionalString(range?.earliest_indexed_at),
-    latestIndexedAt: optionalString(range?.latest_indexed_at),
-    totalIndexed: Number(range?.total_indexed ?? 0),
+    earliestIndexedAt: optionalString(range?.earliest_time),
+    latestIndexedAt: optionalString(range?.latest_time),
+    totalIndexed: Number(range?.total_count ?? 0),
     levels: levels.map((row) => ({ value: String(row.value), count: Number(row.count ?? 0) })),
     events: events.map((row) => String(row.event))
+  }
+}
+
+export function refreshRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso()): void {
+  const database = getRecordDatabase()
+  const timestamp = nowIso()
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    database.prepare('DELETE FROM runtime_log_event_facets WHERE bucket_key = ?').run(runtimeLogFacetBucketKey)
+    database.prepare('DELETE FROM runtime_log_level_facets WHERE bucket_key = ?').run(runtimeLogFacetBucketKey)
+    database.prepare('DELETE FROM runtime_log_facet_summary WHERE bucket_key = ?').run(runtimeLogFacetBucketKey)
+
+    const range = database
+      .prepare(`
+        SELECT COUNT(*) AS total_count, MIN(time) AS earliest_time, MAX(time) AS latest_time
+        FROM runtime_logs
+        WHERE time >= ?
+      `)
+      .get(cutoffIso) as RuntimeLogRow | undefined
+    const totalCount = Number(range?.total_count ?? 0)
+    if (totalCount > 0) {
+      database
+        .prepare(`
+          INSERT INTO runtime_log_facet_summary (
+            bucket_key, total_count, earliest_time, latest_time, updated_at
+          ) VALUES (?, ?, ?, ?, ?)
+        `)
+        .run(
+          runtimeLogFacetBucketKey,
+          totalCount,
+          optionalString(range?.earliest_time) ?? null,
+          optionalString(range?.latest_time) ?? null,
+          timestamp
+        )
+    }
+
+    const levels = database
+      .prepare(`
+        SELECT level, COUNT(*) AS count
+        FROM runtime_logs
+        WHERE time >= ?
+        GROUP BY level
+      `)
+      .all(cutoffIso) as RuntimeLogRow[]
+    const insertLevel = database.prepare(`
+      INSERT INTO runtime_log_level_facets (
+        bucket_key, level, count, updated_at
+      ) VALUES (?, ?, ?, ?)
+    `)
+    for (const row of levels) {
+      insertLevel.run(runtimeLogFacetBucketKey, String(row.level), Number(row.count ?? 0), timestamp)
+    }
+
+    const events = database
+      .prepare(`
+        SELECT event, COUNT(*) AS count, MAX(time) AS latest_time
+        FROM runtime_logs
+        WHERE time >= ? AND event IS NOT NULL AND event <> ''
+        GROUP BY event
+      `)
+      .all(cutoffIso) as RuntimeLogRow[]
+    const insertEvent = database.prepare(`
+      INSERT INTO runtime_log_event_facets (
+        bucket_key, event, count, latest_time, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `)
+    for (const row of events) {
+      insertEvent.run(
+        runtimeLogFacetBucketKey,
+        String(row.event),
+        Number(row.count ?? 0),
+        optionalString(row.latest_time) ?? null,
+        timestamp
+      )
+    }
+
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    try {
+      rollbackDatabaseTransaction(database, transactionStarted)
+    } catch {
+    }
+    throw error
   }
 }
 
@@ -409,6 +492,80 @@ function runtimeLogFileCursorFromRow(row: RuntimeLogRow): RuntimeLogFileCursor {
     lastErrorMessage: optionalString(row.last_error_message),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at)
+  }
+}
+
+function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getRecordDatabase>, rows: RuntimeLogFacetInput[]): void {
+  const cutoff = retentionCutoffIso()
+  const retainedRows = rows.filter((row) => row.time >= cutoff)
+  if (retainedRows.length === 0) return
+
+  const timestamp = nowIso()
+  const sortedTimes = retainedRows.map((row) => row.time).sort()
+  const earliestTime = sortedTimes[0]
+  const latestTime = sortedTimes[sortedTimes.length - 1]
+  database
+    .prepare(`
+      INSERT INTO runtime_log_facet_summary (
+        bucket_key, total_count, earliest_time, latest_time, updated_at
+      ) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(bucket_key) DO UPDATE SET
+        total_count = total_count + excluded.total_count,
+        earliest_time = CASE
+          WHEN runtime_log_facet_summary.earliest_time IS NULL THEN excluded.earliest_time
+          WHEN excluded.earliest_time < runtime_log_facet_summary.earliest_time THEN excluded.earliest_time
+          ELSE runtime_log_facet_summary.earliest_time
+        END,
+        latest_time = CASE
+          WHEN runtime_log_facet_summary.latest_time IS NULL THEN excluded.latest_time
+          WHEN excluded.latest_time > runtime_log_facet_summary.latest_time THEN excluded.latest_time
+          ELSE runtime_log_facet_summary.latest_time
+        END,
+        updated_at = excluded.updated_at
+    `)
+    .run(runtimeLogFacetBucketKey, retainedRows.length, earliestTime, latestTime, timestamp)
+
+  const levels = new Map<string, number>()
+  const events = new Map<string, { count: number; latestTime: string }>()
+  for (const row of retainedRows) {
+    levels.set(row.level, (levels.get(row.level) ?? 0) + 1)
+    const event = row.event?.trim()
+    if (event) {
+      const current = events.get(event)
+      events.set(event, {
+        count: (current?.count ?? 0) + 1,
+        latestTime: current && current.latestTime > row.time ? current.latestTime : row.time
+      })
+    }
+  }
+
+  const upsertLevel = database.prepare(`
+    INSERT INTO runtime_log_level_facets (
+      bucket_key, level, count, updated_at
+    ) VALUES (?, ?, ?, ?)
+    ON CONFLICT(bucket_key, level) DO UPDATE SET
+      count = count + excluded.count,
+      updated_at = excluded.updated_at
+  `)
+  for (const [level, count] of levels) {
+    upsertLevel.run(runtimeLogFacetBucketKey, level, count, timestamp)
+  }
+
+  const upsertEvent = database.prepare(`
+    INSERT INTO runtime_log_event_facets (
+      bucket_key, event, count, latest_time, updated_at
+    ) VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(bucket_key, event) DO UPDATE SET
+      count = count + excluded.count,
+      latest_time = CASE
+        WHEN runtime_log_event_facets.latest_time IS NULL THEN excluded.latest_time
+        WHEN excluded.latest_time > runtime_log_event_facets.latest_time THEN excluded.latest_time
+        ELSE runtime_log_event_facets.latest_time
+      END,
+      updated_at = excluded.updated_at
+  `)
+  for (const [event, summary] of events) {
+    upsertEvent.run(runtimeLogFacetBucketKey, event, summary.count, summary.latestTime, timestamp)
   }
 }
 

@@ -13,18 +13,20 @@
 ## 需求目标
 
 - 背景：Codex 客户端流式响应最多自动重试 5 次。当前网关已有“可见输出前流式失败改写为 `upstream_retryable_error` 的 `response.failed`”逻辑，这个行为来自 Codex 对 `response.failed` 的重试语义，但实现和文档一度写成了通用 OpenAI 流式兜底。继续在通用层叠加“第 4 次切号”会把 Codex 行为扩散到所有 OpenAI-compatible 客户端。
-- 目标：先落地客户端策略分层设计，只在能精准识别 Codex turn 的场景启用 Codex 专属重试切号策略；识别不到时不猜测、不回退到 `session_id`、不影响全部客户端，按普通错误链路返回客户端。
-- 交付物：本计划文档、长期功能文档和架构文档同步；运行时代码、回归脚本和验证记录同步落地。
+- 目标：落地客户端策略分层，只在能精准识别 Codex turn 的场景启用 Codex 专属重试切号策略；识别不到时不猜测、不回退到 `session_id`、不影响全部客户端，按普通错误链路返回客户端。
+- 交付物：本计划文档、长期功能文档和架构文档同步；客户端策略解析、Codex turn 短 TTL 状态缓存、候选账号避让、流式改写收敛、专项回归脚本和验证记录同步落地。
 
 ## 范围边界
 
 ### 本次包含
 
 - [x] 复盘当前已经把 Codex 语义泛化到通用网关层的场景。
-- [x] 明确后续必须引入下游客户端策略分层，而不是继续把所有 OpenAI-compatible 客户端混在同一套流式错误语义里。
+- [x] 引入下游客户端策略分层，不再把所有 OpenAI-compatible 客户端混在同一套流式错误语义里。
 - [x] 明确 Codex turn 级重试识别键、精确触发条件和失败时的非回退行为。
 - [x] 明确第 4 次切号只做 turn 级局部避让，不写全局账号冷却，不扩大到整个分组或全部客户端。
-- [x] 同步长期文档，记录当前问题和后续实现边界。
+- [x] 同步长期文档，记录当前策略边界、实现落点和验证命令。
+- [x] 落地 `clientProfile` / `downstreamProtocol` 解析、Codex turn 状态缓存和第 4 次账号避让。
+- [x] 补充 Codex 客户端策略与流式首段 / 中断回归。
 
 ### 本次不包含
 
@@ -48,7 +50,7 @@
 | 场景 | 当前状态 | 风险 | 设计结论 |
 | --- | --- | --- | --- |
 | 可见输出前上游 `response.failed` / `event:error` 改写成 `upstream_retryable_error` | 已收敛到 Codex profile | 该错误码和重试效果主要来自 Codex 行为，其他客户端可能不认识或展示异常 | 只挂到 `clientProfile = codex` 或后续显式兼容的 Responses 客户端策略 |
-| 流式超时、缺少终止事件时补 `response.failed` | 当前通用处理 | `/chat/completions` 或非 Responses SSE 客户端未必接受 Responses 事件 | 按 `downstreamProtocol` 区分 `responses_sse`、`chat_completions_sse` 和其他协议 |
+| 流式超时、缺少终止事件时补 `response.failed` | Codex 可重试码已收敛到 Codex profile；普通请求保留普通流式错误码 | `/chat/completions` 或非 Responses SSE 客户端未必接受 Responses 事件 | 当前先限制 Codex 专属语义，后续如扩展格式再按 `downstreamProtocol` 区分 |
 | `application/octet-stream` 按 SSE 处理 | 来源是 OAuth / Codex 上游返回形态 | API Key 上游若真实返回二进制 octet-stream，可能被误判为 SSE | 收敛到 OAuth Codex adapter 或已确认 stream 请求，不作为全局 content-type 规则扩散 |
 | 会话亲和使用 `session_id`、`conversation_id`、`prompt_cache_key`、`previous_response_id`、`x-client-request-id` | 当前为通用软排序 | 标识含义跨客户端不同，不能证明同一个 Codex turn | 只保留为软亲和；不得用于 Codex 重试计数 |
 | OAuth Codex adapter 和 OAuth Codex 429 | 已按 OAuth 账号类型隔离 | 不属于下游客户端泛化问题 | 保持现状，后续只补文档命名和审计口径 |
@@ -58,7 +60,7 @@
 
 ### 策略分层
 
-网关后续需要显式拆出三个概念：
+网关已显式拆出三个概念：
 
 - `upstreamAdapter`：描述上游账号如何请求，例如 `openai_api_key`、`openai_oauth_codex`。
 - `downstreamProtocol`：描述下游期望的协议事件，例如 `responses_sse`、`chat_completions_sse`、`json`。
@@ -71,8 +73,8 @@
 Codex turn 策略必须同时满足：
 
 - 请求是 OpenAI Responses 流式请求，且下游协议可确定为 `responses_sse`。
-- 请求头存在可解析的 `x-codex-turn-metadata`。
-- metadata 中存在非空 `turn_id`，并且可以提取 `session_id`、`thread_id` 时一并纳入审计和辅助校验。
+- 请求头存在可解析的普通 JSON 对象格式 `x-codex-turn-metadata`。
+- metadata 中存在非空 snake_case `turn_id`，并且可以提取 snake_case `session_id`、`thread_id` 时一并纳入审计和辅助校验；`turnId`、URL 编码 JSON 或数组 JSON 不能触发 Codex profile。
 - 如请求同时带有 `thread-id` 或 `x-client-request-id`，只能作为一致性校验和审计字段，不得替代 `turn_id`。
 
 不满足上述条件时，`clientProfile` 不得自动升级为 Codex。`session_id`、`x-client-request-id`、User-Agent、IP、body hash、路径或模型名都不能单独作为 Codex turn 识别依据。
@@ -110,6 +112,7 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 - 允许在调度候选账号排序时避让该 turn 已失败账号。
 - 允许在审计日志和使用记录里标记 `clientProfile = codex`、`codexTurnIdPresent = true`、`codexTurnRetryCount`、`turnAccountAvoided` 等诊断字段。
 - 禁止因为 Codex turn 失败直接写账号 `temporary_unavailable`，除非已输出后流熔断或账号错误策略本身另有明确命中。
+- Codex 源码明确终止类的 `context_length_exceeded`、`insufficient_quota`、`usage_not_included`、`invalid_prompt`、`cyber_policy` 原样返回，不改写为可重试错误，也不参与 turn 级切号计数。
 - 状态丢失、解析失败或字段不完整时，系统必须回到普通 OpenAI 网关行为，而不是扩大匹配范围。
 
 ## 执行拆解
@@ -117,9 +120,9 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 - [x] 新增本计划文档。
 - [x] 更新流式中断与客户端重试调研，补充策略分层和本次问题。
 - [x] 更新网关异常重试与兜底策略，明确 Codex 专属行为不能继续作为通用策略扩散。
-- [x] 更新核心功能设计和架构总览，标记后续实现边界。
+- [x] 更新核心功能设计和架构总览，标记当前实现边界。
 - [x] 实现客户端策略解析和 Codex turn 状态缓存。
-- [x] 把现有通用 `response.failed/upstream_retryable_error` 行为收敛到 Codex profile 策略层。
+- [x] 把早期散落在通用层的 Codex 可重试改写收敛到 Codex profile 策略层。
 - [x] 补 Codex turn 第 4 次切号回归脚本。
 
 ## 测试项
@@ -173,7 +176,7 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 - Codex `x-codex-turn-metadata` 是 Codex 客户端行为，不是 OpenAI 官方所有客户端的通用行为；任何依赖它的逻辑都必须 guarded by `clientProfile = codex`。
 - 进程内 TTL 状态在重启后会丢失；这比误识别更安全，因为系统会回到普通错误行为。
 - 若同一 API Key 被多人共享，系统不能识别真实自然人，只能按本地 API Key / 分组 / Codex turn 边界隔离。
-- 后续实现时必须避免把 turn 级失败记录写成账号健康结论。
+- 后续维护时必须避免把 turn 级失败记录写成账号健康结论。
 
 ## 完成总结
 

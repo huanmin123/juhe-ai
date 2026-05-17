@@ -201,17 +201,51 @@ export function getTableStorageOverview(input: { startAt?: string; endAt?: strin
         WHERE sampled_at >= ?
           AND sampled_at <= ?
         GROUP BY database_role, table_name
+      ),
+      latest_row_counts AS (
+        SELECT database_role, table_name, row_count
+        FROM (
+          SELECT
+            database_role,
+            table_name,
+            row_count,
+            ROW_NUMBER() OVER (
+              PARTITION BY database_role, table_name
+              ORDER BY sampled_at DESC
+            ) AS rank
+          FROM table_storage_snapshots
+          WHERE sampled_at >= ?
+            AND sampled_at <= ?
+            AND row_count IS NOT NULL
+        )
+        WHERE rank = 1
       )
-      SELECT t.*
+      SELECT
+        t.database_role,
+        t.table_name,
+        t.sampled_at,
+        COALESCE(t.row_count, latest_row_counts.row_count) AS row_count,
+        t.table_bytes,
+        t.index_bytes,
+        t.total_bytes,
+        t.page_count,
+        t.index_count,
+        t.growth_bytes_1h,
+        t.growth_rows_1h,
+        t.growth_bytes_24h,
+        t.growth_rows_24h
       FROM table_storage_snapshots t
       INNER JOIN latest_table_samples latest
         ON latest.database_role = t.database_role
         AND latest.table_name = t.table_name
         AND latest.sampled_at = t.sampled_at
-      ORDER BY t.total_bytes DESC, t.row_count DESC, t.table_name ASC
+      LEFT JOIN latest_row_counts
+        ON latest_row_counts.database_role = t.database_role
+        AND latest_row_counts.table_name = t.table_name
+      ORDER BY t.total_bytes DESC, COALESCE(t.row_count, latest_row_counts.row_count) DESC, t.table_name ASC
       LIMIT ?
     `)
-    .all(range.startAt, range.endAt, normalizeLimit(input.limit ?? 200)) as unknown as LatestTableSnapshotRow[]
+    .all(range.startAt, range.endAt, range.startAt, range.endAt, normalizeLimit(input.limit ?? 200)) as unknown as LatestTableSnapshotRow[]
   return {
     sampledAt,
     databases: databases.map(databaseSnapshotFromRow),
