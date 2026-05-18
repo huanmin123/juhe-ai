@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DefaultGroupReadonlyError, createGroup, deleteGroup, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -112,7 +112,7 @@ groupsRouter.patch('/:id', (req, res) => {
       return
     }
   }
-  const before = listGroups(requestAccess).find((item) => item.id === req.params.id)
+  const before = findGroupSummary(req.params.id, requestAccess)
   try {
     const group = runLoggedOperation(() => {
       const group = updateGroup(req.params.id, req.body as Record<string, unknown>, requestAccess)
@@ -166,7 +166,7 @@ groupsRouter.delete('/:id', (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const before = listGroups(requestAccess).find((item) => item.id === req.params.id)
+  const before = findGroupSummary(req.params.id, requestAccess)
   const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
   try {
     runLoggedOperation(() => {

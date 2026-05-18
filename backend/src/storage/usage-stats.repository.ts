@@ -17,7 +17,7 @@ import {
   refreshCallerAccountLast7dRequestRankSnapshot,
   refreshUsageQuotaHourlyWindowSnapshots
 } from './usage-stats-snapshot-helpers.js'
-import { aggregateAccountQualityMinuteStatsRecord, aggregateCallerAccountUsageStatsRecord, aggregateUsageStatsRecord } from './usage-stats-writers.js'
+import { aggregateAccountQualityMinuteStatsRecord, aggregateCallerAccountUsageStatsRecord, aggregateUsageStatsRecord, createUsageStatsAggregationContext } from './usage-stats-writers.js'
 import {
   aggregateUsageErrorRows,
   aggregateUsageModelRows,
@@ -95,10 +95,11 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
   }
 
   const updatedAt = nowIso()
+  const aggregationContext = createUsageStatsAggregationContext(rows)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const row of rows) {
-      aggregateUsageStatsRecord(database, row, updatedAt)
+      aggregateUsageStatsRecord(database, row, updatedAt, aggregationContext)
     }
     const last = rows[rows.length - 1]
     updateStatsJobState(database, {

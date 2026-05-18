@@ -3,22 +3,21 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { hasAccountQualityScoreSort, normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
-import { accountCredentialsForList, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries, type AccountRowsPage } from './account-read.repository.js'
+import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
+import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import {
   getAccountUsageStatsOverview as buildAccountUsageStatsOverview,
   getAccountUsageStatsOverviewPageFromWindows as buildAccountUsageStatsOverviewPageFromWindows
 } from './account-usage.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
-import { createApiKeyRecord, deleteApiKey, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
+import { createApiKeyRecord, deleteApiKey, findApiKeySummary, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
 import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
-import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
-import { listGroupRowsForAccess, loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
+import { findGroupRowForAccess, listGroupRowsForAccess, loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
 import { loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
@@ -39,10 +38,24 @@ import {
 import {
   normalizeResourceType
 } from './resource-authorization-list-helpers.js'
-import { listResourceAuthorizationSummaries, loadRuntimeAuthorizationForUserGrant, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
+import { listResourceAuthorizationSummaries, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
+import {
+  activeTeamMemberRows,
+  applyActiveTeamGrantsToMember,
+  cleanupInactiveAuthorizationBindings,
+  deactivateAuthorizationIfNoActiveSources,
+  expireDueResourceAuthorizations,
+  reactivateTeamGrantSources,
+  revokeAllTeamSources,
+  revokeResourceAuthorizationGrant,
+  revokeTeamSourcesForMember,
+  syncResourceAuthorizationGrantRuntime,
+  upsertResourceAuthorizationForUser,
+  upsertResourceAuthorizationGrant
+} from './resource-authorization-write-state.repository.js'
 import { loadSystemAccountNameMap, loadSystemAccountsByIds } from './repository-lookups.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
-import type { AccountFailureRow, AccountListRow, AccountRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow } from './repository-row-types.js'
+import type { AccountFailureRow, AccountListRow, AccountRow, GroupListRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
@@ -104,6 +117,7 @@ export {
   createApiKeyRecord,
   deleteApiKey,
   deleteApiKeyWithRelatedCleanup,
+  findApiKeySummary,
   listApiKeys,
   listApiKeysPage,
   updateApiKey
@@ -155,6 +169,9 @@ export {
   validateGatewayApiKey,
   type GatewayApiKeyRow
 } from './gateway-api-key.repository.js'
+export {
+  expireDueResourceAuthorizations
+} from './resource-authorization-write-state.repository.js'
 export {
   updateAccountUsageSnapshotRefreshState,
   upsertAccountUsageSnapshot
@@ -413,33 +430,6 @@ function disableExpiredAccounts(access?: AccessScope): void {
   }
 }
 
-export function expireDueResourceAuthorizations(): number {
-  const now = nowIso()
-  const database = getDatabase()
-  const dueGrants = database
-    .prepare("SELECT * FROM resource_authorization_grants WHERE status IN ('active', 'paused') AND expires_at IS NOT NULL AND expires_at <= ?")
-    .all(now) as unknown as ResourceAuthorizationGrantRow[]
-  const grantResult = database
-    .prepare(`
-      UPDATE resource_authorization_grants
-      SET status = 'expired',
-          revoked_at = COALESCE(revoked_at, ?),
-          updated_at = ?
-      WHERE status IN ('active', 'paused')
-        AND expires_at IS NOT NULL
-        AND expires_at <= ?
-    `)
-    .run(now, now, now)
-  for (const grant of dueGrants) {
-    syncResourceAuthorizationGrantRuntime({ ...grant, status: 'expired', revoked_at: grant.revoked_at ?? now, updated_at: now }, grant.revoked_by ?? grant.created_by, database, now)
-  }
-  const changed = Number(grantResult.changes ?? 0)
-  if (changed > 0) {
-    cleanupInactiveAuthorizationBindings(database)
-  }
-  return changed
-}
-
 const accountStatusValues: readonly AccountStatus[] = ['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']
 const coolingAccountStatusValues: readonly AccountStatus[] = ['rate_limited', 'temporary_unavailable']
 
@@ -600,7 +590,7 @@ export function listAccounts(access?: AccessScope, options?: AccountListOptions)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
-  const rows = sortHydratedAccountRows(hydrateAccountRowsFromRecordDatabase(listAccountRowsForAccess(access, listOptions)), listOptions)
+  const rows = hydrateAccountRowsFromRecordDatabase(listAccountRowsForAccess(access, listOptions))
   return accountSummariesFromRows(rows, access, viewerSystemAccountId)
 }
 
@@ -608,15 +598,11 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
-  const page = hasAccountQualityScoreSort(listOptions)
-    ? sortedHydratedAccountRowsPage(access, listOptions)
-    : (() => {
-      const databasePage = listAccountRowsPageForAccess(access, listOptions)
-      return {
-        rows: sortHydratedAccountRows(hydrateAccountRowsFromRecordDatabase(databasePage.rows), listOptions),
-        total: databasePage.total
-      }
-    })()
+  const databasePage = listAccountRowsPageForAccess(access, listOptions)
+  const page = {
+    rows: hydrateAccountRowsFromRecordDatabase(databasePage.rows),
+    total: databasePage.total
+  }
   const rows = page.rows
   return {
     items: accountSummariesFromRows(rows, access, viewerSystemAccountId),
@@ -626,81 +612,14 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
   }
 }
 
-function sortedHydratedAccountRowsPage(access: AccessScope | undefined, options: ReturnType<typeof normalizeAccountListOptions>): AccountRowsPage {
-  const rows = sortHydratedAccountRows(hydrateAccountRowsFromRecordDatabase(listAccountRowsForAccess(access, options)), options)
-  const start = (options.page - 1) * options.pageSize
-  return {
-    rows: rows.slice(start, start + options.pageSize),
-    total: rows.length
-  }
-}
-
-function sortHydratedAccountRows(rows: AccountListRow[], options: ReturnType<typeof normalizeAccountListOptions>): AccountListRow[] {
-  if (!options.sorts.some((sort) => sort.field === 'qualityScore')) {
-    return rows
-  }
-  return [...rows].sort((left, right) => {
-    for (const sort of options.sorts) {
-      const diff = compareAccountRowsBySort(left, right, sort)
-      if (diff !== 0) {
-        return diff
-      }
-    }
-    return left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id)
-  })
-}
-
-function compareAccountRowsBySort(left: AccountListRow, right: AccountListRow, sort: ReturnType<typeof normalizeAccountListOptions>['sorts'][number]): number {
-  const direction = sort.order === 'desc' ? -1 : 1
-  if (sort.field === 'qualityScore') {
-    const leftHasQuality = typeof left.quality_score === 'number'
-    const rightHasQuality = typeof right.quality_score === 'number'
-    if (leftHasQuality !== rightHasQuality) return leftHasQuality ? -1 : 1
-    if (!leftHasQuality || !rightHasQuality) return 0
-    return ((left.quality_score ?? 0) - (right.quality_score ?? 0)) * direction
-  }
-  return compareAccountRowsByValue(accountRowSortValue(left, sort.field), accountRowSortValue(right, sort.field)) * direction
-}
-
-function accountRowSortValue(row: AccountListRow, field: string): string | number | undefined {
-  switch (field) {
-    case 'priority':
-      return row.access_type === 'authorized' ? 0 : row.priority
-    case 'superPriority':
-      return row.access_type === 'authorized' ? 0 : row.super_priority_enabled
-    case 'fallback':
-      return row.access_type === 'authorized' ? 0 : row.fallback_enabled
-    case 'name':
-      return row.name
-    case 'type':
-      return row.type
-    case 'providerCode':
-      return row.provider_code
-    case 'systemAccount':
-      return row.system_account_sort_name ?? row.system_account_id
-    case 'concurrency':
-      return row.concurrency_limit
-    case 'status':
-      return row.status
-    case 'accountExpiresAt':
-      return row.account_expires_at ?? undefined
-    case 'lastUsedAt':
-      return row.last_used_at ?? undefined
-    case 'notes':
-      return row.notes ?? undefined
-    default:
-      return undefined
-  }
-}
-
-function compareAccountRowsByValue(left: string | number | undefined, right: string | number | undefined): number {
-  if (left === undefined && right === undefined) return 0
-  if (left === undefined) return 1
-  if (right === undefined) return -1
-  if (typeof left === 'number' || typeof right === 'number') {
-    return Number(left) - Number(right)
-  }
-  return String(left).localeCompare(String(right), 'zh-CN')
+function findAccountSummary(accountId: string, access?: AccessScope): AccountSummary | undefined {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  disableExpiredAccounts(access)
+  const listOptions = normalizeAccountListOptions({ page: 1, pageSize: 1 })
+  const row = findAccountRowForAccess(access, accountId, listOptions)
+  if (!row) return undefined
+  const hydratedRows = hydrateAccountRowsFromRecordDatabase([row])
+  return accountSummariesFromRows(hydratedRows, access, viewerSystemAccountId)[0]
 }
 
 function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountSummary[] {
@@ -873,7 +792,7 @@ function loadAccountUsageDefaultTrendAccountIds(access?: AccessScope): string[] 
 }
 
 export function findAccountForTest(accountId: string, access?: AccessScope): AccountSummary | undefined {
-  const visibleAccount = listAccounts(access).find((account) => account.id === accountId)
+  const visibleAccount = findAccountSummary(accountId, access)
   if (!visibleAccount?.permissions?.canUse) {
     return undefined
   }
@@ -1083,7 +1002,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
 }
 
 export function updateAccount(id: string, input: Record<string, unknown>, access?: AccessScope): AccountSummary | undefined {
-  const current = listAccounts(access).find((account) => account.id === id)
+  const current = findAccountSummary(id, access)
   if (!current) {
     return undefined
   }
@@ -1271,7 +1190,7 @@ export function clearAccountFailureState(
   id: string,
   access?: AccessScope
 ): AccountSummary | undefined {
-  const current = listAccounts(access).find((account) => account.id === id)
+  const current = findAccountSummary(id, access)
   if (!current) {
     return undefined
   }
@@ -1301,7 +1220,7 @@ export function clearAccountFailureState(
     if (Number(result.changes ?? 0) > 0) {
       refreshGroupAccountStatsAfterWrite()
     }
-    return listAccounts(access).find((account) => account.id === id)
+    return findAccountSummary(id, access)
   }
 
   const result = getDatabase()
@@ -1322,7 +1241,7 @@ export function clearAccountFailureState(
     refreshGroupAccountStatsAfterWrite()
   }
 
-  return listAccounts(access).find((account) => account.id === id)
+  return findAccountSummary(id, access)
 }
 
 export function clearAccountStreamFailureState(id: string): boolean {
@@ -1354,7 +1273,7 @@ export function clearAccountStreamFailureState(id: string): boolean {
 }
 
 export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
-  const current = listAccounts().find((account) => account.id === id)
+  const current = findAccountSummary(id)
   if (!current) {
     return undefined
   }
@@ -1381,7 +1300,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
     if (Number(result.changes ?? 0) > 0) {
       refreshGroupAccountStatsAfterWrite()
     }
-    return listAccounts().find((account) => account.id === id)
+    return findAccountSummary(id)
   }
 
   const cooldownStatus: AccountStatus = status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
@@ -1404,7 +1323,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
     refreshGroupAccountStatsAfterWrite()
   }
 
-  return listAccounts().find((account) => account.id === id)
+  return findAccountSummary(id)
 }
 
 export function migrateAccountTraffic(input: {
@@ -1412,7 +1331,7 @@ export function migrateAccountTraffic(input: {
   targetAccountId: string
   sourceStatus: AccountTrafficMigrationSourceStatus
 }, access?: AccessScope): { sourceAccount: AccountSummary; targetAccount: AccountSummary; sourceCooldownUntil?: string } | undefined {
-  const sourceVisibleAccount = listAccounts(access).find((account) => account.id === input.sourceAccountId)
+  const sourceVisibleAccount = findAccountSummary(input.sourceAccountId, access)
   if (sourceVisibleAccount?.accessType === 'authorized') {
     return migrateAuthorizedAccountBindingTraffic(input, access)
   }
@@ -1492,8 +1411,8 @@ export function migrateAccountTraffic(input: {
   refreshGroupAccountStatsAfterWrite()
 
   const ownerAccess = { systemAccountId: sourceRow.system_account_id, role: 'user' as const }
-  const sourceAccount = listAccounts(ownerAccess).find((account) => account.id === input.sourceAccountId)
-  const targetAccount = listAccounts(ownerAccess).find((account) => account.id === input.targetAccountId)
+  const sourceAccount = findAccountSummary(input.sourceAccountId, ownerAccess)
+  const targetAccount = findAccountSummary(input.targetAccountId, ownerAccess)
   if (!sourceAccount || !targetAccount) {
     return undefined
   }
@@ -1506,8 +1425,8 @@ export function updateAuthorizedAccountBindingDispatch(
   access?: AccessScope
 ): AccountSummary | undefined {
   const systemAccountId = authorizedBindingSystemAccountId(access)
-  const current = listAccounts(access).find((account) => account.id === accountId && account.accessType === 'authorized')
-  if (!current?.boundGroupId) {
+  const current = findAccountSummary(accountId, access)
+  if (current?.accessType !== 'authorized' || !current.boundGroupId) {
     throw new Error('授权账户需要先绑定到你的分组')
   }
   if (current.status !== 'active' && (input.superPriorityEnabled === true || input.fallbackEnabled === true)) {
@@ -1550,7 +1469,7 @@ export function updateAuthorizedAccountBindingDispatch(
     return undefined
   }
   refreshGroupAccountStatsAfterWrite()
-  return listAccounts({ systemAccountId, role: 'user' }).find((account) => account.id === accountId)
+  return findAccountSummary(accountId, { systemAccountId, role: 'user' })
 }
 
 function migrateAuthorizedAccountBindingTraffic(input: {
@@ -1562,9 +1481,12 @@ function migrateAuthorizedAccountBindingTraffic(input: {
   if (input.sourceAccountId === input.targetAccountId) {
     throw new Error('目标账户不能和当前账户相同')
   }
-  const visibleAccounts = listAccounts({ systemAccountId, role: 'user' })
-  const sourceAccount = visibleAccounts.find((account) => account.id === input.sourceAccountId && account.accessType === 'authorized')
-  const targetAccount = visibleAccounts.find((account) => account.id === input.targetAccountId)
+  const accountAccess = { systemAccountId, role: 'user' as const }
+  const sourceAccount = findAccountSummary(input.sourceAccountId, accountAccess)
+  const targetAccount = findAccountSummary(input.targetAccountId, accountAccess)
+  if (sourceAccount?.accessType !== 'authorized') {
+    return undefined
+  }
   if (!sourceAccount || !targetAccount) {
     return undefined
   }
@@ -1600,9 +1522,8 @@ function migrateAuthorizedAccountBindingTraffic(input: {
     return undefined
   }
   refreshGroupAccountStatsAfterWrite()
-  const nextAccounts = listAccounts({ systemAccountId, role: 'user' })
-  const nextSource = nextAccounts.find((account) => account.id === input.sourceAccountId)
-  const nextTarget = nextAccounts.find((account) => account.id === input.targetAccountId)
+  const nextSource = findAccountSummary(input.sourceAccountId, accountAccess)
+  const nextTarget = findAccountSummary(input.targetAccountId, accountAccess)
   return nextSource && nextTarget ? { sourceAccount: nextSource, targetAccount: nextTarget, sourceCooldownUntil: sourceCooldownUntil ?? undefined } : undefined
 }
 
@@ -1612,7 +1533,7 @@ export function markAccountException(
   reason: string,
   options: { preserveDisabled?: boolean } = {}
 ): AccountSummary | undefined {
-  const current = listAccounts().find((account) => account.id === id)
+  const current = findAccountSummary(id)
   if (!current) {
     return undefined
   }
@@ -1638,11 +1559,11 @@ export function markAccountException(
     refreshGroupAccountStatsAfterWrite()
   }
 
-  return listAccounts().find((account) => account.id === id)
+  return findAccountSummary(id)
 }
 
 export function markAccountDisabledByFailure(id: string, reason: string): AccountSummary | undefined {
-  const current = listAccounts().find((account) => account.id === id)
+  const current = findAccountSummary(id)
   if (!current || current.status === 'error') {
     return undefined
   }
@@ -1662,7 +1583,7 @@ export function recordAccountStreamFailure(input: {
     return { count: 0, triggered: false }
   }
   if (isHardUnavailableAccountStatus(row.status)) {
-    return { count: Math.max(0, row.stream_failure_count), triggered: false, account: listAccounts().find((item) => item.id === input.accountId) }
+    return { count: Math.max(0, row.stream_failure_count), triggered: false, account: findAccountSummary(input.accountId) }
   }
 
   const now = new Date()
@@ -1686,7 +1607,7 @@ export function recordAccountStreamFailure(input: {
 
   const triggered = count >= Math.max(1, input.thresholdCount) && input.action !== 'none'
   if (!triggered) {
-    return { count, triggered: false, account: listAccounts().find((item) => item.id === input.accountId) }
+    return { count, triggered: false, account: findAccountSummary(input.accountId) }
   }
 
   if (input.action === 'cooldown') {
@@ -1707,13 +1628,21 @@ export function recordAccountStreamFailure(input: {
     .run(nowIsoValue, input.accountId)
   refreshGroupAccountStatsAfterWrite()
 
-  return { count, triggered: true, account: listAccounts().find((item) => item.id === input.accountId) }
+  return { count, triggered: true, account: findAccountSummary(input.accountId) }
 }
 
 export function listGroups(access?: AccessScope): GroupSummary[] {
+  return buildGroupSummaries(listGroupRowsForAccess(access), access)
+}
+
+export function findGroupSummary(id: string, access?: AccessScope): GroupSummary | undefined {
+  const row = findGroupRowForAccess(access, id)
+  return row ? buildGroupSummaries([row], access)[0] : undefined
+}
+
+function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupSummary[] {
   const timezone = usageStatsTimezone()
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
-  const rows = listGroupRowsForAccess(access)
   const groupIds = rows.map((row) => row.id)
   const groupStatsByGroup = loadGroupAccountStatsByGroupIds(groupIds)
   const accountIdsByGroup = loadGroupAccountIdsByGroupIds(groupIds)
@@ -1794,7 +1723,7 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
 }
 
 export function updateGroup(id: string, input: Record<string, unknown>, access?: AccessScope): GroupSummary | undefined {
-  const current = listGroups(access).find((group) => group.id === id)
+  const current = findGroupSummary(id, access)
   if (!current) {
     return undefined
   }
@@ -1832,11 +1761,11 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
     }
     throw error
   }
-  return listGroups(access).find((group) => group.id === id)
+  return findGroupSummary(id, access)
 }
 
 export function deleteGroup(id: string, access?: AccessScope): boolean {
-  const current = listGroups(access).find((group) => group.id === id)
+  const current = findGroupSummary(id, access)
   if (current?.isDefault) {
     throw new Error('默认分组不能删除')
   }
@@ -1860,7 +1789,7 @@ export function setAccountGroup(accountId: string, groupId: string | null, acces
   if (!group || !canManageResourceOwner(group.systemAccountId, access)) {
     return undefined
   }
-  const current = listAccounts({ systemAccountId: group.systemAccountId, role: 'user' }).find((account) => account.id === accountId)
+  const current = findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
   if (!current) {
     return undefined
   }
@@ -1893,7 +1822,7 @@ export function setAccountGroup(accountId: string, groupId: string | null, acces
     .run(group.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, 1, now, now)
   refreshGroupAccountStatsAfterWrite()
 
-  return listAccounts({ systemAccountId: group.systemAccountId, role: 'user' }).find((account) => account.id === accountId)
+  return findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
 }
 
 export function addAccountToGroup(groupId: string, accountId: string, weight = 1): GroupSummary | undefined {
@@ -1925,7 +1854,7 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
     `)
     .run(current.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, weight, now, now)
   refreshGroupAccountStatsAfterWrite()
-  return listGroups().find((group) => group.id === groupId)
+  return findGroupSummary(groupId)
 }
 
 export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
@@ -1944,6 +1873,26 @@ export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
     : getDatabase().prepare('SELECT * FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC, id ASC').all() as unknown as SystemTeamRow[]
   const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
   return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
+}
+
+export function findSystemTeamSummary(id: string, access?: AccessScope): SystemTeamSummary | undefined {
+  const scopedId = scopedSystemAccountId(access)
+  const row = scopedId
+    ? getDatabase()
+      .prepare(`
+        SELECT DISTINCT system_teams.*
+        FROM system_teams
+        INNER JOIN system_team_members ON system_team_members.team_id = system_teams.id
+        WHERE system_teams.id = ?
+          AND system_team_members.system_account_id = ?
+          AND system_team_members.status = 'active'
+        LIMIT 1
+      `)
+      .get(id, scopedId) as unknown as SystemTeamRow | undefined
+    : getDatabase().prepare('SELECT * FROM system_teams WHERE id = ?').get(id) as unknown as SystemTeamRow | undefined
+  if (!row) return undefined
+  const members = listSystemTeamMembersForTeamIds([row.id], true)
+  return systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access)
 }
 
 export function listAuthorizationGranteeAccounts(access?: AccessScope): SystemAccountPrincipalSummary[] {
@@ -1968,7 +1917,7 @@ export function createSystemTeam(input: Record<string, unknown>, access?: Access
   database
     .prepare('INSERT INTO system_teams (id, name, description, status, created_by, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
     .run(id, name, optionalString(input.description) ?? null, input.status === 'disabled' ? 'disabled' : 'active', currentSystemAccountId(access), now, now)
-  const created = listSystemTeams(access).find((team) => team.id === id)
+  const created = findSystemTeamSummary(id, access)
   if (!created) throw new Error('创建团队失败')
   return created
 }
@@ -2003,7 +1952,7 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
   if (authorizationChanged) {
     refreshGroupAccountStatsAfterWrite()
   }
-  return listSystemTeams(access).find((team) => team.id === id)
+  return findSystemTeamSummary(id, access)
 }
 
 export function addSystemTeamMembers(teamId: string, input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary | undefined {
@@ -2034,7 +1983,7 @@ export function addSystemTeamMembers(teamId: string, input: Record<string, unkno
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
-  return listSystemTeams(access).find((item) => item.id === teamId)
+  return findSystemTeamSummary(teamId, access)
 }
 
 export function removeSystemTeamMember(teamId: string, memberId: string, access?: AccessScope): SystemTeamSummary | undefined {
@@ -2052,7 +2001,7 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
-  return listSystemTeams(access).find((item) => item.id === teamId)
+  return findSystemTeamSummary(teamId, access)
 }
 
 export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
@@ -2247,543 +2196,6 @@ function normalizeSystemAccountIds(value: unknown): string[] {
 
 function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourceType, resourceId: string): string | undefined {
   return resourceType === 'account' ? accountSystemAccountId(resourceId) : groupOwnerAndProvider(resourceId)?.systemAccountId
-}
-
-function activeTeamMemberRows(teamId: string, database = getDatabase()): SystemTeamMemberRow[] {
-  return database.prepare(`
-    SELECT system_team_members.*
-    FROM system_team_members
-    INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id
-    WHERE system_team_members.team_id = ?
-      AND system_team_members.status = 'active'
-      AND system_accounts.status = 'active'
-    ORDER BY system_team_members.joined_at ASC, system_team_members.id ASC
-  `).all(teamId) as unknown as SystemTeamMemberRow[]
-}
-
-function upsertResourceAuthorizationForUser(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeSystemAccountId: string; sourceType: ResourceAuthorizationSourceType; sourceTeamId?: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationRow {
-  if (input.granteeSystemAccountId === input.ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
-  const existing = input.database.prepare('SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1').get(input.resourceType, input.resourceId, input.granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
-  const authorizationId = existing?.id ?? newId('rauth')
-  const isTeamSource = input.sourceType === 'team'
-  const hasActiveTeamSource = existing ? hasActiveTeamAuthorizationSource(input.database, authorizationId) : false
-  const nextEffectiveSourceType = isTeamSource || hasActiveTeamSource ? 'team' : 'manual'
-  const nextEffectiveSourceTeamId = isTeamSource ? input.sourceTeamId ?? null : firstActiveTeamSourceId(input.database, authorizationId)
-  const nextExpiresAt = input.expiresAt ?? existing?.expires_at ?? null
-  const existingStatus = existing?.status
-  const nextStatus: AuthorizationStatus = isResourceAuthorizationExpired(nextExpiresAt)
-    ? 'expired'
-    : existingStatus === 'paused' && !isTeamSource
-      ? 'paused'
-      : 'active'
-  const nextLimitsJson = !isTeamSource && hasActiveTeamSource
-    ? existing?.limits_json ?? null
-    : requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits))
-  const nextRevokedBy = nextStatus === 'expired' ? existing?.revoked_by ?? input.actor : null
-  const nextRevokedAt = nextStatus === 'expired' ? existing?.revoked_at ?? input.now : null
-  const nextRevokedReason = nextStatus === 'expired' ? 'authorization_expired' : null
-  if (existing) {
-    input.database.prepare(`
-      UPDATE resource_authorizations
-      SET resource_owner_system_account_id = ?,
-          status = ?,
-          effective_source_type = COALESCE(?, effective_source_type),
-          effective_source_team_id = ?,
-          activated_at = COALESCE(activated_at, ?),
-          last_source_changed_at = ?,
-          remark = COALESCE(?, remark),
-          expires_at = COALESCE(?, expires_at),
-          limits_json = ?,
-          model_policy_json = COALESCE(?, model_policy_json),
-          revoked_by = ?,
-          revoked_at = ?,
-          revoked_reason = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now, authorizationId)
-  } else {
-    input.database.prepare(`
-      INSERT INTO resource_authorizations (
-        id, resource_type, resource_id, resource_owner_system_account_id, grantee_system_account_id, scope, status,
-        effective_source_type, effective_source_team_id, activated_at, last_source_changed_at,
-        remark, expires_at, limits_json, model_policy_json,
-        created_by, created_at, revoked_by, revoked_at, revoked_reason, updated_at
-      ) VALUES (?, ?, ?, ?, ?, 'use', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(authorizationId, input.resourceType, input.resourceId, input.ownerSystemAccountId, input.granteeSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), input.actor, input.now, nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now)
-  }
-  upsertResourceAuthorizationSource(input.database, authorizationId, input.sourceType, input.sourceTeamId, input.actor, input.now, isTeamSource ? 'active' : hasActiveTeamSource ? 'superseded' : 'active')
-  if (isTeamSource) {
-    input.database.prepare(`
-      UPDATE resource_authorization_sources
-      SET status = 'superseded',
-          ended_at = COALESCE(ended_at, ?),
-          ended_reason = COALESCE(ended_reason, 'covered_by_team'),
-          updated_at = ?
-      WHERE authorization_id = ? AND source_type = 'manual' AND status = 'active'
-    `).run(input.now, input.now, authorizationId)
-  }
-  refreshResourceAuthorizationEffectiveSource(authorizationId, input.actor, input.now, input.database)
-  const row = input.database.prepare('SELECT * FROM resource_authorizations WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
-  if (!row) throw new Error('创建资源授权失败')
-  return row
-}
-
-function hasActiveTeamAuthorizationSource(database: DatabaseSync, authorizationId: string): boolean {
-  const row = database
-    .prepare(`
-      SELECT ras.id
-      FROM resource_authorization_sources ras
-      INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
-      INNER JOIN resource_authorization_grants trg
-        ON trg.resource_type = ra.resource_type
-        AND trg.resource_id = ra.resource_id
-        AND trg.grantee_type = 'team'
-        AND trg.grantee_team_id = ras.source_team_id
-        AND trg.status = 'active'
-        AND (trg.expires_at IS NULL OR trg.expires_at > ?)
-      WHERE ras.authorization_id = ?
-        AND ras.source_type = 'team'
-        AND ras.status = 'active'
-      LIMIT 1
-    `)
-    .get(nowIso(), authorizationId) as unknown as { id?: string } | undefined
-  return Boolean(row?.id)
-}
-
-function firstActiveTeamSourceId(database: DatabaseSync, authorizationId: string): string | null {
-  const row = database
-    .prepare(`
-      SELECT ras.source_team_id
-      FROM resource_authorization_sources ras
-      INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
-      INNER JOIN resource_authorization_grants trg
-        ON trg.resource_type = ra.resource_type
-        AND trg.resource_id = ra.resource_id
-        AND trg.grantee_type = 'team'
-        AND trg.grantee_team_id = ras.source_team_id
-        AND trg.status = 'active'
-        AND (trg.expires_at IS NULL OR trg.expires_at > ?)
-      WHERE ras.authorization_id = ?
-        AND ras.source_type = 'team'
-        AND ras.status = 'active'
-      ORDER BY ras.activated_at ASC, ras.created_at ASC, ras.id ASC
-      LIMIT 1
-    `)
-    .get(nowIso(), authorizationId) as unknown as { source_team_id?: string | null } | undefined
-  return row?.source_team_id ?? null
-}
-
-function upsertResourceAuthorizationSource(database: DatabaseSync, authorizationId: string, sourceType: ResourceAuthorizationSourceType, sourceTeamId: string | undefined, actor: string, now: string, requestedStatus: ResourceAuthorizationSourceStatus): void {
-  const existing = database.prepare("SELECT * FROM resource_authorization_sources WHERE authorization_id = ? AND source_type = ? AND COALESCE(source_team_id, '') = COALESCE(?, '') ORDER BY created_at DESC, id DESC LIMIT 1").get(authorizationId, sourceType, sourceTeamId ?? null) as unknown as ResourceAuthorizationSourceRow | undefined
-  if (existing) {
-    database.prepare(`
-      UPDATE resource_authorization_sources
-      SET status = ?,
-          activated_at = COALESCE(activated_at, ?),
-          ended_at = CASE WHEN ? = 'active' THEN NULL ELSE COALESCE(ended_at, ?) END,
-          ended_reason = CASE WHEN ? = 'active' THEN NULL ELSE COALESCE(ended_reason, ?) END,
-          revoked_by = CASE WHEN ? = 'active' THEN NULL ELSE revoked_by END,
-          revoked_at = CASE WHEN ? = 'active' THEN NULL ELSE revoked_at END,
-          updated_at = ?
-      WHERE id = ?
-    `).run(requestedStatus, now, requestedStatus, now, requestedStatus, requestedStatus === 'superseded' ? 'covered_by_team' : null, requestedStatus, requestedStatus, now, existing.id)
-    return
-  }
-  database.prepare(`
-    INSERT INTO resource_authorization_sources (
-      id, authorization_id, source_type, source_team_id, status, activated_at, ended_at, ended_reason,
-      created_by, created_at, revoked_by, revoked_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, ?)
-  `).run(newId('rauthsrc'), authorizationId, sourceType, sourceTeamId ?? null, requestedStatus, now, requestedStatus === 'active' ? null : now, requestedStatus === 'superseded' ? 'covered_by_team' : null, actor, now, now)
-}
-
-function refreshResourceAuthorizationEffectiveSource(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
-  const activeTeamSource = database.prepare(`
-    SELECT ras.source_team_id
-    FROM resource_authorization_sources ras
-    INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
-    INNER JOIN resource_authorization_grants trg
-      ON trg.resource_type = ra.resource_type
-      AND trg.resource_id = ra.resource_id
-      AND trg.grantee_type = 'team'
-      AND trg.grantee_team_id = ras.source_team_id
-      AND trg.status = 'active'
-      AND (trg.expires_at IS NULL OR trg.expires_at > ?)
-    WHERE ras.authorization_id = ?
-      AND ras.source_type = 'team'
-      AND ras.status = 'active'
-    ORDER BY ras.activated_at ASC, ras.created_at ASC, ras.id ASC
-    LIMIT 1
-  `).get(now, authorizationId) as unknown as { source_team_id?: string | null } | undefined
-
-  if (activeTeamSource?.source_team_id) {
-    database.prepare(`
-      UPDATE resource_authorizations
-      SET status = CASE
-            WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired'
-            WHEN status = 'paused' THEN 'paused'
-            ELSE 'active'
-          END,
-          effective_source_type = 'team',
-          effective_source_team_id = ?,
-          revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_by, ?) ELSE NULL END,
-          revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_at, ?) ELSE NULL END,
-          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE NULL END,
-          last_source_changed_at = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(now, activeTeamSource.source_team_id, now, actor, now, now, now, now, now, authorizationId)
-    return
-  }
-
-  const pausedTeamSource = database.prepare(`
-    SELECT ras.source_team_id
-    FROM resource_authorization_sources ras
-    INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
-    INNER JOIN resource_authorization_grants trg
-      ON trg.resource_type = ra.resource_type
-      AND trg.resource_id = ra.resource_id
-      AND trg.grantee_type = 'team'
-      AND trg.grantee_team_id = ras.source_team_id
-      AND trg.status = 'paused'
-    WHERE ras.authorization_id = ?
-      AND ras.source_type = 'team'
-      AND ras.status = 'active'
-    ORDER BY ras.activated_at ASC, ras.created_at ASC, ras.id ASC
-    LIMIT 1
-  `).get(authorizationId) as unknown as { source_team_id?: string | null } | undefined
-
-  if (pausedTeamSource?.source_team_id) {
-    database.prepare(`
-      UPDATE resource_authorizations
-      SET status = CASE
-            WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired'
-            ELSE 'paused'
-          END,
-          effective_source_type = 'team',
-          effective_source_team_id = ?,
-          revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_by, ?) ELSE NULL END,
-          revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_at, ?) ELSE NULL END,
-          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE 'authorization_paused' END,
-          last_source_changed_at = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(now, pausedTeamSource.source_team_id, now, actor, now, now, now, now, now, authorizationId)
-    cleanupInactiveAuthorizationBindings(database, [authorizationId])
-    return
-  }
-
-  const activeManualSource = database.prepare(`
-    SELECT id
-    FROM resource_authorization_sources
-    WHERE authorization_id = ? AND source_type = 'manual' AND status = 'active'
-    ORDER BY activated_at ASC, created_at ASC, id ASC
-    LIMIT 1
-  `).get(authorizationId) as unknown as { id?: string } | undefined
-
-  if (activeManualSource?.id) {
-    database.prepare(`
-      UPDATE resource_authorizations
-      SET status = CASE
-            WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired'
-            WHEN status = 'paused' THEN 'paused'
-            ELSE 'active'
-          END,
-          effective_source_type = 'manual',
-          effective_source_team_id = NULL,
-          revoked_by = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_by, ?) ELSE NULL END,
-          revoked_at = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN COALESCE(revoked_at, ?) ELSE NULL END,
-          revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE NULL END,
-          last_source_changed_at = ?,
-          updated_at = ?
-      WHERE id = ?
-    `).run(now, now, actor, now, now, now, now, now, authorizationId)
-    return
-  }
-
-  database.prepare(`
-    UPDATE resource_authorizations
-    SET status = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired' ELSE 'revoked' END,
-        effective_source_type = NULL,
-        effective_source_team_id = NULL,
-        revoked_by = COALESCE(revoked_by, ?),
-        revoked_at = COALESCE(revoked_at, ?),
-        revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE COALESCE(revoked_reason, 'no_active_source') END,
-        last_source_changed_at = ?,
-        updated_at = ?
-    WHERE id = ?
-  `).run(now, actor, now, now, now, now, authorizationId)
-  cleanupInactiveAuthorizationBindings(database, [authorizationId])
-}
-
-function cleanupInactiveAuthorizationBindings(database = getDatabase(), authorizationIds?: string[]): void {
-  void database
-  void authorizationIds
-  clearGatewayApiKeyValidationCache()
-  refreshGroupAccountStatsAfterWrite()
-}
-
-function upsertResourceAuthorizationGrant(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeType: 'system_account' | 'team'; granteeId: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationGrantRow {
-  if (input.granteeType === 'system_account' && input.granteeId === input.ownerSystemAccountId) {
-    throw new Error('不能授权给资源所有者自己')
-  }
-  const active = input.database.prepare(`
-    SELECT id
-    FROM resource_authorization_grants
-    WHERE resource_type = ?
-      AND resource_id = ?
-      AND grantee_type = ?
-      AND COALESCE(grantee_system_account_id, '') = COALESCE(?, '')
-      AND COALESCE(grantee_team_id, '') = COALESCE(?, '')
-      AND status = 'active'
-    LIMIT 1
-  `).get(
-    input.resourceType,
-    input.resourceId,
-    input.granteeType,
-    input.granteeType === 'system_account' ? input.granteeId : null,
-    input.granteeType === 'team' ? input.granteeId : null
-  ) as unknown as { id?: string } | undefined
-  if (active?.id) {
-    throw new Error(input.granteeType === 'team' ? '该资源已授权给该团队，请勿重复授权' : '该资源已授权给该用户，请勿重复授权')
-  }
-  const existing = input.database.prepare(`
-    SELECT *
-    FROM resource_authorization_grants
-    WHERE resource_type = ?
-      AND resource_id = ?
-      AND grantee_type = ?
-      AND COALESCE(grantee_system_account_id, '') = COALESCE(?, '')
-      AND COALESCE(grantee_team_id, '') = COALESCE(?, '')
-      AND status IN ('paused', 'expired', 'revoked')
-    ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END,
-      created_at ASC,
-      id ASC
-    LIMIT 1
-  `).get(
-    input.resourceType,
-    input.resourceId,
-    input.granteeType,
-    input.granteeType === 'system_account' ? input.granteeId : null,
-    input.granteeType === 'team' ? input.granteeId : null
-  ) as unknown as ResourceAuthorizationGrantRow | undefined
-  if (existing?.status === 'paused') {
-    throw new Error(input.granteeType === 'team' ? '该资源已暂停授权给该团队，请先恢复或修改原授权' : '该资源已暂停授权给该用户，请先恢复或修改原授权')
-  }
-  const id = existing?.id ?? newId('rauthgrant')
-  if (existing) {
-    input.database.prepare("UPDATE resource_authorization_grants SET status = 'active', remark = COALESCE(?, remark), expires_at = ?, limits_json = ?, model_policy_json = COALESCE(?, model_policy_json), revoked_by = NULL, revoked_at = NULL, updated_at = ? WHERE id = ?")
-      .run(input.remark ?? null, input.expiresAt ?? existing.expires_at, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.now, id)
-  } else {
-    input.database.prepare("INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at, limits_json, model_policy_json, created_by, created_at, revoked_by, revoked_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)")
-      .run(
-        id,
-        input.resourceType,
-        input.resourceId,
-        input.ownerSystemAccountId,
-        input.granteeType,
-        input.granteeType === 'system_account' ? input.granteeId : null,
-        input.granteeType === 'team' ? input.granteeId : null,
-        input.remark ?? null,
-        input.expiresAt ?? null,
-        requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)),
-        jsonObjectOrNull(input.modelPolicy),
-        input.actor,
-        input.now,
-        input.now
-      )
-  }
-  const row = input.database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(id) as unknown as ResourceAuthorizationGrantRow | undefined
-  if (!row) throw new Error('创建资源授权失败')
-  return row
-}
-
-function revokeResourceAuthorizationGrant(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
-  database
-    .prepare("UPDATE resource_authorization_grants SET status = 'revoked', revoked_by = ?, revoked_at = ?, updated_at = ? WHERE id = ?")
-    .run(actor, now, now, grant.id)
-  syncResourceAuthorizationGrantRuntime({ ...grant, status: 'revoked', revoked_by: actor, revoked_at: now, updated_at: now }, actor, database, now)
-  cleanupInactiveAuthorizationBindings(database)
-}
-
-function syncResourceAuthorizationGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
-  if (grant.grantee_type === 'system_account') {
-    syncUserGrantRuntime(grant, actor, database, now)
-    return
-  }
-  syncTeamGrantMemberAuthorizations(grant, actor, database, now)
-}
-
-function syncUserGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
-  if (!grant.grantee_system_account_id) return
-  const runtime = loadRuntimeAuthorizationForUserGrant(grant, database)
-  if (grant.status === 'active') {
-    upsertResourceAuthorizationForUser({
-      resourceType: grant.resource_type,
-      resourceId: grant.resource_id,
-      ownerSystemAccountId: grant.resource_owner_system_account_id,
-      granteeSystemAccountId: grant.grantee_system_account_id,
-      sourceType: 'manual',
-      remark: grant.remark ?? undefined,
-      expiresAt: grant.expires_at,
-      limits: parseRequestQuotaLimitsJson(grant.limits_json),
-      modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined),
-      actor,
-      now,
-      database
-    })
-    return
-  }
-  if (!runtime) return
-  database.prepare(`
-    UPDATE resource_authorization_sources
-    SET status = 'revoked',
-        ended_at = COALESCE(ended_at, ?),
-        ended_reason = COALESCE(ended_reason, ?),
-        revoked_by = ?,
-        revoked_at = ?,
-        updated_at = ?
-    WHERE authorization_id = ? AND source_type = 'manual' AND status IN ('active', 'superseded')
-  `).run(now, grant.status === 'expired' ? 'authorization_expired' : grant.status === 'paused' ? 'authorization_paused' : 'authorization_revoked', actor, now, now, runtime.id)
-  refreshResourceAuthorizationEffectiveSource(runtime.id, actor, now, database)
-}
-
-function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
-  const teamId = grant.grantee_team_id
-  if (!teamId) return
-  if (grant.status === 'revoked') {
-    revokeTeamGrantSources(grant.resource_type, grant.resource_id, teamId, actor, database, now)
-    return
-  }
-  if (grant.status === 'paused' || grant.status === 'expired') {
-    const sourceRows = database.prepare(`
-      SELECT ras.id AS source_id, ras.authorization_id
-      FROM resource_authorization_sources ras
-      INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
-      WHERE ra.resource_type = ?
-        AND ra.resource_id = ?
-        AND ras.source_type = 'team'
-        AND ras.source_team_id = ?
-        AND ras.status = 'active'
-    `).all(grant.resource_type, grant.resource_id, teamId) as unknown as Array<{ source_id?: string; authorization_id?: string }>
-    for (const sourceRow of sourceRows) {
-      if (!sourceRow.source_id || !sourceRow.authorization_id) continue
-      database.prepare(`
-        UPDATE resource_authorization_sources
-        SET status = 'revoked',
-            ended_at = COALESCE(ended_at, ?),
-            ended_reason = ?,
-            revoked_by = ?,
-            revoked_at = ?,
-            updated_at = ?
-        WHERE id = ?
-      `).run(now, grant.status === 'paused' ? 'authorization_paused' : 'authorization_expired', actor, now, now, sourceRow.source_id)
-      refreshResourceAuthorizationEffectiveSource(sourceRow.authorization_id, actor, now, database)
-    }
-    return
-  }
-  if (grant.status === 'active') {
-    const members = activeTeamMemberRows(teamId, database).filter((member) => member.system_account_id !== grant.resource_owner_system_account_id)
-    for (const member of members) {
-      upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseRequestQuotaLimitsJson(grant.limits_json), modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined), actor, now, database })
-    }
-  }
-  const rows = database.prepare(`
-    SELECT ra.id
-    FROM resource_authorizations ra
-    INNER JOIN resource_authorization_sources ras ON ras.authorization_id = ra.id
-    WHERE ra.resource_type = ?
-      AND ra.resource_id = ?
-      AND ras.source_type = 'team'
-      AND ras.source_team_id = ?
-      AND ras.status = 'active'
-  `).all(grant.resource_type, grant.resource_id, teamId) as unknown as Array<{ id?: string }>
-  for (const row of rows) {
-    if (!row.id) continue
-    const otherActiveTeam = database.prepare(`
-      SELECT ras.id
-      FROM resource_authorization_sources ras
-      INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
-      INNER JOIN resource_authorization_grants trg
-        ON trg.resource_type = ra.resource_type
-        AND trg.resource_id = ra.resource_id
-        AND trg.grantee_type = 'team'
-        AND trg.grantee_team_id = ras.source_team_id
-        AND trg.id <> ?
-        AND trg.status = 'active'
-        AND (trg.expires_at IS NULL OR trg.expires_at > ?)
-      WHERE ras.authorization_id = ?
-        AND ras.source_type = 'team'
-        AND ras.status = 'active'
-      LIMIT 1
-    `).get(grant.id, now, row.id) as unknown as { id?: string } | undefined
-    if (!otherActiveTeam?.id) {
-      database.prepare(`
-        UPDATE resource_authorizations
-        SET expires_at = ?,
-            revoked_by = CASE WHEN ? IN ('active', 'paused') THEN NULL ELSE ? END,
-            revoked_at = CASE WHEN ? IN ('active', 'paused') THEN NULL ELSE ? END,
-            revoked_reason = CASE WHEN ? = 'expired' THEN 'authorization_expired' WHEN ? = 'paused' THEN 'authorization_paused' ELSE NULL END,
-            limits_json = ?,
-            updated_at = ?
-        WHERE id = ?
-      `).run(grant.expires_at, grant.status, grant.revoked_by, grant.status, grant.revoked_at, grant.status, grant.status, grant.limits_json, now, row.id)
-    }
-    refreshResourceAuthorizationEffectiveSource(row.id, actor, now, database)
-  }
-}
-
-function applyActiveTeamGrantsToMember(teamId: string, systemAccountId: string, access: AccessScope | undefined, database: DatabaseSync, now: string): void {
-  const grants = database.prepare("SELECT * FROM resource_authorization_grants WHERE grantee_type = 'team' AND grantee_team_id = ? AND status = 'active'").all(teamId) as unknown as ResourceAuthorizationGrantRow[]
-  const actor = currentSystemAccountId(access)
-  for (const grant of grants) {
-    if (grant.resource_owner_system_account_id === systemAccountId) continue
-    upsertResourceAuthorizationForUser({ resourceType: grant.resource_type, resourceId: grant.resource_id, ownerSystemAccountId: grant.resource_owner_system_account_id, granteeSystemAccountId: systemAccountId, sourceType: 'team', sourceTeamId: teamId, remark: grant.remark ?? undefined, expiresAt: grant.expires_at, limits: parseRequestQuotaLimitsJson(grant.limits_json), modelPolicy: parseOptionalJsonObject(grant.model_policy_json ?? undefined), actor, now, database })
-  }
-}
-
-function revokeTeamSourcesForMember(teamId: string, systemAccountId: string, actor: string, database: DatabaseSync, now: string): void {
-  const rows = database.prepare("SELECT ras.authorization_id FROM resource_authorization_sources ras INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id WHERE ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active' AND ra.grantee_system_account_id = ?").all(teamId, systemAccountId) as unknown as Array<{ authorization_id: string }>
-  for (const row of rows) {
-    database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'member_removed'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'").run(now, actor, now, now, row.authorization_id, teamId)
-    refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database)
-  }
-}
-
-function revokeTeamGrantSources(resourceType: ResourceAuthorizationResourceType, resourceId: string, teamId: string, actor: string, database: DatabaseSync, now: string): void {
-  const rows = database.prepare("SELECT ras.authorization_id FROM resource_authorization_sources ras INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id WHERE ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active' AND ra.resource_type = ? AND ra.resource_id = ?").all(teamId, resourceType, resourceId) as unknown as Array<{ authorization_id: string }>
-  for (const row of rows) {
-    database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'team_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'").run(now, actor, now, now, row.authorization_id, teamId)
-    refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database)
-  }
-}
-
-function revokeAllTeamSources(teamId: string, actor: string, database: DatabaseSync, now: string, reason: string): void {
-  const rows = database.prepare("SELECT DISTINCT authorization_id FROM resource_authorization_sources WHERE source_type = 'team' AND source_team_id = ? AND status = 'active'").all(teamId) as unknown as Array<{ authorization_id: string }>
-  for (const row of rows) {
-    database.prepare(`
-      UPDATE resource_authorization_sources
-      SET status = 'revoked',
-          ended_at = COALESCE(ended_at, ?),
-          ended_reason = COALESCE(ended_reason, ?),
-          revoked_by = ?,
-          revoked_at = ?,
-          updated_at = ?
-      WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'
-    `).run(now, reason, actor, now, now, row.authorization_id, teamId)
-    refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database)
-  }
-}
-
-function reactivateTeamGrantSources(teamId: string, access: AccessScope | undefined, database: DatabaseSync, now: string): void {
-  const memberRows = activeTeamMemberRows(teamId, database)
-  for (const member of memberRows) {
-    applyActiveTeamGrantsToMember(teamId, member.system_account_id, access, database, now)
-  }
-}
-
-function deactivateAuthorizationIfNoActiveSources(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
-  refreshResourceAuthorizationEffectiveSource(authorizationId, actor, now, database)
 }
 
 function loadResourceAuthorizationUsageDetail(

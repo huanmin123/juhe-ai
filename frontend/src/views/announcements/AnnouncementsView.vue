@@ -90,7 +90,6 @@
 </template>
 
 <script setup lang="ts">
-import axios from 'axios'
 import { message } from '@/lib/antd'
 import { onMounted, reactive, ref } from 'vue'
 
@@ -100,6 +99,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
 import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '@/types/domain'
 import {
@@ -268,13 +268,6 @@ function handleAction(key: string, record: AnnouncementSummary) {
   if (key === 'delete') {
     void removeAnnouncement(record.id)
   }
-}
-
-function extractApiErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError<{ message?: string }>(error)) {
-    return error.response?.data?.message ?? fallback
-  }
-  return error instanceof Error ? error.message : fallback
 }
 
 onMounted(loadData)

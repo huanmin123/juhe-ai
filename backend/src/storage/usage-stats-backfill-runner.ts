@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { beginDatabaseTransaction, commitDatabaseTransaction, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
+import { createUsageStatsAggregationContext, type UsageStatsAggregationContext } from './usage-stats-writers.js'
 
 export interface UsageStatsBackfillCursor {
   cursorCreatedAt: string
@@ -26,7 +27,7 @@ interface UsageStatsBackfillRunnerOptions {
   sourceCursor: UsageStatsBackfillCursor
   recordFilterSql: string
   failureMessage: string
-  aggregateRecord: (database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string) => void
+  aggregateRecord: (database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string, context?: UsageStatsAggregationContext) => void
 }
 
 export function ensureUsageStatsBackfill(options: UsageStatsBackfillRunnerOptions): UsageStatsBackfillResult {
@@ -44,10 +45,11 @@ export function ensureUsageStatsBackfill(options: UsageStatsBackfillRunnerOption
   const cursorId = backfillState?.cursor_id ?? ''
   const rows = readUsageStatsBackfillRows(options, cursorCreatedAt, cursorId)
   const updatedAt = nowIso()
+  const aggregationContext = createUsageStatsAggregationContext(rows)
   const transactionStarted = beginDatabaseTransaction(options.database)
   try {
     for (const row of rows) {
-      options.aggregateRecord(options.database, row, updatedAt)
+      options.aggregateRecord(options.database, row, updatedAt, aggregationContext)
     }
     const last = rows[rows.length - 1]
     const complete = isUsageStatsBackfillComplete(last, rows.length, options.limit, options.sourceCursor)

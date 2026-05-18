@@ -9,7 +9,7 @@ import {
   cleanupUsageStatsBucketsBefore
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
-import { cleanupRuntimeLogIndex, refreshRuntimeLogFacetSnapshots, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
+import { cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
 import { cleanupTableStorageSnapshotsBefore, tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
 import { getDatabase } from '../../storage/database.js'
@@ -127,9 +127,6 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       limit: batchSize
     }), batchSize, maxBatches)
     result.runtimeLogs = cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
-    if (result.runtimeLogs > 0) {
-      refreshRuntimeLogFacetSnapshots(cutoffIso(now, retention.runtimeLogDays))
-    }
     result.usageRecords = cleanupInBatches(() => cleanupProcessedUsageRecordsBefore(cutoffIso(now, retention.usageRecordDays), batchSize), batchSize, maxBatches)
 
     cleanupRetentionInBatches(result, () => cleanupUsageStatsBucketsBefore({

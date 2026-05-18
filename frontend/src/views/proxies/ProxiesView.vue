@@ -238,7 +238,6 @@
 </template>
 
 <script setup lang="ts">
-import axios from 'axios'
 import { message } from '@/lib/antd'
 import { onMounted, reactive, ref } from 'vue'
 
@@ -248,6 +247,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime } from '@/shared/formatters'
 import type { ProxyProfileSummary, ProxyTestItemStatus, ProxyTestReport } from '@/types/domain'
 
@@ -437,13 +437,6 @@ async function removeProxy(id: string) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除代理失败'))
   }
-}
-
-function extractApiErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError<{ message?: string }>(error)) {
-    return error.response?.data?.message ?? fallback
-  }
-  return error instanceof Error ? error.message : fallback
 }
 
 onMounted(loadData)

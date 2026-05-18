@@ -39,6 +39,16 @@ try {
   repositories.updateAccount(accounts[2].id, { fallbackEnabled: true }, access)
   assert.deepEqual(listStableAccountIds(expectedIds), expectedIds, '切换降级备用不应改变默认列表相对顺序')
 
+  seedQualityScore(accounts[1].id, 900)
+  seedQualityScore(accounts[2].id, 800)
+  const qualityPage = repositories.listAccountsPage(access, {
+    sorts: [{ field: 'qualityScore', order: 'desc' }],
+    page: 1,
+    pageSize: 2
+  })
+  assert.deepEqual(qualityPage.items.map((account) => account.id), [accounts[1].id, accounts[2].id], '质量分排序应由 SQL 分页返回当前页')
+  assert.equal(qualityPage.total, 3, '质量分排序分页仍应返回完整筛选总数')
+
   console.log('AI 账户列表稳定排序回归通过')
 } finally {
   try {
@@ -73,4 +83,18 @@ function listStableAccountIds(expectedIds: string[]): string[] {
   return repositories.listAccounts(access)
     .filter((account) => expected.has(account.id))
     .map((account) => account.id)
+}
+
+function seedQualityScore(accountId: string, qualityScore: number): void {
+  const now = new Date().toISOString()
+  databaseModule.getRecordDatabase()
+    .prepare(`
+      INSERT INTO account_quality_scores (
+        account_id, system_account_id, provider_code, quality_score, quality_state,
+        recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
+        recent_avg_first_token_ms, ewma_first_token_ms, success_rate,
+        window_started_at, window_ended_at, updated_at
+      ) VALUES (?, 'sys_admin', 'openai', ?, 'healthy', 1, 1, 0, 1, 1000, 1000, 1, ?, ?, ?)
+    `)
+    .run(accountId, qualityScore, now, now, now)
 }

@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, listApiKeysPage, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
+import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySummary, listApiKeysPage, updateApiKey, type ApiKeyListOptions } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -116,7 +116,7 @@ apiKeysRouter.patch('/:id', (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const before = listApiKeysPage(requestAccess, { limit: 200 }).items.find((item) => item.id === req.params.id)
+  const before = findApiKeySummary(req.params.id, requestAccess)
   try {
     const apiKey = runLoggedOperation(() => {
       const apiKey = updateApiKey(req.params.id, req.body as Record<string, unknown>, requestAccess)
@@ -170,7 +170,7 @@ apiKeysRouter.delete('/:id', (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const before = listApiKeysPage(requestAccess, { limit: 200 }).items.find((item) => item.id === req.params.id)
+  const before = findApiKeySummary(req.params.id, requestAccess)
   const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
   try {
     runLoggedOperation(() => {

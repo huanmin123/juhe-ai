@@ -31,7 +31,7 @@
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
 - 存储：Node 内置 `node:sqlite`，默认拆为业务库 `backend/data/juhe-ai.sqlite3` 和记录库 `backend/data/juhe-ai-records.sqlite3`。
-- 配置：只读取 `backend/.env`，相对路径按 `backend/` 目录解析。
+- 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
 - 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口，当前只启用 OpenAI 供应商适配。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
 
@@ -208,7 +208,7 @@ erDiagram
 
 ### 6.6 Schema 演进
 
-- 预上线阶段的 `backend/src/storage/schema.ts` 只描述当前完整结构：表、索引、默认约束和外键。
+- 预上线阶段的 `backend/src/storage/schema.ts` 作为 schema 入口，`backend/src/storage/schema/` 下的拆分文件只描述当前完整结构：表、索引、默认约束和外键。
 - 新表和索引可以使用 `CREATE ... IF NOT EXISTS` 保持重复启动安全，但不能夹带旧表、旧字段或临时对象处理分支。
 - 不写 `ensureColumn()`、启动补列、迁移标记、旧字段适配、临时表改名、一次性清洗分支或“同步旧数据”逻辑到运行时代码。
 - 本地库结构变化时，先备份业务库 `backend/data/juhe-ai.sqlite3` 和 `backend/.env`，再通过直接 SQL、临时离线脚本或重建库处理数据；记录库默认不纳入业务备份。
@@ -227,7 +227,7 @@ erDiagram
 
 配置规则：
 
-- 只从 `backend/.env` 读取，不要求用户设置系统环境变量。
+- 默认从 `backend/.env` 读取，不要求用户设置系统环境变量；同名进程环境变量可临时覆盖 `.env`，用于容器、托管平台、隔离烟测和一次性排障。
 - 相对路径按 `backend/` 解析，便于发布包整体迁移。
 - 新增配置必须同步 `backend/.env.example`、`docs/develop/` 和 `docs/deploy/` 相关说明。
 - 不把供应商密钥、OAuth token、代理密码等敏感业务凭据放进 `.env`；这些应通过后台写入数据库密文字段。

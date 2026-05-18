@@ -41,22 +41,32 @@ export function listApiKeysPage(access?: AccessScope, options?: ApiKeyListOption
   return queryApiKeys(access, options, true)
 }
 
+export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySummary | undefined {
+  const scope = buildSystemAccountScopeClause(access)
+  const row = getDatabase()
+    .prepare(`SELECT * FROM api_keys WHERE id = ?${scope.clause}`)
+    .get(id, ...scope.params) as unknown as ApiKeyRow | undefined
+  return row ? apiKeySummariesFromRows([row], access)[0] : undefined
+}
+
 function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult {
   const normalized = normalizeApiKeyListOptions(options)
   const scope = buildSystemAccountWhereClause(access)
   const filters = buildApiKeyFilters(scope, normalized)
   const limitClause = paged ? 'LIMIT ? OFFSET ?' : ''
   const limitParams = paged ? [normalized.pageSize, (normalized.page - 1) * normalized.pageSize] : []
-  const totalRow = getDatabase()
-    .prepare(`SELECT COUNT(*) AS total FROM api_keys ${filters.clause}`)
-    .get(...filters.params) as { total?: number } | undefined
+  const totalRow = paged
+    ? getDatabase()
+      .prepare(`SELECT COUNT(*) AS total FROM api_keys ${filters.clause}`)
+      .get(...filters.params) as { total?: number } | undefined
+    : undefined
   const rows = getDatabase()
     .prepare(`SELECT * FROM api_keys ${filters.clause} ORDER BY updated_at DESC, created_at DESC, id DESC ${limitClause}`)
     .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
   const items = apiKeySummariesFromRows(rows, access)
   return {
     items,
-    total: Number(totalRow?.total ?? 0),
+    total: paged ? Number(totalRow?.total ?? 0) : items.length,
     page: normalized.page,
     pageSize: normalized.pageSize
   }
@@ -121,7 +131,10 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   if (!systemAccountId || !canManageApiKeyOwner(systemAccountId, access)) {
     return undefined
   }
-  const current = listApiKeys({ systemAccountId, role: 'user' }).find((apiKey) => apiKey.id === id)
+  const currentRow = getDatabase()
+    .prepare('SELECT * FROM api_keys WHERE id = ? AND system_account_id = ?')
+    .get(id, systemAccountId) as unknown as ApiKeyRow | undefined
+  const current = currentRow ? apiKeySummariesFromRows([currentRow], { systemAccountId, role: 'user' })[0] : undefined
   if (!current) {
     return undefined
   }

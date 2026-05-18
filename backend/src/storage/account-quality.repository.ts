@@ -1,4 +1,5 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { chunkValues } from './query-utils.js'
 import { minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
 
 export type AccountQualityState = 'fresh' | 'stale' | 'failed' | 'unknown'
@@ -47,6 +48,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
   const retentionCutoffMinute = minuteKey(new Date(now.getTime() - 24 * 60 * 60 * 1000), timezone)
   const updatedAt = nowIso()
   const activeAccounts = loadQualityAccountMetadata()
+  const previousQualityByAccount = loadAccountQualityRows()
 
   const rows = database
     .prepare(`
@@ -91,16 +93,22 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
     }>
 
   const activeAccountIds = new Set(activeAccounts.keys())
+  const refreshedAccountIds = new Set<string>()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     const activeIds = [...activeAccountIds]
     const deleteResult = activeIds.length > 0
-      ? database
-        .prepare(`DELETE FROM account_quality_scores WHERE account_id NOT IN (${sqlPlaceholders(activeIds.length)})`)
-        .run(...activeIds)
+      ? cleanupInactiveQualityRows(database, activeIds)
       : database.prepare('DELETE FROM account_quality_scores').run()
     if (activeIds.length > 0) {
-      database.prepare(`DELETE FROM account_quality_minute_stats WHERE account_id NOT IN (${sqlPlaceholders(activeIds.length)})`).run(...activeIds)
+      database.prepare(`
+        DELETE FROM account_quality_minute_stats
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM temp_active_quality_accounts active_accounts
+          WHERE active_accounts.id = account_quality_minute_stats.account_id
+        )
+      `).run()
     } else {
       database.prepare('DELETE FROM account_quality_minute_stats').run()
     }
@@ -108,7 +116,8 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
     for (const row of rows) {
       const metadata = activeAccounts.get(row.account_id)
       if (!metadata) continue
-      const previous = accountQualityRow(row.account_id)
+      refreshedAccountIds.add(row.account_id)
+      const previous = previousQualityByAccount.get(row.account_id)
       const recentAvg = integerOrNull(row.recent_avg_first_token_ms)
       const previousEwma = previous?.ewma_first_token_ms ?? null
       const ewmaFirstTokenMs = recentAvg === null
@@ -149,12 +158,11 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       })
     }
 
-    const existingRows = database.prepare('SELECT account_id FROM account_quality_scores').all() as unknown as Array<{ account_id: string }>
-    for (const existing of existingRows) {
-      if (activeAccountIds.has(existing.account_id)) {
+    for (const [accountId, previous] of previousQualityByAccount) {
+      if (!activeAccountIds.has(accountId) || refreshedAccountIds.has(accountId)) {
         continue
       }
-      markAccountQualityStale(existing.account_id, windowStartedAt, windowEndedAt, updatedAt)
+      markAccountQualityStale(previous, windowStartedAt, windowEndedAt, updatedAt)
     }
 
     commitDatabaseTransaction(database, transactionStarted)
@@ -175,21 +183,32 @@ function loadQualityAccountMetadata(): Map<string, { systemAccountId: string; pr
   return new Map(rows.map((row) => [row.id, { systemAccountId: row.system_account_id, providerCode: row.provider_code }]))
 }
 
-function sqlPlaceholders(count: number): string {
-  return Array.from({ length: Math.max(1, count) }, () => '?').join(',')
+function loadAccountQualityRows(): Map<string, AccountQualityRow> {
+  const rows = getRecordDatabase()
+    .prepare('SELECT * FROM account_quality_scores')
+    .all() as unknown as AccountQualityRow[]
+  return new Map(rows.map((row) => [row.account_id, row]))
 }
 
-function accountQualityRow(accountId: string): AccountQualityRow | undefined {
-  return getRecordDatabase()
-    .prepare('SELECT * FROM account_quality_scores WHERE account_id = ?')
-    .get(accountId) as unknown as AccountQualityRow | undefined
-}
-
-function markAccountQualityStale(accountId: string, windowStartedAt: string, windowEndedAt: string, updatedAt: string): void {
-  const previous = accountQualityRow(accountId)
-  if (!previous) {
-    return
+function cleanupInactiveQualityRows(database: ReturnType<typeof getRecordDatabase>, activeIds: string[]): { changes?: number | bigint } {
+  database.prepare('DROP TABLE IF EXISTS temp_active_quality_accounts').run()
+  database.prepare('CREATE TEMP TABLE temp_active_quality_accounts (id TEXT PRIMARY KEY)').run()
+  for (const chunk of chunkValues(activeIds, 500)) {
+    database
+      .prepare(`INSERT INTO temp_active_quality_accounts (id) VALUES ${chunk.map(() => '(?)').join(',')}`)
+      .run(...chunk)
   }
+  return database.prepare(`
+    DELETE FROM account_quality_scores
+    WHERE NOT EXISTS (
+      SELECT 1
+      FROM temp_active_quality_accounts active_accounts
+      WHERE active_accounts.id = account_quality_scores.account_id
+    )
+  `).run()
+}
+
+function markAccountQualityStale(previous: AccountQualityRow, windowStartedAt: string, windowEndedAt: string, updatedAt: string): void {
   const qualityState: AccountQualityState = previous.quality_state === 'fresh' ? 'stale' : previous.quality_state
   const qualityScore = computeQualityScore({
     ewmaFirstTokenMs: previous.ewma_first_token_ms,
@@ -198,7 +217,7 @@ function markAccountQualityStale(accountId: string, windowStartedAt: string, win
     updatedAt
   })
   upsertAccountQuality({
-    accountId,
+    accountId: previous.account_id,
     systemAccountId: previous.system_account_id,
     providerCode: previous.provider_code,
     qualityScore,

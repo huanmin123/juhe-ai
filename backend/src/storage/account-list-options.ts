@@ -86,10 +86,6 @@ export function buildAccountListOrderClause(options: Pick<NormalizedAccountListO
   return `ORDER BY ${[...orderParts, 'account_rows.created_at ASC', 'account_rows.id ASC'].join(', ')}`
 }
 
-export function hasAccountQualityScoreSort(options: Pick<NormalizedAccountListOptions, 'sorts'>): boolean {
-  return options.sorts.some((sort) => sort.field === 'qualityScore')
-}
-
 function normalizeTextFilter(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }

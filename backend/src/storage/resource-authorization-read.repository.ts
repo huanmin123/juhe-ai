@@ -247,21 +247,29 @@ function runtimeAuthorizationRowsByGrantIds(rows: ResourceAuthorizationGrantRow[
     }
   }
 
-  for (const row of rows) {
-    if (row.grantee_type === 'team' && row.grantee_team_id) {
-      const runtimeRows = database.prepare(`
-        SELECT DISTINCT ra.*
-        FROM resource_authorizations ra
-        INNER JOIN resource_authorization_sources ras
-          ON ras.authorization_id = ra.id
-          AND ras.source_type = 'team'
-          AND ras.source_team_id = ?
-        WHERE ra.resource_type = ?
-          AND ra.resource_id = ?
-          AND ra.resource_owner_system_account_id = ?
-        ORDER BY ra.created_at ASC, ra.id ASC
-      `).all(row.grantee_team_id, row.resource_type, row.resource_id, row.resource_owner_system_account_id) as unknown as ResourceAuthorizationRow[]
-      result.set(row.id, runtimeRows)
+  const teamRows = rows.filter((row) => row.grantee_type === 'team' && row.grantee_team_id)
+  for (let index = 0; index < teamRows.length; index += RUNTIME_AUTHORIZATION_BATCH_SIZE) {
+    const chunk = teamRows.slice(index, index + RUNTIME_AUTHORIZATION_BATCH_SIZE)
+    const values = chunk.map(() => '(?, ?, ?, ?, ?)').join(', ')
+    const params = chunk.flatMap((row) => [row.id, row.resource_type, row.resource_id, row.resource_owner_system_account_id, row.grantee_team_id ?? ''])
+    const runtimeRows = database.prepare(`
+      WITH requested(grant_id, resource_type, resource_id, resource_owner_system_account_id, grantee_team_id) AS (
+        VALUES ${values}
+      )
+      SELECT DISTINCT requested.grant_id, ra.*
+      FROM requested
+      INNER JOIN resource_authorization_sources ras
+        ON ras.source_type = 'team'
+        AND ras.source_team_id = requested.grantee_team_id
+      INNER JOIN resource_authorizations ra
+        ON ra.id = ras.authorization_id
+        AND ra.resource_type = requested.resource_type
+        AND ra.resource_id = requested.resource_id
+        AND ra.resource_owner_system_account_id = requested.resource_owner_system_account_id
+      ORDER BY requested.grant_id ASC, ra.created_at ASC, ra.id ASC
+    `).all(...params) as unknown as Array<ResourceAuthorizationRow & { grant_id: string }>
+    for (const runtime of runtimeRows) {
+      result.set(runtime.grant_id, [...(result.get(runtime.grant_id) ?? []), runtime])
     }
   }
   return result

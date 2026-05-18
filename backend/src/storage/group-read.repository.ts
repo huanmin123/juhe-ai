@@ -38,6 +38,42 @@ export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
     .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
 }
 
+export function findGroupRowForAccess(access: AccessScope | undefined, groupId: string): GroupListRow | undefined {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  if (!ownerSystemAccountId && canAccessAll(access)) {
+    return getDatabase()
+      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups WHERE groups.id = ?")
+      .get(groupId) as unknown as GroupListRow | undefined
+  }
+  if (!viewerSystemAccountId) {
+    return getDatabase()
+      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups WHERE groups.id = ?")
+      .get(groupId) as unknown as GroupListRow | undefined
+  }
+  return getDatabase()
+    .prepare(`
+      SELECT * FROM (
+        SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+        FROM groups
+        WHERE groups.id = ?
+          AND groups.system_account_id = ?
+        UNION ALL
+        SELECT groups.*, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
+        FROM resource_authorizations ra
+        INNER JOIN groups ON groups.id = ra.resource_id
+        WHERE groups.id = ?
+          AND ra.resource_type = 'group'
+          AND ra.grantee_system_account_id = ?
+          AND ra.status = 'active'
+          AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+          AND groups.system_account_id <> ?
+      )
+      LIMIT 1
+    `)
+    .get(groupId, ownerSystemAccountId ?? viewerSystemAccountId, groupId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow | undefined
+}
+
 export function loadGroupAuthorizationUsageSummaries(
   scopes: UsageSummaryScopeRequest[],
   statDateOrRange?: string | Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>,

@@ -1,4 +1,5 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
 import { buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
 import { decryptJson } from './crypto.js'
@@ -12,9 +13,11 @@ export interface AccountRowsPage {
 }
 
 type AccountFilterValue = string | number
+type AccountRowQueryOptions = NormalizedAccountListOptions & { accountId?: string }
+const accountQualityDatabaseAlias = 'account_quality_records'
 
 export function listAccountRowsForAccess(access: AccessScope | undefined, options: NormalizedAccountListOptions): AccountListRow[] {
-  return queryAccountRowsForAccess(access, options).rows
+  return queryAccountRowsForAccess(access, options, undefined, false).rows
 }
 
 export function listAccountRowsPageForAccess(access: AccessScope | undefined, options: NormalizedAccountListOptions): AccountRowsPage {
@@ -24,11 +27,25 @@ export function listAccountRowsPageForAccess(access: AccessScope | undefined, op
   })
 }
 
+export function findAccountRowForAccess(access: AccessScope | undefined, accountId: string, options: NormalizedAccountListOptions): AccountListRow | undefined {
+  const page = queryAccountRowsForAccess(access, { ...options, accountId }, {
+    limit: 1,
+    offset: 0
+  }, false)
+  return page.rows[0]
+}
+
 function queryAccountRowsForAccess(
   access: AccessScope | undefined,
-  options: NormalizedAccountListOptions,
-  pagination?: { limit: number; offset: number }
+  options: AccountRowQueryOptions,
+  pagination?: { limit: number; offset: number },
+  includeTotal = true
 ): AccountRowsPage {
+  const database = getDatabase()
+  const includeQualityInQuery = hasAccountQualityScoreSort(options)
+  if (includeQualityInQuery) {
+    ensureAccountQualityDatabaseAttached(database)
+  }
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const orderClause = buildAccountListOrderClause(options)
@@ -37,25 +54,22 @@ function queryAccountRowsForAccess(
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   const queryRows = (baseSql: string, params: AccountFilterValue[] = []): AccountRowsPage => {
     const filteredSql = `${baseSql} ${filters.clause}`
-    const totalRow = getDatabase().prepare(`SELECT COUNT(*) AS total FROM (${filteredSql}) counted_rows`).get(...params, ...filters.params) as { total?: number } | undefined
-    const rows = getDatabase().prepare(`${filteredSql} ${orderClause} ${pageClause}`).all(...params, ...filters.params, ...pageParams) as unknown as AccountListRow[]
-    return { rows, total: Number(totalRow?.total ?? 0) }
+    const totalRow = includeTotal
+      ? (database.prepare(`SELECT COUNT(*) AS total FROM (${filteredSql}) counted_rows`).get(...params, ...filters.params) as { total?: number } | undefined)
+      : undefined
+    const rows = database.prepare(`${filteredSql} ${orderClause} ${pageClause}`).all(...params, ...filters.params, ...pageParams) as unknown as AccountListRow[]
+    return { rows, total: includeTotal ? Number(totalRow?.total ?? 0) : rows.length }
   }
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return queryRows(`
         SELECT account_rows.*, ${groupBindingSelectColumns()},
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
-          NULL AS quality_score,
-          NULL AS quality_state,
-          NULL AS quality_ewma_first_token_ms,
-          NULL AS quality_recent_avg_first_token_ms,
-          NULL AS quality_recent_request_count,
-          NULL AS quality_recent_success_rate,
-          NULL AS quality_updated_at
+          ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
         ) account_rows
+        ${accountQualityJoinClause(includeQualityInQuery)}
         LEFT JOIN ${accountBindingSubquery()} group_bindings
           ON group_bindings.account_id = account_rows.id
           AND group_bindings.system_account_id = account_rows.system_account_id
@@ -66,17 +80,12 @@ function queryAccountRowsForAccess(
     return queryRows(`
         SELECT account_rows.*, ${groupBindingSelectColumns()},
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
-          NULL AS quality_score,
-          NULL AS quality_state,
-          NULL AS quality_ewma_first_token_ms,
-          NULL AS quality_recent_avg_first_token_ms,
-          NULL AS quality_recent_request_count,
-          NULL AS quality_recent_success_rate,
-          NULL AS quality_updated_at
+          ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
           SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
         ) account_rows
+        ${accountQualityJoinClause(includeQualityInQuery)}
         LEFT JOIN ${accountBindingSubquery()} group_bindings
           ON group_bindings.account_id = account_rows.id
           AND group_bindings.system_account_id = account_rows.system_account_id
@@ -86,13 +95,7 @@ function queryAccountRowsForAccess(
   return queryRows(`
       SELECT account_rows.*, ${groupBindingSelectColumns()},
         COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
-        NULL AS quality_score,
-        NULL AS quality_state,
-        NULL AS quality_ewma_first_token_ms,
-        NULL AS quality_recent_avg_first_token_ms,
-        NULL AS quality_recent_request_count,
-        NULL AS quality_recent_success_rate,
-        NULL AS quality_updated_at
+        ${accountQualitySelectColumns(includeQualityInQuery)}
       FROM (
         SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM accounts
@@ -107,11 +110,48 @@ function queryAccountRowsForAccess(
           AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           AND accounts.system_account_id <> ?
       ) account_rows
+      ${accountQualityJoinClause(includeQualityInQuery)}
       LEFT JOIN ${accountBindingSubquery()} group_bindings
         ON group_bindings.account_id = account_rows.id
         AND group_bindings.system_account_id = CASE WHEN account_rows.access_type = 'authorized' THEN ? ELSE account_rows.system_account_id END
       LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
     `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId])
+}
+
+function hasAccountQualityScoreSort(options: Pick<NormalizedAccountListOptions, 'sorts'>): boolean {
+  return options.sorts.some((sort) => sort.field === 'qualityScore')
+}
+
+function ensureAccountQualityDatabaseAttached(database: ReturnType<typeof getDatabase>): void {
+  getRecordDatabase()
+  const rows = database.prepare('PRAGMA database_list').all() as unknown as Array<{ name?: string }>
+  if (rows.some((row) => row.name === accountQualityDatabaseAlias)) return
+  database.prepare(`ATTACH DATABASE ? AS ${accountQualityDatabaseAlias}`).run(runtimeConfig.recordDatabasePath)
+}
+
+function accountQualitySelectColumns(includeQualityInQuery: boolean): string {
+  if (!includeQualityInQuery) {
+    return `NULL AS quality_score,
+          NULL AS quality_state,
+          NULL AS quality_ewma_first_token_ms,
+          NULL AS quality_recent_avg_first_token_ms,
+          NULL AS quality_recent_request_count,
+          NULL AS quality_recent_success_rate,
+          NULL AS quality_updated_at`
+  }
+  return `quality_scores.quality_score AS quality_score,
+          quality_scores.quality_state AS quality_state,
+          quality_scores.ewma_first_token_ms AS quality_ewma_first_token_ms,
+          quality_scores.recent_avg_first_token_ms AS quality_recent_avg_first_token_ms,
+          quality_scores.recent_request_count AS quality_recent_request_count,
+          quality_scores.success_rate AS quality_recent_success_rate,
+          quality_scores.updated_at AS quality_updated_at`
+}
+
+function accountQualityJoinClause(includeQualityInQuery: boolean): string {
+  if (!includeQualityInQuery) return ''
+  return `LEFT JOIN ${accountQualityDatabaseAlias}.account_quality_scores quality_scores
+        ON quality_scores.account_id = account_rows.id`
 }
 
 export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): AccountListRow[] {
@@ -202,9 +242,13 @@ function accountBindingSubquery(): string {
   )`
 }
 
-function buildAccountListFilters(options: NormalizedAccountListOptions): { clause: string; params: AccountFilterValue[] } {
+function buildAccountListFilters(options: AccountRowQueryOptions): { clause: string; params: AccountFilterValue[] } {
   const clauses: string[] = []
   const params: AccountFilterValue[] = []
+  if (options.accountId) {
+    clauses.push('account_rows.id = ?')
+    params.push(options.accountId)
+  }
   const keyword = options.keyword?.trim()
   if (keyword) {
     clauses.push(`(

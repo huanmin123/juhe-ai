@@ -37,6 +37,16 @@ try {
     },
     status: 'active'
   }, access)
+  const staleAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '质量刷新无新样本账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-quality-stale-refresh',
+      base_url: 'http://127.0.0.1:9/v1'
+    },
+    status: 'active'
+  }, access)
   const nowDate = new Date()
   const now = nowDate.toISOString()
   const statMinute = minuteKey(nowDate, usageStatsTimezone())
@@ -49,6 +59,16 @@ try {
       ) VALUES (?, ?, ?, ?, 1, 0, 1, 0, 0, ?, NULL, ?, ?, ?)
     `)
     .run(account.id, 'sys_admin', 'openai', statMinute, now, now, '质量刷新模拟错误', now)
+  recordDatabase
+    .prepare(`
+      INSERT INTO account_quality_scores (
+        account_id, system_account_id, provider_code, quality_score, quality_state,
+        recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
+        recent_avg_first_token_ms, ewma_first_token_ms, success_rate,
+        window_started_at, window_ended_at, last_sample_at, updated_at
+      ) VALUES (?, 'sys_admin', 'openai', 1000, 'fresh', 1, 1, 0, 1, 1000, 1000, 1, ?, ?, ?, ?)
+    `)
+    .run(staleAccount.id, now, now, now, now)
 
   const result = accountQualityRepository.refreshAccountQualityFromUsage(10)
   assert.equal(result.refreshed, 1, '账号质量刷新应处理分钟桶样本')
@@ -58,6 +78,11 @@ try {
   assert.equal(row?.quality_state, 'failed')
   assert.equal(row?.recent_error_count, 1)
   assert.equal(row?.last_error_message, '质量刷新模拟错误')
+  const staleRow = recordDatabase
+    .prepare('SELECT quality_state, recent_request_count FROM account_quality_scores WHERE account_id = ?')
+    .get(staleAccount.id) as { quality_state?: string; recent_request_count?: number } | undefined
+  assert.equal(staleRow?.quality_state, 'stale', '活跃账户没有新质量样本时应标记为 stale')
+  assert.equal(staleRow?.recent_request_count, 0)
 
   console.log('账号质量刷新回归通过')
 } finally {

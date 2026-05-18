@@ -127,7 +127,7 @@ export const tableMonitorSampleRetentionDays = 30
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'full'
-  const rowCountMode = options.rowCountMode ?? 'full'
+  const rowCountMode = options.rowCountMode ?? 'none'
   const recordDatabase = getRecordDatabase()
   const targets: MonitoredDatabaseTarget[] = [
     { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },

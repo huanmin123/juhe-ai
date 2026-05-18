@@ -5,6 +5,7 @@ import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from 
 import {
   addSystemTeamMembers,
   createSystemTeam,
+  findSystemTeamSummary,
   listSystemTeams,
   removeSystemTeamMember,
   updateSystemTeam
@@ -132,7 +133,7 @@ systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const team = runLoggedOperation(() => {
-      const before = listSystemTeams(requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const before = findSystemTeamSummary(paramsParsed.data.id, requestAccess)
       const team = updateSystemTeam(paramsParsed.data.id, parsed.data, requestAccess)
       if (!team) {
         throw new Error('团队不存在')
@@ -196,7 +197,7 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const team = runLoggedOperation(() => {
-      const before = listSystemTeams(requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const before = findSystemTeamSummary(paramsParsed.data.id, requestAccess)
       const beforeMemberIds = new Set((before?.members ?? []).map((member) => member.systemAccountId))
       const team = addSystemTeamMembers(paramsParsed.data.id, parsed.data, requestAccess)
       if (!team) {
@@ -254,7 +255,7 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const team = runLoggedOperation(() => {
-      const before = listSystemTeams(requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const before = findSystemTeamSummary(paramsParsed.data.id, requestAccess)
       const removedMember = before?.members?.find((member) => member.id === paramsParsed.data.memberId)
       const team = removeSystemTeamMember(paramsParsed.data.id, paramsParsed.data.memberId, requestAccess)
       if (!team) {

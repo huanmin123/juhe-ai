@@ -80,17 +80,17 @@ function loadLocalEnv(path: string): Record<string, string> {
 }
 
 function stringConfig(name: string, fallback: string): string {
-  const value = localEnv[name]?.trim()
+  const value = process.env[name]?.trim() ?? localEnv[name]?.trim()
   return value ? value : fallback
 }
 
 function optionalStringConfig(name: string): string | undefined {
-  const value = localEnv[name]?.trim()
+  const value = process.env[name]?.trim() ?? localEnv[name]?.trim()
   return value ? value : undefined
 }
 
 function booleanConfig(name: string, fallback: boolean): boolean {
-  const value = localEnv[name]?.trim().toLowerCase()
+  const value = stringConfig(name, '').toLowerCase()
   if (!value) return fallback
   if (['1', 'true', 'yes', 'on'].includes(value)) return true
   if (['0', 'false', 'no', 'off'].includes(value)) return false
@@ -98,12 +98,12 @@ function booleanConfig(name: string, fallback: boolean): boolean {
 }
 
 function logLevelConfig(name: string, fallback: LogLevel): LogLevel {
-  const value = localEnv[name]?.trim().toLowerCase()
+  const value = stringConfig(name, '').toLowerCase()
   return isLogLevel(value) ? value : fallback
 }
 
 function processRoleConfig(name: string, fallback: ProcessRole): ProcessRole {
-  const value = process.env[name]?.trim().toLowerCase() ?? localEnv[name]?.trim().toLowerCase()
+  const value = stringConfig(name, '').toLowerCase()
   if (value === 'worker') return 'worker'
   if (value === 'db-service') return 'db-service'
   return fallback

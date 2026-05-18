@@ -136,7 +136,6 @@
 </template>
 
 <script setup lang="ts">
-import axios from 'axios'
 import { message } from '@/lib/antd'
 import { computed, onMounted, reactive, ref } from 'vue'
 
@@ -148,6 +147,7 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import type { SystemAccountSummary, SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
 const loading = ref(false)
@@ -374,13 +374,6 @@ async function removeMember(memberId: string) {
 function hasDuplicateTeamName(name: string, excludeId?: string): boolean {
   const normalized = name.toLocaleLowerCase()
   return teams.value.some((team) => team.id !== excludeId && team.name.toLocaleLowerCase() === normalized)
-}
-
-function extractApiErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError<{ message?: string }>(error)) {
-    return error.response?.data?.message ?? fallback
-  }
-  return fallback
 }
 
 onMounted(loadData)

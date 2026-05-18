@@ -49,6 +49,13 @@ try {
   assert.equal(facets.levels.find((item) => item.value === 'info')?.count, 2, '运行日志 facets 应维护 level 预聚合')
   assert(facets.events.includes('normal_runtime_log_event'), '运行日志 facets 应维护事件列表')
 
+  const deleted = runtimeLogsRepository.cleanupRuntimeLogIndex(new Date(Date.now() + 1000).toISOString(), 10)
+  assert.equal(deleted, 2, '运行日志清理应删除过期索引')
+  const facetsAfterCleanup = runtimeLogsRepository.getRuntimeLogFacets()
+  assert.equal(facetsAfterCleanup.totalIndexed, 0, '运行日志清理应同步扣减 facets 总量')
+  assert.equal(facetsAfterCleanup.levels.length, 0, '运行日志清理应删除空 level facet')
+  assert.equal(facetsAfterCleanup.events.length, 0, '运行日志清理应删除空 event facet')
+
   console.log('运行日志索引超长行回归通过：超长日志不再同步完整解析，仍保留截断原文搜索')
 } finally {
   try {

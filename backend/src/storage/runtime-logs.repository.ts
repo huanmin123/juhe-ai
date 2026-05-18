@@ -1,5 +1,5 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString } from './value-utils.js'
 
 export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
@@ -310,21 +310,47 @@ export function refreshRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso()
   }
 }
 
+export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso()): void {
+  const database = getRecordDatabase()
+  const summary = database
+    .prepare('SELECT bucket_key FROM runtime_log_facet_summary WHERE bucket_key = ? LIMIT 1')
+    .get(runtimeLogFacetBucketKey) as RuntimeLogRow | undefined
+  if (summary?.bucket_key) return
+
+  const hasIndexedLogs = database
+    .prepare('SELECT id FROM runtime_logs WHERE time >= ? LIMIT 1')
+    .get(cutoffIso) as RuntimeLogRow | undefined
+  if (!hasIndexedLogs?.id) return
+
+  refreshRuntimeLogFacetSnapshots(cutoffIso)
+}
+
 export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit = 10000): number {
   const database = getRecordDatabase()
   const rows = database
-    .prepare('SELECT id FROM runtime_logs WHERE time < ? ORDER BY time ASC, id ASC LIMIT ?')
+    .prepare('SELECT id, time, level, event FROM runtime_logs WHERE time < ? ORDER BY time ASC, id ASC LIMIT ?')
     .all(cutoffIso, Math.max(1, Math.trunc(limit))) as RuntimeLogRow[]
   const ids = rows.map((row) => String(row.id)).filter(Boolean)
   if (ids.length === 0) return 0
 
-  const placeholders = sqlPlaceholders(ids.length)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    database.prepare(`DELETE FROM runtime_log_search WHERE log_id IN (${placeholders})`).run(...ids)
-    const result = database.prepare(`DELETE FROM runtime_logs WHERE id IN (${placeholders})`).run(...ids)
+    let deleted = 0
+    for (const chunk of chunkValues(ids, 900)) {
+      const placeholders = sqlPlaceholders(chunk.length)
+      database.prepare(`DELETE FROM runtime_log_search WHERE log_id IN (${placeholders})`).run(...chunk)
+      const result = database.prepare(`DELETE FROM runtime_logs WHERE id IN (${placeholders})`).run(...chunk)
+      deleted += Number(result.changes ?? 0)
+    }
+    if (deleted > 0) {
+      decrementRuntimeLogFacetSnapshots(database, rows.map((row) => ({
+        time: String(row.time),
+        level: String(row.level),
+        event: optionalString(row.event)
+      })), cutoffIso)
+    }
     commitDatabaseTransaction(database, transactionStarted)
-    return Number(result.changes ?? 0)
+    return deleted
   } catch (error) {
     try {
       rollbackDatabaseTransaction(database, transactionStarted)
@@ -567,6 +593,71 @@ function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getRecord
   for (const [event, summary] of events) {
     upsertEvent.run(runtimeLogFacetBucketKey, event, summary.count, summary.latestTime, timestamp)
   }
+}
+
+function decrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getRecordDatabase>, rows: RuntimeLogFacetInput[], cutoffIso: string): void {
+  if (rows.length === 0) return
+
+  const timestamp = nowIso()
+  const summary = database
+    .prepare('SELECT earliest_time FROM runtime_log_facet_summary WHERE bucket_key = ?')
+    .get(runtimeLogFacetBucketKey) as RuntimeLogRow | undefined
+  const earliestCountedTime = optionalString(summary?.earliest_time)
+  const countedRows = earliestCountedTime
+    ? rows.filter((row) => row.time >= earliestCountedTime)
+    : rows
+  if (countedRows.length === 0) return
+
+  const range = database
+    .prepare('SELECT MIN(time) AS earliest_time, MAX(time) AS latest_time FROM runtime_logs WHERE time >= ?')
+    .get(cutoffIso) as RuntimeLogRow | undefined
+  database.prepare(`
+    UPDATE runtime_log_facet_summary
+    SET total_count = MAX(0, total_count - ?),
+        earliest_time = ?,
+        latest_time = ?,
+        updated_at = ?
+    WHERE bucket_key = ?
+  `).run(
+    countedRows.length,
+    optionalString(range?.earliest_time) ?? null,
+    optionalString(range?.latest_time) ?? null,
+    timestamp,
+    runtimeLogFacetBucketKey
+  )
+  database.prepare('DELETE FROM runtime_log_facet_summary WHERE bucket_key = ? AND total_count <= 0').run(runtimeLogFacetBucketKey)
+
+  const levels = new Map<string, number>()
+  const events = new Map<string, number>()
+  for (const row of countedRows) {
+    levels.set(row.level, (levels.get(row.level) ?? 0) + 1)
+    const event = row.event?.trim()
+    if (event) {
+      events.set(event, (events.get(event) ?? 0) + 1)
+    }
+  }
+
+  const updateLevel = database.prepare(`
+    UPDATE runtime_log_level_facets
+    SET count = MAX(0, count - ?),
+        updated_at = ?
+    WHERE bucket_key = ? AND level = ?
+  `)
+  for (const [level, count] of levels) {
+    updateLevel.run(count, timestamp, runtimeLogFacetBucketKey, level)
+  }
+  database.prepare('DELETE FROM runtime_log_level_facets WHERE bucket_key = ? AND count <= 0').run(runtimeLogFacetBucketKey)
+
+  const updateEvent = database.prepare(`
+    UPDATE runtime_log_event_facets
+    SET count = MAX(0, count - ?),
+        updated_at = ?
+    WHERE bucket_key = ? AND event = ?
+  `)
+  for (const [event, count] of events) {
+    updateEvent.run(count, timestamp, runtimeLogFacetBucketKey, event)
+  }
+  database.prepare('DELETE FROM runtime_log_event_facets WHERE bucket_key = ? AND count <= 0').run(runtimeLogFacetBucketKey)
 }
 
 function normalizeLevel(value: string): string {

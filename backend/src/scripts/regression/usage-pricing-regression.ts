@@ -353,7 +353,12 @@ assert.doesNotMatch(accountQualityRepositorySource, /recordAccountQualityProbe/)
 assert.doesNotMatch(accountQualityRepositorySource, /AccountQualityScoreInput/)
 assert.doesNotMatch(accountQualityRepositorySource, /last_probe_at/)
 
-const schemaSource = readSource('storage/schema.ts')
+const schemaSource = [
+  readSource('storage/schema.ts'),
+  readSource('storage/schema/business-schema.ts'),
+  readSource('storage/schema/record-schema.ts'),
+  readSource('storage/schema/seed-defaults.ts')
+].join('\n')
 assert.doesNotMatch(schemaSource, /last_probe_at/)
 
 console.log('usage-pricing-regression passed')

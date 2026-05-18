@@ -1,3 +1,5 @@
+import http from 'node:http'
+
 import { runtimeConfig } from '../../config/runtime.js'
 import { systemSettingKeys } from '../../storage/settings.repository.js'
 
@@ -86,6 +88,13 @@ interface UsageRecordListResult {
   pageSize: number
 }
 
+interface AccountListResult {
+  items: AccountSummary[]
+  total: number
+  page: number
+  pageSize: number
+}
+
 interface SystemSettings {
   defaultTemporaryUnschedulableMinutes?: number
   temporaryUnschedulableRetryIntervalSeconds?: number
@@ -138,15 +147,17 @@ interface ResponsePayload {
 
 interface SmokeResourceState {
   accountId?: string
-  originalGroupId?: string
   ownerSystemAccountId?: string
-  temporaryGroupId?: string
+  temporaryGroupIds: string[]
+  activeGatewayGroupId?: string
   temporaryApiKeyId?: string
+  temporaryAccountId?: string
+  temporaryMockUpstream?: http.Server
 }
 
 async function main(): Promise<void> {
   const summary: string[] = []
-  const resourceState: SmokeResourceState = {}
+  const resourceState: SmokeResourceState = { temporaryGroupIds: [] }
 
   try {
     await checkHealth()
@@ -193,17 +204,22 @@ async function main(): Promise<void> {
     assertExactSettingKeys(settings)
     summary.push('系统设置检查通过')
 
-    const accounts = await getEnvelope<AccountSummary[]>(apiPath('/accounts'))
-    assert(accounts.length > 0, '账户列表为空')
+    let accounts = await fetchSmokeAccounts()
+    if (!accountName && !accounts.some(isOpenAIAccountCandidate)) {
+      const seeded = await createTemporaryMockOpenAIAccount(resourceState)
+      accounts = [seeded, ...accounts.filter((account) => account.id !== seeded.id)]
+      summary.push(`空库自动创建临时 mock OpenAI 账户：${seeded.name}`)
+    }
+    assert(accounts.length > 0, '账户列表为空，且未能创建临时 mock OpenAI 账户')
     const selectedAccount = accountName
       ? await testNamedAccount(accounts, accountName)
       : await selectFirstUsableOpenAIAccount(accounts)
     const { account: targetAccount, test: accountTest } = selectedAccount
-    assert(targetAccount.ownerSystemAccountId, `账户 ${targetAccount.name} 缺少 ownerSystemAccountId，无法按正规管理流程创建临时分组`)
-    assert(targetAccount.boundGroupId, `账户 ${targetAccount.name} 缺少当前绑定分组，无法在烟测后恢复`)
+    assert(targetAccount.ownerSystemAccountId, `账户 ${targetAccount.name} 缺少 ownerSystemAccountId，无法按正规管理流程创建临时 API Key`)
+    assert(targetAccount.boundGroupId, `账户 ${targetAccount.name} 缺少当前绑定分组，无法创建临时网关 API Key`)
     resourceState.accountId = targetAccount.id
     resourceState.ownerSystemAccountId = targetAccount.ownerSystemAccountId
-    resourceState.originalGroupId = targetAccount.boundGroupId
+    resourceState.activeGatewayGroupId = targetAccount.boundGroupId
     summary.push(`账户检查通过：${targetAccount.name}`)
     summary.push(`账户测试通过：${accountTest.message}${accountTest.proxyUrl ? '，代理已配置' : ''}`)
 
@@ -283,6 +299,13 @@ async function checkHealth(): Promise<void> {
   assert(health.status === 'ok', `健康检查失败：${JSON.stringify(health)}`)
 }
 
+async function fetchSmokeAccounts(): Promise<AccountSummary[]> {
+  const data = await getEnvelope<AccountSummary[] | AccountListResult>(apiPath('/accounts'))
+  if (Array.isArray(data)) return data
+  if (Array.isArray(data.items)) return data.items
+  throw new Error('账户列表返回格式异常')
+}
+
 async function loginAsAdmin(): Promise<void> {
   const captcha = await getEnvelope<{ captchaId: string; image: string }>(apiPath('/auth/captcha'))
   const captchaCode = parseCaptchaCode(captcha.image)
@@ -300,6 +323,56 @@ async function loginAsAdmin(): Promise<void> {
   assert(loginResult.data.role === 'admin', `烟测登录账号不是管理员：${loginResult.data.username ?? 'unknown'}`)
 }
 
+async function createTemporaryMockOpenAIAccount(resourceState: SmokeResourceState): Promise<AccountSummary> {
+  const ownerSystemAccountId = await resolveSmokeOwnerSystemAccountId()
+  const runId = smokeRunId()
+  const upstream = createMockOpenAIUpstream()
+  await listen(upstream)
+  resourceState.temporaryMockUpstream = upstream
+  resourceState.ownerSystemAccountId = ownerSystemAccountId
+
+  const ownerScope = ownerScopeQuery(resourceState)
+  const group = await postEnvelope<GroupSummary>(apiPath(`/groups${ownerScope}`), {
+    name: `${temporaryResourcePrefix}-Mock分组-${runId}`,
+    providerCode: 'openai',
+    description: '空库烟测自动创建的临时 mock 分组',
+    enabled: true
+  })
+  resourceState.activeGatewayGroupId = group.id
+  resourceState.temporaryGroupIds.push(group.id)
+
+  const account = await postEnvelope<AccountSummary>(apiPath(`/accounts${ownerScope}`), {
+    providerCode: 'openai',
+    name: `${temporaryResourcePrefix}-Mock账户-${runId}`,
+    type: 'api_key',
+    credentials: {
+      api_key: `sk-smoke-mock-${runId}`,
+      base_url: `http://127.0.0.1:${serverPort(upstream)}/v1`
+    },
+    status: 'active',
+    groupId: group.id,
+    schedulable: true,
+    concurrencyLimit: 20,
+    notes: '空库烟测自动创建，测试结束后删除'
+  }, accountTestTimeoutMs)
+  resourceState.accountId = account.id
+  resourceState.temporaryAccountId = account.id
+  return {
+    ...account,
+    ownerSystemAccountId,
+    boundGroupId: account.boundGroupId ?? group.id
+  }
+}
+
+async function resolveSmokeOwnerSystemAccountId(): Promise<string> {
+  const accounts = await getEnvelope<Array<{ id: string; username?: string; role?: string; status?: string }>>(apiPath('/system-accounts'))
+  const configuredAdmin = accounts.find((account) => account.username === runtimeConfig.smokeTest.adminUsername)
+  const activeAdmin = configuredAdmin ?? accounts.find((account) => account.role === 'admin' && account.status !== 'disabled')
+  const activeAccount = activeAdmin ?? accounts.find((account) => account.status !== 'disabled')
+  assert(activeAccount?.id, '无法定位烟测系统账户，不能创建临时账号')
+  return activeAccount.id
+}
+
 function parseCaptchaCode(image: string): string {
   const base64 = image.replace(/^data:image\/svg\+xml;base64,/, '')
   const svg = Buffer.from(base64, 'base64').toString('utf8')
@@ -311,19 +384,12 @@ async function createTemporaryGatewayKeyForAccount(
   resourceState: SmokeResourceState
 ): Promise<ApiKeySummary & { key: string }> {
   const ownerScope = ownerScopeQuery(resourceState)
-  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)
-  const group = await postEnvelope<GroupSummary>(apiPath(`/groups${ownerScope}`), {
-    name: `${temporaryResourcePrefix}-OpenAI-${stamp}`,
-    providerCode: account.providerCode,
-    description: '真实网关链路临时烟测分组',
-    enabled: true
-  })
-  resourceState.temporaryGroupId = group.id
-
-  await postEnvelope<AccountSummary>(apiPath(`/accounts/${account.id}/group${ownerScope}`), { groupId: group.id })
+  const groupId = account.boundGroupId ?? resourceState.activeGatewayGroupId
+  assert(groupId, `账户 ${account.name} 缺少可用分组，无法创建临时网关 API Key`)
+  resourceState.activeGatewayGroupId = groupId
   const apiKey = await postEnvelope<ApiKeySummary>(apiPath(`/api-keys${ownerScope}`), {
-    name: `${temporaryResourcePrefix}-Key-${stamp}`,
-    groupId: group.id,
+    name: `${temporaryResourcePrefix}-Key-${smokeRunId()}`,
+    groupId,
     status: 'active',
     description: '真实网关链路临时烟测 Key'
   })
@@ -338,7 +404,7 @@ async function waitForSmokeUsageRecords(resourceState: SmokeResourceState): Prom
     const usageRecords = await fetchSmokeUsageRecords(resourceState)
     const matched = usageRecords.filter((record) => {
       if (resourceState.temporaryApiKeyId && record.apiKeyId === resourceState.temporaryApiKeyId) return true
-      return Boolean(resourceState.temporaryGroupId && record.groupId === resourceState.temporaryGroupId)
+      return Boolean(resourceState.activeGatewayGroupId && record.groupId === resourceState.activeGatewayGroupId)
     })
     if (
       matched.some((record) => record.endpoint === 'GET /v1/models' && record.success)
@@ -350,7 +416,7 @@ async function waitForSmokeUsageRecords(resourceState: SmokeResourceState): Prom
   }
   return (await fetchSmokeUsageRecords(resourceState)).filter((record) => {
     if (resourceState.temporaryApiKeyId && record.apiKeyId === resourceState.temporaryApiKeyId) return true
-    return Boolean(resourceState.temporaryGroupId && record.groupId === resourceState.temporaryGroupId)
+    return Boolean(resourceState.activeGatewayGroupId && record.groupId === resourceState.activeGatewayGroupId)
   })
 }
 
@@ -362,18 +428,22 @@ async function fetchSmokeUsageRecords(resourceState: SmokeResourceState): Promis
 }
 
 async function cleanupSmokeResources(resourceState: SmokeResourceState): Promise<void> {
-  if (!resourceState.ownerSystemAccountId) return
-  const ownerScope = ownerScopeQuery(resourceState)
-  if (!ownerScope) return
+  try {
+    if (!resourceState.ownerSystemAccountId) return
+    const ownerScope = ownerScopeQuery(resourceState)
+    if (!ownerScope) return
 
-  if (resourceState.temporaryApiKeyId) {
-    await ignoreCleanupError(() => requestNoContent(apiPath(`/api-keys/${resourceState.temporaryApiKeyId}${ownerScope}`), { method: 'DELETE' }))
-  }
-  if (resourceState.accountId && resourceState.originalGroupId) {
-    await ignoreCleanupError(() => postEnvelope<AccountSummary>(apiPath(`/accounts/${resourceState.accountId}/group${ownerScope}`), { groupId: resourceState.originalGroupId }))
-  }
-  if (resourceState.temporaryGroupId) {
-    await ignoreCleanupError(() => requestNoContent(apiPath(`/groups/${resourceState.temporaryGroupId}${ownerScope}`), { method: 'DELETE' }))
+    if (resourceState.temporaryApiKeyId) {
+      await ignoreCleanupError(() => requestNoContent(apiPath(`/api-keys/${resourceState.temporaryApiKeyId}${ownerScope}`), { method: 'DELETE' }))
+    }
+    if (resourceState.temporaryAccountId) {
+      await ignoreCleanupError(() => requestNoContent(apiPath(`/accounts/${resourceState.temporaryAccountId}${ownerScope}`), { method: 'DELETE' }))
+    }
+    for (const groupId of [...resourceState.temporaryGroupIds].reverse()) {
+      await ignoreCleanupError(() => requestNoContent(apiPath(`/groups/${groupId}${ownerScope}`), { method: 'DELETE' }))
+    }
+  } finally {
+    await closeServer(resourceState.temporaryMockUpstream)
   }
 }
 
@@ -388,6 +458,11 @@ async function ignoreCleanupError(action: () => Promise<unknown>): Promise<void>
 function ownerScopeQuery(resourceState: SmokeResourceState): string {
   assert(resourceState.ownerSystemAccountId, '缺少目标系统账户，无法按管理作用域调用接口')
   return `?systemAccountId=${encodeURIComponent(resourceState.ownerSystemAccountId)}`
+}
+
+function smokeRunId(): string {
+  const time = new Date().toISOString().replace(/[-:TZ.]/g, '')
+  return `${time}-${Math.random().toString(36).slice(2, 8)}`
 }
 
 async function testNamedAccount(accounts: AccountSummary[], name: string): Promise<TestedAccount> {
@@ -584,6 +659,113 @@ function assertExactSettingKeys(settings: object): void {
     actualKeys.length === expectedKeys.length && actualKeys.every((key, index) => key === expectedKeys[index]),
     `系统设置字段不匹配：expected=${expectedKeys.join(',')} actual=${actualKeys.join(',')}`
   )
+}
+
+function createMockOpenAIUpstream(): http.Server {
+  return http.createServer((req, res) => {
+    const url = new URL(req.url ?? '/', 'http://127.0.0.1')
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => {
+      chunks.push(Buffer.from(chunk))
+    })
+    req.on('end', () => {
+      const body = parseJson(Buffer.concat(chunks).toString('utf8'))
+      if (url.pathname === '/v1/models') {
+        sendMockModels(res)
+        return
+      }
+      if (url.pathname === '/v1/responses') {
+        if (body.stream === true) {
+          sendMockResponseStream(res)
+        } else {
+          sendMockResponseJson(res)
+        }
+        return
+      }
+      res.writeHead(404, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ error: { message: 'mock upstream path not found' } }))
+    })
+  })
+}
+
+function sendMockModels(res: http.ServerResponse): void {
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({
+    object: 'list',
+    data: [
+      { id: model, object: 'model', created: 0, owned_by: 'mock' }
+    ]
+  }))
+}
+
+function sendMockResponseJson(res: http.ServerResponse): void {
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({
+    id: 'resp_smoke_mock',
+    object: 'response',
+    status: 'completed',
+    model,
+    output: [
+      {
+        type: 'message',
+        role: 'assistant',
+        content: [{ type: 'output_text', text: 'OK' }]
+      }
+    ],
+    usage: {
+      input_tokens: 3,
+      output_tokens: 2,
+      input_tokens_details: {
+        cached_tokens: 0
+      }
+    }
+  }))
+}
+
+function sendMockResponseStream(res: http.ServerResponse): void {
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    connection: 'keep-alive'
+  })
+  res.write(`event: response.output_text.delta\ndata: ${JSON.stringify({ type: 'response.output_text.delta', delta: 'OK' })}\n\n`)
+  res.write(`event: response.completed\ndata: ${JSON.stringify({ type: 'response.completed', response: { status: 'completed', usage: { input_tokens: 3, output_tokens: 2 } } })}\n\n`)
+  res.end()
+}
+
+function parseJson(value: string): Record<string, unknown> {
+  if (!value.trim()) return {}
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return typeof parsed === 'object' && parsed !== null ? parsed as Record<string, unknown> : {}
+  } catch {
+    return {}
+  }
+}
+
+function listen(server: http.Server): Promise<void> {
+  if (server.listening) return Promise.resolve()
+  server.listen(0, '127.0.0.1')
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.once('listening', resolvePromise)
+    server.once('error', rejectPromise)
+  })
+}
+
+function serverPort(server: http.Server): number {
+  const address = server.address()
+  assert(typeof address === 'object' && address !== null, 'mock upstream 未监听端口')
+  return address.port
+}
+
+function closeServer(server: http.Server | undefined): Promise<void> {
+  if (!server?.listening) return Promise.resolve()
+  return new Promise((resolvePromise, rejectPromise) => {
+    server.close((error) => {
+      if (error) rejectPromise(error)
+      else resolvePromise()
+    })
+  })
 }
 
 main().catch((error) => {

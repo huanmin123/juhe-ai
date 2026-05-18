@@ -1,5 +1,3 @@
-import axios from 'axios'
-
 import {
   formatCompactUsageAmount,
   formatDateTime,
@@ -14,6 +12,7 @@ import type {
   AuthorizationStatus,
   ResourceAuthorizationSummary
 } from '@/types/domain'
+export { extractApiErrorMessage } from '@/shared/apiError'
 export { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 
 export function statusLabel(status: AuthorizationStatus): string {
@@ -173,13 +172,6 @@ export function sumUsageSummaries(items: Array<Partial<AccountUsageSummary> | un
       lastUsedAt
     }
   }, emptyUsageSummary())
-}
-
-export function extractApiErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError<{ message?: string }>(error)) {
-    return error.response?.data?.message ?? fallback
-  }
-  return error instanceof Error ? error.message : fallback
 }
 
 export { formatDateTime, formatNumber, formatServerDateTimeInput, parseDatePickerValue }

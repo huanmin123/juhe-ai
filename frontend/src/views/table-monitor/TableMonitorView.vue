@@ -178,13 +178,13 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMoun
 import type { ShallowRef } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import axios from 'axios'
 import { DeleteOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import DeferredRender from '@/components/DeferredRender.vue'
 import { disposeChart, ensureChartFromElement, resizeEcharts, type ECharts } from '@/composables/useEcharts'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
 import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverview, TableStorageSnapshotSummary, UsageRecordsCleanupResult } from '@/types/domain'
 
@@ -601,13 +601,6 @@ function formatSampleTime(value: string) {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return value
   return date.toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })
-}
-
-function extractApiErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError<{ message?: string }>(error)) {
-    return error.response?.data?.message ?? fallback
-  }
-  return error instanceof Error ? error.message : fallback
 }
 
 function addResizeListener() {

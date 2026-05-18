@@ -96,7 +96,6 @@
 </template>
 
 <script setup lang="ts">
-import axios from 'axios'
 import { message } from '@/lib/antd'
 import { onMounted, reactive, ref } from 'vue'
 
@@ -106,6 +105,7 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
 
 const loading = ref(false)
@@ -276,13 +276,6 @@ function hasDuplicateUsername(username: string): boolean {
 function hasDuplicateDisplayName(displayName: string, excludeId?: string): boolean {
   const normalized = displayName.toLocaleLowerCase()
   return accounts.value.some((account) => account.id !== excludeId && account.displayName.toLocaleLowerCase() === normalized)
-}
-
-function extractApiErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError<{ message?: string }>(error)) {
-    return error.response?.data?.message ?? fallback
-  }
-  return fallback
 }
 
 onMounted(loadData)

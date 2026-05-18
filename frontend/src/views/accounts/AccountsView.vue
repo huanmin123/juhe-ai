@@ -147,12 +147,12 @@
 </template>
 
 <script setup lang="ts">
-import axios from 'axios'
 import { message } from '@/lib/antd'
 import { computed, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import type { AccountSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -428,13 +428,6 @@ async function copyText(value: string) {
 function resetFilters() {
   selectedAccountIds.value = []
   resetAccountListFilters()
-}
-
-function extractApiErrorMessage(error: unknown, fallback: string): string {
-  if (axios.isAxiosError<{ message?: string }>(error)) {
-    return error.response?.data?.message ?? fallback
-  }
-  return error instanceof Error ? error.message : fallback
 }
 
 function handleSystemAccountFilterChange() {
