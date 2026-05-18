@@ -3,7 +3,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupOptionSummary, GroupSummary, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
+import { normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions } from './account-list-options.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import {
   getAccountUsageStatsOverview as buildAccountUsageStatsOverview,
@@ -590,8 +590,13 @@ function refreshGroupAccountStatsAfterWrite(): void {
 export interface AccountListResult {
   items: AccountSummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
+}
+
+interface AccountSummaryBuildOptions {
+  includeCredentials?: boolean
 }
 
 export function listAccounts(access?: AccessScope, options?: AccountListOptions): AccountSummary[] {
@@ -606,15 +611,16 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions(options)
-  const databasePage = listAccountRowsPageForAccess(access, listOptions)
+  const databasePage = listAccountRowsPageForAccess(access, listOptions, { includeCredentials: false })
   const page = {
     rows: hydrateAccountRowsFromRecordDatabase(databasePage.rows),
     total: databasePage.total
   }
   const rows = page.rows
   return {
-    items: accountSummariesFromRows(rows, access, viewerSystemAccountId),
+    items: accountSummariesFromRows(rows, access, viewerSystemAccountId, { includeCredentials: false }),
     total: page.total,
+    hasMore: page.total > listOptions.page * listOptions.pageSize,
     page: listOptions.page,
     pageSize: listOptions.pageSize
   }
@@ -623,8 +629,8 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
 export function listAccountOptions(access?: AccessScope, options?: AccountListOptions): AccountOptionSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
-  const listOptions = normalizeAccountListOptions(options)
-  const rows = listAccountRowsForAccess(access, listOptions)
+  const listOptions = normalizeAccountOptionListOptions(options)
+  const rows = listAccountRowsPageForAccess(access, listOptions, { includeCredentials: false, includeTotal: false }).rows
   return accountOptionSummariesFromRows(rows, access, viewerSystemAccountId)
 }
 
@@ -662,7 +668,13 @@ function accountOptionSummariesFromRows(rows: AccountListRow[], access: AccessSc
   })
 }
 
-function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountSummary[] {
+function accountSummariesFromRows(
+  rows: AccountListRow[],
+  access: AccessScope | undefined,
+  viewerSystemAccountId: string | undefined,
+  options: AccountSummaryBuildOptions = {}
+): AccountSummary[] {
+  const includeCredentials = options.includeCredentials ?? true
   const timezone = usageStatsTimezone()
   const accountIds = rows.map((row) => row.id)
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(accountIds)
@@ -711,7 +723,7 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       name: row.name,
       notes: isAuthorizedView ? undefined : row.notes ?? undefined,
       type: row.type,
-      credentials: accountCredentialsForList(row),
+      credentials: accountCredentialsForList(row, includeCredentials),
       status: effectiveAuthorizedStatus,
       concurrencyLimit: isAuthorizedView ? 0 : row.concurrency_limit,
       currentConcurrency: isAuthorizedView ? 0 : (currentConcurrencyByAccount.get(row.id) ?? 0),
@@ -751,6 +763,7 @@ function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | 
       boundGroupId: groupBinding?.groupId,
       boundGroupName: groupBinding?.groupName,
       groupBindStatus: groupBinding?.groupBindStatus,
+      bindingSystemAccountId: isAuthorizedView && groupBinding ? groupBindingSystemAccountId : undefined,
       authorizationStatus: row.authorization_status ?? undefined,
       authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(sourcesByAuthorization.get(row.authorization_id) ?? [], isAuthorizedView) : undefined,
       permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions(),
@@ -963,7 +976,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     status: nextStatus,
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? DEFAULT_ACCOUNT_CONCURRENCY_LIMIT),
     currentConcurrency: 0,
-    priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? 0),
+    priority: Number(input.priority ?? input.priority_level ?? 0),
     superPriorityEnabled: createSuperPriorityEnabled,
     fallbackEnabled: createFallbackEnabled,
     proxyProfileId,
@@ -1145,7 +1158,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     credentials,
     status: nextStatus,
     concurrencyLimit: Number(input.concurrencyLimit ?? input.concurrency_limit ?? current.concurrencyLimit),
-    priority: Number(input.priority ?? input.prioritiy ?? input.priority_level ?? current.priority),
+    priority: Number(input.priority ?? input.priority_level ?? current.priority),
     superPriorityEnabled: nextSuperPriorityEnabled,
     fallbackEnabled: nextFallbackEnabled,
     proxyProfileId: Object.prototype.hasOwnProperty.call(input, 'proxyProfileId') || Object.prototype.hasOwnProperty.call(input, 'proxy_profile_id')

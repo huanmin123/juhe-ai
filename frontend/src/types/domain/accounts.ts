@@ -98,6 +98,7 @@ export interface AccountSummary {
   boundGroupId?: string
   boundGroupName?: string
   groupBindStatus?: AccountGroupBindStatus
+  bindingSystemAccountId?: string
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
@@ -110,6 +111,7 @@ export interface AccountSummary {
 export interface AccountListResult {
   items: AccountSummary[]
   total: number
+  hasMore?: boolean
   page: number
   pageSize: number
 }

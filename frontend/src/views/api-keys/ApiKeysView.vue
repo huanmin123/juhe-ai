@@ -338,7 +338,7 @@ function groupOptionLabel(group: GroupOptionSummary) {
 }
 
 function formatKeyPreview(value?: string) {
-  if (!value) return '未回填'
+  if (!value) return '仅创建时展示'
   if (value.length <= 14) return value
   return `${value.slice(0, 6)}...${value.slice(-4)}`
 }

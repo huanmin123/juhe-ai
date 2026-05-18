@@ -29,6 +29,10 @@ export interface NormalizedAccountListOptions {
   schedulable: AccountListSchedulableFilter
 }
 
+interface AccountListNormalizationOptions {
+  maxPageSize?: number
+}
+
 const accountListSortColumns: Record<AccountListSortField, string> = {
   priority: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.priority END",
   superPriority: "CASE WHEN account_rows.access_type = 'authorized' THEN 0 ELSE account_rows.super_priority_enabled END",
@@ -48,8 +52,9 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
 const defaultAccountListSorts: AccountListSort[] = [{ field: 'priority', order: 'asc' }]
 const defaultAccountListPageSize = 50
 const maxAccountListPageSize = 200
+const maxAccountOptionPageSize = 500
 
-export function normalizeAccountListOptions(options?: AccountListOptions): NormalizedAccountListOptions {
+export function normalizeAccountListOptions(options?: AccountListOptions, normalizationOptions: AccountListNormalizationOptions = {}): NormalizedAccountListOptions {
   const seenFields = new Set<AccountListSortField>()
   const sorts = (options?.sorts ?? [])
     .filter((sort): sort is AccountListSort => isAccountListSortField(sort.field) && isAccountListSortDirection(sort.order))
@@ -60,9 +65,10 @@ export function normalizeAccountListOptions(options?: AccountListOptions): Norma
     })
   const rawPage = options?.page
   const rawPageSize = options?.pageSize ?? options?.limit
+  const maxPageSize = normalizationOptions.maxPageSize ?? maxAccountListPageSize
   const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
-    ? Math.min(maxAccountListPageSize, Math.max(1, rawPageSize))
+    ? Math.min(maxPageSize, Math.max(1, rawPageSize))
     : defaultAccountListPageSize
   return {
     sorts: sorts.length ? sorts : defaultAccountListSorts,
@@ -73,6 +79,10 @@ export function normalizeAccountListOptions(options?: AccountListOptions): Norma
     status: normalizeTextFilter(options?.status),
     schedulable: isSchedulableFilter(options?.schedulable) ? options.schedulable : 'all'
   }
+}
+
+export function normalizeAccountOptionListOptions(options?: AccountListOptions): NormalizedAccountListOptions {
+  return normalizeAccountListOptions({ ...options, sorts: [] }, { maxPageSize: maxAccountOptionPageSize })
 }
 
 export function buildAccountListOrderClause(options: Pick<NormalizedAccountListOptions, 'sorts'>): string {

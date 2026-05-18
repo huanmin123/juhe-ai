@@ -45,7 +45,11 @@ function startWorkerProcess(): void {
   })
 
   workerProcess = child
-  attachBackgroundWorkerProcess(child)
+  attachBackgroundWorkerProcess(child, {
+    onReady: () => {
+      restartAttempts = 0
+    }
+  })
   pipeWorkerOutput(child)
 
   logger.info({
@@ -73,6 +77,12 @@ function startWorkerProcess(): void {
     logger.error(errorLogFields(error, {
       event: 'background_worker_spawn_failed'
     }), '后台 worker 启动失败')
+    if (workerProcess === child) {
+      workerProcess = undefined
+    }
+    if (!stopping) {
+      scheduleWorkerRestart()
+    }
   })
 }
 

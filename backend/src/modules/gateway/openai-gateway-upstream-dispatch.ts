@@ -26,8 +26,9 @@ import {
 import { rememberOpenAIAccountForSession } from './openai-gateway-session-affinity.service.js'
 import { performUpstreamRequestAttempt } from './openai-gateway-upstream-attempts.js'
 import { type UpstreamAttempt } from './openai-gateway-usage.js'
-import { type GatewayUsageContext } from './openai-gateway-usage-records.js'
+import { recordFailedUpstreamAttempt, type GatewayUsageContext } from './openai-gateway-usage-records.js'
 import { type GatewayUpstreamResponse } from './openai-gateway-upstream.js'
+import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 
 export interface OpenAIUpstreamDispatchResult {
   account: UpstreamAccount
@@ -70,26 +71,64 @@ export async function fetchFirstAvailableUpstream(
       lastAttempt = unavailableProxyAttempt
       continue
     }
-    const account = await prepareUpstreamAccount(originalAccount, signal)
-    const upstreamUrls = buildUpstreamUrlsForAccount(account, req)
-    if (upstreamUrls.length === 0) {
-      continue
-    }
-    const requestParts = await buildPreparedUpstreamRequestParts(req, account, usageContext, signal)
-    const concurrencySlot = tryAcquireAccountConcurrency(account.id, account.concurrencyLimit)
+    const concurrencySlot = tryAcquireAccountConcurrency(originalAccount.id, originalAccount.concurrencyLimit)
     if (!concurrencySlot.acquired) {
+      const message = `账户并发已达到上限 ${concurrencySlot.current}/${concurrencySlot.limit}`
       lastAttempt = {
-        accountId: account.id,
-        accountName: account.name,
+        accountId: originalAccount.id,
+        accountName: originalAccount.name,
         upstreamUrl: 'concurrency:limit',
-        message: `账户并发已达到上限 ${concurrencySlot.current}/${concurrencySlot.limit}`
+        message
       }
+      recordFailedUpstreamAttempt(req, usageContext, originalAccount, {
+        upstreamUrl: 'concurrency:limit',
+        startedAt: Date.now(),
+        errorMessage: message
+      })
       continue
     }
-    const { headers, body } = requestParts
     let skipAccount = false
     let keepConcurrencySlot = false
     try {
+      let account = originalAccount
+      let headers: Headers
+      let body: Buffer | string | undefined
+      let upstreamUrls: string[]
+      const preparationStartedAt = Date.now()
+      try {
+        account = await prepareUpstreamAccount(originalAccount, signal)
+        upstreamUrls = buildUpstreamUrlsForAccount(account, req)
+        if (upstreamUrls.length === 0) {
+          continue
+        }
+        const requestParts = await buildPreparedUpstreamRequestParts(req, account, usageContext, signal)
+        headers = requestParts.headers
+        body = requestParts.body
+      } catch (error) {
+        if (signal?.aborted || error instanceof OpenAIOAuthCodexAdapterError) {
+          throw error
+        }
+        const requestErrorResult = await handleUpstreamRequestError({
+          req,
+          usageContext,
+          auditCapture,
+          auditAttemptId: '',
+          account: originalAccount,
+          upstreamUrl: 'account:preparation',
+          settings,
+          attemptStartedAt: preparationStartedAt,
+          attemptIndex: 0,
+          auditAttemptIndex,
+          retryAttempts: 0,
+          sessionAffinityKey,
+          signal,
+          lastAttempt,
+          failedProxyDispatchKeys,
+          error
+        })
+        lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
+        continue
+      }
       for (const upstreamUrl of upstreamUrls) {
         for (let attemptIndex = 0; attemptIndex <= retryAttempts; attemptIndex += 1) {
           const attemptStartedAt = Date.now()

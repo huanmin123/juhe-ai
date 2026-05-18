@@ -17,6 +17,7 @@ import {
 } from './authorization-quota.service.js'
 import { type AuditCaptureContext } from './audit-capture.service.js'
 import { filterLocallySuppressedGatewayAccounts } from './gateway-account-side-effects.service.js'
+import { getGatewayRequestBodyState } from './openai-gateway-request-body.js'
 import {
   orderOpenAIAccountsByCodexTurnAvoidance
 } from './openai-gateway-codex-turn-retry.service.js'
@@ -165,6 +166,28 @@ export async function prepareOpenAIGatewayDispatchContext(
     endpoint,
     requestSnapshot
   })
+
+  const bodyState = getGatewayRequestBodyState(req)
+  if (bodyState?.jsonParseStatus === 'invalid_json') {
+    const statusCode = 400
+    const responsePayload = gatewayErrorPayload('请求体不是合法 JSON', 'invalid_request_error')
+    sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext,
+      startedAt,
+      statusCode,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'request_validation',
+        errorCode: 'invalid_json',
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
 
   const quotaDecision = apiKeyRecord ? await checkGatewayApiKeyQuotaAsync(apiKeyRecord) : { allowed: true }
   if (!quotaDecision.allowed) {

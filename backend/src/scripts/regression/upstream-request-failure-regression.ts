@@ -4,10 +4,11 @@ import http from 'node:http'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import express, { type NextFunction, type Request, type Response as ExpressResponse } from 'express'
+import express from 'express'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
+import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-upstream-request-failure-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'upstream-request-failure.sqlite3')
@@ -42,8 +43,6 @@ const [
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
-
-type RawBodyRequest = Request & { rawBody?: Buffer }
 
 const app = express()
 app.use(requestContextMiddleware)
@@ -90,6 +89,20 @@ async function main(): Promise<void> {
     appServer = http.createServer(app)
     await listen(appServer)
     const baseUrl = `http://127.0.0.1:${serverAddress(appServer).port}`
+
+    const invalidJsonHitsBefore = totalUpstreamHitCount()
+    const invalidJsonResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: '{"model":"gpt-4o-mini",'
+    })
+    const invalidJsonText = await invalidJsonResponse.text()
+    assert.equal(invalidJsonResponse.status, 400, `无效 JSON 应由网关直接拒绝，实际 HTTP ${invalidJsonResponse.status}: ${invalidJsonText}`)
+    assert.match(invalidJsonText, /请求体不是合法 JSON/, `无效 JSON 响应应说明请求体错误：${invalidJsonText}`)
+    assert.equal(totalUpstreamHitCount(), invalidJsonHitsBefore, '无效 JSON 不应转发到任何上游账号')
 
     currentScenario = 'tool_output_missing_feature'
     const featureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
@@ -190,7 +203,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('请求级上游失败回归通过：工具输出缺失和 Instructions are required 特征直接返回客户端；未知非 2xx 失败先同账号重试；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
+    console.log('请求级上游失败回归通过：无效 JSON 由网关拒绝；工具输出缺失和 Instructions are required 特征直接返回客户端；未知非 2xx 失败先同账号重试；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -282,6 +295,13 @@ function createRejectedRequestUpstream(): http.Server {
   })
 }
 
+function totalUpstreamHitCount(): number {
+  return toolOutputMissingUpstreamHitCount
+    + sameSignatureUpstreamHitCount
+    + instructionsRequiredUpstreamHitCount
+    + transient502UpstreamHitCount
+}
+
 function createRegressionApiKey(groupId: string): { id: string; key: string } {
   const key = 'sk-request-failure-regression'
   const id = databaseModule.newId('key')
@@ -309,22 +329,6 @@ function createRegressionApiKey(groupId: string): { id: string; key: string } {
       now
     )
   return { id, key }
-}
-
-function captureGatewayRawBody(req: RawBodyRequest, _res: ExpressResponse, next: NextFunction): void {
-  const rawBody = Buffer.isBuffer(req.body) ? Buffer.from(req.body) : Buffer.alloc(0)
-  req.rawBody = rawBody
-  const contentType = req.headers['content-type'] ?? ''
-  if (rawBody.length > 0 && String(contentType).toLowerCase().includes('json')) {
-    try {
-      req.body = JSON.parse(rawBody.toString('utf8')) as unknown
-    } catch {
-      req.body = undefined
-    }
-  } else {
-    req.body = undefined
-  }
-  next()
 }
 
 function listen(server: http.Server): Promise<void> {

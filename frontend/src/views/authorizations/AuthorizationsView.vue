@@ -110,6 +110,9 @@ const teams = ref<SystemTeamPrincipalSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
 
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
+let loadRequestId = 0
+let loadingRequestId = 0
+let createOwnerResourceRequestId = 0
 
 type AuthorizationFilters = {
   direction: AuthorizationDirectionFilter
@@ -273,6 +276,9 @@ async function loadMetaData() {
 }
 
 async function loadData() {
+  const requestId = loadRequestId + 1
+  loadRequestId = requestId
+  loadingRequestId = requestId
   loading.value = true
   try {
     const systemAccountId = isManagementView.value ? authorizationScopeParams.value?.systemAccountId : undefined
@@ -282,17 +288,22 @@ async function loadData() {
       teamId: isManagementView.value ? filters.teamId : undefined,
       granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
       direction: isManagementView.value ? undefined : filters.direction,
+      sourceType: !isManagementView.value && filters.sourceType !== 'all' ? filters.sourceType : undefined,
       status: 'all' as const
     }
     const authorizationList = isManagementView.value
       ? await api.authorizations.list(systemAccountId ? { ...params, systemAccountId } : params)
       : await api.myAuthorizations.list(params)
-    authorizations.value = isManagementView.value ? authorizationList : filterAuthorizationsBySourceType(authorizationList)
+    if (requestId !== loadRequestId) return
+    authorizations.value = authorizationList
   } catch (error) {
+    if (requestId !== loadRequestId) return
     console.error(error)
     message.error('加载授权列表失败')
   } finally {
-    loading.value = false
+    if (loadingRequestId === requestId) {
+      loading.value = false
+    }
   }
 }
 
@@ -318,16 +329,20 @@ function handleCreateOwnerChange() {
 }
 
 async function loadCreateOwnerResources() {
+  const requestId = createOwnerResourceRequestId + 1
+  createOwnerResourceRequestId = requestId
+  const ownerSystemAccountId = createForm.ownerSystemAccountId
+  const resourceType = createForm.resourceType
   createAccounts.value = []
   createGroups.value = []
   const accountRequest = isManagementView.value
-    ? createForm.ownerSystemAccountId
-      ? api.accounts.options({ systemAccountId: createForm.ownerSystemAccountId, limit: 200 })
+    ? ownerSystemAccountId
+      ? api.accounts.options({ systemAccountId: ownerSystemAccountId, limit: 200 })
       : undefined
     : api.myAccounts.options({ limit: 200 })
   const groupRequest = isManagementView.value
-    ? createForm.ownerSystemAccountId
-      ? api.groups.options({ systemAccountId: createForm.ownerSystemAccountId })
+    ? ownerSystemAccountId
+      ? api.groups.options({ systemAccountId: ownerSystemAccountId })
       : undefined
     : api.myGroups.options()
   if (!accountRequest || !groupRequest) return
@@ -335,6 +350,13 @@ async function loadCreateOwnerResources() {
     accountRequest,
     groupRequest
   ])
+  if (
+    requestId !== createOwnerResourceRequestId
+    || createForm.ownerSystemAccountId !== ownerSystemAccountId
+    || createForm.resourceType !== resourceType
+  ) {
+    return
+  }
   if (accountResult.status === 'fulfilled') {
     createAccounts.value = accountResult.value
   } else {
@@ -358,11 +380,6 @@ function resetFilters() {
   Object.assign(filters, defaultAuthorizationsPageState().filters)
   pageStateCache.clear()
   void loadData()
-}
-
-function filterAuthorizationsBySourceType(items: ResourceAuthorizationSummary[]): ResourceAuthorizationSummary[] {
-  if (filters.sourceType === 'all') return items
-  return items.filter((item) => item.authorizationSources?.some((source) => source.sourceType === filters.sourceType && source.status === 'active'))
 }
 
 const createAuthorization = submitAction('authorizations.create', async () => {
@@ -547,8 +564,7 @@ async function confirmExpireChange() {
 
 onMounted(async () => {
   applyRouteFilters()
-  await loadMetaData()
-  await loadData()
+  await Promise.all([loadMetaData(), loadData()])
 })
 
 function applyRouteFilters() {

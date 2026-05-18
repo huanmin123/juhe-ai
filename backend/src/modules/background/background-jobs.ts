@@ -26,7 +26,7 @@ import { collectTableStorageSnapshot } from '../../storage/table-monitor.reposit
 import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
-import { flushUsageRecordQueue } from '../gateway/usage-record-queue.service.js'
+import { flushUsageRecordQueue, pendingUsageRecordCount } from '../gateway/usage-record-queue.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
@@ -68,7 +68,7 @@ async function runUsageStatsAggregation(): Promise<void> {
   if (usageStatsAggregationRunning) return
   usageStatsAggregationRunning = true
   try {
-    flushUsageRecordQueue({ drain: true, retryOnFailure: false, maxBatches: 5 })
+    flushUsageRecordsBeforeStatsAggregation()
     await yieldToEventLoop()
     const batchSize = settingsNumber('statsAggregationBatchSize', 2000, 100, 10000)
     const maxBatches = settingsNumber('statsAggregationMaxBatchesPerRun', 5, 1, 100)
@@ -82,6 +82,14 @@ async function runUsageStatsAggregation(): Promise<void> {
     throw error
   } finally {
     usageStatsAggregationRunning = false
+  }
+}
+
+function flushUsageRecordsBeforeStatsAggregation(): void {
+  flushUsageRecordQueue({ drain: true, retryOnFailure: false })
+  const pendingCount = pendingUsageRecordCount()
+  if (pendingCount > 0) {
+    throw new Error(`使用记录队列仍有 ${pendingCount} 条未落库，本轮跳过统计聚合，避免统计游标越过排队记录`)
   }
 }
 
@@ -240,7 +248,7 @@ async function runProxyLatencyRefresh(): Promise<void> {
 
 async function runAccountQualityRefresh(): Promise<void> {
   try {
-    flushUsageRecordQueue({ drain: true, retryOnFailure: false, maxBatches: 5 })
+    flushUsageRecordQueue({ drain: true, retryOnFailure: false })
     await yieldToEventLoop()
     const windowMinutes = settingsNumber('accountQualityWindowMinutes', 10, 1, 60)
     const realtimeResult = refreshAccountQualityFromUsage(windowMinutes)

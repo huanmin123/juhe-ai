@@ -165,6 +165,8 @@ const providers = ref<ProviderDefinition[]>([])
 const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
+let loadRequestId = 0
+let loadingRequestId = 0
 type GroupsPageState = {
   systemAccountFilter: string
 }
@@ -301,6 +303,9 @@ function defaultProviderCode() {
 }
 
 async function loadData(options: { forceOptions?: boolean } = {}) {
+  const requestId = loadRequestId + 1
+  loadRequestId = requestId
+  loadingRequestId = requestId
   loading.value = true
   try {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
@@ -308,12 +313,16 @@ async function loadData(options: { forceOptions?: boolean } = {}) {
       isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
       loadGroupOptions(options.forceOptions === true)
     ])
+    if (requestId !== loadRequestId) return
     groups.value = groupList
   } catch (error) {
+    if (requestId !== loadRequestId) return
     console.error(error)
     message.error('加载分组失败')
   } finally {
-    loading.value = false
+    if (loadingRequestId === requestId) {
+      loading.value = false
+    }
   }
 }
 

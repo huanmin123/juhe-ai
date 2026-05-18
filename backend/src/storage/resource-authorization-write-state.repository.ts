@@ -68,7 +68,9 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
   const hasActiveTeamSource = existing ? hasActiveTeamAuthorizationSource(input.database, authorizationId) : false
   const nextEffectiveSourceType = isTeamSource || hasActiveTeamSource ? 'team' : 'manual'
   const nextEffectiveSourceTeamId = isTeamSource ? input.sourceTeamId ?? null : firstActiveTeamSourceId(input.database, authorizationId)
-  const nextExpiresAt = input.expiresAt ?? existing?.expires_at ?? null
+  const nextExpiresAt = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
+    ? input.expiresAt ?? null
+    : existing?.expires_at ?? null
   const existingStatus = existing?.status
   const nextStatus: AuthorizationStatus = isResourceAuthorizationExpired(nextExpiresAt)
     ? 'expired'
@@ -91,7 +93,7 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
           activated_at = COALESCE(activated_at, ?),
           last_source_changed_at = ?,
           remark = COALESCE(?, remark),
-          expires_at = COALESCE(?, expires_at),
+          expires_at = ?,
           limits_json = ?,
           model_policy_json = COALESCE(?, model_policy_json),
           revoked_by = ?,
@@ -99,7 +101,7 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
           revoked_reason = ?,
           updated_at = ?
       WHERE id = ?
-    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, input.expiresAt ?? null, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now, authorizationId)
+    `).run(input.ownerSystemAccountId, nextStatus, nextEffectiveSourceType, nextEffectiveSourceTeamId, input.now, input.now, input.remark ?? null, nextExpiresAt, nextLimitsJson, jsonObjectOrNull(input.modelPolicy), nextRevokedBy, nextRevokedAt, nextRevokedReason, input.now, authorizationId)
   } else {
     input.database.prepare(`
       INSERT INTO resource_authorizations (
@@ -371,9 +373,12 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
     throw new Error(input.granteeType === 'team' ? '该资源已暂停授权给该团队，请先恢复或修改原授权' : '该资源已暂停授权给该用户，请先恢复或修改原授权')
   }
   const id = existing?.id ?? newId('rauthgrant')
+  const nextExpiresAt = Object.prototype.hasOwnProperty.call(input, 'expiresAt')
+    ? input.expiresAt ?? null
+    : existing?.expires_at ?? null
   if (existing) {
     input.database.prepare("UPDATE resource_authorization_grants SET status = 'active', remark = COALESCE(?, remark), expires_at = ?, limits_json = ?, model_policy_json = COALESCE(?, model_policy_json), revoked_by = NULL, revoked_at = NULL, updated_at = ? WHERE id = ?")
-      .run(input.remark ?? null, input.expiresAt ?? existing.expires_at, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.now, id)
+      .run(input.remark ?? null, nextExpiresAt, requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)), jsonObjectOrNull(input.modelPolicy), input.now, id)
   } else {
     input.database.prepare("INSERT INTO resource_authorization_grants (id, resource_type, resource_id, resource_owner_system_account_id, grantee_type, grantee_system_account_id, grantee_team_id, scope, status, remark, expires_at, limits_json, model_policy_json, created_by, created_at, revoked_by, revoked_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'use', 'active', ?, ?, ?, ?, ?, ?, NULL, NULL, ?)")
       .run(
@@ -385,7 +390,7 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
         input.granteeType === 'system_account' ? input.granteeId : null,
         input.granteeType === 'team' ? input.granteeId : null,
         input.remark ?? null,
-        input.expiresAt ?? null,
+        nextExpiresAt,
         requestQuotaLimitsJson(normalizeRequestQuotaLimits(input.limits)),
         jsonObjectOrNull(input.modelPolicy),
         input.actor,

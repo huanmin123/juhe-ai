@@ -67,6 +67,9 @@ if ($FrontendGatewayBaseUrl) {
   Write-Host '==> Frontend gateway base URL: inferred from browser origin'
 }
 pnpm build
+if ($LASTEXITCODE -ne 0) {
+  throw 'Workspace build failed.'
+}
 
 Write-Host '==> Preparing release folder'
 Remove-Item -LiteralPath $packageRoot -Recurse -Force -ErrorAction SilentlyContinue

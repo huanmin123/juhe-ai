@@ -6,7 +6,7 @@ type AccountPaginationState = UnwrapNestedRefs<{ current: number; pageSize: numb
 export function useAccountMobilePagination(
   pageSize: number,
   totalCount: () => number,
-  loadData: (options?: { append?: boolean; quiet?: boolean }) => Promise<void>,
+  loadData: (options?: { append?: boolean; quiet?: boolean }) => Promise<boolean | void>,
   externalPagination?: AccountPaginationState
 ) {
   const mobileLoadingMore = ref(false)
@@ -14,6 +14,7 @@ export function useAccountMobilePagination(
   const mobileVisibleCount = ref(pageSize)
   const accountPagination = externalPagination ?? reactive({ current: 1, pageSize, total: 0 })
   let localLoadMoreTimer: ReturnType<typeof window.setTimeout> | undefined
+  let loadMoreRequestId = 0
 
   const mobileHasMore = computed(() => mobileVisibleCount.value < totalCount())
   const tablePagination = computed(() => ({
@@ -40,10 +41,18 @@ export function useAccountMobilePagination(
   async function loadMoreMobile() {
     if (mobileLoadingMore.value || !mobileHasMore.value) return
     mobileLoadingMore.value = true
+    const previousPage = accountPagination.current
+    const nextPage = previousPage + 1
+    const requestId = loadMoreRequestId + 1
+    loadMoreRequestId = requestId
     try {
-      accountPagination.current += 1
+      accountPagination.current = nextPage
       if (externalPagination) {
-        await loadData({ append: true, quiet: true })
+        const loaded = await loadData({ append: true, quiet: true })
+        if (loaded === false && loadMoreRequestId === requestId && accountPagination.current === nextPage) {
+          accountPagination.current = previousPage
+          return
+        }
       } else {
         clearLocalLoadMoreTimer()
         localLoadMoreTimer = window.setTimeout(() => {
@@ -54,8 +63,15 @@ export function useAccountMobilePagination(
         return
       }
       mobileVisibleCount.value = Math.min(mobileVisibleCount.value + pageSize, totalCount())
+    } catch (error) {
+      if (loadMoreRequestId === requestId && accountPagination.current === nextPage) {
+        accountPagination.current = previousPage
+      }
+      throw error
     } finally {
-      mobileLoadingMore.value = false
+      if (loadMoreRequestId === requestId) {
+        mobileLoadingMore.value = false
+      }
     }
   }
 

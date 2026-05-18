@@ -85,9 +85,11 @@ type OrderedRuntimeLogGrepItem = RuntimeLogGrepItem & {
 
 const maxKeywords = 10
 const maxKeywordLength = 128
+const minKeywordLength = 3
 const defaultLimit = 100
 const maxLimit = 100
 const maxLineLength = 20_000
+const maxRgJsonLineLength = maxLineLength + 8_000
 const maxRgStderrLength = 2_000
 const maxRgCommandChars = 24_000
 const dayMs = 24 * 60 * 60 * 1000
@@ -96,7 +98,8 @@ const maxGrepRangeDays = 7
 
 export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promise<RuntimeLogGrepResult> {
   const startedAt = performance.now()
-  const keywords = normalizeGrepKeywords(options.keywords)
+  const keywordInput = normalizeGrepKeywords(options.keywords)
+  const keywords = keywordInput.keywords
   const limit = normalizeLimit(options.limit)
   const files = runtimeConfig.log.fileEnabled ? listLogFiles() : []
   const timeRange = normalizeGrepTimeRange(options, files)
@@ -117,7 +120,9 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
       items: [],
       truncated: false,
       scannedFileCount: 0,
-      message: '请输入要搜索的关键字'
+      message: keywordInput.shortKeywordCount > 0
+        ? `grep 关键字至少需要 ${minKeywordLength} 个字符，请输入更具体的关键字。`
+        : '请输入要搜索的关键字'
     }
   }
 
@@ -167,7 +172,10 @@ export async function grepRuntimeLogFiles(options: RuntimeLogGrepOptions): Promi
       files: searchableFiles,
       rgExecutable,
       timeRange,
-      rangeAdjustedMessage: timeRange.adjusted ? `grep 文件时间范围已自动调整，单次最多 ${maxGrepRangeDays} 天` : undefined,
+      warnings: [
+        timeRange.adjusted ? `grep 文件时间范围已自动调整，单次最多 ${maxGrepRangeDays} 天` : undefined,
+        keywordInput.shortKeywordCount > 0 ? `已忽略少于 ${minKeywordLength} 个字符的短关键字` : undefined
+      ].filter((item): item is string => Boolean(item)),
       startedAt
     })
     return result
@@ -194,22 +202,27 @@ export function getRuntimeLogGrepRuntime(): RuntimeLogGrepRuntime {
   }
 }
 
-function normalizeGrepKeywords(values: string[]): string[] {
+function normalizeGrepKeywords(values: string[]): { keywords: string[]; shortKeywordCount: number } {
   const seen = new Set<string>()
   const keywords: string[] = []
+  let shortKeywordCount = 0
   for (const value of values) {
     for (const part of value.split(/[\s,;，；]+/)) {
       const keyword = part.trim()
       if (!keyword) continue
       const normalized = keyword.slice(0, maxKeywordLength)
+      if ([...normalized].length < minKeywordLength) {
+        shortKeywordCount += 1
+        continue
+      }
       const dedupeKey = normalized.toLowerCase()
       if (seen.has(dedupeKey)) continue
       seen.add(dedupeKey)
       keywords.push(normalized)
-      if (keywords.length >= maxKeywords) return keywords
+      if (keywords.length >= maxKeywords) return { keywords, shortKeywordCount }
     }
   }
-  return keywords
+  return { keywords, shortKeywordCount }
 }
 
 function normalizeLimit(value: number | undefined): number {
@@ -327,7 +340,7 @@ async function searchLogFilesWithRg(options: {
   limit: number
   rgExecutable: string
   timeRange: RuntimeLogGrepTimeRange
-  rangeAdjustedMessage?: string
+  warnings: string[]
   startedAt: number
 }): Promise<RuntimeLogGrepResult> {
   const normalizedKeywords = options.keywords.map((keyword) => keyword.toLowerCase())
@@ -381,7 +394,7 @@ async function searchLogFilesWithRg(options: {
     truncated,
     scannedFileCount: options.files.length,
     message: [
-      options.rangeAdjustedMessage,
+      ...options.warnings,
       truncated ? `结果超过 ${options.limit} 行，已按最新优先截断显示` : undefined,
       noMatchBatches === batches.length ? '没有匹配的日志行' : undefined
     ].filter(Boolean).join('；') || undefined
@@ -421,6 +434,8 @@ function baseRgArgs(pattern: string): string[] {
     '--ignore-case',
     '--no-heading',
     '--color=never',
+    '--max-columns',
+    String(maxLineLength),
     '--',
     pattern
   ]
@@ -436,22 +451,38 @@ function runRgSearch(options: {
     const args = [...baseRgArgs(options.pattern), ...options.files.map((file) => file.path)]
     const child = spawn(options.executable, args, { windowsHide: true })
     let stdoutPending = ''
+    let droppingOversizedStdoutLine = false
     let stderrText = ''
     let matched = false
 
     child.stdout.setEncoding('utf8')
     child.stdout.on('data', (chunk: string) => {
-      stdoutPending += chunk
-      let newlineIndex = stdoutPending.indexOf('\n')
-      while (newlineIndex >= 0) {
-        const line = stdoutPending.slice(0, newlineIndex)
-        stdoutPending = stdoutPending.slice(newlineIndex + 1)
-        const event = parseRgJsonLine(line)
-        if (event?.type === 'match') {
-          matched = true
-          options.onMatch(event)
+      let remaining = chunk
+      while (remaining.length > 0) {
+        const newlineIndex = remaining.indexOf('\n')
+        const segment = newlineIndex >= 0 ? remaining.slice(0, newlineIndex) : remaining
+        remaining = newlineIndex >= 0 ? remaining.slice(newlineIndex + 1) : ''
+
+        if (!droppingOversizedStdoutLine) {
+          if (stdoutPending.length + segment.length > maxRgJsonLineLength) {
+            stdoutPending = ''
+            droppingOversizedStdoutLine = true
+          } else {
+            stdoutPending += segment
+          }
         }
-        newlineIndex = stdoutPending.indexOf('\n')
+
+        if (newlineIndex >= 0) {
+          if (!droppingOversizedStdoutLine) {
+            const event = parseRgJsonLine(stdoutPending)
+            if (event?.type === 'match') {
+              matched = true
+              options.onMatch(event)
+            }
+          }
+          stdoutPending = ''
+          droppingOversizedStdoutLine = false
+        }
       }
     })
 
@@ -465,7 +496,7 @@ function runRgSearch(options: {
     })
 
     child.on('close', (code) => {
-      if (stdoutPending.trim()) {
+      if (!droppingOversizedStdoutLine && stdoutPending.trim()) {
         const event = parseRgJsonLine(stdoutPending)
         if (event?.type === 'match') {
           matched = true
@@ -533,6 +564,9 @@ function insertLatestGrepItem(items: OrderedRuntimeLogGrepItem[], item: OrderedR
 }
 
 function lineMatchesKeywords(line: string, normalizedKeywords: string[]): boolean {
+  if (line.length > maxLineLength) {
+    return false
+  }
   const searchableLine = line.toLowerCase()
   return normalizedKeywords.every((keyword) => searchableLine.includes(keyword))
 }

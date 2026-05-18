@@ -41,8 +41,9 @@ try {
   const large = runtimeLogsRepository.listRuntimeLogs({ keyword: '超长日志', pageSize: 10 })
   assert.equal(large.items.length, 1, '超长日志应保留截断 rawJson 并可搜索')
   assert.equal(large.items[0]?.event, undefined, '超长日志不应同步解析整行 JSON 提取字段')
-  assert(large.items[0]?.rawJson.includes('[truncated]'), '超长日志 rawJson 应带截断标记')
-  assert((large.items[0]?.rawJson.length ?? 0) < 140 * 1024, '超长日志 rawJson 应在索引前截断')
+  const largeDetail = runtimeLogsRepository.getRuntimeLogDetail(large.items[0]?.id ?? '')
+  assert(largeDetail?.rawJson.includes('[truncated]'), '超长日志 rawJson 应带截断标记')
+  assert((largeDetail?.rawJson.length ?? 0) < 140 * 1024, '超长日志 rawJson 应在索引前截断')
 
   const facets = runtimeLogsRepository.getRuntimeLogFacets()
   assert.equal(facets.totalIndexed, 2, '运行日志 facets 应读取预聚合总量')

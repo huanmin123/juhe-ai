@@ -73,6 +73,7 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
 
   flushing = true
   let shouldRetry = false
+  let failed = false
   let flushedBatches = 0
   const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
@@ -86,6 +87,7 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
       try {
         createUsageRecordsBatch(batch)
       } catch (error) {
+        failed = true
         pendingUsageRecords = [...batch, ...pendingUsageRecords]
         flushFailureCount += 1
         logger.error(errorLogFields(error, {
@@ -102,7 +104,7 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
     flushing = false
   }
 
-  if (pendingUsageRecords.length > 0) {
+  if (pendingUsageRecords.length > 0 && (!failed || shouldRetry)) {
     scheduleUsageRecordFlush(shouldRetry ? usageRecordRetryDelayMs : 0)
   }
 }
@@ -164,6 +166,10 @@ function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
     responseSnapshot: sanitizeUsageRecordSnapshot(input.responseSnapshot),
     createdAt: input.createdAt ?? nowIso()
   }
+}
+
+export function pendingUsageRecordCount(): number {
+  return pendingUsageRecords.length
 }
 
 function sanitizeUsageRecordSnapshot(value: unknown): unknown {

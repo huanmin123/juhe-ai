@@ -14,6 +14,7 @@ import {
   type AccountTestForm
 } from './accountTestFlow'
 import { buildTestModelOptions } from './accountDerivedState'
+import { accountOperationScopeParams } from './accountOperationScope'
 import { canTestAccount } from './accountRules'
 
 interface UseAccountTestModalOptions {
@@ -72,7 +73,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     try {
       const payload = buildAccountTestPayload(testForm)
       const result = options.isManagementView.value
-        ? await api.accounts.test(account.id, payload, options.accountScopeParams.value, { signal: controller.signal })
+        ? await api.accounts.test(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value), { signal: controller.signal })
         : await api.myAccounts.test(account.id, payload, { signal: controller.signal })
       testResult.value = result
       if (result.success) {
@@ -114,7 +115,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     try {
       const payload = buildAccountTestPayload(testForm)
       return options.isManagementView.value
-        ? await api.accounts.test(account.id, payload, options.accountScopeParams.value)
+        ? await api.accounts.test(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
         : await api.myAccounts.test(account.id, payload)
     } catch (error) {
       console.error(error)

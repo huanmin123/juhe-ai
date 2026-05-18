@@ -16,7 +16,7 @@
     :mobile-has-more="mobileHasMore"
     :loading-more="loadingMore"
     :refreshing="refreshing"
-    @change="$emit('change', $event)"
+    @change="(...args) => $emit('change', ...args)"
     @sort-change="$emit('sort-change', $event)"
     @mobile-load-more="$emit('mobile-load-more')"
     @mobile-refresh="$emit('mobile-refresh')"
@@ -99,7 +99,7 @@ defineProps<{
 
 defineEmits<{
   (event: 'bind-group', account: AccountSummary): void
-  (event: 'change', paginationInfo: unknown): void
+  (event: 'change', ...args: unknown[]): void
   (event: 'delete', accountId: string): void
   (event: 'edit', account: AccountSummary): void
   (event: 'menu-click', menuEvent: { key: string | number }, account: AccountSummary): void

@@ -34,6 +34,7 @@ const authorizationsQuerySchema = z.object({
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
   status: z.enum(['active', 'paused', 'expired', 'revoked', 'all']).optional(),
   direction: z.enum(['all', 'outbound', 'inbound']).optional(),
+  sourceType: z.enum(['all', 'manual', 'team']).optional(),
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
   endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
@@ -52,7 +53,9 @@ const authorizationUsageOverviewQuerySchema = z.object({
   granteeSystemAccountId: z.string().trim().min(1, '被授权用户 ID 不能为空').optional(),
   teamId: z.string().trim().min(1, '团队 ID 不能为空').optional(),
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
-  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
+  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional(),
+  page: z.coerce.number().int().min(1, '页码必须大于 0').optional(),
+  pageSize: z.coerce.number().int().min(1, '每页数量必须大于 0').max(200, '每页最多 200 条').optional()
 })
 
 const createAuthorizationSchema = z.object({
@@ -108,11 +111,12 @@ authorizationsRouter.get('/', (req, res) => {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, direction, startDate, endDate, ...filters } = parsed.data
+  const { systemAccountId, direction, sourceType, startDate, endDate, ...filters } = parsed.data
   const usageRange = normalizeAuthorizationListUsageRange({ startDate, endDate })
+  const sourceTypeFilter = sourceType && sourceType !== 'all' ? { sourceType } : {}
   const routeFilters = req.baseUrl.endsWith('/my-authorizations') && direction && direction !== 'all'
-    ? { ...filters, direction }
-    : filters
+    ? { ...filters, ...sourceTypeFilter, direction }
+    : { ...filters, ...sourceTypeFilter }
   res.json(ok(listResourceAuthorizations(routeFilters, getRequestAccessScope(systemAccountId), { usageRange })))
 })
 
@@ -122,9 +126,9 @@ authorizationsRouter.get('/usage/team-details', (req, res) => {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, startDate, endDate, ...filters } = parsed.data
+  const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
   const range = normalizeAuthorizationUsageRange({ startDate, endDate })
-  res.json(ok(getAuthorizationTeamUsageOverview(filters, getRequestAccessScope(systemAccountId), range)))
+  res.json(ok(getAuthorizationTeamUsageOverview(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
 })
 
 authorizationsRouter.get('/usage/user-details', (req, res) => {
@@ -133,9 +137,9 @@ authorizationsRouter.get('/usage/user-details', (req, res) => {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, startDate, endDate, ...filters } = parsed.data
+  const { systemAccountId, startDate, endDate, page, pageSize, ...filters } = parsed.data
   const range = normalizeAuthorizationUsageRange({ startDate, endDate })
-  res.json(ok(getAuthorizationUserUsageOverview(filters, getRequestAccessScope(systemAccountId), range)))
+  res.json(ok(getAuthorizationUserUsageOverview(filters, getRequestAccessScope(systemAccountId), range, { page, pageSize })))
 })
 
 authorizationsRouter.post('/', mutationGuard({

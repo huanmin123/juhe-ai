@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs'
+import { availableParallelism } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Worker } from 'node:worker_threads'
@@ -38,6 +39,12 @@ interface GatewayJsonWorkerResponse {
   errorCode?: string
   errorStatusCode?: number
   errorType?: string
+}
+
+interface GatewayJsonWorkerSlot {
+  id: number
+  worker: Worker
+  activeJob?: GatewayJsonWorkerJob
 }
 
 const currentModulePath = fileURLToPath(import.meta.url)
@@ -104,9 +111,9 @@ class HeadIndexedQueue<T> {
   }
 }
 
-let worker: Worker | undefined
 let nextJobId = 1
-let activeJob: GatewayJsonWorkerJob | undefined
+let nextWorkerSlotId = 1
+const workerSlots: GatewayJsonWorkerSlot[] = []
 const queuedJobs = new HeadIndexedQueue<GatewayJsonWorkerJob>()
 
 export function parseGatewayJsonBodyInWorker(rawBody: Buffer, timeoutMs = 30000, signal?: AbortSignal): Promise<unknown> {
@@ -134,27 +141,28 @@ export function normalizeOpenAIOAuthCodexBodyInWorker(
 }
 
 export async function stopGatewayJsonParseWorker(): Promise<void> {
-  const currentWorker = worker
-  const currentJob = activeJob
-  worker = undefined
-  activeJob = undefined
-  if (currentJob) {
-    clearJobTimer(currentJob)
-    removeAbortListener(currentJob)
-    currentJob.reject(new Error('网关 JSON worker 已关闭'))
+  const currentSlots = workerSlots.splice(0, workerSlots.length)
+  for (const slot of currentSlots) {
+    const currentJob = slot.activeJob
+    slot.activeJob = undefined
+    if (currentJob) {
+      clearJobTimer(currentJob)
+      removeAbortListener(currentJob)
+      currentJob.reject(new Error('网关 JSON worker 已关闭'))
+    }
   }
   while (queuedJobs.length > 0) {
-    const job = queuedJobs.shift()
+    const job = shiftQueuedJob()
     if (job) {
       clearJobTimer(job)
       removeAbortListener(job)
       job.reject(new Error('网关 JSON worker 已关闭'))
     }
   }
-  if (currentWorker) {
-    currentWorker.removeAllListeners()
-    await currentWorker.terminate()
-  }
+  await Promise.all(currentSlots.map(async (slot) => {
+    slot.worker.removeAllListeners()
+    await slot.worker.terminate()
+  }))
 }
 
 function enqueueGatewayJsonWorkerJob<TValue>(input: {
@@ -184,64 +192,99 @@ function enqueueGatewayJsonWorkerJob<TValue>(input: {
       job.abortListener = () => cancelJob(job)
       input.signal.addEventListener('abort', job.abortListener, { once: true })
     }
-    queuedJobs.push(job)
+    pushQueuedJob(job)
     pumpJsonWorkerQueue()
   })
 }
 
 function pumpJsonWorkerQueue(): void {
-  if (activeJob || queuedJobs.length === 0) {
+  if (queuedJobs.length === 0) {
     return
   }
 
-  const job = queuedJobs.shift()
-  if (!job) {
+  try {
+    ensureWorkerPool()
+  } catch (error) {
+    failNextQueuedJob(error instanceof Error ? error : new Error(String(error)))
     return
   }
-  activeJob = job
 
+  while (queuedJobs.length > 0) {
+    const slot = idleWorkerSlot()
+    if (!slot) {
+      return
+    }
+    const job = shiftQueuedJob()
+    if (!job) {
+      return
+    }
+    startJobOnWorkerSlot(slot, job)
+  }
+}
+
+function ensureWorkerPool(): void {
+  const targetSize = gatewayJsonWorkerPoolSize()
+  while (workerSlots.length < targetSize) {
+    workerSlots.push(createWorkerSlot())
+  }
+}
+
+function createWorkerSlot(): GatewayJsonWorkerSlot {
+  const slot: GatewayJsonWorkerSlot = {
+    id: nextWorkerSlotId++,
+    worker: new Worker(resolveGatewayJsonWorkerPath(), {
+      execArgv: process.execArgv.filter((arg) => !arg.startsWith('--inspect'))
+    })
+  }
+  slot.worker.unref()
+  slot.worker.on('message', (message: GatewayJsonWorkerResponse) => handleWorkerMessage(slot, message))
+  slot.worker.on('error', (error) => {
+    failActiveJob(slot, error, true)
+  })
+  slot.worker.on('exit', (code) => {
+    removeWorkerSlot(slot)
+    if (code !== 0) {
+      logger.warn({
+        event: 'gateway_json_parse_worker_exited',
+        workerSlotId: slot.id,
+        exitCode: code
+      }, '网关 JSON worker 异常退出')
+    }
+    if (slot.activeJob) {
+      const job = slot.activeJob
+      slot.activeJob = undefined
+      failJob(job, new Error(`网关 JSON worker 已退出，退出码 ${code}`), false, slot)
+    }
+    pumpJsonWorkerQueue()
+  })
+  return slot
+}
+
+function startJobOnWorkerSlot(slot: GatewayJsonWorkerSlot, job: GatewayJsonWorkerJob): void {
+  slot.activeJob = job
   try {
     job.startedAtMs = Date.now()
     startJobTimer(job)
-    ensureWorker().postMessage({
+    slot.worker.postMessage({
       id: job.id,
       type: job.type,
       rawBody: job.rawBody,
       normalizeInput: job.normalizeInput
     })
   } catch (error) {
-    failJob(job, error instanceof Error ? error : new Error(String(error)), true)
+    failJob(job, error instanceof Error ? error : new Error(String(error)), true, slot)
   }
 }
 
-function ensureWorker(): Worker {
-  if (worker) {
-    return worker
-  }
+function idleWorkerSlot(): GatewayJsonWorkerSlot | undefined {
+  return workerSlots.find((slot) => !slot.activeJob)
+}
 
-  worker = new Worker(resolveGatewayJsonWorkerPath(), {
-    execArgv: process.execArgv.filter((arg) => !arg.startsWith('--inspect'))
-  })
-  worker.unref()
-  worker.on('message', handleWorkerMessage)
-  worker.on('error', (error) => {
-    failActiveJob(error, true)
-  })
-  worker.on('exit', (code) => {
-    const exitedWorker = worker
-    worker = undefined
-    if (code !== 0) {
-      logger.warn({
-        event: 'gateway_json_parse_worker_exited',
-        exitCode: code
-      }, '网关 JSON worker 异常退出')
-    }
-    if (exitedWorker && activeJob) {
-      failActiveJob(new Error(`网关 JSON worker 已退出，退出码 ${code}`), false)
-    }
-    pumpJsonWorkerQueue()
-  })
-  return worker
+function removeWorkerSlot(slot: GatewayJsonWorkerSlot): void {
+  const index = workerSlots.indexOf(slot)
+  if (index >= 0) {
+    workerSlots.splice(index, 1)
+  }
 }
 
 function resolveGatewayJsonWorkerPath(): string {
@@ -254,15 +297,15 @@ function resolveGatewayJsonWorkerPath(): string {
   return workerSourcePath
 }
 
-function handleWorkerMessage(message: GatewayJsonWorkerResponse): void {
-  const job = activeJob
+function handleWorkerMessage(slot: GatewayJsonWorkerSlot, message: GatewayJsonWorkerResponse): void {
+  const job = slot.activeJob
   if (!job || message.id !== job.id) {
     return
   }
 
   clearJobTimer(job)
   removeAbortListener(job)
-  activeJob = undefined
+  slot.activeJob = undefined
   if (message.ok) {
     logJobCompleted(job)
     job.resolve(message.value)
@@ -286,24 +329,45 @@ function workerResponseError(job: GatewayJsonWorkerJob, message: GatewayJsonWork
   return new Error(errorMessage)
 }
 
-function failActiveJob(error: Error, restartWorker: boolean): void {
-  if (activeJob) {
-    failJob(activeJob, error, restartWorker)
+function pushQueuedJob(job: GatewayJsonWorkerJob): void {
+  queuedJobs.push(job)
+}
+
+function shiftQueuedJob(): GatewayJsonWorkerJob | undefined {
+  return queuedJobs.shift()
+}
+
+function removeQueuedJobAt(index: number): GatewayJsonWorkerJob | undefined {
+  return queuedJobs.removeAt(index)
+}
+
+function failActiveJob(slot: GatewayJsonWorkerSlot, error: Error, restartWorker: boolean): void {
+  if (slot.activeJob) {
+    failJob(slot.activeJob, error, restartWorker, slot)
     return
   }
   if (restartWorker) {
-    restartJsonWorker()
+    restartJsonWorker(slot)
   }
 }
 
-function failJob(job: GatewayJsonWorkerJob, error: Error, restartWorker: boolean): void {
-  const wasActive = activeJob?.id === job.id
+function failNextQueuedJob(error: Error): void {
+  const job = shiftQueuedJob()
+  if (!job) {
+    return
+  }
+  failJob(job, error, false)
+}
+
+function failJob(job: GatewayJsonWorkerJob, error: Error, restartWorker: boolean, slot?: GatewayJsonWorkerSlot): void {
+  const activeSlot = slot ?? activeWorkerSlotForJob(job)
+  const wasActive = activeSlot?.activeJob?.id === job.id
   if (wasActive) {
-    activeJob = undefined
+    activeSlot.activeJob = undefined
   } else {
     const queuedIndex = queuedJobs.findIndex((item) => item.id === job.id)
     if (queuedIndex >= 0) {
-      queuedJobs.removeAt(queuedIndex)
+      removeQueuedJobAt(queuedIndex)
     }
   }
   clearJobTimer(job)
@@ -319,29 +383,34 @@ function failJob(job: GatewayJsonWorkerJob, error: Error, restartWorker: boolean
     queuedJobs: queuedJobs.length
   }), '网关 JSON worker 失败')
   job.reject(error)
-  if (restartWorker) {
-    restartJsonWorker()
+  if (restartWorker && activeSlot) {
+    restartJsonWorker(activeSlot)
   }
   pumpJsonWorkerQueue()
 }
 
 function cancelJob(job: GatewayJsonWorkerJob): void {
-  const wasActive = activeJob?.id === job.id
+  const activeSlot = activeWorkerSlotForJob(job)
+  const wasActive = activeSlot?.activeJob?.id === job.id
   if (wasActive) {
-    activeJob = undefined
+    activeSlot.activeJob = undefined
   } else {
     const queuedIndex = queuedJobs.findIndex((item) => item.id === job.id)
     if (queuedIndex >= 0) {
-      queuedJobs.removeAt(queuedIndex)
+      removeQueuedJobAt(queuedIndex)
     }
   }
   clearJobTimer(job)
   removeAbortListener(job)
   job.reject(new Error('网关 JSON worker 任务已取消'))
-  if (wasActive) {
-    restartJsonWorker()
+  if (wasActive && activeSlot) {
+    restartJsonWorker(activeSlot)
   }
   pumpJsonWorkerQueue()
+}
+
+function activeWorkerSlotForJob(job: GatewayJsonWorkerJob): GatewayJsonWorkerSlot | undefined {
+  return workerSlots.find((slot) => slot.activeJob?.id === job.id)
 }
 
 function logJobCompleted(job: GatewayJsonWorkerJob): void {
@@ -392,13 +461,14 @@ function removeAbortListener(job: GatewayJsonWorkerJob): void {
   job.abortListener = undefined
 }
 
-function restartJsonWorker(): void {
-  const currentWorker = worker
-  worker = undefined
-  if (currentWorker) {
-    currentWorker.removeAllListeners()
-    void currentWorker.terminate().catch(() => undefined)
-  }
+function restartJsonWorker(slot: GatewayJsonWorkerSlot): void {
+  removeWorkerSlot(slot)
+  slot.worker.removeAllListeners()
+  void slot.worker.terminate().catch(() => undefined)
+}
+
+function gatewayJsonWorkerPoolSize(): number {
+  return Math.max(1, availableParallelism())
 }
 
 const gatewayJsonWorkerSlowQueueWaitMs = 500

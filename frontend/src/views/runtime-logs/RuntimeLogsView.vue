@@ -245,6 +245,7 @@ const selectedLog = ref<RuntimeLogSummary>()
 const selectedGrepItem = ref<RuntimeLogGrepItem>()
 const detailOpen = ref(false)
 const grepDetailOpen = ref(false)
+let detailRequestId = 0
 const viewMode = ref<RuntimeLogViewMode>(initialPageState.viewMode === 'grep' ? 'grep' : 'index')
 
 const traceIdFilter = ref(initialPageState.traceIdFilter)
@@ -470,9 +471,20 @@ async function searchGrepLogs(): Promise<void> {
   }
 }
 
-function openDetail(record: RuntimeLogSummary): void {
+async function openDetail(record: RuntimeLogSummary): Promise<void> {
+  const requestId = detailRequestId + 1
+  detailRequestId = requestId
   selectedLog.value = record
   detailOpen.value = true
+  try {
+    const detail = await api.runtimeLogs.detail(record.id)
+    if (detailRequestId === requestId) {
+      selectedLog.value = detail
+    }
+  } catch (error) {
+    console.error(error)
+    message.error('加载运行日志详情失败')
+  }
 }
 
 function openGrepDetail(record: RuntimeLogGrepItem): void {
@@ -481,7 +493,7 @@ function openGrepDetail(record: RuntimeLogGrepItem): void {
 }
 
 function openRuntimeLogDetail(record: RuntimeLogListRecord): void {
-  openDetail(record as RuntimeLogSummary)
+  void openDetail(record as RuntimeLogSummary)
 }
 
 function openRuntimeGrepDetail(record: RuntimeLogListRecord): void {

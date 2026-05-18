@@ -40,6 +40,9 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   const hasMore = ref(false)
   const currentPageCount = ref(0)
   const items = shallowRef<T[]>([])
+  let loadRequestId = 0
+  let loadingRequestId = 0
+  let mobileLoadingRequestId = 0
   const pagination = reactive({
     current: options.initialPagination?.current ?? 1,
     pageSize: options.initialPagination?.pageSize ?? options.pageSize,
@@ -72,23 +75,30 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   }
 
   async function loadData(loadOptions = {} as ResponsivePagedListLoadOptions & ExtraOptions): Promise<boolean> {
+    const requestId = loadRequestId + 1
+    loadRequestId = requestId
     if (!loadOptions.quiet) {
       loading.value = true
+      loadingRequestId = requestId
     }
     try {
       const result = await options.fetchPage(loadOptions, pagination)
+      if (requestId !== loadRequestId) return false
       if (!loadOptions.append && result.page > 1 && result.items.length === 0 && result.hasMore === false) {
         pagination.current = 1
-        applyPageResult(await options.fetchPage(loadOptions, pagination), loadOptions)
+        const fallbackResult = await options.fetchPage(loadOptions, pagination)
+        if (requestId !== loadRequestId) return false
+        applyPageResult(fallbackResult, loadOptions)
       } else {
         applyPageResult(result, loadOptions)
       }
       return true
     } catch (error) {
+      if (requestId !== loadRequestId) return false
       options.onError?.(error)
       return false
     } finally {
-      if (!loadOptions.quiet) {
+      if (!loadOptions.quiet && loadingRequestId === requestId) {
         loading.value = false
       }
     }
@@ -117,15 +127,19 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   async function loadMoreMobile(loadOptions = {} as ExtraOptions): Promise<void> {
     if (!mobileHasMore.value || mobileLoadingMore.value) return
     const previousPage = pagination.current
+    const requestId = loadRequestId + 1
+    mobileLoadingRequestId = requestId
     mobileLoadingMore.value = true
     pagination.current += 1
     try {
       const loaded = await loadData({ ...loadOptions, append: true, quiet: true })
-      if (!loaded) {
+      if (!loaded && mobileLoadingRequestId === requestId && pagination.current === previousPage + 1) {
         pagination.current = previousPage
       }
     } finally {
-      mobileLoadingMore.value = false
+      if (mobileLoadingRequestId === requestId) {
+        mobileLoadingMore.value = false
+      }
     }
   }
 

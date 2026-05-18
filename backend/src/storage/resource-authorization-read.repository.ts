@@ -71,6 +71,14 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
   }
   const status = authorizationStatusFilter(filters.status)
   if (status) { clauses.push('rag.status = ?'); params.push(status) }
+  const sourceType = optionalString(filters.sourceType ?? filters.source_type)
+  if (sourceType === 'manual') {
+    clauses.push('rag.grantee_type = ?')
+    params.push('system_account')
+  } else if (sourceType === 'team') {
+    clauses.push('rag.grantee_type = ?')
+    params.push('team')
+  }
   const teamId = optionalString(filters.teamId ?? filters.team_id)
   if (teamId) {
     if (!canAccessAll(access)) {

@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import type { AccountSummary, AccountTrafficMigrationSourceStatus } from '@/types/domain'
 import { trafficMigrationTargetOptions as buildTrafficMigrationTargetOptions } from './accountDerivedState'
 import { isAuthorizedAccount } from './accountFormatters'
+import { accountOperationScopeParams } from './accountOperationScope'
 import {
   canUseAccountActions,
   canUseAsTrafficMigrationTarget,
@@ -86,7 +87,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
         sourceStatus: trafficMigrationForm.sourceStatus
       }
       const result = options.isManagementView.value
-        ? await api.accounts.migrateTraffic(source.id, payload, options.accountScopeParams.value)
+        ? await api.accounts.migrateTraffic(source.id, payload, accountOperationScopeParams(source, options.accountScopeParams.value))
         : await api.myAccounts.migrateTraffic(source.id, payload)
       const statusText = result.sourceStatus === 'disabled' ? '停用账户' : '临时不可调用'
       const scopeText = isAuthorizedAccount(source) ? '你的分组内' : ''

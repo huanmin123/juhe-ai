@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { basename, resolve } from 'node:path'
 
 import cors from 'cors'
 import express, { type NextFunction, type Request, type Response } from 'express'
@@ -22,6 +22,7 @@ const host = runtimeConfig.host
 const port = runtimeConfig.port
 const frontendDistPath = resolve(backendRoot, '..', 'frontend', 'dist')
 const frontendIndexPath = resolve(frontendDistPath, 'index.html')
+const frontendAssetsPath = resolve(frontendDistPath, 'assets')
 const systemPrefix = '/__aisys__'
 const systemApiPrefix = `${systemPrefix}/api`
 const gatewayRawBodyLimit = '64mb'
@@ -78,7 +79,7 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
 
 installProcessLogHandlers()
 startProcessEventLoopMonitor()
-setRuntimeLogLineSink((line) => sendRuntimeLogLineToWorker(line))
+setRuntimeLogLineSink((line, options) => sendRuntimeLogLineToWorker(line, options))
 startDbServiceSupervisor()
 startBackgroundWorkerSupervisor()
 
@@ -100,13 +101,24 @@ if (existsSync(frontendIndexPath)) {
 
     res.redirect(302, `${systemPrefix}/`)
   })
-  app.use(systemPrefix, express.static(frontendDistPath))
+  app.use(systemPrefix, express.static(frontendDistPath, {
+    setHeaders: (res, filePath) => {
+      if (filePath.startsWith(frontendAssetsPath)) {
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable')
+        return
+      }
+      if (basename(filePath) === 'index.html' || basename(filePath) === 'brand-icon.svg') {
+        res.setHeader('Cache-Control', 'no-cache')
+      }
+    }
+  }))
   app.get(`${systemPrefix}/*`, (req, res, next) => {
     if (req.path === `${systemPrefix}/health` || req.path === systemApiPrefix || req.path.startsWith(`${systemApiPrefix}/`)) {
       next()
       return
     }
 
+    res.setHeader('Cache-Control', 'no-cache')
     res.sendFile(frontendIndexPath)
   })
 }

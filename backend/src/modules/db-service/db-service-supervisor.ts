@@ -40,11 +40,16 @@ function startDbServiceProcess(): void {
       JUHE_AI_PROCESS_ROLE: 'db-service'
     },
     execArgv: entry.execArgv,
+    serialization: 'advanced',
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   })
 
   dbServiceProcess = child
-  attachDbServiceProcess(child)
+  attachDbServiceProcess(child, {
+    onReady: () => {
+      restartAttempts = 0
+    }
+  })
   pipeDbServiceOutput(child)
 
   logger.info({
@@ -72,6 +77,12 @@ function startDbServiceProcess(): void {
     logger.error(errorLogFields(error, {
       event: 'db_service_spawn_failed'
     }), '数据库服务启动失败')
+    if (dbServiceProcess === child) {
+      dbServiceProcess = undefined
+    }
+    if (!stopping) {
+      scheduleDbServiceRestart()
+    }
   })
 }
 

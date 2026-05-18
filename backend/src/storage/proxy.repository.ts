@@ -66,12 +66,12 @@ export class ProxyProfileUnavailableError extends Error {
 }
 
 export function listProxies(): ProxyProfileSummary[] {
-  const rows = getDatabase().prepare('SELECT * FROM proxy_profiles ORDER BY updated_at DESC, id DESC').all() as unknown as ProxyRow[]
+  const rows = getDatabase().prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles ORDER BY updated_at DESC, id DESC`).all() as unknown as ProxyRow[]
   return rows.map(proxySummaryFromRow)
 }
 
 export function findProxy(id: string): ProxyProfileSummary | undefined {
-  const row = getDatabase().prepare('SELECT * FROM proxy_profiles WHERE id = ?').get(id) as unknown as ProxyRow | undefined
+  const row = getDatabase().prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
   return row ? proxySummaryFromRow(row) : undefined
 }
 
@@ -104,6 +104,25 @@ function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {
     lastTestMessage: row.last_test_message ?? undefined,
     lastTestedAt: row.last_tested_at ?? undefined
   }
+}
+
+function proxySummarySelectColumns(): string {
+  return [
+    'id',
+    'name',
+    'description',
+    'type',
+    'host',
+    'port',
+    'username',
+    'enabled',
+    'test_status',
+    'latency_ms',
+    'outbound_ip',
+    'outbound_region',
+    'last_test_message',
+    'last_tested_at'
+  ].join(', ')
 }
 
 export function createProxy(input: Record<string, unknown>): ProxyProfileSummary {

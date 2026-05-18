@@ -274,7 +274,7 @@ function listOperationLogsWithFilters(filters: { clause: string; params: Operati
   const database = getRecordDatabase()
   const rows = database
     .prepare(`
-      SELECT ol.*
+      SELECT ${operationLogListSelectColumns('ol')}
       FROM operation_logs ol
       ${filters.clause}
       ORDER BY ol.created_at DESC, ol.id DESC
@@ -303,6 +303,36 @@ function listOperationLogsWithFilters(filters: { clause: string; params: Operati
   }
 }
 
+function operationLogListSelectColumns(alias: string): string {
+  return [
+    'id',
+    'trace_id',
+    'actor_system_account_id',
+    'actor_username',
+    'actor_display_name',
+    'actor_role',
+    'operation_scope_system_account_id',
+    'mode',
+    'module',
+    'action',
+    'operation_key',
+    'resource_type',
+    'resource_id',
+    'resource_name',
+    'summary',
+    'detail_level',
+    'visibility_scope',
+    "'[]' AS changes_json",
+    "'{}' AS metadata_json",
+    'method',
+    'path',
+    'status_code',
+    'client_ip',
+    'user_agent',
+    'created_at'
+  ].map((column) => column.includes(' AS ') ? column : `${alias}.${column}`).join(', ')
+}
+
 function listVisibleOperationLogsForViewer(systemAccountId: string, options: OperationLogListOptions): OperationLogListResult {
   const pageSize = normalizeOperationLogPageSize(options.pageSize ?? options.limit)
   const page = normalizeOperationLogPage(options.page)
@@ -325,12 +355,12 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
     .prepare(`
       SELECT *
       FROM (
-        SELECT ol.*
+        SELECT ${operationLogListSelectColumns('ol')}
         FROM operation_logs ol
         ${targetedVisibleJoin}
         WHERE ${targetedClause}
         UNION ALL
-        SELECT ol.*
+        SELECT ${operationLogListSelectColumns('ol')}
         FROM operation_logs ol
         WHERE ${allUsersClause}
       ) visible_logs

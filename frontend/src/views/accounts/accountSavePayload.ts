@@ -12,7 +12,7 @@ export type AccountSavePayload = {
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
-  proxyProfileId?: string
+  proxyProfileId?: string | null
   accountExpiresAt: string | null
   groupId?: string
   notes: string
@@ -53,6 +53,7 @@ export function validateAccountSaveForm(input: {
 
 export function buildAccountSavePayload(input: {
   accounts: AccountSummary[]
+  accountDetail?: AccountSummary
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
@@ -64,7 +65,7 @@ export function buildAccountSavePayload(input: {
     credentials: accountCredentials(input),
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
-    proxyProfileId: input.form.proxyProfileId,
+    proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     groupId: input.form.groupId,
     notes: input.form.notes
@@ -89,14 +90,20 @@ export function buildOAuthCreateCommonPayload(input: {
   }
 }
 
+function saveProxyProfileId(proxyProfileId: string | undefined, editing: boolean): string | null | undefined {
+  if (proxyProfileId) return proxyProfileId
+  return editing ? null : undefined
+}
+
 function accountCredentials(input: {
   accounts: AccountSummary[]
+  accountDetail?: AccountSummary
   editingId?: string
   form: AccountFormModel
   errorPolicyRules: AccountErrorPolicyRuleForm[]
 }): Record<string, unknown> {
   return buildAccountCredentials({
-    currentCredentials: currentAccountCredentials(input.accounts, input.editingId),
+    currentCredentials: input.accountDetail?.credentials ?? currentAccountCredentials(input.accounts, input.editingId),
     errorPolicyRules: input.errorPolicyRules,
     form: input.form
   })

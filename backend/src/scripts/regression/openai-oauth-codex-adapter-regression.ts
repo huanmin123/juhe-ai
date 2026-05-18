@@ -18,7 +18,10 @@ import {
   type GatewayRawBodyRequest
 } from '../../modules/gateway/openai-gateway-request-body.js'
 import { captureGatewayRawBody } from '../../modules/gateway/openai-gateway-request-body-middleware.js'
-import { stopGatewayJsonParseWorker } from '../../modules/gateway/openai-gateway-json-parser.js'
+import {
+  parseGatewayJsonBodyInWorker,
+  stopGatewayJsonParseWorker
+} from '../../modules/gateway/openai-gateway-json-parser.js'
 
 type TestRequest = GatewayRawBodyRequest
 
@@ -46,6 +49,7 @@ async function main(): Promise<void> {
   await testInvalidBodyRejection()
   await testLargeBodyCompatibility()
   await testLargeBodyDeferredMiddlewareToOAuthWorker()
+  await testGatewayJsonWorkerConcurrentParsing()
   await testRequiredBodyFieldRejection()
   testOAuthEffectiveStreamSemantics()
   testApiKeyPassthroughUnchanged()
@@ -345,6 +349,13 @@ async function testRequiredBodyFieldRejection(): Promise<void> {
     })
     await buildOpenAIOAuthCodexRequestParts(req, req.headers, account, identity)
   })
+}
+
+async function testGatewayJsonWorkerConcurrentParsing(): Promise<void> {
+  const inputs = Array.from({ length: 24 }, (_, index) => Buffer.from(JSON.stringify({ index, ok: true }), 'utf8'))
+  const results = await Promise.all(inputs.map((input) => parseGatewayJsonBodyInWorker(input))) as Array<{ index: number; ok: boolean }>
+  assert.deepEqual(results.map((result) => result.index), inputs.map((_, index) => index))
+  assert.equal(results.every((result) => result.ok === true), true)
 }
 
 function testOAuthEffectiveStreamSemantics(): void {

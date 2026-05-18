@@ -8,6 +8,7 @@ import {
   bindGroupTip as buildBindGroupTip,
   defaultGroupForProvider
 } from './accountDerivedState'
+import { accountOperationScopeParams } from './accountOperationScope'
 
 type ReadonlyValue<T> = {
   readonly value: T
@@ -50,7 +51,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     bindGroupSaving.value = true
     try {
       if (options.isManagementView.value) {
-        await api.accounts.bindGroup(bindingAccount.value.id, { groupId: bindGroupForm.groupId }, options.accountScopeParams.value)
+        await api.accounts.bindGroup(bindingAccount.value.id, { groupId: bindGroupForm.groupId }, accountOperationScopeParams(bindingAccount.value, options.accountScopeParams.value))
       } else {
         await api.myAccounts.bindGroup(bindingAccount.value.id, { groupId: bindGroupForm.groupId })
       }

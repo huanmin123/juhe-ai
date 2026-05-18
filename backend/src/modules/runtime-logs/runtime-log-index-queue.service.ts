@@ -33,6 +33,13 @@ interface RuntimeLogFlushOptions {
   retryOnFailure?: boolean
 }
 
+export interface RuntimeLogLineIndexOptions {
+  sourceKey?: string
+  logFile?: string
+  logOffset?: number
+  lineNumber?: number
+}
+
 export interface RuntimeLogIndexRuntime {
   queueLength: number
   droppedCount: number
@@ -41,16 +48,16 @@ export interface RuntimeLogIndexRuntime {
   retentionDays: number
 }
 
-export function enqueueRuntimeLogLine(rawLine: string, options: { sourceKey?: string } = {}): void {
-  if (runtimeConfig.processRole === 'server' && sendRuntimeLogLineToWorker(rawLine)) {
+export function enqueueRuntimeLogLine(rawLine: string, options: RuntimeLogLineIndexOptions = {}): void {
+  if (runtimeConfig.processRole === 'server' && sendRuntimeLogLineToWorker(rawLine, options)) {
     return
   }
 
   enqueueRuntimeLogLineLocal(rawLine, options)
 }
 
-export function enqueueRuntimeLogLineLocal(rawLine: string, options: { sourceKey?: string } = {}): void {
-  const input = runtimeLogInputFromLine(rawLine, options.sourceKey)
+export function enqueueRuntimeLogLineLocal(rawLine: string, options: RuntimeLogLineIndexOptions = {}): void {
+  const input = runtimeLogInputFromLine(rawLine, options)
   if (!input) return
 
   pendingRuntimeLogs.push(input)
@@ -135,13 +142,14 @@ export function installRuntimeLogIndexQueueShutdownHooks(): void {
   process.once('exit', flushAllRuntimeLogIndexQueue)
 }
 
-function runtimeLogInputFromLine(rawLine: string, sourceKey?: string): RuntimeLogIndexInput | undefined {
+function runtimeLogInputFromLine(rawLine: string, options: RuntimeLogLineIndexOptions = {}): RuntimeLogIndexInput | undefined {
   const line = rawLine.trim()
   if (!line) return undefined
   const rawJson = truncateRawJson(line)
+  const metadata = runtimeLogSourceMetadata(options)
 
   if (line.length > runtimeLogMaxRawJsonChars) {
-    return fallbackRuntimeLogInput(rawJson, sourceKey ?? stableRuntimeLogSource(line, rawJson))
+    return fallbackRuntimeLogInput(rawJson, options.sourceKey ?? stableRuntimeLogSource(line, rawJson), metadata)
   }
 
   let parsed: Record<string, unknown>
@@ -157,7 +165,8 @@ function runtimeLogInputFromLine(rawLine: string, sourceKey?: string): RuntimeLo
 
   const time = stringValue(parsed.time) ?? nowIso()
   return {
-    id: stableRuntimeLogId(sourceKey ?? line),
+    id: stableRuntimeLogId(options.sourceKey ?? line),
+    ...metadata,
     time,
     level: normalizeLevel(parsed.level),
     traceId: stringValue(parsed.traceId),
@@ -169,10 +178,11 @@ function runtimeLogInputFromLine(rawLine: string, sourceKey?: string): RuntimeLo
   }
 }
 
-function fallbackRuntimeLogInput(rawJson: string, sourceKey: string): RuntimeLogIndexInput {
+function fallbackRuntimeLogInput(rawJson: string, sourceKey: string, metadata: Pick<RuntimeLogIndexInput, 'logFile' | 'logOffset' | 'lineNumber'>): RuntimeLogIndexInput {
   const createdAt = nowIso()
   return {
     id: stableRuntimeLogId(sourceKey),
+    ...metadata,
     time: createdAt,
     level: 'info',
     rawJson,
@@ -184,6 +194,14 @@ function stableRuntimeLogSource(line: string, rawJson: string): string {
   return line.length > runtimeLogMaxRawJsonChars
     ? `${line.length}:${rawJson}`
     : line
+}
+
+function runtimeLogSourceMetadata(options: RuntimeLogLineIndexOptions): Pick<RuntimeLogIndexInput, 'logFile' | 'logOffset' | 'lineNumber'> {
+  return {
+    logFile: stringValue(options.logFile),
+    logOffset: positiveIntegerOrUndefined(options.logOffset),
+    lineNumber: positiveIntegerOrUndefined(options.lineNumber)
+  }
 }
 
 function stableRuntimeLogId(value: string): string {
@@ -206,6 +224,12 @@ function normalizeLevel(value: unknown): RuntimeLogLevel | string {
 
 function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function positiveIntegerOrUndefined(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0
+    ? Math.trunc(value)
+    : undefined
 }
 
 function errorMessageFromErr(value: unknown): string | undefined {

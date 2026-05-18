@@ -149,7 +149,9 @@ function resolveAccountTestCandidate(account: AccountSummary, input: { groupId?:
   groupId: string
   account: OpenAIAccountSecret
 } {
-  const systemAccountId = account.systemAccountId ?? authorizedCallerSystemAccountId(account) ?? account.ownerSystemAccountId ?? resolveAccountSystemAccountId(account.id) ?? 'sys_admin'
+  const systemAccountId = account.accessType === 'authorized'
+    ? account.bindingSystemAccountId ?? account.systemAccountId ?? authorizedCallerSystemAccountId(account) ?? account.ownerSystemAccountId ?? resolveAccountSystemAccountId(account.id) ?? 'sys_admin'
+    : account.systemAccountId ?? account.ownerSystemAccountId ?? resolveAccountSystemAccountId(account.id) ?? 'sys_admin'
   const groupId = input.groupId || account.boundGroupId
   if (!groupId) {
     throw new Error('账户未绑定可用分组，无法按客户真实链路测试')

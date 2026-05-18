@@ -5,6 +5,7 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
+import type { RuntimeLogLineIndexOptions } from '../runtime-logs/runtime-log-index-queue.service.js'
 import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
 
 export interface BackgroundWorkerQueueRuntime {
@@ -46,7 +47,7 @@ type BackgroundWorkerMessage =
   | { type: 'background_worker_audit_logs'; items: AuditLogInput[] }
   | { type: 'background_worker_operation_logs'; items: OperationLogInput[] }
   | { type: 'background_worker_record_maintenance'; items: RecordMaintenanceJob[] }
-  | { type: 'background_worker_runtime_log_line'; line: string }
+  | ({ type: 'background_worker_runtime_log_line'; line: string } & RuntimeLogLineIndexOptions)
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
   | { type: 'background_worker_process_event_loop_request'; requestId: string }
@@ -168,6 +169,7 @@ let pendingPendingMessagesWarningCount = 0
 let pendingRequests = new Map<string, PendingRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let lastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
+let backgroundWorkerReadyHandler: (() => void) | undefined
 
 const maxPendingMessages = 5000
 const maxPendingMessageBytes = 128 * 1024 * 1024
@@ -176,10 +178,11 @@ if (runtimeConfig.processRole === 'worker') {
   process.on('message', handleParentMessage)
 }
 
-export function attachBackgroundWorkerProcess(child: ChildProcess): void {
+export function attachBackgroundWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
   workerProcess = child
   workerPid = child.pid ?? undefined
   workerReady = false
+  backgroundWorkerReadyHandler = options.onReady
 
   child.removeAllListeners('message')
   child.on('message', handleWorkerMessage)
@@ -244,10 +247,14 @@ export function sendRecordMaintenanceJobsToWorker(items: RecordMaintenanceJob[])
   })
 }
 
-export function sendRuntimeLogLineToWorker(line: string): boolean {
+export function sendRuntimeLogLineToWorker(line: string, options: RuntimeLogLineIndexOptions = {}): boolean {
   return sendBackgroundWorkerMessage({
     type: 'background_worker_runtime_log_line',
-    line
+    line,
+    sourceKey: options.sourceKey,
+    logFile: options.logFile,
+    logOffset: options.logOffset,
+    lineNumber: options.lineNumber
   })
 }
 
@@ -256,8 +263,7 @@ export function sendBackgroundWorkerMessage(message: BackgroundWorkerMessage): b
     return false
   }
 
-  queueWorkerMessage(message)
-  return true
+  return queueWorkerMessage(message)
 }
 
 export async function requestBackgroundWorkerSnapshot(timeoutMs = 5000): Promise<BackgroundWorkerRuntimeSnapshot | undefined> {
@@ -327,6 +333,7 @@ function handleWorkerMessage(message: unknown): void {
     case 'background_worker_ready':
       workerReady = true
       workerPid = typeof record.pid === 'number' ? record.pid : workerPid
+      backgroundWorkerReadyHandler?.()
       flushWorkerMessageQueue()
       break
     case 'background_worker_status_response':
@@ -367,7 +374,7 @@ function handleParentMessage(message: unknown): void {
   finishProcessEventLoopRequest(record.requestId, record.samples as ProcessEventLoopSample[])
 }
 
-function queueWorkerMessage(message: BackgroundWorkerMessage): void {
+function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
   const messageBytes = estimateWorkerMessageBytes(message)
   if (message.type === 'background_worker_usage_records') {
     usageRecordMessageQueue.push(message)
@@ -376,9 +383,13 @@ function queueWorkerMessage(message: BackgroundWorkerMessage): void {
     regularWorkerMessageQueue.push(message)
     regularWorkerMessageQueueBytes += messageBytes
   }
-  enforceWorkerMessageQueueLimits()
+  const droppedMessages = enforceWorkerMessageQueueLimits()
+  const retained = !droppedMessages.includes(message)
 
-  flushWorkerMessageQueue()
+  if (retained) {
+    flushWorkerMessageQueue()
+  }
+  return retained
 }
 
 function flushWorkerMessageQueue(): void {
@@ -399,8 +410,7 @@ function flushWorkerMessageQueue(): void {
       sendingWorkerMessage = undefined
       if (error) {
         requeueWorkerMessageFirst(message)
-        workerReady = false
-        workerPid = workerProcess?.pid ?? workerPid
+        markWorkerIpcBroken(error)
         return
       }
       flushWorkerMessageQueue()
@@ -412,8 +422,7 @@ function flushWorkerMessageQueue(): void {
     sendingMessage = false
     sendingWorkerMessage = undefined
     requeueWorkerMessageFirst(message)
-    workerReady = false
-    workerPid = workerProcess?.pid ?? workerPid
+    markWorkerIpcBroken(error)
     process.stderr.write(`[background-worker] 向 worker 发送消息失败：${error instanceof Error ? error.message : String(error)}\n`)
   }
 }
@@ -443,13 +452,15 @@ function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
   enforceWorkerMessageQueueLimits()
 }
 
-function enforceWorkerMessageQueueLimits(): void {
+function enforceWorkerMessageQueueLimits(): BackgroundWorkerMessage[] {
+  const droppedMessages: BackgroundWorkerMessage[] = []
   while (usageRecordMessageQueue.length > maxPendingMessages || usageRecordMessageQueueBytes > maxPendingMessageBytes) {
     const dropped = usageRecordMessageQueue.shift()
     if (!dropped) {
       break
     }
     usageRecordMessageQueueBytes = Math.max(0, usageRecordMessageQueueBytes - estimateWorkerMessageBytes(dropped))
+    droppedMessages.push(dropped)
     pendingPendingMessagesWarningCount += 1
     process.stderr.write(`[background-worker] 消息队列已满，已丢弃 ${describeDroppedWorkerMessage(dropped)} ${pendingPendingMessagesWarningCount} 次\n`)
   }
@@ -459,9 +470,12 @@ function enforceWorkerMessageQueueLimits(): void {
     if (!dropped) {
       break
     }
+    droppedMessages.push(dropped)
     pendingPendingMessagesWarningCount += 1
     process.stderr.write(`[background-worker] 消息队列已满，已丢弃 ${describeDroppedWorkerMessage(dropped)} ${pendingPendingMessagesWarningCount} 次\n`)
   }
+
+  return droppedMessages
 }
 
 function shiftDroppableRegularWorkerMessage(): BackgroundWorkerMessage | undefined {
@@ -478,7 +492,7 @@ function shiftDroppableRegularWorkerMessage(): BackgroundWorkerMessage | undefin
     return removeRegularWorkerMessageAt(nonAuditIndex)
   }
 
-  return removeRegularWorkerMessageAt(0)
+  return undefined
 }
 
 function shiftSuccessAuditWorkerMessage(): BackgroundWorkerMessage | undefined {
@@ -525,7 +539,10 @@ function describeDroppedWorkerMessage(message: BackgroundWorkerMessage): string 
 function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {
   switch (message.type) {
     case 'background_worker_runtime_log_line':
-      return Buffer.byteLength(message.line, 'utf8') + 128
+      return Buffer.byteLength(message.line, 'utf8')
+        + Buffer.byteLength(message.sourceKey ?? '', 'utf8')
+        + Buffer.byteLength(message.logFile ?? '', 'utf8')
+        + 192
     case 'background_worker_usage_records':
       return message.items.reduce((sum, item) => sum + estimateJsonBytes(item) + 256, 128)
     case 'background_worker_audit_logs':
@@ -617,6 +634,23 @@ function finishProcessEventLoopRequest(requestId: string, samples: ProcessEventL
   pending.resolve(samples)
 }
 
+function markWorkerIpcBroken(error: unknown): void {
+  const child = workerProcess
+  workerReady = false
+  workerPid = child?.pid ?? workerPid
+  failPendingRequests()
+  if (child && !child.killed) {
+    try {
+      child.kill('SIGTERM')
+    } catch (killError) {
+      process.stderr.write(`[background-worker] 终止 IPC 异常 worker 失败：${killError instanceof Error ? killError.message : String(killError)}\n`)
+    }
+  }
+  if (error) {
+    process.stderr.write(`[background-worker] worker IPC 已断开：${error instanceof Error ? error.message : String(error)}\n`)
+  }
+}
+
 async function clearServerGatewayRuntimeCache(): Promise<void> {
   const dbServiceIpc = await import('../db-service/db-service-ipc.js')
   const gatewayCache = await import('../gateway/gateway-runtime-cache.service.js')
@@ -637,7 +671,11 @@ async function respondToProcessEventLoopRequest(requestId: string): Promise<void
     type: 'background_worker_process_event_loop_response',
     requestId,
     samples
-  } satisfies BackgroundWorkerMessage)
+  } satisfies BackgroundWorkerMessage, (error) => {
+    if (error) {
+      markWorkerIpcBroken(error)
+    }
+  })
 }
 
 async function dbServiceProcessEventLoopSample(): Promise<ProcessEventLoopSample | undefined> {

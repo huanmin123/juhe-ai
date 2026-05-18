@@ -1,5 +1,5 @@
 import { message } from '@/lib/antd'
-import { computed, reactive, ref, type ComputedRef } from 'vue'
+import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
@@ -58,6 +58,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const modalOpen = ref(false)
   const authResult = ref<OpenAIAuthURLResult>()
   const editingId = ref<string>()
+  const editingAccountDetail = ref<AccountSummary>()
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
 
@@ -140,6 +141,15 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     modalOpen.value = true
   }
 
+  watch(
+    () => options.groups.value,
+    () => {
+      if (modalOpen.value && !editingId.value && form.providerCode) {
+        ensureDefaultGroupSelected()
+      }
+    }
+  )
+
   function handleModalCancel() {
     authResult.value = undefined
   }
@@ -167,6 +177,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function openEdit(account: AccountSummary) {
     editingId.value = account.id
+    editingAccountDetail.value = account
     Object.assign(form, defaultForm(account.providerCode, account.type), {
       providerCode: account.providerCode,
       name: account.name,
@@ -185,6 +196,27 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
     authResult.value = undefined
     modalOpen.value = true
+    void loadEditingAccountDetail(account.id)
+  }
+
+  async function loadEditingAccountDetail(accountId: string): Promise<void> {
+    try {
+      const detail = options.isManagementView.value
+        ? await api.accounts.detail(accountId, options.accountScopeParams.value)
+        : await api.myAccounts.detail(accountId)
+      if (editingId.value !== accountId) return
+      editingAccountDetail.value = detail
+      Object.assign(form, {
+        apiKey: asString(detail.credentials.api_key),
+        baseUrl: asString(detail.credentials.base_url) || form.baseUrl || 'https://api.openai.com/v1',
+        accessToken: asString(detail.credentials.access_token),
+        refreshToken: asString(detail.credentials.refresh_token)
+      })
+      accountErrorPolicyRules.value = loadAccountErrorPolicyRules(detail.credentials)
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '加载账户详情失败'))
+    }
   }
 
   const saveAccount = submitAction('accounts.save', async () => {
@@ -201,6 +233,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
     const payload = buildAccountSavePayload({
       accounts: options.accounts.value,
+      accountDetail: editingAccountDetail.value,
       editingId: editingId.value,
       form,
       errorPolicyRules: accountErrorPolicyRules.value

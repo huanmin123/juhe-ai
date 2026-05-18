@@ -317,6 +317,7 @@ export interface AccountSummary {
   boundGroupId?: string
   boundGroupName?: string
   groupBindStatus?: AccountGroupBindStatus
+  bindingSystemAccountId?: string
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
@@ -532,6 +533,10 @@ export interface AuthorizationTeamUsageOverview {
   summary: AccountUsageSummary
   rows: AuthorizationTeamUsageRow[]
   teamCount: number
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
 }
 
 export interface AuthorizationUserUsageRow {
@@ -557,6 +562,10 @@ export interface AuthorizationUserUsageOverview {
   summary: AccountUsageSummary
   rows: AuthorizationUserUsageRow[]
   userCount: number
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
 }
 
 export interface ApiKeySummary {

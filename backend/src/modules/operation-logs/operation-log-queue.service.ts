@@ -32,17 +32,21 @@ export function enqueueOperationLog(input: OperationLogInput): void {
 
   if (runtimeConfig.processRole === 'db-service') {
     if (process.send) {
-      process.send({
-        type: 'background_worker_operation_logs',
-        items: [queuedInput]
-      })
+      try {
+        process.send({
+          type: 'background_worker_operation_logs',
+          items: [queuedInput]
+        }, (error) => {
+          if (error) {
+            recordOperationLogDispatchFailure(error)
+          }
+        })
+      } catch (error) {
+        recordOperationLogDispatchFailure(error)
+      }
       return
     }
-    droppedDispatchCount += 1
-    logger.warn({
-      event: 'operation_log_queue_dispatch_failed',
-      droppedDispatchCount
-    }, 'DB service 无父进程 IPC，操作日志已跳过投递')
+    recordOperationLogDispatchFailure(new Error('DB service 无父进程 IPC'))
     return
   }
 
@@ -71,6 +75,7 @@ export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): 
 
   flushing = true
   let shouldRetry = false
+  let failed = false
   let flushedBatches = 0
   const maxBatches = normalizeMaxBatches(options.maxBatches)
   try {
@@ -84,6 +89,7 @@ export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): 
       try {
         createOperationLogsBatch(batch)
       } catch (error) {
+        failed = true
         pendingOperationLogs = [...batch, ...pendingOperationLogs]
         flushFailureCount += 1
         logger.error(errorLogFields(error, {
@@ -100,7 +106,7 @@ export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): 
     flushing = false
   }
 
-  if (pendingOperationLogs.length > 0) {
+  if (pendingOperationLogs.length > 0 && (!failed || shouldRetry)) {
     scheduleOperationLogFlush(shouldRetry ? operationLogRetryDelayMs : 0)
   }
 }
@@ -170,6 +176,14 @@ function scheduleOperationLogFlush(delayMs: number): void {
     flushOperationLogQueue()
   }, delayMs)
   flushTimer.unref()
+}
+
+function recordOperationLogDispatchFailure(error: unknown): void {
+  droppedDispatchCount += 1
+  logger.warn(errorLogFields(error, {
+    event: 'operation_log_queue_dispatch_failed',
+    droppedDispatchCount
+  }), 'DB service 操作日志投递失败，已跳过投递')
 }
 
 function normalizeOperationLogInput(input: OperationLogInput): OperationLogInput {

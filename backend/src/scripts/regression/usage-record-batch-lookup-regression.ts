@@ -17,9 +17,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, usageRecordQueue] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../modules/gateway/usage-record-queue.service.js')
 ])
 
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -81,6 +82,36 @@ try {
   assert.equal(detail.groupId, group.id, '使用记录应保留分组')
   assert.equal(detail.accountId, account.id, '使用记录应保留账户')
 
+  const recordDatabase = databaseModule.getRecordDatabase()
+  const originalRecordPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  let failedInsertPrepares = 0
+  const failuresBefore = usageRecordQueue.getUsageRecordQueueRuntime().flushFailureCount
+  recordDatabase.prepare = ((sql: string) => {
+    if (/^\s*INSERT\s+INTO\s+usage_records\b/i.test(sql)) {
+      failedInsertPrepares += 1
+      if (failedInsertPrepares === 1) {
+        throw new Error('模拟使用记录批量写入失败')
+      }
+    }
+    return originalRecordPrepare(sql)
+  }) as typeof recordDatabase.prepare
+  try {
+    usageRecordQueue.enqueueUsageRecordsLocal([buildUsageRecord(101, apiKey.id, group.id, account.id)])
+    usageRecordQueue.flushUsageRecordQueue({ retryOnFailure: false })
+    assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().flushFailureCount, failuresBefore + 1, '使用记录写入失败应记录 flush 失败')
+    assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 1, 'retryOnFailure=false 时失败使用记录应保留在队列')
+    await waitForImmediate()
+    assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 1, 'retryOnFailure=false 不应在返回后立刻异步重试使用记录')
+    await waitForRetryDelay()
+    assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 1, 'retryOnFailure=false 不应在默认重试延迟后异步重试使用记录')
+    assert.equal(usageRecordExists('usage_batch_lookup_101'), 0, '失败后使用记录不应被后台定时器偷偷写入')
+  } finally {
+    recordDatabase.prepare = originalRecordPrepare
+  }
+  usageRecordQueue.flushAllUsageRecordQueue()
+  assert.equal(usageRecordQueue.getUsageRecordQueueRuntime().queueLength, 0, '恢复后保留的使用记录应可继续 flush 完成')
+  assert.equal(usageRecordExists('usage_batch_lookup_101'), 1, '恢复后应写入保留的使用记录')
+
   console.log('使用记录批量查询回归通过：批量写入预加载归属，避免逐条查询 API Key/分组/账户')
 } finally {
   try {
@@ -117,4 +148,19 @@ function usageRecordCount(): number {
     .prepare('SELECT COUNT(*) AS total FROM usage_records')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
+}
+
+function usageRecordExists(id: string): number {
+  const row = databaseModule.getRecordDatabase()
+    .prepare('SELECT COUNT(*) AS total FROM usage_records WHERE id = ?')
+    .get(id) as { total?: number } | undefined
+  return Number(row?.total ?? 0)
+}
+
+async function waitForImmediate(): Promise<void> {
+  await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
+}
+
+async function waitForRetryDelay(): Promise<void> {
+  await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 1100))
 }

@@ -125,6 +125,10 @@ export interface AuthorizationTeamUsageOverview {
   summary: AccountUsageSummary
   rows: AuthorizationTeamUsageRow[]
   teamCount: number
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
 }
 
 export interface AuthorizationUserUsageRow {
@@ -150,6 +154,10 @@ export interface AuthorizationUserUsageOverview {
   summary: AccountUsageSummary
   rows: AuthorizationUserUsageRow[]
   userCount: number
+  total: number
+  page: number
+  pageSize: number
+  hasMore: boolean
 }
 
 export interface AccountUsageStatsRow {

@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import type { ProcessRole } from '../config/runtime.js'
 import type {
   AccountUsageStatsRange,
 } from '../domain/types.js'
@@ -63,6 +64,7 @@ export { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './u
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
 const CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME = 'caller_account_usage_stats_backfill'
 const ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME = 'account_quality_minute_stats_backfill'
+const PROCESS_EVENT_LOOP_ROLES: ProcessRole[] = ['server', 'worker', 'db-service']
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
   const database = getRecordDatabase()
@@ -363,20 +365,8 @@ function usageRankSnapshotStages(): UsageRankSnapshotStage[] {
       run: (database, context) => refreshAuthorizationCurrentMonthCostRankSnapshot(database, 'group_authorization', context.snapshotAt, context.updatedAt, context.timezone)
     },
     {
-      name: 'usage_overview_summary_windows',
-      run: refreshUsageOverviewSummaryWindowSnapshots
-    },
-    {
-      name: 'usage_overview_trend_windows',
-      run: refreshUsageOverviewTrendWindowSnapshots
-    },
-    {
-      name: 'usage_model_rank_windows',
-      run: refreshUsageModelRankWindowSnapshots
-    },
-    {
-      name: 'usage_error_rank_windows',
-      run: refreshUsageErrorRankWindowSnapshots
+      name: 'usage_overview_windows',
+      run: refreshUsageOverviewWindowSnapshots
     },
     {
       name: 'ai_performance_summary_windows',
@@ -399,6 +389,13 @@ function usageRankSnapshotStages(): UsageRankSnapshotStage[] {
       run: (database, context) => refreshAuthorizationUsageRangeWindowSnapshots(database, context.updatedAt, context.timezone)
     }
   ]
+}
+
+function refreshUsageOverviewWindowSnapshots(database: DatabaseSync, context: UsageRankSnapshotContext): void {
+  refreshUsageOverviewSummaryWindowSnapshots(database, context)
+  refreshUsageOverviewTrendWindowSnapshots(database, context)
+  refreshUsageModelRankWindowSnapshots(database, context)
+  refreshUsageErrorRankWindowSnapshots(database, context)
 }
 
 function refreshUsageOverviewSummaryWindowSnapshots(database: DatabaseSync, context: UsageRankSnapshotContext): void {
@@ -1146,12 +1143,16 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
     WHERE window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
   `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
-  const processLatestRows = database.prepare(`
+  const processLatestStatement = database.prepare(`
     SELECT process_role, process_pid, sampled_at, event_loop_lag_ms
     FROM process_event_loop_samples
+    WHERE process_role = ?
     ORDER BY sampled_at DESC, id DESC
-    LIMIT 100
-  `).all() as unknown as Array<Record<string, unknown>>
+    LIMIT 1
+  `)
+  const processLatestRows = PROCESS_EVENT_LOOP_ROLES
+    .map((role) => processLatestStatement.get(role) as unknown as Record<string, unknown> | undefined)
+    .filter((row): row is Record<string, unknown> => Boolean(row))
   const processRows = database.prepare(`
     SELECT bucket_key AS stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_max
     FROM process_event_loop_trend_windows
@@ -1162,7 +1163,8 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
     latest: latest ? mapSystemMetricsLatest(latest) : undefined,
     hourlyTrend: rows.map(mapSystemMetricsHourly),
     processEventLoopLatest: mapProcessEventLoopLatestRows(processLatestRows),
-    processEventLoopTrend: processRows.map(mapProcessEventLoopHourly)
+    processEventLoopTrend: processRows.map(mapProcessEventLoopHourly),
+    backgroundJobs: []
   }
 }
 

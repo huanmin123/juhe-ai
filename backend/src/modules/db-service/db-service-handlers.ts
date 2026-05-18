@@ -12,6 +12,7 @@ import {
 } from '../../storage/repositories.js'
 import {
   getRuntimeLogFacets,
+  getRuntimeLogDetail,
   listRuntimeLogs
 } from '../../storage/runtime-logs.repository.js'
 import {
@@ -142,6 +143,8 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
       return { cleared: true }
     case 'list_runtime_logs':
       return listRuntimeLogs(operation.options)
+    case 'get_runtime_log_detail':
+      return getRuntimeLogDetail(operation.id)
     case 'get_runtime_log_facets':
       return getRuntimeLogFacets()
     case 'status':

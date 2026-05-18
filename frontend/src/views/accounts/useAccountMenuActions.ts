@@ -4,6 +4,7 @@ import { ref, type ComputedRef } from 'vue'
 import { api } from '@/api/client'
 import type { AccountSummary } from '@/types/domain'
 import { isAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
+import { accountOperationScopeParams } from './accountOperationScope'
 import {
   canEditAccount,
   canManageOpenAIOAuth,
@@ -52,7 +53,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     if (isAuthorizedAccount(account)) {
       try {
         if (options.isManagementView.value) {
-          await api.accounts.updateAuthorizedDispatch(account.id, payload, options.accountScopeParams.value)
+          await api.accounts.updateAuthorizedDispatch(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
         } else {
           await api.myAccounts.updateAuthorizedDispatch(account.id, payload)
         }

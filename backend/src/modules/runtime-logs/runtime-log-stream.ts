@@ -1,9 +1,17 @@
 import { Writable } from 'node:stream'
 
-type RuntimeLogLineSink = (line: string) => void
+export interface RuntimeLogLineSinkOptions {
+  sourceKey?: string
+  logFile?: string
+  logOffset?: number
+  lineNumber?: number
+}
+
+type RuntimeLogLineSink = (line: string, options?: RuntimeLogLineSinkOptions) => void
+type PendingRuntimeLogLine = { line: string; options?: RuntimeLogLineSinkOptions }
 
 let runtimeLogLineSink: RuntimeLogLineSink | undefined
-const pendingRuntimeLogLines: string[] = []
+const pendingRuntimeLogLines: PendingRuntimeLogLine[] = []
 let pendingRuntimeLogLineBytes = 0
 
 const maxPendingLineBytes = 256 * 1024
@@ -18,13 +26,14 @@ export function setRuntimeLogLineSink(sink?: RuntimeLogLineSink): void {
 
   const lines = pendingRuntimeLogLines.splice(0, pendingRuntimeLogLines.length)
   pendingRuntimeLogLineBytes = 0
-  for (const line of lines) {
-    runtimeLogLineSink(line)
+  for (const item of lines) {
+    runtimeLogLineSink(item.line, item.options)
   }
 }
 
 export class RuntimeLogIndexStream extends Writable {
   private pending = ''
+  private lineSequence = 0
 
   _write(chunk: Buffer | string, encoding: BufferEncoding, callback: (error?: Error | null) => void): void {
     try {
@@ -52,35 +61,42 @@ export class RuntimeLogIndexStream extends Writable {
     while (newlineIndex >= 0) {
       const line = this.pending.slice(0, newlineIndex)
       this.pending = this.pending.slice(newlineIndex + 1)
-      this.emitLine(line)
+      this.emitIndexedLine(line)
       newlineIndex = this.pending.indexOf('\n')
     }
 
     if (includePartial && this.pending.trim()) {
-      this.emitLine(this.pending)
+      this.emitIndexedLine(this.pending)
       this.pending = ''
     }
-  }
-
-  private emitLine(line: string): void {
-    if (runtimeLogLineSink) {
-      runtimeLogLineSink(line)
-      return
-    }
-
-    enqueuePendingRuntimeLogLine(line)
   }
 
   private truncateOversizedPendingLine(): void {
     if (Buffer.byteLength(this.pending, 'utf8') <= maxPendingLineBytes) {
       return
     }
-    this.emitLine(`${this.pending.slice(0, maxPendingLineBytes)} [truncated: runtime log line exceeded pending buffer limit]`)
+    this.emitIndexedLine(`${this.pending.slice(0, maxPendingLineBytes)} [truncated: runtime log line exceeded pending buffer limit]`)
     this.pending = ''
+  }
+
+  private emitIndexedLine(line: string): void {
+    this.lineSequence += 1
+    emitRuntimeLogLine(line, {
+      sourceKey: `live:${process.pid}:${this.lineSequence}`
+    })
   }
 }
 
-function enqueuePendingRuntimeLogLine(line: string): void {
+export function emitRuntimeLogLine(line: string, options?: RuntimeLogLineSinkOptions): void {
+  if (runtimeLogLineSink) {
+    runtimeLogLineSink(line, options)
+    return
+  }
+
+  enqueuePendingRuntimeLogLine(line, options)
+}
+
+function enqueuePendingRuntimeLogLine(line: string, options?: RuntimeLogLineSinkOptions): void {
   const lineBytes = Buffer.byteLength(line, 'utf8')
   while (
     pendingRuntimeLogLines.length >= maxPendingQueueLines
@@ -88,8 +104,8 @@ function enqueuePendingRuntimeLogLine(line: string): void {
   ) {
     const removed = pendingRuntimeLogLines.shift()
     if (removed === undefined) break
-    pendingRuntimeLogLineBytes = Math.max(0, pendingRuntimeLogLineBytes - Buffer.byteLength(removed, 'utf8'))
+    pendingRuntimeLogLineBytes = Math.max(0, pendingRuntimeLogLineBytes - Buffer.byteLength(removed.line, 'utf8'))
   }
-  pendingRuntimeLogLines.push(line)
+  pendingRuntimeLogLines.push({ line, options })
   pendingRuntimeLogLineBytes += lineBytes
 }

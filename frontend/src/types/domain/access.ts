@@ -37,6 +37,7 @@ export interface ApiKeySummary {
 export interface ApiKeyListResult {
   items: ApiKeySummary[]
   total: number
+  hasMore?: boolean
   page: number
   pageSize: number
 }

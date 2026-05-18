@@ -20,7 +20,8 @@ export interface ApiKeyRow {
   quota_limits_json: string | null
 }
 
-export function apiKeySummariesFromRows(rows: ApiKeyRow[], access?: AccessScope): ApiKeySummary[] {
+export function apiKeySummariesFromRows(rows: ApiKeyRow[], access?: AccessScope, options: { includeSecret?: boolean } = {}): ApiKeySummary[] {
+  const includeSecret = options.includeSecret ?? true
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
   const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
@@ -32,7 +33,7 @@ export function apiKeySummariesFromRows(rows: ApiKeyRow[], access?: AccessScope)
     name: row.name,
     description: row.description ?? undefined,
     keyPrefix: row.key_prefix,
-    key: decryptApiKeySecret(row.key_secret_encrypted),
+    key: includeSecret ? decryptApiKeySecret(row.key_secret_encrypted) : '',
     status: row.status,
     groupId: row.group_id,
     groupAuthorizationId: row.group_authorization_id ?? undefined,

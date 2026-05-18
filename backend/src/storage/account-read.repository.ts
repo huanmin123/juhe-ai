@@ -5,6 +5,7 @@ import { buildAccountListOrderClause, type NormalizedAccountListOptions } from '
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import type { AccountListRow } from './repository-row-types.js'
+import { compatiblePagedTotal, takePageRows } from './query-utils.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
 export interface AccountRowsPage {
@@ -14,17 +15,25 @@ export interface AccountRowsPage {
 
 type AccountFilterValue = string | number
 type AccountRowQueryOptions = NormalizedAccountListOptions & { accountId?: string }
+type AccountRowQuerySettings = {
+  includeCredentials?: boolean
+  includeTotal?: boolean
+}
 const accountQualityDatabaseAlias = 'account_quality_records'
 
 export function listAccountRowsForAccess(access: AccessScope | undefined, options: NormalizedAccountListOptions): AccountListRow[] {
   return queryAccountRowsForAccess(access, options, undefined, false).rows
 }
 
-export function listAccountRowsPageForAccess(access: AccessScope | undefined, options: NormalizedAccountListOptions): AccountRowsPage {
+export function listAccountRowsPageForAccess(
+  access: AccessScope | undefined,
+  options: NormalizedAccountListOptions,
+  settings: AccountRowQuerySettings = {}
+): AccountRowsPage {
   return queryAccountRowsForAccess(access, options, {
-    limit: options.pageSize,
+    limit: settings.includeTotal === false ? options.pageSize : options.pageSize + 1,
     offset: (options.page - 1) * options.pageSize
-  })
+  }, settings)
 }
 
 export function findAccountRowForAccess(access: AccessScope | undefined, accountId: string, options: NormalizedAccountListOptions): AccountListRow | undefined {
@@ -39,9 +48,12 @@ function queryAccountRowsForAccess(
   access: AccessScope | undefined,
   options: AccountRowQueryOptions,
   pagination?: { limit: number; offset: number },
-  includeTotal = true
+  settings: AccountRowQuerySettings | boolean = true
 ): AccountRowsPage {
   const database = getDatabase()
+  const normalizedSettings = typeof settings === 'boolean' ? { includeTotal: settings } : settings
+  const includeTotal = normalizedSettings.includeTotal ?? true
+  const accountSelectColumns = accountRowSelectColumns(normalizedSettings.includeCredentials ?? true)
   const includeQualityInQuery = hasAccountQualityScoreSort(options)
   if (includeQualityInQuery) {
     ensureAccountQualityDatabaseAttached(database)
@@ -54,11 +66,13 @@ function queryAccountRowsForAccess(
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   const queryRows = (baseSql: string, params: AccountFilterValue[] = []): AccountRowsPage => {
     const filteredSql = `${baseSql} ${filters.clause}`
-    const totalRow = includeTotal
-      ? (database.prepare(`SELECT COUNT(*) AS total FROM (${filteredSql}) counted_rows`).get(...params, ...filters.params) as { total?: number } | undefined)
-      : undefined
     const rows = database.prepare(`${filteredSql} ${orderClause} ${pageClause}`).all(...params, ...filters.params, ...pageParams) as unknown as AccountListRow[]
-    return { rows, total: includeTotal ? Number(totalRow?.total ?? 0) : rows.length }
+    if (!includeTotal || !pagination) return { rows, total: rows.length }
+    const pageRows = takePageRows(rows, pagination.limit - 1)
+    return {
+      rows: pageRows.rows,
+      total: compatiblePagedTotal(options.page, options.pageSize, pageRows.rows.length, pageRows.hasMore)
+    }
   }
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return queryRows(`
@@ -66,13 +80,15 @@ function queryAccountRowsForAccess(
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
           ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
-          SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+          SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
         ) account_rows
         ${accountQualityJoinClause(includeQualityInQuery)}
         LEFT JOIN ${accountBindingSubquery()} group_bindings
           ON group_bindings.account_id = account_rows.id
           AND group_bindings.system_account_id = account_rows.system_account_id
+          AND group_bindings.enabled = 1
+        LEFT JOIN groups bound_groups ON bound_groups.id = group_bindings.group_id
         LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
       `)
   }
@@ -82,13 +98,15 @@ function queryAccountRowsForAccess(
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
           ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
-          SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+          SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
           FROM accounts
         ) account_rows
         ${accountQualityJoinClause(includeQualityInQuery)}
         LEFT JOIN ${accountBindingSubquery()} group_bindings
           ON group_bindings.account_id = account_rows.id
           AND group_bindings.system_account_id = account_rows.system_account_id
+          AND group_bindings.enabled = 1
+        LEFT JOIN groups bound_groups ON bound_groups.id = group_bindings.group_id
         LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
       `)
   }
@@ -97,11 +115,11 @@ function queryAccountRowsForAccess(
         COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
         ${accountQualitySelectColumns(includeQualityInQuery)}
       FROM (
-        SELECT accounts.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+        SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM accounts
         WHERE accounts.system_account_id = ?
         UNION ALL
-        SELECT accounts.*, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
+        SELECT ${accountSelectColumns}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
         FROM resource_authorizations ra
         INNER JOIN accounts ON accounts.id = ra.resource_id
         WHERE ra.resource_type = 'account'
@@ -114,6 +132,8 @@ function queryAccountRowsForAccess(
       LEFT JOIN ${accountBindingSubquery()} group_bindings
         ON group_bindings.account_id = account_rows.id
         AND group_bindings.system_account_id = CASE WHEN account_rows.access_type = 'authorized' THEN ? ELSE account_rows.system_account_id END
+        AND group_bindings.enabled = 1
+      LEFT JOIN groups bound_groups ON bound_groups.id = group_bindings.group_id
       LEFT JOIN system_accounts ON system_accounts.id = account_rows.system_account_id
     `, [ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId])
 }
@@ -154,6 +174,38 @@ function accountQualityJoinClause(includeQualityInQuery: boolean): string {
         ON quality_scores.account_id = account_rows.id`
 }
 
+function accountRowSelectColumns(includeCredentials: boolean): string {
+  const columns = [
+    'accounts.id',
+    'accounts.system_account_id',
+    'accounts.provider_code',
+    'accounts.name',
+    'accounts.notes',
+    'accounts.type',
+    'accounts.status',
+    'accounts.credential_mask',
+    includeCredentials ? 'accounts.credentials_encrypted' : "'' AS credentials_encrypted",
+    'accounts.proxy_profile_id',
+    'accounts.concurrency_limit',
+    'accounts.passthrough_enabled',
+    'accounts.error_policy_id',
+    'accounts.priority',
+    'accounts.super_priority_enabled',
+    'accounts.fallback_enabled',
+    'accounts.schedulable',
+    'accounts.account_expires_at',
+    'accounts.last_used_at',
+    'accounts.cooldown_until',
+    'accounts.last_error_code',
+    'accounts.last_error_message',
+    'accounts.stream_failure_count',
+    'accounts.stream_failure_window_started_at',
+    'accounts.created_at',
+    'accounts.updated_at'
+  ]
+  return columns.join(', ')
+}
+
 export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): AccountListRow[] {
   if (rows.length === 0) return rows
   const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))]
@@ -192,7 +244,8 @@ export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): Ac
   })
 }
 
-export function accountCredentialsForList(row: AccountListRow): Record<string, unknown> {
+export function accountCredentialsForList(row: AccountListRow, includeCredentials = true): Record<string, unknown> {
+  if (!includeCredentials) return {}
   const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
   if (row.access_type !== 'authorized') {
     return credentials
@@ -214,7 +267,7 @@ export function loadAccountAuthorizationUsageSummaries(
 function groupBindingSelectColumns(): string {
   return `group_bindings.system_account_id AS binding_system_account_id,
           group_bindings.group_id AS bound_group_id,
-          group_bindings.group_name AS bound_group_name,
+          bound_groups.name AS bound_group_name,
           group_bindings.account_authorization_id AS bound_group_account_authorization_id,
           group_bindings.local_status AS bound_group_local_status,
           group_bindings.local_cooldown_until AS bound_group_local_cooldown_until,
@@ -224,22 +277,7 @@ function groupBindingSelectColumns(): string {
 }
 
 function accountBindingSubquery(): string {
-  return `(
-    SELECT
-      group_accounts.system_account_id,
-      group_accounts.account_id,
-      group_accounts.group_id,
-      group_accounts.account_authorization_id,
-      group_accounts.local_status,
-      group_accounts.local_cooldown_until,
-      group_accounts.local_last_error_message,
-      group_accounts.local_super_priority_enabled,
-      group_accounts.local_fallback_enabled,
-      groups.name AS group_name
-    FROM group_accounts
-    INNER JOIN groups ON groups.id = group_accounts.group_id
-    WHERE group_accounts.enabled = 1
-  )`
+  return `group_accounts`
 }
 
 function buildAccountListFilters(options: AccountRowQueryOptions): { clause: string; params: AccountFilterValue[] } {
@@ -257,7 +295,7 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
       OR account_rows.provider_code LIKE ?
       OR account_rows.type LIKE ?
       OR account_rows.id LIKE ?
-      OR COALESCE(group_bindings.group_name, '') LIKE ?
+      OR COALESCE(bound_groups.name, '') LIKE ?
     )`)
     params.push(...Array.from({ length: 6 }, () => `%${keyword}%`))
   }

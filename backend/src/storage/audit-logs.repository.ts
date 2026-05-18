@@ -659,12 +659,20 @@ function deleteAuditLogsByWhere(whereClause: string, params: AuditLogFilterValue
 
 function cleanupAuditErrorGroupsBefore(cutoffUpdatedAt: string, limit?: number): number {
   const database = getRecordDatabase()
+  const unreferencedGroupWhere = `
+    updated_at < ?
+    AND NOT EXISTS (
+      SELECT 1
+      FROM audit_logs
+      WHERE audit_logs.error_group_id = audit_error_groups.id
+    )
+  `
   if (!limit) {
-    const result = database.prepare('DELETE FROM audit_error_groups WHERE updated_at < ?').run(cutoffUpdatedAt)
+    const result = database.prepare(`DELETE FROM audit_error_groups WHERE ${unreferencedGroupWhere}`).run(cutoffUpdatedAt)
     return Number(result.changes ?? 0)
   }
   const rows = database
-    .prepare('SELECT id FROM audit_error_groups WHERE updated_at < ? ORDER BY updated_at ASC, id ASC LIMIT ?')
+    .prepare(`SELECT id FROM audit_error_groups WHERE ${unreferencedGroupWhere} ORDER BY updated_at ASC, id ASC LIMIT ?`)
     .all(cutoffUpdatedAt, Math.max(1, Math.trunc(limit))) as AuditLogRow[]
   const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
   if (ids.length === 0) return 0

@@ -220,7 +220,7 @@ export interface SystemMetricsOverview {
     eventLoopLagMsAvg?: number
     eventLoopLagMsMax?: number
   }>
-  backgroundJobs?: Array<{
+  backgroundJobs: Array<{
     name: string
     intervalMs: number
     running: boolean

@@ -51,6 +51,8 @@ export interface RuntimeLogSummary {
   createdAt: string
 }
 
+export type RuntimeLogDetail = RuntimeLogSummary
+
 export interface RuntimeLogFacets {
   retentionDays: number
   earliestIndexedAt?: string
@@ -93,6 +95,8 @@ const runtimeLogMaxPageSize = 100
 export const runtimeLogIndexRetentionDays = 3
 const runtimeLogFacetBucketKey = 'current'
 const runtimeLogFacetMaxEvents = 80
+const runtimeLogMaxRawJsonChars = 128 * 1024
+const runtimeLogMinKeywordLength = 3
 
 export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
   if (inputs.length === 0) return
@@ -116,6 +120,7 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
       const id = input.id ?? newId('rtlog')
       const createdAt = input.createdAt ?? nowIso()
       const level = normalizeLevel(input.level)
+      const rawJson = truncateRuntimeLogRawJson(input.rawJson)
       const result = insertLog.run(
         id,
         input.logFile ?? null,
@@ -127,7 +132,7 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
         input.event ?? null,
         input.message ?? null,
         input.errorMessage ?? null,
-        input.rawJson,
+        rawJson,
         createdAt
       )
       if (Number(result.changes ?? 0) === 0) {
@@ -140,7 +145,7 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
         input.event ?? '',
         input.message ?? '',
         input.errorMessage ?? '',
-        input.rawJson
+        rawJson
       )
     }
     incrementRuntimeLogFacetSnapshots(database, facetRows)
@@ -165,7 +170,7 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
   const rows = keywordFilter
     ? database
       .prepare(`
-        SELECT rl.*
+        SELECT ${runtimeLogListSelectColumns('rl')}
         FROM runtime_log_search
         INNER JOIN runtime_logs rl ON rl.id = runtime_log_search.log_id
         ${filters.clause}
@@ -176,7 +181,7 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
       .all(...filters.params, ...keywordFilter.params, pageSize + 1, offset) as RuntimeLogRow[]
     : database
       .prepare(`
-        SELECT rl.*
+        SELECT ${runtimeLogListSelectColumns('rl')}
         FROM runtime_logs rl
         ${filters.clause}
         ORDER BY rl.time DESC, rl.id DESC
@@ -193,6 +198,18 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
     page,
     pageSize
   }
+}
+
+export function getRuntimeLogDetail(id: string): RuntimeLogDetail | undefined {
+  const row = getRecordDatabase()
+    .prepare(`
+      SELECT ${runtimeLogDetailSelectColumns('rl')}
+      FROM runtime_logs rl
+      WHERE rl.id = ?
+      LIMIT 1
+    `)
+    .get(id.trim()) as RuntimeLogRow | undefined
+  return row ? runtimeLogFromRow(row) : undefined
 }
 
 export function getRuntimeLogFacets(): RuntimeLogFacets {
@@ -442,15 +459,15 @@ function buildRuntimeLogKeywordFilter(value?: string): { clause: string; params:
   if (!text) return undefined
   const terms = splitKeywordTerms(text)
   if (!terms.length) return undefined
-  if (terms.every((term) => [...term].length >= 3)) {
+  if (terms.some((term) => [...term].length < runtimeLogMinKeywordLength)) {
     return {
-      clause: 'runtime_log_search MATCH ?',
-      params: [terms.map(quoteFts5Term).join(' AND ')]
+      clause: '0 = 1',
+      params: []
     }
   }
   return {
-    clause: terms.map(() => 'runtime_log_search.raw_json LIKE ?').join(' AND '),
-    params: terms.map((term) => `%${term}%`)
+    clause: 'runtime_log_search MATCH ?',
+    params: [terms.map(quoteFts5Term).join(' AND ')]
   }
 }
 
@@ -470,6 +487,28 @@ function splitKeywordTerms(value: string): string[] {
 
 function quoteFts5Term(value: string): string {
   return `"${value.replace(/"/g, '""')}"`
+}
+
+function truncateRuntimeLogRawJson(value: string): string {
+  if (value.length <= runtimeLogMaxRawJsonChars) return value
+  return `${value.slice(0, runtimeLogMaxRawJsonChars)}...[truncated]`
+}
+
+function runtimeLogListSelectColumns(alias: string): string {
+  return [
+    'id',
+    'time',
+    'level',
+    'trace_id',
+    'event',
+    'message',
+    'error_message',
+    'created_at'
+  ].map((column) => `${alias}.${column}`).join(', ')
+}
+
+function runtimeLogDetailSelectColumns(alias: string): string {
+  return `${runtimeLogListSelectColumns(alias)}, ${alias}.raw_json`
 }
 
 function normalizeRuntimeLogPage(value: unknown): number {
@@ -501,7 +540,7 @@ function runtimeLogFromRow(row: RuntimeLogRow): RuntimeLogSummary {
     event: optionalString(row.event),
     message: optionalString(row.message),
     errorMessage: optionalString(row.error_message),
-    rawJson: String(row.raw_json),
+    rawJson: optionalString(row.raw_json) ?? '',
     createdAt: String(row.created_at)
   }
 }

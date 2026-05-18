@@ -95,6 +95,22 @@ runtimeLogsRouter.get('/grep', async (req, res, next) => {
   }
 })
 
+runtimeLogsRouter.get('/:id', async (req, res, next) => {
+  try {
+    const detail = await requestDbService({
+      type: 'get_runtime_log_detail',
+      id: req.params.id
+    })
+    if (!detail) {
+      res.status(404).json({ message: '运行日志不存在' })
+      return
+    }
+    res.json(ok(detail))
+  } catch (error) {
+    next(error)
+  }
+})
+
 const runtimeLogLevels = new Set<RuntimeLogLevel | 'all'>([
   'all',
   'trace',

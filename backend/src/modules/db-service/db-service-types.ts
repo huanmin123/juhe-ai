@@ -1,6 +1,6 @@
 import type { AccountSummary } from '../../domain/types.js'
 import type { GatewayApiKeyRow, GroupUsageAccessMetadata, OpenAIAccountSecret, OperationLogInput } from '../../storage/repositories.js'
-import type { RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
+import type { RuntimeLogDetail, RuntimeLogFacets, RuntimeLogListOptions, RuntimeLogListResult } from '../../storage/runtime-logs.repository.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
@@ -190,6 +190,10 @@ export type DbServiceOperation =
     options: RuntimeLogListOptions
   }
   | {
+    type: 'get_runtime_log_detail'
+    id: string
+  }
+  | {
     type: 'get_runtime_log_facets'
   }
   | {
@@ -214,6 +218,7 @@ export type DbServiceOperationResult<T extends DbServiceOperation = DbServiceOpe
   T extends { type: 'clear_account_stream_failure_state' } ? { changed: boolean } :
   T extends { type: 'clear_gateway_runtime_cache' } ? { cleared: true } :
   T extends { type: 'list_runtime_logs' } ? RuntimeLogListResult :
+  T extends { type: 'get_runtime_log_detail' } ? RuntimeLogDetail | undefined :
   T extends { type: 'get_runtime_log_facets' } ? RuntimeLogFacets :
   T extends { type: 'status' } ? DbServiceRuntimeSnapshot :
   unknown

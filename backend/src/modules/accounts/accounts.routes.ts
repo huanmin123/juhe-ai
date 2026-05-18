@@ -72,8 +72,17 @@ const accountListSortFields = new Set<AccountListSortField>([
 
 accountsRouter.get('/', async (req, res, next) => {
   try {
+    const listStartedAt = performance.now()
     const result = listAccountsPage(getRequestAccessScope(req.query.systemAccountId), parseAccountListOptions(req.query))
-    res.json(ok(await applyServerAccountConcurrencyToAccountList(result)))
+    const listDurationMs = performance.now() - listStartedAt
+    const concurrencyStartedAt = performance.now()
+    const hydratedResult = await applyServerAccountConcurrencyToAccountList(result)
+    const concurrencyDurationMs = performance.now() - concurrencyStartedAt
+    res.setHeader('Server-Timing', [
+      serverTimingMetric('account-list', listDurationMs),
+      serverTimingMetric('account-concurrency', concurrencyDurationMs)
+    ].join(', '))
+    res.json(ok(hydratedResult))
   } catch (error) {
     next(error)
   }
@@ -88,8 +97,35 @@ accountsRouter.get('/options', (req, res, next) => {
   }
 })
 
+accountsRouter.get('/:id', (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const visibleAccount = findAccountSummary(req.params.id, requestAccess)
+  if (!visibleAccount) {
+    res.status(404).json({ message: '账户不存在' })
+    return
+  }
+  if (visibleAccount.permissions?.canViewCredentials === false || visibleAccount.permissions?.canEdit === false) {
+    res.status(403).json({ message: '无权查看账户凭据' })
+    return
+  }
+  const account = findAccountForTest(req.params.id, requestAccess)
+  if (!account) {
+    res.status(404).json({ message: '账户不存在' })
+    return
+  }
+  res.json(ok(account))
+})
+
 function parseAccountOptionsQuery(query: Record<string, unknown>): AccountListOptions {
   return {
+    page: integerQueryValue(query.page),
+    pageSize: integerQueryValue(query.pageSize),
+    limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword),
     type: optionalQueryText(query.type),
     status: optionalQueryText(query.status),
@@ -144,6 +180,10 @@ function optionalQueryText(value: unknown): string | undefined {
 function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | undefined {
   const text = optionalQueryText(value)
   return text === 'all' || text === 'enabled' || text === 'disabled' || text === 'cooling' ? text : undefined
+}
+
+function serverTimingMetric(name: string, durationMs: number): string {
+  return `${name};dur=${Math.max(0, durationMs).toFixed(1)}`
 }
 
 accountsRouter.post('/', mutationGuard({

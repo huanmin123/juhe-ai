@@ -6,6 +6,9 @@ import type { AccountSummary, AccountTestResult } from '@/types/domain'
 import { batchTestSummary } from './accountTestFlow'
 import { canBatchManageAccount, canTestAccount } from './accountRules'
 
+const accountBatchConcurrency = 5
+const accountBatchTestConcurrency = 3
+
 interface UseAccountBatchActionsOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   clearSelection: () => void
@@ -28,9 +31,9 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
     }
     const hide = message.loading(`${loadingLabel}（${selected.length} 个）...`, 0)
     try {
-      const results = await Promise.allSettled(selected.map((account) => options.isManagementView.value
+      const results = await runWithConcurrency(selected, accountBatchConcurrency, (account) => options.isManagementView.value
         ? api.accounts.update(account.id, payloadBuilder(account), options.accountScopeParams.value)
-        : api.myAccounts.update(account.id, payloadBuilder(account))))
+        : api.myAccounts.update(account.id, payloadBuilder(account)))
       const failedCount = results.filter((result) => result.status === 'rejected').length
       if (failedCount === 0) {
         message.success(successLabel)
@@ -55,7 +58,8 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
     }
     const hide = message.loading(`正在批量测试 ${selected.length} 个账户...`, 0)
     try {
-      const results = await Promise.all(selected.map((account) => options.testAccountSilently(account)))
+      const settledResults = await runWithConcurrency(selected, accountBatchTestConcurrency, (account) => options.testAccountSilently(account))
+      const results = settledResults.map((result) => result.status === 'fulfilled' ? result.value : undefined)
       const successCount = results.filter((result) => result?.success).length
       const summary = batchTestSummary(results.length, successCount)
       if (summary.success) {
@@ -98,4 +102,27 @@ export function useAccountBatchActions(options: UseAccountBatchActionsOptions) {
     batchTestSelected,
     batchUpdateAccounts
   }
+}
+
+async function runWithConcurrency<TItem, TResult>(
+  items: TItem[],
+  concurrency: number,
+  task: (item: TItem) => Promise<TResult>
+): Promise<Array<PromiseSettledResult<TResult>>> {
+  const results: Array<PromiseSettledResult<TResult>> = new Array(items.length)
+  let nextIndex = 0
+  const workerCount = Math.min(Math.max(1, concurrency), items.length)
+  async function runWorker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const index = nextIndex
+      nextIndex += 1
+      try {
+        results[index] = { status: 'fulfilled', value: await task(items[index]) }
+      } catch (reason) {
+        results[index] = { status: 'rejected', reason }
+      }
+    }
+  }
+  await Promise.all(Array.from({ length: workerCount }, runWorker))
+  return results
 }

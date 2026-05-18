@@ -43,8 +43,9 @@ import type {
   ProxyProfileSummary,
   ProxyTestReport,
   RuntimeLogFacets,
-  RuntimeLogLevel,
   RuntimeLogGrepResult,
+  RuntimeLogLevel,
+  RuntimeLogSummary,
   RuntimeLogSearchResult,
   UpstreamErrorFeatureRuleCatalogItem,
   SystemTeamMemberSummary,
@@ -229,6 +230,7 @@ export interface AuthorizationListParams extends ListParams {
   teamId?: string
   status?: 'active' | 'paused' | 'expired' | 'revoked' | 'all'
   direction?: 'all' | 'outbound' | 'inbound'
+  sourceType?: 'all' | 'manual' | 'team'
   startDate?: string
   endDate?: string
 }
@@ -247,6 +249,8 @@ export interface AuthorizationUsageOverviewParams extends AuthorizationScopePara
   teamId?: string
   startDate?: string
   endDate?: string
+  page?: number
+  pageSize?: number
 }
 
 export interface AnnouncementListParams {
@@ -326,6 +330,7 @@ export const api = {
   accounts: {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
     options: (params?: AccountListParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
+    detail: (id: string, params?: ListParams) => unwrap<AccountSummary>(http.get(`/accounts/${id}`, { params })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/accounts', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
     updateAuthorizedDispatch: (id: string, payload: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
@@ -337,6 +342,7 @@ export const api = {
   myAccounts: {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListParams(params, false) })),
     options: (params?: AccountListParams) => unwrap<AccountOptionSummary[]>(http.get('/my-accounts/options', { params: accountOptionsParams(params, false) })),
+    detail: (id: string) => unwrap<AccountSummary>(http.get(`/my-accounts/${id}`)),
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
     updateAuthorizedDispatch: (id: string, payload: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
@@ -460,6 +466,7 @@ export const api = {
   runtimeLogs: {
     list: (params?: RuntimeLogListParams) => unwrap<RuntimeLogSearchResult>(http.get('/runtime-logs', { params })),
     facets: () => unwrap<RuntimeLogFacets>(http.get('/runtime-logs/facets')),
+    detail: (id: string) => unwrap<RuntimeLogSummary>(http.get(`/runtime-logs/${id}`)),
     grep: (params?: RuntimeLogGrepParams) => unwrap<RuntimeLogGrepResult>(http.get('/runtime-logs/grep', { params, ...noTimeout }))
   },
   operationLogs: {
@@ -537,6 +544,9 @@ function accountOptionsParams(params?: AccountListParams, includeSystemAccount =
   if (!params) return undefined
   const output: Record<string, unknown> = {}
   if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.page) output.page = params.page
+  if (params.pageSize) output.pageSize = params.pageSize
+  if (params.limit) output.limit = params.limit
   if (params.keyword) output.keyword = params.keyword
   if (params.type && params.type !== 'all') output.type = params.type
   if (params.status && params.status !== 'all') output.status = params.status

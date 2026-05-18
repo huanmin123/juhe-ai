@@ -1,4 +1,4 @@
-import { getDatabase, getRecordDatabase, nowIso } from './database.js'
+import { getDatabase, getRecordDatabase, nowIso, runInDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 
 type CleanupRow = Record<string, unknown>
@@ -287,7 +287,7 @@ export function cleanupUsageStatsBucketsBefore(input: {
 }): UsageStatsRetentionCleanupResult {
   const database = getRecordDatabase()
   const limit = positiveLimit(input.limit)
-  return {
+  return runInDatabaseTransaction(() => ({
     accountQualityMinuteStats: deleteRowsBeforeByRowid(database, 'account_quality_minute_stats', 'stat_minute', input.accountQualityMinuteCutoffMinute, limit),
     usageStatsMinute: deleteRowsBeforeByRowid(database, 'usage_stats_minute', 'stat_minute', input.minuteCutoffMinute, limit),
     usageModelMinute: deleteRowsBeforeByRowid(database, 'usage_model_minute', 'stat_minute', input.minuteCutoffMinute, limit),
@@ -322,20 +322,20 @@ export function cleanupUsageStatsBucketsBefore(input: {
     usageQuotaHourlyWindows: deleteRowsBeforeByRowid(database, 'usage_quota_hourly_windows', 'updated_at', input.windowCutoffIso, limit),
     usageScopeRangeWindows: deleteRowsBeforeByRowid(database, 'usage_scope_range_windows', 'end_date', input.windowCutoffDate, limit),
     accountUsageSnapshots: deleteRowsBeforeByRowid(database, 'account_usage_snapshots', 'updated_at', input.windowCutoffIso, limit)
-  }
+  }), database)
 }
 
 export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; hourlyCutoffHour: string; trendWindowCutoffDate: string; limit?: number }): SystemMetricsRetentionCleanupResult {
   const database = getRecordDatabase()
   const limit = positiveLimit(input.limit)
-  return {
+  return runInDatabaseTransaction(() => ({
     systemMetricsSamples: deleteRowsBeforeByRowid(database, 'system_metrics_samples', 'sampled_at', input.samplesCutoffIso, limit),
     systemMetricsHourly: deleteRowsBeforeByRowid(database, 'system_metrics_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
     systemMetricsTrendWindows: deleteRowsBeforeByRowid(database, 'system_metrics_trend_windows', 'end_date', input.trendWindowCutoffDate, limit),
     processEventLoopSamples: deleteRowsBeforeByRowid(database, 'process_event_loop_samples', 'sampled_at', input.samplesCutoffIso, limit),
     processEventLoopHourly: deleteRowsBeforeByRowid(database, 'process_event_loop_hourly', 'stat_hour', input.hourlyCutoffHour, limit),
     processEventLoopTrendWindows: deleteRowsBeforeByRowid(database, 'process_event_loop_trend_windows', 'end_date', input.trendWindowCutoffDate, limit)
-  }
+  }), database)
 }
 
 export function cleanupExpiredSystemSessions(expiredBefore = nowIso()): number {

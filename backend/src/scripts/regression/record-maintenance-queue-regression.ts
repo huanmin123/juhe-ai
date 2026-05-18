@@ -42,7 +42,18 @@ try {
     maxBatches: 1
   })
   recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
-  assert.equal(usageRecordCount('usage_cleanup_regression'), 0, 'worker 记录库维护任务应真实删除截止时间前的使用记录')
+  assert.equal(usageRecordCount('usage_cleanup_regression'), 1, '统计安全游标未就绪时不应删除使用记录')
+
+  seedUsageStatsCleanupCursors('2000-01-01T00:00:00.000Z', 'usage_cleanup_regression')
+  recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'usage_records_cleanup',
+    id: 'recmaint_usage_cleanup_regression_after_cursor',
+    cutoffAt: '2000-01-02T00:00:00.000Z',
+    batchSize: 100,
+    maxBatches: 1
+  })
+  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  assert.equal(usageRecordCount('usage_cleanup_regression'), 0, '统计安全游标就绪后才允许删除已聚合使用记录')
 
   seedUsageRecord('usage_cleanup_recent_protected', new Date().toISOString())
   recordMaintenanceQueue.enqueueRecordMaintenanceJob({
@@ -120,6 +131,52 @@ try {
     assert.equal(accountUsageSnapshotCount(`acct_codex_snapshot_batch_${index}`), 1, `批量账号用量快照应写入账号 ${index}`)
   }
 
+  seedAccount('acct_codex_snapshot_retry_0', 'sys_admin')
+  seedAccount('acct_codex_snapshot_retry_1', 'sys_admin')
+  seedUsageRecord('usage_cleanup_retry_guard', '2000-01-01T00:00:00.000Z')
+  seedUsageStatsCleanupCursors('2000-01-01T00:00:00.000Z', 'usage_cleanup_retry_guard')
+  let failedSnapshotUpsertPrepares = 0
+  recordDatabase.prepare = ((sql: string) => {
+    if (/^\s*INSERT\s+INTO\s+account_usage_snapshots\b/i.test(sql)) {
+      failedSnapshotUpsertPrepares += 1
+      if (failedSnapshotUpsertPrepares === 1) {
+        throw new Error('模拟账号用量快照批量写入失败')
+      }
+    }
+    return originalRecordPrepare(sql)
+  }) as typeof recordDatabase.prepare
+  const failuresBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().flushFailureCount
+  try {
+    recordMaintenanceQueue.enqueueRecordMaintenanceJobsLocal([
+      buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_retry_0', 'acct_codex_snapshot_retry_0', 31),
+      buildAccountUsageSnapshotJob('recmaint_account_usage_snapshot_retry_1', 'acct_codex_snapshot_retry_1', 32),
+      {
+        type: 'usage_records_cleanup' as const,
+        id: 'recmaint_usage_cleanup_retry_guard',
+        cutoffAt: '2000-01-02T00:00:00.000Z',
+        batchSize: 100,
+        maxBatches: 1
+      }
+    ])
+    recordMaintenanceQueue.flushRecordMaintenanceQueue({ retryOnFailure: false })
+    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().flushFailureCount, failuresBefore + 1, '批量快照写入失败应记录 flush 失败')
+    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 3, 'retryOnFailure=false 时失败任务和同批后续任务应保留在队列')
+    await waitForImmediate()
+    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 3, 'retryOnFailure=false 不应在返回后立刻异步重试')
+    await waitForRetryDelay()
+    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 3, 'retryOnFailure=false 不应在默认重试延迟后异步重试')
+    assert.equal(accountUsageSnapshotCount('acct_codex_snapshot_retry_0'), 0, '失败事务不应写入部分账号快照')
+    assert.equal(accountUsageSnapshotCount('acct_codex_snapshot_retry_1'), 0, '失败事务不应写入批量快照中的后续账号')
+    assert.equal(usageRecordCount('usage_cleanup_retry_guard'), 1, '失败后不应越过失败任务执行后续清理')
+  } finally {
+    recordDatabase.prepare = originalRecordPrepare
+  }
+  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, '恢复后保留任务应可继续 flush 完成')
+  assert.equal(accountUsageSnapshotCount('acct_codex_snapshot_retry_0'), 1, '恢复后应写入失败前的第一个快照任务')
+  assert.equal(accountUsageSnapshotCount('acct_codex_snapshot_retry_1'), 1, '恢复后应写入失败前的第二个快照任务')
+  assert.equal(usageRecordCount('usage_cleanup_retry_guard'), 0, '恢复后后续清理任务应继续按顺序执行')
+
   runtimeConfig.processRole = 'server'
   const pendingBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildUsageRecordsCleanupJob('server_ipc'))
@@ -131,6 +188,22 @@ try {
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildApiKeyCleanupJob('db_service_parent_ipc_missing'))
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'db-service 角色不能进入本地记录库维护队列')
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount, droppedBefore + 1, '无父进程 IPC 的 db-service 测试态应记录投递失败计数')
+
+  const originalProcessSend = process.send
+  try {
+    process.send = ((message: unknown, callback?: (error: Error | null) => void) => {
+      void message
+      callback?.(new Error('模拟父进程 IPC 异步失败'))
+      return true
+    }) as NodeJS.Process['send']
+    const asyncDroppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
+    const asyncDispatchResult = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildApiKeyCleanupJob('db_service_parent_ipc_async_failed'))
+    assert.equal(asyncDispatchResult.queued, true, 'DB service 父进程 IPC 异步失败前同步投递结果仍只能表示已尝试发送')
+    await waitForImmediate()
+    assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount, asyncDroppedBefore + 1, 'DB service 父进程 IPC 异步失败应记录投递失败计数')
+  } finally {
+    process.send = originalProcessSend
+  }
 
   console.log('记录库维护队列回归通过：server/db-service 只投递，worker 才执行记录库清理')
 } finally {
@@ -161,6 +234,21 @@ function buildApiKeyCleanupJob(source: string) {
   }
 }
 
+function buildAccountUsageSnapshotJob(id: string, accountId: string, usedPercent: number) {
+  return {
+    type: 'account_usage_snapshot_upsert' as const,
+    id,
+    accountId,
+    kind: 'openai_codex' as const,
+    source: 'regression_retry_guard',
+    snapshot: {
+      codex_usage_updated_at: '2000-01-01T00:00:00.000Z',
+      codex_5h_used_percent: usedPercent
+    },
+    updatedAt: '2000-01-01T00:00:00.000Z'
+  }
+}
+
 function seedAccount(accountId: string, systemAccountId: string): void {
   databaseModule.getDatabase()
     .prepare(`
@@ -185,6 +273,23 @@ function seedUsageRecord(id: string, createdAt: string): void {
     .run(id, `trace_${id}`, createdAt)
 }
 
+function seedUsageStatsCleanupCursors(cursorCreatedAt: string, cursorId: string): void {
+  const database = databaseModule.getRecordDatabase()
+  const statement = database.prepare(`
+    INSERT INTO stats_job_state (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
+    ) VALUES ('global', '', ?, ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
+      cursor_id = excluded.cursor_id,
+      last_success_at = excluded.last_success_at,
+      updated_at = excluded.updated_at
+  `)
+  for (const jobName of ['usage_stats_aggregation', 'caller_account_usage_stats_backfill', 'account_quality_minute_stats_backfill']) {
+    statement.run(jobName, cursorCreatedAt, cursorId, cursorCreatedAt, cursorCreatedAt)
+  }
+}
+
 function usageRecordCount(id: string): number {
   const row = databaseModule.getRecordDatabase()
     .prepare('SELECT COUNT(*) AS total FROM usage_records WHERE id = ?')
@@ -197,4 +302,12 @@ function accountUsageSnapshotCount(accountId: string): number {
     .prepare('SELECT COUNT(*) AS total FROM account_usage_snapshots WHERE account_id = ?')
     .get(accountId) as { total?: number } | undefined
   return Number(row?.total ?? 0)
+}
+
+async function waitForImmediate(): Promise<void> {
+  await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
+}
+
+async function waitForRetryDelay(): Promise<void> {
+  await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 1100))
 }

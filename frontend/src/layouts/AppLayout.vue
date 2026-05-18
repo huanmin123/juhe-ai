@@ -68,7 +68,6 @@ import type { MenuProps } from 'ant-design-vue'
 import { message } from '@/lib/antd'
 import type { ItemType } from 'ant-design-vue'
 import { computed, h, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import type { Component } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -98,22 +97,13 @@ const sidebarCollapsed = ref(false)
 const passwordModalOpen = ref(false)
 const passwordSaving = ref(false)
 const passwordForm = reactive({ newPassword: '', confirmPassword: '' })
-const keepAliveMax = 48
+const keepAliveMax = 24
 const announcementModalOpen = ref(false)
 const announcementsLoading = ref(false)
 const announcements = ref<AnnouncementSummary[]>([])
 let announcementsRefreshTimer: number | undefined
-let routePreloadTimer: number | undefined
-let routePreloadGeneration = 0
-let routePreloadDestroyed = false
 let announcementsRefreshRunning = false
 let announcementsRequestId = 0
-const preloadedRoutePaths = new Set<string>()
-type AsyncRouteComponent = () => Promise<Component>
-type IdleWindow = Window & {
-  requestIdleCallback?: (callback: () => void, options?: { timeout?: number }) => number
-}
-const routePreloadBatchSize = 3
 
 const selectedKeys = computed(() => [route.path])
 const openMenuKeys = computed(() => {
@@ -379,59 +369,6 @@ function handleResize() {
   updateViewport()
 }
 
-function scheduleVisibleRoutePreload() {
-  if (typeof window === 'undefined') return
-  routePreloadGeneration += 1
-  const generation = routePreloadGeneration
-  if (routePreloadTimer) {
-    window.clearTimeout(routePreloadTimer)
-  }
-  routePreloadTimer = window.setTimeout(() => {
-    routePreloadTimer = undefined
-    void preloadVisibleRoutesInBatches(generation)
-  }, 1200)
-}
-
-async function preloadVisibleRoutesInBatches(generation: number) {
-  const preloadTargets = visibleMenuRoutes.value
-    .filter((item) => item.meta?.heavy || item.path === route.path)
-    .filter((item) => !preloadedRoutePaths.has(item.path))
-
-  for (let index = 0; index < preloadTargets.length; index += routePreloadBatchSize) {
-    if (routePreloadDestroyed || generation !== routePreloadGeneration) return
-    await waitForRoutePreloadIdle()
-    if (routePreloadDestroyed || generation !== routePreloadGeneration) return
-    const batch = preloadTargets.slice(index, index + routePreloadBatchSize)
-    await Promise.all(batch.map(preloadRouteComponent))
-  }
-}
-
-async function preloadRouteComponent(item: typeof menuRoutes[number]) {
-  preloadedRoutePaths.add(item.path)
-  const loader = typeof item.component === 'function' && !('render' in item.component)
-    ? item.component as AsyncRouteComponent
-    : undefined
-  if (!loader) return
-  try {
-    await loader()
-  } catch (error) {
-    preloadedRoutePaths.delete(item.path)
-    console.error(error)
-  }
-}
-
-function waitForRoutePreloadIdle(): Promise<void> {
-  if (typeof window === 'undefined') return Promise.resolve()
-  return new Promise((resolve) => {
-    const idleWindow = window as IdleWindow
-    if (idleWindow.requestIdleCallback) {
-      idleWindow.requestIdleCallback(resolve, { timeout: 1500 })
-      return
-    }
-    window.setTimeout(resolve, 300)
-  })
-}
-
 async function refreshAnnouncementsSafely() {
   if (announcementsRefreshRunning) return
   announcementsRefreshRunning = true
@@ -449,7 +386,6 @@ async function refreshAnnouncementsSafely() {
 }
 
 onMounted(() => {
-  routePreloadDestroyed = false
   updateViewport()
   loadAppBrandSettings().catch((error) => {
     console.error(error)
@@ -461,17 +397,11 @@ onMounted(() => {
     void refreshAnnouncementsSafely()
   }, 60000)
   window.addEventListener('resize', handleResize, { passive: true })
-  scheduleVisibleRoutePreload()
 })
 
 onBeforeUnmount(() => {
-  routePreloadDestroyed = true
-  routePreloadGeneration += 1
   if (announcementsRefreshTimer) {
     window.clearInterval(announcementsRefreshTimer)
-  }
-  if (routePreloadTimer) {
-    window.clearTimeout(routePreloadTimer)
   }
   window.removeEventListener('resize', handleResize)
 })
@@ -482,7 +412,6 @@ watch(
     if (isMobile.value) {
       sidebarOpen.value = false
     }
-    scheduleVisibleRoutePreload()
   }
 )
 
@@ -515,9 +444,6 @@ watch(
   { immediate: true }
 )
 
-watch(visibleMenuRoutes, () => {
-  scheduleVisibleRoutePreload()
-})
 </script>
 
 <style scoped>

@@ -7,6 +7,7 @@ import { apiKeySummariesFromRows, type ApiKeyRow } from './api-key-mappers.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { defaultOpenAIGroupIdForSystemAccount } from './default-group.repository.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
+import { compatiblePagedTotal, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMap } from './repository-lookups.js'
 import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimitsJson } from './request-quota-limits.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
@@ -24,6 +25,7 @@ export interface ApiKeyListOptions {
 export interface ApiKeyListResult {
   items: ApiKeySummary[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
 }
@@ -54,22 +56,35 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
   const scope = buildSystemAccountWhereClause(access)
   const filters = buildApiKeyFilters(scope, normalized)
   const limitClause = paged ? 'LIMIT ? OFFSET ?' : ''
-  const limitParams = paged ? [normalized.pageSize, (normalized.page - 1) * normalized.pageSize] : []
-  const totalRow = paged
-    ? getDatabase()
-      .prepare(`SELECT COUNT(*) AS total FROM api_keys ${filters.clause}`)
-      .get(...filters.params) as { total?: number } | undefined
-    : undefined
+  const limitParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
   const rows = getDatabase()
-    .prepare(`SELECT * FROM api_keys ${filters.clause} ORDER BY updated_at DESC, created_at DESC, id DESC ${limitClause}`)
+    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys ${filters.clause} ORDER BY updated_at DESC, created_at DESC, id DESC ${limitClause}`)
     .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
-  const items = apiKeySummariesFromRows(rows, access)
+  const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
+  const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: false })
   return {
     items,
-    total: paged ? Number(totalRow?.total ?? 0) : items.length,
+    total: paged ? compatiblePagedTotal(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
+    hasMore: pageRows.hasMore,
     page: normalized.page,
     pageSize: normalized.pageSize
   }
+}
+
+function apiKeyListColumns(): string {
+  return [
+    'id',
+    'system_account_id',
+    'name',
+    'description',
+    'key_prefix',
+    'NULL AS key_secret_encrypted',
+    'status',
+    'group_id',
+    'group_authorization_id',
+    'expires_at',
+    'quota_limits_json'
+  ].join(', ')
 }
 
 export function createApiKeyRecord(input: Record<string, unknown>, access?: AccessScope): ApiKeySummary & { key: string } {

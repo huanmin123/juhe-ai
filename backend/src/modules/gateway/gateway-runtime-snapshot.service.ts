@@ -4,6 +4,9 @@ import { requestServerAccountConcurrencySnapshot } from '../db-service/db-servic
 type AccountConcurrencySnapshot = Record<string, number>
 
 export async function applyServerAccountConcurrencyToAccountList<T extends { items: AccountSummary[] }>(result: T): Promise<T> {
+  if (!result.items.some((account) => account.accessType !== 'authorized')) {
+    return result
+  }
   const concurrency = await loadServerAccountConcurrencySnapshot()
   if (!concurrency) {
     return result
@@ -15,6 +18,9 @@ export async function applyServerAccountConcurrencyToAccountList<T extends { ite
 }
 
 export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary[]): Promise<GroupSummary[]> {
+  if (!groups.some((group) => group.accessType !== 'authorized' && group.accountIds.length > 0)) {
+    return groups
+  }
   const concurrency = await loadServerAccountConcurrencySnapshot()
   if (!concurrency) {
     return groups
@@ -35,7 +41,7 @@ export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary
 }
 
 async function loadServerAccountConcurrencySnapshot(): Promise<AccountConcurrencySnapshot | undefined> {
-  return await requestServerAccountConcurrencySnapshot(300).catch(() => undefined)
+  return await requestServerAccountConcurrencySnapshot(80).catch(() => undefined)
 }
 
 function applyAccountConcurrency(account: AccountSummary, concurrency: AccountConcurrencySnapshot): AccountSummary {

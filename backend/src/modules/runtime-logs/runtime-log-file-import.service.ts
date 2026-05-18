@@ -19,7 +19,7 @@ const runtimeLogTailPollIntervalMs = 1000
 const runtimeLogTailMaxBytesPerFile = 1024 * 1024
 const runtimeLogTailMaxLinesPerFile = 5000
 
-interface ActiveRuntimeLogFile {
+export interface ActiveRuntimeLogFile {
   path: string
   role: string
 }
@@ -66,7 +66,8 @@ function scheduleNextPoll(): void {
 function activeRuntimeLogFiles(): ActiveRuntimeLogFile[] {
   return [
     { path: join(runtimeConfig.log.directory, 'juhe-ai.log'), role: 'server-current' },
-    { path: join(runtimeConfig.log.directory, 'juhe-ai.worker.log'), role: 'worker-current' }
+    { path: join(runtimeConfig.log.directory, 'juhe-ai.worker.log'), role: 'worker-current' },
+    { path: join(runtimeConfig.log.directory, 'juhe-ai.db-service.log'), role: 'db-service-current' }
   ]
 }
 
@@ -101,13 +102,30 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<vo
       initialLineNumber: cursor.lineNumber
     })
     if (result.nextOffset === startOffset && endOffset < stats.size) {
+      const skippedLine = await skipOversizedRuntimeLogFileLine(file.path, {
+        searchOffset: endOffset,
+        fileSize: stats.size,
+        initialLineNumber: cursor.lineNumber
+      })
+      if (skippedLine) {
+        saveRuntimeLogFileCursor({
+          ...cursor,
+          cursorOffset: skippedLine.nextOffset,
+          lineNumber: skippedLine.nextLineNumber,
+          fileSize: stats.size,
+          fileMtimeMs: Math.trunc(stats.mtimeMs),
+          lastReadAt: nowIso(),
+          lastErrorMessage: '单行日志超过运行日志增量读取窗口，已跳过完整超长行后继续追尾'
+        })
+        return
+      }
+
       saveRuntimeLogFileCursor({
         ...cursor,
-        cursorOffset: endOffset,
         fileSize: stats.size,
         fileMtimeMs: Math.trunc(stats.mtimeMs),
         lastReadAt: nowIso(),
-        lastErrorMessage: '单行日志超过运行日志增量读取窗口，已跳过当前窗口继续追尾'
+        lastErrorMessage: '单行日志超过运行日志增量读取窗口，等待完整换行后继续追尾'
       })
       return
     }
@@ -199,10 +217,17 @@ async function readRuntimeLogFileLines(logPath: string, input: {
       }
 
       pendingLine = concatLineBuffer(pendingLine, buffer.subarray(cursor, newlineIndex))
+      const lineStartOffset = nextOffset
+      const lineNumber = nextLineNumber + 1
       nextOffset += pendingLine.length + 1
-      nextLineNumber += 1
+      nextLineNumber = lineNumber
       importedLineCount += 1
-      enqueueRuntimeLogLineLocal(trimTrailingCarriageReturn(pendingLine).toString('utf8'))
+      enqueueRuntimeLogLineLocal(trimTrailingCarriageReturn(pendingLine).toString('utf8'), {
+        sourceKey: runtimeLogFileSourceKey(logPath, lineStartOffset),
+        logFile: logPath,
+        logOffset: lineStartOffset,
+        lineNumber
+      })
       pendingLine = Buffer.alloc(0)
       cursor = newlineIndex + 1
 
@@ -219,6 +244,35 @@ async function readRuntimeLogFileLines(logPath: string, input: {
   }
 
   return { nextOffset, nextLineNumber }
+}
+
+async function skipOversizedRuntimeLogFileLine(logPath: string, input: {
+  searchOffset: number
+  fileSize: number
+  initialLineNumber: number
+}): Promise<{ nextOffset: number; nextLineNumber: number } | undefined> {
+  if (input.searchOffset >= input.fileSize) {
+    return undefined
+  }
+
+  const stream = createReadStream(logPath, {
+    start: input.searchOffset,
+    end: input.fileSize - 1
+  })
+  let chunkStartOffset = input.searchOffset
+  for await (const chunk of stream) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    const newlineIndex = buffer.indexOf(10)
+    if (newlineIndex >= 0) {
+      return {
+        nextOffset: chunkStartOffset + newlineIndex + 1,
+        nextLineNumber: input.initialLineNumber + 1
+      }
+    }
+    chunkStartOffset += buffer.length
+  }
+
+  return undefined
 }
 
 function runtimeLogFileIdentity(file: ActiveRuntimeLogFile, stats: Stats): string {
@@ -242,6 +296,18 @@ function trimTrailingCarriageReturn(buffer: Buffer<ArrayBufferLike>): Buffer<Arr
     : buffer
 }
 
+function runtimeLogFileSourceKey(logPath: string, lineStartOffset: number): string {
+  return `${logPath}:${lineStartOffset}`
+}
+
 function saveRuntimeLogFileCursor(input: Parameters<typeof upsertRuntimeLogFileCursor>[0]): void {
   upsertRuntimeLogFileCursor(input)
+}
+
+export function activeRuntimeLogFilesForTest(): ActiveRuntimeLogFile[] {
+  return activeRuntimeLogFiles()
+}
+
+export async function importRuntimeLogFileDeltaForTest(file: ActiveRuntimeLogFile): Promise<void> {
+  await importRuntimeLogFileDelta(file)
 }

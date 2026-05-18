@@ -14,7 +14,7 @@ import { Writable } from 'node:stream'
 import pino, { type Logger, type LoggerOptions } from 'pino'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { RuntimeLogIndexStream } from '../modules/runtime-logs/runtime-log-stream.js'
+import { emitRuntimeLogLine, RuntimeLogIndexStream } from '../modules/runtime-logs/runtime-log-stream.js'
 
 interface RotatingFileLogStreamOptions {
   directory: string
@@ -24,10 +24,16 @@ interface RotatingFileLogStreamOptions {
   maxFiles: number
 }
 
+const runtimeLogIndexMaxLineBytes = 256 * 1024
+
 class RotatingFileLogStream extends Writable {
   private readonly currentPath: string
   private stream: WriteStream
   private currentSize = 0
+  private lineNumber: number | undefined
+  private pendingIndexLine: Buffer = Buffer.alloc(0)
+  private pendingIndexLineStartOffset: number | undefined
+  private pendingIndexLineTruncated = false
   private cleanupRunning = false
   private cleanupQueued = false
   private readonly protectedCurrentFileNames = new Set([
@@ -41,6 +47,7 @@ class RotatingFileLogStream extends Writable {
     mkdirSync(options.directory, { recursive: true })
     this.currentPath = join(options.directory, options.fileName)
     this.currentSize = this.readCurrentSize()
+    this.lineNumber = this.currentSize === 0 ? 0 : undefined
     this.stream = this.openStream()
     this.cleanup()
   }
@@ -108,7 +115,7 @@ class RotatingFileLogStream extends Writable {
   }
 
   private writeBuffer(buffer: Buffer, callback: (error?: Error | null) => void): void {
-    this.currentSize += buffer.byteLength
+    this.emitIndexedLines(buffer)
     this.stream.write(buffer, (error?: Error | null) => {
       callback(error ?? undefined)
     })
@@ -128,6 +135,8 @@ class RotatingFileLogStream extends Writable {
   private rotateClosedFile(callback: (error?: Error | null) => void): void {
     if (!existsSync(this.currentPath)) {
       this.currentSize = 0
+      this.lineNumber = 0
+      this.resetPendingIndexLine()
       this.stream = this.openStream()
       callback()
       return
@@ -141,6 +150,8 @@ class RotatingFileLogStream extends Writable {
       renameSync(this.currentPath, fallbackPath)
     }
     this.currentSize = 0
+    this.lineNumber = 0
+    this.resetPendingIndexLine()
     this.cleanup()
     this.stream = this.openStream()
     callback()
@@ -176,6 +187,75 @@ class RotatingFileLogStream extends Writable {
     } catch {
       return 0
     }
+  }
+
+  private emitIndexedLines(buffer: Buffer): void {
+    const bufferStartOffset = this.currentSize
+    let cursor = 0
+    while (cursor < buffer.length) {
+      if (this.pendingIndexLineStartOffset === undefined) {
+        this.pendingIndexLineStartOffset = bufferStartOffset + cursor
+      }
+      const newlineIndex = buffer.indexOf(10, cursor)
+      if (newlineIndex < 0) {
+        this.appendPendingIndexLine(buffer.subarray(cursor))
+        break
+      }
+
+      this.appendPendingIndexLine(buffer.subarray(cursor, newlineIndex))
+      this.emitPendingIndexLine()
+      cursor = newlineIndex + 1
+    }
+    this.currentSize += buffer.byteLength
+  }
+
+  private appendPendingIndexLine(segment: Buffer): void {
+    if (segment.length === 0) return
+    const remainingBytes = runtimeLogIndexMaxLineBytes - this.pendingIndexLine.length
+    if (remainingBytes <= 0) {
+      this.pendingIndexLineTruncated = true
+      return
+    }
+
+    const retainedSegment = segment.length > remainingBytes
+      ? segment.subarray(0, remainingBytes)
+      : segment
+    this.pendingIndexLine = concatLineBuffer(
+      this.pendingIndexLine,
+      retainedSegment
+    )
+    if (retainedSegment.length < segment.length) {
+      this.pendingIndexLineTruncated = true
+    }
+  }
+
+  private emitPendingIndexLine(): void {
+    const lineStartOffset = this.pendingIndexLineStartOffset
+    if (lineStartOffset === undefined) {
+      this.resetPendingIndexLine()
+      return
+    }
+
+    let line = trimTrailingCarriageReturn(this.pendingIndexLine).toString('utf8')
+    if (this.pendingIndexLineTruncated) {
+      line = `${line} [truncated: runtime log line exceeded pending buffer limit]`
+    }
+    if (this.lineNumber !== undefined) {
+      this.lineNumber += 1
+    }
+    emitRuntimeLogLine(line, {
+      sourceKey: runtimeLogFileSourceKey(this.currentPath, lineStartOffset),
+      logFile: this.currentPath,
+      logOffset: lineStartOffset,
+      lineNumber: this.lineNumber
+    })
+    this.resetPendingIndexLine()
+  }
+
+  private resetPendingIndexLine(): void {
+    this.pendingIndexLine = Buffer.alloc(0)
+    this.pendingIndexLineStartOffset = undefined
+    this.pendingIndexLineTruncated = false
   }
 
   private nextRotatedPath(): string {
@@ -243,6 +323,22 @@ class MultiDestinationLogStream extends Writable {
   }
 }
 
+function runtimeLogFileSourceKey(logPath: string, lineStartOffset: number): string {
+  return `${logPath}:${lineStartOffset}`
+}
+
+function trimTrailingCarriageReturn(buffer: Buffer): Buffer {
+  return buffer.length > 0 && buffer[buffer.length - 1] === 13
+    ? buffer.subarray(0, buffer.length - 1)
+    : buffer
+}
+
+function concatLineBuffer(left: Buffer, right: Buffer): Buffer {
+  if (right.length === 0) return left
+  if (left.length === 0) return right
+  return Buffer.concat([left, right], left.length + right.length)
+}
+
 const fileLogStream = runtimeConfig.log.fileEnabled
   ? new RotatingFileLogStream({
     directory: runtimeConfig.log.directory,
@@ -256,12 +352,12 @@ const fileLogStream = runtimeConfig.log.fileEnabled
     maxFiles: runtimeConfig.log.maxFiles
   })
   : undefined
-const runtimeLogIndexStream = new RuntimeLogIndexStream()
+const runtimeLogIndexStream = fileLogStream ? undefined : new RuntimeLogIndexStream()
 
 const logDestinations: Writable[] = [
   ...(runtimeConfig.log.consoleEnabled ? [process.stdout] : []),
   ...(fileLogStream ? [fileLogStream] : []),
-  runtimeLogIndexStream
+  ...(runtimeLogIndexStream ? [runtimeLogIndexStream] : [])
 ]
 
 const loggerOptions: LoggerOptions = {

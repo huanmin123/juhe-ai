@@ -4,7 +4,7 @@ import { cleanupAuditLogsByRetention } from '../../storage/audit-logs.repository
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import {
   cleanupExpiredSystemSessions,
-  cleanupProcessedUsageRecordsBefore,
+  cleanupProcessedUsageRecordsBeforeWithResult,
   cleanupSystemMetricsBefore,
   cleanupUsageStatsBucketsBefore
 } from '../../storage/data-retention.repository.js'
@@ -59,12 +59,8 @@ export interface DataRetentionCleanupResult {
   usageModelMonthly: number
   usageErrorMonthly: number
   usageLatencyMonthly: number
-  authorizationTeamUsageMonthly: number
-  authorizationTeamUsageSummaryMonthly: number
   authorizationTeamUsageSummaryDaily: number
   authorizationTeamUsageRangeWindows: number
-  authorizationUserUsageMonthly: number
-  authorizationUserUsageSummaryMonthly: number
   authorizationUserUsageSummaryDaily: number
   authorizationUserUsageRangeWindows: number
   usageRankSnapshots: number
@@ -130,7 +126,17 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       limit: batchSize
     }), batchSize, maxBatches)
     result.runtimeLogs = cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
-    result.usageRecords = cleanupInBatches(() => cleanupProcessedUsageRecordsBefore(cutoffIso(now, retention.usageRecordDays), batchSize), batchSize, maxBatches)
+    const usageRecordCleanup = cleanupProcessedUsageRecordsInBatches(cutoffIso(now, retention.usageRecordDays), batchSize, maxBatches)
+    result.usageRecords = usageRecordCleanup.deletedRows
+    if (usageRecordCleanup.blockedReason) {
+      logger.warn({
+        event: 'data_retention_usage_records_cleanup_blocked',
+        blockedReason: usageRecordCleanup.blockedReason,
+        cutoffCreatedAt: usageRecordCleanup.cutoffCreatedAt,
+        deletedRows: usageRecordCleanup.deletedRows,
+        batches: usageRecordCleanup.batches
+      }, '使用记录保留清理被统计安全游标拦截')
+    }
 
     cleanupRetentionInBatches(result, () => cleanupUsageStatsBucketsBefore({
       accountQualityMinuteCutoffMinute: cutoffMinuteKey(now, accountQualityMinuteRetentionHours, timezone),
@@ -187,6 +193,34 @@ function cleanupInBatches(cleanupBatch: () => number, batchSize: number, maxBatc
     }
   }
   return total
+}
+
+function cleanupProcessedUsageRecordsInBatches(cutoffCreatedAt: string, batchSize: number, maxBatches: number): {
+  cutoffCreatedAt: string
+  deletedRows: number
+  batches: number
+  blockedReason?: string
+} {
+  let deletedRows = 0
+  let batches = 0
+  let blockedReason: string | undefined
+  for (let index = 0; index < maxBatches; index += 1) {
+    const batch = cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt, batchSize)
+    deletedRows += batch.deletedRows
+    blockedReason = batch.blockedReason ?? blockedReason
+    if (batch.deletedRows > 0) {
+      batches += 1
+    }
+    if (batch.blockedReason || batch.deletedRows < batchSize || !batch.hasMore) {
+      break
+    }
+  }
+  return {
+    cutoffCreatedAt,
+    deletedRows,
+    batches,
+    blockedReason
+  }
 }
 
 function cleanupRetentionInBatches(
@@ -275,12 +309,8 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     usageModelMonthly: 0,
     usageErrorMonthly: 0,
     usageLatencyMonthly: 0,
-    authorizationTeamUsageMonthly: 0,
-    authorizationTeamUsageSummaryMonthly: 0,
     authorizationTeamUsageSummaryDaily: 0,
     authorizationTeamUsageRangeWindows: 0,
-    authorizationUserUsageMonthly: 0,
-    authorizationUserUsageSummaryMonthly: 0,
     authorizationUserUsageSummaryDaily: 0,
     authorizationUserUsageRangeWindows: 0,
     usageRankSnapshots: 0,

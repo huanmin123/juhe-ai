@@ -13,7 +13,7 @@ runtimeConfig.recordDatabasePath = join(tempRoot, 'gateway-runtime-cache-records
 runtimeConfig.secret = 'gateway-runtime-cache-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
-runtimeConfig.processRole = 'worker'
+runtimeConfig.processRole = 'server'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
@@ -33,6 +33,7 @@ const [
 
 class FakeDbServiceChild extends EventEmitter {
   readonly pid = 424242
+  readonly connected = true
   sentOperationCount = 0
 
   send(message: unknown, callback?: (error?: Error | null) => void): boolean {

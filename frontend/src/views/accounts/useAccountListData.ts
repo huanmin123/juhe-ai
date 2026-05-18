@@ -42,6 +42,9 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
   const accountOptionsLoaded = ref(false)
   const accountOptionsScopeKey = ref('')
+  const accountOptionsInFlight = new Map<string, Promise<void>>()
+  let accountListRequestId = 0
+  let loadingRequestId = 0
   const accountSorts = ref<AccountListSortParam[]>(initialPageState.sorts)
   const filters = reactive<AccountFilters>({ ...initialPageState.filters })
   const accountPagination = reactive({
@@ -69,23 +72,32 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   } = useAccountMobilePagination(ACCOUNT_PAGE_SIZE, () => accountPagination.total, loadData, accountPagination)
   const mobileVisibleAccounts = computed(() => filteredAccounts.value)
 
-  async function loadData(loadOptions: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}): Promise<void> {
+  async function loadData(loadOptions: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}): Promise<boolean> {
+    const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
+    const requestId = accountListRequestId + 1
+    accountListRequestId = requestId
     if (!loadOptions.quiet) {
       loading.value = true
+      loadingRequestId = requestId
     }
+    void loadAccountOptions(systemAccountId, loadOptions.forceOptions === true).catch((error) => {
+      console.error(error)
+      message.error('加载账户辅助信息失败')
+    })
     try {
-      const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      const [initialAccountList] = await Promise.all([
-        fetchAccountList(systemAccountId),
-        loadAccountOptions(systemAccountId, loadOptions.forceOptions === true)
-      ])
-      const accountList = await resolvedAccountListPage(initialAccountList, systemAccountId, loadOptions)
+      const initialAccountList = await fetchAccountList(systemAccountId)
+      if (requestId !== accountListRequestId) return false
+      const accountList = await resolvedAccountListPage(initialAccountList, systemAccountId, loadOptions, () => requestId === accountListRequestId)
+      if (requestId !== accountListRequestId) return false
       applyAccountList(accountList, loadOptions)
+      return true
     } catch (error) {
+      if (requestId !== accountListRequestId) return false
       console.error(error)
       message.error('加载账户失败')
+      return false
     } finally {
-      if (!loadOptions.quiet) {
+      if (!loadOptions.quiet && loadingRequestId === requestId) {
         loading.value = false
       }
     }
@@ -95,8 +107,16 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return options.isManagementView.value ? api.accounts.list(accountListParams(systemAccountId)) : api.myAccounts.list(accountListParams())
   }
 
-  async function resolvedAccountListPage(accountList: Awaited<ReturnType<typeof fetchAccountList>>, systemAccountId: string | undefined, loadOptions: { append?: boolean }): Promise<Awaited<ReturnType<typeof fetchAccountList>>> {
-    if (loadOptions.append || accountList.page <= 1 || accountList.items.length > 0 || accountList.total === 0) {
+  async function resolvedAccountListPage(
+    accountList: Awaited<ReturnType<typeof fetchAccountList>>,
+    systemAccountId: string | undefined,
+    loadOptions: { append?: boolean },
+    isCurrentRequest: () => boolean
+  ): Promise<Awaited<ReturnType<typeof fetchAccountList>>> {
+    if (loadOptions.append || accountList.page <= 1 || accountList.items.length > 0 || accountList.hasMore !== false) {
+      return accountList
+    }
+    if (!isCurrentRequest()) {
       return accountList
     }
     accountPagination.current = 1
@@ -167,19 +187,39 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     if (!force && accountOptionsLoaded.value && accountOptionsScopeKey.value === scopeKey) {
       return
     }
+    const currentScopeKey = () => options.isManagementView.value
+      ? `management:${accountScopeParams.value?.systemAccountId ?? 'all'}`
+      : 'self'
+    const existingRequest = !force ? accountOptionsInFlight.get(scopeKey) : undefined
+    if (existingRequest) {
+      return existingRequest
+    }
 
-    const [providerList, proxyList, groupList, systemAccountList] = await Promise.all([
-      options.isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-      api.proxies.options(),
-      options.isManagementView.value ? api.groups.accountOptions({ systemAccountId }) : api.myGroups.accountOptions(),
-      options.isManagementView.value ? api.systemAccounts.options() : Promise.resolve([] as SystemAccountPrincipalSummary[])
-    ])
-    providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
-    proxies.value = proxyList
-    groups.value = groupList
-    systemAccounts.value = systemAccountList
-    accountOptionsLoaded.value = true
-    accountOptionsScopeKey.value = scopeKey
+    const requestRef: { current?: Promise<void> } = {}
+    const request = (async () => {
+      const [providerList, proxyList, groupList, systemAccountList] = await Promise.all([
+        options.isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
+        api.proxies.options(),
+        options.isManagementView.value ? api.groups.accountOptions({ systemAccountId }) : api.myGroups.accountOptions(),
+        options.isManagementView.value ? api.systemAccounts.options() : Promise.resolve([] as SystemAccountPrincipalSummary[])
+      ])
+      if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
+        return
+      }
+      providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
+      proxies.value = proxyList
+      groups.value = groupList
+      systemAccounts.value = systemAccountList
+      accountOptionsLoaded.value = true
+      accountOptionsScopeKey.value = scopeKey
+    })().finally(() => {
+      if (accountOptionsInFlight.get(scopeKey) === requestRef.current) {
+        accountOptionsInFlight.delete(scopeKey)
+      }
+    })
+    requestRef.current = request
+    accountOptionsInFlight.set(scopeKey, request)
+    return request
   }
 
   function accountListParams(systemAccountId?: string): AccountListParams {

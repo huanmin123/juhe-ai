@@ -29,7 +29,7 @@
             class="authorization-usage-select responsive-list-inline-filter"
             placeholder="筛选授权团队"
             scope="team"
-            @change="loadData"
+            @change="reloadFromFirstPage"
           />
           <a-select v-model:value="filters.resourceType" class="authorization-usage-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
           <SystemPrincipalSelect
@@ -52,7 +52,7 @@
             :options="resourceOptions"
             :disabled="filters.resourceType === 'all'"
             :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
-            @change="loadData"
+            @change="reloadFromFirstPage"
           />
         </template>
         <template #filters>
@@ -71,7 +71,7 @@
           </label>
           <label class="mobile-filter-field">
             <span>授权团队</span>
-            <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选授权团队" @change="loadData" />
+            <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选授权团队" @change="reloadFromFirstPage" />
           </label>
           <label class="mobile-filter-field">
             <span>授权内容</span>
@@ -99,7 +99,7 @@
               :options="resourceOptions"
               :disabled="filters.resourceType === 'all'"
               :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
-              @change="loadData"
+              @change="reloadFromFirstPage"
             />
           </label>
         </template>
@@ -119,11 +119,16 @@
         :data-source="teamRows"
         row-key="id"
         :loading="loading"
-        :pagination="false"
+        :pagination="tablePagination"
         :scroll-x="1360"
+        mobile-pagination
+        :mobile-has-more="mobileHasMore"
+        :loading-more="mobileLoadingMore"
         pull-refresh-enabled
         :refreshing="loading"
-        @mobile-refresh="loadData"
+        @change="handleTableChange"
+        @mobile-load-more="loadMoreMobileTeamRows"
+        @mobile-refresh="refreshMobileTeamRows"
       >
         <template #emptyText>
           <a-empty class="page-empty-card" description="当前筛选范围暂无团队授权消耗。" />
@@ -201,6 +206,7 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
+import { useResponsivePagedList, type ResponsivePagedListLoadOptions } from '@/composables/useResponsivePagedList'
 import type { AuthorizationResourceType, AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
@@ -222,10 +228,12 @@ type TeamUsageFilters = {
   resourceId?: string
 }
 const router = useRouter()
-const loading = ref(false)
+const authorizationUsagePageSize = 20
 const overview = ref<AuthorizationTeamUsageOverview>()
 const teams = ref<SystemTeamPrincipalSummary[]>([])
 const resourceOwners = ref<SystemAccountPrincipalSummary[]>([])
+let optionsLoaded = false
+let optionsLoading: Promise<void> | undefined
 
 const filters = reactive<TeamUsageFilters>(defaultFilters())
 const {
@@ -247,7 +255,30 @@ const {
   disabledDate,
   resetDateRange,
   syncDateRangeFromResponse
-} = useAuthorizationUsageDateRange({ onChange: loadData })
+} = useAuthorizationUsageDateRange({ onChange: reloadFromFirstPage })
+const {
+  items: teamRows,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileTeamRows,
+  refreshMobile: refreshMobileTeamRows,
+  resetPagination
+} = useResponsivePagedList<AuthorizationTeamUsageRow, { forceOptions?: boolean }>({
+  pageSize: authorizationUsagePageSize,
+  showTotal: (total, _range, context) => {
+    const loaded = context ? (context.current - 1) * context.pageSize + context.currentPageCount : total
+    return context?.hasMore ? `已加载到第 ${formatNumber(loaded)} 条团队消耗，还有更多` : `共 ${formatNumber(total)} 条团队消耗`
+  },
+  fetchPage: fetchTeamUsagePage,
+  onError: (error) => {
+    console.error(error)
+    message.error('加载团队消耗明细失败')
+  }
+})
 const resourceTypeOptions = authorizationResourceTypeOptions
 const detailActions: RowActionItem[] = [
   { key: 'users', label: '查询用户明细', icon: 'detail', tone: 'info' }
@@ -271,7 +302,6 @@ const activeFilterCount = computed(() => {
   if (dateRangeExplicit.value) count += 1
   return count
 })
-const teamRows = computed<AuthorizationTeamUsageRow[]>(() => overview.value?.rows ?? [])
 const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
 const summaryCards = computed(() => [
   { key: 'teams', label: '授权团队', value: formatNumber(overview.value?.teamCount ?? 0), extra: `范围 ${rangeLabel.value}` },
@@ -280,7 +310,19 @@ const summaryCards = computed(() => [
   { key: 'cost', label: '成本', value: formatCost(totalUsage.value.totalCost), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` }
 ])
 
-async function loadOptions() {
+async function loadOptions(options: { force?: boolean } = {}) {
+  if (optionsLoaded && !options.force) return
+  if (optionsLoading && !options.force) return optionsLoading
+  optionsLoading = loadOptionsNow()
+  try {
+    await optionsLoading
+    optionsLoaded = true
+  } finally {
+    optionsLoading = undefined
+  }
+}
+
+async function loadOptionsNow() {
   const [teamResult, ownerResult, resourceResult] = await Promise.allSettled([
     isManagementView.value ? api.authorizationOptions.granteeTeams() : api.myAuthorizationOptions.granteeTeams(),
     isManagementView.value ? api.systemAccounts.options() : Promise.resolve([]),
@@ -304,30 +346,36 @@ async function loadOptions() {
   }
 }
 
-async function loadData() {
-  loading.value = true
-  try {
-    const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
-    const rangeParams = selectedRangeParams()
-    const params = {
-      systemAccountId: ownerSystemAccountId,
-      resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
-      resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
-      teamId: filters.teamId,
-      ...rangeParams
-    }
-    const [usageOverview] = await Promise.all([
-      isManagementView.value ? api.authorizations.teamUsage(params) : api.myAuthorizations.teamUsage(params),
-      loadOptions()
-    ])
-    overview.value = usageOverview
-    syncDateRangeFromResponse(usageOverview.range)
-  } catch (error) {
-    console.error(error)
-    message.error('加载团队消耗明细失败')
-  } finally {
-    loading.value = false
+async function fetchTeamUsagePage(loadPageOptions: ResponsivePagedListLoadOptions & { forceOptions?: boolean }, pageState: { current: number; pageSize: number }) {
+  const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
+  const rangeParams = selectedRangeParams()
+  const params = {
+    systemAccountId: ownerSystemAccountId,
+    resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
+    resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
+    teamId: filters.teamId,
+    page: pageState.current,
+    pageSize: pageState.pageSize,
+    ...rangeParams
   }
+  const [usageOverview] = await Promise.all([
+    isManagementView.value ? api.authorizations.teamUsage(params) : api.myAuthorizations.teamUsage(params),
+    loadOptions({ force: loadPageOptions.forceOptions === true })
+  ])
+  overview.value = usageOverview
+  syncDateRangeFromResponse(usageOverview.range)
+  return {
+    items: usageOverview.rows,
+    page: usageOverview.page,
+    pageSize: usageOverview.pageSize,
+    total: usageOverview.total,
+    hasMore: usageOverview.hasMore
+  }
+}
+
+function reloadFromFirstPage() {
+  resetPagination()
+  void loadData()
 }
 
 function handleTeamAction(key: string, row: AuthorizationTeamUsageRow) {
@@ -358,18 +406,18 @@ function resourceDisplayName(row: AuthorizationTeamUsageRow): string {
 
 function handleResourceTypeChange() {
   resetResourceId()
-  void loadData()
+  reloadFromFirstPage()
 }
 
 function handleResourceOwnerChange() {
   resetResourceId()
-  void loadData()
+  reloadFromFirstPage()
 }
 
 function resetFilters() {
   Object.assign(filters, defaultFilters())
   resetDateRange()
-  void loadData()
+  reloadFromFirstPage()
 }
 
 function defaultFilters(): TeamUsageFilters {

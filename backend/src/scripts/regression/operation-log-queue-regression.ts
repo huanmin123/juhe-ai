@@ -87,6 +87,34 @@ try {
   assert.equal(richDetail.changes[0]?.field, 'status', '操作日志详情应保留 changes payload')
   assert.equal(richDetail.metadata.batchIndex, 3, '操作日志详情应保留 metadata payload')
 
+  let failedInsertPrepares = 0
+  const failuresBefore = operationLogQueue.getOperationLogQueueRuntime().flushFailureCount
+  database.prepare = ((sql: string) => {
+    if (/^\s*INSERT\s+INTO\s+operation_logs\b/i.test(sql)) {
+      failedInsertPrepares += 1
+      if (failedInsertPrepares === 1) {
+        throw new Error('模拟操作日志批量写入失败')
+      }
+    }
+    return originalPrepare(sql)
+  }) as typeof database.prepare
+  try {
+    operationLogQueue.enqueueOperationLogsLocal([buildOperationLog('retry_disabled_guard')])
+    operationLogQueue.flushOperationLogQueue({ retryOnFailure: false })
+    assert.equal(operationLogQueue.getOperationLogQueueRuntime().flushFailureCount, failuresBefore + 1, '操作日志写入失败应记录 flush 失败')
+    assert.equal(operationLogQueue.getOperationLogQueueRuntime().queueLength, 1, 'retryOnFailure=false 时失败操作日志应保留在队列')
+    await waitForImmediate()
+    assert.equal(operationLogQueue.getOperationLogQueueRuntime().queueLength, 1, 'retryOnFailure=false 不应在返回后立刻异步重试操作日志')
+    await waitForRetryDelay()
+    assert.equal(operationLogQueue.getOperationLogQueueRuntime().queueLength, 1, 'retryOnFailure=false 不应在默认重试延迟后异步重试操作日志')
+    assert.equal(operationLogExists('retry_disabled_guard'), 0, '失败后操作日志不应被后台定时器偷偷写入')
+  } finally {
+    database.prepare = originalPrepare
+  }
+  operationLogQueue.flushAllOperationLogQueue()
+  assert.equal(operationLogQueue.getOperationLogQueueRuntime().queueLength, 0, '恢复后保留的操作日志应可继续 flush 完成')
+  assert.equal(operationLogExists('retry_disabled_guard'), 1, '恢复后应写入保留的操作日志')
+
   console.log('操作日志队列回归通过：写入边界正确，批量落库复用 prepared statements')
 } finally {
   try {
@@ -181,4 +209,19 @@ function operationLogViewerCount(): number {
     .prepare('SELECT COUNT(*) AS total FROM operation_log_viewers')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
+}
+
+function operationLogExists(action: string): number {
+  const row = databaseModule.getRecordDatabase()
+    .prepare('SELECT COUNT(*) AS total FROM operation_logs WHERE action = ?')
+    .get(action) as { total?: number } | undefined
+  return Number(row?.total ?? 0)
+}
+
+async function waitForImmediate(): Promise<void> {
+  await new Promise<void>((resolvePromise) => setImmediate(resolvePromise))
+}
+
+async function waitForRetryDelay(): Promise<void> {
+  await new Promise<void>((resolvePromise) => setTimeout(resolvePromise, 1100))
 }

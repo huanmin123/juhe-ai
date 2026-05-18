@@ -51,7 +51,7 @@
       :table-scroll-x="tableScrollX"
       :table-scroll-y="tableScrollY"
       @bind-group="openBindGroup"
-      @change="handleAccountTableChangeAndLoad"
+      @change="handleAccountTableChange"
       @delete="removeAccount"
       @edit="openEdit"
       @menu-click="handleAccountMenuClick"
@@ -63,6 +63,7 @@
     />
 
     <AccountTestModal
+      v-if="testModalOpen"
       v-model:open="testModalOpen"
       v-model:model="testForm.model"
       :account="testingAccount"
@@ -78,6 +79,7 @@
     />
 
     <AccountEditModal
+      v-if="modalOpen"
       v-model:open="modalOpen"
       v-model:error-policy-rules="accountErrorPolicyRules"
       :account-type-choices="accountTypeChoices"
@@ -110,6 +112,7 @@
     />
 
     <AccountBindGroupModal
+      v-if="bindGroupModalOpen"
       v-model:open="bindGroupModalOpen"
       v-model:group-id="bindGroupForm.groupId"
       :account="bindingAccount"
@@ -120,6 +123,7 @@
     />
 
     <AccountTrafficMigrationModal
+      v-if="trafficMigrationModalOpen"
       v-model:open="trafficMigrationModalOpen"
       v-model:source-status="trafficMigrationForm.sourceStatus"
       v-model:target-account-id="trafficMigrationForm.targetAccountId"
@@ -130,6 +134,7 @@
     />
 
     <AccountReauthorizeModal
+      v-if="reauthorizeModalOpen"
       v-model:open="reauthorizeModalOpen"
       :account="reauthorizingAccount"
       :auth-loading="reauthorizeAuthLoading"
@@ -147,7 +152,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -155,13 +160,8 @@ import { extractApiErrorMessage } from '@/shared/apiError'
 import type { AccountSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
-import AccountBindGroupModal from './AccountBindGroupModal.vue'
-import AccountEditModal from './AccountEditModal.vue'
 import AccountFilterToolbar from './AccountFilterToolbar.vue'
 import AccountList from './AccountList.vue'
-import AccountReauthorizeModal from './AccountReauthorizeModal.vue'
-import AccountTestModal from './AccountTestModal.vue'
-import AccountTrafficMigrationModal from './AccountTrafficMigrationModal.vue'
 import {
   accountByIdMap,
   buildProxyOptions,
@@ -196,6 +196,12 @@ import { useAccountMenuActions } from './useAccountMenuActions'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountTestModal } from './useAccountTestModal'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
+
+const AccountBindGroupModal = defineAsyncComponent(() => import('./AccountBindGroupModal.vue'))
+const AccountEditModal = defineAsyncComponent(() => import('./AccountEditModal.vue'))
+const AccountReauthorizeModal = defineAsyncComponent(() => import('./AccountReauthorizeModal.vue'))
+const AccountTestModal = defineAsyncComponent(() => import('./AccountTestModal.vue'))
+const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./AccountTrafficMigrationModal.vue'))
 
 const selectedAccountIds = ref<string[]>([])
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
@@ -238,13 +244,24 @@ function handleAccountListLoaded(selectableAccountIds: Set<string>) {
   }
 }
 
-function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean }) {
-  return loadAccountListData(options)
+async function loadData(options?: { append?: boolean; quiet?: boolean; forceOptions?: boolean }) {
+  await loadAccountListData(options)
 }
 
 const columns = computed(() => buildAccountTableColumns(isManagementView.value, (field) => resolveAccountColumnSortOrder(accountSorts.value, field)))
 const tableScrollX = computed(() => accountTableScrollX(isManagementView.value))
 const tableScrollY = computed(accountTableScrollY)
+
+function handleAccountTableChange(...args: unknown[]): void {
+  if (tableChangeAction(args[3]) === 'sort') return
+  void handleAccountTableChangeAndLoad(args[0])
+}
+
+function tableChangeAction(value: unknown): string | undefined {
+  return value && typeof value === 'object' && typeof (value as { action?: unknown }).action === 'string'
+    ? (value as { action: string }).action
+    : undefined
+}
 
 const accountById = computed(() => accountByIdMap(accounts.value))
 const selectedAccountIdSet = computed(() => new Set(selectedAccountIds.value))

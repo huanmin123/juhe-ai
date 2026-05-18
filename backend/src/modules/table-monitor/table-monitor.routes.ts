@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { inspectUsageRecordsCleanupBefore } from '../../storage/data-retention.repository.js'
+import { inspectProcessedUsageRecordsCleanupBefore } from '../../storage/data-retention.repository.js'
 import { nowIso } from '../../storage/database.js'
 import { getTableStorageOverview, listTableStorageHistory, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
@@ -93,7 +93,7 @@ tableMonitorRouter.post('/usage-records/cleanup', mutationGuard({
 
   const batchSize = parsed.data.batchSize ?? defaultCleanupBatchSize
   const maxBatches = parsed.data.maxBatches ?? defaultCleanupMaxBatches
-  const preview = inspectUsageRecordsCleanupBefore(cutoff.iso, batchSize)
+  const preview = inspectProcessedUsageRecordsCleanupBefore(cutoff.iso, batchSize)
   const baseResult: UsageRecordsCleanupResult = {
     cutoffAt: cutoff.iso,
     deletedRows: 0,
@@ -102,7 +102,8 @@ tableMonitorRouter.post('/usage-records/cleanup', mutationGuard({
     maxBatches,
     hasMore: preview.hasMore,
     queued: false,
-    eligibleRows: preview.eligibleRows
+    eligibleRows: preview.eligibleRows,
+    blockedReason: preview.blockedReason
   }
 
   if (preview.eligibleRows <= 0) {

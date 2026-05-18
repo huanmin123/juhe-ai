@@ -214,6 +214,17 @@ try {
   const events = repositories.listAuditErrorGroupEvents(groups.items[0].id, { pageSize: 10 })
   assert.equal(events.total, 2, '错误聚合组应可反查每次 occurrence')
 
+  const retainedErrorGroupId = groups.items[0].id
+  recordDatabase.prepare('UPDATE audit_error_groups SET updated_at = ? WHERE id = ?').run('2000-01-01T00:00:00.000Z', retainedErrorGroupId)
+  repositories.cleanupAuditLogsByRetention({
+    successCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
+    failureCutoffCreatedAt: '2000-01-01T00:00:00.000Z',
+    errorGroupCutoffUpdatedAt: '2001-01-01T00:00:00.000Z',
+    limit: 100
+  })
+  assert.equal(repositories.listAuditErrorGroups({ pageSize: 10, statusCode: 429 }).total, 1, '仍被失败审计日志引用的错误聚合组不应被独立清理')
+  assert.equal(repositories.listAuditErrorGroupEvents(retainedErrorGroupId, { pageSize: 10 }).total, 2, '保留中的错误聚合组应继续能反查 occurrence')
+
   const detail = repositories.getAuditLogDetail('audit_retention_1')
   const payload = detail?.payloads.find((item) => item.partType === 'gateway_error')
   assert(payload, '事件详情应包含 gateway_error payload 引用')

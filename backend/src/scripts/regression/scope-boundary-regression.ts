@@ -15,6 +15,8 @@ runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 mkdirSync(tempRoot, { recursive: true })
 
+const REGRESSION_FETCH_TIMEOUT_MS = 5000
+
 const [
   { accountsRouter },
   { apiKeysRouter },
@@ -81,6 +83,7 @@ interface AccountSummary {
   status?: string
   accessType?: string
   proxyProfileId?: string
+  credentials?: Record<string, unknown>
 }
 
 interface AccountListResult {
@@ -200,7 +203,8 @@ interface ResourceAuthorizationSummary {
   resourceType: string
   resourceId: string
   resourceOwnerSystemAccountId: string
-  granteeSystemAccountId: string
+  granteeSystemAccountId?: string
+  granteeTeamId?: string
   status: string
   permissions?: {
     canEdit: boolean
@@ -223,14 +227,16 @@ interface SeedState {
   teamNoUserAId: string
   userCId: string
   inboundAuthorizationId: string
+  teamInboundAuthorizationId: string
   userBGroupId: string
   usageToday: string
   usageYesterday: string
 }
 
 async function main(): Promise<void> {
+  let server: ReturnType<typeof app.listen> | undefined
   try {
-    const server = app.listen(0, '127.0.0.1')
+    server = app.listen(0, '127.0.0.1')
     await onceListening(server)
     const address = server.address()
     if (!address || typeof address === 'string') {
@@ -254,6 +260,14 @@ async function main(): Promise<void> {
     assert(userAMyAccounts.some((account) => account.id === seed.userBAccountId && account.proxyProfileId === seed.userBProxyId), '用户 A 的授权账户应保留所有者绑定的代理标记')
     const userAMyAccountsWithQuery = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.userACookie)
     assertSameIds(userAMyAccounts, userAMyAccountsWithQuery, '用户 A 传 systemAccountId 后 my-accounts 结果发生变化')
+    const userAOwnAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}`, seed.userACookie)
+    assert(userAOwnAccountDetail.credentials?.api_key === 'sk-scope-user-a', '用户 A 应能查看自有账户凭据详情')
+    await assertStatus(
+      `${baseUrl}/__aisys__/api/my-accounts/${seed.userBAccountId}`,
+      seed.userACookie,
+      403,
+      '用户 A 不应通过授权账户详情接口查看用户 B 凭据'
+    )
     summary.push('我的账户自有作用域检查通过')
 
     const adminMyAccounts = await getAccountItems(baseUrl, `/__aisys__/api/my-accounts?systemAccountId=${seed.userBId}`, seed.adminCookie)
@@ -401,27 +415,36 @@ async function main(): Promise<void> {
 
     const userAAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, `/__aisys__/api/my-authorizations?status=all&systemAccountId=${seed.userBId}`, seed.userACookie)
     const inboundAuthorization = userAAuthorizations.find((authorization) => authorization.id === seed.inboundAuthorizationId)
+    const teamInboundAuthorization = userAAuthorizations.find((authorization) => authorization.id === seed.teamInboundAuthorizationId)
     assert(inboundAuthorization?.resourceOwnerSystemAccountId === seed.userBId && inboundAuthorization.granteeSystemAccountId === seed.userAId, '用户 A 我的授权没有返回入站授权')
+    assert(teamInboundAuthorization?.resourceOwnerSystemAccountId === seed.userBId && teamInboundAuthorization.granteeTeamId === seed.teamSharedId, '用户 A 我的授权没有返回团队入站授权')
     assert(inboundAuthorization.permissions?.canEdit === false && inboundAuthorization.permissions.canAuthorize === false, '入站授权不应允许普通用户管理')
+    assert(teamInboundAuthorization.permissions?.canEdit === false && teamInboundAuthorization.permissions.canAuthorize === false, '团队入站授权不应允许普通用户管理')
     const userAInboundAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, '/__aisys__/api/my-authorizations?status=all&direction=inbound', seed.userACookie)
     assert(userAInboundAuthorizations.some((authorization) => authorization.id === seed.inboundAuthorizationId), '用户 A 我的授权入站筛选没有返回授权给我的记录')
-    assert(userAInboundAuthorizations.every((authorization) => authorization.granteeSystemAccountId === seed.userAId), '用户 A 我的授权入站筛选返回了非当前用户被授权记录')
+    assert(userAInboundAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '用户 A 我的授权入站筛选没有返回团队授权记录')
+    assert(userAInboundAuthorizations.every((authorization) => authorization.granteeSystemAccountId === seed.userAId || authorization.granteeTeamId === seed.teamSharedId), '用户 A 我的授权入站筛选返回了非当前用户被授权记录')
     const userAOutboundAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, '/__aisys__/api/my-authorizations?status=all&direction=outbound', seed.userACookie)
     assert(!userAOutboundAuthorizations.some((authorization) => authorization.id === seed.inboundAuthorizationId), '用户 A 我的授权出站筛选不应返回授权给我的记录')
     assert(userAOutboundAuthorizations.every((authorization) => authorization.resourceOwnerSystemAccountId === seed.userAId), '用户 A 我的授权出站筛选返回了非当前用户资源授权')
+    const userAManualAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, '/__aisys__/api/my-authorizations?status=all&sourceType=manual', seed.userACookie)
+    assert(userAManualAuthorizations.some((authorization) => authorization.id === seed.inboundAuthorizationId), '用户 A 我的授权手动来源筛选没有返回个人授权记录')
+    assert(!userAManualAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '用户 A 我的授权手动来源筛选不应返回团队授权记录')
+    const userATeamAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, '/__aisys__/api/my-authorizations?status=all&sourceType=team', seed.userACookie)
+    assert(userATeamAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '用户 A 我的授权团队来源筛选没有返回团队授权记录')
+    assert(userATeamAuthorizations.every((authorization) => authorization.granteeTeamId === seed.teamSharedId), '用户 A 我的授权团队来源筛选返回了非目标团队授权')
     await getEnvelope<ResourceAuthorizationSummary>(baseUrl, `/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}/usage?systemAccountId=${seed.userBId}`, seed.userACookie)
     await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}`, seed.userACookie, 'PATCH', { status: 'paused' }, '入站授权不应允许普通用户暂停')
     await assertForbiddenOrNotFound(`${baseUrl}/__aisys__/api/my-authorizations/${seed.inboundAuthorizationId}`, seed.userACookie, 'DELETE', { sourceType: 'manual' }, '入站授权不应允许普通用户回收')
     const adminAuthorization = await getEnvelope<ResourceAuthorizationSummary>(baseUrl, `/__aisys__/api/authorizations/${seed.inboundAuthorizationId}/usage`, seed.adminCookie)
     assert(adminAuthorization.permissions?.canEdit === true, '管理员统一授权管理应保留管理能力')
+    const adminTeamAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userBId}&sourceType=team`, seed.adminCookie)
+    assert(adminTeamAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '管理员统一授权团队来源筛选没有返回团队授权记录')
     summary.push('授权方向作用域检查通过')
-
-    await new Promise<void>((resolvePromise, rejectPromise) => {
-      server.close((error) => error ? rejectPromise(error) : resolvePromise())
-    })
 
     console.log(`作用域边界回归通过：${summary.join('，')}`)
   } finally {
+    await closeServer(server)
     try {
       databaseModule.getDatabase().close()
       databaseModule.getRecordDatabase().close()
@@ -513,12 +536,19 @@ function seedData(): SeedState {
     granteeId: userA.id,
     remark: '用户 B 授权给用户 A 的账户'
   }, userBAccess)
+  const teamInboundAuthorization = repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: userBGroup.id,
+    granteeType: 'team',
+    granteeId: teamShared.id,
+    remark: '用户 B 授权给共享团队的分组'
+  }, userBAccess)
   repositories.createApiKeyRecord({
     name: '用户 A Key',
     groupId: repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
   }, userAAccess)
-  const usageToday = localDateKey(new Date())
-  const usageYesterday = localDateKey(addDays(new Date(), -1))
+  const usageToday = localDateKey(addDays(new Date(), -1))
+  const usageYesterday = localDateKey(addDays(new Date(), -2))
   repositories.createUsageRecordsBatch([
     usageRecord('scope_usage_a_1', userA.id, userAAccount.id, 'GET /v1/models', 'scope-model-a', 200, true, usageAt(usageToday, 1)),
     usageRecord('scope_usage_a_2', userA.id, userAAccount.id, 'POST /v1/responses', 'scope-model-a', 500, false, usageAt(usageToday, 2)),
@@ -545,6 +575,7 @@ function seedData(): SeedState {
     teamUserBOnlyId: teamUserBOnly.id,
     teamNoUserAId: teamNoUserA.id,
     inboundAuthorizationId: inboundAuthorization.id,
+    teamInboundAuthorizationId: teamInboundAuthorization.id,
     userBGroupId: userBGroup.id,
     usageToday,
     usageYesterday
@@ -627,7 +658,7 @@ function sessionCookie(systemAccountId: string): string {
 }
 
 async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, { headers: { cookie } })
+  const response = await fetchRegression(`${baseUrl}${path}`, { headers: { cookie } }, path)
   return unwrapEnvelope<T>(response, path)
 }
 
@@ -640,11 +671,11 @@ async function getApiKeyItems(baseUrl: string, path: string, cookie: string): Pr
 }
 
 async function postEnvelope<T>(baseUrl: string, path: string, cookie: string, body: unknown): Promise<T> {
-  const response = await fetch(`${baseUrl}${path}`, {
+  const response = await fetchRegression(`${baseUrl}${path}`, {
     method: 'POST',
     headers: { cookie, 'content-type': 'application/json' },
     body: JSON.stringify(body)
-  })
+  }, path)
   return unwrapEnvelope<T>(response, path)
 }
 
@@ -657,17 +688,36 @@ async function unwrapEnvelope<T>(response: Response, path: string): Promise<T> {
 }
 
 async function assertForbidden(path: string, cookie: string, message: string): Promise<void> {
-  const response = await fetch(path, { headers: { cookie } })
-  assert(response.status === 403, `${message}，实际状态 ${response.status}`)
+  await assertStatus(path, cookie, 403, message)
+}
+
+async function assertStatus(path: string, cookie: string, expectedStatus: number, message: string): Promise<void> {
+  const response = await fetchRegression(path, { headers: { cookie } })
+  assert(response.status === expectedStatus, `${message}，实际状态 ${response.status}: ${await response.text()}`)
 }
 
 async function assertForbiddenOrNotFound(path: string, cookie: string, method: 'PATCH' | 'DELETE', body: unknown, message: string): Promise<void> {
-  const response = await fetch(path, {
+  const response = await fetchRegression(path, {
     method,
     headers: { cookie, 'content-type': 'application/json' },
     body: JSON.stringify(body)
   })
   assert(response.status === 403 || response.status === 404, `${message}，实际状态 ${response.status}: ${await response.text()}`)
+}
+
+async function fetchRegression(url: string, init: RequestInit = {}, label = url): Promise<Response> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), REGRESSION_FETCH_TIMEOUT_MS)
+  try {
+    return await fetch(url, { ...init, signal: controller.signal })
+  } catch (error) {
+    if (error instanceof Error && error.name === 'AbortError') {
+      throw new Error(`${label} 请求超过 ${REGRESSION_FETCH_TIMEOUT_MS}ms`)
+    }
+    throw error
+  } finally {
+    clearTimeout(timeout)
+  }
 }
 
 function assertSameIds(left: Array<{ id: string }>, right: Array<{ id: string }>, message: string): void {
@@ -681,6 +731,25 @@ async function onceListening(server: ReturnType<typeof app.listen>): Promise<voi
   await new Promise<void>((resolvePromise, rejectPromise) => {
     server.once('listening', resolvePromise)
     server.once('error', rejectPromise)
+  })
+}
+
+async function closeServer(server?: ReturnType<typeof app.listen>): Promise<void> {
+  if (!server?.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    const timeout = setTimeout(() => {
+      server.closeAllConnections?.()
+      resolvePromise()
+    }, 1000)
+    server.close((error) => {
+      clearTimeout(timeout)
+      if (error) {
+        rejectPromise(error)
+      } else {
+        resolvePromise()
+      }
+    })
+    server.closeIdleConnections?.()
   })
 }
 

@@ -1,4 +1,7 @@
 $ErrorActionPreference = 'Stop'
+if ($PSVersionTable.PSVersion.Major -ge 7) {
+  $PSNativeCommandUseErrorActionPreference = $true
+}
 
 $appDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $appDir
@@ -62,6 +65,8 @@ if (-not (Test-CommandExists 'pnpm')) {
     throw 'pnpm is required. Install pnpm or enable corepack first.'
   }
 }
+
+$env:NODE_ENV = if ($env:NODE_ENV) { $env:NODE_ENV } else { 'production' }
 
 if (-not (Test-Path -LiteralPath 'backend/.env')) {
   if (Test-Path -LiteralPath 'backend/.env.example.local') {

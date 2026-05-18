@@ -38,7 +38,7 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_audit_logs'; items: unknown[] }
   | { type: 'background_worker_operation_logs'; items: unknown[] }
   | { type: 'background_worker_record_maintenance'; items: unknown[] }
-  | { type: 'background_worker_runtime_log_line'; line: unknown }
+  | { type: 'background_worker_runtime_log_line'; line: unknown; sourceKey?: unknown; logFile?: unknown; logOffset?: unknown; lineNumber?: unknown }
   | { type: 'background_worker_status_request'; requestId: unknown }
 
 getBusinessDatabase()
@@ -52,7 +52,7 @@ installRecordMaintenanceQueueShutdownHooks()
 installRuntimeLogIndexQueueShutdownHooks()
 process.once('beforeExit', flushAllAuditLogQueue)
 process.once('exit', flushAllAuditLogQueue)
-setRuntimeLogLineSink((line) => enqueueRuntimeLogLineLocal(line))
+setRuntimeLogLineSink((line, options) => enqueueRuntimeLogLineLocal(line, options))
 startRuntimeLogFileImport()
 startBackgroundJobs()
 
@@ -76,7 +76,7 @@ process.on('message', (message: unknown) => {
       break
     case 'background_worker_runtime_log_line':
       if (typeof message.line === 'string') {
-        enqueueRuntimeLogLineLocal(message.line)
+        enqueueRuntimeLogLineLocal(message.line, runtimeLogLineOptionsFromMessage(message))
       }
       break
     case 'background_worker_status_request':
@@ -168,6 +168,15 @@ function sendWorkerMessage(message: Record<string, unknown>): void {
     return
   }
   process.send(message)
+}
+
+function runtimeLogLineOptionsFromMessage(message: Extract<WorkerIncomingMessage, { type: 'background_worker_runtime_log_line' }>): Parameters<typeof enqueueRuntimeLogLineLocal>[1] {
+  return {
+    sourceKey: typeof message.sourceKey === 'string' ? message.sourceKey : undefined,
+    logFile: typeof message.logFile === 'string' ? message.logFile : undefined,
+    logOffset: typeof message.logOffset === 'number' ? message.logOffset : undefined,
+    lineNumber: typeof message.lineNumber === 'number' ? message.lineNumber : undefined
+  }
 }
 
 function isWorkerIncomingMessage(message: unknown): message is WorkerIncomingMessage {

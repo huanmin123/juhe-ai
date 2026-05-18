@@ -10,7 +10,7 @@ import type {
 } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, getRecordDatabase } from './database.js'
-import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { loadSystemAccountsByIds } from './repository-lookups.js'
 
@@ -19,6 +19,11 @@ interface AuthorizationUsageFilters {
   resourceId?: string
   teamId?: string
   granteeSystemAccountId?: string
+}
+
+interface AuthorizationUsagePageOptions {
+  page?: number
+  pageSize?: number
 }
 
 type AuthorizationReportResourceType = 'all' | ResourceAuthorizationResourceType
@@ -62,10 +67,11 @@ interface AuthorizationResourceInfo {
   ownerSystemAccountId: string
 }
 
-export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): AuthorizationTeamUsageOverview {
+export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): AuthorizationTeamUsageOverview {
+  const pageOptions = normalizeAuthorizationUsagePageOptions(options)
   const filterKey = authorizationReportFilterKey(filters, access, range)
   if (!filterKey) {
-    return emptyAuthorizationTeamUsageOverview(range)
+    return emptyAuthorizationTeamUsageOverview(range, pageOptions)
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
@@ -89,19 +95,23 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
       AND (? = '' OR report.team_filter_id = ?)
       AND ${resourcePredicate.sql}
     ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.team_filter_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
+    LIMIT ? OFFSET ?
   `).all(
     filterKey.systemAccountId,
     filterKey.range.startDate,
     filterKey.range.endDate,
     filterKey.teamFilterId,
     filterKey.teamFilterId,
-    ...resourcePredicate.params
+    ...resourcePredicate.params,
+    pageOptions.pageSize + 1,
+    (pageOptions.page - 1) * pageOptions.pageSize
   ) as unknown as AuthorizationTeamUsageReportRow[]
-  const teams = loadTeamRowsByIds(rows.map((row) => row.team_id))
-  const resources = loadAuthorizationResourceInfoMap(rows)
+  const pageRows = takePageRows(rows, pageOptions.pageSize)
+  const teams = loadTeamRowsByIds(pageRows.rows.map((row) => row.team_id))
+  const resources = loadAuthorizationResourceInfoMap(pageRows.rows)
   const resourceOwners = loadAuthorizationResourceOwners(resources)
   const summary = loadAuthorizationTeamUsageSummary(filterKey)
-  const overviewRows = rows.map((row): AuthorizationTeamUsageRow => {
+  const overviewRows = pageRows.rows.map((row): AuthorizationTeamUsageRow => {
     const resource = resources.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id))
     return {
       id: [row.team_id, row.resource_filter_type, row.resource_filter_id].filter(Boolean).join(':'),
@@ -120,14 +130,19 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
     range: filterKey.range,
     summary,
     rows: overviewRows,
-    teamCount: new Set(overviewRows.map((row) => row.teamId)).size
+    teamCount: countAuthorizationTeamUsageTeams(filterKey, resourcePredicate),
+    total: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
+    page: pageOptions.page,
+    pageSize: pageOptions.pageSize,
+    hasMore: pageRows.hasMore
   }
 }
 
-export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): AuthorizationUserUsageOverview {
+export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange, options: AuthorizationUsagePageOptions = {}): AuthorizationUserUsageOverview {
+  const pageOptions = normalizeAuthorizationUsagePageOptions(options)
   const filterKey = authorizationReportFilterKey(filters, access, range)
   if (!filterKey) {
-    return emptyAuthorizationUserUsageOverview(range)
+    return emptyAuthorizationUserUsageOverview(range, pageOptions)
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
@@ -153,6 +168,7 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
       AND (? = '' OR report.grantee_filter_system_account_id = ?)
       AND ${resourcePredicate.sql}
     ORDER BY report.total_cost_usd DESC, report.request_count DESC, report.last_used_at DESC, report.grantee_filter_system_account_id ASC, report.resource_filter_type ASC, report.resource_filter_id ASC
+    LIMIT ? OFFSET ?
   `).all(
     filterKey.systemAccountId,
     filterKey.range.startDate,
@@ -160,16 +176,19 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     filterKey.teamFilterId,
     filterKey.granteeFilterSystemAccountId,
     filterKey.granteeFilterSystemAccountId,
-    ...resourcePredicate.params
+    ...resourcePredicate.params,
+    pageOptions.pageSize + 1,
+    (pageOptions.page - 1) * pageOptions.pageSize
   ) as unknown as AuthorizationUserUsageReportRow[]
-  const accounts = loadSystemAccountsByIds(rows.map((row) => row.grantee_system_account_id))
-  const teams = loadTeamRowsByIds(rows.map((row) => row.team_filter_id))
-  const teamMemberships = loadActiveTeamMembershipsBySystemAccountIds(rows.map((row) => row.grantee_system_account_id))
-  const resources = loadAuthorizationResourceInfoMap(rows)
+  const pageRows = takePageRows(rows, pageOptions.pageSize)
+  const accounts = loadSystemAccountsByIds(pageRows.rows.map((row) => row.grantee_system_account_id))
+  const teams = loadTeamRowsByIds(pageRows.rows.map((row) => row.team_filter_id))
+  const teamMemberships = loadActiveTeamMembershipsBySystemAccountIds(pageRows.rows.map((row) => row.grantee_system_account_id))
+  const resources = loadAuthorizationResourceInfoMap(pageRows.rows)
   const resourceOwners = loadAuthorizationResourceOwners(resources)
   const summary = loadAuthorizationUserUsageSummary(filterKey)
   const sourceLabels = userUsageSourceLabels(filterKey.teamFilterId)
-  const overviewRows = rows.map((row): AuthorizationUserUsageRow => {
+  const overviewRows = pageRows.rows.map((row): AuthorizationUserUsageRow => {
     const user = accounts.get(row.grantee_system_account_id)
     const resource = resources.get(authorizationResourceKey(row.resource_filter_type, row.resource_filter_id))
     return {
@@ -191,8 +210,20 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     range: filterKey.range,
     summary,
     rows: overviewRows,
-    userCount: new Set(overviewRows.map((row) => row.systemAccountId)).size
+    userCount: countAuthorizationUserUsageUsers(filterKey, resourcePredicate),
+    total: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
+    page: pageOptions.page,
+    pageSize: pageOptions.pageSize,
+    hasMore: pageRows.hasMore
   }
+}
+
+function normalizeAuthorizationUsagePageOptions(options: AuthorizationUsagePageOptions): Required<AuthorizationUsagePageOptions> {
+  const page = typeof options.page === 'number' && Number.isInteger(options.page) && options.page > 0 ? options.page : 1
+  const pageSize = typeof options.pageSize === 'number' && Number.isInteger(options.pageSize)
+    ? Math.max(1, Math.min(options.pageSize, authorizationUsageMaxPageSize))
+    : authorizationUsageDefaultPageSize
+  return { page, pageSize }
 }
 
 function authorizationReportFilterKey(filters: AuthorizationUsageFilters, access: AccessScope | undefined, range: AccountUsageStatsRange): ReportFilterKey | undefined {
@@ -289,21 +320,73 @@ function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountU
   return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
 }
 
-function emptyAuthorizationTeamUsageOverview(range: AccountUsageStatsRange): AuthorizationTeamUsageOverview {
+function countAuthorizationTeamUsageTeams(filterKey: ReportFilterKey, resourcePredicate: ReturnType<typeof authorizationDetailResourcePredicate>): number {
+  const row = getRecordDatabase().prepare(`
+    SELECT COUNT(DISTINCT report.team_filter_id) AS total
+    FROM authorization_team_usage_range_windows report
+    WHERE report.system_account_id = ?
+      AND report.start_date = ?
+      AND report.end_date = ?
+      AND report.team_filter_id <> ''
+      AND (? = '' OR report.team_filter_id = ?)
+      AND ${resourcePredicate.sql}
+  `).get(
+    filterKey.systemAccountId,
+    filterKey.range.startDate,
+    filterKey.range.endDate,
+    filterKey.teamFilterId,
+    filterKey.teamFilterId,
+    ...resourcePredicate.params
+  ) as unknown as { total?: number } | undefined
+  return Number(row?.total ?? 0)
+}
+
+function countAuthorizationUserUsageUsers(filterKey: ReportFilterKey, resourcePredicate: ReturnType<typeof authorizationDetailResourcePredicate>): number {
+  const row = getRecordDatabase().prepare(`
+    SELECT COUNT(DISTINCT report.grantee_filter_system_account_id) AS total
+    FROM authorization_user_usage_range_windows report
+    WHERE report.system_account_id = ?
+      AND report.start_date = ?
+      AND report.end_date = ?
+      AND report.team_filter_id = ?
+      AND report.grantee_filter_system_account_id <> ''
+      AND (? = '' OR report.grantee_filter_system_account_id = ?)
+      AND ${resourcePredicate.sql}
+  `).get(
+    filterKey.systemAccountId,
+    filterKey.range.startDate,
+    filterKey.range.endDate,
+    filterKey.teamFilterId,
+    filterKey.granteeFilterSystemAccountId,
+    filterKey.granteeFilterSystemAccountId,
+    ...resourcePredicate.params
+  ) as unknown as { total?: number } | undefined
+  return Number(row?.total ?? 0)
+}
+
+function emptyAuthorizationTeamUsageOverview(range: AccountUsageStatsRange, options: Required<AuthorizationUsagePageOptions>): AuthorizationTeamUsageOverview {
   return {
     range,
     summary: emptyAccountUsageSummary(),
     rows: [],
-    teamCount: 0
+    teamCount: 0,
+    total: 0,
+    page: options.page,
+    pageSize: options.pageSize,
+    hasMore: false
   }
 }
 
-function emptyAuthorizationUserUsageOverview(range: AccountUsageStatsRange): AuthorizationUserUsageOverview {
+function emptyAuthorizationUserUsageOverview(range: AccountUsageStatsRange, options: Required<AuthorizationUsagePageOptions>): AuthorizationUserUsageOverview {
   return {
     range,
     summary: emptyAccountUsageSummary(),
     rows: [],
-    userCount: 0
+    userCount: 0,
+    total: 0,
+    page: options.page,
+    pageSize: options.pageSize,
+    hasMore: false
   }
 }
 
@@ -408,3 +491,6 @@ function resourceOwnerFields(resource: AuthorizationResourceInfo | undefined, ow
     accountOwnerSystemAccountName: ownerSystemAccountId ? owner?.displayName ?? owner?.username ?? ownerSystemAccountId : undefined
   }
 }
+
+const authorizationUsageDefaultPageSize = 20
+const authorizationUsageMaxPageSize = 200

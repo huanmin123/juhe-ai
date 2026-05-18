@@ -52,6 +52,7 @@ let timedOutRequestCount = 0
 let failedRequestCount = 0
 let lastSnapshot: DbServiceRuntimeSnapshot | undefined
 let unavailableCircuitOpenUntilMs = 0
+let dbServiceReadyHandler: (() => void) | undefined
 
 interface PendingServerRuntimeRequest {
   resolve: (snapshot: DbServiceServerRuntimeSnapshot | undefined) => void
@@ -63,12 +64,13 @@ interface PendingProcessEventLoopRequest {
   timeout: NodeJS.Timeout
 }
 
-export function attachDbServiceProcess(child: ChildProcess): void {
+export function attachDbServiceProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
   dbServiceProcess = child
   dbServicePid = child.pid ?? undefined
   dbServiceHttpHost = undefined
   dbServiceHttpPort = undefined
   dbServiceReady = false
+  dbServiceReadyHandler = options.onReady
 
   child.removeAllListeners('message')
   child.on('message', handleDbServiceMessage)
@@ -96,8 +98,12 @@ export async function requestDbService<T extends DbServiceOperation>(
     throw new Error('DB service 暂时不可用，请稍后重试')
   }
 
-  if (!dbServiceProcess || !dbServiceReady || pendingRequests.size >= maxPendingRequests) {
+  const child = dbServiceProcess
+  if (!child || !child.connected || !dbServiceReady || pendingRequests.size >= maxPendingRequests) {
     openUnavailableCircuit()
+    if (child && !child.connected) {
+      markDbServiceIpcBroken(new Error('DB service IPC 已断开'), child)
+    }
     throw new Error('DB service 未就绪或请求队列已满')
   }
 
@@ -115,18 +121,25 @@ export async function requestDbService<T extends DbServiceOperation>(
         reject(new Error('DB service 请求超时'))
       }, options.timeoutMs ?? requestTimeoutMs)
       pendingRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
-      dbServiceProcess?.send(message, (error) => {
-        if (!error) {
-          return
-        }
+      const failSend = (error: unknown): void => {
         const pending = pendingRequests.get(requestId)
         if (!pending) {
           return
         }
         clearTimeout(pending.timeout)
         pendingRequests.delete(requestId)
-        pending.reject(error)
-      })
+        markDbServiceIpcBroken(error, child)
+        pending.reject(error instanceof Error ? error : new Error(String(error)))
+      }
+      try {
+        child.send(message, (error) => {
+          if (error) {
+            failSend(error)
+          }
+        })
+      } catch (error) {
+        failSend(error)
+      }
     })
   } catch (error) {
     failedRequestCount += 1
@@ -147,7 +160,7 @@ export function clearDbServiceGatewayRuntimeCache(): void {
         event: 'db_service_local_cache_invalidation_failed'
       }), 'DB service 本地缓存失效失败')
     }).finally(() => {
-      process.send?.({ type: 'gateway_runtime_cache_invalidate' } satisfies DbServiceChildMessage)
+      sendDbServiceChildMessage({ type: 'gateway_runtime_cache_invalidate' })
     })
     return
   }
@@ -186,7 +199,8 @@ export async function requestServerAccountConcurrencySnapshot(timeoutMs = 300): 
 }
 
 export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): Promise<ProcessEventLoopSample | undefined> {
-  if (runtimeConfig.processRole !== 'server' || !dbServiceProcess || !dbServiceReady) {
+  const child = dbServiceProcess
+  if (runtimeConfig.processRole !== 'server' || !child || !child.connected || !dbServiceReady) {
     return undefined
   }
 
@@ -197,14 +211,20 @@ export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): P
       resolve(undefined)
     }, timeoutMs)
     pendingProcessEventLoopRequests.set(requestId, { resolve, timeout })
-    dbServiceProcess?.send({
-      type: 'db_service_process_event_loop_request',
-      requestId
-    } satisfies DbServiceParentMessage, (error) => {
-      if (error) {
-        finishProcessEventLoopRequest(requestId, undefined)
-      }
-    })
+    try {
+      child.send({
+        type: 'db_service_process_event_loop_request',
+        requestId
+      } satisfies DbServiceParentMessage, (error) => {
+        if (error) {
+          markDbServiceIpcBroken(error, child)
+          finishProcessEventLoopRequest(requestId, undefined)
+        }
+      })
+    } catch (error) {
+      markDbServiceIpcBroken(error, child)
+      finishProcessEventLoopRequest(requestId, undefined)
+    }
   })
 }
 
@@ -215,11 +235,11 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
 
   const record = message as Partial<DbServiceParentMessage> & Record<string, unknown>
   if (record.type === 'db_service_process_event_loop_request' && typeof record.requestId === 'string') {
-    process.send?.({
+    sendDbServiceChildMessage({
       type: 'db_service_process_event_loop_response',
       requestId: record.requestId,
       sample: buildProcessEventLoopSample('db-service')
-    } satisfies DbServiceChildMessage)
+    })
     return true
   }
 
@@ -231,9 +251,7 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   if (!pending) {
     return true
   }
-  clearTimeout(pending.timeout)
-  pendingServerRuntimeRequests.delete(record.requestId)
-  pending.resolve(record.ok === true ? record.result as DbServiceServerRuntimeSnapshot : undefined)
+  finishServerRuntimeRequest(record.requestId, record.ok === true ? record.result as DbServiceServerRuntimeSnapshot : undefined)
   return true
 }
 
@@ -250,6 +268,7 @@ function handleDbServiceMessage(message: unknown): void {
       dbServicePid = typeof record.pid === 'number' ? record.pid : dbServicePid
       dbServiceHttpHost = typeof record.httpHost === 'string' ? record.httpHost : dbServiceHttpHost
       dbServiceHttpPort = typeof record.httpPort === 'number' ? record.httpPort : dbServiceHttpPort
+      dbServiceReadyHandler?.()
       lastSnapshot = {
         pid: dbServicePid ?? 0,
         ready: true,
@@ -343,6 +362,48 @@ function finishProcessEventLoopRequest(requestId: string, sample: ProcessEventLo
   pending.resolve(sample)
 }
 
+function markDbServiceIpcBroken(error: unknown, child = dbServiceProcess): void {
+  if (child && dbServiceProcess === child) {
+    dbServiceReady = false
+    dbServicePid = child.pid ?? dbServicePid
+  }
+  failPendingRequests(error instanceof Error ? error : new Error(String(error)))
+  if (child && !child.killed) {
+    try {
+      child.kill('SIGTERM')
+    } catch (killError) {
+      logger.warn(errorLogFields(killError, {
+        event: 'db_service_ipc_broken_kill_failed',
+        pid: child.pid
+      }), '终止 IPC 异常 DB service 失败')
+    }
+  }
+}
+
+function sendDbServiceChildMessage(message: DbServiceChildMessage, onFailure?: () => void): void {
+  if (!process.send) {
+    onFailure?.()
+    return
+  }
+  try {
+    process.send(message, (error) => {
+      if (error) {
+        logger.warn(errorLogFields(error, {
+          event: 'db_service_child_ipc_send_failed',
+          messageType: message.type
+        }), 'DB service 向父进程发送 IPC 消息失败')
+        onFailure?.()
+      }
+    })
+  } catch (error) {
+    logger.warn(errorLogFields(error, {
+      event: 'db_service_child_ipc_send_failed',
+      messageType: message.type
+    }), 'DB service 向父进程发送 IPC 消息失败')
+    onFailure?.()
+  }
+}
+
 function openUnavailableCircuit(): void {
   unavailableCircuitOpenUntilMs = Math.max(unavailableCircuitOpenUntilMs, Date.now() + unavailableCircuitOpenMs)
 }
@@ -369,19 +430,19 @@ async function respondToServerRuntimeRequest(requestId: string, scope: DbService
     const snapshot = scope === 'account_concurrency'
       ? await buildServerAccountConcurrencySnapshot()
       : await buildServerRuntimeSnapshot()
-    child.send?.({
+    sendToDbServiceProcess(child, {
       type: 'db_service_server_runtime_response',
       requestId,
       ok: true,
       result: snapshot
-    } satisfies DbServiceParentMessage)
+    })
   } catch (error) {
-    child.send?.({
+    sendToDbServiceProcess(child, {
       type: 'db_service_server_runtime_response',
       requestId,
       ok: false,
       errorMessage: error instanceof Error ? error.message : String(error)
-    } satisfies DbServiceParentMessage)
+    })
   }
 }
 
@@ -400,12 +461,41 @@ async function requestServerRuntimeSnapshotByScope(
       resolve(undefined)
     }, timeoutMs)
     pendingServerRuntimeRequests.set(requestId, { resolve, timeout })
-    process.send?.({
+    sendDbServiceChildMessage({
       type: 'db_service_server_runtime_request',
       requestId,
       scope
-    } satisfies DbServiceChildMessage)
+    }, () => {
+      finishServerRuntimeRequest(requestId, undefined)
+    })
   })
+}
+
+function finishServerRuntimeRequest(requestId: string, snapshot: DbServiceServerRuntimeSnapshot | undefined): void {
+  const pending = pendingServerRuntimeRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+
+  clearTimeout(pending.timeout)
+  pendingServerRuntimeRequests.delete(requestId)
+  pending.resolve(snapshot)
+}
+
+function sendToDbServiceProcess(child: ChildProcess, message: DbServiceParentMessage): void {
+  if (!child.connected) {
+    markDbServiceIpcBroken(new Error('DB service IPC 已断开'), child)
+    return
+  }
+  try {
+    child.send(message, (error) => {
+      if (error) {
+        markDbServiceIpcBroken(error, child)
+      }
+    })
+  } catch (error) {
+    markDbServiceIpcBroken(error, child)
+  }
 }
 
 async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnapshot> {

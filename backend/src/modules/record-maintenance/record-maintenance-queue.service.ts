@@ -1,6 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
-import { cleanupUsageRecordsBeforeWithResult } from '../../storage/data-retention.repository.js'
+import { cleanupProcessedUsageRecordsBeforeWithResult } from '../../storage/data-retention.repository.js'
 import { newId, nowIso } from '../../storage/database.js'
 import {
   cleanupDeletedApiKeyRelatedRecordData,
@@ -77,31 +77,23 @@ export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJo
   }
 
   if (runtimeConfig.processRole === 'db-service') {
-    if (process.send) {
+    if (process.send && process.connected !== false) {
       try {
         process.send({
           type: 'background_worker_record_maintenance',
           items: [job]
+        }, (error) => {
+          if (error) {
+            recordRecordMaintenanceDispatchFailure(error, job)
+          }
         })
         return { job, queued: true }
       } catch (error) {
-        droppedDispatchCount += 1
-        logger.warn(errorLogFields(error, {
-          event: 'record_maintenance_queue_dispatch_failed',
-          jobType: job.type,
-          jobId: job.id,
-          droppedDispatchCount
-        }), 'DB service 记录库维护任务投递失败')
+        recordRecordMaintenanceDispatchFailure(error, job)
         return { job, queued: false, droppedReason: 'worker_dispatch_failed' }
       }
     }
-    droppedDispatchCount += 1
-    logger.warn({
-      event: 'record_maintenance_queue_dispatch_failed',
-      jobType: job.type,
-      jobId: job.id,
-      droppedDispatchCount
-    }, 'DB service 无父进程 IPC，记录库维护任务已跳过投递')
+    recordRecordMaintenanceDispatchFailure(new Error('DB service 无父进程 IPC'), job)
     return { job, queued: false, droppedReason: 'worker_ipc_unavailable' }
   }
 
@@ -130,6 +122,7 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
   }
 
   flushing = true
+  let failed = false
   let shouldRetry = false
   let flushedBatches = 0
   const maxBatches = normalizeMaxBatches(options.maxBatches)
@@ -154,6 +147,7 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
             completedCount += 1
           }
         } catch (error) {
+          failed = true
           pendingJobs = [job, ...batch.slice(index + 1), ...pendingJobs]
           flushFailureCount += 1
           logger.error(errorLogFields(error, {
@@ -170,7 +164,7 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
     } while (options.drain && pendingJobs.length > 0 && flushedBatches < maxBatches)
   } finally {
     flushing = false
-    if (pendingJobs.length > 0) {
+    if (pendingJobs.length > 0 && (!failed || shouldRetry)) {
       scheduleRecordMaintenanceFlush(shouldRetry ? recordMaintenanceRetryDelayMs : 0)
     }
   }
@@ -328,9 +322,10 @@ function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number;
   }
 
   for (let index = 0; index < input.maxBatches; index += 1) {
-    const batch = cleanupUsageRecordsBeforeWithResult(input.cutoffAt, input.batchSize)
+    const batch = cleanupProcessedUsageRecordsBeforeWithResult(input.cutoffAt, input.batchSize)
     deletedRows += batch.deletedRows
     hasMore = batch.hasMore
+    blockedReason = batch.blockedReason ?? blockedReason
     if (batch.deletedRows > 0) {
       batches += 1
     }
@@ -409,6 +404,16 @@ function scheduleRecordMaintenanceFlush(delayMs: number): void {
     flushRecordMaintenanceQueue()
   }, delayMs)
   flushTimer.unref()
+}
+
+function recordRecordMaintenanceDispatchFailure(error: unknown, job: RecordMaintenanceJob): void {
+  droppedDispatchCount += 1
+  logger.warn(errorLogFields(error, {
+    event: 'record_maintenance_queue_dispatch_failed',
+    jobType: job.type,
+    jobId: job.id,
+    droppedDispatchCount
+  }), 'DB service 记录库维护任务投递失败，已跳过投递')
 }
 
 function normalizeMaxBatches(value: number | undefined): number {
