@@ -377,13 +377,13 @@ function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: strin
     return undefined
   }
   const accountOwnerId = row.system_account_id
-  const authorization = accountOwnerId && systemAccountId && accountOwnerId !== systemAccountId
-    ? activeAccountAuthorization(row.id, systemAccountId)
+  const activeAuthorizationId = accountOwnerId && systemAccountId && accountOwnerId !== systemAccountId
+    ? row.authorization_id ?? undefined
     : undefined
   return {
     groupId: row.bound_group_id,
     groupName: row.bound_group_name ?? row.bound_group_id,
-    groupBindStatus: row.bound_group_account_authorization_id && authorization?.id !== row.bound_group_account_authorization_id ? 'authorization_unavailable' : 'bound'
+    groupBindStatus: row.bound_group_account_authorization_id && activeAuthorizationId !== row.bound_group_account_authorization_id ? 'authorization_unavailable' : 'bound'
   }
 }
 

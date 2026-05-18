@@ -67,7 +67,7 @@ export function loadResourceAuthorizationSourcesByAuthorizationIds(authorization
   const database = getDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database.prepare(`
-      SELECT ras.*, system_teams.name AS team_name
+      SELECT ${resourceAuthorizationSourceSelectColumns('ras')}, system_teams.name AS team_name
       FROM resource_authorization_sources ras
       LEFT JOIN system_teams ON system_teams.id = ras.source_team_id
       WHERE ras.authorization_id IN (${sqlPlaceholders(chunk.length)})
@@ -95,4 +95,22 @@ export function loadResourceAuthorizationSourcesByAuthorizationIds(authorization
     result.set(row.authorization_id, [...(result.get(row.authorization_id) ?? []), summary])
   }
   return result
+}
+
+function resourceAuthorizationSourceSelectColumns(alias: string): string {
+  return [
+    'id',
+    'authorization_id',
+    'source_type',
+    'source_team_id',
+    'status',
+    'activated_at',
+    'ended_at',
+    'ended_reason',
+    'created_by',
+    'created_at',
+    'revoked_by',
+    'revoked_at',
+    'updated_at'
+  ].map((column) => `${alias}.${column}`).join(', ')
 }

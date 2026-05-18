@@ -199,7 +199,30 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
-  return getDatabase().prepare(`SELECT rag.* FROM resource_authorization_grants rag ${where} ORDER BY CASE rag.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, rag.updated_at DESC, rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[]
+  return getDatabase().prepare(`SELECT ${resourceAuthorizationGrantSelectColumns('rag')} FROM resource_authorization_grants rag ${where} ORDER BY CASE rag.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, rag.updated_at DESC, rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[]
+}
+
+function resourceAuthorizationGrantSelectColumns(alias: string): string {
+  return [
+    'id',
+    'resource_type',
+    'resource_id',
+    'resource_owner_system_account_id',
+    'grantee_type',
+    'grantee_system_account_id',
+    'grantee_team_id',
+    'scope',
+    'status',
+    'remark',
+    'expires_at',
+    'limits_json',
+    'model_policy_json',
+    'created_by',
+    'created_at',
+    'revoked_by',
+    'revoked_at',
+    'updated_at'
+  ].map((column) => `${alias}.${column}`).join(', ')
 }
 
 export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationGrantRow, database = getDatabase()): ResourceAuthorizationRow | undefined {

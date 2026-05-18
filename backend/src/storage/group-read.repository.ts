@@ -64,24 +64,24 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   if (!ownerSystemAccountId && canAccessAll(access)) {
     const rows = getDatabase()
-      .prepare(`SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC${pageClause}`)
+      .prepare(`SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC${pageClause}`)
       .all(...pageParams) as unknown as GroupListRow[]
     return { rows }
   }
   if (!viewerSystemAccountId) {
     const rows = getDatabase()
-      .prepare(`SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC${pageClause}`)
+      .prepare(`SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC${pageClause}`)
       .all(...pageParams) as unknown as GroupListRow[]
     return { rows }
   }
   const rows = getDatabase()
     .prepare(`
       SELECT * FROM (
-        SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+        SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM groups
         WHERE groups.system_account_id = ?
         UNION ALL
-        SELECT groups.*, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
+        SELECT ${groupRowSelectColumns('groups')}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
         FROM resource_authorizations ra
         INNER JOIN groups ON groups.id = ra.resource_id
         WHERE ra.resource_type = 'group'
@@ -102,23 +102,23 @@ export function findGroupRowForAccess(access: AccessScope | undefined, groupId: 
   const ownerSystemAccountId = manageableSystemAccountId(access)
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return getDatabase()
-      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups WHERE groups.id = ?")
+      .prepare(`SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups WHERE groups.id = ?`)
       .get(groupId) as unknown as GroupListRow | undefined
   }
   if (!viewerSystemAccountId) {
     return getDatabase()
-      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups WHERE groups.id = ?")
+      .prepare(`SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups WHERE groups.id = ?`)
       .get(groupId) as unknown as GroupListRow | undefined
   }
   return getDatabase()
     .prepare(`
       SELECT * FROM (
-        SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+        SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM groups
         WHERE groups.id = ?
           AND groups.system_account_id = ?
         UNION ALL
-        SELECT groups.*, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
+        SELECT ${groupRowSelectColumns('groups')}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
         FROM resource_authorizations ra
         INNER JOIN groups ON groups.id = ra.resource_id
         WHERE groups.id = ?
@@ -131,6 +131,20 @@ export function findGroupRowForAccess(access: AccessScope | undefined, groupId: 
       LIMIT 1
     `)
     .get(groupId, ownerSystemAccountId ?? viewerSystemAccountId, groupId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow | undefined
+}
+
+function groupRowSelectColumns(alias: string): string {
+  return [
+    'id',
+    'system_account_id',
+    'name',
+    'provider_code',
+    'description',
+    'enabled',
+    'is_default',
+    'created_at',
+    'updated_at'
+  ].map((column) => `${alias}.${column}`).join(', ')
 }
 
 export function loadGroupAuthorizationUsageSummaries(

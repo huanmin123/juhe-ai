@@ -422,7 +422,8 @@ function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
 }
 
 function flushWorkerMessageQueue(): void {
-  if (sendingMessage || !workerProcess || !workerReady) {
+  const child = workerProcess
+  if (sendingMessage || !child || !workerReady) {
     return
   }
 
@@ -434,15 +435,22 @@ function flushWorkerMessageQueue(): void {
   sendingMessage = true
   sendingWorkerMessage = message
   try {
-    const accepted = workerProcess.send(message, (error) => {
-      sendingMessage = false
-      sendingWorkerMessage = undefined
+    const accepted = child.send(message, (error) => {
+      const stillSendingThisMessage = sendingWorkerMessage === message
+      if (stillSendingThisMessage) {
+        sendingMessage = false
+        sendingWorkerMessage = undefined
+      }
       if (error) {
-        requeueWorkerMessageFirst(message)
-        markWorkerIpcBroken(error)
+        if (stillSendingThisMessage) {
+          requeueWorkerMessageFirst(message)
+        }
+        markWorkerIpcBroken(error, child)
         return
       }
-      flushWorkerMessageQueue()
+      if (stillSendingThisMessage) {
+        flushWorkerMessageQueue()
+      }
     })
     if (!accepted) {
       // 由 callback 继续驱动后续发送。
@@ -451,7 +459,7 @@ function flushWorkerMessageQueue(): void {
     sendingMessage = false
     sendingWorkerMessage = undefined
     requeueWorkerMessageFirst(message)
-    markWorkerIpcBroken(error)
+    markWorkerIpcBroken(error, child)
     process.stderr.write(`[background-worker] 向 worker 发送消息失败：${error instanceof Error ? error.message : String(error)}\n`)
   }
 }
@@ -779,11 +787,13 @@ function finishProcessEventLoopRequest(requestId: string, samples: ProcessEventL
   pending.resolve(samples)
 }
 
-function markWorkerIpcBroken(error: unknown): void {
-  const child = workerProcess
-  workerReady = false
-  workerPid = child?.pid ?? workerPid
-  failPendingRequests()
+function markWorkerIpcBroken(error: unknown, child = workerProcess): void {
+  const isCurrentChild = child === undefined || workerProcess === child
+  if (isCurrentChild) {
+    workerReady = false
+    workerPid = child?.pid ?? workerPid
+    failPendingRequests()
+  }
   if (child && !child.killed) {
     try {
       child.kill('SIGTERM')
@@ -812,15 +822,23 @@ async function respondToProcessEventLoopRequest(requestId: string): Promise<void
     samples.push(dbServiceSample)
   }
 
-  workerProcess?.send?.({
-    type: 'background_worker_process_event_loop_response',
-    requestId,
-    samples
-  } satisfies BackgroundWorkerMessage, (error) => {
-    if (error) {
-      markWorkerIpcBroken(error)
-    }
-  })
+  const child = workerProcess
+  if (!child || !child.connected) {
+    return
+  }
+  try {
+    child.send({
+      type: 'background_worker_process_event_loop_response',
+      requestId,
+      samples
+    } satisfies BackgroundWorkerMessage, (error) => {
+      if (error) {
+        markWorkerIpcBroken(error, child)
+      }
+    })
+  } catch (error) {
+    markWorkerIpcBroken(error, child)
+  }
 }
 
 async function dbServiceProcessEventLoopSample(): Promise<ProcessEventLoopSample | undefined> {

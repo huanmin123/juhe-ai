@@ -183,6 +183,8 @@ export interface GroupRow {
   description: string | null
   enabled: number
   is_default: number
+  created_at: string
+  updated_at: string
 }
 
 export type GroupListRow = GroupRow & {

@@ -25,7 +25,7 @@ const {
 workerPort.on('message', (message: GatewayJsonWorkerRequest) => {
   const id = message.id
   try {
-    const rawBody = Buffer.from(message.rawBody)
+    const rawBody = Buffer.from(message.rawBody.buffer, message.rawBody.byteOffset, message.rawBody.byteLength)
     if (message.type === 'normalize_openai_oauth_codex_body') {
       if (!message.normalizeInput) {
         throw new Error('OpenAI OAuth Codex 归一化参数缺失')

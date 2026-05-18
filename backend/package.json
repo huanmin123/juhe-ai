@@ -16,6 +16,7 @@
     "test:codex-turn-switch-e2e": "tsx src/scripts/regression/codex-turn-account-switch-e2e-regression.ts",
     "test:smoke:mock": "tsx src/scripts/regression/codex-turn-account-switch-e2e-regression.ts",
     "test:db-service-worker-local": "tsx src/scripts/regression/db-service-worker-local-regression.ts",
+    "test:db-service-ipc-timeout-recovery": "tsx src/scripts/regression/db-service-ipc-timeout-recovery-regression.ts",
     "test:db-service-system-api-boundary": "tsx src/scripts/regression/db-service-system-api-boundary-regression.ts",
     "test:db-service-system-api-http": "tsx src/scripts/regression/db-service-system-api-http-regression.ts",
     "test:disabled-account-state-guard": "tsx src/scripts/regression/disabled-account-state-guard-regression.ts",
@@ -68,7 +69,7 @@
     "test:proxy-single-read": "tsx src/scripts/regression/proxy-single-read-regression.ts",
     "test:announcement-single-read": "tsx src/scripts/regression/announcement-single-read-regression.ts",
     "clean:dist": "node --input-type=module -e \"import { rmSync } from 'node:fs'; rmSync('dist', { recursive: true, force: true })\"",
-    "build": "pnpm run clean:dist && tsc -p tsconfig.json",
+    "build": "pnpm run clean:dist && tsc -p tsconfig.build.json",
     "start": "node dist/scripts/preflight/check-node-sqlite.js && node dist/server.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "tsc -p tsconfig.json --noEmit"

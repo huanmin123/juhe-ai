@@ -61,11 +61,26 @@ export function loadGroupAccountStatsByGroupIds(groupIds: string[]): Map<string,
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database
       .prepare(`
-        SELECT *
+        SELECT ${groupAccountStatsSelectColumns()}
         FROM group_account_stats
         WHERE group_id IN (${sqlPlaceholders(chunk.length)})
       `)
       .all(...chunk) as unknown as GroupAccountStatsRow[])
   }
   return new Map(rows.map((row) => [row.group_id, row]))
+}
+
+function groupAccountStatsSelectColumns(): string {
+  return [
+    'system_account_id',
+    'group_id',
+    'total',
+    'active',
+    'disabled',
+    'rate_limited',
+    'error',
+    'available',
+    'current_concurrency',
+    'concurrency_limit'
+  ].join(', ')
 }

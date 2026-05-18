@@ -1,7 +1,7 @@
 import type { SystemAccountSummary } from '../domain/types.js'
 import { getDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
+import { systemAccountSummaryFromRow, type SystemAccountSummaryRow } from './system-account-mappers.js'
 
 function uniqueIds(values: string[]): string[] {
   return [...new Set(values)].filter(Boolean)
@@ -26,7 +26,11 @@ export function loadSystemAccountNameMap(): Map<string, string> {
 export function loadSystemAccountsByIds(systemAccountIds: string[]): Map<string, SystemAccountSummary> {
   const ids = uniqueIds(systemAccountIds)
   if (!ids.length) return new Map()
-  const rows = loadRowsByIds<SystemAccountRow>(ids, (chunk) => `SELECT * FROM system_accounts WHERE id IN (${sqlPlaceholders(chunk.length)})`)
+  const rows = loadRowsByIds<SystemAccountSummaryRow>(ids, (chunk) => `
+    SELECT id, username, display_name, description, role, status, must_change_password, last_login_at, created_at, updated_at
+    FROM system_accounts
+    WHERE id IN (${sqlPlaceholders(chunk.length)})
+  `)
   return new Map(rows.map((row) => [row.id, systemAccountSummaryFromRow(row)]))
 }
 

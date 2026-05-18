@@ -100,6 +100,14 @@ interface GroupSummary {
   name: string
 }
 
+interface GroupListResult {
+  items: GroupSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 interface ApiKeySummary {
   id: string
   systemAccountId?: string
@@ -212,6 +220,14 @@ interface ResourceAuthorizationSummary {
   }
 }
 
+interface ResourceAuthorizationListResult {
+  items: ResourceAuthorizationSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 interface SeedState {
   adminId: string
   userAId: string
@@ -291,6 +307,12 @@ async function main(): Promise<void> {
       providerCode: 'openai'
     })
     assert(createdGroup.systemAccountId === seed.userBId, '管理员按用户 B 创建分组没有归属到用户 B')
+    const userBGroupPage1 = await getEnvelope<GroupListResult>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
+    assert(userBGroupPage1.items.length === 1 && userBGroupPage1.page === 1 && userBGroupPage1.pageSize === 1, '管理分组分页第一页异常')
+    assert(userBGroupPage1.hasMore === true && userBGroupPage1.total >= 2, '管理分组分页应使用兼容 total 并提示还有更多')
+    const userAMyGroupPage1 = await getEnvelope<GroupListResult>(baseUrl, '/__aisys__/api/my-groups?page=1&pageSize=1', seed.userACookie)
+    assert(userAMyGroupPage1.items.length === 1 && userAMyGroupPage1.pageSize === 1, '用户侧分组分页第一页异常')
+    assert(userAMyGroupPage1.hasMore === true, '用户侧分组分页应提示还有更多')
     summary.push('管理员代建分组归属检查通过')
 
     const createdApiKey = await postEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}`, seed.adminCookie, {
@@ -420,6 +442,9 @@ async function main(): Promise<void> {
     assert(teamInboundAuthorization?.resourceOwnerSystemAccountId === seed.userBId && teamInboundAuthorization.granteeTeamId === seed.teamSharedId, '用户 A 我的授权没有返回团队入站授权')
     assert(inboundAuthorization.permissions?.canEdit === false && inboundAuthorization.permissions.canAuthorize === false, '入站授权不应允许普通用户管理')
     assert(teamInboundAuthorization.permissions?.canEdit === false && teamInboundAuthorization.permissions.canAuthorize === false, '团队入站授权不应允许普通用户管理')
+    const userAAuthorizationPage1 = await getEnvelope<ResourceAuthorizationListResult>(baseUrl, '/__aisys__/api/my-authorizations?status=all&page=1&pageSize=1', seed.userACookie)
+    assert(userAAuthorizationPage1.items.length === 1 && userAAuthorizationPage1.page === 1 && userAAuthorizationPage1.pageSize === 1, '用户 A 我的授权分页第一页异常')
+    assert(userAAuthorizationPage1.hasMore === true && userAAuthorizationPage1.total >= 2, '用户 A 我的授权分页应提示还有更多')
     const userAInboundAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, '/__aisys__/api/my-authorizations?status=all&direction=inbound', seed.userACookie)
     assert(userAInboundAuthorizations.some((authorization) => authorization.id === seed.inboundAuthorizationId), '用户 A 我的授权入站筛选没有返回授权给我的记录')
     assert(userAInboundAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '用户 A 我的授权入站筛选没有返回团队授权记录')
@@ -440,6 +465,8 @@ async function main(): Promise<void> {
     assert(adminAuthorization.permissions?.canEdit === true, '管理员统一授权管理应保留管理能力')
     const adminTeamAuthorizations = await getEnvelope<ResourceAuthorizationSummary[]>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userBId}&sourceType=team`, seed.adminCookie)
     assert(adminTeamAuthorizations.some((authorization) => authorization.id === seed.teamInboundAuthorizationId), '管理员统一授权团队来源筛选没有返回团队授权记录')
+    const adminAuthorizationPage1 = await getEnvelope<ResourceAuthorizationListResult>(baseUrl, `/__aisys__/api/authorizations?status=all&systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
+    assert(adminAuthorizationPage1.items.length === 1 && adminAuthorizationPage1.hasMore === true && adminAuthorizationPage1.total >= 2, '管理员统一授权分页异常')
     summary.push('授权方向作用域检查通过')
 
     console.log(`作用域边界回归通过：${summary.join('，')}`)

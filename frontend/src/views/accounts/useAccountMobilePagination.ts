@@ -23,7 +23,10 @@ export function useAccountMobilePagination(
     total: totalCount(),
     hideOnSinglePage: true,
     showSizeChanger: false,
-    showTotal: (total: number) => `共 ${total} 个账户`
+    showTotal: (total: number, range?: [number, number]) => {
+      const loadedEnd = range?.[1] ?? Math.min(total, accountPagination.current * accountPagination.pageSize)
+      return mobileHasMore.value ? `已加载到第 ${loadedEnd} 个账户，还有更多` : `共 ${loadedEnd} 个账户`
+    }
   }))
 
   function resetPagination() {

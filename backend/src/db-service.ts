@@ -91,7 +91,23 @@ function sendDbServiceMessage(message: Record<string, unknown>): void {
   if (!process.send) {
     return
   }
-  process.send(message)
+  try {
+    process.send(message, (error) => {
+      if (error) {
+        logger.error(errorLogFields(error, {
+          event: 'db_service_child_ipc_send_failed',
+          messageType: typeof message.type === 'string' ? message.type : undefined
+        }), '数据库服务向父进程发送 IPC 消息失败，进程将退出等待 supervisor 重启')
+        process.exit(1)
+      }
+    })
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'db_service_child_ipc_send_failed',
+      messageType: typeof message.type === 'string' ? message.type : undefined
+    }), '数据库服务向父进程发送 IPC 消息失败，进程将退出等待 supervisor 重启')
+    process.exit(1)
+  }
 }
 
 type DbServiceRequestParentMessage = Extract<DbServiceParentMessage, { type: 'db_service_request' }>

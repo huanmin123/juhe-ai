@@ -14,7 +14,9 @@ export interface SystemAccountRow {
   updated_at: string
 }
 
-export function systemAccountSummaryFromRow(row: SystemAccountRow): SystemAccountSummary {
+export type SystemAccountSummaryRow = Omit<SystemAccountRow, 'password_hash'>
+
+export function systemAccountSummaryFromRow(row: SystemAccountSummaryRow): SystemAccountSummary {
   return {
     id: row.id,
     username: row.username,

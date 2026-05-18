@@ -42,7 +42,7 @@
     <div
       v-else
       ref="mobileListRef"
-      :class="['responsive-data-list-cards', cardClass]"
+      :class="['responsive-data-list-cards', cardClass, { 'responsive-data-list-cards-virtualized': shouldVirtualizeMobileCards }]"
       @scroll="handleMobileScroll"
       @touchstart.passive="handleTouchStart"
       @touchmove.passive="handleTouchMove"
@@ -54,8 +54,32 @@
       </div>
       <a-spin v-if="loading" class="responsive-data-list-loading" />
       <template v-else-if="mobileDataSource.length">
-        <template v-for="(record, index) in mobileDataSource" :key="resolveRowKey(record, index)">
-          <slot name="card" :record="record" :index="index" />
+        <template v-if="shouldVirtualizeMobileCards">
+          <div
+            v-if="mobileVirtualWindow.topPadding > 0"
+            class="responsive-data-list-virtual-spacer"
+            :style="{ height: `${mobileVirtualWindow.topPadding}px` }"
+          />
+          <div
+            v-for="virtualItem in mobileVirtualItems"
+            :key="virtualItem.key"
+            :ref="(element) => setMobileItemRef(element, virtualItem.heightKey)"
+            class="responsive-data-list-item"
+            :class="{ 'responsive-data-list-item-last': virtualItem.index === mobileDataSource.length - 1 }"
+            :data-mobile-list-index="virtualItem.index"
+          >
+            <slot name="card" :record="virtualItem.record" :index="virtualItem.index" />
+          </div>
+          <div
+            v-if="mobileVirtualWindow.bottomPadding > 0"
+            class="responsive-data-list-virtual-spacer"
+            :style="{ height: `${mobileVirtualWindow.bottomPadding}px` }"
+          />
+        </template>
+        <template v-else>
+          <template v-for="(record, index) in mobileDataSource" :key="resolveRowKey(record, index)">
+            <slot name="card" :record="record" :index="index" />
+          </template>
         </template>
         <div v-if="mobilePagination" class="responsive-data-list-footer">
           <a-spin v-if="loadingMore" size="small" />
@@ -102,6 +126,8 @@ const props = withDefaults(defineProps<{
   adaptiveColumnWidth?: boolean
   deferTableMount?: boolean
   tableMountDelayFrames?: number
+  mobileVirtualized?: boolean
+  mobileVirtualizeThreshold?: number
 }>(), {
   rowKey: 'id',
   loading: false,
@@ -120,7 +146,9 @@ const props = withDefaults(defineProps<{
   pullRefreshEnabled: false,
   adaptiveColumnWidth: true,
   deferTableMount: true,
-  tableMountDelayFrames: 1
+  tableMountDelayFrames: 1,
+  mobileVirtualized: true,
+  mobileVirtualizeThreshold: 60
 })
 
 const emit = defineEmits<{
@@ -154,15 +182,32 @@ const defaultPageSize = 20
 const tableHeaderHeight = 47
 const tablePaginationHeight = 56
 const minTableBodyHeight = 160
+const defaultMobileItemHeight = 148
+const mobileVirtualOverscanItems = 10
 let listResizeObserver: ResizeObserver | undefined
 let tableMutationObserver: MutationObserver | undefined
+let mobileItemResizeObserver: ResizeObserver | undefined
 let tableScrollbarPlaceholderFrame = 0
+let mobileMeasurementFrame = 0
 let tableScrollbarPlaceholderTimers: number[] = []
 let tableScrollbarPlaceholderUpdateQueued = false
 let bodyScrollLocked = false
 let viewportListenersAttached = false
 
+type MobileVirtualItem<TRecord> = {
+  record: TRecord
+  index: number
+  key: string | number
+  heightKey: string
+}
+
 const mobileDataSource = computed(() => props.mobileDataSource ?? props.dataSource)
+const mobileScrollTop = ref(0)
+const mobileContainerHeight = ref(0)
+const mobileEstimatedItemHeight = ref(defaultMobileItemHeight)
+const mobileItemHeightVersion = ref(0)
+const mobileItemHeights = new Map<string, number>()
+const mobileItemElements = new Map<string, HTMLElement>()
 const tableColumns = computed(() => normalizeTableColumns(props.columns))
 const tableClassNames = computed(() => [
   'responsive-data-list-table',
@@ -229,6 +274,72 @@ const mobileFooterText = computed(() => {
   return props.mobileHasMore ? '上拉加载更多' : '没有更多了'
 })
 
+const shouldVirtualizeMobileCards = computed(() => (
+  props.mobileVirtualized &&
+  isMobile.value &&
+  mobileDataSource.value.length > props.mobileVirtualizeThreshold
+))
+
+const mobileVirtualWindow = computed(() => {
+  const records = mobileDataSource.value
+  const total = records.length
+  if (!shouldVirtualizeMobileCards.value || total === 0) {
+    return { start: 0, end: total, topPadding: 0, bottomPadding: 0 }
+  }
+
+  void mobileItemHeightVersion.value
+  const viewportHeight = Math.max(mobileContainerHeight.value || listHeight.value || 600, 240)
+  const estimatedItemHeight = Math.max(1, mobileEstimatedItemHeight.value)
+  const overscanHeight = estimatedItemHeight * mobileVirtualOverscanItems
+  const visibleStart = Math.max(0, mobileScrollTop.value - overscanHeight)
+  const visibleEnd = mobileScrollTop.value + viewportHeight + overscanHeight
+
+  let offset = 0
+  let start = 0
+  for (; start < total; start += 1) {
+    const itemHeight = getMobileItemHeight(records[start], start)
+    if (offset + itemHeight >= visibleStart) break
+    offset += itemHeight
+  }
+
+  const topPadding = offset
+  let end = start
+  for (; end < total; end += 1) {
+    offset += getMobileItemHeight(records[end], end)
+    if (offset >= visibleEnd) {
+      end += 1
+      break
+    }
+  }
+  end = Math.min(total, Math.max(start + 1, end))
+
+  let totalHeight = offset
+  for (let index = end; index < total; index += 1) {
+    totalHeight += getMobileItemHeight(records[index], index)
+  }
+
+  return {
+    start,
+    end,
+    topPadding,
+    bottomPadding: Math.max(0, totalHeight - offset)
+  }
+})
+
+const mobileVirtualItems = computed<MobileVirtualItem<T>[]>(() => {
+  const { start, end } = mobileVirtualWindow.value
+  return mobileDataSource.value.slice(start, end).map((record, offset) => {
+    const index = start + offset
+    const key = resolveRowKey(record, index)
+    return {
+      record,
+      index,
+      key,
+      heightKey: normalizeMobileItemHeightKey(key)
+    }
+  })
+})
+
 function updateViewportState() {
   if (typeof window === 'undefined') return
   isMobile.value = window.innerWidth <= props.mobileBreakpoint
@@ -236,6 +347,7 @@ function updateViewportState() {
 
 function updateListHeight() {
   listHeight.value = listRootRef.value?.clientHeight ?? 0
+  updateMobileViewportMetrics()
   queueTableScrollbarPlaceholderUpdate()
 }
 
@@ -246,6 +358,25 @@ function initialMobileState() {
 function resolveRowKey(record: T, index: number): string | number {
   if (typeof props.rowKey === 'function') return props.rowKey(record)
   return record[props.rowKey] ?? index
+}
+
+function normalizeMobileItemHeightKey(key: string | number): string {
+  return `${typeof key}:${String(key)}`
+}
+
+function getMobileItemHeight(record: T, index: number): number {
+  return mobileItemHeights.get(mobileItemHeightKey(record, index)) ?? mobileEstimatedItemHeight.value
+}
+
+function mobileItemHeightKey(record: T, index: number): string {
+  return normalizeMobileItemHeightKey(resolveRowKey(record, index))
+}
+
+function updateMobileViewportMetrics() {
+  const list = mobileListRef.value
+  if (!list) return
+  mobileContainerHeight.value = list.clientHeight
+  mobileScrollTop.value = list.scrollTop
 }
 
 function numberFromPagination(value: unknown): number | undefined {
@@ -481,6 +612,108 @@ function disconnectListResize() {
   listResizeObserver = undefined
 }
 
+function ensureMobileItemResizeObserver() {
+  if (mobileItemResizeObserver || typeof ResizeObserver === 'undefined') return
+  mobileItemResizeObserver = new ResizeObserver((entries) => {
+    let updated = false
+    entries.forEach((entry) => {
+      if (entry.target instanceof HTMLElement) {
+        updated = updateMobileItemHeight(entry.target) || updated
+      }
+    })
+    if (updated) updateMobileEstimatedItemHeight()
+  })
+}
+
+function observeRenderedMobileItems() {
+  ensureMobileItemResizeObserver()
+  if (!mobileItemResizeObserver) return
+  mobileItemElements.forEach((element) => mobileItemResizeObserver?.observe(element))
+}
+
+function disconnectMobileItemResizeObserver() {
+  mobileItemResizeObserver?.disconnect()
+  mobileItemResizeObserver = undefined
+  cancelMobileItemMeasurement()
+}
+
+function setMobileItemRef(element: unknown, heightKey: string) {
+  const resolvedElement = resolveElementRef(element)
+  const existingElement = mobileItemElements.get(heightKey)
+  if (existingElement && existingElement !== resolvedElement) {
+    mobileItemResizeObserver?.unobserve(existingElement)
+    mobileItemElements.delete(heightKey)
+  }
+  if (!resolvedElement) return
+  mobileItemElements.set(heightKey, resolvedElement)
+  ensureMobileItemResizeObserver()
+  mobileItemResizeObserver?.observe(resolvedElement)
+  queueMobileItemMeasurement()
+}
+
+function resolveElementRef(element: unknown): HTMLElement | undefined {
+  if (typeof HTMLElement === 'undefined') return undefined
+  if (element instanceof HTMLElement) return element
+  const possibleElement = element && typeof element === 'object' ? (element as { $el?: unknown }).$el : undefined
+  return possibleElement instanceof HTMLElement ? possibleElement : undefined
+}
+
+function updateMobileItemHeight(element: HTMLElement): boolean {
+  const index = Number(element.dataset.mobileListIndex)
+  const record = mobileDataSource.value[index]
+  if (!record) return false
+  const height = Math.ceil(element.getBoundingClientRect().height)
+  if (!Number.isFinite(height) || height <= 0) return false
+  const heightKey = mobileItemHeightKey(record, index)
+  const previousHeight = mobileItemHeights.get(heightKey)
+  if (previousHeight !== undefined && Math.abs(previousHeight - height) <= 1) return false
+  mobileItemHeights.set(heightKey, height)
+  mobileItemHeightVersion.value += 1
+  return true
+}
+
+function updateMobileEstimatedItemHeight() {
+  if (mobileItemHeights.size === 0) {
+    mobileEstimatedItemHeight.value = defaultMobileItemHeight
+    return
+  }
+  const heights = Array.from(mobileItemHeights.values())
+  const averageHeight = heights.reduce((total, height) => total + height, 0) / heights.length
+  mobileEstimatedItemHeight.value = Math.max(96, Math.min(640, Math.round(averageHeight)))
+}
+
+function measureRenderedMobileItems() {
+  let updated = false
+  mobileItemElements.forEach((element) => {
+    updated = updateMobileItemHeight(element) || updated
+  })
+  if (updated) updateMobileEstimatedItemHeight()
+}
+
+function queueMobileItemMeasurement() {
+  if (typeof window === 'undefined' || mobileMeasurementFrame) return
+  mobileMeasurementFrame = window.requestAnimationFrame(() => {
+    mobileMeasurementFrame = 0
+    measureRenderedMobileItems()
+  })
+}
+
+function cancelMobileItemMeasurement() {
+  if (typeof window === 'undefined' || !mobileMeasurementFrame) return
+  window.cancelAnimationFrame(mobileMeasurementFrame)
+  mobileMeasurementFrame = 0
+}
+
+function pruneMobileItemHeights() {
+  if (mobileItemHeights.size <= mobileDataSource.value.length + props.mobileVirtualizeThreshold) return
+  const currentKeys = new Set(mobileDataSource.value.map((record, index) => mobileItemHeightKey(record, index)))
+  mobileItemHeights.forEach((_, key) => {
+    if (!currentKeys.has(key)) mobileItemHeights.delete(key)
+  })
+  updateMobileEstimatedItemHeight()
+  mobileItemHeightVersion.value += 1
+}
+
 function addViewportListeners() {
   if (viewportListenersAttached || typeof window === 'undefined') return
   viewportListenersAttached = true
@@ -498,8 +731,10 @@ function removeViewportListeners() {
 }
 
 function handleMobileScroll(event: Event) {
-  if (!props.mobilePagination || props.loadingMore || props.refreshing || !props.mobileHasMore) return
   const target = event.currentTarget as HTMLElement
+  mobileScrollTop.value = target.scrollTop
+  mobileContainerHeight.value = target.clientHeight
+  if (!props.mobilePagination || props.loadingMore || props.refreshing || !props.mobileHasMore) return
   const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight
   if (distanceToBottom <= 80) emit('mobile-load-more')
 }
@@ -556,11 +791,27 @@ watch([
   nextTick(queueTableScrollbarPlaceholderUpdate)
 }, { flush: 'post' })
 
+watch([
+  () => props.loading,
+  () => mobileDataSource.value.length,
+  shouldVirtualizeMobileCards
+], () => {
+  nextTick(() => {
+    updateMobileViewportMetrics()
+    pruneMobileItemHeights()
+    queueMobileItemMeasurement()
+  })
+}, { flush: 'post' })
+
 onMounted(() => {
   pageActive.value = true
   updateViewportState()
   updateListHeight()
-  nextTick(queueTableScrollbarPlaceholderUpdate)
+  nextTick(() => {
+    queueTableScrollbarPlaceholderUpdate()
+    observeRenderedMobileItems()
+    queueMobileItemMeasurement()
+  })
   lockBodyScroll()
   observeListResize()
   observeTableMutations()
@@ -577,6 +828,8 @@ onActivated(() => {
     updateViewportState()
     updateListHeight()
     queueTableScrollbarPlaceholderUpdate()
+    observeRenderedMobileItems()
+    queueMobileItemMeasurement()
   })
 })
 
@@ -588,15 +841,19 @@ onDeactivated(() => {
   disconnectListResize()
   removeViewportListeners()
   cancelTableScrollbarPlaceholderUpdate()
+  disconnectMobileItemResizeObserver()
 })
 
 onBeforeUnmount(() => {
   pageActive.value = false
   unlockBodyScroll()
   cancelTableScrollbarPlaceholderUpdate()
+  disconnectMobileItemResizeObserver()
   disconnectListResize()
   tableMutationObserver?.disconnect()
   removeViewportListeners()
+  mobileItemElements.clear()
+  mobileItemHeights.clear()
 })
 </script>
 
@@ -701,6 +958,25 @@ onBeforeUnmount(() => {
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 2px;
+}
+
+.responsive-data-list-cards-virtualized {
+  gap: 0;
+}
+
+.responsive-data-list-item {
+  min-width: 0;
+  box-sizing: border-box;
+  padding-bottom: 12px;
+}
+
+.responsive-data-list-item-last {
+  padding-bottom: 0;
+}
+
+.responsive-data-list-virtual-spacer {
+  min-height: 0;
+  pointer-events: none;
 }
 
 .responsive-data-list-pull,

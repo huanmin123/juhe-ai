@@ -29,7 +29,7 @@ import {
   installUsageRecordQueueShutdownHooks
 } from './modules/gateway/usage-record-queue.service.js'
 import { getBusinessDatabase, getRecordDatabase } from './storage/database.js'
-import { installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
+import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 
@@ -167,7 +167,23 @@ function sendWorkerMessage(message: Record<string, unknown>): void {
   if (!process.send) {
     return
   }
-  process.send(message)
+  try {
+    process.send(message, (error) => {
+      if (error) {
+        logger.error(errorLogFields(error, {
+          event: 'background_worker_child_ipc_send_failed',
+          messageType: typeof message.type === 'string' ? message.type : undefined
+        }), '后台 worker 向父进程发送 IPC 消息失败，进程将退出等待 supervisor 重启')
+        process.exit(1)
+      }
+    })
+  } catch (error) {
+    logger.error(errorLogFields(error, {
+      event: 'background_worker_child_ipc_send_failed',
+      messageType: typeof message.type === 'string' ? message.type : undefined
+    }), '后台 worker 向父进程发送 IPC 消息失败，进程将退出等待 supervisor 重启')
+    process.exit(1)
+  }
 }
 
 function runtimeLogLineOptionsFromMessage(message: Extract<WorkerIncomingMessage, { type: 'background_worker_runtime_log_line' }>): Parameters<typeof enqueueRuntimeLogLineLocal>[1] {

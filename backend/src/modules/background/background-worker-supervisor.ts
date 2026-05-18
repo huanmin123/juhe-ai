@@ -60,7 +60,6 @@ function startWorkerProcess(): void {
   }, '后台 worker 已创建')
 
   child.once('exit', (code, signal) => {
-    workerProcess = undefined
     logger.warn({
       event: 'background_worker_exited',
       pid: child.pid,
@@ -68,6 +67,10 @@ function startWorkerProcess(): void {
       signal,
       stopping
     }, '后台 worker 已退出')
+    if (workerProcess !== child) {
+      return
+    }
+    workerProcess = undefined
     if (!stopping) {
       scheduleWorkerRestart()
     }
@@ -77,9 +80,10 @@ function startWorkerProcess(): void {
     logger.error(errorLogFields(error, {
       event: 'background_worker_spawn_failed'
     }), '后台 worker 启动失败')
-    if (workerProcess === child) {
-      workerProcess = undefined
+    if (workerProcess !== child) {
+      return
     }
+    workerProcess = undefined
     if (!stopping) {
       scheduleWorkerRestart()
     }

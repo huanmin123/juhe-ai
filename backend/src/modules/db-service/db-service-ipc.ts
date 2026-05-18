@@ -118,9 +118,18 @@ export async function requestDbService<T extends DbServiceOperation>(
   try {
     return await new Promise<DbServiceOperationResult<T>>((resolve, reject) => {
       const timeout = setTimeout(() => {
-        pendingRequests.delete(requestId)
+        const pending = pendingRequests.get(requestId)
+        if (!pending) {
+          return
+        }
         timedOutRequestCount += 1
-        reject(new Error('DB service 请求超时'))
+        const timeoutError = new Error('DB service 请求超时')
+        if (dbServiceProcess === child) {
+          markDbServiceIpcBroken(timeoutError, child)
+          return
+        }
+        pendingRequests.delete(requestId)
+        pending.reject(timeoutError)
       }, options.timeoutMs ?? requestTimeoutMs)
       pendingRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
       const failSend = (error: unknown): void => {
@@ -350,6 +359,11 @@ function failPendingRequests(error: Error): void {
     clearTimeout(pending.timeout)
     pending.resolve(undefined)
     pendingProcessEventLoopRequests.delete(requestId)
+  }
+  for (const [requestId, pending] of pendingServerRuntimeRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve(undefined)
+    pendingServerRuntimeRequests.delete(requestId)
   }
 }
 

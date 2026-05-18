@@ -60,7 +60,6 @@ function startDbServiceProcess(): void {
   }, '数据库服务已创建')
 
   child.once('exit', (code, signal) => {
-    dbServiceProcess = undefined
     logger.warn({
       event: 'db_service_exited',
       pid: child.pid,
@@ -68,6 +67,10 @@ function startDbServiceProcess(): void {
       signal,
       stopping
     }, '数据库服务已退出')
+    if (dbServiceProcess !== child) {
+      return
+    }
+    dbServiceProcess = undefined
     if (!stopping) {
       scheduleDbServiceRestart()
     }
@@ -77,9 +80,10 @@ function startDbServiceProcess(): void {
     logger.error(errorLogFields(error, {
       event: 'db_service_spawn_failed'
     }), '数据库服务启动失败')
-    if (dbServiceProcess === child) {
-      dbServiceProcess = undefined
+    if (dbServiceProcess !== child) {
+      return
     }
+    dbServiceProcess = undefined
     if (!stopping) {
       scheduleDbServiceRestart()
     }

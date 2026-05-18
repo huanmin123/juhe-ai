@@ -248,7 +248,9 @@ const {
 } = useResponsivePagedList<ApiKeySummary, { forceOptions?: boolean }>({
   pageSize,
   initialPagination: initialPageState.pagination,
-  showTotal: (total) => `共 ${total} 个 API Key`,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${range?.[1] ?? total - 1} 个 API Key，还有更多`
+    : `共 ${formatNumber(total)} 个 API Key`,
   fetchPage: async (options, pageState) => {
     const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
     const [keyList] = await Promise.all([

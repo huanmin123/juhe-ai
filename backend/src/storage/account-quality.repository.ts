@@ -188,9 +188,33 @@ function loadQualityAccountMetadata(): Map<string, { systemAccountId: string; pr
 
 function loadAccountQualityRows(): Map<string, AccountQualityRow> {
   const rows = getRecordDatabase()
-    .prepare('SELECT * FROM account_quality_scores')
+    .prepare(`SELECT ${accountQualitySelectColumns()} FROM account_quality_scores`)
     .all() as unknown as AccountQualityRow[]
   return new Map(rows.map((row) => [row.account_id, row]))
+}
+
+function accountQualitySelectColumns(): string {
+  return [
+    'account_id',
+    'system_account_id',
+    'provider_code',
+    'quality_score',
+    'quality_state',
+    'recent_request_count',
+    'recent_success_count',
+    'recent_error_count',
+    'recent_first_token_sample_count',
+    'recent_avg_first_token_ms',
+    'ewma_first_token_ms',
+    'success_rate',
+    'window_started_at',
+    'window_ended_at',
+    'last_sample_at',
+    'last_success_at',
+    'last_error_at',
+    'last_error_message',
+    'updated_at'
+  ].join(', ')
 }
 
 function cleanupInactiveQualityRows(database: ReturnType<typeof getRecordDatabase>, activeIds: string[]): { changes?: number | bigint } {

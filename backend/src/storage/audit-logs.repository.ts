@@ -521,8 +521,7 @@ export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): 
   const database = getRecordDatabase()
   const rows = database
     .prepare(`
-      SELECT
-        aeg.*
+      SELECT ${auditErrorGroupListSelectColumns('aeg')}
       FROM audit_error_groups aeg
       ${filters.clause}
       ORDER BY aeg.updated_at DESC, aeg.id DESC
@@ -907,6 +906,35 @@ function buildAuditErrorGroupFilters(options: AuditErrorGroupListOptions): { cla
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params
   }
+}
+
+function auditErrorGroupListSelectColumns(alias: string): string {
+  return [
+    'id',
+    'fingerprint',
+    'window_started_at',
+    'window_ended_at',
+    'system_account_id',
+    'api_key_id',
+    'group_id',
+    'account_id',
+    'provider_code',
+    'path',
+    'model',
+    'status_code',
+    'error_phase',
+    'error_code',
+    'error_type',
+    'request_fingerprint',
+    'error_fingerprint',
+    'count',
+    'first_event_id',
+    'last_event_id',
+    'sample_event_id',
+    'last_message',
+    'created_at',
+    'updated_at'
+  ].map((column) => `${alias}.${column}`).join(', ')
 }
 
 function normalizePage(value: unknown): number {
