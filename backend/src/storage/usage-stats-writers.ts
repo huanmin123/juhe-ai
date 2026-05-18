@@ -55,6 +55,15 @@ interface AuthorizationReportSummaryKey {
 
 export interface UsageStatsAggregationContext {
   apiKeyExistsById: Map<string, boolean>
+  usageStatsUpsertStatements?: UsageStatsUpsertStatements
+}
+
+type SqliteStatement = ReturnType<DatabaseSync['prepare']>
+
+interface UsageStatsUpsertStatements {
+  database: DatabaseSync
+  total: SqliteStatement
+  timeBuckets: Map<string, SqliteStatement>
 }
 
 const usageStatsTimeBuckets: TimeBucketDefinition[] = [
@@ -122,7 +131,7 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
 
   const timeKeys = usageStatsTimeKeys(database, row)
   for (const entry of usageStatsEntries(row)) {
-    upsertUsageStatsEntry(database, entry, timeKeys, updatedAt)
+    upsertUsageStatsEntry(database, entry, timeKeys, updatedAt, context)
     upsertUsageLatencyEntry(database, entry, row, timeKeys, updatedAt)
   }
   upsertAuthorizationUsageReportRows(database, row, timeKeys, updatedAt)
@@ -144,7 +153,7 @@ export function aggregateCallerAccountUsageStatsRecord(database: DatabaseSync, r
     scopeId: row.account_id,
     accumulator: usageStatsAccumulatorFromRecord(row)
   }
-  upsertUsageStatsEntry(database, entry, timeKeys, updatedAt)
+  upsertUsageStatsEntry(database, entry, timeKeys, updatedAt, context)
   upsertUsageLatencyEntry(database, entry, row, timeKeys, updatedAt)
 }
 
@@ -201,10 +210,11 @@ function persistEstimatedCacheReadCost(database: DatabaseSync, row: UsageStatsRe
   row.cache_read_cost_usd = cacheReadCostUsd
 }
 
-function upsertUsageStatsEntry(database: DatabaseSync, entry: UsageStatsEntry, timeKeys: UsageStatsTimeKeys, updatedAt: string): void {
-  upsertUsageStatsTotal(database, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt)
+function upsertUsageStatsEntry(database: DatabaseSync, entry: UsageStatsEntry, timeKeys: UsageStatsTimeKeys, updatedAt: string, context?: UsageStatsAggregationContext): void {
+  const statements = usageStatsUpsertStatementsFor(database, context)
+  upsertUsageStatsTotal(database, entry.systemAccountId, entry.scopeType, entry.scopeId, entry.accumulator, updatedAt, statements?.total)
   for (const bucket of usageStatsTimeBuckets) {
-    upsertUsageStatsTimeBucket(database, bucket, timeKeys[bucket.valueKey], entry, updatedAt)
+    upsertUsageStatsTimeBucket(database, bucket, timeKeys[bucket.valueKey], entry, updatedAt, statements?.timeBuckets.get(bucket.tableName))
   }
 }
 
@@ -215,8 +225,23 @@ function subtractUsageStatsEntry(database: DatabaseSync, entry: UsageStatsEntry,
   }
 }
 
-function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, stats: UsageStatsAccumulator, updatedAt: string): void {
-  database.prepare(`
+function usageStatsUpsertStatementsFor(database: DatabaseSync, context?: UsageStatsAggregationContext): UsageStatsUpsertStatements | undefined {
+  if (!context) return undefined
+  const cached = context.usageStatsUpsertStatements
+  if (cached?.database === database) {
+    return cached
+  }
+  const statements: UsageStatsUpsertStatements = {
+    database,
+    total: prepareUsageStatsTotalUpsertStatement(database),
+    timeBuckets: new Map(usageStatsTimeBuckets.map((bucket) => [bucket.tableName, prepareUsageStatsTimeBucketUpsertStatement(database, bucket)]))
+  }
+  context.usageStatsUpsertStatements = statements
+  return statements
+}
+
+function prepareUsageStatsTotalUpsertStatement(database: DatabaseSync): SqliteStatement {
+  return database.prepare(`
     INSERT INTO usage_stats_totals (system_account_id, scope_type, scope_id, request_count, success_count, error_count,
       input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, last_error_at, updated_at)
@@ -239,12 +264,16 @@ function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, 
       last_used_at = CASE WHEN excluded.last_used_at IS NULL THEN usage_stats_totals.last_used_at WHEN usage_stats_totals.last_used_at IS NULL OR excluded.last_used_at > usage_stats_totals.last_used_at THEN excluded.last_used_at ELSE usage_stats_totals.last_used_at END,
       last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN usage_stats_totals.last_error_at WHEN usage_stats_totals.last_error_at IS NULL OR excluded.last_error_at > usage_stats_totals.last_error_at THEN excluded.last_error_at ELSE usage_stats_totals.last_error_at END,
       updated_at = excluded.updated_at
-  `).run(systemAccountId, scopeType, scopeId, ...statsParamsTail(stats, updatedAt))
+  `)
 }
 
-function upsertUsageStatsTimeBucket(database: DatabaseSync, bucket: TimeBucketDefinition, timeValue: string, entry: UsageStatsEntry, updatedAt: string): void {
+function upsertUsageStatsTotal(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, stats: UsageStatsAccumulator, updatedAt: string, statement = prepareUsageStatsTotalUpsertStatement(database)): void {
+  statement.run(systemAccountId, scopeType, scopeId, ...statsParamsTail(stats, updatedAt))
+}
+
+function prepareUsageStatsTimeBucketUpsertStatement(database: DatabaseSync, bucket: TimeBucketDefinition): SqliteStatement {
   const { tableName, columnName } = bucket
-  database.prepare(`
+  return database.prepare(`
     INSERT INTO ${tableName} (system_account_id, scope_type, scope_id, ${columnName}, request_count, success_count, error_count,
       input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd, duration_ms_sum, duration_ms_count, duration_ms_max,
       first_token_ms_sum, first_token_ms_count, first_token_ms_max, last_used_at, last_error_at, updated_at)
@@ -267,7 +296,11 @@ function upsertUsageStatsTimeBucket(database: DatabaseSync, bucket: TimeBucketDe
       last_used_at = CASE WHEN excluded.last_used_at IS NULL THEN ${tableName}.last_used_at WHEN ${tableName}.last_used_at IS NULL OR excluded.last_used_at > ${tableName}.last_used_at THEN excluded.last_used_at ELSE ${tableName}.last_used_at END,
       last_error_at = CASE WHEN excluded.last_error_at IS NULL THEN ${tableName}.last_error_at WHEN ${tableName}.last_error_at IS NULL OR excluded.last_error_at > ${tableName}.last_error_at THEN excluded.last_error_at ELSE ${tableName}.last_error_at END,
       updated_at = excluded.updated_at
-  `).run(entry.systemAccountId, entry.scopeType, entry.scopeId, timeValue, ...statsParamsTail(entry.accumulator, updatedAt))
+  `)
+}
+
+function upsertUsageStatsTimeBucket(database: DatabaseSync, bucket: TimeBucketDefinition, timeValue: string, entry: UsageStatsEntry, updatedAt: string, statement = prepareUsageStatsTimeBucketUpsertStatement(database, bucket)): void {
+  statement.run(entry.systemAccountId, entry.scopeType, entry.scopeId, timeValue, ...statsParamsTail(entry.accumulator, updatedAt))
 }
 
 function subtractUsageStatsTotal(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string, stats: UsageStatsAccumulator, updatedAt: string): void {

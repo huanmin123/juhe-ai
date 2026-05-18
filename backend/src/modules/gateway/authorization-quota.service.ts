@@ -2,6 +2,7 @@ import { createAppCache } from '../../shared/cache.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import type { RequestQuotaLimits } from '../../domain/types.js'
 import { getDatabase, getRecordDatabase } from '../../storage/database.js'
+import { chunkValues, sqlPlaceholders } from '../../storage/query-utils.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
 import { requestDbService } from '../db-service/db-service-ipc.js'
@@ -65,19 +66,11 @@ export function checkGatewayAuthorizationQuota(input: {
   account?: OpenAIAccountSecret
   now?: Date
 }): AuthorizationQuotaDecision {
-  assertLocalGatewayDatabaseAccess('checkGatewayAuthorizationQuota')
-  const now = input.now ?? new Date()
-  const checks: AuthorizationQuotaCheck[] = []
-  if (input.groupAccess.groupAuthorizationId) {
-    checks.push(...authorizationQuotaChecks(input.groupAccess.groupAuthorizationId, 'group_authorization', now))
-  }
-  if (input.account?.accountAuthorizationId) {
-    checks.push(...authorizationQuotaChecks(input.account.accountAuthorizationId, 'account_authorization', now))
-  }
-  if (!checks.length) {
-    return { allowed: true }
-  }
-  return authorizationQuotaDecisionFromChecks(checks)
+  return checkGatewayAuthorizationQuotaByIds({
+    groupAuthorizationId: input.groupAccess.groupAuthorizationId,
+    accountAuthorizationId: input.account?.accountAuthorizationId,
+    now: input.now
+  })
 }
 
 export async function checkGatewayAuthorizationQuotaAsync(input: {
@@ -115,19 +108,14 @@ export function checkGatewayAuthorizationQuotaByIds(input: {
   accountAuthorizationId?: string
   now?: Date
 }): AuthorizationQuotaDecision {
-  assertLocalGatewayDatabaseAccess('checkGatewayAuthorizationQuotaByIds')
-  const now = input.now ?? new Date()
-  const checks: AuthorizationQuotaCheck[] = []
-  if (input.groupAuthorizationId) {
-    checks.push(...authorizationQuotaChecks(input.groupAuthorizationId, 'group_authorization', now))
-  }
-  if (input.accountAuthorizationId) {
-    checks.push(...authorizationQuotaChecks(input.accountAuthorizationId, 'account_authorization', now))
-  }
-  if (!checks.length) {
-    return { allowed: true }
-  }
-  return authorizationQuotaDecisionFromChecks(checks)
+  return checkGatewayAuthorizationQuotaBatchByIds({
+    groupAuthorizationId: input.groupAuthorizationId,
+    accounts: [{
+      accountId: input.accountAuthorizationId ?? '',
+      accountAuthorizationId: input.accountAuthorizationId
+    }],
+    now: input.now
+  })[0] ?? { allowed: true }
 }
 
 export function checkGatewayAuthorizationQuotaBatchByIds(input: {
@@ -184,37 +172,6 @@ interface AuthorizationQuotaCheck {
   exceeded: boolean
 }
 
-function authorizationQuotaChecks(authorizationId: string, scopeType: 'account_authorization' | 'group_authorization', now: Date): AuthorizationQuotaCheck[] {
-  const database = getDatabase()
-  const row = database.prepare(`
-    SELECT id, resource_owner_system_account_id, resource_type, resource_id, effective_source_team_id, limits_json
-    FROM resource_authorizations
-    WHERE id = ? AND status = 'active'
-  `).get(authorizationId) as unknown as AuthorizationQuotaRow | undefined
-  if (!row) return []
-
-  const checks = quotaCheckForAuthorizationRow(row, scopeType, now)
-  if (row.effective_source_team_id) {
-    const teamRow = database.prepare(`
-      SELECT id, resource_owner_system_account_id, resource_type, resource_id, limits_json
-      FROM resource_authorization_grants
-      WHERE resource_type = ? AND resource_id = ?
-        AND grantee_type = 'team'
-        AND grantee_team_id = ?
-        AND status = 'active'
-      LIMIT 1
-    `).get(row.resource_type, row.resource_id, row.effective_source_team_id) as unknown as TeamAuthorizationQuotaRow | undefined
-    if (teamRow) {
-      checks.push(...quotaCheckForTeamRow(teamRow, scopeType, row.effective_source_team_id, now))
-    }
-  }
-  return checks
-}
-
-function quotaCheckForAuthorizationRow(row: AuthorizationQuotaRow, scopeType: 'account_authorization' | 'group_authorization', now: Date): AuthorizationQuotaCheck[] {
-  return materializeAuthorizationQuotaCostChecks(authorizationQuotaCostChecksForAuthorizationRow(row, scopeType, now))
-}
-
 function authorizationQuotaCostChecksForAuthorizationRow(row: AuthorizationQuotaRow, scopeType: AuthorizationQuotaScopeType, now: Date): AuthorizationQuotaCostCheck[] {
   const limits = parseRequestQuotaLimitsJson(row.limits_json)
   if (!hasEnabledRequestQuotaLimit(limits)) return []
@@ -229,10 +186,6 @@ function authorizationQuotaCostChecksForAuthorizationRow(row: AuthorizationQuota
       hourlyWindowHours: limits.hourly?.hours
     }
   }]
-}
-
-function quotaCheckForTeamRow(row: TeamAuthorizationQuotaRow, scopeType: 'account_authorization' | 'group_authorization', teamId: string, now: Date): AuthorizationQuotaCheck[] {
-  return materializeAuthorizationQuotaCostChecks(authorizationQuotaCostChecksForTeamRow(row, scopeType, teamId, now))
 }
 
 function authorizationQuotaCostChecksForTeamRow(row: TeamAuthorizationQuotaRow, scopeType: AuthorizationQuotaScopeType, teamId: string, now: Date): AuthorizationQuotaCostCheck[] {
@@ -284,31 +237,39 @@ function loadAuthorizationQuotaCostChecksByScope(scopes: AuthorizationQuotaScope
 function loadAuthorizationQuotaRows(authorizationIds: string[]): Map<string, AuthorizationQuotaRow> {
   const ids = [...new Set(authorizationIds.filter(Boolean))]
   if (!ids.length) return new Map()
-  const rows = getDatabase().prepare(`
-    SELECT id, resource_owner_system_account_id, resource_type, resource_id, effective_source_team_id, limits_json
-    FROM resource_authorizations
-    WHERE status = 'active'
-      AND id IN (${ids.map(() => '?').join(',')})
-  `).all(...ids) as unknown as AuthorizationQuotaRow[]
+  const rows: AuthorizationQuotaRow[] = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database.prepare(`
+      SELECT id, resource_owner_system_account_id, resource_type, resource_id, effective_source_team_id, limits_json
+      FROM resource_authorizations
+      WHERE status = 'active'
+        AND id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...chunk) as unknown as AuthorizationQuotaRow[])
+  }
   return new Map(rows.map((row) => [row.id, row]))
 }
 
 function loadTeamAuthorizationQuotaRowsByAuthorizationId(rows: AuthorizationQuotaRow[]): Map<string, TeamAuthorizationQuotaRow> {
   const ids = rows.filter((row) => row.effective_source_team_id).map((row) => row.id)
   if (!ids.length) return new Map()
-  const teamRows = getDatabase().prepare(`
-    SELECT ra.id AS authorization_id, grant_rows.id, grant_rows.resource_owner_system_account_id, grant_rows.resource_type, grant_rows.resource_id, grant_rows.limits_json
-    FROM resource_authorizations ra
-    INNER JOIN resource_authorization_grants grant_rows
-      ON grant_rows.resource_type = ra.resource_type
-      AND grant_rows.resource_id = ra.resource_id
-      AND grant_rows.grantee_type = 'team'
-      AND grant_rows.grantee_team_id = ra.effective_source_team_id
-      AND grant_rows.status = 'active'
-    WHERE ra.status = 'active'
-      AND ra.effective_source_team_id IS NOT NULL
-      AND ra.id IN (${ids.map(() => '?').join(',')})
-  `).all(...ids) as unknown as TeamAuthorizationQuotaBatchRow[]
+  const teamRows: TeamAuthorizationQuotaBatchRow[] = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    teamRows.push(...database.prepare(`
+      SELECT ra.id AS authorization_id, grant_rows.id, grant_rows.resource_owner_system_account_id, grant_rows.resource_type, grant_rows.resource_id, grant_rows.limits_json
+      FROM resource_authorizations ra
+      INNER JOIN resource_authorization_grants grant_rows
+        ON grant_rows.resource_type = ra.resource_type
+        AND grant_rows.resource_id = ra.resource_id
+        AND grant_rows.grantee_type = 'team'
+        AND grant_rows.grantee_team_id = ra.effective_source_team_id
+        AND grant_rows.status = 'active'
+      WHERE ra.status = 'active'
+        AND ra.effective_source_team_id IS NOT NULL
+        AND ra.id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...chunk) as unknown as TeamAuthorizationQuotaBatchRow[])
+  }
   return new Map(teamRows.map((row) => [row.authorization_id, row]))
 }
 

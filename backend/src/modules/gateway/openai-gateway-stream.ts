@@ -345,7 +345,7 @@ export async function pipeUpstreamStream(
     }
     if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
       const inspection = inspector.finish()
-      if (terminalEventWritten && inspection.terminalReceived && !inspection.failedReceived) {
+      if (inspection.terminalReceived && !inspection.failedReceived) {
         endResponse(res)
         streamLogger.info({
           event: 'gateway_stream_client_closed_after_terminal',
@@ -354,6 +354,7 @@ export async function pipeUpstreamStream(
           totalUpstreamBytes,
           totalResponseBytes,
           signalAborted: signal?.aborted,
+          terminalEventWritten,
           outputReceived: inspection.outputReceived,
           outputEventCount: inspection.outputEventCount,
           sseEventCount: inspection.eventCount,

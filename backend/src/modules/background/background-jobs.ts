@@ -1,10 +1,10 @@
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { execFile } from 'node:child_process'
 import { cpus, freemem, platform, totalmem } from 'node:os'
-import { monitorEventLoopDelay } from 'node:perf_hooks'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import { nowIso } from '../../storage/database.js'
 import {
   expireDueResourceAuthorizations,
@@ -16,6 +16,7 @@ import {
 import {
   aggregateUsageStatsBatch,
   checkUsageStatsConsistency,
+  insertProcessEventLoopSample,
   insertSystemMetricsSample,
   latestUsageStatsLagSeconds,
   refreshGroupAccountStatsCache,
@@ -30,6 +31,7 @@ import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.servi
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
+import { requestServerProcessEventLoopSamples } from './background-ipc.js'
 import { WorkerScheduler } from './worker-scheduler.js'
 
 let started = false
@@ -38,9 +40,6 @@ let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
 const dailyIntervalMs = 24 * 60 * 60 * 1000
 const scheduler = new WorkerScheduler()
-const eventLoopDelayHistogram = monitorEventLoopDelay({ resolution: 10 })
-
-eventLoopDelayHistogram.enable()
 
 export function startBackgroundJobs(): void {
   if (started) return
@@ -61,6 +60,10 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'data-retention-cleanup', intervalMs: dailyIntervalMs, task: runDataRetentionCleanup })
 }
 
+export function getBackgroundJobRuntimeSnapshots() {
+  return scheduler.snapshots()
+}
+
 async function runUsageStatsAggregation(): Promise<void> {
   if (usageStatsAggregationRunning) return
   usageStatsAggregationRunning = true
@@ -76,6 +79,7 @@ async function runUsageStatsAggregation(): Promise<void> {
     }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
+    throw error
   } finally {
     usageStatsAggregationRunning = false
   }
@@ -86,6 +90,7 @@ async function runGroupAccountStatsRefresh(): Promise<void> {
     refreshGroupAccountStatsCache()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_group_account_stats_refresh_failed' }), '分组账户统计刷新失败')
+    throw error
   }
 }
 
@@ -97,6 +102,7 @@ async function runResourceAuthorizationExpirySweep(): Promise<void> {
     }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_resource_authorization_expiry_sweep_failed' }), '资源授权过期扫描失败')
+    throw error
   }
 }
 
@@ -104,6 +110,8 @@ async function runSystemMetricsSample(): Promise<void> {
   const memoryMetrics = await currentMemoryMetrics()
   const memoryUsage = process.memoryUsage()
   const networkMetrics = await currentNetworkMetrics()
+  const remoteProcessSamples = await requestServerProcessEventLoopSamples().catch(() => [])
+  const workerEventLoopSample = buildProcessEventLoopSample('worker')
   try {
     insertSystemMetricsSample({
       cpuPercent: currentCpuPercent(),
@@ -113,13 +121,17 @@ async function runSystemMetricsSample(): Promise<void> {
       processRssBytes: memoryUsage.rss,
       processHeapUsedBytes: memoryUsage.heapUsed,
       processHeapTotalBytes: memoryUsage.heapTotal,
-      eventLoopLagMs: currentEventLoopDelayMs(),
+      eventLoopLagMs: workerEventLoopSample.eventLoopLagMs,
       ...networkMetrics,
       dbFileBytes: databaseFileBytes(),
       statsLagSeconds: latestUsageStatsLagSeconds()
     })
+    for (const sample of [workerEventLoopSample, ...remoteProcessSamples]) {
+      insertProcessEventLoopSample(sample)
+    }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_system_metrics_sample_failed' }), '系统指标采样失败')
+    throw error
   }
 }
 
@@ -213,6 +225,7 @@ async function runOpenAIOAuthAccessTokenRefresh(): Promise<void> {
     }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_openai_oauth_access_token_refresh_failed' }), 'OpenAI OAuth Access Token 刷新失败')
+    throw error
   }
 }
 
@@ -221,6 +234,7 @@ async function runProxyLatencyRefresh(): Promise<void> {
     await refreshProxyLatencyBatch(proxyLatencyRefreshBatchSize)
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_proxy_latency_refresh_failed' }), '代理延迟刷新失败')
+    throw error
   }
 }
 
@@ -240,6 +254,7 @@ async function runAccountQualityRefresh(): Promise<void> {
     }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_account_quality_refresh_failed' }), '账户质量缓存刷新失败')
+    throw error
   }
 }
 
@@ -281,6 +296,7 @@ async function runRuntimeLogIndexMaintenance(): Promise<void> {
     ensureRuntimeLogFacetSnapshots()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_runtime_log_index_maintenance_failed' }), '运行日志索引维护失败')
+    throw error
   }
 }
 
@@ -321,23 +337,6 @@ function databaseFileBytes(): number | undefined {
   }
 }
 
-function currentEventLoopDelayMs(): number | undefined {
-  const minNs = eventLoopDelayHistogram.min
-  const maxNs = eventLoopDelayHistogram.max
-  eventLoopDelayHistogram.reset()
-
-  if (!Number.isFinite(minNs) || !Number.isFinite(maxNs) || maxNs <= 0 || minNs > maxNs) {
-    return undefined
-  }
-
-  return roundMetricMs((maxNs - minNs) / 1_000_000)
-}
-
-function roundMetricMs(value: number): number | undefined {
-  if (!Number.isFinite(value)) return undefined
-  return Math.round(Math.max(0, value) * 100) / 100
-}
-
 async function runTableStorageMonitor(): Promise<void> {
   try {
     collectTableStorageSnapshot(nowIso(), {
@@ -347,6 +346,7 @@ async function runTableStorageMonitor(): Promise<void> {
     })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_table_storage_monitor_failed' }), '表数据监控采样失败')
+    throw error
   }
 }
 
@@ -432,6 +432,7 @@ async function runUsageRankSnapshotsRefresh(): Promise<void> {
     await refreshUsageRankSnapshotsInStages({ yieldToEventLoop })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_rank_snapshots_refresh_failed' }), '用量排行快照刷新失败')
+    throw error
   }
 }
 
@@ -446,6 +447,7 @@ async function runUsageStatsConsistencyCheck(): Promise<void> {
     }, '用量统计聚合桶一致性校验发现差异')
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_consistency_check_failed' }), '用量统计聚合桶一致性校验失败')
+    throw error
   }
 }
 

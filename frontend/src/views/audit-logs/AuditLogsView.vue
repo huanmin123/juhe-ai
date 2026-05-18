@@ -245,7 +245,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, SystemAccountSummary } from '@/types/domain'
+import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, SystemAccountPrincipalSummary } from '@/types/domain'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import ReadonlyCodeViewer from '@/components/ReadonlyCodeViewer.vue'
@@ -283,7 +283,7 @@ const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
 const payloadContentTab = ref<'headers' | 'body'>('body')
 const payloadCodeViewer = ref<{ copyDisplayText: () => Promise<void> }>()
-const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const systemAccountsLoaded = ref(false)
 
 const pageSize = 100
@@ -416,7 +416,7 @@ function fetchRecords(pageState: { current: number; pageSize: number }) {
 
 async function loadSystemAccounts(force = false): Promise<void> {
   if (!force && systemAccountsLoaded.value) return
-  systemAccounts.value = await api.systemAccounts.list()
+  systemAccounts.value = await api.systemAccounts.options()
   systemAccountsLoaded.value = true
 }
 

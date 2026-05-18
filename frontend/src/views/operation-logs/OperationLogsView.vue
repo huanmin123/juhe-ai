@@ -238,7 +238,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateTime } from '@/shared/formatters'
-import type { OperationLogChange, OperationLogDetail, OperationLogSummary, SystemAccountSummary } from '@/types/domain'
+import type { OperationLogChange, OperationLogDetail, OperationLogSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
 type OperationLogsPageState = {
@@ -274,7 +274,7 @@ const { isManagementView } = useScopedMenuView()
 const detailLoading = ref(false)
 const detail = ref<OperationLogDetail>()
 const detailOpen = ref(false)
-const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const systemAccountsLoaded = ref(false)
 const keywordFilter = ref(initialPageState.keywordFilter)
 const moduleFilter = ref(initialPageState.moduleFilter)
@@ -465,7 +465,7 @@ async function loadSystemAccounts(force = false): Promise<void> {
     return
   }
   if (!force && systemAccountsLoaded.value) return
-  systemAccounts.value = await api.systemAccounts.list()
+  systemAccounts.value = await api.systemAccounts.options()
   systemAccountsLoaded.value = true
 }
 

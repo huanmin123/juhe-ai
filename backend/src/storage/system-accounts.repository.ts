@@ -1,10 +1,10 @@
 import { randomBytes } from 'node:crypto'
 
-import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
+import type { SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
 import { hashPassword, hashSecret, verifyPassword } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
-import { systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
+import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
 
 interface SystemSessionRow {
@@ -28,6 +28,13 @@ export interface SessionWithAccount {
 export function listSystemAccounts(): SystemAccountSummary[] {
   const rows = getDatabase().prepare('SELECT * FROM system_accounts ORDER BY created_at ASC, id ASC').all() as unknown as SystemAccountRow[]
   return rows.map(systemAccountSummaryFromRow)
+}
+
+export function listSystemAccountOptions(): SystemAccountPrincipalSummary[] {
+  const rows = getDatabase()
+    .prepare('SELECT id, username, display_name, status FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC, id ASC')
+    .all() as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
+  return rows.map(systemAccountPrincipalSummaryFromRow)
 }
 
 export function findSystemAccountById(id: string): SystemAccountSummary | undefined {

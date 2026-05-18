@@ -3,6 +3,7 @@ import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type {
   DbServiceChildMessage,
   DbServiceOperation,
@@ -46,6 +47,7 @@ let dbServiceHttpHost: string | undefined
 let dbServiceHttpPort: number | undefined
 let pendingRequests = new Map<string, PendingRequest>()
 let pendingServerRuntimeRequests = new Map<string, PendingServerRuntimeRequest>()
+let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let timedOutRequestCount = 0
 let failedRequestCount = 0
 let lastSnapshot: DbServiceRuntimeSnapshot | undefined
@@ -53,6 +55,11 @@ let unavailableCircuitOpenUntilMs = 0
 
 interface PendingServerRuntimeRequest {
   resolve: (snapshot: DbServiceServerRuntimeSnapshot | undefined) => void
+  timeout: NodeJS.Timeout
+}
+
+interface PendingProcessEventLoopRequest {
+  resolve: (sample: ProcessEventLoopSample | undefined) => void
   timeout: NodeJS.Timeout
 }
 
@@ -178,12 +185,44 @@ export async function requestServerAccountConcurrencySnapshot(timeoutMs = 300): 
   return snapshot?.accountConcurrency
 }
 
+export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): Promise<ProcessEventLoopSample | undefined> {
+  if (runtimeConfig.processRole !== 'server' || !dbServiceProcess || !dbServiceReady) {
+    return undefined
+  }
+
+  const requestId = randomUUID()
+  return await new Promise<ProcessEventLoopSample | undefined>((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingProcessEventLoopRequests.delete(requestId)
+      resolve(undefined)
+    }, timeoutMs)
+    pendingProcessEventLoopRequests.set(requestId, { resolve, timeout })
+    dbServiceProcess?.send({
+      type: 'db_service_process_event_loop_request',
+      requestId
+    } satisfies DbServiceParentMessage, (error) => {
+      if (error) {
+        finishProcessEventLoopRequest(requestId, undefined)
+      }
+    })
+  })
+}
+
 export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
   if (typeof message !== 'object' || message === null || Array.isArray(message)) {
     return false
   }
 
   const record = message as Partial<DbServiceParentMessage> & Record<string, unknown>
+  if (record.type === 'db_service_process_event_loop_request' && typeof record.requestId === 'string') {
+    process.send?.({
+      type: 'db_service_process_event_loop_response',
+      requestId: record.requestId,
+      sample: buildProcessEventLoopSample('db-service')
+    } satisfies DbServiceChildMessage)
+    return true
+  }
+
   if (record.type !== 'db_service_server_runtime_response' || typeof record.requestId !== 'string') {
     return false
   }
@@ -227,6 +266,10 @@ function handleDbServiceMessage(message: unknown): void {
     case 'db_service_response':
       if (typeof record.requestId !== 'string') break
       finishPendingRequest(record.requestId, record)
+      break
+    case 'db_service_process_event_loop_response':
+      if (typeof record.requestId !== 'string') break
+      finishProcessEventLoopRequest(record.requestId, record.sample as ProcessEventLoopSample | undefined)
       break
     case 'db_service_server_runtime_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
@@ -282,6 +325,22 @@ function failPendingRequests(error: Error): void {
     pending.reject(error)
     pendingRequests.delete(requestId)
   }
+  for (const [requestId, pending] of pendingProcessEventLoopRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve(undefined)
+    pendingProcessEventLoopRequests.delete(requestId)
+  }
+}
+
+function finishProcessEventLoopRequest(requestId: string, sample: ProcessEventLoopSample | undefined): void {
+  const pending = pendingProcessEventLoopRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+
+  clearTimeout(pending.timeout)
+  pendingProcessEventLoopRequests.delete(requestId)
+  pending.resolve(sample)
 }
 
 function openUnavailableCircuit(): void {
@@ -376,6 +435,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
         ? {
           pid: workerSnapshot.pid,
           ready: workerSnapshot.ready,
+          jobs: workerSnapshot.jobs.map((job) => ({ ...job })),
           usageRecordQueue: { ...workerSnapshot.usageRecordQueue },
           operationLogQueue: { ...workerSnapshot.operationLogQueue },
           recordMaintenanceQueue: { ...workerSnapshot.recordMaintenanceQueue },

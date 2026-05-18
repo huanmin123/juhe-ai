@@ -1,0 +1,46 @@
+import { monitorEventLoopDelay } from 'node:perf_hooks'
+
+import { runtimeConfig, type ProcessRole } from '../config/runtime.js'
+
+export interface ProcessEventLoopSample {
+  processRole: ProcessRole
+  processPid: number
+  sampledAt: string
+  eventLoopLagMs?: number
+}
+
+const eventLoopDelayHistogram = monitorEventLoopDelay({ resolution: 10 })
+let enabled = false
+
+export function startProcessEventLoopMonitor(): void {
+  if (enabled) return
+  eventLoopDelayHistogram.enable()
+  enabled = true
+}
+
+export function currentProcessEventLoopLagMs(): number | undefined {
+  startProcessEventLoopMonitor()
+  const minNs = eventLoopDelayHistogram.min
+  const maxNs = eventLoopDelayHistogram.max
+  eventLoopDelayHistogram.reset()
+
+  if (!Number.isFinite(minNs) || !Number.isFinite(maxNs) || maxNs <= 0 || minNs > maxNs) {
+    return undefined
+  }
+
+  return roundMetricMs((maxNs - minNs) / 1_000_000)
+}
+
+export function buildProcessEventLoopSample(processRole: ProcessRole = runtimeConfig.processRole): ProcessEventLoopSample {
+  return {
+    processRole,
+    processPid: process.pid,
+    sampledAt: new Date().toISOString(),
+    eventLoopLagMs: currentProcessEventLoopLagMs()
+  }
+}
+
+function roundMetricMs(value: number): number | undefined {
+  if (!Number.isFinite(value)) return undefined
+  return Math.round(Math.max(0, value) * 100) / 100
+}

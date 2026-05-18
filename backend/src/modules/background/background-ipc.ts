@@ -2,8 +2,10 @@ import { randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 import type { AuditLogInput, OperationLogInput, UsageRecordInput } from '../../storage/repositories.js'
 import type { RecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
+import type { WorkerScheduledJobRuntimeSnapshot } from './worker-scheduler.js'
 
 export interface BackgroundWorkerQueueRuntime {
   queueLength: number
@@ -30,6 +32,7 @@ export interface BackgroundWorkerRuntimeSnapshot {
   pid: number
   ready: boolean
   processRole: 'worker'
+  jobs: WorkerScheduledJobRuntimeSnapshot[]
   usageRecordQueue: BackgroundWorkerQueueRuntime
   operationLogQueue: BackgroundWorkerQueueRuntime
   recordMaintenanceQueue: BackgroundWorkerQueueRuntime
@@ -46,11 +49,18 @@ type BackgroundWorkerMessage =
   | { type: 'background_worker_runtime_log_line'; line: string }
   | { type: 'background_worker_status_request'; requestId: string }
   | { type: 'background_worker_status_response'; requestId: string; snapshot: BackgroundWorkerRuntimeSnapshot }
+  | { type: 'background_worker_process_event_loop_request'; requestId: string }
+  | { type: 'background_worker_process_event_loop_response'; requestId: string; samples: ProcessEventLoopSample[] }
   | { type: 'gateway_runtime_cache_invalidate' }
 
 interface PendingRequest {
   resolve: (snapshot: BackgroundWorkerRuntimeSnapshot | undefined) => void
   reject: (error: Error) => void
+  timeout: NodeJS.Timeout
+}
+
+interface PendingProcessEventLoopRequest {
+  resolve: (samples: ProcessEventLoopSample[]) => void
   timeout: NodeJS.Timeout
 }
 
@@ -156,10 +166,15 @@ let sendingMessage = false
 let sendingWorkerMessage: BackgroundWorkerMessage | undefined
 let pendingPendingMessagesWarningCount = 0
 let pendingRequests = new Map<string, PendingRequest>()
+let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let lastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
 
 const maxPendingMessages = 5000
 const maxPendingMessageBytes = 128 * 1024 * 1024
+
+if (runtimeConfig.processRole === 'worker') {
+  process.on('message', handleParentMessage)
+}
 
 export function attachBackgroundWorkerProcess(child: ChildProcess): void {
   workerProcess = child
@@ -268,6 +283,30 @@ export async function requestBackgroundWorkerSnapshot(timeoutMs = 5000): Promise
   })
 }
 
+export async function requestServerProcessEventLoopSamples(timeoutMs = 1000): Promise<ProcessEventLoopSample[]> {
+  if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
+    return []
+  }
+
+  const sendToParent = process.send.bind(process)
+  const requestId = randomUUID()
+  return await new Promise<ProcessEventLoopSample[]>((resolve) => {
+    const timeout = setTimeout(() => {
+      pendingProcessEventLoopRequests.delete(requestId)
+      resolve([])
+    }, timeoutMs)
+    pendingProcessEventLoopRequests.set(requestId, { resolve, timeout })
+    sendToParent({
+      type: 'background_worker_process_event_loop_request',
+      requestId
+    } satisfies BackgroundWorkerMessage, (error) => {
+      if (error) {
+        finishProcessEventLoopRequest(requestId, [])
+      }
+    })
+  })
+}
+
 export function getBackgroundWorkerState(): BackgroundWorkerState {
   return {
     pid: workerPid,
@@ -297,6 +336,15 @@ function handleWorkerMessage(message: unknown): void {
         lastSnapshot = record.snapshot as BackgroundWorkerRuntimeSnapshot
       }
       break
+    case 'background_worker_process_event_loop_response':
+      if (typeof record.requestId !== 'string' || !Array.isArray(record.samples)) break
+      finishProcessEventLoopRequest(record.requestId, record.samples as ProcessEventLoopSample[])
+      break
+    case 'background_worker_process_event_loop_request':
+      if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
+        void respondToProcessEventLoopRequest(record.requestId)
+      }
+      break
     case 'gateway_runtime_cache_invalidate':
       if (runtimeConfig.processRole !== 'worker') {
         void clearServerGatewayRuntimeCache()
@@ -305,6 +353,18 @@ function handleWorkerMessage(message: unknown): void {
     default:
       break
   }
+}
+
+function handleParentMessage(message: unknown): void {
+  if (typeof message !== 'object' || message === null || Array.isArray(message)) {
+    return
+  }
+
+  const record = message as Partial<BackgroundWorkerMessage> & Record<string, unknown>
+  if (record.type !== 'background_worker_process_event_loop_response' || typeof record.requestId !== 'string' || !Array.isArray(record.samples)) {
+    return
+  }
+  finishProcessEventLoopRequest(record.requestId, record.samples as ProcessEventLoopSample[])
 }
 
 function queueWorkerMessage(message: BackgroundWorkerMessage): void {
@@ -546,9 +606,45 @@ function failPendingRequests(): void {
   }
 }
 
+function finishProcessEventLoopRequest(requestId: string, samples: ProcessEventLoopSample[]): void {
+  const pending = pendingProcessEventLoopRequests.get(requestId)
+  if (!pending) {
+    return
+  }
+
+  clearTimeout(pending.timeout)
+  pendingProcessEventLoopRequests.delete(requestId)
+  pending.resolve(samples)
+}
+
 async function clearServerGatewayRuntimeCache(): Promise<void> {
   const dbServiceIpc = await import('../db-service/db-service-ipc.js')
   const gatewayCache = await import('../gateway/gateway-runtime-cache.service.js')
   gatewayCache.clearGatewayRuntimeCacheLocal()
   dbServiceIpc.clearDbServiceGatewayRuntimeCache()
+}
+
+async function respondToProcessEventLoopRequest(requestId: string): Promise<void> {
+  const samples = [
+    buildProcessEventLoopSample('server')
+  ]
+  const dbServiceSample = await dbServiceProcessEventLoopSample()
+  if (dbServiceSample) {
+    samples.push(dbServiceSample)
+  }
+
+  workerProcess?.send?.({
+    type: 'background_worker_process_event_loop_response',
+    requestId,
+    samples
+  } satisfies BackgroundWorkerMessage)
+}
+
+async function dbServiceProcessEventLoopSample(): Promise<ProcessEventLoopSample | undefined> {
+  try {
+    const dbServiceIpc = await import('../db-service/db-service-ipc.js')
+    return await dbServiceIpc.requestDbServiceProcessEventLoopSample(800)
+  } catch {
+    return undefined
+  }
 }

@@ -199,7 +199,7 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
-import dayjs, { type Dayjs } from 'dayjs'
+import type { Dayjs } from 'dayjs'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 
 import { api } from '@/api/client'
@@ -208,9 +208,9 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
+import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
+import type { AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText, statusColor, statusText } from '@/views/accounts/accountFormatters'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -252,9 +252,7 @@ const metricOptions: Array<{ label: string; value: UsageTrendMetric }> = [
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
 const defaultDateRange = (): [Dayjs, Dayjs] => {
-  const today = dayjs().startOf('day')
-  const start = isManagementView.value ? today : today.subtract(MAX_RANGE_DAYS - 1, 'day')
-  return [start, today]
+  return recentDateRange(MAX_RANGE_DAYS)
 }
 const defaultUsageStatsPageState = (): UsageStatsPageState => {
   return {
@@ -266,7 +264,7 @@ const defaultUsageStatsPageState = (): UsageStatsPageState => {
 const loading = ref(false)
 const mobileRefreshing = ref(false)
 const overview = ref<AccountUsageStatsOverview>()
-const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const usageStatsOptionsLoaded = ref(false)
 const usageStatsOptionsScopeKey = ref('')
@@ -422,7 +420,7 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
 
   const [providerList, systemAccountList] = await Promise.all([
     api.providers.list(),
-    api.systemAccounts.list()
+    api.systemAccounts.options()
   ])
   providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
   systemAccounts.value = systemAccountList
@@ -466,6 +464,7 @@ async function refreshMobileRows() {
 }
 
 function accountUsageParams(systemAccountId?: string) {
+  const [startDate, endDate] = selectedRange.value
   const params: {
     systemAccountId?: string
     startDate?: string
@@ -477,11 +476,8 @@ function accountUsageParams(systemAccountId?: string) {
     page: accountUsagePagination.current,
     pageSize: accountUsagePagination.pageSize
   }
-  if (shouldSendDateRangeParams()) {
-    const [startDate, endDate] = selectedRange.value
-    params.startDate = startDate
-    params.endDate = endDate
-  }
+  params.startDate = startDate
+  params.endDate = endDate
   return params
 }
 
@@ -593,10 +589,6 @@ function snapshotPageState(): UsageStatsPageState {
     metric: selectedMetric.value,
     range: dateRangeExplicit.value ? { startDate, endDate } : undefined
   }
-}
-
-function shouldSendDateRangeParams(): boolean {
-  return dateRangeExplicit.value || !isManagementView.value
 }
 
 function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {

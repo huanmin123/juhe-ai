@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import type { DatabaseSync } from 'node:sqlite'
 
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import {
@@ -6,6 +7,7 @@ import {
   cleanupCreatedAuditBlobFiles,
   cleanupUnreferencedAuditPayloadBlobs,
   persistAuditPayloadBlob,
+  prepareAuditPayloadBlobStatements,
   prepareAuditPayloadBlob,
   readAuditHeadersBlob,
   readAuditPayloadBlobWindow,
@@ -19,7 +21,7 @@ import {
   hydrateAuditRows,
   type AuditLogRow
 } from './audit-log-mappers.js'
-import { compatiblePagedTotal, takePageRows } from './query-utils.js'
+import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
@@ -295,6 +297,14 @@ interface PreparedAuditPayload {
   createdAt: string
 }
 
+type AuditErrorGroupStatement = ReturnType<DatabaseSync['prepare']>
+
+interface AuditErrorGroupStatements {
+  selectExisting: AuditErrorGroupStatement
+  updateExisting: AuditErrorGroupStatement
+  insertGroup: AuditErrorGroupStatement
+}
+
 const auditLogDefaultPageSize = 100
 const auditLogMaxPageSize = 100
 const errorGroupDefaultPageSize = 100
@@ -333,13 +343,18 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   `)
 
   const createdStorageKeys: string[] = []
+  const existingLogIds = loadExistingAuditLogIds(database, inputs)
+  const seenLogIds = new Set<string>()
+  const payloadBlobStatements = prepareAuditPayloadBlobStatements(database)
+  const errorGroupStatements = prepareAuditErrorGroupStatements(database)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const input of inputs) {
       const id = input.id ?? newId('audit')
-      if (auditLogExists(database, id)) {
+      if (existingLogIds.has(id) || seenLogIds.has(id)) {
         continue
       }
+      seenLogIds.add(id)
       const createdAt = input.createdAt ?? nowIso()
       const attemptIds = new Map<string, string>()
       const preparedAttempts = input.attempts.map((attempt) => {
@@ -353,7 +368,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
       const payloadBytes = payloads.reduce((sum, payload) => sum + payload.rawSizeBytes, 0)
       const compressedPayloadBytes = payloads.reduce((sum, payload) => sum + payload.compressedSizeBytes, 0)
       const compressionSavedBytes = Math.max(0, payloadBytes - compressedPayloadBytes)
-      const errorGroupId = upsertAuditErrorGroup(database, input, id, payloads, createdAt)
+      const errorGroupId = upsertAuditErrorGroup(input, id, payloads, createdAt, errorGroupStatements)
 
       const insertLogResult = insertLog.run(
         id,
@@ -420,8 +435,8 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
       }
 
       for (const payload of payloads) {
-        const headersBlobId = persistAuditPayloadBlob(database, payload.headersBlob, createdAt, createdStorageKeys)
-        const bodyBlobId = persistAuditPayloadBlob(database, payload.bodyBlob, createdAt, createdStorageKeys)
+        const headersBlobId = persistAuditPayloadBlob(database, payload.headersBlob, createdAt, createdStorageKeys, payloadBlobStatements)
+        const bodyBlobId = persistAuditPayloadBlob(database, payload.bodyBlob, createdAt, createdStorageKeys, payloadBlobStatements)
         insertPayloadRef.run(
           payload.id,
           id,
@@ -453,9 +468,20 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   }
 }
 
-function auditLogExists(database: ReturnType<typeof getRecordDatabase>, id: string): boolean {
-  const row = database.prepare('SELECT id FROM audit_logs WHERE id = ?').get(id) as unknown as { id?: string } | undefined
-  return Boolean(row?.id)
+function loadExistingAuditLogIds(database: ReturnType<typeof getRecordDatabase>, inputs: AuditLogInput[]): Set<string> {
+  const ids = [...new Set(inputs.map((input) => input.id).filter((id): id is string => Boolean(id?.trim())))]
+  const existingIds = new Set<string>()
+  for (const chunk of chunkValues(ids, 900)) {
+    const rows = database
+      .prepare(`SELECT id FROM audit_logs WHERE id IN (${sqlPlaceholders(chunk.length)})`)
+      .all(...chunk) as Array<{ id?: string }>
+    for (const row of rows) {
+      if (row.id) {
+        existingIds.add(row.id)
+      }
+    }
+  }
+  return existingIds
 }
 
 export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListResult {
@@ -672,12 +698,35 @@ function preparePayloadInput(payload: AuditLogPayloadInput, fallbackIndex: numbe
   }
 }
 
+function prepareAuditErrorGroupStatements(database: ReturnType<typeof getRecordDatabase>): AuditErrorGroupStatements {
+  return {
+    selectExisting: database.prepare('SELECT id FROM audit_error_groups WHERE fingerprint = ? AND window_started_at = ?'),
+    updateExisting: database.prepare(`
+      UPDATE audit_error_groups
+      SET count = count + 1,
+          window_ended_at = ?,
+          last_event_id = ?,
+          sample_event_id = COALESCE(sample_event_id, ?),
+          last_message = ?,
+          updated_at = ?
+      WHERE id = ?
+    `),
+    insertGroup: database.prepare(`
+      INSERT INTO audit_error_groups (
+        id, fingerprint, window_started_at, window_ended_at, system_account_id, api_key_id, group_id, account_id,
+        provider_code, path, model, status_code, error_phase, error_code, error_type, request_fingerprint,
+        error_fingerprint, count, first_event_id, last_event_id, sample_event_id, last_message, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
+    `)
+  }
+}
+
 function upsertAuditErrorGroup(
-  database: ReturnType<typeof getRecordDatabase>,
   input: AuditLogInput,
   auditLogId: string,
   payloads: PreparedAuditPayload[],
-  timestamp: string
+  timestamp: string,
+  statements: AuditErrorGroupStatements
 ): string | null {
   if (input.auditOutcome === 'success') {
     return null
@@ -700,60 +749,39 @@ function upsertAuditErrorGroup(
     requestFingerprint,
     errorFingerprint
   }))
-  const existing = database
-    .prepare('SELECT id FROM audit_error_groups WHERE fingerprint = ? AND window_started_at = ?')
-    .get(fingerprint, windowStartedAt) as AuditLogRow | undefined
+  const existing = statements.selectExisting.get(fingerprint, windowStartedAt) as AuditLogRow | undefined
   const existingId = optionalString(existing?.id)
   if (existingId) {
-    database
-      .prepare(`
-        UPDATE audit_error_groups
-        SET count = count + 1,
-            window_ended_at = ?,
-            last_event_id = ?,
-            sample_event_id = COALESCE(sample_event_id, ?),
-            last_message = ?,
-            updated_at = ?
-        WHERE id = ?
-      `)
-      .run(windowEndedAt, auditLogId, auditLogId, input.errorMessage ?? null, timestamp, existingId)
+    statements.updateExisting.run(windowEndedAt, auditLogId, auditLogId, input.errorMessage ?? null, timestamp, existingId)
     return existingId
   }
 
   const id = newId('audgrp')
-  database
-    .prepare(`
-      INSERT INTO audit_error_groups (
-        id, fingerprint, window_started_at, window_ended_at, system_account_id, api_key_id, group_id, account_id,
-        provider_code, path, model, status_code, error_phase, error_code, error_type, request_fingerprint,
-        error_fingerprint, count, first_event_id, last_event_id, sample_event_id, last_message, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-    `)
-    .run(
-      id,
-      fingerprint,
-      windowStartedAt,
-      windowEndedAt,
-      input.systemAccountId ?? null,
-      input.apiKeyId ?? null,
-      input.groupId ?? null,
-      input.accountId ?? null,
-      input.providerCode ?? null,
-      input.path,
-      input.model ?? null,
-      input.finalStatusCode ?? null,
-      input.errorPhase ?? null,
-      input.errorCode ?? null,
-      input.auditOutcome,
-      requestFingerprint,
-      errorFingerprint,
-      auditLogId,
-      auditLogId,
-      auditLogId,
-      input.errorMessage ?? null,
-      timestamp,
-      timestamp
-    )
+  statements.insertGroup.run(
+    id,
+    fingerprint,
+    windowStartedAt,
+    windowEndedAt,
+    input.systemAccountId ?? null,
+    input.apiKeyId ?? null,
+    input.groupId ?? null,
+    input.accountId ?? null,
+    input.providerCode ?? null,
+    input.path,
+    input.model ?? null,
+    input.finalStatusCode ?? null,
+    input.errorPhase ?? null,
+    input.errorCode ?? null,
+    input.auditOutcome,
+    requestFingerprint,
+    errorFingerprint,
+    auditLogId,
+    auditLogId,
+    auditLogId,
+    input.errorMessage ?? null,
+    timestamp,
+    timestamp
+  )
   return id
 }
 

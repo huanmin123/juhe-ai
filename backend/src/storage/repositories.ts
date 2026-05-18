@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupSummary, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupOptionSummary, GroupSummary, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountListOptions, type AccountListOptions } from './account-list-options.js'
@@ -22,7 +22,7 @@ import { loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from '
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
-import { sqlPlaceholders } from './query-utils.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import {
   accountSystemAccountId,
   activeAccountAuthorization,
@@ -57,6 +57,7 @@ import { loadSystemAccountNameMap, loadSystemAccountsByIds } from './repository-
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountFailureRow, AccountListRow, AccountRow, GroupListRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
+import { systemAccountPrincipalSummaryFromRow } from './system-account-mappers.js'
 import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
@@ -131,6 +132,7 @@ export {
   findSessionByToken,
   findSystemAccountById,
   findSystemAccountByUsername,
+  listSystemAccountOptions,
   listSystemAccounts,
   revokeAllSessionsForAccount,
   revokeSession,
@@ -151,10 +153,12 @@ export {
   ProxyInUseError,
   ProxyProfileUnavailableError,
   resolveEnabledProxyProfileId,
+  resolveProxyUrlsForProfiles,
   resolveProxyUrlForProfile,
   resolveProxyUrlForProfileForSystemAccount,
   updateProxyTestState,
   updateProxy,
+  type ProxyProfileUrlResolution,
   type ProxyProfileOptionSummary,
   type ProxyProfileSummary,
   type ProxyProfileTestConfig
@@ -175,8 +179,10 @@ export {
   expireDueResourceAuthorizations
 } from './resource-authorization-write-state.repository.js'
 export {
+  type AccountUsageSnapshotUpsertInput,
   updateAccountUsageSnapshotRefreshState,
-  upsertAccountUsageSnapshot
+  upsertAccountUsageSnapshot,
+  upsertAccountUsageSnapshots
 } from './account-usage-snapshot.repository.js'
 export {
   createUsageRecord,
@@ -614,6 +620,14 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
   }
 }
 
+export function listAccountOptions(access?: AccessScope, options?: AccountListOptions): AccountOptionSummary[] {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  disableExpiredAccounts(access)
+  const listOptions = normalizeAccountListOptions(options)
+  const rows = listAccountRowsForAccess(access, listOptions)
+  return accountOptionSummariesFromRows(rows, access, viewerSystemAccountId)
+}
+
 export function findAccountSummary(accountId: string, access?: AccessScope): AccountSummary | undefined {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
@@ -622,6 +636,30 @@ export function findAccountSummary(accountId: string, access?: AccessScope): Acc
   if (!row) return undefined
   const hydratedRows = hydrateAccountRowsFromRecordDatabase([row])
   return accountSummariesFromRows(hydratedRows, access, viewerSystemAccountId)[0]
+}
+
+function accountOptionSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountOptionSummary[] {
+  const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
+  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows ? loadSystemAccountNameMap() : new Map<string, string>()
+  return rows.map((row) => {
+    const isAuthorizedView = row.access_type === 'authorized'
+    return {
+      id: row.id,
+      systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
+      systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(row.system_account_id) : undefined,
+      ownerSystemAccountId: row.system_account_id,
+      ownerSystemAccountName: accountNames.get(row.system_account_id),
+      providerCode: row.provider_code,
+      name: row.name,
+      type: row.type,
+      status: row.status,
+      accessType: row.access_type ?? 'owner',
+      accountAuthorizationId: row.authorization_id ?? undefined,
+      authorizationStatus: row.authorization_status ?? undefined,
+      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
+    }
+  })
 }
 
 function accountSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountSummary[] {
@@ -1637,9 +1675,47 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
   return buildGroupSummaries(listGroupRowsForAccess(access), access)
 }
 
+export function listGroupOptions(access?: AccessScope): GroupOptionSummary[] {
+  return buildGroupOptionSummaries(listGroupRowsForAccess(access), access)
+}
+
+export function listAccountGroupOptions(access?: AccessScope): AccountGroupOptionSummary[] {
+  const rows = listGroupRowsForAccess(access)
+  const accountIdsByGroup = loadGroupAccountIdsByGroupIds(rows.map((row) => row.id))
+  return buildGroupOptionSummaries(rows, access).map((group) => ({
+    ...group,
+    accountIds: accountIdsByGroup.get(group.id) ?? []
+  }))
+}
+
 export function findGroupSummary(id: string, access?: AccessScope): GroupSummary | undefined {
   const row = findGroupRowForAccess(access, id)
   return row ? buildGroupSummaries([row], access)[0] : undefined
+}
+
+function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessScope): GroupOptionSummary[] {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
+  const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
+  const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows ? loadSystemAccountNameMap() : new Map<string, string>()
+  return rows.map((row) => {
+    const isAuthorizedView = row.access_type === 'authorized'
+    return {
+      id: row.id,
+      systemAccountId: shouldIncludeSystemAccountFields ? row.system_account_id : undefined,
+      systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(row.system_account_id) : undefined,
+      ownerSystemAccountId: row.system_account_id,
+      ownerSystemAccountName: accountNames.get(row.system_account_id),
+      name: row.name,
+      providerCode: row.provider_code,
+      enabled: row.enabled === 1,
+      isDefault: isAuthorizedView ? false : row.is_default === 1,
+      accessType: row.access_type ?? 'owner',
+      groupAuthorizationId: row.authorization_id ?? undefined,
+      authorizationStatus: row.authorization_status ?? undefined,
+      permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
+    }
+  })
 }
 
 function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupSummary[] {
@@ -1899,7 +1975,7 @@ export function findSystemTeamSummary(id: string, access?: AccessScope): SystemT
 
 export function listAuthorizationGranteeAccounts(access?: AccessScope): SystemAccountPrincipalSummary[] {
   const database = getDatabase()
-  const rows = database.prepare('SELECT * FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC, id ASC').all() as unknown as SystemAccountRow[]
+  const rows = database.prepare('SELECT id, username, display_name, status FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC, id ASC').all() as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
   return rows.map(systemAccountPrincipalSummaryFromRow)
 }
 
@@ -2168,20 +2244,15 @@ function systemTeamPrincipalSummaryFromRow(row: SystemTeamRow): SystemTeamPrinci
   }
 }
 
-function systemAccountPrincipalSummaryFromRow(row: SystemAccountRow): SystemAccountPrincipalSummary {
-  return {
-    id: row.id,
-    username: row.username,
-    displayName: row.display_name,
-    status: row.status
-  }
-}
-
 function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false): Map<string, SystemTeamMemberSummary[]> {
   const ids = [...new Set(teamIds)].filter(Boolean)
   if (!ids.length) return new Map()
   const statusClause = activeOnly ? " AND system_team_members.status = 'active'" : ''
-  const rows = getDatabase().prepare(`SELECT system_team_members.*, system_accounts.display_name, system_accounts.username FROM system_team_members INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id WHERE system_team_members.team_id IN (${sqlPlaceholders(ids.length)})${statusClause} ORDER BY system_team_members.status ASC, system_team_members.joined_at ASC, system_team_members.id ASC`).all(...ids) as unknown as Array<SystemTeamMemberRow & { display_name?: string; username?: string }>
+  const rows: Array<SystemTeamMemberRow & { display_name?: string; username?: string }> = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database.prepare(`SELECT system_team_members.*, system_accounts.display_name, system_accounts.username FROM system_team_members INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id WHERE system_team_members.team_id IN (${sqlPlaceholders(chunk.length)})${statusClause} ORDER BY system_team_members.status ASC, system_team_members.joined_at ASC, system_team_members.id ASC`).all(...chunk) as unknown as Array<SystemTeamMemberRow & { display_name?: string; username?: string }>)
+  }
   const result = new Map<string, SystemTeamMemberSummary[]>()
   for (const row of rows) {
     const member: SystemTeamMemberSummary = { id: row.id, teamId: row.team_id, systemAccountId: row.system_account_id, systemAccountName: row.display_name, username: row.username, memberRole: 'member', status: row.status, joinedAt: row.joined_at, removedAt: row.removed_at ?? undefined, createdAt: row.created_at, updatedAt: row.updated_at }

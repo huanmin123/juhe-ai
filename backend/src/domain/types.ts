@@ -327,6 +327,23 @@ export interface AccountSummary {
   authorizationTeamCount?: number
 }
 
+export type AccountOptionSummary = Pick<
+  AccountSummary,
+  | 'id'
+  | 'systemAccountId'
+  | 'systemAccountName'
+  | 'ownerSystemAccountId'
+  | 'ownerSystemAccountName'
+  | 'providerCode'
+  | 'name'
+  | 'type'
+  | 'status'
+  | 'accessType'
+  | 'accountAuthorizationId'
+  | 'authorizationStatus'
+  | 'permissions'
+>
+
 export interface AccountTrafficMigrationResult {
   sourceAccount: AccountSummary
   targetAccount: AccountSummary
@@ -416,6 +433,27 @@ export interface GroupSummary {
   authorizationStatus?: AuthorizationStatus
   authorizationSources?: ResourceAuthorizationSourceSummary[]
   permissions?: ResourcePermissions
+}
+
+export type GroupOptionSummary = Pick<
+  GroupSummary,
+  | 'id'
+  | 'systemAccountId'
+  | 'systemAccountName'
+  | 'ownerSystemAccountId'
+  | 'ownerSystemAccountName'
+  | 'name'
+  | 'providerCode'
+  | 'enabled'
+  | 'isDefault'
+  | 'accessType'
+  | 'groupAuthorizationId'
+  | 'authorizationStatus'
+  | 'permissions'
+>
+
+export interface AccountGroupOptionSummary extends GroupOptionSummary {
+  accountIds: string[]
 }
 
 export interface ResourceAuthorizationUsageDetail {

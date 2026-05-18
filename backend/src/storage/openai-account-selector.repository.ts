@@ -2,7 +2,8 @@ import type { AccountStatus, AccountType, ResourceAuthorizationSourceType } from
 import { buildSystemAccountScopeClause, currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
-import { ProxyProfileUnavailableError, resolveProxyUrlForProfile } from './proxy.repository.js'
+import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { activeResourceAuthorization, activeResourceAuthorizationsByResourceIds, groupSystemAccountId } from './resource-authorization-helpers.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
@@ -84,6 +85,8 @@ type OpenAIAccountAccess = {
 type OpenAIAccountSecretOptions = {
   enforceSchedulableAuthorization?: boolean
   accountAuthorizationsByResourceId?: Map<string, ResourceAuthorizationRow>
+  proxyProfilesById?: Map<string, ProxyProfileUrlResolution>
+  accountAccess?: OpenAIAccountAccess
 }
 
 export function selectOpenAIAccountForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret | undefined {
@@ -214,21 +217,26 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
         group_accounts.account_id ASC
     `)
     .all(groupId, now, now) as unknown as OpenAIGroupAccountSelectionRow[]
-  const qualityByAccountId = loadFreshAccountQualityRows(groupAccountRows.map((row) => row.account_id), qualityFreshAfter)
-  const accountAuthorizationsByResourceId = loadAccountAuthorizationsForSelection(groupAccountRows, groupAccess, systemAccountId)
+  const candidateRows = groupAccountRows.filter((row) => isGroupAccountLocallyAvailable(row, now))
+  const accountAuthorizationsByResourceId = loadAccountAuthorizationsForSelection(candidateRows, groupAccess, systemAccountId)
+  const eligibleRows = candidateRows
+    .map((row) => ({
+      row,
+      accountAccess: resolveSchedulableOpenAIAccountAccess(row, groupAccess, systemAccountId, row, { accountAuthorizationsByResourceId })
+    }))
+    .filter((item): item is { row: OpenAIGroupAccountSelectionRow; accountAccess: OpenAIAccountAccess } => Boolean(item.accountAccess))
+  const qualityByAccountId = loadFreshAccountQualityRows(eligibleRows.map((item) => item.row.account_id), qualityFreshAfter)
+  const proxyProfilesById = loadProxyProfilesForSelection(eligibleRows.map((item) => item.row))
 
   const accounts: OpenAIAccountSecret[] = []
-  for (const row of groupAccountRows) {
+  for (const { row, accountAccess } of eligibleRows) {
     const quality = qualityByAccountId.get(row.id)
     if (quality) {
       row.quality_score = quality.quality_score
       row.quality_state = quality.quality_state
       row.quality_ewma_first_token_ms = quality.quality_ewma_first_token_ms
     }
-    if (!isGroupAccountLocallyAvailable(row, now)) {
-      continue
-    }
-    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByResourceId })
+    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByResourceId, proxyProfilesById, accountAccess })
     if (account) {
       accounts.push(account)
     }
@@ -268,6 +276,10 @@ function openAIAccountSecretFromRow(
   groupAccount?: GroupAccountRow,
   options: OpenAIAccountSecretOptions = {}
 ): OpenAIAccountSecret | undefined {
+  const accountAccess = options.accountAccess ?? resolveSchedulableOpenAIAccountAccess(row, groupAccess, systemAccountId, groupAccount, options)
+  if (!accountAccess) {
+    return undefined
+  }
   const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
   const apiKey = row.type === 'oauth'
     ? typeof credentials.access_token === 'string' ? credentials.access_token : ''
@@ -275,20 +287,7 @@ function openAIAccountSecretFromRow(
   if (!apiKey) {
     return undefined
   }
-  const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, groupAccount?.account_authorization_id ?? undefined, options.accountAuthorizationsByResourceId)
-  if (!accountAccess) {
-    return undefined
-  }
-  if (options.enforceSchedulableAuthorization !== false && !canScheduleAuthorizedAccount({
-    accountId: row.id,
-    accountAccessType: accountAccess.accountAccessType,
-    authorizationId: accountAccess.accountAuthorizationId,
-    systemAccountId,
-    accountAuthorizationsByResourceId: options.accountAuthorizationsByResourceId
-  })) {
-    return undefined
-  }
-  const proxyProfile = resolveOpenAIAccountProxyUrl(row.proxy_profile_id)
+  const proxyProfile = resolveOpenAIAccountProxyUrl(row.proxy_profile_id, options.proxyProfilesById)
   const isAccountAuthorized = accountAccess.accountAccessType === 'account_authorized'
   const isLocalAccountAuthorized = isAccountAuthorized && Boolean(groupAccount?.account_authorization_id)
   const localSuperPriorityEnabled = isLocalAccountAuthorized && groupAccount?.local_super_priority_enabled === 1
@@ -398,20 +397,52 @@ function qualityFreshAfterIso(): string {
 function loadFreshAccountQualityRows(accountIds: string[], freshAfter: string): Map<string, Pick<OpenAIAccountRow, 'quality_score' | 'quality_state' | 'quality_ewma_first_token_ms'>> {
   const ids = [...new Set(accountIds.filter(Boolean))]
   if (!ids.length) return new Map()
-  const rows = getRecordDatabase()
-    .prepare(`
-      SELECT account_id, quality_score, quality_state, ewma_first_token_ms AS quality_ewma_first_token_ms
-      FROM account_quality_scores
-      WHERE account_id IN (${ids.map(() => '?').join(',')})
-        AND last_sample_at >= ?
-    `)
-    .all(...ids, freshAfter) as unknown as Array<{
-      account_id: string
-      quality_score: number | null
-      quality_state: string | null
-      quality_ewma_first_token_ms: number | null
-    }>
+  const rows: Array<{
+    account_id: string
+    quality_score: number | null
+    quality_state: string | null
+    quality_ewma_first_token_ms: number | null
+  }> = []
+  const database = getRecordDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database
+      .prepare(`
+        SELECT account_id, quality_score, quality_state, ewma_first_token_ms AS quality_ewma_first_token_ms
+        FROM account_quality_scores
+        WHERE account_id IN (${sqlPlaceholders(chunk.length)})
+          AND last_sample_at >= ?
+      `)
+      .all(...chunk, freshAfter) as unknown as Array<{
+        account_id: string
+        quality_score: number | null
+        quality_state: string | null
+        quality_ewma_first_token_ms: number | null
+      }>)
+  }
   return new Map(rows.map((row) => [row.account_id, row]))
+}
+
+function resolveSchedulableOpenAIAccountAccess(
+  row: OpenAIAccountRow,
+  groupAccess: GroupUsageAccessMetadata,
+  systemAccountId: string,
+  groupAccount: GroupAccountRow | undefined,
+  options: OpenAIAccountSecretOptions
+): OpenAIAccountAccess | undefined {
+  const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, groupAccount?.account_authorization_id ?? undefined, options.accountAuthorizationsByResourceId)
+  if (!accountAccess) {
+    return undefined
+  }
+  if (options.enforceSchedulableAuthorization !== false && !canScheduleAuthorizedAccount({
+    accountId: row.id,
+    accountAccessType: accountAccess.accountAccessType,
+    authorizationId: accountAccess.accountAuthorizationId,
+    systemAccountId,
+    accountAuthorizationsByResourceId: options.accountAuthorizationsByResourceId
+  })) {
+    return undefined
+  }
+  return accountAccess
 }
 
 function loadAccountAuthorizationsForSelection(
@@ -427,7 +458,18 @@ function loadAccountAuthorizationsForSelection(
   return activeResourceAuthorizationsByResourceIds('account', authorizedAccountIds, systemAccountId)
 }
 
-function resolveOpenAIAccountProxyUrl(proxyProfileId: string | null): { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } {
+function loadProxyProfilesForSelection(rows: OpenAIGroupAccountSelectionRow[]): Map<string, ProxyProfileUrlResolution> | undefined {
+  const proxyProfileIds = rows
+    .map((row) => row.proxy_profile_id ?? '')
+    .filter(Boolean)
+  if (!proxyProfileIds.length) return undefined
+  return resolveProxyUrlsForProfiles(proxyProfileIds)
+}
+
+function resolveOpenAIAccountProxyUrl(proxyProfileId: string | null, proxyProfilesById?: Map<string, ProxyProfileUrlResolution>): ProxyProfileUrlResolution {
+  if (proxyProfileId && proxyProfilesById) {
+    return proxyProfilesById.get(proxyProfileId) ?? { unavailable: true, errorMessage: new ProxyProfileUnavailableError(proxyProfileId).message }
+  }
   try {
     return { proxyUrl: resolveProxyUrlForProfile(proxyProfileId) }
   } catch (error) {

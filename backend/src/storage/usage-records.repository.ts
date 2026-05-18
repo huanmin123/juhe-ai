@@ -2,7 +2,7 @@ import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessS
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { compatiblePagedTotal, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMap } from './repository-lookups.js'
-import { systemAccountIdForUsage, usageAccessMetadata } from './usage-record-access-metadata.js'
+import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
 import { buildUsageRecordFilters, buildUsageRecordOrderClause, normalizeUsageRecordListOptions } from './usage-record-list-query.js'
 import { hydrateUsageRecordNames, usageRecordSummaryFromRow, type UsageRecordRow } from './usage-record-mappers.js'
 import { optionalString } from './value-utils.js'
@@ -265,16 +265,17 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   `)
   const updateAccountStatement = businessDatabase.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
   const accountLastUsedAt = new Map<string, string>()
+  const accessLookupContext = buildUsageAccessLookupContext(inputs)
 
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const input of inputs) {
-      if (input.apiKeyId && !apiKeyExists(input.apiKeyId)) {
+      if (input.apiKeyId && !usageApiKeyExists(input.apiKeyId, accessLookupContext)) {
         continue
       }
       const now = input.createdAt ?? nowIso()
-      const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input)
-      const accessMetadata = usageAccessMetadata({ ...input, systemAccountId })
+      const systemAccountId = input.systemAccountId ?? systemAccountIdForUsage(input, accessLookupContext)
+      const accessMetadata = usageAccessMetadata({ ...input, systemAccountId }, accessLookupContext)
       const result = insertStatement.run(
         input.id ?? newId('usage'),
         systemAccountId,
@@ -341,7 +342,3 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   }
 }
 
-function apiKeyExists(apiKeyId: string): boolean {
-  const row = getDatabase().prepare('SELECT id FROM api_keys WHERE id = ?').get(apiKeyId) as unknown as { id?: string } | undefined
-  return Boolean(row?.id)
-}

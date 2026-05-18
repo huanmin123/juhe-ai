@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import type { AccountSummary, GroupSummary } from '@/types/domain'
+import type { AccountOptionSummary, GroupOptionSummary } from '@/types/domain'
 import type { AuthorizationFilterResourceType } from './authorizationTableColumns'
 
 export type AuthorizationUsageResourceFilters = {
@@ -14,8 +14,8 @@ export type AuthorizationUsageResourceFilters = {
 
 export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsageResourceFilters) {
   const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
-  const accounts = ref<AccountSummary[]>([])
-  const groups = ref<GroupSummary[]>([])
+  const accounts = ref<AccountOptionSummary[]>([])
+  const groups = ref<GroupOptionSummary[]>([])
   const selectedResourceOwnerSystemAccountId = computed(() => {
     return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
   })
@@ -36,11 +36,11 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
   async function loadAuthorizableResourceOptions() {
     const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
     const [accountResult, groupResult] = await Promise.allSettled([
-      isManagementView.value ? api.accounts.list({ systemAccountId: ownerSystemAccountId, limit: 500 }) : api.myAccounts.list({ limit: 500 }),
-      isManagementView.value ? api.groups.list({ systemAccountId: ownerSystemAccountId }) : api.myGroups.list()
+      isManagementView.value ? api.accounts.options({ systemAccountId: ownerSystemAccountId, limit: 500 }) : api.myAccounts.options({ limit: 500 }),
+      isManagementView.value ? api.groups.options({ systemAccountId: ownerSystemAccountId }) : api.myGroups.options()
     ])
     if (accountResult.status === 'fulfilled') {
-      accounts.value = accountResult.value.items
+      accounts.value = accountResult.value
     } else {
       console.error(accountResult.reason)
       message.error('加载 AI 账户失败')
@@ -57,7 +57,7 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     filters.resourceId = undefined
   }
 
-  function matchesSelectedResourceOwner(resource: Pick<AccountSummary | GroupSummary, 'ownerSystemAccountId' | 'systemAccountId'>): boolean {
+  function matchesSelectedResourceOwner(resource: Pick<AccountOptionSummary | GroupOptionSummary, 'ownerSystemAccountId' | 'systemAccountId'>): boolean {
     const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
     if (!ownerSystemAccountId) return true
     return (resource.ownerSystemAccountId ?? resource.systemAccountId) === ownerSystemAccountId

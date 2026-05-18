@@ -5,7 +5,7 @@ import type {
   ResourceAuthorizationSourceType
 } from '../domain/types.js'
 import { getDatabase } from './database.js'
-import { sqlPlaceholders } from './query-utils.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 interface ResourceAuthorizationSourceRow {
   id: string
@@ -35,21 +35,25 @@ function uniqueIds(values: string[]): string[] {
 export function loadResourceAuthorizationStatsByResourceIds(resourceType: ResourceAuthorizationResourceType, resourceIds: string[]): Map<string, ResourceAuthorizationStats> {
   const ids = uniqueIds(resourceIds)
   if (!ids.length) return new Map()
-  const rows = getDatabase().prepare(`
-    SELECT
-      ra.resource_id,
-      COUNT(DISTINCT ra.id) AS authorization_count,
-      COUNT(DISTINCT CASE WHEN ras.source_type = 'team' AND ras.status = 'active' THEN ras.source_team_id END) AS authorization_team_count
-    FROM resource_authorizations ra
-    LEFT JOIN resource_authorization_sources ras
-      ON ras.authorization_id = ra.id
-      AND ras.source_type = 'team'
-      AND ras.status = 'active'
-    WHERE ra.resource_type = ?
-      AND ra.status = 'active'
-      AND ra.resource_id IN (${sqlPlaceholders(ids.length)})
-    GROUP BY ra.resource_id
-  `).all(resourceType, ...ids) as unknown as Array<{ resource_id: string; authorization_count: number; authorization_team_count: number }>
+  const rows: Array<{ resource_id: string; authorization_count: number; authorization_team_count: number }> = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database.prepare(`
+      SELECT
+        ra.resource_id,
+        COUNT(DISTINCT ra.id) AS authorization_count,
+        COUNT(DISTINCT CASE WHEN ras.source_type = 'team' AND ras.status = 'active' THEN ras.source_team_id END) AS authorization_team_count
+      FROM resource_authorizations ra
+      LEFT JOIN resource_authorization_sources ras
+        ON ras.authorization_id = ra.id
+        AND ras.source_type = 'team'
+        AND ras.status = 'active'
+      WHERE ra.resource_type = ?
+        AND ra.status = 'active'
+        AND ra.resource_id IN (${sqlPlaceholders(chunk.length)})
+      GROUP BY ra.resource_id
+    `).all(resourceType, ...chunk) as unknown as Array<{ resource_id: string; authorization_count: number; authorization_team_count: number }>)
+  }
   return new Map(rows.map((row) => [row.resource_id, {
     authorizationCount: Number(row.authorization_count ?? 0),
     authorizationTeamCount: Number(row.authorization_team_count ?? 0)
@@ -59,13 +63,17 @@ export function loadResourceAuthorizationStatsByResourceIds(resourceType: Resour
 export function loadResourceAuthorizationSourcesByAuthorizationIds(authorizationIds: string[]): Map<string, ResourceAuthorizationSourceSummary[]> {
   const ids = uniqueIds(authorizationIds)
   if (!ids.length) return new Map()
-  const rows = getDatabase().prepare(`
-    SELECT ras.*, system_teams.name AS team_name
-    FROM resource_authorization_sources ras
-    LEFT JOIN system_teams ON system_teams.id = ras.source_team_id
-    WHERE ras.authorization_id IN (${sqlPlaceholders(ids.length)})
-    ORDER BY ras.status ASC, ras.created_at ASC, ras.id ASC
-  `).all(...ids) as unknown as Array<ResourceAuthorizationSourceRow & { team_name?: string | null }>
+  const rows: Array<ResourceAuthorizationSourceRow & { team_name?: string | null }> = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database.prepare(`
+      SELECT ras.*, system_teams.name AS team_name
+      FROM resource_authorization_sources ras
+      LEFT JOIN system_teams ON system_teams.id = ras.source_team_id
+      WHERE ras.authorization_id IN (${sqlPlaceholders(chunk.length)})
+      ORDER BY ras.status ASC, ras.created_at ASC, ras.id ASC
+    `).all(...chunk) as unknown as Array<ResourceAuthorizationSourceRow & { team_name?: string | null }>)
+  }
   const result = new Map<string, ResourceAuthorizationSourceSummary[]>()
   for (const row of rows) {
     const summary: ResourceAuthorizationSourceSummary = {

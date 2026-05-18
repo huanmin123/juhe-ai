@@ -1,4 +1,5 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
+import type { ProcessRole } from '../config/runtime.js'
 
 export const GLOBAL_STATS_SYSTEM_ACCOUNT_ID = 'global'
 export const GLOBAL_STATS_SCOPE_ID = 'global'
@@ -152,6 +153,13 @@ export interface SystemMetricsSampleInput {
   statsLagSeconds?: number
 }
 
+export interface ProcessEventLoopSampleInput {
+  processRole: ProcessRole
+  processPid?: number
+  sampledAt?: string
+  eventLoopLagMs?: number
+}
+
 export interface UsageStatsOverview {
   range: AccountUsageStatsRange
   summary: AccountUsageSummary & { successCount: number; errorCount: number; errorRate: number; averageDurationMs?: number; averageFirstTokenMs?: number }
@@ -198,5 +206,34 @@ export interface SystemMetricsOverview {
     processHeapUsedBytesMax?: number
     dbFileBytesMax?: number
     statsLagSecondsMax?: number
+  }>
+  processEventLoopLatest: Array<{
+    processRole: ProcessRole
+    processPid?: number
+    sampledAt: string
+    eventLoopLagMs?: number
+  }>
+  processEventLoopTrend: Array<{
+    statHour: string
+    processRole: ProcessRole
+    sampleCount: number
+    eventLoopLagMsAvg?: number
+    eventLoopLagMsMax?: number
+  }>
+  backgroundJobs?: Array<{
+    name: string
+    intervalMs: number
+    running: boolean
+    lastStartedAt?: string
+    lastFinishedAt?: string
+    lastSuccessAt?: string
+    lastErrorAt?: string
+    lastError?: string
+    lastDurationMs?: number
+    maxDurationMs?: number
+    runCount: number
+    successCount: number
+    failureCount: number
+    skippedCount: number
   }>
 }

@@ -1,5 +1,6 @@
 import { decryptJson, encryptJson } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
 
 interface ProxyRow {
@@ -41,6 +42,12 @@ export type ProxyProfileOptionSummary = Pick<ProxyProfileSummary, 'id' | 'name' 
 
 export interface ProxyProfileTestConfig extends ProxyProfileSummary {
   proxyUrl: string
+}
+
+export interface ProxyProfileUrlResolution {
+  proxyUrl?: string
+  unavailable?: boolean
+  errorMessage?: string
 }
 
 export class ProxyInUseError extends Error {
@@ -282,6 +289,28 @@ export function resolveProxyUrlForProfile(proxyProfileId?: string | null): strin
 
 export function resolveProxyUrlForProfileForSystemAccount(proxyProfileId: string | undefined | null, _systemAccountId: string): string | undefined {
   return proxyUrlForProfile(proxyProfileId)
+}
+
+export function resolveProxyUrlsForProfiles(proxyProfileIds: string[]): Map<string, ProxyProfileUrlResolution> {
+  const ids = [...new Set(proxyProfileIds.map((id) => id.trim()).filter(Boolean))]
+  const output = new Map<string, ProxyProfileUrlResolution>()
+  if (!ids.length) return output
+
+  const rows: Array<Pick<ProxyRow, 'id' | 'type' | 'host' | 'port' | 'username' | 'password_encrypted' | 'enabled'>> = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database
+      .prepare(`SELECT id, type, host, port, username, password_encrypted, enabled FROM proxy_profiles WHERE id IN (${sqlPlaceholders(chunk.length)})`)
+      .all(...chunk) as unknown as Array<Pick<ProxyRow, 'id' | 'type' | 'host' | 'port' | 'username' | 'password_encrypted' | 'enabled'>>)
+  }
+  const rowsById = new Map(rows.map((row) => [row.id, row]))
+  for (const id of ids) {
+    const row = rowsById.get(id)
+    output.set(id, row && row.enabled === 1
+      ? { proxyUrl: proxyUrlFromRow(row) }
+      : { unavailable: true, errorMessage: new ProxyProfileUnavailableError(id).message })
+  }
+  return output
 }
 
 export function resolveEnabledProxyProfileId(proxyProfileId?: string | null): string | undefined {

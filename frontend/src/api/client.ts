@@ -3,6 +3,8 @@ import axios from 'axios'
 import type {
   AccountSummary,
   AccountListResult,
+  AccountGroupOptionSummary,
+  AccountOptionSummary,
   AccountTestResult,
   AccountTrafficMigrationResult,
   AccountTrafficMigrationSourceStatus,
@@ -30,6 +32,7 @@ import type {
   CurrentUserSummary,
   ErrorPolicySummary,
   GlobalSettings,
+  GroupOptionSummary,
   GroupSummary,
   OpenAIAuthURLResult,
   OperationLogDetail,
@@ -291,6 +294,7 @@ export const api = {
   },
   systemAccounts: {
     list: () => unwrap<SystemAccountSummary[]>(http.get('/system-accounts')),
+    options: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/system-accounts/options')),
     create: (payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.post('/system-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.patch(`/system-accounts/${id}`, payload))
   },
@@ -321,6 +325,7 @@ export const api = {
   },
   accounts: {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
+    options: (params?: AccountListParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/accounts', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
     updateAuthorizedDispatch: (id: string, payload: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
@@ -331,6 +336,7 @@ export const api = {
   },
   myAccounts: {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/my-accounts', { params: accountListParams(params, false) })),
+    options: (params?: AccountListParams) => unwrap<AccountOptionSummary[]>(http.get('/my-accounts/options', { params: accountOptionsParams(params, false) })),
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
     updateAuthorizedDispatch: (id: string, payload: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
@@ -341,12 +347,16 @@ export const api = {
   },
   groups: {
     list: (params?: ListParams) => unwrap<GroupSummary[]>(http.get('/groups', { params })),
+    options: (params?: ListParams) => unwrap<GroupOptionSummary[]>(http.get('/groups/options', { params })),
+    accountOptions: (params?: ListParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.post('/groups', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.patch(`/groups/${id}`, payload, { params })),
     delete: (id: string, params?: ListParams) => http.delete(`/groups/${id}`, { params })
   },
   myGroups: {
     list: () => unwrap<GroupSummary[]>(http.get('/my-groups')),
+    options: () => unwrap<GroupOptionSummary[]>(http.get('/my-groups/options')),
+    accountOptions: () => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options')),
     create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/my-groups', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<GroupSummary>(http.patch(`/my-groups/${id}`, payload)),
     delete: (id: string) => http.delete(`/my-groups/${id}`)
@@ -521,6 +531,17 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
     output.sorts = params.sorts.map((sort) => `${sort.field}:${sort.order}`).join(',')
   }
   return output
+}
+
+function accountOptionsParams(params?: AccountListParams, includeSystemAccount = true): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.keyword) output.keyword = params.keyword
+  if (params.type && params.type !== 'all') output.type = params.type
+  if (params.status && params.status !== 'all') output.status = params.status
+  if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
+  return Object.keys(output).length ? output : undefined
 }
 
 function aiPerformanceParams(params?: AiPerformanceParams, includeSystemAccount = true): Record<string, unknown> | undefined {

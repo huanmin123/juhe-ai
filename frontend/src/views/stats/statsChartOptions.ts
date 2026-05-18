@@ -199,14 +199,14 @@ export function buildErrorOption(errors: UsageStatsOverview['errors']): EChartsO
 
 export function buildSystemMetricsOption(trend: SystemMetricsOverview['hourlyTrend']): EChartsOption {
   return {
-    color: ['#1677ff', '#52c41a', '#13c2c2', '#722ed1', '#faad14'],
+    color: ['#1677ff', '#52c41a', '#13c2c2', '#722ed1'],
     tooltip: {
       trigger: 'axis',
       formatter: (params: unknown) => systemMetricsTooltip(params)
     },
     legend: {
       bottom: 0,
-      data: ['CPU 平均', '内存平均', '入站带宽', '出站带宽', '事件循环延迟']
+      data: ['CPU 平均', '内存平均', '入站带宽', '出站带宽']
     },
     grid: {
       left: 48,
@@ -230,7 +230,7 @@ export function buildSystemMetricsOption(trend: SystemMetricsOverview['hourlyTre
       },
       {
         type: 'value',
-        name: 'Mbps / ms',
+        name: 'Mbps',
         axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
         splitLine: { show: false }
       }
@@ -269,17 +269,49 @@ export function buildSystemMetricsOption(trend: SystemMetricsOverview['hourlyTre
         symbol: 'circle',
         symbolSize: 6,
         data: trend.map((item) => bytesPerSecondToMbps(item.networkTxBytesPerSecondAvg))
-      },
-      {
-        name: '事件循环延迟',
-        type: 'line',
-        yAxisIndex: 1,
-        smooth: true,
-        symbol: 'circle',
-        symbolSize: 6,
-        data: trend.map((item) => item.eventLoopLagMsAvg ?? null)
       }
     ]
+  }
+}
+
+export function buildProcessEventLoopOption(trend: SystemMetricsOverview['processEventLoopTrend']): EChartsOption {
+  const roles = processEventLoopRoles(trend)
+  return {
+    color: ['#faad14', '#eb2f96', '#2f54eb'],
+    tooltip: {
+      trigger: 'axis',
+      formatter: (params: unknown) => processEventLoopTooltip(params)
+    },
+    legend: {
+      bottom: 0,
+      data: roles.map(processRoleLabel)
+    },
+    grid: {
+      left: 48,
+      right: 24,
+      top: 28,
+      bottom: 56
+    },
+    xAxis: {
+      type: 'category',
+      data: processEventLoopHours(trend).map((item) => formatHourLabel(item)),
+      axisLabel: { color: '#64748b' },
+      axisLine: { lineStyle: { color: '#d9e2ef' } }
+    },
+    yAxis: {
+      type: 'value',
+      name: 'ms',
+      axisLabel: { formatter: axisNumberLabel, color: '#64748b' },
+      splitLine: { lineStyle: { color: '#edf2f7' } }
+    },
+    series: roles.map((role) => ({
+      name: processRoleLabel(role),
+      type: 'line',
+      smooth: true,
+      symbol: 'circle',
+      symbolSize: 6,
+      data: processEventLoopHours(trend).map((statHour) => processEventLoopValue(trend, statHour, role))
+    }))
   }
 }
 
@@ -338,6 +370,36 @@ function systemMetricsTooltip(params: unknown) {
     lines.push(`${point.marker ?? ''}${name}: ${formatted}`)
   }
   return lines.join('<br/>')
+}
+
+function processEventLoopTooltip(params: unknown) {
+  const points = tooltipParams(params)
+  const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
+  const lines = [`<strong>${title}</strong>`]
+  for (const point of points) {
+    lines.push(`${point.marker ?? ''}${String(point.seriesName ?? '')}: ${formatDuration(pointValue(point))}`)
+  }
+  return lines.join('<br/>')
+}
+
+function processEventLoopRoles(trend: SystemMetricsOverview['processEventLoopTrend']) {
+  const roles = new Set(trend.map((item) => item.processRole))
+  return (['server', 'worker', 'db-service'] as const).filter((role) => roles.has(role))
+}
+
+function processEventLoopHours(trend: SystemMetricsOverview['processEventLoopTrend']) {
+  return [...new Set(trend.map((item) => item.statHour))].sort()
+}
+
+function processEventLoopValue(trend: SystemMetricsOverview['processEventLoopTrend'], statHour: string, processRole: string) {
+  return trend.find((item) => item.statHour === statHour && item.processRole === processRole)?.eventLoopLagMsAvg ?? null
+}
+
+export function processRoleLabel(processRole: string) {
+  if (processRole === 'server') return '主进程'
+  if (processRole === 'worker') return '后台 worker'
+  if (processRole === 'db-service') return 'DB service'
+  return processRole
 }
 
 interface TooltipPoint {

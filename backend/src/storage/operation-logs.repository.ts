@@ -1,5 +1,5 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountsByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
@@ -152,93 +152,36 @@ export interface OperationLogDetail extends OperationLogSummary {
 
 type OperationLogRow = Record<string, unknown>
 type OperationLogFilterValue = string | number
+type OperationLogInsertStatement = ReturnType<ReturnType<typeof getRecordDatabase>['prepare']>
+
+interface OperationLogInsertStatements {
+  insertLog: OperationLogInsertStatement
+  insertTarget: OperationLogInsertStatement
+  insertViewer: OperationLogInsertStatement
+}
+
+interface PreparedOperationLogInput {
+  id: string
+  input: OperationLogInput
+  createdAt: string
+  visibilityScope: OperationLogVisibilityScope
+  detailLevel: OperationLogDetailLevel
+  targets: OperationLogTargetInput[]
+  viewers: OperationLogViewerInput[]
+  changesJson: string
+  metadataJson: string
+}
 
 const operationLogDefaultPageSize = 100
 const operationLogMaxPageSize = 100
 
 export function createOperationLog(input: OperationLogInput): OperationLogSummary {
   const database = getRecordDatabase()
-  const id = input.id ?? newId('oplog')
-  const createdAt = input.createdAt ?? nowIso()
-  const visibilityScope = input.visibilityScope ?? 'targeted'
-  const detailLevel = input.detailLevel ?? 'full'
-  const targets = normalizeTargets(input)
-  const viewers = normalizeViewers(input)
-  const changesJson = safeJsonStringify(input.changes ?? [], '[]')
-  const metadataJson = safeJsonStringify(input.metadata ?? {}, '{}')
-
-  const insertLog = database.prepare(`
-    INSERT INTO operation_logs (
-      id, trace_id, actor_system_account_id, actor_username, actor_display_name, actor_role,
-      operation_scope_system_account_id, mode, module, action, operation_key, resource_type, resource_id,
-      resource_name, summary, detail_level, visibility_scope, changes_json, metadata_json, method, path,
-      status_code, client_ip, user_agent, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  const insertTarget = database.prepare(`
-    INSERT INTO operation_log_targets (
-      id, operation_log_id, target_type, target_id, target_name, target_owner_system_account_id, relation, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  const insertViewer = database.prepare(`
-    INSERT OR IGNORE INTO operation_log_viewers (
-      operation_log_id, system_account_id, visibility_reason, detail_level, created_at
-    ) VALUES (?, ?, ?, ?, ?)
-  `)
-
+  const prepared = prepareOperationLogInput(input)
+  const statements = prepareOperationLogInsertStatements(database)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    insertLog.run(
-      id,
-      input.traceId ?? null,
-      input.actorSystemAccountId,
-      input.actorUsername ?? null,
-      input.actorDisplayName ?? null,
-      input.actorRole,
-      input.operationScopeSystemAccountId ?? null,
-      input.mode ?? 'self',
-      input.module,
-      input.action,
-      input.operationKey,
-      input.resourceType,
-      input.resourceId ?? null,
-      input.resourceName ?? null,
-      input.summary,
-      detailLevel,
-      visibilityScope,
-      changesJson,
-      metadataJson,
-      input.method ?? null,
-      input.path ?? null,
-      integerOrNull(input.statusCode),
-      input.clientIp ?? null,
-      input.userAgent ?? null,
-      createdAt
-    )
-
-    for (const target of targets) {
-      insertTarget.run(
-        newId('optgt'),
-        id,
-        target.targetType,
-        target.targetId ?? null,
-        target.targetName ?? null,
-        target.targetOwnerSystemAccountId ?? null,
-        target.relation ?? 'affected',
-        createdAt
-      )
-    }
-
-    for (const viewer of viewers) {
-      insertViewer.run(
-        id,
-        viewer.systemAccountId,
-        viewer.visibilityReason,
-        viewer.detailLevel ?? detailLevel,
-        createdAt
-      )
-    }
-
+    insertPreparedOperationLog(statements, prepared)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     try {
@@ -248,43 +191,18 @@ export function createOperationLog(input: OperationLogInput): OperationLogSummar
     throw error
   }
 
-  return operationLogSummaryFromRow({
-    id,
-    trace_id: input.traceId,
-    actor_system_account_id: input.actorSystemAccountId,
-    actor_username: input.actorUsername,
-    actor_display_name: input.actorDisplayName,
-    actor_role: input.actorRole,
-    operation_scope_system_account_id: input.operationScopeSystemAccountId,
-    mode: input.mode ?? 'self',
-    module: input.module,
-    action: input.action,
-    operation_key: input.operationKey,
-    resource_type: input.resourceType,
-    resource_id: input.resourceId,
-    resource_name: input.resourceName,
-    summary: input.summary,
-    detail_level: detailLevel,
-    visibility_scope: visibilityScope,
-    changes_json: changesJson,
-    metadata_json: metadataJson,
-    method: input.method,
-    path: input.path,
-    status_code: input.statusCode,
-    client_ip: input.clientIp,
-    user_agent: input.userAgent,
-    created_at: createdAt
-  }, new Map())
+  return operationLogSummaryFromPrepared(prepared)
 }
 
 export function createOperationLogsBatch(inputs: OperationLogInput[]): void {
   if (inputs.length === 0) return
 
   const database = getRecordDatabase()
+  const statements = prepareOperationLogInsertStatements(database)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     for (const input of inputs) {
-      createOperationLog(input)
+      insertPreparedOperationLog(statements, prepareOperationLogInput(input))
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -534,6 +452,129 @@ function pushLikeFilter(clauses: string[], params: OperationLogFilterValue[], co
   params.push(`%${text}%`)
 }
 
+function prepareOperationLogInput(input: OperationLogInput): PreparedOperationLogInput {
+  const detailLevel = input.detailLevel ?? 'full'
+  return {
+    id: input.id ?? newId('oplog'),
+    input,
+    createdAt: input.createdAt ?? nowIso(),
+    visibilityScope: input.visibilityScope ?? 'targeted',
+    detailLevel,
+    targets: normalizeTargets(input),
+    viewers: normalizeViewers(input),
+    changesJson: safeJsonStringify(input.changes ?? [], '[]'),
+    metadataJson: safeJsonStringify(input.metadata ?? {}, '{}')
+  }
+}
+
+function prepareOperationLogInsertStatements(database: ReturnType<typeof getRecordDatabase>): OperationLogInsertStatements {
+  return {
+    insertLog: database.prepare(`
+      INSERT INTO operation_logs (
+        id, trace_id, actor_system_account_id, actor_username, actor_display_name, actor_role,
+        operation_scope_system_account_id, mode, module, action, operation_key, resource_type, resource_id,
+        resource_name, summary, detail_level, visibility_scope, changes_json, metadata_json, method, path,
+        status_code, client_ip, user_agent, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `),
+    insertTarget: database.prepare(`
+      INSERT INTO operation_log_targets (
+        id, operation_log_id, target_type, target_id, target_name, target_owner_system_account_id, relation, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `),
+    insertViewer: database.prepare(`
+      INSERT OR IGNORE INTO operation_log_viewers (
+        operation_log_id, system_account_id, visibility_reason, detail_level, created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `)
+  }
+}
+
+function insertPreparedOperationLog(statements: OperationLogInsertStatements, prepared: PreparedOperationLogInput): void {
+  const input = prepared.input
+  statements.insertLog.run(
+    prepared.id,
+    input.traceId ?? null,
+    input.actorSystemAccountId,
+    input.actorUsername ?? null,
+    input.actorDisplayName ?? null,
+    input.actorRole,
+    input.operationScopeSystemAccountId ?? null,
+    input.mode ?? 'self',
+    input.module,
+    input.action,
+    input.operationKey,
+    input.resourceType,
+    input.resourceId ?? null,
+    input.resourceName ?? null,
+    input.summary,
+    prepared.detailLevel,
+    prepared.visibilityScope,
+    prepared.changesJson,
+    prepared.metadataJson,
+    input.method ?? null,
+    input.path ?? null,
+    integerOrNull(input.statusCode),
+    input.clientIp ?? null,
+    input.userAgent ?? null,
+    prepared.createdAt
+  )
+
+  for (const target of prepared.targets) {
+    statements.insertTarget.run(
+      newId('optgt'),
+      prepared.id,
+      target.targetType,
+      target.targetId ?? null,
+      target.targetName ?? null,
+      target.targetOwnerSystemAccountId ?? null,
+      target.relation ?? 'affected',
+      prepared.createdAt
+    )
+  }
+
+  for (const viewer of prepared.viewers) {
+    statements.insertViewer.run(
+      prepared.id,
+      viewer.systemAccountId,
+      viewer.visibilityReason,
+      viewer.detailLevel ?? prepared.detailLevel,
+      prepared.createdAt
+    )
+  }
+}
+
+function operationLogSummaryFromPrepared(prepared: PreparedOperationLogInput): OperationLogSummary {
+  const input = prepared.input
+  return operationLogSummaryFromRow({
+    id: prepared.id,
+    trace_id: input.traceId,
+    actor_system_account_id: input.actorSystemAccountId,
+    actor_username: input.actorUsername,
+    actor_display_name: input.actorDisplayName,
+    actor_role: input.actorRole,
+    operation_scope_system_account_id: input.operationScopeSystemAccountId,
+    mode: input.mode ?? 'self',
+    module: input.module,
+    action: input.action,
+    operation_key: input.operationKey,
+    resource_type: input.resourceType,
+    resource_id: input.resourceId,
+    resource_name: input.resourceName,
+    summary: input.summary,
+    detail_level: prepared.detailLevel,
+    visibility_scope: prepared.visibilityScope,
+    changes_json: prepared.changesJson,
+    metadata_json: prepared.metadataJson,
+    method: input.method,
+    path: input.path,
+    status_code: input.statusCode,
+    client_ip: input.clientIp,
+    user_agent: input.userAgent,
+    created_at: prepared.createdAt
+  }, new Map())
+}
+
 function operationLogSummaryFromRow(row: OperationLogRow, systemAccountNames: Map<string, string>, options: { includePayload?: boolean } = {}): OperationLogSummary {
   const actorSystemAccountId = String(row.actor_system_account_id)
   const operationScopeSystemAccountId = optionalString(row.operation_scope_system_account_id)
@@ -598,13 +639,17 @@ function loadViewerDetailLevels(operationLogIds: string[], systemAccountId: stri
   const ids = [...new Set(operationLogIds.filter((id) => id.trim()))]
   if (ids.length === 0) return new Map()
 
-  const rows = getRecordDatabase()
-    .prepare(`
-      SELECT operation_log_id, detail_level
-      FROM operation_log_viewers
-      WHERE system_account_id = ? AND operation_log_id IN (${sqlPlaceholders(ids.length)})
-    `)
-    .all(systemAccountId, ...ids) as OperationLogRow[]
+  const rows: OperationLogRow[] = []
+  const database = getRecordDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database
+      .prepare(`
+        SELECT operation_log_id, detail_level
+        FROM operation_log_viewers
+        WHERE system_account_id = ? AND operation_log_id IN (${sqlPlaceholders(chunk.length)})
+      `)
+      .all(systemAccountId, ...chunk) as OperationLogRow[])
+  }
   const levels = new Map<string, OperationLogDetailLevel>()
   for (const row of rows) {
     const id = optionalString(row.operation_log_id)

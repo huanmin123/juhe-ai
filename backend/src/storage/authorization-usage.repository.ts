@@ -10,6 +10,7 @@ import type {
 } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, getRecordDatabase } from './database.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { loadSystemAccountsByIds } from './repository-lookups.js'
 
@@ -313,25 +314,33 @@ function userUsageSourceLabels(teamFilterId: string): string[] {
 function loadTeamRowsByIds(teamIds: string[]): Map<string, { name: string; status: SystemTeamStatus }> {
   const ids = [...new Set(teamIds.filter(Boolean))]
   if (!ids.length) return new Map()
-  const rows = getDatabase()
-    .prepare(`SELECT id, name, status FROM system_teams WHERE id IN (${ids.map(() => '?').join(',')})`)
-    .all(...ids) as unknown as Array<{ id: string; name: string; status: SystemTeamStatus }>
+  const rows: Array<{ id: string; name: string; status: SystemTeamStatus }> = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database
+      .prepare(`SELECT id, name, status FROM system_teams WHERE id IN (${sqlPlaceholders(chunk.length)})`)
+      .all(...chunk) as unknown as Array<{ id: string; name: string; status: SystemTeamStatus }>)
+  }
   return new Map(rows.map((row) => [row.id, { name: row.name, status: row.status }]))
 }
 
 function loadActiveTeamMembershipsBySystemAccountIds(systemAccountIds: string[]): Map<string, string[]> {
   const ids = [...new Set(systemAccountIds.filter(Boolean))]
   if (!ids.length) return new Map()
-  const rows = getDatabase()
-    .prepare(`
-      SELECT members.system_account_id, teams.name
-      FROM system_team_members members
-      INNER JOIN system_teams teams ON teams.id = members.team_id
-      WHERE members.status = 'active'
-        AND members.system_account_id IN (${ids.map(() => '?').join(',')})
-      ORDER BY teams.name COLLATE NOCASE ASC, teams.id ASC
-    `)
-    .all(...ids) as unknown as Array<{ system_account_id: string; name: string }>
+  const rows: Array<{ system_account_id: string; name: string }> = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database
+      .prepare(`
+        SELECT members.system_account_id, teams.name
+        FROM system_team_members members
+        INNER JOIN system_teams teams ON teams.id = members.team_id
+        WHERE members.status = 'active'
+          AND members.system_account_id IN (${sqlPlaceholders(chunk.length)})
+        ORDER BY teams.name COLLATE NOCASE ASC, teams.id ASC
+      `)
+      .all(...chunk) as unknown as Array<{ system_account_id: string; name: string }>)
+  }
   const result = new Map<string, string[]>()
   for (const row of rows) {
     const names = result.get(row.system_account_id) ?? []
@@ -357,17 +366,25 @@ function loadAuthorizationResourceInfoMap(rows: Array<{ resource_filter_type: Re
   const groupIds = [...new Set(rows.filter((row) => row.resource_filter_type === 'group').map((row) => row.resource_filter_id).filter(Boolean))]
   const resources = new Map<string, AuthorizationResourceInfo>()
   if (accountIds.length) {
-    const accountRows = getDatabase()
-      .prepare(`SELECT id, name, system_account_id FROM accounts WHERE id IN (${accountIds.map(() => '?').join(',')})`)
-      .all(...accountIds) as unknown as Array<{ id: string; name: string; system_account_id: string }>
+    const accountRows: Array<{ id: string; name: string; system_account_id: string }> = []
+    const database = getDatabase()
+    for (const chunk of chunkValues(accountIds, 900)) {
+      accountRows.push(...database
+        .prepare(`SELECT id, name, system_account_id FROM accounts WHERE id IN (${sqlPlaceholders(chunk.length)})`)
+        .all(...chunk) as unknown as Array<{ id: string; name: string; system_account_id: string }>)
+    }
     for (const row of accountRows) {
       resources.set(authorizationResourceKey('account', row.id), { name: row.name, ownerSystemAccountId: row.system_account_id })
     }
   }
   if (groupIds.length) {
-    const groupRows = getDatabase()
-      .prepare(`SELECT id, name, system_account_id FROM groups WHERE id IN (${groupIds.map(() => '?').join(',')})`)
-      .all(...groupIds) as unknown as Array<{ id: string; name: string; system_account_id: string }>
+    const groupRows: Array<{ id: string; name: string; system_account_id: string }> = []
+    const database = getDatabase()
+    for (const chunk of chunkValues(groupIds, 900)) {
+      groupRows.push(...database
+        .prepare(`SELECT id, name, system_account_id FROM groups WHERE id IN (${sqlPlaceholders(chunk.length)})`)
+        .all(...chunk) as unknown as Array<{ id: string; name: string; system_account_id: string }>)
+    }
     for (const row of groupRows) {
       resources.set(authorizationResourceKey('group', row.id), { name: row.name, ownerSystemAccountId: row.system_account_id })
     }

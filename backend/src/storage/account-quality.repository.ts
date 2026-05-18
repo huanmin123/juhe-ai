@@ -1,3 +1,5 @@
+import type { DatabaseSync } from 'node:sqlite'
+
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues } from './query-utils.js'
 import { minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
@@ -96,6 +98,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
   const refreshedAccountIds = new Set<string>()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
+    const upsertQuality = prepareAccountQualityUpsert(database)
     const activeIds = [...activeAccountIds]
     const deleteResult = activeIds.length > 0
       ? cleanupInactiveQualityRows(database, activeIds)
@@ -135,7 +138,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
         qualityState,
         updatedAt
       })
-      upsertAccountQuality({
+      upsertAccountQuality(upsertQuality, {
         accountId: row.account_id,
         systemAccountId: metadata.systemAccountId,
         providerCode: metadata.providerCode,
@@ -162,7 +165,7 @@ export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQuali
       if (!activeAccountIds.has(accountId) || refreshedAccountIds.has(accountId)) {
         continue
       }
-      markAccountQualityStale(previous, windowStartedAt, windowEndedAt, updatedAt)
+      markAccountQualityStale(upsertQuality, previous, windowStartedAt, windowEndedAt, updatedAt)
     }
 
     commitDatabaseTransaction(database, transactionStarted)
@@ -208,7 +211,7 @@ function cleanupInactiveQualityRows(database: ReturnType<typeof getRecordDatabas
   `).run()
 }
 
-function markAccountQualityStale(previous: AccountQualityRow, windowStartedAt: string, windowEndedAt: string, updatedAt: string): void {
+function markAccountQualityStale(upsertQuality: ReturnType<DatabaseSync['prepare']>, previous: AccountQualityRow, windowStartedAt: string, windowEndedAt: string, updatedAt: string): void {
   const qualityState: AccountQualityState = previous.quality_state === 'fresh' ? 'stale' : previous.quality_state
   const qualityScore = computeQualityScore({
     ewmaFirstTokenMs: previous.ewma_first_token_ms,
@@ -216,7 +219,7 @@ function markAccountQualityStale(previous: AccountQualityRow, windowStartedAt: s
     qualityState,
     updatedAt
   })
-  upsertAccountQuality({
+  upsertAccountQuality(upsertQuality, {
     accountId: previous.account_id,
     systemAccountId: previous.system_account_id,
     providerCode: previous.provider_code,
@@ -239,7 +242,37 @@ function markAccountQualityStale(previous: AccountQualityRow, windowStartedAt: s
   })
 }
 
-function upsertAccountQuality(input: {
+function prepareAccountQualityUpsert(database: ReturnType<typeof getRecordDatabase>): ReturnType<DatabaseSync['prepare']> {
+  return database.prepare(`
+    INSERT INTO account_quality_scores (
+      account_id, system_account_id, provider_code, quality_score, quality_state,
+      recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
+      recent_avg_first_token_ms, ewma_first_token_ms, success_rate,
+      window_started_at, window_ended_at, last_sample_at, last_success_at, last_error_at, last_error_message, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(account_id) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      provider_code = excluded.provider_code,
+      quality_score = excluded.quality_score,
+      quality_state = excluded.quality_state,
+      recent_request_count = excluded.recent_request_count,
+      recent_success_count = excluded.recent_success_count,
+      recent_error_count = excluded.recent_error_count,
+      recent_first_token_sample_count = excluded.recent_first_token_sample_count,
+      recent_avg_first_token_ms = excluded.recent_avg_first_token_ms,
+      ewma_first_token_ms = excluded.ewma_first_token_ms,
+      success_rate = excluded.success_rate,
+      window_started_at = excluded.window_started_at,
+      window_ended_at = excluded.window_ended_at,
+      last_sample_at = excluded.last_sample_at,
+      last_success_at = excluded.last_success_at,
+      last_error_at = excluded.last_error_at,
+      last_error_message = excluded.last_error_message,
+      updated_at = excluded.updated_at
+  `)
+}
+
+function upsertAccountQuality(upsertQuality: ReturnType<DatabaseSync['prepare']>, input: {
   accountId: string
   systemAccountId: string
   providerCode: string
@@ -260,35 +293,7 @@ function upsertAccountQuality(input: {
   lastErrorMessage?: string
   updatedAt: string
 }): void {
-  getRecordDatabase()
-    .prepare(`
-      INSERT INTO account_quality_scores (
-        account_id, system_account_id, provider_code, quality_score, quality_state,
-        recent_request_count, recent_success_count, recent_error_count, recent_first_token_sample_count,
-        recent_avg_first_token_ms, ewma_first_token_ms, success_rate,
-        window_started_at, window_ended_at, last_sample_at, last_success_at, last_error_at, last_error_message, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(account_id) DO UPDATE SET
-        system_account_id = excluded.system_account_id,
-        provider_code = excluded.provider_code,
-        quality_score = excluded.quality_score,
-        quality_state = excluded.quality_state,
-        recent_request_count = excluded.recent_request_count,
-        recent_success_count = excluded.recent_success_count,
-        recent_error_count = excluded.recent_error_count,
-        recent_first_token_sample_count = excluded.recent_first_token_sample_count,
-        recent_avg_first_token_ms = excluded.recent_avg_first_token_ms,
-        ewma_first_token_ms = excluded.ewma_first_token_ms,
-        success_rate = excluded.success_rate,
-        window_started_at = excluded.window_started_at,
-        window_ended_at = excluded.window_ended_at,
-        last_sample_at = excluded.last_sample_at,
-        last_success_at = excluded.last_success_at,
-        last_error_at = excluded.last_error_at,
-        last_error_message = excluded.last_error_message,
-        updated_at = excluded.updated_at
-    `)
-    .run(
+  upsertQuality.run(
       input.accountId,
       input.systemAccountId,
       input.providerCode,

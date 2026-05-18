@@ -4,7 +4,7 @@ import {
   type BackgroundWorkerQueueRuntime,
   type BackgroundWorkerRuntimeLogQueueRuntime
 } from './modules/background/background-ipc.js'
-import { startBackgroundJobs } from './modules/background/background-jobs.js'
+import { getBackgroundJobRuntimeSnapshots, startBackgroundJobs } from './modules/background/background-jobs.js'
 import { enqueueAuditLogsLocal, flushAllAuditLogQueue, getAuditLogQueueRuntime } from './modules/audit-logs/audit-log-queue.service.js'
 import {
   enqueueOperationLogsLocal,
@@ -30,6 +30,7 @@ import {
 } from './modules/gateway/usage-record-queue.service.js'
 import { getBusinessDatabase, getRecordDatabase } from './storage/database.js'
 import { installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
+import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 
 type WorkerIncomingMessage =
@@ -43,6 +44,7 @@ type WorkerIncomingMessage =
 getBusinessDatabase()
 getRecordDatabase()
 installProcessLogHandlers()
+startProcessEventLoopMonitor()
 startLogMaintenance()
 installUsageRecordQueueShutdownHooks()
 installOperationLogQueueShutdownHooks()
@@ -110,6 +112,7 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
     pid: process.pid,
     ready: true,
     processRole: 'worker',
+    jobs: getBackgroundJobRuntimeSnapshots(),
     usageRecordQueue: queueRuntime(getUsageRecordQueueRuntime()),
     operationLogQueue: queueRuntime(getOperationLogQueueRuntime()),
     recordMaintenanceQueue: queueRuntime(getRecordMaintenanceQueueRuntime()),

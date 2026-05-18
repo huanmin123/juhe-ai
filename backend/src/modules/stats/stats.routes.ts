@@ -14,8 +14,10 @@ import {
   listAiPerformanceAccountOptions,
 } from '../../storage/usage-stats.repository.js'
 import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
+import { fixedUsageStatsDateKeys } from '../../storage/usage-stats-window-helpers.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
+import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 
 export const statsRouter = Router()
 
@@ -66,10 +68,12 @@ statsRouter.get('/account-usage', (req, res) => {
 
 function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOptions & { range: ReturnType<typeof normalizeAccountUsageStatsRange> } {
   const timezone = usageStatsTimezone()
-  const range = normalizeAccountUsageStatsRange({
-    startDate: optionalQueryText(query.startDate),
-    endDate: optionalQueryText(query.endDate)
-  }, timezone)
+  const startDate = optionalQueryText(query.startDate)
+  const endDate = optionalQueryText(query.endDate)
+  const range = normalizeAccountUsageStatsRange(
+    startDate || endDate ? { startDate, endDate } : defaultAccountUsageDateRange(timezone),
+    timezone
+  )
   const pageSize = integerQueryValue(query.pageSize)
   return {
     page: integerQueryValue(query.page),
@@ -79,6 +83,15 @@ function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOp
     type: optionalQueryText(query.type),
     schedulable: schedulableQueryValue(query.schedulable),
     range
+  }
+}
+
+function defaultAccountUsageDateRange(timezone: string): { startDate: string; endDate: string } {
+  const dateKeys = fixedUsageStatsDateKeys(timezone)
+  const today = todayDateKey(timezone)
+  return {
+    startDate: dateKeys[0] ?? today,
+    endDate: dateKeys[dateKeys.length - 1] ?? today
   }
 }
 
@@ -114,13 +127,18 @@ function parseAccountIds(value: unknown): string[] {
   return ids
 }
 
-statsRouter.get('/system-metrics', requireAdmin, (req, res) => {
+statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
   const parsed = usageOverviewQuerySchema.safeParse(req.query)
   if (!parsed.success) {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '监控日期范围不合法')))
     return
   }
-  res.json(ok(getSystemMetricsOverview(normalizeStatsDateRange(parsed.data))))
+  const overview = getSystemMetricsOverview(normalizeStatsDateRange(parsed.data))
+  const runtime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
+  res.json(ok({
+    ...overview,
+    backgroundJobs: runtime?.worker?.snapshot?.jobs ?? []
+  }))
 })
 
 function normalizeStatsDateRange(input: { startDate?: string; endDate?: string }) {

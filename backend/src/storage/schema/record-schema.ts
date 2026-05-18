@@ -1029,6 +1029,38 @@ export function applyRecordSchema(database: DatabaseSync): void {
       PRIMARY KEY (window_key, bucket_key)
     );
 
+    CREATE TABLE IF NOT EXISTS process_event_loop_samples (
+      id TEXT PRIMARY KEY,
+      sampled_at TEXT NOT NULL,
+      process_role TEXT NOT NULL,
+      process_pid INTEGER,
+      event_loop_lag_ms REAL,
+      created_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS process_event_loop_hourly (
+      stat_hour TEXT NOT NULL,
+      process_role TEXT NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      event_loop_lag_ms_sum REAL NOT NULL DEFAULT 0,
+      event_loop_lag_ms_max REAL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (stat_hour, process_role)
+    );
+
+    CREATE TABLE IF NOT EXISTS process_event_loop_trend_windows (
+      window_key TEXT NOT NULL,
+      start_date TEXT NOT NULL DEFAULT '',
+      end_date TEXT NOT NULL DEFAULT '',
+      bucket_key TEXT NOT NULL,
+      process_role TEXT NOT NULL,
+      sample_count INTEGER NOT NULL DEFAULT 0,
+      event_loop_lag_ms_sum REAL NOT NULL DEFAULT 0,
+      event_loop_lag_ms_max REAL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (window_key, bucket_key, process_role)
+    );
+
     CREATE TABLE IF NOT EXISTS database_storage_snapshots (
       id TEXT PRIMARY KEY,
       database_role TEXT NOT NULL,
@@ -1175,6 +1207,9 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_lookup ON usage_scope_range_windows(system_account_id, scope_type, scope_id, start_date, end_date);
     CREATE INDEX IF NOT EXISTS idx_system_metrics_trend_windows_lookup ON system_metrics_trend_windows(window_key, bucket_key);
     CREATE INDEX IF NOT EXISTS idx_system_metrics_samples_sampled_at ON system_metrics_samples(sampled_at);
+    CREATE INDEX IF NOT EXISTS idx_process_event_loop_samples_sampled_at ON process_event_loop_samples(sampled_at);
+    CREATE INDEX IF NOT EXISTS idx_process_event_loop_hourly_lookup ON process_event_loop_hourly(stat_hour, process_role);
+    CREATE INDEX IF NOT EXISTS idx_process_event_loop_trend_windows_lookup ON process_event_loop_trend_windows(window_key, bucket_key, process_role);
     CREATE INDEX IF NOT EXISTS idx_database_storage_snapshots_role_time ON database_storage_snapshots(database_role, sampled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest ON table_storage_snapshots(database_role, table_name, sampled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);

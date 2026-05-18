@@ -142,7 +142,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
-import type { GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
+import type { GroupSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
@@ -162,7 +162,7 @@ const { submitAction, submittingRef } = useSubmitAction('groups')
 const groupSaving = submittingRef('groups.save')
 const groups = ref<GroupSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
-const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
 type GroupsPageState = {
@@ -325,7 +325,7 @@ async function loadGroupOptions(force = false): Promise<void> {
 
   const [providerList, systemAccountList] = await Promise.all([
     isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-    isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+    isManagementView.value ? api.systemAccounts.options() : Promise.resolve([] as SystemAccountPrincipalSummary[])
   ])
   providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
   systemAccounts.value = systemAccountList

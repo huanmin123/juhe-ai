@@ -37,6 +37,13 @@ interface StoredPayloadBlobMeta {
 }
 
 type AuditPayloadBlobRow = Record<string, unknown>
+type AuditPayloadBlobStatement = ReturnType<DatabaseSync['prepare']>
+
+export interface AuditPayloadBlobStatements {
+  selectExisting: AuditPayloadBlobStatement
+  updateExisting: AuditPayloadBlobStatement
+  insertBlob: AuditPayloadBlobStatement
+}
 
 const auditBlobRoot = resolve(backendRoot, 'data', 'audit', 'blobs')
 const auditBlobCompressionThresholdBytes = 4 * 1024
@@ -69,18 +76,16 @@ export function persistAuditPayloadBlob(
   database: DatabaseSync,
   blob: PreparedAuditPayloadBlob | undefined,
   timestamp: string,
-  createdStorageKeys: string[]
+  createdStorageKeys: string[],
+  statements = prepareAuditPayloadBlobStatements(database)
 ): string | null {
   if (!blob) return null
 
-  const existing = database
-    .prepare('SELECT id, storage_key FROM audit_payload_blobs WHERE sha256 = ? AND raw_size_bytes = ? AND content_type = ?')
+  const existing = statements.selectExisting
     .get(blob.sha256, blob.rawSizeBytes, blob.contentType) as AuditPayloadBlobRow | undefined
   const existingId = optionalString(existing?.id)
   if (existingId) {
-    database
-      .prepare('UPDATE audit_payload_blobs SET ref_count = ref_count + 1, last_seen_at = ? WHERE id = ?')
-      .run(timestamp, existingId)
+    statements.updateExisting.run(timestamp, existingId)
     writeBlobFileIfMissing(optionalString(existing?.storage_key), blob.bytes)
     return existingId
   }
@@ -89,27 +94,33 @@ export function persistAuditPayloadBlob(
   const storageKey = storageKeyForBlob(id, blob.compression)
   writeBlobFile(storageKey, blob.bytes)
   createdStorageKeys.push(storageKey)
-  database
-    .prepare(`
+  statements.insertBlob.run(
+    id,
+    blob.sha256,
+    blob.rawSizeBytes,
+    blob.compressedSizeBytes,
+    blob.contentType,
+    blob.contentEncoding ?? null,
+    blob.compression,
+    storageKey,
+    timestamp,
+    timestamp,
+    timestamp
+  )
+  return id
+}
+
+export function prepareAuditPayloadBlobStatements(database: DatabaseSync): AuditPayloadBlobStatements {
+  return {
+    selectExisting: database.prepare('SELECT id, storage_key FROM audit_payload_blobs WHERE sha256 = ? AND raw_size_bytes = ? AND content_type = ?'),
+    updateExisting: database.prepare('UPDATE audit_payload_blobs SET ref_count = ref_count + 1, last_seen_at = ? WHERE id = ?'),
+    insertBlob: database.prepare(`
       INSERT INTO audit_payload_blobs (
         id, sha256, raw_size_bytes, compressed_size_bytes, content_type, content_encoding, compression,
         storage_key, ref_count, first_seen_at, last_seen_at, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
     `)
-    .run(
-      id,
-      blob.sha256,
-      blob.rawSizeBytes,
-      blob.compressedSizeBytes,
-      blob.contentType,
-      blob.contentEncoding ?? null,
-      blob.compression,
-      storageKey,
-      timestamp,
-      timestamp,
-      timestamp
-    )
-  return id
+  }
 }
 
 export function cleanupUnreferencedAuditPayloadBlobs(limit = 1000): number {

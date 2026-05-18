@@ -79,6 +79,9 @@ export interface DataRetentionCleanupResult {
   systemMetricsSamples: number
   systemMetricsHourly: number
   systemMetricsTrendWindows: number
+  processEventLoopSamples: number
+  processEventLoopHourly: number
+  processEventLoopTrendWindows: number
   tableStorageSnapshots: number
   systemSessions: number
 }
@@ -292,6 +295,9 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     systemMetricsSamples: 0,
     systemMetricsHourly: 0,
     systemMetricsTrendWindows: 0,
+    processEventLoopSamples: 0,
+    processEventLoopHourly: 0,
+    processEventLoopTrendWindows: 0,
     tableStorageSnapshots: 0,
     systemSessions: 0
   }

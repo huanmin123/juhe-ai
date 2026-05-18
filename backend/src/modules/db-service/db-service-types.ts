@@ -5,6 +5,7 @@ import type { RecordMaintenanceJob } from '../record-maintenance/record-maintena
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.service.js'
+import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 
 export interface DbServiceRuntimeSnapshot {
   pid: number
@@ -12,6 +13,7 @@ export interface DbServiceRuntimeSnapshot {
   processRole: 'db-service'
   httpHost?: string
   httpPort?: number
+  eventLoopLagMs?: number
   pendingRequestCount: number
   handledRequestCount: number
   failedRequestCount: number
@@ -29,6 +31,22 @@ export interface DbServiceServerRuntimeSnapshot {
     snapshot?: {
       pid: number
       ready: boolean
+      jobs?: Array<{
+        name: string
+        intervalMs: number
+        running: boolean
+        lastStartedAt?: string
+        lastFinishedAt?: string
+        lastSuccessAt?: string
+        lastErrorAt?: string
+        lastError?: string
+        lastDurationMs?: number
+        maxDurationMs?: number
+        runCount: number
+        successCount: number
+        failureCount: number
+        skippedCount: number
+      }>
       usageRecordQueue: DbServiceRuntimeQueueSnapshot
       operationLogQueue: DbServiceRuntimeQueueSnapshot
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
@@ -218,6 +236,10 @@ export type DbServiceParentMessage =
     ok: false
     errorMessage: string
   }
+  | {
+    type: 'db_service_process_event_loop_request'
+    requestId: string
+  }
 
 export type DbServiceChildMessage =
   | {
@@ -242,6 +264,11 @@ export type DbServiceChildMessage =
     type: 'db_service_server_runtime_request'
     requestId: string
     scope?: DbServiceServerRuntimeSnapshotScope
+  }
+  | {
+    type: 'db_service_process_event_loop_response'
+    requestId: string
+    sample?: ProcessEventLoopSample
   }
   | {
     type: 'gateway_runtime_cache_invalidate'

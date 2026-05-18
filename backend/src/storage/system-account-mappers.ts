@@ -1,4 +1,4 @@
-import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
+import type { SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
 
 export interface SystemAccountRow {
   id: string
@@ -26,5 +26,14 @@ export function systemAccountSummaryFromRow(row: SystemAccountRow): SystemAccoun
     lastLoginAt: row.last_login_at ?? undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at
+  }
+}
+
+export function systemAccountPrincipalSummaryFromRow(row: Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>): SystemAccountPrincipalSummary {
+  return {
+    id: row.id,
+    username: row.username,
+    displayName: row.display_name,
+    status: row.status
   }
 }

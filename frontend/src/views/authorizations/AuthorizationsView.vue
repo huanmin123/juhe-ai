@@ -69,7 +69,7 @@ import { authState } from '@/composables/useAuth'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
-import type { AccountSummary, GroupSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
 import AuthorizationFilterToolbar from './AuthorizationFilterToolbar.vue'
@@ -102,10 +102,10 @@ const route = useRoute()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
 const authorizations = ref<ResourceAuthorizationSummary[]>([])
-const accounts = ref<AccountSummary[]>([])
-const groups = ref<GroupSummary[]>([])
-const createAccounts = ref<AccountSummary[]>([])
-const createGroups = ref<GroupSummary[]>([])
+const accounts = ref<AccountOptionSummary[]>([])
+const groups = ref<GroupOptionSummary[]>([])
+const createAccounts = ref<AccountOptionSummary[]>([])
+const createGroups = ref<GroupOptionSummary[]>([])
 const teams = ref<SystemTeamPrincipalSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
 
@@ -241,13 +241,13 @@ watch(() => createForm.resourceType, () => {
 async function loadMetaData() {
   const systemAccountId = isManagementView.value ? scopedSystemAccountId() : undefined
   const [accountResult, groupResult, teamResult, userResult] = await Promise.allSettled([
-    isManagementView.value ? api.accounts.list({ systemAccountId, limit: 200 }) : api.myAccounts.list({ limit: 200 }),
-    isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
+    isManagementView.value ? api.accounts.options({ systemAccountId, limit: 200 }) : api.myAccounts.options({ limit: 200 }),
+    isManagementView.value ? api.groups.options({ systemAccountId }) : api.myGroups.options(),
     isManagementView.value ? api.authorizationOptions.granteeTeams() : api.myAuthorizationOptions.granteeTeams(),
     isManagementView.value ? api.authorizationOptions.granteeAccounts() : api.myAuthorizationOptions.granteeAccounts()
   ])
   if (accountResult.status === 'fulfilled') {
-    accounts.value = accountResult.value.items
+    accounts.value = accountResult.value
   } else {
     console.error(accountResult.reason)
     message.error('加载可授权账户失败')
@@ -322,21 +322,21 @@ async function loadCreateOwnerResources() {
   createGroups.value = []
   const accountRequest = isManagementView.value
     ? createForm.ownerSystemAccountId
-      ? api.accounts.list({ systemAccountId: createForm.ownerSystemAccountId, limit: 200 })
+      ? api.accounts.options({ systemAccountId: createForm.ownerSystemAccountId, limit: 200 })
       : undefined
-    : api.myAccounts.list({ limit: 200 })
+    : api.myAccounts.options({ limit: 200 })
   const groupRequest = isManagementView.value
     ? createForm.ownerSystemAccountId
-      ? api.groups.list({ systemAccountId: createForm.ownerSystemAccountId })
+      ? api.groups.options({ systemAccountId: createForm.ownerSystemAccountId })
       : undefined
-    : api.myGroups.list()
+    : api.myGroups.options()
   if (!accountRequest || !groupRequest) return
   const [accountResult, groupResult] = await Promise.allSettled([
     accountRequest,
     groupRequest
   ])
   if (accountResult.status === 'fulfilled') {
-    createAccounts.value = accountResult.value.items
+    createAccounts.value = accountResult.value
   } else {
     console.error(accountResult.reason)
     message.error('加载授权人的 AI 账户失败')

@@ -283,7 +283,7 @@ const summaryCards = computed(() => [
 async function loadOptions() {
   const [teamResult, ownerResult, resourceResult] = await Promise.allSettled([
     isManagementView.value ? api.authorizationOptions.granteeTeams() : api.myAuthorizationOptions.granteeTeams(),
-    isManagementView.value ? api.systemAccounts.list() : Promise.resolve([]),
+    isManagementView.value ? api.systemAccounts.options() : Promise.resolve([]),
     loadAuthorizableResourceOptions()
   ])
   if (teamResult.status === 'fulfilled') {

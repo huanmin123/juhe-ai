@@ -1,0 +1,190 @@
+import { strict as assert } from 'node:assert'
+import { mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import express from 'express'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
+
+const tempRoot = resolve(tmpdir(), `juhe-ai-system-account-options-lightweight-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const blockedRecordDatabasePath = join(tempRoot, 'records-as-directory.sqlite3')
+runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+runtimeConfig.recordDatabasePath = blockedRecordDatabasePath
+runtimeConfig.secret = 'system-account-options-lightweight-secret'
+runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.fileEnabled = false
+runtimeConfig.processRole = 'worker'
+mkdirSync(blockedRecordDatabasePath, { recursive: true })
+logger.level = 'silent'
+
+const [
+  { systemAccountsRouter },
+  { requireAuth },
+  { requestContextMiddleware },
+  databaseModule,
+  repositories
+] = await Promise.all([
+  import('../../modules/system-accounts/system-accounts.routes.js'),
+  import('../../modules/auth/auth.middleware.js'),
+  import('../../shared/request-context.js'),
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js')
+])
+
+const app = express()
+app.use(requestContextMiddleware)
+app.use(express.json({ limit: '1mb' }))
+app.use('/__aisys__/api', requireAuth)
+app.use('/__aisys__/api/system-accounts', systemAccountsRouter)
+
+interface ApiEnvelope<T> {
+  data: T
+  message?: string
+}
+
+interface SystemAccountOptionSummary {
+  id: string
+  username: string
+  displayName: string
+  status: 'active' | 'disabled'
+  role?: unknown
+  description?: unknown
+  mustChangePassword?: unknown
+  lastLoginAt?: unknown
+  createdAt?: unknown
+  updatedAt?: unknown
+  passwordHash?: unknown
+}
+
+interface SeedState {
+  activeUserId: string
+  adminCookie: string
+  disabledUserId: string
+  userCookie: string
+}
+
+let server: ReturnType<typeof app.listen> | undefined
+
+try {
+  const seed = seedData()
+  server = app.listen(0, '127.0.0.1')
+  await onceListening(server)
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('系统账户选项轻量回归服务地址不可用')
+  }
+  const baseUrl = `http://127.0.0.1:${address.port}`
+
+  const database = databaseModule.getDatabase()
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const systemAccountOptionSqls: string[] = []
+  database.prepare = ((sql: string) => {
+    if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+system_accounts\b/i.test(sql)) {
+      systemAccountOptionSqls.push(sql)
+    }
+    return originalPrepare(sql)
+  }) as typeof database.prepare
+
+  let adminOptions: SystemAccountOptionSummary[]
+  try {
+    adminOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options', seed.adminCookie)
+  } finally {
+    database.prepare = originalPrepare
+  }
+
+  const activeOption = adminOptions.find((account) => account.id === seed.activeUserId)
+  assert(activeOption, '系统账户选项应包含普通启用用户')
+  assert.equal(activeOption.displayName, '系统账户选项用户')
+  assert.equal(activeOption.status, 'active')
+  const disabledOption = adminOptions.find((account) => account.id === seed.disabledUserId)
+  assert(disabledOption, '系统账户选项应包含停用用户，供筛选和历史归属展示')
+  assert.equal(disabledOption.status, 'disabled')
+  assertLightweightSystemAccountOption(activeOption)
+  assertLightweightSystemAccountOption(disabledOption)
+
+  assert.equal(systemAccountOptionSqls.length, 1, '系统账户选项请求应只执行一次系统账户选项查询')
+  assert.equal(systemAccountOptionSqls.some((sql) => /SELECT\s+\*/i.test(sql)), false, '系统账户选项查询不应 SELECT *')
+  assert.equal(systemAccountOptionSqls.some((sql) => /\bpassword_hash\b/i.test(sql)), false, '系统账户选项查询不应读取 password_hash')
+  assert.equal(systemAccountOptionSqls.some((sql) => /\brole\b|\bmust_change_password\b|\blast_login_at\b|\bcreated_at\b|\bupdated_at\b/i.test(sql)), false, '系统账户选项查询不应读取管理字段')
+
+  const forbiddenResponse = await fetch(`${baseUrl}/__aisys__/api/system-accounts/options`, { headers: { cookie: seed.userCookie } })
+  assert.equal(forbiddenResponse.status, 403, '普通用户不应调用管理侧系统账户选项接口')
+
+  console.log('系统账户选项轻量回归通过：options 接口只读取最小字段，也不返回系统账户管理字段')
+} finally {
+  await closeServer(server)
+  try {
+    databaseModule.getDatabase().close()
+  } catch {
+  }
+  rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function seedData(): SeedState {
+  const admin = repositories.listSystemAccounts().find((account) => account.username === 'admin')
+  assert(admin, '默认管理员不存在')
+  const activeUser = repositories.createSystemAccount({
+    username: 'system_account_options_user',
+    displayName: '系统账户选项用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const disabledUser = repositories.createSystemAccount({
+    username: 'system_account_options_disabled',
+    displayName: '系统账户选项停用用户',
+    password: 'password',
+    role: 'user',
+    status: 'disabled',
+    mustChangePassword: true
+  })
+  return {
+    activeUserId: activeUser.id,
+    adminCookie: sessionCookie(admin.id),
+    disabledUserId: disabledUser.id,
+    userCookie: sessionCookie(activeUser.id)
+  }
+}
+
+function assertLightweightSystemAccountOption(account: SystemAccountOptionSummary): void {
+  for (const field of ['role', 'description', 'mustChangePassword', 'lastLoginAt', 'createdAt', 'updatedAt', 'passwordHash'] as const) {
+    assert.equal(Object.prototype.hasOwnProperty.call(account, field), false, `系统账户选项不应返回 ${field}`)
+  }
+}
+
+function sessionCookie(systemAccountId: string): string {
+  return `juhe_ai_session=${repositories.createSession(systemAccountId, 1).token}`
+}
+
+async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Promise<T> {
+  const response = await fetch(`${baseUrl}${path}`, { headers: { cookie } })
+  const text = await response.text()
+  if (!response.ok) {
+    throw new Error(`${path} HTTP ${response.status}: ${text}`)
+  }
+  return (JSON.parse(text) as ApiEnvelope<T>).data
+}
+
+async function onceListening(listeningServer: ReturnType<typeof app.listen>): Promise<void> {
+  if (listeningServer.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    listeningServer.once('listening', resolvePromise)
+    listeningServer.once('error', rejectPromise)
+  })
+}
+
+async function closeServer(listeningServer?: ReturnType<typeof app.listen>): Promise<void> {
+  if (!listeningServer?.listening) return
+  await new Promise<void>((resolvePromise, rejectPromise) => {
+    listeningServer.close((error) => {
+      if (error) {
+        rejectPromise(error)
+      } else {
+        resolvePromise()
+      }
+    })
+  })
+}

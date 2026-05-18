@@ -4,7 +4,7 @@ import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
 import { api, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { usePageStateCache } from '@/composables/usePageStateCache'
-import type { AccountSummary, GroupSummary, ProviderDefinition, ProxyProfileOptionSummary, SystemAccountSummary } from '@/types/domain'
+import type { AccountGroupOptionSummary, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDER } from './accountOptions'
@@ -38,8 +38,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const accounts = ref<AccountSummary[]>([])
   const providers = ref<ProviderDefinition[]>([])
   const proxies = ref<ProxyProfileOptionSummary[]>([])
-  const groups = ref<GroupSummary[]>([])
-  const systemAccounts = ref<SystemAccountSummary[]>([])
+  const groups = ref<AccountGroupOptionSummary[]>([])
+  const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
   const accountOptionsLoaded = ref(false)
   const accountOptionsScopeKey = ref('')
   const accountSorts = ref<AccountListSortParam[]>(initialPageState.sorts)
@@ -171,8 +171,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const [providerList, proxyList, groupList, systemAccountList] = await Promise.all([
       options.isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
       api.proxies.options(),
-      options.isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
-      options.isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+      options.isManagementView.value ? api.groups.accountOptions({ systemAccountId }) : api.myGroups.accountOptions(),
+      options.isManagementView.value ? api.systemAccounts.options() : Promise.resolve([] as SystemAccountPrincipalSummary[])
     ])
     providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
     proxies.value = proxyList

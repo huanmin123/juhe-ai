@@ -125,7 +125,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
-import type { SystemAccountSummary, UsageRecordSummary } from '@/types/domain'
+import type { SystemAccountPrincipalSummary, UsageRecordSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
@@ -173,7 +173,7 @@ const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseDateRange(initialPa
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
-const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const systemAccountsLoaded = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>(initialPageState.sortState)
@@ -340,7 +340,7 @@ async function loadSystemAccountOptions(force = false): Promise<void> {
   if (!force && systemAccountsLoaded.value) {
     return
   }
-  systemAccounts.value = await api.systemAccounts.list()
+  systemAccounts.value = await api.systemAccounts.options()
   systemAccountsLoaded.value = true
 }
 

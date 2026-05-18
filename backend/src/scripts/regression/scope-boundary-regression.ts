@@ -143,6 +143,10 @@ interface AccountUsageStatsRow {
 }
 
 interface AccountUsageStatsOverview {
+  range: {
+    days: number
+    maxDays: number
+  }
   rows: AccountUsageStatsRow[]
   defaultTrendAccountIds: string[]
   total: number
@@ -358,6 +362,7 @@ async function main(): Promise<void> {
     const userBOAuthUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, `/__aisys__/api/stats/account-usage?systemAccountId=${seed.userBId}&type=oauth&page=1&pageSize=10`, seed.adminCookie)
     assert(userBOAuthUsage.total === 0 && userBOAuthUsage.rows.length === 0, '管理账号用量统计类型筛选应排除无用量 OAuth 账户')
     const adminAllAccountUsage = await getEnvelope<AccountUsageStatsOverview>(baseUrl, '/__aisys__/api/stats/account-usage', seed.adminCookie)
+    assert(adminAllAccountUsage.range.days === 31 && adminAllAccountUsage.range.maxDays === 31, '管理账号用量统计默认范围应为最近 31 天')
     assert(adminAllAccountUsage.defaultTrendAccountIds.length === 2, `管理员全部用户默认趋势账户数量异常：${adminAllAccountUsage.defaultTrendAccountIds.length}`)
     assert(adminAllAccountUsage.defaultTrendAccountIds[0] === seed.userBAccountId && adminAllAccountUsage.defaultTrendAccountIds[1] === seed.userAAccountId, '管理员全部用户默认趋势账户应按全局可见账户用量排序')
     summary.push('账号用量统计分页筛选检查通过')

@@ -2,7 +2,7 @@ import { message } from '@/lib/antd'
 import { computed, reactive, ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountSummary, GroupSummary } from '@/types/domain'
+import type { AccountGroupOptionSummary, AccountSummary } from '@/types/domain'
 import {
   bindGroupOptionsForAccount,
   bindGroupTip as buildBindGroupTip,
@@ -17,7 +17,7 @@ interface UseAccountBindGroupOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   groupIdForAccount: (accountId: string) => string | undefined
-  groups: ReadonlyValue<GroupSummary[]>
+  groups: ReadonlyValue<AccountGroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
 }

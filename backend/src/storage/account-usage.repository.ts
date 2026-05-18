@@ -8,7 +8,7 @@ import type {
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
-import { sqlPlaceholders } from './query-utils.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { latestUsageStatsLagSeconds } from './usage-stats.repository.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { GLOBAL_STATS_SCOPE_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
@@ -375,25 +375,29 @@ function loadAccountUsageMetadataRows(access: AccessScope | undefined, accountId
         AND usage_authorization.status = 'active'
         AND (usage_authorization.expires_at IS NULL OR usage_authorization.expires_at > ?)`
     : ''
-  const queryParams = scopeType === 'caller_account'
-    ? [viewerSystemAccountId, viewerSystemAccountId, nowIso(), ...ids]
-    : ids
-  const rows = getDatabase().prepare(`
-    SELECT
-      accounts.id,
-      accounts.system_account_id,
-      COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id) AS system_account_name,
-      accounts.provider_code,
-      accounts.name,
-      accounts.type,
-      accounts.status,
-      ${scopeType === 'caller_account' ? "CASE WHEN accounts.system_account_id = ? THEN 'owner' ELSE 'authorized' END" : "'owner'"} AS access_type,
-      ${scopeType === 'caller_account' ? 'usage_authorization.id' : 'NULL'} AS authorization_id
-    FROM accounts
-    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
-    ${authorizationJoin}
-    WHERE accounts.id IN (${sqlPlaceholders(ids.length)})
-  `).all(...queryParams) as unknown as AccountUsageMetadataRow[]
+  const rows: AccountUsageMetadataRow[] = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    const queryParams = scopeType === 'caller_account'
+      ? [viewerSystemAccountId, viewerSystemAccountId, nowIso(), ...chunk]
+      : chunk
+    rows.push(...database.prepare(`
+      SELECT
+        accounts.id,
+        accounts.system_account_id,
+        COALESCE(system_accounts.display_name, system_accounts.username, accounts.system_account_id) AS system_account_name,
+        accounts.provider_code,
+        accounts.name,
+        accounts.type,
+        accounts.status,
+        ${scopeType === 'caller_account' ? "CASE WHEN accounts.system_account_id = ? THEN 'owner' ELSE 'authorized' END" : "'owner'"} AS access_type,
+        ${scopeType === 'caller_account' ? 'usage_authorization.id' : 'NULL'} AS authorization_id
+      FROM accounts
+      LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
+      ${authorizationJoin}
+      WHERE accounts.id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...queryParams) as unknown as AccountUsageMetadataRow[])
+  }
   const order = new Map(ids.map((id, index) => [id, index]))
   return rows.sort((left, right) => (order.get(left.id) ?? 0) - (order.get(right.id) ?? 0))
 }

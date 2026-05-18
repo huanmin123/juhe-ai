@@ -71,6 +71,55 @@ try {
   recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(accountUsageSnapshotCount('acct_codex_snapshot'), 1, 'worker 应能通过记录库维护队列写入账号用量快照')
 
+  for (let index = 0; index < 5; index += 1) {
+    seedAccount(`acct_codex_snapshot_batch_${index}`, 'sys_admin')
+  }
+  const businessDatabase = databaseModule.getDatabase()
+  const recordDatabase = databaseModule.getRecordDatabase()
+  const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
+  const originalRecordPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  let accountOwnerBatchSelects = 0
+  let accountUsageSnapshotUpsertPrepares = 0
+  businessDatabase.prepare = ((sql: string) => {
+    if (/^\s*SELECT\s+id,\s*system_account_id\s+FROM\s+accounts\s+WHERE\s+id\s+IN\s*\(/i.test(sql)) {
+      accountOwnerBatchSelects += 1
+    }
+    if (/^\s*SELECT\s+system_account_id\s+FROM\s+accounts\s+WHERE\s+id\s+=\s+\?/i.test(sql)) {
+      throw new Error('批量账号用量快照写入不应逐账号查询归属')
+    }
+    return originalBusinessPrepare(sql)
+  }) as typeof businessDatabase.prepare
+  recordDatabase.prepare = ((sql: string) => {
+    if (/^\s*INSERT\s+INTO\s+account_usage_snapshots\b/i.test(sql)) {
+      accountUsageSnapshotUpsertPrepares += 1
+    }
+    return originalRecordPrepare(sql)
+  }) as typeof recordDatabase.prepare
+
+  try {
+    recordMaintenanceQueue.enqueueRecordMaintenanceJobsLocal(Array.from({ length: 5 }, (_, index) => ({
+      type: 'account_usage_snapshot_upsert' as const,
+      id: `recmaint_account_usage_snapshot_batch_${index}`,
+      accountId: `acct_codex_snapshot_batch_${index}`,
+      kind: 'openai_codex' as const,
+      source: 'regression_batch',
+      snapshot: {
+        codex_usage_updated_at: '2000-01-01T00:00:00.000Z',
+        codex_5h_used_percent: 20 + index
+      },
+      updatedAt: '2000-01-01T00:00:00.000Z'
+    })))
+    recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  } finally {
+    businessDatabase.prepare = originalBusinessPrepare
+    recordDatabase.prepare = originalRecordPrepare
+  }
+  assert.equal(accountOwnerBatchSelects, 1, '连续账号用量快照 job 应批量读取账号归属')
+  assert.equal(accountUsageSnapshotUpsertPrepares, 1, '连续账号用量快照 job 应复用 upsert statement')
+  for (let index = 0; index < 5; index += 1) {
+    assert.equal(accountUsageSnapshotCount(`acct_codex_snapshot_batch_${index}`), 1, `批量账号用量快照应写入账号 ${index}`)
+  }
+
   runtimeConfig.processRole = 'server'
   const pendingBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildUsageRecordsCleanupJob('server_ipc'))

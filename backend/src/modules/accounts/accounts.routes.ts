@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, listAccountsPage, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
@@ -78,6 +78,24 @@ accountsRouter.get('/', async (req, res, next) => {
     next(error)
   }
 })
+
+accountsRouter.get('/options', (req, res, next) => {
+  try {
+    const options = listAccountOptions(getRequestAccessScope(req.query.systemAccountId), parseAccountOptionsQuery(req.query))
+    res.json(ok(options))
+  } catch (error) {
+    next(error)
+  }
+})
+
+function parseAccountOptionsQuery(query: Record<string, unknown>): AccountListOptions {
+  return {
+    keyword: optionalQueryText(query.keyword),
+    type: optionalQueryText(query.type),
+    status: optionalQueryText(query.status),
+    schedulable: schedulableQueryValue(query.schedulable)
+  }
+}
 
 function parseAccountListOptions(query: Record<string, unknown>): AccountListOptions {
   const rawSorts = query.sorts ?? query.sort

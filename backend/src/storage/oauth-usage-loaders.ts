@@ -1,7 +1,7 @@
 import type { AccountOAuthUsageSnapshot, AccountOAuthUsageWindow } from '../domain/types.js'
 import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
 import { getRecordDatabase } from './database.js'
-import { sqlPlaceholders } from './query-utils.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { numberFromUnknown } from './usage-stats-helpers.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
@@ -38,13 +38,17 @@ export function loadOpenAICodexUsageSnapshots(access?: AccessScope): Map<string,
 export function loadOpenAICodexUsageSnapshotsByAccountIds(accountIds: string[]): Map<string, AccountOAuthUsageSnapshot> {
   const ids = uniqueIds(accountIds)
   if (!ids.length) return new Map()
-  const rows = getRecordDatabase().prepare(`
-    SELECT
-      account_id, kind, source, snapshot_json, refresh_status,
-      last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at
-    FROM account_usage_snapshots
-    WHERE kind = 'openai_codex' AND account_id IN (${sqlPlaceholders(ids.length)})
-  `).all(...ids) as unknown as AccountUsageSnapshotRow[]
+  const rows: AccountUsageSnapshotRow[] = []
+  const database = getRecordDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database.prepare(`
+      SELECT
+        account_id, kind, source, snapshot_json, refresh_status,
+        last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at
+      FROM account_usage_snapshots
+      WHERE kind = 'openai_codex' AND account_id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...chunk) as unknown as AccountUsageSnapshotRow[])
+  }
   return oauthUsageSnapshotsFromRows(rows)
 }
 

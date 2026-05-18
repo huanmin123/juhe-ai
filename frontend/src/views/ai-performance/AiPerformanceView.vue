@@ -93,7 +93,7 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
-import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview, SystemAccountSummary } from '@/types/domain'
+import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview, SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
@@ -114,7 +114,7 @@ const activeAccountIds = ref<string[]>([])
 const accountPickerValue = ref<string[]>([])
 const overview = ref<AiPerformanceOverview>()
 const accounts = ref<AiPerformanceAccountOption[]>([])
-const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const systemAccountsLoaded = ref(false)
 const selectedSystemAccountId = ref(allSystemAccountsValue)
 const loading = ref(false)
@@ -345,7 +345,7 @@ function selectedPerformanceSystemAccountId(): string | undefined {
 function loadSystemAccounts(): Promise<void> {
   if (!isManagementView.value || systemAccountsLoaded.value) return Promise.resolve()
   if (systemAccountsLoadingPromise) return systemAccountsLoadingPromise
-  systemAccountsLoadingPromise = api.systemAccounts.list()
+  systemAccountsLoadingPromise = api.systemAccounts.options()
     .then((accounts) => {
       systemAccounts.value = accounts
       systemAccountsLoaded.value = true

@@ -148,7 +148,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { SystemAccountSummary, SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
+import type { SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
 const loading = ref(false)
 const { submitAction, submittingRef } = useSubmitAction('system-teams')
@@ -156,7 +156,7 @@ const teamSaving = submittingRef('system_teams.save')
 const memberSaving = submittingRef('system_teams.add_members')
 
 const teams = ref<SystemTeamSummary[]>([])
-const systemAccounts = ref<SystemAccountSummary[]>([])
+const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const memberOptionsLoaded = ref(false)
 const memberOptionsScopeKey = ref('')
 const { isManagementView } = useScopedMenuView()
@@ -256,7 +256,7 @@ async function loadMemberOptions(force = false): Promise<void> {
     return
   }
   systemAccounts.value = isManagementView.value
-    ? await api.systemAccounts.list()
+    ? await api.systemAccounts.options()
     : []
   memberOptionsLoaded.value = true
   memberOptionsScopeKey.value = scopeKey

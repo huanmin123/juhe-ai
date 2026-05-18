@@ -6,7 +6,7 @@ import type {
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { averageFromSum, dateKey, hourKey, usageStatsTimezone } from './usage-stats-helpers.js'
-import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
+import { emptyStatsAggregateMathRow, mapProcessEventLoopHourly, mapProcessEventLoopLatestRows, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 import { ensureUsageStatsBackfill } from './usage-stats-backfill-runner.js'
@@ -39,6 +39,7 @@ import {
   rowsByStatHourDate,
   rowsForDateRange,
   sortedMapEntries,
+  trendBucketKey,
   trendBucketHours
 } from './usage-stats-window-helpers.js'
 import {
@@ -46,6 +47,7 @@ import {
   GLOBAL_STATS_SYSTEM_ACCOUNT_ID,
   USAGE_STATS_RECORD_SELECT_COLUMNS,
   type AccountUsageAggregateRow,
+  type ProcessEventLoopSampleInput,
   type StatsAggregateMathRow,
   type StatsJobStateRow,
   type SystemMetricsOverview,
@@ -436,7 +438,9 @@ function refreshAiPerformanceSummaryWindowSnapshots(database: DatabaseSync, cont
 
 function refreshSystemMetricsTrendWindowSnapshotsStage(database: DatabaseSync, context: UsageRankSnapshotContext): void {
   database.prepare('DELETE FROM system_metrics_trend_windows').run()
+  database.prepare('DELETE FROM process_event_loop_trend_windows').run()
   refreshSystemMetricsTrendWindows(database, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
+  refreshProcessEventLoopTrendWindows(database, context.ranges, context.earliestDate, context.todayKey, context.updatedAt)
 }
 
 function defaultUsageSnapshotYield(): Promise<void> {
@@ -765,6 +769,59 @@ function refreshSystemMetricsTrendWindows(
   }
 }
 
+function refreshProcessEventLoopTrendWindows(
+  database: DatabaseSync,
+  ranges: AccountUsageStatsRange[],
+  earliestDate: string,
+  todayKey: string,
+  updatedAt: string
+): void {
+  const rows = database.prepare('SELECT * FROM process_event_loop_hourly WHERE stat_hour >= ? AND stat_hour <= ? ORDER BY stat_hour ASC, process_role ASC').all(`${earliestDate}T00`, `${todayKey}T23`) as unknown as Array<Record<string, unknown>>
+  const rowsByDate = rowsByStatHourDate(rows.map((row) => ({ ...row, stat_hour: String(row.stat_hour ?? '') })))
+  const insert = database.prepare(`
+    INSERT INTO process_event_loop_trend_windows (
+      window_key, start_date, end_date, bucket_key, process_role, sample_count,
+      event_loop_lag_ms_sum, event_loop_lag_ms_max, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const range of ranges) {
+    const buckets = aggregateProcessEventLoopRows(rowsForDateRange(rowsByDate, range), trendBucketHours(range))
+    for (const row of buckets.sort((left, right) => compareText(String(left.stat_hour ?? ''), String(right.stat_hour ?? '')) || compareText(String(left.process_role ?? ''), String(right.process_role ?? '')))) {
+      insert.run(
+        rangeWindowKey(range),
+        range.startDate,
+        range.endDate,
+        String(row.stat_hour ?? ''),
+        String(row.process_role ?? ''),
+        Number(row.sample_count ?? 0),
+        Number(row.event_loop_lag_ms_sum ?? 0),
+        nullableNumber(row.event_loop_lag_ms_max),
+        updatedAt
+      )
+    }
+  }
+}
+
+function aggregateProcessEventLoopRows(rows: Array<Record<string, unknown>>, bucketHours: number): Array<Record<string, unknown>> {
+  const buckets = new Map<string, Record<string, unknown>>()
+  for (const row of rows) {
+    const processRole = String(row.process_role ?? '')
+    if (!processRole) continue
+    const statHour = trendBucketKey(String(row.stat_hour ?? ''), bucketHours)
+    const bucketKey = `${statHour}:${processRole}`
+    const bucket = buckets.get(bucketKey) ?? { stat_hour: statHour, process_role: processRole, sample_count: 0, event_loop_lag_ms_sum: 0 }
+    bucket.sample_count = Number(bucket.sample_count ?? 0) + Number(row.sample_count ?? 0)
+    bucket.event_loop_lag_ms_sum = Number(bucket.event_loop_lag_ms_sum ?? 0) + Number(row.event_loop_lag_ms_sum ?? 0)
+    const value = nullableNumber(row.event_loop_lag_ms_max)
+    const current = nullableNumber(bucket.event_loop_lag_ms_max)
+    if (value !== null) {
+      bucket.event_loop_lag_ms_max = current === null ? value : Math.max(current, value)
+    }
+    buckets.set(bucketKey, bucket)
+  }
+  return [...buckets.values()]
+}
+
 function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
   const todayKey = dateKey(new Date(), timezone)
   const dates = fixedUsageStatsDateKeys(timezone, todayKey)
@@ -982,6 +1039,39 @@ export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void
   }
 }
 
+export function insertProcessEventLoopSample(input: ProcessEventLoopSampleInput): void {
+  const eventLoopLagMs = input.eventLoopLagMs
+  if (eventLoopLagMs === undefined || !Number.isFinite(eventLoopLagMs)) {
+    return
+  }
+
+  const database = getRecordDatabase()
+  const sampledAt = input.sampledAt ?? nowIso()
+  const statHour = hourKey(new Date(sampledAt), usageStatsTimezone())
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    database
+      .prepare(`
+        INSERT INTO process_event_loop_samples (
+          sampled_at, process_role, process_pid, event_loop_lag_ms, id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+      `)
+      .run(
+        sampledAt,
+        input.processRole,
+        input.processPid ?? null,
+        eventLoopLagMs,
+        newId('process_metric'),
+        sampledAt
+      )
+    upsertProcessEventLoopHourly(database, statHour, input.processRole, eventLoopLagMs, sampledAt)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
 export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): UsageStatsOverview {
   const database = getRecordDatabase()
   const statsScope = usageOverviewStatsScope(access)
@@ -1056,9 +1146,23 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
     WHERE window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC
   `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
+  const processLatestRows = database.prepare(`
+    SELECT process_role, process_pid, sampled_at, event_loop_lag_ms
+    FROM process_event_loop_samples
+    ORDER BY sampled_at DESC, id DESC
+    LIMIT 100
+  `).all() as unknown as Array<Record<string, unknown>>
+  const processRows = database.prepare(`
+    SELECT bucket_key AS stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_max
+    FROM process_event_loop_trend_windows
+    WHERE window_key = ? AND start_date = ? AND end_date = ?
+    ORDER BY bucket_key ASC, process_role ASC
+  `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
   return {
     latest: latest ? mapSystemMetricsLatest(latest) : undefined,
-    hourlyTrend: rows.map(mapSystemMetricsHourly)
+    hourlyTrend: rows.map(mapSystemMetricsHourly),
+    processEventLoopLatest: mapProcessEventLoopLatestRows(processLatestRows),
+    processEventLoopTrend: processRows.map(mapProcessEventLoopHourly)
   }
 }
 
@@ -1227,6 +1331,32 @@ function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, inp
     input.networkTxTotalBytes ?? null,
     input.dbFileBytes ?? null,
     input.statsLagSeconds ?? null,
+    updatedAt
+  )
+}
+
+function upsertProcessEventLoopHourly(
+  database: DatabaseSync,
+  statHour: string,
+  processRole: ProcessEventLoopSampleInput['processRole'],
+  eventLoopLagMs: number,
+  updatedAt: string
+): void {
+  database.prepare(`
+    INSERT INTO process_event_loop_hourly (
+      stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_max, updated_at
+    )
+    VALUES (?, ?, 1, ?, ?, ?)
+    ON CONFLICT(stat_hour, process_role) DO UPDATE SET
+      sample_count = sample_count + 1,
+      event_loop_lag_ms_sum = event_loop_lag_ms_sum + excluded.event_loop_lag_ms_sum,
+      event_loop_lag_ms_max = CASE WHEN excluded.event_loop_lag_ms_max IS NULL THEN process_event_loop_hourly.event_loop_lag_ms_max WHEN process_event_loop_hourly.event_loop_lag_ms_max IS NULL OR excluded.event_loop_lag_ms_max > process_event_loop_hourly.event_loop_lag_ms_max THEN excluded.event_loop_lag_ms_max ELSE process_event_loop_hourly.event_loop_lag_ms_max END,
+      updated_at = excluded.updated_at
+  `).run(
+    statHour,
+    processRole,
+    eventLoopLagMs,
+    eventLoopLagMs,
     updatedAt
   )
 }

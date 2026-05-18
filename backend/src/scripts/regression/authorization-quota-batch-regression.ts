@@ -39,14 +39,45 @@ try {
     status: 'active',
     mustChangePassword: false
   })
+  const teamGrantee = repositories.createSystemAccount({
+    username: 'quota_batch_team_grantee',
+    displayName: '额度批量团队成员',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
+  const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
   const granteeGroup = repositories.createGroup({
     name: '额度批量分组',
     providerCode: 'openai'
   }, granteeAccess)
+  const ownerGroup = repositories.createGroup({
+    name: '额度单次分组授权资源',
+    providerCode: 'openai'
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: ownerGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '额度单次回归',
+    limits: {
+      hourly: { enabled: true, hours: 3, limit: 100 },
+      daily: { enabled: true, limit: 100 },
+      weekly: { enabled: true, limit: 100 },
+      monthly: { enabled: true, limit: 100 },
+      total: { enabled: true, limit: 100 }
+    }
+  }, ownerAccess)
+  const groupAuthorization = databaseModule.getDatabase()
+    .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
+    .get(ownerGroup.id, grantee.id) as unknown as { id?: string } | undefined
+  assert(groupAuthorization?.id, '分组授权运行时记录不存在')
 
-  const accountCount = 30
+  const accountCount = 925
   const accountAuthorizationIds: string[] = []
   for (let index = 0; index < accountCount; index += 1) {
     const account = repositories.createAccount({
@@ -97,7 +128,7 @@ try {
     if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+resource_authorizations\b/i.test(sql)) {
       authorizationSelects += 1
     }
-    if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+resource_authorization_grants\b/i.test(sql)) {
+    if (/^\s*SELECT\b/i.test(sql) && /\bresource_authorization_grants\b/i.test(sql)) {
       grantSelects += 1
     }
     return originalBusinessPrepare(sql)
@@ -120,9 +151,78 @@ try {
     assert.equal(decisions.length, accountCount, '批量额度检查应返回每个候选账号的判定')
     assert(decisions.slice(0, -1).every((decision) => decision.allowed), '未超限授权账号应允许调度')
     assert.equal(decisions.at(-1)?.allowed, false, '超限授权账号应被拒绝调度')
-    assert.equal(authorizationSelects, 1, '授权额度批量检查应批量读取授权主表')
+    assert.equal(authorizationSelects, 2, '授权额度批量检查应按批读取授权主表，避免大候选列表撞 SQLite 参数上限')
     assert.equal(grantSelects, 0, '没有团队授权来源时不应读取团队授权表')
-    assert(usageSelects <= 5, `用量窗口查询应保持常量，实际 ${usageSelects}`)
+    assert(usageSelects <= 30, `用量窗口查询应按窗口分块批量读取，实际 ${usageSelects}`)
+
+    quotaService.clearAuthorizationQuotaCache()
+    authorizationSelects = 0
+    grantSelects = 0
+    usageSelects = 0
+    const singleDecision = quotaService.checkGatewayAuthorizationQuotaByIds({
+      groupAuthorizationId: groupAuthorization.id,
+      accountAuthorizationId: accountAuthorizationIds[0],
+      now
+    })
+    assert.equal(singleDecision.allowed, true, '单次授权额度检查应同时合并分组与账号授权额度')
+    assert.equal(authorizationSelects, 1, '单次授权额度检查应复用批量读取授权主表')
+    assert.equal(grantSelects, 0, '没有团队授权来源时单次检查不应读取团队授权表')
+    assert(usageSelects <= 5, `单次检查用量窗口查询应保持常量，实际 ${usageSelects}`)
+
+    const team = repositories.createSystemTeam({
+      name: '额度批量团队',
+      status: 'active'
+    }, adminAccess)
+    assert(repositories.addSystemTeamMembers(team.id, { systemAccountIds: [teamGrantee.id] }, adminAccess), '额度批量团队成员添加失败')
+    const teamAccount = repositories.createAccount({
+      providerCode: 'openai',
+      name: '额度批量团队授权账户',
+      type: 'api_key',
+      credentials: { api_key: 'sk-authorization-quota-team', base_url: 'https://api.openai.com/v1' }
+    }, ownerAccess)
+    const teamAuthorizationGrant = repositories.createResourceAuthorization({
+      resourceType: 'account',
+      resourceId: teamAccount.id,
+      granteeType: 'team',
+      granteeId: team.id,
+      remark: '额度批量团队授权回归',
+      limits: {
+        hourly: { enabled: true, hours: 3, limit: 100 },
+        daily: { enabled: true, limit: 100 },
+        weekly: { enabled: true, limit: 100 },
+        monthly: { enabled: true, limit: 100 },
+        total: { enabled: true, limit: 100 }
+      }
+    }, ownerAccess)
+    const teamMemberAuthorization = businessDatabase
+      .prepare("SELECT id, effective_source_team_id FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND grantee_system_account_id = ? LIMIT 1")
+      .get(teamAccount.id, teamGrantee.id) as unknown as { id?: string; effective_source_team_id?: string | null } | undefined
+    assert(teamMemberAuthorization?.id, '团队来源账号授权运行时记录不存在')
+    assert.equal(teamMemberAuthorization.effective_source_team_id, team.id, '团队来源账号授权应记录来源团队')
+    insertUsageTotal(recordDatabase, owner.id, 'account_authorization_team', `${teamAccount.id}:${team.id}`, 150)
+    insertUsageDaily(recordDatabase, owner.id, 'account_authorization_team', `${teamAccount.id}:${team.id}`, statDate, 150)
+    insertUsageHourlyWindow(recordDatabase, owner.id, 'account_authorization_team', `${teamAccount.id}:${team.id}`, 3, 150)
+
+    quotaService.clearAuthorizationQuotaCache()
+    authorizationSelects = 0
+    grantSelects = 0
+    usageSelects = 0
+    const mixedDecisions = quotaService.checkGatewayAuthorizationQuotaBatchByIds({
+      groupAuthorizationId: groupAuthorization.id,
+      accounts: [
+        { accountId: 'team-source', accountAuthorizationId: teamMemberAuthorization.id },
+        { accountId: 'manual-ok', accountAuthorizationId: accountAuthorizationIds[0] },
+        { accountId: 'manual-over-limit', accountAuthorizationId: exceededAuthorizationId },
+        { accountId: 'team-source-duplicate', accountAuthorizationId: teamMemberAuthorization.id },
+        { accountId: 'owner-account-without-authorization' }
+      ],
+      now
+    })
+    assert.deepEqual(mixedDecisions.map((decision) => decision.allowed), [false, true, false, false, true], '混合团队/账号授权批量判定应保持输入顺序并命中团队来源额度')
+    assert.equal(authorizationSelects, 2, '混合授权额度检查应批量读取授权主表和团队授权来源')
+    assert.equal(grantSelects, 1, '团队来源授权应批量读取团队授权表')
+    assert(usageSelects <= 5, `混合授权额度检查用量窗口查询应保持常量，实际 ${usageSelects}`)
+    assert(teamAuthorizationGrant.id, '团队授权 grant 应保留可追踪 ID')
   } finally {
     businessDatabase.prepare = originalBusinessPrepare
     recordDatabase.prepare = originalRecordPrepare

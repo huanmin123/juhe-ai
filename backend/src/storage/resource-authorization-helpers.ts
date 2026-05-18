@@ -1,6 +1,7 @@
 import type { AccountUsageSummary, ProviderCode, ResourceAuthorizationResourceType, ResourceAuthorizationSummary } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, nowIso } from './database.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import type { UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
@@ -38,17 +39,21 @@ export function activeResourceAuthorizationsByResourceIds(resourceType: Resource
   const ids = [...new Set(resourceIds.filter(Boolean))]
   if (!ids.length) return new Map()
   const now = nowIso()
-  const rows = getDatabase()
-    .prepare(`
-      SELECT *
-      FROM resource_authorizations
-      WHERE resource_type = ?
-        AND grantee_system_account_id = ?
-        AND status = 'active'
-        AND (expires_at IS NULL OR expires_at > ?)
-        AND resource_id IN (${ids.map(() => '?').join(',')})
-    `)
-    .all(resourceType, granteeSystemAccountId, now, ...ids) as unknown as ResourceAuthorizationRow[]
+  const rows: ResourceAuthorizationRow[] = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    rows.push(...database
+      .prepare(`
+        SELECT *
+        FROM resource_authorizations
+        WHERE resource_type = ?
+          AND grantee_system_account_id = ?
+          AND status = 'active'
+          AND (expires_at IS NULL OR expires_at > ?)
+          AND resource_id IN (${sqlPlaceholders(chunk.length)})
+      `)
+      .all(resourceType, granteeSystemAccountId, now, ...chunk) as unknown as ResourceAuthorizationRow[])
+  }
   return new Map(rows.map((row) => [row.resource_id, row]))
 }
 

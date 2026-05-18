@@ -114,6 +114,23 @@ export interface AccountListResult {
   pageSize: number
 }
 
+export type AccountOptionSummary = Pick<
+  AccountSummary,
+  | 'id'
+  | 'systemAccountId'
+  | 'systemAccountName'
+  | 'ownerSystemAccountId'
+  | 'ownerSystemAccountName'
+  | 'providerCode'
+  | 'name'
+  | 'type'
+  | 'status'
+  | 'accessType'
+  | 'accountAuthorizationId'
+  | 'authorizationStatus'
+  | 'permissions'
+>
+
 export interface AccountTestResult {
   accountId: string
   accountName: string
@@ -173,4 +190,25 @@ export interface GroupSummary {
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
   permissions?: ResourcePermissions
+}
+
+export type GroupOptionSummary = Pick<
+  GroupSummary,
+  | 'id'
+  | 'systemAccountId'
+  | 'systemAccountName'
+  | 'ownerSystemAccountId'
+  | 'ownerSystemAccountName'
+  | 'name'
+  | 'providerCode'
+  | 'enabled'
+  | 'isDefault'
+  | 'accessType'
+  | 'groupAuthorizationId'
+  | 'authorizationStatus'
+  | 'permissions'
+>
+
+export interface AccountGroupOptionSummary extends GroupOptionSummary {
+  accountIds: string[]
 }

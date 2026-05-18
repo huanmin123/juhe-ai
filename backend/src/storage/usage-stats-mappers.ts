@@ -1,3 +1,4 @@
+import type { ProcessRole } from '../config/runtime.js'
 import type { AccountUsageSummary } from '../domain/types.js'
 import { averageFromSum, numberFromUnknown, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import type { AccountUsageAggregateRow, StatsAggregateMathRow, SystemMetricsOverview } from './usage-stats-types.js'
@@ -79,4 +80,45 @@ export function mapSystemMetricsHourly(row: Record<string, unknown>): SystemMetr
     dbFileBytesMax: numberFromUnknown(row.db_file_bytes_max),
     statsLagSecondsMax: numberFromUnknown(row.stats_lag_seconds_max)
   }
+}
+
+export function mapProcessEventLoopLatestRows(rows: Array<Record<string, unknown>>): SystemMetricsOverview['processEventLoopLatest'] {
+  const latestByRole = new Map<ProcessRole, SystemMetricsOverview['processEventLoopLatest'][number]>()
+  for (const row of rows) {
+    const processRole = processRoleFromUnknown(row.process_role)
+    if (!processRole || latestByRole.has(processRole)) {
+      continue
+    }
+    latestByRole.set(processRole, {
+      processRole,
+      processPid: numberFromUnknown(row.process_pid),
+      sampledAt: String(row.sampled_at ?? ''),
+      eventLoopLagMs: numberFromUnknown(row.event_loop_lag_ms)
+    })
+  }
+  return [...latestByRole.values()].sort((left, right) => processRoleSort(left.processRole) - processRoleSort(right.processRole))
+}
+
+export function mapProcessEventLoopHourly(row: Record<string, unknown>): SystemMetricsOverview['processEventLoopTrend'][number] {
+  const processRole = processRoleFromUnknown(row.process_role)
+  return {
+    statHour: String(row.stat_hour),
+    processRole: processRole ?? 'worker',
+    sampleCount: Number(row.sample_count ?? 0),
+    eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, row.sample_count),
+    eventLoopLagMsMax: numberFromUnknown(row.event_loop_lag_ms_max)
+  }
+}
+
+function processRoleFromUnknown(value: unknown): ProcessRole | undefined {
+  if (value === 'server' || value === 'worker' || value === 'db-service') {
+    return value
+  }
+  return undefined
+}
+
+function processRoleSort(role: ProcessRole): number {
+  if (role === 'server') return 0
+  if (role === 'worker') return 1
+  return 2
 }

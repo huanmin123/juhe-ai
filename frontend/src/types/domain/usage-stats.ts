@@ -1,4 +1,4 @@
-import type { AccountStatus, ProviderCode } from './base'
+import type { AccountStatus, ProcessRole, ProviderCode } from './base'
 
 export interface AccountUsageSummary {
   requestCount: number
@@ -151,5 +151,34 @@ export interface SystemMetricsOverview {
     processHeapUsedBytesMax?: number
     dbFileBytesMax?: number
     statsLagSecondsMax?: number
+  }>
+  processEventLoopLatest: Array<{
+    processRole: ProcessRole
+    processPid?: number
+    sampledAt: string
+    eventLoopLagMs?: number
+  }>
+  processEventLoopTrend: Array<{
+    statHour: string
+    processRole: ProcessRole
+    sampleCount: number
+    eventLoopLagMsAvg?: number
+    eventLoopLagMsMax?: number
+  }>
+  backgroundJobs: Array<{
+    name: string
+    intervalMs: number
+    running: boolean
+    lastStartedAt?: string
+    lastFinishedAt?: string
+    lastSuccessAt?: string
+    lastErrorAt?: string
+    lastError?: string
+    lastDurationMs?: number
+    maxDurationMs?: number
+    runCount: number
+    successCount: number
+    failureCount: number
+    skippedCount: number
   }>
 }

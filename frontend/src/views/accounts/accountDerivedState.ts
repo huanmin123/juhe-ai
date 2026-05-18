@@ -1,4 +1,4 @@
-import type { AccountSummary, GroupSummary, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountSummary } from '@/types/domain'
+import type { AccountGroupOptionSummary, AccountSummary, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import { canManageGroupAccounts, canUseAsTrafficMigrationTarget, type AccountGroupIdResolver } from './accountRules'
 import { defaultTestModelOptions } from './accountOptions'
 
@@ -13,7 +13,7 @@ export function buildTestModelOptions(providerModels: ProviderModelPricing[]): S
   return [...new Set(models)].map((model) => ({ label: model, value: model }))
 }
 
-export function targetSystemAccountLabel(systemAccounts: SystemAccountSummary[], systemAccountId?: string): string {
+export function targetSystemAccountLabel(systemAccounts: SystemAccountPrincipalSummary[], systemAccountId?: string): string {
   if (!systemAccountId) return '请选择系统账户后再创建'
   const account = systemAccounts.find((item) => item.id === systemAccountId)
   return account?.displayName || account?.username || systemAccountId
@@ -35,7 +35,7 @@ export function proxyByIdMap(proxies: ProxyProfileOptionSummary[]): Map<string, 
   return new Map(proxies.map((proxy) => [proxy.id, proxy]))
 }
 
-export function groupByIdMap(groups: GroupSummary[]): Map<string, GroupSummary> {
+export function groupByIdMap(groups: AccountGroupOptionSummary[]): Map<string, AccountGroupOptionSummary> {
   return new Map(groups.map((group) => [group.id, group]))
 }
 
@@ -43,7 +43,7 @@ export function accountByIdMap(accounts: AccountSummary[]): Map<string, AccountS
   return new Map(accounts.map((account) => [account.id, account]))
 }
 
-export function groupIdByAccountIdMap(groups: GroupSummary[]): Map<string, string> {
+export function groupIdByAccountIdMap(groups: AccountGroupOptionSummary[]): Map<string, string> {
   const map = new Map<string, string>()
   for (const group of groups) {
     for (const accountId of group.accountIds ?? []) {
@@ -55,7 +55,7 @@ export function groupIdByAccountIdMap(groups: GroupSummary[]): Map<string, strin
   return map
 }
 
-export function groupNameByAccountIdMap(accounts: AccountSummary[], groups: GroupSummary[]): Map<string, string> {
+export function groupNameByAccountIdMap(accounts: AccountSummary[], groups: AccountGroupOptionSummary[]): Map<string, string> {
   const map = new Map<string, string>()
   const groupsById = groupByIdMap(groups)
   for (const group of groups) {
@@ -80,24 +80,24 @@ export function groupNameByAccountIdMap(accounts: AccountSummary[], groups: Grou
   return map
 }
 
-export function manageableGroupsForProvider(groups: GroupSummary[], providerCode?: string): GroupSummary[] {
+export function manageableGroupsForProvider(groups: AccountGroupOptionSummary[], providerCode?: string): AccountGroupOptionSummary[] {
   return groups.filter((group) => isManageableGroupForProvider(group, providerCode))
 }
 
-export function isManageableGroupForProvider(group: GroupSummary, providerCode?: string): boolean {
+export function isManageableGroupForProvider(group: AccountGroupOptionSummary, providerCode?: string): boolean {
   return canManageGroupAccounts(group) && (!providerCode || group.providerCode === providerCode)
 }
 
-export function groupOptionsForProvider(groups: GroupSummary[], providerCode?: string): SelectOption[] {
+export function groupOptionsForProvider(groups: AccountGroupOptionSummary[], providerCode?: string): SelectOption[] {
   return manageableGroupsForProvider(groups, providerCode).map((group) => ({ label: group.name, value: group.id }))
 }
 
-export function defaultGroupForProvider(groups: GroupSummary[], providerCode: string): GroupSummary | undefined {
+export function defaultGroupForProvider(groups: AccountGroupOptionSummary[], providerCode: string): AccountGroupOptionSummary | undefined {
   const candidates = manageableGroupsForProvider(groups, providerCode)
   return candidates.find((group) => group.isDefault) ?? candidates[0]
 }
 
-export function bindGroupOptionsForAccount(groups: GroupSummary[], account?: AccountSummary): SelectOption[] {
+export function bindGroupOptionsForAccount(groups: AccountGroupOptionSummary[], account?: AccountSummary): SelectOption[] {
   if (!account) return []
   return groupOptionsForProvider(groups, account.providerCode)
 }

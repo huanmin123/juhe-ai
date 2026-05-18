@@ -8,6 +8,7 @@ import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
 import { getBusinessDatabase, getRecordDatabase } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
+import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 
 const systemApiPrefix = '/__aisys__/api'
 
@@ -30,6 +31,7 @@ async function startDbService(): Promise<void> {
   getBusinessDatabase()
   getRecordDatabase()
   installProcessLogHandlers()
+  startProcessEventLoopMonitor()
   startLogMaintenance()
   setRuntimeLogLineSink(() => {})
 

@@ -60,7 +60,7 @@
 <script setup lang="ts">
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { AccountStatus, AccountType, SystemAccountSummary } from '@/types/domain'
+import type { AccountStatus, AccountType, SystemAccountPrincipalSummary } from '@/types/domain'
 import type { AccountFilters } from './accountFormTypes'
 import type { SchedulableFilter } from './accountFormatters'
 
@@ -77,7 +77,7 @@ defineProps<{
   refreshLoading: boolean
   schedulableOptions: ReadonlyArray<FilterOption<SchedulableFilter>>
   statusOptions: Array<FilterOption<'all' | AccountStatus>>
-  systemAccounts: SystemAccountSummary[]
+  systemAccounts: SystemAccountPrincipalSummary[]
   typeOptions: Array<FilterOption<'all' | AccountType>>
 }>()
 

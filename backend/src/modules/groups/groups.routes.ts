@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
@@ -23,6 +23,22 @@ groupsRouter.get('/', async (req, res, next) => {
   try {
     const groups = listGroups(getRequestAccessScope(req.query.systemAccountId))
     res.json(ok(await applyServerAccountConcurrencyToGroups(groups)))
+  } catch (error) {
+    next(error)
+  }
+})
+
+groupsRouter.get('/options', (req, res, next) => {
+  try {
+    res.json(ok(listGroupOptions(getRequestAccessScope(req.query.systemAccountId))))
+  } catch (error) {
+    next(error)
+  }
+})
+
+groupsRouter.get('/account-options', (req, res, next) => {
+  try {
+    res.json(ok(listAccountGroupOptions(getRequestAccessScope(req.query.systemAccountId))))
   } catch (error) {
     next(error)
   }

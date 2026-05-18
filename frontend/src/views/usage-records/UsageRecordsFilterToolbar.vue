@@ -85,7 +85,7 @@ import type { Dayjs } from 'dayjs'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { normalizeDayjsDateRange } from '@/shared/dateRange'
-import type { SystemAccountSummary } from '@/types/domain'
+import type { SystemAccountPrincipalSummary } from '@/types/domain'
 
 type ResultFilter = 'all' | 'success' | 'failed'
 type FilterOption<T extends string> = {
@@ -105,7 +105,7 @@ defineProps<{
   resultOptions: Array<FilterOption<ResultFilter>>
   statusCode: string
   systemAccountId: string
-  systemAccounts: SystemAccountSummary[]
+  systemAccounts: SystemAccountPrincipalSummary[]
 }>()
 
 const emit = defineEmits<{

@@ -187,7 +187,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
-import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
+import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
@@ -220,8 +220,8 @@ const initialPageState = pageStateCache.read()
 const keywordFilter = ref(initialPageState.keywordFilter)
 const statusFilter = ref<'all' | 'active' | 'disabled'>(initialPageState.statusFilter)
 const groupFilter = ref<string | undefined>(initialPageState.groupFilter)
-const groups = ref<GroupSummary[]>([])
-const systemAccounts = ref<SystemAccountSummary[]>([])
+const groups = ref<GroupOptionSummary[]>([])
+const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const apiKeyOptionsLoaded = ref(false)
 const apiKeyOptionsScopeKey = ref('')
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -332,7 +332,7 @@ function groupName(groupId: string) {
   return group ? groupOptionLabel(group) : groupId
 }
 
-function groupOptionLabel(group: GroupSummary) {
+function groupOptionLabel(group: GroupOptionSummary) {
   if (group.accessType !== 'authorized') return group.name
   return `${group.name}（来自 ${group.ownerSystemAccountName || '其他用户'} 授权）`
 }
@@ -350,8 +350,8 @@ async function loadApiKeyOptions(systemAccountId: string | undefined, force = fa
   }
 
   const [groupList, systemAccountList] = await Promise.all([
-    isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
-    isManagementView.value ? api.systemAccounts.list() : Promise.resolve([] as SystemAccountSummary[])
+    isManagementView.value ? api.groups.options({ systemAccountId }) : api.myGroups.options(),
+    isManagementView.value ? api.systemAccounts.options() : Promise.resolve([] as SystemAccountPrincipalSummary[])
   ])
   groups.value = groupList
   systemAccounts.value = systemAccountList

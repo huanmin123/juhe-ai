@@ -12,6 +12,7 @@ import { captureGatewayRawBody } from './modules/gateway/openai-gateway-request-
 import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { installProcessLogHandlers, logger } from './shared/logger.js'
+import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { getRequestLogger, getTraceId, requestContextMiddleware, sanitizeUrlForLog } from './shared/request-context.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { sendRuntimeLogLineToWorker } from './modules/background/background-ipc.js'
@@ -76,6 +77,7 @@ function handleGatewayRawBodyError(error: BodyParserError, req: Request, res: Re
 }
 
 installProcessLogHandlers()
+startProcessEventLoopMonitor()
 setRuntimeLogLineSink((line) => sendRuntimeLogLineToWorker(line))
 startDbServiceSupervisor()
 startBackgroundWorkerSupervisor()

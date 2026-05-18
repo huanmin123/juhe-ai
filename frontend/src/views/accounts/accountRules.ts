@@ -1,4 +1,4 @@
-import type { AccountSummary, GroupSummary } from '@/types/domain'
+import type { AccountSummary, ResourcePermissions } from '@/types/domain'
 import type { AccountMenuItem } from './accountActionTypes'
 import { isAuthorizedAccount, isOwnerDisabledAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
 
@@ -40,7 +40,7 @@ export function canTestAccount(account: AccountSummary): boolean {
   return account.status !== 'disabled' && account.permissions?.canUse !== false
 }
 
-export function canManageGroupAccounts(group: GroupSummary): boolean {
+export function canManageGroupAccounts(group: { accessType?: string; permissions?: Pick<ResourcePermissions, 'canManageAccounts'> }): boolean {
   return group.permissions?.canManageAccounts !== false && group.accessType !== 'authorized'
 }
 

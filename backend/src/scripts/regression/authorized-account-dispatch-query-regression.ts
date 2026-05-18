@@ -44,17 +44,47 @@ try {
     name: '被授权人调度查询分组',
     providerCode: 'openai'
   }, granteeAccess)
+  const sharedProxy = repositories.createProxy({
+    name: '授权调度查询共用代理',
+    type: 'http',
+    host: '127.0.0.1',
+    port: 18_080,
+    username: 'dispatch_proxy_user',
+    password: 'dispatch_proxy_password',
+    enabled: true
+  })
+  const disabledProxy = repositories.createProxy({
+    name: '授权调度查询停用代理',
+    type: 'http',
+    host: '127.0.0.1',
+    port: 18_081,
+    enabled: true
+  })
+  const staleBadProxy = repositories.createProxy({
+    name: '授权失效账户坏代理',
+    type: 'http',
+    host: '127.0.0.1',
+    port: 18_082,
+    username: 'stale_bad_proxy_user',
+    password: 'stale_bad_proxy_password',
+    enabled: true
+  })
 
   const accountCount = 40
   const accountIds: string[] = []
+  let disabledProxyAccountId = ''
   for (let index = 0; index < accountCount; index += 1) {
     const account = repositories.createAccount({
       providerCode: 'openai',
       name: `授权调度查询账户 ${String(index).padStart(2, '0')}`,
       type: 'api_key',
-      credentials: { api_key: `sk-authorized-dispatch-query-${index}`, base_url: 'https://api.openai.com/v1' }
+      credentials: { api_key: `sk-authorized-dispatch-query-${index}`, base_url: 'https://api.openai.com/v1' },
+      proxyProfileId: index === 0 ? disabledProxy.id : sharedProxy.id
     }, ownerAccess)
     accountIds.push(account.id)
+    if (index === 0) {
+      disabledProxyAccountId = account.id
+    }
     repositories.createResourceAuthorization({
       resourceType: 'account',
       resourceId: account.id,
@@ -65,12 +95,37 @@ try {
     const bound = repositories.setAccountGroup(account.id, granteeGroup.id, granteeAccess)
     assert(bound, `授权账户绑定分组失败：${account.name}`)
   }
+  const staleAuthorizedAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权已失效且凭据损坏账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-authorized-dispatch-stale', base_url: 'https://api.openai.com/v1' },
+    proxyProfileId: staleBadProxy.id
+  }, ownerAccess)
+  const staleAuthorization = repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: staleAuthorizedAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '调度授权失效凭据回归'
+  }, ownerAccess)
+  assert(repositories.setAccountGroup(staleAuthorizedAccount.id, granteeGroup.id, granteeAccess), '失效授权账户绑定分组失败')
+  assert(repositories.revokeResourceAuthorization(staleAuthorization.id, {}, ownerAccess), '失效授权回收失败')
+  databaseModule.getDatabase()
+    .prepare('UPDATE accounts SET credentials_encrypted = ? WHERE id = ?')
+    .run('not-a-valid-encrypted-payload', staleAuthorizedAccount.id)
+  databaseModule.getDatabase()
+    .prepare('UPDATE proxy_profiles SET password_encrypted = ? WHERE id = ?')
+    .run('not-a-valid-encrypted-proxy-payload', staleBadProxy.id)
+  repositories.updateProxy(disabledProxy.id, { enabled: false })
 
   const database = databaseModule.getDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   let resourceAuthorizationSelects = 0
   let singleResourceAuthorizationSelects = 0
   let batchResourceAuthorizationSelects = 0
+  let proxyProfileSelects = 0
+  let batchProxyProfileSelects = 0
   database.prepare = ((sql: string) => {
     if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+resource_authorizations\b/i.test(sql)) {
       resourceAuthorizationSelects += 1
@@ -78,6 +133,12 @@ try {
         batchResourceAuthorizationSelects += 1
       } else {
         singleResourceAuthorizationSelects += 1
+      }
+    }
+    if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+proxy_profiles\b/i.test(sql)) {
+      proxyProfileSelects += 1
+      if (/\bid\s+IN\s*\(/i.test(sql)) {
+        batchProxyProfileSelects += 1
       }
     }
     return originalPrepare(sql)
@@ -89,6 +150,14 @@ try {
     for (const accountId of accountIds) {
       assert(dispatchIds.has(accountId), `授权账户缺失调度候选：${accountId}`)
     }
+    assert.equal(dispatchIds.has(staleAuthorizedAccount.id), false, '授权失效账户应在凭据解密前被跳过')
+    assert(!dispatchAccounts.some((account) => account.proxyProfileId === staleBadProxy.id), '授权失效账户的坏代理不应进入代理解析范围')
+    const enabledProxyAccounts = dispatchAccounts.filter((account) => account.id !== disabledProxyAccountId)
+    assert(enabledProxyAccounts.every((account) => account.proxyUrl === 'http://dispatch_proxy_user:dispatch_proxy_password@127.0.0.1:18080'), '共用代理账户应解析出代理 URL')
+    const disabledProxyAccount = dispatchAccounts.find((account) => account.id === disabledProxyAccountId)
+    assert.equal(disabledProxyAccount?.proxyProfileUnavailable, true, '停用代理账户应保留代理不可用标记')
+    assert.equal(batchProxyProfileSelects, 1, '授权账户调度应批量读取代理配置')
+    assert.equal(proxyProfileSelects, 1, '授权账户调度代理查询数应保持常量')
     assert.equal(batchResourceAuthorizationSelects, 1, '授权账户调度应批量读取账号授权')
     assert.equal(singleResourceAuthorizationSelects, 0, '授权账户调度不应逐账号读取账号授权')
     assert.equal(resourceAuthorizationSelects, 1, '授权账户调度授权查询数应保持常量')

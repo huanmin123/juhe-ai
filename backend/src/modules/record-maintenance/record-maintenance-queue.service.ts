@@ -4,7 +4,8 @@ import { cleanupUsageRecordsBeforeWithResult } from '../../storage/data-retentio
 import { newId, nowIso } from '../../storage/database.js'
 import {
   cleanupDeletedApiKeyRelatedRecordData,
-  upsertAccountUsageSnapshot
+  upsertAccountUsageSnapshots,
+  type AccountUsageSnapshotUpsertInput
 } from '../../storage/repositories.js'
 import { sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
 
@@ -142,9 +143,16 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
 
       for (let index = 0; index < batch.length; index += 1) {
         const job = batch[index]
+        const snapshotJobs = collectAccountUsageSnapshotJobs(batch, index)
         try {
-          processRecordMaintenanceJob(job)
-          completedCount += 1
+          if (snapshotJobs.length > 0) {
+            processAccountUsageSnapshotUpsertJobs(snapshotJobs)
+            completedCount += snapshotJobs.length
+            index += snapshotJobs.length - 1
+          } else {
+            processRecordMaintenanceJob(job)
+            completedCount += 1
+          }
         } catch (error) {
           pendingJobs = [job, ...batch.slice(index + 1), ...pendingJobs]
           flushFailureCount += 1
@@ -246,24 +254,40 @@ function processRecordMaintenanceJob(job: RecordMaintenanceJob): void {
       return
     }
     case 'account_usage_snapshot_upsert':
-      upsertAccountUsageSnapshot({
-        accountId: job.accountId,
-        kind: job.kind,
-        source: job.source,
-        snapshot: job.snapshot,
-        updatedAt: job.updatedAt
-      })
-      logger.info({
-        event: 'record_maintenance_account_usage_snapshot_upserted',
-        jobId: job.id,
-        accountId: job.accountId,
-        kind: job.kind,
-        source: job.source
-      }, '账号用量快照后台写入完成')
+      processAccountUsageSnapshotUpsertJobs([job])
       return
     default:
       assertNever(job)
   }
+}
+
+type AccountUsageSnapshotUpsertJob = Extract<RecordMaintenanceJob, { type: 'account_usage_snapshot_upsert' }>
+
+function collectAccountUsageSnapshotJobs(batch: RecordMaintenanceJob[], startIndex: number): AccountUsageSnapshotUpsertJob[] {
+  const output: AccountUsageSnapshotUpsertJob[] = []
+  for (let index = startIndex; index < batch.length; index += 1) {
+    const job = batch[index]
+    if (job.type !== 'account_usage_snapshot_upsert') break
+    output.push(job)
+  }
+  return output
+}
+
+function processAccountUsageSnapshotUpsertJobs(jobs: AccountUsageSnapshotUpsertJob[]): void {
+  const inputs: AccountUsageSnapshotUpsertInput[] = jobs.map((job) => ({
+    accountId: job.accountId,
+    kind: job.kind,
+    source: job.source,
+    snapshot: job.snapshot,
+    updatedAt: job.updatedAt
+  }))
+  upsertAccountUsageSnapshots(inputs)
+  logger.info({
+    event: 'record_maintenance_account_usage_snapshots_upserted',
+    jobCount: jobs.length,
+    jobIds: jobs.map((job) => job.id),
+    accountIds: jobs.map((job) => job.accountId)
+  }, '账号用量快照后台批量写入完成')
 }
 
 function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number; maxBatches: number }): {

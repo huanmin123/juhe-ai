@@ -6,10 +6,10 @@ import { useSubmitAction } from '@/composables/useSubmitAction'
 import type {
   AccountSummary,
   AccountType,
-  GroupSummary,
+  AccountGroupOptionSummary,
   OpenAIAuthURLResult,
   ProviderDefinition,
-  SystemAccountSummary
+  SystemAccountPrincipalSummary
 } from '@/types/domain'
 import {
   defaultGroupForProvider as selectDefaultGroupForProvider,
@@ -44,11 +44,11 @@ interface UseAccountEditFormOptions {
   accounts: ReadonlyValue<AccountSummary[]>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   groupIdForAccount: (accountId: string) => string | undefined
-  groups: ReadonlyValue<GroupSummary[]>
+  groups: ReadonlyValue<AccountGroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
   loadData: () => Promise<void>
   providers: ReadonlyValue<ProviderDefinition[]>
-  systemAccounts: ReadonlyValue<SystemAccountSummary[]>
+  systemAccounts: ReadonlyValue<SystemAccountPrincipalSummary[]>
 }
 
 export function useAccountEditForm(options: UseAccountEditFormOptions) {

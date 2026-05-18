@@ -28,6 +28,7 @@ import type {
   DbServiceOperationResult,
   DbServiceRuntimeSnapshot
 } from './db-service-types.js'
+import { currentProcessEventLoopLagMs } from '../../shared/process-event-loop-monitor.js'
 
 let handledRequestCount = 0
 let failedRequestCount = 0
@@ -60,6 +61,7 @@ export function buildDbServiceRuntimeSnapshot(pid = process.pid): DbServiceRunti
     processRole: 'db-service',
     httpHost: dbServiceHttpEndpoint?.host,
     httpPort: dbServiceHttpEndpoint?.port,
+    eventLoopLagMs: currentProcessEventLoopLagMs(),
     pendingRequestCount,
     handledRequestCount,
     failedRequestCount,
