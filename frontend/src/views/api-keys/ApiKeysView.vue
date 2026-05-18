@@ -185,6 +185,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupSummary, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -490,7 +491,7 @@ const saveApiKey = submitAction('api_keys.save', async () => {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('保存 API Key 失败')
+    message.error(extractApiErrorMessage(error, '保存 API Key 失败'))
   }
 })
 
@@ -536,7 +537,7 @@ async function removeApiKey(id: string) {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('删除 API Key 失败')
+    message.error(extractApiErrorMessage(error, '删除 API Key 失败'))
   }
 }
 

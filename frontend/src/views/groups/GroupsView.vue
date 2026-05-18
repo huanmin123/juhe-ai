@@ -140,6 +140,7 @@ import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
 import type { GroupSummary, ProviderDefinition, SystemAccountSummary } from '@/types/domain'
 import { allSystemAccountsValue, matchesSystemAccountFilter, systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -391,7 +392,7 @@ const saveGroup = submitAction('groups.save', async () => {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('保存分组失败')
+    message.error(extractApiErrorMessage(error, '保存分组失败'))
   }
 })
 
@@ -415,7 +416,7 @@ async function removeGroup(id: string) {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('删除分组失败')
+    message.error(extractApiErrorMessage(error, '删除分组失败'))
   }
 }
 

@@ -38,7 +38,7 @@ import {
 import {
   normalizeResourceType
 } from './resource-authorization-list-helpers.js'
-import { listResourceAuthorizationSummaries, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
+import { findResourceAuthorizationSummary, listResourceAuthorizationSummaries, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
 import {
   activeTeamMemberRows,
   applyActiveTeamGrantsToMember,
@@ -100,6 +100,7 @@ export type { AccountUsageSummary, SystemAccountPrincipalSummary, SystemAccountR
 export {
   createAnnouncement,
   deleteAnnouncement,
+  findAnnouncement,
   listAnnouncements,
   listPublicAnnouncements,
   markPublicAnnouncementsRead,
@@ -142,6 +143,7 @@ export {
 export {
   createProxy,
   deleteProxy,
+  findProxy,
   getProxyTestConfig,
   listEnabledProxyTestConfigs,
   listProxyOptions,
@@ -612,7 +614,7 @@ export function listAccountsPage(access?: AccessScope, options?: AccountListOpti
   }
 }
 
-function findAccountSummary(accountId: string, access?: AccessScope): AccountSummary | undefined {
+export function findAccountSummary(accountId: string, access?: AccessScope): AccountSummary | undefined {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
   const listOptions = normalizeAccountListOptions({ page: 1, pageSize: 1 })
@@ -2009,6 +2011,11 @@ export function listResourceAuthorizations(filters: Record<string, unknown> = {}
   return listResourceAuthorizationSummaries(filters, access, options)
 }
 
+export function findResourceAuthorization(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary | undefined {
+  expireDueResourceAuthorizations()
+  return findResourceAuthorizationSummary(authorizationId, access, options)
+}
+
 export function createResourceAuthorization(input: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationSummary {
   const resourceType = normalizeResourceType(input.resourceType ?? input.resource_type)
   const resourceId = optionalString(input.resourceId ?? input.resource_id)
@@ -2048,7 +2055,7 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
-  const created = createdGrantId ? listResourceAuthorizations({ id: createdGrantId, status: 'all' }, access)[0] : undefined
+  const created = createdGrantId ? findResourceAuthorization(createdGrantId, access) : undefined
   if (created) return created
   const fallback = listResourceAuthorizations({ resourceType, resourceId, granteeSystemAccountId: granteeType === 'system_account' ? granteeId : undefined, teamId: granteeType === 'team' ? granteeId : undefined, status: 'all' }, access)[0]
   if (!fallback) throw new Error('创建资源授权失败')
@@ -2070,7 +2077,7 @@ export function revokeResourceAuthorization(authorizationId: string, input: Reco
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
-  return listResourceAuthorizations({ id: authorizationId, status: 'all' }, access)[0]
+  return findResourceAuthorization(authorizationId, access)
 }
 
 export function updateResourceAuthorization(authorizationId: string, input: Record<string, unknown> = {}, access?: AccessScope): ResourceAuthorizationSummary | undefined {
@@ -2132,17 +2139,18 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
     throw error
   }
   cleanupInactiveAuthorizationBindings(database)
-  return listResourceAuthorizations({ id: authorizationId, status: 'all' }, access)[0]
+  return findResourceAuthorization(authorizationId, access)
 }
 
 export function getResourceAuthorizationUsage(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationUsageOptions = {}): ResourceAuthorizationSummary | undefined {
-  const authorization = listResourceAuthorizations({ id: authorizationId, status: 'all' }, access)[0]
+  const authorization = findResourceAuthorization(authorizationId, access, { includeUsage: false })
   if (!authorization) return undefined
   const range = options.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
   const detail = loadResourceAuthorizationUsageDetail(authorization, range)
   return {
     ...authorization,
     usage: detail.usage,
+    lastUsedAt: detail.usage.lastUsedAt,
     usageBySystemAccount: detail.usageBySystemAccount,
     usageRange: range
   }

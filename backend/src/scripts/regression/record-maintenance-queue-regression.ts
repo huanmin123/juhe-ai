@@ -33,6 +33,28 @@ try {
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'worker flush 后记录库维护队列应清空')
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().completedCount, completedBefore + 1, 'worker flush 应执行记录库维护任务')
 
+  seedUsageRecord('usage_cleanup_regression', '2000-01-01T00:00:00.000Z')
+  recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'usage_records_cleanup',
+    id: 'recmaint_usage_cleanup_regression',
+    cutoffAt: '2000-01-02T00:00:00.000Z',
+    batchSize: 100,
+    maxBatches: 1
+  })
+  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  assert.equal(usageRecordCount('usage_cleanup_regression'), 0, 'worker 记录库维护任务应真实删除截止时间前的使用记录')
+
+  seedUsageRecord('usage_cleanup_recent_protected', new Date().toISOString())
+  recordMaintenanceQueue.enqueueRecordMaintenanceJob({
+    type: 'usage_records_cleanup',
+    id: 'recmaint_usage_cleanup_recent_protected',
+    cutoffAt: new Date(Date.now() + 60 * 1000).toISOString(),
+    batchSize: 100,
+    maxBatches: 1
+  })
+  recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
+  assert.equal(usageRecordCount('usage_cleanup_recent_protected'), 1, 'worker 记录库维护任务应强制保留最近 1 天的使用记录')
+
   seedAccount('acct_codex_snapshot', 'sys_admin')
   recordMaintenanceQueue.enqueueRecordMaintenanceJob({
     type: 'account_usage_snapshot_upsert',
@@ -103,6 +125,22 @@ function seedAccount(accountId: string, systemAccountId: string): void {
       VALUES (?, ?, 'openai', ?, 'oauth', 'active', ?, 1, ?, ?)
     `)
     .run(accountId, systemAccountId, accountId, '{}', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
+}
+
+function seedUsageRecord(id: string, createdAt: string): void {
+  databaseModule.getRecordDatabase()
+    .prepare(`
+      INSERT INTO usage_records (id, system_account_id, trace_id, stream, success, created_at)
+      VALUES (?, 'sys_admin', ?, 0, 1, ?)
+    `)
+    .run(id, `trace_${id}`, createdAt)
+}
+
+function usageRecordCount(id: string): number {
+  const row = databaseModule.getRecordDatabase()
+    .prepare('SELECT COUNT(*) AS total FROM usage_records WHERE id = ?')
+    .get(id) as { total?: number } | undefined
+  return Number(row?.total ?? 0)
 }
 
 function accountUsageSnapshotCount(accountId: string): number {

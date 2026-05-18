@@ -25,18 +25,32 @@ const RUNTIME_AUTHORIZATION_BATCH_SIZE = 200
 
 export interface ResourceAuthorizationListOptions {
   usageRange?: AccountUsageStatsRange
+  includeUsage?: boolean
 }
 
 export function listResourceAuthorizationSummaries(filters: Record<string, unknown>, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const grantRows = listResourceAuthorizationGrantOperationRows(filters, access)
-  const summaries = resourceAuthorizationGrantSummaries(grantRows, options.usageRange)
+  const summaries = resourceAuthorizationGrantSummaries(grantRows, options)
     .sort(compareResourceAuthorizationOperations)
   return summaries.map((summary) => withResourceAuthorizationPermissions(
     sanitizeResourceAuthorizationSummaryForAccess(summary, access),
     viewerSystemAccountId,
     access
   ))
+}
+
+export function findResourceAuthorizationSummary(id: string, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary | undefined {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const grantRows = listResourceAuthorizationGrantOperationRows({ id, status: 'all' }, access)
+  const summary = resourceAuthorizationGrantSummaries(grantRows.slice(0, 1), options)[0]
+  return summary
+    ? withResourceAuthorizationPermissions(
+      sanitizeResourceAuthorizationSummaryForAccess(summary, access),
+      viewerSystemAccountId,
+      access
+    )
+    : undefined
 }
 
 function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationGrantRow[] {
@@ -126,13 +140,18 @@ export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationG
   `).get(row.resource_type, row.resource_id, row.grantee_system_account_id) as unknown as ResourceAuthorizationRow | undefined
 }
 
-function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow[], usageRange?: AccountUsageStatsRange): ResourceAuthorizationSummary[] {
+function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow[], options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
   const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
   const systemAccounts = loadSystemAccountsByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
   const teamNames = loadSystemTeamNameMap(rows.map((row) => row.grantee_team_id ?? ''))
-  const usage = loadResourceAuthorizationGrantUsageSummaries(rows, usageRange ?? todayDateKey(usageStatsTimezone()))
-  const totalUsage = loadResourceAuthorizationGrantUsageSummaries(rows)
+  const includeUsage = options.includeUsage ?? true
+  const usage = includeUsage
+    ? loadResourceAuthorizationGrantUsageSummaries(rows, options.usageRange ?? todayDateKey(usageStatsTimezone()))
+    : new Map<string, AccountUsageSummary>()
+  const totalUsage = includeUsage
+    ? loadResourceAuthorizationGrantUsageSummaries(rows)
+    : new Map<string, AccountUsageSummary>()
   return rows.map((row) => {
     const owner = systemAccounts.get(row.resource_owner_system_account_id)
     const grantee = row.grantee_system_account_id ? systemAccounts.get(row.grantee_system_account_id) : undefined

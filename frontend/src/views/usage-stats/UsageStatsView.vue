@@ -200,12 +200,12 @@
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import dayjs, { type Dayjs } from 'dayjs'
-import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, reactive, ref, shallowRef, watch } from 'vue'
+import { computed, reactive, ref, shallowRef, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import { disposeChart, ensureChart, resizeEcharts, type ECharts } from '@/composables/useEcharts'
+import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
@@ -288,9 +288,12 @@ const accountUsagePagination = reactive({
 
 const trendChartRef = ref<HTMLDivElement>()
 const trendChart = shallowRef<ECharts>()
-const pageActive = ref(false)
-const chartRenderPending = ref(false)
-let resizeListenerAttached = false
+const { pageActive, requestRender: renderChart } = useEchartsPageLifecycle({
+  renderCharts: renderUsageTrendChart,
+  resizeCharts,
+  disposeCharts,
+  onMounted: loadData
+})
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
 const rows = computed(() => orderedUsageRows(overview.value?.rows ?? []))
@@ -565,43 +568,22 @@ function trendAccountLabel(account: AccountUsageStatsRow) {
   return `${account.name}（${suffix}）`
 }
 
-function renderChart() {
-  if (!pageActive.value) {
-    chartRenderPending.value = true
+function renderUsageTrendChart() {
+  if (!overview.value || !hasTrendData.value) {
+    disposeChart(trendChart)
     return
   }
-  void nextTick(() => {
-    if (!pageActive.value) {
-      chartRenderPending.value = true
-      return
-    }
-    chartRenderPending.value = false
-    if (!overview.value || !hasTrendData.value) {
-      disposeChart(trendChart)
-      return
-    }
-    const chart = ensureChart(trendChartRef, trendChart)
-    if (!chart) return
-    chart.setOption(buildAccountUsageTrendOption(overview.value, selectedMetric.value, visibleTrendRows.value), { notMerge: true })
-    chart.resize()
-  })
+  const chart = ensureChart(trendChartRef, trendChart)
+  if (!chart) return
+  chart.setOption(buildAccountUsageTrendOption(overview.value, selectedMetric.value, visibleTrendRows.value), { notMerge: true })
 }
 
 function resizeCharts() {
-  if (!pageActive.value) return
   resizeEcharts([trendChart.value])
 }
 
-function addResizeListener() {
-  if (resizeListenerAttached || typeof window === 'undefined') return
-  resizeListenerAttached = true
-  window.addEventListener('resize', resizeCharts)
-}
-
-function removeResizeListener() {
-  if (!resizeListenerAttached || typeof window === 'undefined') return
-  resizeListenerAttached = false
-  window.removeEventListener('resize', resizeCharts)
+function disposeCharts() {
+  disposeChart(trendChart)
 }
 
 function snapshotPageState(): UsageStatsPageState {
@@ -664,35 +646,6 @@ function pruneSelectedTrendAccounts(currentRows: AccountUsageStatsRow[]) {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-
-onMounted(() => {
-  pageActive.value = true
-  addResizeListener()
-  void loadData()
-})
-
-onActivated(() => {
-  pageActive.value = true
-  addResizeListener()
-  if (chartRenderPending.value) {
-    renderChart()
-    return
-  }
-  void nextTick(resizeCharts)
-})
-
-onDeactivated(() => {
-  pageActive.value = false
-  chartRenderPending.value = true
-  removeResizeListener()
-  disposeChart(trendChart)
-})
-
-onBeforeUnmount(() => {
-  pageActive.value = false
-  removeResizeListener()
-  disposeChart(trendChart)
-})
 </script>
 
 <style scoped>

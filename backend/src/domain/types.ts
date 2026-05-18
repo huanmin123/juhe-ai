@@ -378,6 +378,7 @@ export interface AccountTestResult {
   responseHeaders?: Record<string, string | string[]>
   responseBody?: unknown
   responseText?: string
+  responseTruncated?: boolean
   outputText?: string
   modelsUrl?: string
   proxyUrl?: string

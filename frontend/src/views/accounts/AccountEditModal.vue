@@ -42,7 +42,6 @@
         :form="form"
         :is-management-view="isManagementView"
         :proxy-options="proxyOptions"
-        :status-options="statusOptions"
       />
 
       <AccountErrorPolicyCard v-if="hasAccountType" v-model:rules="errorPolicyRules" />
@@ -95,7 +94,6 @@ defineProps<{
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]
   selectedProvider?: ProviderDefinition
-  statusOptions: SelectOption<string>[]
   title: string
   targetSystemAccountLabel?: string
 }>()

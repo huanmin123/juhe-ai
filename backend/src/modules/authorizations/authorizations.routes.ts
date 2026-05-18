@@ -5,6 +5,7 @@ import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from 
 import { getAuthorizationTeamUsageOverview, getAuthorizationUserUsageOverview } from '../../storage/authorization-usage.repository.js'
 import {
   createResourceAuthorization,
+  findResourceAuthorization,
   getResourceAuthorizationUsage,
   listResourceAuthorizations,
   revokeResourceAuthorization,
@@ -224,7 +225,7 @@ authorizationsRouter.delete('/:id', (req, res) => {
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const authorization = runLoggedOperation(() => {
-      const before = listResourceAuthorizations({ status: 'all' }, requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const before = findResourceAuthorization(paramsParsed.data.id, requestAccess, { includeUsage: false })
       const authorization = revokeResourceAuthorization(paramsParsed.data.id, parsed.data, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')
@@ -284,7 +285,7 @@ authorizationsRouter.patch('/:id', (req, res) => {
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const authorization = runLoggedOperation(() => {
-      const before = listResourceAuthorizations({ status: 'all' }, requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const before = findResourceAuthorization(paramsParsed.data.id, requestAccess, { includeUsage: false })
       const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')
@@ -341,7 +342,7 @@ authorizationsRouter.patch('/:id/expire', (req, res) => {
   try {
     const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
     const authorization = runLoggedOperation(() => {
-      const before = listResourceAuthorizations({ status: 'all' }, requestAccess).find((item) => item.id === paramsParsed.data.id)
+      const before = findResourceAuthorization(paramsParsed.data.id, requestAccess, { includeUsage: false })
       const authorization = updateResourceAuthorization(paramsParsed.data.id, parsed.data, requestAccess)
       if (!authorization) {
         throw new Error('授权记录不存在')

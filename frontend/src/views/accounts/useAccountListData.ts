@@ -75,16 +75,12 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     }
     try {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      const [accountList] = await Promise.all([
-        options.isManagementView.value ? api.accounts.list(accountListParams(systemAccountId)) : api.myAccounts.list(accountListParams()),
+      const [initialAccountList] = await Promise.all([
+        fetchAccountList(systemAccountId),
         loadAccountOptions(systemAccountId, loadOptions.forceOptions === true)
       ])
-      accountPagination.current = accountList.page
-      accountPagination.pageSize = accountList.pageSize
-      accountPagination.total = accountList.total
-      accounts.value = loadOptions.append ? [...accounts.value, ...accountList.items] : accountList.items
-      const selectableAccountIds = new Set(accounts.value.filter(canBatchManageAccount).map((account) => account.id))
-      options.onLoaded?.(selectableAccountIds)
+      const accountList = await resolvedAccountListPage(initialAccountList, systemAccountId, loadOptions)
+      applyAccountList(accountList, loadOptions)
     } catch (error) {
       console.error(error)
       message.error('加载账户失败')
@@ -93,6 +89,27 @@ export function useAccountListData(options: UseAccountListDataOptions) {
         loading.value = false
       }
     }
+  }
+
+  function fetchAccountList(systemAccountId?: string) {
+    return options.isManagementView.value ? api.accounts.list(accountListParams(systemAccountId)) : api.myAccounts.list(accountListParams())
+  }
+
+  async function resolvedAccountListPage(accountList: Awaited<ReturnType<typeof fetchAccountList>>, systemAccountId: string | undefined, loadOptions: { append?: boolean }): Promise<Awaited<ReturnType<typeof fetchAccountList>>> {
+    if (loadOptions.append || accountList.page <= 1 || accountList.items.length > 0 || accountList.total === 0) {
+      return accountList
+    }
+    accountPagination.current = 1
+    return fetchAccountList(systemAccountId)
+  }
+
+  function applyAccountList(accountList: Awaited<ReturnType<typeof fetchAccountList>>, loadOptions: { append?: boolean }) {
+    accountPagination.current = accountList.page
+    accountPagination.pageSize = accountList.pageSize
+    accountPagination.total = accountList.total
+    accounts.value = loadOptions.append ? [...accounts.value, ...accountList.items] : accountList.items
+    const selectableAccountIds = new Set(accounts.value.filter(canBatchManageAccount).map((account) => account.id))
+    options.onLoaded?.(selectableAccountIds)
   }
 
   function refreshData() {

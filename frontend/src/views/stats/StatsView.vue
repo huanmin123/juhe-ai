@@ -98,14 +98,14 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef, watch } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import { disposeChart, ensureChart, resizeEcharts, type ECharts } from '@/composables/useEcharts'
+import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
@@ -153,9 +153,12 @@ const usageTrendChart = shallowRef<ECharts>()
 const modelDistributionChart = shallowRef<ECharts>()
 const errorChart = shallowRef<ECharts>()
 const systemMetricsChart = shallowRef<ECharts>()
-const pageActive = ref(false)
-const chartRenderPending = ref(false)
-let resizeListenerAttached = false
+const { requestRender: renderCharts } = useEchartsPageLifecycle({
+  renderCharts: renderStatsCharts,
+  resizeCharts,
+  disposeCharts,
+  onMounted: loadData
+})
 
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
@@ -240,23 +243,11 @@ async function loadSystemAccounts(): Promise<void> {
   systemAccountsLoaded.value = true
 }
 
-function renderCharts() {
-  if (!pageActive.value) {
-    chartRenderPending.value = true
-    return
-  }
-  void nextTick(() => {
-    if (!pageActive.value) {
-      chartRenderPending.value = true
-      return
-    }
-    chartRenderPending.value = false
-    renderUsageTrendChart()
-    renderModelDistributionChart()
-    renderErrorChart()
-    renderSystemMetricsChart()
-    resizeCharts()
-  })
+function renderStatsCharts() {
+  renderUsageTrendChart()
+  renderModelDistributionChart()
+  renderErrorChart()
+  renderSystemMetricsChart()
 }
 
 function renderUsageTrendChart() {
@@ -304,20 +295,14 @@ function renderSystemMetricsChart() {
 }
 
 function resizeCharts() {
-  if (!pageActive.value) return
   resizeEcharts([usageTrendChart.value, modelDistributionChart.value, errorChart.value, systemMetricsChart.value])
 }
 
-function addResizeListener() {
-  if (resizeListenerAttached || typeof window === 'undefined') return
-  resizeListenerAttached = true
-  window.addEventListener('resize', resizeCharts)
-}
-
-function removeResizeListener() {
-  if (!resizeListenerAttached || typeof window === 'undefined') return
-  resizeListenerAttached = false
-  window.removeEventListener('resize', resizeCharts)
+function disposeCharts() {
+  disposeChart(usageTrendChart)
+  disposeChart(modelDistributionChart)
+  disposeChart(errorChart)
+  disposeChart(systemMetricsChart)
 }
 
 function snapshotPageState(): StatsPageState {
@@ -354,41 +339,6 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
-
-onMounted(() => {
-  pageActive.value = true
-  addResizeListener()
-  void loadData()
-})
-
-onActivated(() => {
-  pageActive.value = true
-  addResizeListener()
-  if (chartRenderPending.value) {
-    renderCharts()
-    return
-  }
-  void nextTick(resizeCharts)
-})
-
-onDeactivated(() => {
-  pageActive.value = false
-  chartRenderPending.value = true
-  removeResizeListener()
-  disposeChart(usageTrendChart)
-  disposeChart(modelDistributionChart)
-  disposeChart(errorChart)
-  disposeChart(systemMetricsChart)
-})
-
-onBeforeUnmount(() => {
-  pageActive.value = false
-  removeResizeListener()
-  disposeChart(usageTrendChart)
-  disposeChart(modelDistributionChart)
-  disposeChart(errorChart)
-  disposeChart(systemMetricsChart)
-})
 </script>
 
 <style scoped>

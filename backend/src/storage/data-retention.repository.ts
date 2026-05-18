@@ -18,6 +18,27 @@ export interface ProcessedUsageRecordsCleanupBatchResult {
   blockedReason?: string
 }
 
+export interface ProcessedUsageRecordsCleanupPreviewResult {
+  cutoffCreatedAt: string
+  safetyCursorCreatedAt?: string
+  safetyCursorId?: string
+  eligibleRows: number
+  hasMore: boolean
+  blockedReason?: string
+}
+
+export interface UsageRecordsCleanupBatchResult {
+  cutoffCreatedAt: string
+  deletedRows: number
+  hasMore: boolean
+}
+
+export interface UsageRecordsCleanupPreviewResult {
+  cutoffCreatedAt: string
+  eligibleRows: number
+  hasMore: boolean
+}
+
 export interface UsageStatsRetentionCleanupResult {
   accountQualityMinuteStats: number
   usageStatsMinute: number
@@ -65,6 +86,58 @@ export function cleanupProcessedUsageRecordsBefore(cutoffCreatedAt: string, limi
   return cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt, limit).deletedRows
 }
 
+export function inspectUsageRecordsCleanupBefore(cutoffCreatedAt: string, limit = 10000): UsageRecordsCleanupPreviewResult {
+  const batchLimit = positiveLimit(limit)
+  const rows = selectUsageRecordCleanupRows(getRecordDatabase(), cutoffCreatedAt, batchLimit + 1)
+  return {
+    cutoffCreatedAt,
+    eligibleRows: Math.min(rows.length, batchLimit),
+    hasMore: rows.length > batchLimit
+  }
+}
+
+export function cleanupUsageRecordsBeforeWithResult(cutoffCreatedAt: string, limit = 10000): UsageRecordsCleanupBatchResult {
+  const batchLimit = positiveLimit(limit)
+  const rows = selectUsageRecordCleanupRows(getRecordDatabase(), cutoffCreatedAt, batchLimit + 1)
+  return {
+    cutoffCreatedAt,
+    deletedRows: deleteRowsById('usage_records', rows.slice(0, batchLimit)),
+    hasMore: rows.length > batchLimit
+  }
+}
+
+export function inspectProcessedUsageRecordsCleanupBefore(cutoffCreatedAt: string, limit = 10000): ProcessedUsageRecordsCleanupPreviewResult {
+  const database = getRecordDatabase()
+  const cursor = usageRecordsCleanupCursor(database)
+  const cursorCreatedAt = cursor?.cursorCreatedAt
+  const cursorId = cursor?.cursorId
+  if (!cursorCreatedAt || !cursorId) {
+    if (!hasUsageRecordsBefore(database, cutoffCreatedAt)) {
+      return {
+        cutoffCreatedAt,
+        eligibleRows: 0,
+        hasMore: false
+      }
+    }
+    return {
+      cutoffCreatedAt,
+      eligibleRows: 0,
+      hasMore: false,
+      blockedReason: cursor?.blockedReason ?? '统计安全游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试'
+    }
+  }
+
+  const batchLimit = positiveLimit(limit)
+  const rows = selectProcessedUsageRecordCleanupRows(database, cutoffCreatedAt, cursorCreatedAt, cursorId, batchLimit + 1)
+  return {
+    cutoffCreatedAt,
+    safetyCursorCreatedAt: cursorCreatedAt,
+    safetyCursorId: cursorId,
+    eligibleRows: Math.min(rows.length, batchLimit),
+    hasMore: rows.length > batchLimit
+  }
+}
+
 export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: string, limit = 10000): ProcessedUsageRecordsCleanupBatchResult {
   const database = getRecordDatabase()
   const cursor = usageRecordsCleanupCursor(database)
@@ -87,7 +160,24 @@ export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: st
   }
 
   const batchLimit = positiveLimit(limit)
-  const rows = database
+  const rows = selectProcessedUsageRecordCleanupRows(database, cutoffCreatedAt, cursorCreatedAt, cursorId, batchLimit + 1)
+  return {
+    cutoffCreatedAt,
+    safetyCursorCreatedAt: cursorCreatedAt,
+    safetyCursorId: cursorId,
+    deletedRows: deleteRowsById('usage_records', rows.slice(0, batchLimit)),
+    hasMore: rows.length > batchLimit
+  }
+}
+
+function selectProcessedUsageRecordCleanupRows(
+  database: ReturnType<typeof getRecordDatabase>,
+  cutoffCreatedAt: string,
+  cursorCreatedAt: string,
+  cursorId: string,
+  limit: number
+): CleanupRow[] {
+  return database
     .prepare(`
       SELECT id
       FROM usage_records
@@ -96,14 +186,23 @@ export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: st
       ORDER BY created_at ASC, id ASC
       LIMIT ?
     `)
-    .all(cutoffCreatedAt, cursorCreatedAt, cursorCreatedAt, cursorId, batchLimit + 1) as CleanupRow[]
-  return {
-    cutoffCreatedAt,
-    safetyCursorCreatedAt: cursorCreatedAt,
-    safetyCursorId: cursorId,
-    deletedRows: deleteRowsById('usage_records', rows.slice(0, batchLimit)),
-    hasMore: rows.length > batchLimit
-  }
+    .all(cutoffCreatedAt, cursorCreatedAt, cursorCreatedAt, cursorId, positiveLimit(limit)) as CleanupRow[]
+}
+
+function selectUsageRecordCleanupRows(
+  database: ReturnType<typeof getRecordDatabase>,
+  cutoffCreatedAt: string,
+  limit: number
+): CleanupRow[] {
+  return database
+    .prepare(`
+      SELECT id
+      FROM usage_records
+      WHERE created_at < ?
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(cutoffCreatedAt, positiveLimit(limit)) as CleanupRow[]
 }
 
 function hasUsageRecordsBefore(database: ReturnType<typeof getRecordDatabase>, cutoffCreatedAt: string): boolean {

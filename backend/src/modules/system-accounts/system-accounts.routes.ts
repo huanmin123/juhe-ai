@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { clearGatewayApiKeyValidationCache, createSystemAccount, listSystemAccounts, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
+import { clearGatewayApiKeyValidationCache, createSystemAccount, findSystemAccountById, listSystemAccounts, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
@@ -88,7 +88,7 @@ systemAccountsRouter.patch('/:id', requireAdmin, (req, res) => {
     return
   }
   try {
-    const before = listSystemAccounts().find((item) => item.id === req.params.id)
+    const before = findSystemAccountById(req.params.id)
     const account = runLoggedOperation(() => {
       const account = updateSystemAccount(req.params.id, parsed.data)
       if (!account) {

@@ -35,6 +35,13 @@ export interface StreamPipeResult {
   streamIntercept?: StreamInterceptDecision
 }
 
+class StreamCompletedAfterTerminalSignal extends Error {
+  constructor() {
+    super('上游流式响应已收到终止事件')
+    this.name = 'StreamCompletedAfterTerminalSignal'
+  }
+}
+
 export interface StreamFailureContext {
   downstreamBytesWritten: number
   outputReceived: boolean
@@ -82,6 +89,7 @@ export async function pipeUpstreamStream(
   let lastProgressLogAt = startedAt
   let lastBackpressureLogAt = 0
   let clientClosed = false
+  let terminalEventWritten = false
   const closeIterator = () => {
     clientClosed = true
     void closeAsyncIterator(iterator)
@@ -160,6 +168,10 @@ export async function pipeUpstreamStream(
         const writeMs = Date.now() - writeStartedAt
         chunkWriteMs += writeMs
         totalResponseBytes += outbound.length
+        if (latestInspection.terminalReceived && !latestInspection.failedReceived) {
+          terminalEventWritten = true
+          throw new StreamCompletedAfterTerminalSignal()
+        }
         const writeNow = Date.now()
         if (writeResult.backpressure && writeNow - lastBackpressureLogAt >= streamBackpressureLogIntervalMs) {
           lastBackpressureLogAt = writeNow
@@ -257,6 +269,25 @@ export async function pipeUpstreamStream(
         }
         const writeResult = await writeResponseChunk(res, outbound)
         totalResponseBytes += outbound.length
+        if (latestInspection.terminalReceived && !latestInspection.failedReceived) {
+          terminalEventWritten = true
+          endResponse(res)
+          streamLogger.info({
+            event: 'gateway_stream_finished_success_after_terminal',
+            elapsedMs: Date.now() - startedAt,
+            chunkCount: chunkIndex,
+            totalUpstreamBytes,
+            totalResponseBytes,
+            firstTokenMs,
+            sseEventCount: latestInspection.eventCount,
+            sseEventTypeCounts: latestInspection.eventTypeCounts,
+            recentSseEventTypes: latestInspection.recentEventTypes,
+            outputReceived: latestInspection.outputReceived,
+            outputEventCount: latestInspection.outputEventCount,
+            eofPendingFlush: true
+          }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
+          return streamResult(true, '已完成', undefined, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens)
+        }
         const writeNow = Date.now()
         if (writeResult.backpressure && writeNow - lastBackpressureLogAt >= streamBackpressureLogIntervalMs) {
           lastBackpressureLogAt = writeNow
@@ -294,8 +325,46 @@ export async function pipeUpstreamStream(
     }
   } catch (error) {
     await closeAsyncIterator(iterator)
+    if (error instanceof StreamCompletedAfterTerminalSignal) {
+      const inspection = inspector.finish()
+      endResponse(res)
+      streamLogger.info({
+        event: 'gateway_stream_finished_success_after_terminal',
+        elapsedMs: Date.now() - startedAt,
+        chunkCount: chunkIndex,
+        totalUpstreamBytes,
+        totalResponseBytes,
+        firstTokenMs,
+        sseEventCount: inspection.eventCount,
+        sseEventTypeCounts: inspection.eventTypeCounts,
+        recentSseEventTypes: inspection.recentEventTypes,
+        outputReceived: inspection.outputReceived,
+        outputEventCount: inspection.outputEventCount
+      }, '网关已收到 OpenAI 终止事件并成功结束流式响应')
+      return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+    }
     if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
       const inspection = inspector.finish()
+      if (terminalEventWritten && inspection.terminalReceived && !inspection.failedReceived) {
+        endResponse(res)
+        streamLogger.info({
+          event: 'gateway_stream_client_closed_after_terminal',
+          elapsedMs: Date.now() - startedAt,
+          chunkCount: chunkIndex,
+          totalUpstreamBytes,
+          totalResponseBytes,
+          signalAborted: signal?.aborted,
+          outputReceived: inspection.outputReceived,
+          outputEventCount: inspection.outputEventCount,
+          sseEventCount: inspection.eventCount,
+          sseEventTypeCounts: inspection.eventTypeCounts,
+          recentSseEventTypes: inspection.recentEventTypes,
+          parserSkipped: inspection.skipped,
+          skipReason: inspection.skipReason,
+          errorMessage: error instanceof Error ? error.message : String(error)
+        }, '客户端在 OpenAI 终止事件后关闭连接，按成功流式响应收尾')
+        return streamResult(true, '已完成', undefined, firstTokenMs, inspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, inspection.outputReceived, inspection.estimatedOutputTokens)
+      }
       streamLogger.warn({
         event: 'gateway_stream_aborted',
         elapsedMs: Date.now() - startedAt,

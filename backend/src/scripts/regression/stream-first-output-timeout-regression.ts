@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { createHash } from 'node:crypto'
 import { mkdirSync, rmSync } from 'node:fs'
 import http from 'node:http'
 import { tmpdir } from 'node:os'
@@ -93,6 +94,7 @@ async function main(): Promise<void> {
     const parserSkippedCredential = createScenarioCredential(upstreamBaseUrl, '解析跳过后原样转发')
     const missingTerminalCredential = createScenarioCredential(upstreamBaseUrl, '缺少终止事件')
     const heartbeatCredential = createScenarioCredential(upstreamBaseUrl, '心跳刷新')
+    const clientCloseAfterTerminalCredential = createScenarioCredential(upstreamBaseUrl, '终止后客户端关闭')
     const overloadedBeforeOutputCredential = createScenarioCredential(upstreamBaseUrl, '容量错误未输出前重试')
     const slowDownCredential = createScenarioCredential(upstreamBaseUrl, 'slow_down 未输出前重试')
     const genericErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '未知 error 事件默认重试')
@@ -178,6 +180,12 @@ async function main(): Promise<void> {
     assert(heartbeatThenCompletedResult.streamText.includes('response.completed'), `客户端未收到完成事件：${heartbeatThenCompletedResult.streamText}`)
     assert(!heartbeatThenCompletedResult.streamText.includes('response.failed'), `上游持续心跳时不应触发失败事件：${heartbeatThenCompletedResult.streamText}`)
     assert(heartbeatThenCompletedResult.durationMs < 5000, `持续心跳后完成没有及时结束，耗时 ${heartbeatThenCompletedResult.durationMs}ms`)
+
+    await requestAndCloseAfterTerminal(baseUrl, clientCloseAfterTerminalCredential.apiKey.key)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    assertSuccessfulUsageRecord(clientCloseAfterTerminalCredential.account.id)
+    auditLogQueue.flushAllAuditLogQueue()
+    assertNoClientAbortedAuditLogForAccount(clientCloseAfterTerminalCredential.account.id)
 
     const overloadedBeforeOutputResult = await requestServerOverloadedBeforeOutput(baseUrl, overloadedBeforeOutputCredential.apiKey.key)
     assert(!overloadedBeforeOutputResult.streamText.includes('server_is_overloaded'), `未输出前不应把原始容量错误发给客户端：${overloadedBeforeOutputResult.streamText}`)
@@ -384,6 +392,16 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
           clearInterval(interval)
           clearTimeout(doneTimer)
         })
+        return
+      }
+      if (scenario === 'client-close-after-terminal') {
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"done"}\n\n')
+        res.write('event: response.completed\n')
+        res.write('data: {"type":"response.completed","response":{"id":"resp_client_close_after_terminal","status":"completed","usage":{"input_tokens":1,"output_tokens":1}}}\n\n')
+        setTimeout(() => {
+          res.end()
+        }, 500)
         return
       }
       if (scenario === 'server-overloaded-before-output') {
@@ -598,6 +616,47 @@ async function requestHeartbeatThenCompleted(baseUrl: string, apiKey: string): P
   }
 }
 
+async function requestAndCloseAfterTerminal(baseUrl: string, apiKey: string): Promise<void> {
+  settingsRepository.updateSettings({
+    streamCircuitBreakerEnabled: true,
+    streamRequestTimeoutSeconds: 10,
+    streamIdleTimeoutSeconds: 10,
+    temporaryUnschedulableRetryAttempts: 0
+  })
+  gatewayCache.clearGatewayRuntimeCache()
+
+  const traceId = traceIdForSampledSuccessBucket()
+  const response = await fetch(`${baseUrl}/v1/responses`, {
+    method: 'POST',
+    headers: {
+      ...codexStreamHeaders(apiKey, traceId),
+      'x-trace-id': traceId
+    },
+    body: JSON.stringify({
+      model: 'gpt-4o-mini',
+      input: 'client-close-after-terminal',
+      stream: true
+    })
+  })
+  assert.equal(response.status, 200)
+  assert(response.body, '终止后关闭场景应返回响应流')
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let streamText = ''
+  while (true) {
+    const result = await reader.read()
+    if (result.done) {
+      break
+    }
+    streamText += decoder.decode(result.value, { stream: true })
+    if (streamText.includes('response.completed')) {
+      await reader.cancel()
+      break
+    }
+  }
+  assert(streamText.includes('response.completed'), `终止后关闭场景未读到完成事件：${streamText}`)
+}
+
 function captureGatewayRawBody(req: RawBodyRequest, _res: ExpressResponse, next: NextFunction): void {
   const rawBody = Buffer.isBuffer(req.body) ? Buffer.from(req.body) : Buffer.alloc(0)
   req.rawBody = rawBody
@@ -732,6 +791,42 @@ function assertFailedUsageRecordHasTokenCost(accountId: string): void {
   assert((record.inputTokens ?? 0) > 0, `输出后失败应估算输入 token：${record.inputTokens}`)
   assert((record.outputTokens ?? 0) > 0, `输出后失败应估算输出 token：${record.outputTokens}`)
   assert((record.costUsd ?? 0) > 0, `输出后失败应估算成本：${record.costUsd}`)
+}
+
+function assertSuccessfulUsageRecord(accountId: string): void {
+  const records = repositories.listUsageRecords(undefined, { result: 'success', page: 1, pageSize: 50 })
+  const record = records.items.find((item) => item.accountId === accountId && item.success === true)
+  assert(record, `终止后客户端关闭场景应按成功写入使用记录，账号 ${accountId} 未找到成功记录`)
+  assert.equal(record.errorCode, undefined, `终止后客户端关闭不应写错误码：${record.errorCode}`)
+  assert.equal(record.statusCode, 200, `终止后客户端关闭应保留 200 状态码：${record.statusCode}`)
+}
+
+function assertNoClientAbortedAuditLogForAccount(accountId: string): void {
+  const row = databaseModule.getRecordDatabase()
+    .prepare(`
+      SELECT COUNT(*) AS count
+      FROM audit_logs audit_logs
+      INNER JOIN audit_log_attempts attempts ON attempts.audit_log_id = audit_logs.id
+      WHERE attempts.account_id = ?
+        AND audit_logs.audit_outcome = 'client_aborted'
+    `)
+    .get(accountId) as { count?: number } | undefined
+  assert.equal(Number(row?.count ?? 0), 0, '收到 response.completed 后客户端关闭不应写 client_aborted 审计')
+}
+
+function traceIdForSampledSuccessBucket(): string {
+  for (let index = 0; index < 100000; index += 1) {
+    const traceId = `stream-client-close-after-terminal-${index}`
+    if (sampleBucketForTraceId(traceId) < 1000) {
+      return traceId
+    }
+  }
+  throw new Error('无法构造成功采样 traceId')
+}
+
+function sampleBucketForTraceId(traceId: string): number {
+  const digest = createHash('sha256').update(traceId).digest()
+  return digest.readUInt32BE(0) % 10000
 }
 
 async function assertStreamInterceptAuditMetadata(

@@ -98,7 +98,6 @@
       :providers="availableProviders"
       :proxy-options="proxyOptions"
       :selected-provider="selectedProvider"
-      :status-options="statusEditOptions"
       :title="modalTitle"
       :target-system-account-label="targetSystemAccountLabel"
       @cancel="handleModalCancel"
@@ -279,7 +278,6 @@ const {
   selectedAccountTypeTitle,
   selectedProvider,
   selectProvider,
-  statusEditOptions,
   targetSystemAccountLabel
 } = useAccountEditForm({
   accountScopeParams,
@@ -450,7 +448,7 @@ async function removeAccount(id: string) {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('删除账户失败')
+    message.error(extractApiErrorMessage(error, '删除账户失败'))
   }
 }
 

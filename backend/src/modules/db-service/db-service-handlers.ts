@@ -19,7 +19,7 @@ import {
   readCachedGatewaySettings,
 } from '../gateway/gateway-runtime-cache.service.js'
 import { checkGatewayApiKeyQuota, clearApiKeyQuotaCache } from '../gateway/api-key-quota.service.js'
-import { checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
+import { checkGatewayAuthorizationQuotaBatchByIds, checkGatewayAuthorizationQuotaByIds, clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
 import { applyAccountErrorHandling } from '../gateway/account-error-policy.service.js'
 import { persistOpenAICodexUsageHeaders } from '../gateway/openai-codex-usage.service.js'
 import type {
@@ -94,10 +94,10 @@ function handleDbServiceOperationSync(operation: DbServiceOperation): unknown {
         accountAuthorizationId: operation.accountAuthorizationId
       })
     case 'check_authorization_quota_batch':
-      return operation.accounts.map((account) => checkGatewayAuthorizationQuotaByIds({
+      return checkGatewayAuthorizationQuotaBatchByIds({
         groupAuthorizationId: operation.groupAuthorizationId,
-        accountAuthorizationId: account.accountAuthorizationId
-      }))
+        accounts: operation.accounts
+      })
     case 'update_openai_oauth_credentials': {
       const updated = updateAccount(operation.accountId, { credentials: operation.credentials })
       if (updated) {

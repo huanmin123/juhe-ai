@@ -34,6 +34,24 @@ export function activeResourceAuthorization(resourceType: ResourceAuthorizationR
     .get(resourceType, resourceId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
 }
 
+export function activeResourceAuthorizationsByResourceIds(resourceType: ResourceAuthorizationResourceType, resourceIds: string[], granteeSystemAccountId: string): Map<string, ResourceAuthorizationRow> {
+  const ids = [...new Set(resourceIds.filter(Boolean))]
+  if (!ids.length) return new Map()
+  const now = nowIso()
+  const rows = getDatabase()
+    .prepare(`
+      SELECT *
+      FROM resource_authorizations
+      WHERE resource_type = ?
+        AND grantee_system_account_id = ?
+        AND status = 'active'
+        AND (expires_at IS NULL OR expires_at > ?)
+        AND resource_id IN (${ids.map(() => '?').join(',')})
+    `)
+    .all(resourceType, granteeSystemAccountId, now, ...ids) as unknown as ResourceAuthorizationRow[]
+  return new Map(rows.map((row) => [row.resource_id, row]))
+}
+
 export function resolveAccountSystemAccountId(accountId: string): string | undefined {
   return accountSystemAccountId(accountId)
 }

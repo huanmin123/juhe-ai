@@ -63,6 +63,11 @@ export function listProxies(): ProxyProfileSummary[] {
   return rows.map(proxySummaryFromRow)
 }
 
+export function findProxy(id: string): ProxyProfileSummary | undefined {
+  const row = getDatabase().prepare('SELECT * FROM proxy_profiles WHERE id = ?').get(id) as unknown as ProxyRow | undefined
+  return row ? proxySummaryFromRow(row) : undefined
+}
+
 export function listProxyOptions(): ProxyProfileOptionSummary[] {
   const rows = getDatabase()
     .prepare('SELECT id, name, type, enabled FROM proxy_profiles WHERE enabled = 1 ORDER BY name ASC, updated_at DESC, id ASC')
@@ -129,7 +134,7 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
 }
 
 export function updateProxy(id: string, input: Record<string, unknown>): ProxyProfileSummary | undefined {
-  const current = listProxies().find((proxy) => proxy.id === id)
+  const current = findProxy(id)
   if (!current) {
     return undefined
   }
@@ -189,7 +194,7 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
     }
     throw error
   }
-  return listProxies().find((proxy) => proxy.id === id) ?? next
+  return findProxy(id) ?? next
 }
 
 export function getProxyTestConfig(id: string): ProxyProfileTestConfig | undefined {
@@ -242,7 +247,7 @@ export function updateProxyTestState(
   getDatabase()
     .prepare(sql)
     .run(...params)
-  return listProxies().find((proxy) => proxy.id === id)
+  return findProxy(id)
 }
 
 export function deleteProxy(id: string): boolean {

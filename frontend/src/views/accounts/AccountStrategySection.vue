@@ -7,9 +7,6 @@
       </div>
     </div>
     <div class="strategy-grid">
-      <a-form-item label="状态">
-        <a-select v-model:value="form.status" :options="statusOptions" />
-      </a-form-item>
       <a-form-item label="并发上限">
         <a-input-number v-model:value="form.concurrencyLimit" :min="1" style="width: 100%" />
       </a-form-item>
@@ -17,7 +14,7 @@
         <a-input-number v-model:value="form.priority" :min="0" style="width: 100%" />
       </a-form-item>
     </div>
-    <div class="form-help strategy-help">优先级数字越小越优先；状态不是正常时账户不会参与调度。</div>
+    <div class="form-help strategy-help">优先级数字越小越优先。</div>
     <a-form-item class="strategy-proxy-field" label="代理">
       <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
       <div v-if="!isManagementView" class="form-help">代理配置由管理员统一维护；这里可以选择已启用的全局代理。</div>
@@ -32,7 +29,6 @@ defineProps<{
   form: AccountFormModel
   isManagementView: boolean
   proxyOptions: Array<{ label: string; value: string }>
-  statusOptions: Array<{ label: string; value: string }>
 }>()
 </script>
 
@@ -62,7 +58,7 @@ defineProps<{
 
 .strategy-grid {
   display: grid;
-  grid-template-columns: minmax(160px, 1.3fr) minmax(120px, 1fr) minmax(120px, 1fr);
+  grid-template-columns: repeat(2, minmax(120px, 1fr));
   gap: 0 16px;
 }
 

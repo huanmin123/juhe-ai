@@ -52,7 +52,7 @@ export function useAccountReauthorize(options: UseAccountReauthorizeOptions) {
       message.success('授权链接已生成')
     } catch (error) {
       console.error(error)
-      message.error('生成授权链接失败')
+      message.error(options.extractApiErrorMessage(error, '生成授权链接失败'))
     } finally {
       reauthorizeAuthLoading.value = false
     }

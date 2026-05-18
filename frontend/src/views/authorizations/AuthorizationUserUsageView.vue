@@ -211,7 +211,6 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import type { Dayjs } from 'dayjs'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
@@ -220,9 +219,8 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
-import { useScopedMenuView } from '@/composables/useScopedMenuView'
-import { formatDateKey, formatDateLabel, isDateKey, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
-import type { AccountSummary, AuthorizationResourceType, AuthorizationUserUsageOverview, AuthorizationUserUsageRow, GroupSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
+import { isDateKey } from '@/shared/dateRange'
+import type { AuthorizationResourceType, AuthorizationUserUsageOverview, AuthorizationUserUsageRow, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
 import {
@@ -233,6 +231,8 @@ import {
   formatUsageAmount
 } from './authorizationFormatters'
 import { authorizationResourceTypeOptions, type AuthorizationFilterResourceType } from './authorizationTableColumns'
+import { useAuthorizationUsageDateRange } from './useAuthorizationUsageDateRange'
+import { useAuthorizationUsageResourceFilters } from './useAuthorizationUsageResourceFilters'
 
 type UserUsageFilters = {
   teamId?: string
@@ -241,17 +241,34 @@ type UserUsageFilters = {
   resourceType: AuthorizationFilterResourceType
   resourceId?: string
 }
-const MAX_RANGE_DAYS = 31
 const route = useRoute()
-const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const loading = ref(false)
 const overview = ref<AuthorizationUserUsageOverview>()
 const teams = ref<SystemTeamPrincipalSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
-const accounts = ref<AccountSummary[]>([])
-const groups = ref<GroupSummary[]>([])
 
 const filters = reactive<UserUsageFilters>(defaultFilters())
+const {
+  isManagementView,
+  selectedResourceOwnerSystemAccountId,
+  resourceOptions,
+  loadAuthorizableResourceOptions,
+  resetResourceId
+} = useAuthorizationUsageResourceFilters(filters)
+const {
+  dateRange,
+  dateRangeExplicit,
+  displayRange,
+  rangeLabel,
+  handleDateRangeChange,
+  selectedRangeParams,
+  handleCalendarChange,
+  handleDateRangeOpenChange,
+  disabledDate,
+  resetDateRange,
+  setExplicitDateRange,
+  syncDateRangeFromResponse
+} = useAuthorizationUsageDateRange({ onChange: loadData })
 const resourceTypeOptions = authorizationResourceTypeOptions
 const columns = [
   { title: '资源名称', key: 'account', width: 220 },
@@ -263,11 +280,6 @@ const columns = [
 ]
 
 const initialLoading = computed(() => loading.value && !overview.value)
-const dateRange = ref<[Dayjs, Dayjs]>(defaultDateRange())
-const dateRangeExplicit = ref(false)
-const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
-const selectedRange = computed(() => normalizedDateRange(dateRange.value))
-const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const activeFilterCount = computed(() => {
   let count = 0
   if (filters.teamId) count += 1
@@ -278,25 +290,8 @@ const activeFilterCount = computed(() => {
   if (dateRangeExplicit.value) count += 1
   return count
 })
-const selectedResourceOwnerSystemAccountId = computed(() => {
-  return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
-})
-const resourceOptions = computed(() => {
-  if (filters.resourceType === 'all') return []
-  if (filters.resourceType === 'account') {
-    return ownAuthorizableAccounts.value
-      .filter((account) => matchesSelectedResourceOwner(account))
-      .map((account) => ({ label: account.name, value: account.id }))
-  }
-  return ownAuthorizableGroups.value
-    .filter((group) => matchesSelectedResourceOwner(group))
-    .map((group) => ({ label: group.name, value: group.id }))
-})
-const ownAuthorizableAccounts = computed(() => accounts.value.filter((account) => account.permissions?.canAuthorize !== false))
-const ownAuthorizableGroups = computed(() => groups.value.filter((group) => group.permissions?.canAuthorize !== false))
 const userRows = computed<AuthorizationUserUsageRow[]>(() => overview.value?.rows ?? [])
 const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
-const rangeLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const summaryCards = computed(() => [
   { key: 'users', label: '被授权用户', value: formatNumber(overview.value?.userCount ?? 0), extra: `范围 ${rangeLabel.value}` },
   { key: 'requests', label: '范围请求', value: formatNumber(totalUsage.value.requestCount), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` },
@@ -305,12 +300,10 @@ const summaryCards = computed(() => [
 ])
 
 async function loadOptions() {
-  const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
-  const [teamResult, userResult, accountResult, groupResult] = await Promise.allSettled([
+  const [teamResult, userResult, resourceResult] = await Promise.allSettled([
     isManagementView.value ? api.authorizationOptions.granteeTeams() : api.myAuthorizationOptions.granteeTeams(),
     isManagementView.value ? api.authorizationOptions.granteeAccounts() : api.myAuthorizationOptions.granteeAccounts(),
-    isManagementView.value ? api.accounts.list({ systemAccountId: ownerSystemAccountId, limit: 500 }) : api.myAccounts.list({ limit: 500 }),
-    isManagementView.value ? api.groups.list({ systemAccountId: ownerSystemAccountId }) : api.myGroups.list()
+    loadAuthorizableResourceOptions()
   ])
   if (teamResult.status === 'fulfilled') {
     teams.value = teamResult.value
@@ -324,17 +317,9 @@ async function loadOptions() {
     console.error(userResult.reason)
     message.error('加载系统账户列表失败')
   }
-  if (accountResult.status === 'fulfilled') {
-    accounts.value = accountResult.value.items
-  } else {
-    console.error(accountResult.reason)
-    message.error('加载 AI 账户失败')
-  }
-  if (groupResult.status === 'fulfilled') {
-    groups.value = groupResult.value
-  } else {
-    console.error(groupResult.reason)
-    message.error('加载分组失败')
+  if (resourceResult.status === 'rejected') {
+    console.error(resourceResult.reason)
+    message.error('加载授权资源选项失败')
   }
 }
 
@@ -380,20 +365,18 @@ function teamDisplayName(row: AuthorizationUserUsageRow): string {
 }
 
 function handleResourceTypeChange() {
-  filters.resourceId = undefined
+  resetResourceId()
   void loadData()
 }
 
 function handleResourceOwnerChange() {
-  filters.resourceId = undefined
+  resetResourceId()
   void loadData()
 }
 
 function resetFilters() {
   Object.assign(filters, defaultFilters())
-  dateRange.value = defaultDateRange()
-  dateRangeExplicit.value = false
-  calendarRange.value = [null, null]
+  resetDateRange()
   void loadData()
 }
 
@@ -407,7 +390,7 @@ function applyRouteFilters() {
   const startDate = singleQueryValue(route.query.startDate)
   const endDate = singleQueryValue(route.query.endDate)
   Object.assign(filters, defaultFilters())
-  dateRangeExplicit.value = false
+  resetDateRange()
   filters.teamId = teamId
   filters.granteeSystemAccountId = granteeSystemAccountId
   if (isManagementView.value && resourceOwnerSystemAccountId) {
@@ -418,8 +401,7 @@ function applyRouteFilters() {
     filters.resourceId = resourceId
   }
   if (isDateKey(startDate) || isDateKey(endDate)) {
-    dateRange.value = parseDateRange({ startDate, endDate })
-    dateRangeExplicit.value = true
+    setExplicitDateRange({ startDate, endDate })
   }
 }
 
@@ -441,54 +423,6 @@ function singleQueryValue(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
 }
 
-function handleDateRangeChange() {
-  dateRange.value = parseDateRange({
-    startDate: formatDateKey(dateRange.value[0]),
-    endDate: formatDateKey(dateRange.value[1])
-  })
-  dateRangeExplicit.value = true
-  void loadData()
-}
-
-function selectedRangeParams(): { startDate?: string; endDate?: string } {
-  if (!dateRangeExplicit.value) return {}
-  const [startDate, endDate] = selectedRange.value
-  return { startDate, endDate }
-}
-
-function handleCalendarChange(value: Array<Dayjs | null> | null) {
-  calendarRange.value = [value?.[0] ?? null, value?.[1] ?? null]
-}
-
-function handleDateRangeOpenChange(open: boolean) {
-  if (!open) {
-    calendarRange.value = [null, null]
-  }
-}
-
-function disabledDate(current: Dayjs) {
-  return isRecentWindowDateDisabled(current, calendarRange.value, MAX_RANGE_DAYS)
-}
-
-function defaultDateRange(): [Dayjs, Dayjs] {
-  return todayDateRange()
-}
-
-function parseDateRange(value?: { startDate?: string; endDate?: string }): [Dayjs, Dayjs] {
-  return parseDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
-}
-
-function syncDateRangeFromResponse(value?: { startDate?: string; endDate?: string }) {
-  const start = parseDateKey(value?.startDate)
-  const end = parseDateKey(value?.endDate)
-  if (!start || !end || start.isAfter(end, 'day')) return
-  dateRange.value = [start.startOf('day'), end.startOf('day')]
-}
-
-function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
-  return normalizeDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
-}
-
 function defaultFilters(): UserUsageFilters {
   return {
     resourceOwnerSystemAccountId: allSystemAccountsValue,
@@ -497,12 +431,6 @@ function defaultFilters(): UserUsageFilters {
     teamId: undefined,
     granteeSystemAccountId: undefined
   }
-}
-
-function matchesSelectedResourceOwner(resource: Pick<AccountSummary | GroupSummary, 'ownerSystemAccountId' | 'systemAccountId'>): boolean {
-  const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
-  if (!ownerSystemAccountId) return true
-  return (resource.ownerSystemAccountId ?? resource.systemAccountId) === ownerSystemAccountId
 }
 
 onMounted(() => {

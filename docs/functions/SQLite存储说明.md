@@ -77,7 +77,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 
 - 运行日志索引通过 `runtime_log_file_cursors` 保存文件 offset、行号和文件标识；worker 重启后从游标继续，首次遇到已有当前日志文件时默认从文件末尾开始，避免导入历史大文件。
 - 按行读取只在完整换行结束后推进 offset；末尾半行保留到下一轮，轮转、截断或文件标识变化时重置游标。
-- 审计 payload blob 详情接口只能按 offset / limit 返回有限窗口；未压缩 blob 使用文件 offset 读取，gzip blob 通过解压流跳过到逻辑 offset 后只收集当前窗口，接口返回 `bodyOffset`、`bodyLimit`、`bodyTotalBytes`、`bodyNextOffset` 和 `bodyTruncated`。
+- 审计 payload blob 详情接口只能按 offset / limit 返回有限窗口；未压缩 blob 使用文件 offset 读取，gzip blob 通过解压流跳过到逻辑 offset 后只收集当前窗口，接口返回 `bodyOffset`、`bodyLimit`、`bodyTotalBytes`、`bodyNextOffset` 和 `bodyTruncated`。超过单次最大读取窗口的 payload 默认保持未压缩，避免读取后半段时反复从头解压 gzip。
 - 使用记录、操作日志、原始审计日志、审计错误组和运行日志索引这类高增长列表，默认只读取当前页 `pageSize + 1` 条来判断 `hasMore`，不在请求路径执行全量 `COUNT(*)`；返回的 `total` 只是前端分页器兼容值，不代表精确全表总数。
 - 小 `.env` 配置、极小系统状态文件、测试 / 回归脚本、明确有大小上限的网关 raw body 或诊断响应捕获可以作为例外；`/v1` raw body 可接收 `64mb`，JSON 请求体继续正常解析以保留 `model`、`stream`、会话粘滞、统计和审计字段，`2mb` 只是大 JSON 预警阈值，不作为拒绝阈值，超过后保持客户端连接并进入 worker thread 异步解析，解析完成再继续调度和转发；使用记录请求快照只保存体积摘要，不能为了快照把完整大请求体再写入明细表，完整原始内容由原始审计按策略捕获；例外不得用于运行日志、审计 payload、使用记录导出或统计明细。
 
@@ -121,7 +121,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `audit_logs`：保存进入原始审计的客户端请求事件元数据，用于后台页面检索；完全成功请求默认只采样 10%。
 - `audit_log_attempts`：保存审计请求下每次上游尝试、命中账号、代理、状态码和错误摘要。
 - `audit_payload_refs`：保存审计事件到 headers/body blob 的引用、part 类型、顺序、hash、大小和保留状态。
-- `audit_payload_blobs`：保存压缩后的客户端请求、上游请求、上游响应和最终网关响应 blob 元数据；blob 文件落在本地数据目录。
+- `audit_payload_blobs`：保存客户端请求、上游请求、上游响应和最终网关响应 blob 元数据；可压缩且不超过单次读取窗口的正文会 gzip，超大正文保持 plain 以支持直接 offset 读取；blob 文件落在本地数据目录。
 - `audit_error_groups`：保存短时间窗口内重复错误的聚合信息，列表默认可按错误组查看。
 - `runtime_logs`：保存最近 3 天普通运行日志的可检索字段和原始 JSON 行，用于管理员“日志搜索”页面。
 - `runtime_log_search`：FTS5 `trigram` 虚表，保存普通运行日志关键字段和原始 JSON，用于关键字检索；`runtime_log_search_data`、`runtime_log_search_idx`、`runtime_log_search_content`、`runtime_log_search_docsize` 和 `runtime_log_search_config` 是 SQLite 自动生成的 FTS 影子表，只能通过清理 `runtime_log_search` 主虚表间接维护，不能单独删除。
@@ -238,7 +238,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
 - 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属；`event_loop_lag_ms` 来自 worker 内独立事件循环直方图，记录上个采样窗口内去除采样分辨率基线后的额外最大延迟，不再使用采样任务本身的定时器晚到时间。
 - 系统采样的 `memory_used_percent` 表示主机实际内存压力口径，不是所有平台都等同于 `totalmem - freemem`。macOS 会把可回收文件缓存、inactive 和 speculative 页面排除在已用内存外，按 `vm_stat` 的 `Anonymous pages + Pages wired down + Pages occupied by compressor` 计算，避免把系统缓存误报为应用内存占用；读取失败时才回退到 Node 默认口径。
-- 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；大 blob 文件写入本地数据目录。
+- 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；超过单次读取窗口的大 blob 保持 plain，文件写入本地数据目录。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
 - 操作日志在业务库写操作提交成功后入队，worker 从操作日志队列批量写入 `operation_logs`、`operation_log_targets` 和 `operation_log_viewers`；操作日志入队或落库失败只影响追溯数据，不反向回滚已提交业务变更。
 - 记录库维护类动作不在管理接口或 DB service 内直接执行；API Key 删除后的关联记录清理、表监控手动清理使用记录、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue`，由 worker 分批执行。
@@ -259,7 +259,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 | `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 完全成功请求未命中 10% 采样时不写入原始审计 |
 | `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 7 天，失败 / 异常正文默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
 | `audit_error_groups` | 重复错误聚合 | 默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只做展示和排障聚合，不替代事件记录 |
-| `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理；管理员也可在表监控按截止时间手动清理 | 只删除超过指定时间、避开最近 1 天且已被主统计聚合游标和必需回填游标确认过的记录，避免破坏统计聚合 |
+| `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理；管理员也可在表监控按截止时间手动清理 | 自动保留任务按统计游标安全清理；手动清理只强制保留最近 1 天，按管理员选择的截止时间分批删除 |
 | `account_quality_minute_stats` | 账号质量分钟桶 | 默认 24 小时 | 是，`data-retention-cleanup` 每天在 worker 内清理；账号质量刷新任务也会兜底清理 | 只保存真实网关请求短窗口质量样本，不回扫 `usage_records` |
 | `usage_stats_minute`、`usage_model_minute`、`usage_error_minute`、`usage_latency_minute` | 分钟级统计缓存 | 默认 48 小时 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 供短窗口、账号质量和后续精细统计使用，不作为页面大范围查询事实源 |
 | `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly`、`usage_latency_hourly` | 小时级统计缓存 | 默认 60 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 覆盖 AI 性能最近 31 天小时趋势，并供 worker 刷新概览、排行、额度和 AI 性能窗口快照；API 摘要不在请求时聚合这些小时桶 |
@@ -280,7 +280,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 不按保留期物理清理：
 
 - `usage_stats_totals` 长期保留，作为账户、分组、授权和全局总量缓存。
-- `stats_job_state` 长期保留，作为统计游标和任务状态；它是删除 `usage_records` 的安全边界。
+- `stats_job_state` 长期保留，作为统计游标和任务状态；它是自动保留任务删除 `usage_records` 的安全边界，管理员手动清理不再按该游标阻塞。
 - `group_account_stats` 是当前分组账户状态缓存，由刷新任务整表重建，不属于历史日志。
 - `runtime_log_file_cursors` 长期保留，只记录当前日志文件增量读取位置；日志索引清理不会删除游标。
 - `runtime_log_search_data`、`runtime_log_search_idx`、`runtime_log_search_content`、`runtime_log_search_docsize`、`runtime_log_search_config` 是 FTS5 影子表，不作为独立清理目标；删除 `runtime_log_search` 虚表记录时由 SQLite 自动维护。
@@ -290,7 +290,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 
 - 表数据保留期统一由 `data-retention-cleanup` 每天在独立 background worker 进程内执行；表监控页面额外提供 `usage_records` 按截止时间手动清理入口，用于容量异常时提前释放可复用页。
 - 清理任务按批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 10000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 10` 批，避免长时间占用 SQLite 写锁。
-- 手动清理 `usage_records` 同样按批次执行，并复用统计聚合游标和必需回填游标作为安全边界；截止时间不能晚于当前时间 24 小时前，主统计游标缺失或必需回填任务无安全游标时不能强删。预留迁移任务只有在库内已有未完成状态时才参与安全边界，避免后续统计、授权消耗、账号质量缓存无法从事实源补齐。
+- 手动清理 `usage_records` 同样按批次执行，但只强制保护最近 1 天；截止时间不能晚于当前时间 24 小时前。提交前先按 `created_at < cutoffAt` 做有限预检查，没有可清理记录或 worker 投递不可用时返回 `queued = false` 和原因；预检查通过后才返回 `queued = true` 并交给 worker 分批清理。
 - 统计聚合、系统指标采样、审计日志落库和运行日志索引队列只负责写入或聚合，不再在各自流程里顺手删除历史表数据。
 - 如果统计缓存损坏或统计口径升级，可以停服务后在发布包根目录运行 `node backend/dist/scripts/maintenance/rebuild-usage-stats.js`，从尚未清理的 `usage_records` 重新构建缓存。该命令会清空并重建当前 `backend/.env` 指向数据库里的统计缓存，执行前应确认数据库路径并先备份。
 
@@ -458,7 +458,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `compressed_size_bytes`
 - `content_type`
 - `content_encoding`
-- `compression`：当前固定支持 `none`、`gzip`
+- `compression`：当前固定支持 `none`、`gzip`；超过单次最大读取窗口的正文保持 `none`，便于后续按 offset 读取窗口。
 - `storage_key`
 - `ref_count`
 - `first_seen_at`
@@ -716,7 +716,7 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 - `groupAccountStatsRefreshIntervalSeconds = 60`：分组账户统计缓存默认刷新间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
 - `tableMonitorMaxTablesPerRun = 4`：表监控每轮每个库最多刷新多少张表级快照；设置为 `0` 时只采样文件级指标。后台表级采样只读取本轮表和索引大小，默认不做精确行数统计。
-- `usageRecordRetentionDays = 7`：使用记录默认保留 7 天；清理时必须等统计游标已处理。
+- `usageRecordRetentionDays = 7`：自动保留任务默认保留使用记录 7 天，并等待统计游标已处理；表监控手动清理只强制保留最近 1 天。
 - `usageStatsMinuteRetentionHours = 48`：分钟级统计缓存默认保留 48 小时。
 - `usageStatsHourlyRetentionDays = 60`：小时级统计缓存默认保留 60 天，覆盖 AI 性能最近 31 天小时趋势和边界回查。
 - `usageStatsDailyRetentionDays = 400`：日级统计缓存默认保留 400 天，覆盖一年内自然日查询和月表重建。

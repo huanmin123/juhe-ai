@@ -15,7 +15,6 @@ export interface AccountFormModel {
   oauthMode: 'manual' | 'refresh_token'
   callbackUrl: string
   accountExpiresAt?: Dayjs | null
-  status: AccountStatus
   concurrencyLimit: number
   priority: number
   proxyProfileId?: string

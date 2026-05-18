@@ -10,6 +10,7 @@ import {
   updateProxyTestState,
   type ProxyProfileTestConfig
 } from '../../storage/proxy.repository.js'
+import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { createProxyAgent } from '../openai-oauth/openai-oauth.service.js'
 
 export type ProxyTestItemStatus = 'passed' | 'warning' | 'failed'
@@ -56,6 +57,7 @@ interface ProxyOutboundInfo {
 type OutboundProbeParser = 'ip-api' | 'ipwhois' | 'ipsb' | 'ipinfo' | 'ipify' | 'httpbin'
 
 const probeTimeoutMs = 15000
+const maxProxyProbeResponseBytes = 512 * 1024
 export const proxyLatencyRefreshIntervalSeconds = 60
 export const proxyLatencyRefreshBatchSize = 20
 const outboundProbeTargets = [
@@ -238,6 +240,18 @@ function requestWithProxy(targetUrl: string, proxyUrl: string): Promise<HttpProb
     const url = new URL(targetUrl)
     const requestFn = url.protocol === 'http:' ? httpRequest : httpsRequest
     const startedAt = Date.now()
+    let settled = false
+    const finish = (input: { statusCode: number; headers: IncomingHttpHeaders; body: BoundedBufferCollector }) => {
+      if (settled) return
+      settled = true
+      resolve({
+        statusCode: input.statusCode,
+        headers: normalizeHeaders(input.headers),
+        bodyText: input.body.text(),
+        latencyMs: Date.now() - startedAt
+      })
+      request.destroy()
+    }
     const request = requestFn(url, {
       method: 'GET',
       headers: {
@@ -247,20 +261,20 @@ function requestWithProxy(targetUrl: string, proxyUrl: string): Promise<HttpProb
       agent: createProxyAgent(proxyUrl),
       timeout: probeTimeoutMs
     }, (response) => {
-      const chunks: Buffer[] = []
+      const body = new BoundedBufferCollector(maxProxyProbeResponseBytes)
       response.on('data', (chunk: Buffer) => {
-        chunks.push(chunk)
+        body.append(chunk)
+        if (body.truncated) {
+          finish({ statusCode: response.statusCode ?? 0, headers: response.headers, body })
+        }
       })
       response.on('end', () => {
-        resolve({
-          statusCode: response.statusCode ?? 0,
-          headers: normalizeHeaders(response.headers),
-          bodyText: Buffer.concat(chunks).toString('utf8'),
-          latencyMs: Date.now() - startedAt
-        })
+        finish({ statusCode: response.statusCode ?? 0, headers: response.headers, body })
       })
     })
-    request.on('error', reject)
+    request.on('error', (error) => {
+      if (!settled) reject(error)
+    })
     request.on('timeout', () => request.destroy(new Error('代理检测请求超时')))
     request.end()
   })

@@ -60,6 +60,75 @@ export function loadRequestQuotaCosts(database: DatabaseSync, input: {
   }
 }
 
+export type RequestQuotaCostInput = {
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+  now: Date
+  hourlyWindowHours?: number
+}
+
+export function loadRequestQuotaCostsBatch(database: DatabaseSync, inputs: RequestQuotaCostInput[]): Map<string, RequestQuotaCosts> {
+  const timezone = usageStatsTimezone()
+  const requests = uniqueRequestQuotaCostInputs(inputs, timezone)
+  const output = new Map<string, RequestQuotaCosts>()
+  for (const request of requests) {
+    output.set(request.key, { hourly: 0, daily: 0, weekly: 0, monthly: 0, total: 0 })
+  }
+  if (!requests.length) return output
+
+  const totalKeys = requestKeysByTuple(requests, (request) => [request.systemAccountId, request.scopeType, request.scopeId])
+  for (const row of loadCostRows(database, 'usage_stats_totals', 'total_cost', ['system_account_id', 'scope_type', 'scope_id'], [...totalKeys.keys()].map(splitTupleKey))) {
+    for (const key of totalKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.total = Number(row.total_cost ?? 0)
+    }
+  }
+  const dailyKeys = requestKeysByTuple(requests, (request) => [request.systemAccountId, request.scopeType, request.scopeId, request.statDate])
+  for (const row of loadCostRows(database, 'usage_stats_daily', 'total_cost', ['system_account_id', 'scope_type', 'scope_id', 'stat_date'], [...dailyKeys.keys()].map(splitTupleKey))) {
+    for (const key of dailyKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id, row.stat_date])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.daily = Number(row.total_cost ?? 0)
+    }
+  }
+  const weeklyKeys = requestKeysByTuple(requests, (request) => [request.systemAccountId, request.scopeType, request.scopeId, request.statWeek])
+  for (const row of loadCostRows(database, 'usage_stats_weekly', 'total_cost', ['system_account_id', 'scope_type', 'scope_id', 'stat_week'], [...weeklyKeys.keys()].map(splitTupleKey))) {
+    for (const key of weeklyKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id, row.stat_week])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.weekly = Number(row.total_cost ?? 0)
+    }
+  }
+  const monthlyKeys = requestKeysByTuple(requests, (request) => [request.systemAccountId, request.scopeType, request.scopeId, request.statMonth])
+  for (const row of loadCostRows(database, 'usage_stats_monthly', 'total_cost', ['system_account_id', 'scope_type', 'scope_id', 'stat_month'], [...monthlyKeys.keys()].map(splitTupleKey))) {
+    for (const key of monthlyKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id, row.stat_month])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.monthly = Number(row.total_cost ?? 0)
+    }
+  }
+  const hourlyRequests = requests.filter((request) => request.hourlyWindowHours !== undefined)
+  const hourlyKeys = requestKeysByTuple(hourlyRequests, (request) => [request.systemAccountId, request.scopeType, request.scopeId, request.hourlyWindowHours])
+  for (const row of loadCostRows(database, 'usage_quota_hourly_windows', 'total_cost', ['system_account_id', 'scope_type', 'scope_id', 'window_hours'], [...hourlyKeys.keys()].map(splitTupleKey))) {
+    for (const key of hourlyKeys.get(tupleKey([row.system_account_id, row.scope_type, row.scope_id, row.window_hours])) ?? []) {
+      const costs = output.get(key)
+      if (costs) costs.hourly = Number(row.total_cost ?? 0)
+    }
+  }
+  return output
+}
+
+export function requestQuotaCostKey(input: RequestQuotaCostInput): string {
+  const timezone = usageStatsTimezone()
+  return requestQuotaCostKeyFromParts(
+    input.systemAccountId,
+    input.scopeType,
+    input.scopeId,
+    dateKey(input.now, timezone),
+    weekKey(input.now, timezone),
+    monthKey(input.now, timezone),
+    input.hourlyWindowHours === undefined ? undefined : Math.max(1, Math.trunc(input.hourlyWindowHours))
+  )
+}
+
 export function isRequestQuotaExceeded(limits: RequestQuotaLimits, costs: RequestQuotaCosts): boolean {
   return Boolean(
     (limits.hourly?.enabled && costs.hourly >= limits.hourly.limit)
@@ -68,4 +137,103 @@ export function isRequestQuotaExceeded(limits: RequestQuotaLimits, costs: Reques
     || (limits.monthly?.enabled && costs.monthly >= limits.monthly.limit)
     || (limits.total?.enabled && costs.total >= limits.total.limit)
   )
+}
+
+type RequestQuotaCostLookup = {
+  key: string
+  systemAccountId: string
+  scopeType: string
+  scopeId: string
+  statDate: string
+  statWeek: string
+  statMonth: string
+  hourlyWindowHours?: number
+}
+
+type CostRow = {
+  system_account_id: string
+  scope_type: string
+  scope_id: string
+  stat_date?: string
+  stat_week?: string
+  stat_month?: string
+  window_hours?: number
+  total_cost?: number
+}
+
+function uniqueRequestQuotaCostInputs(inputs: RequestQuotaCostInput[], timezone: string): RequestQuotaCostLookup[] {
+  const byKey = new Map<string, RequestQuotaCostLookup>()
+  for (const input of inputs) {
+    const hourlyWindowHours = input.hourlyWindowHours === undefined ? undefined : Math.max(1, Math.trunc(input.hourlyWindowHours))
+    const statDate = dateKey(input.now, timezone)
+    const statWeek = weekKey(input.now, timezone)
+    const statMonth = monthKey(input.now, timezone)
+    const key = requestQuotaCostKeyFromParts(input.systemAccountId, input.scopeType, input.scopeId, statDate, statWeek, statMonth, hourlyWindowHours)
+    if (!byKey.has(key)) {
+      byKey.set(key, {
+        key,
+        systemAccountId: input.systemAccountId,
+        scopeType: input.scopeType,
+        scopeId: input.scopeId,
+        statDate,
+        statWeek,
+        statMonth,
+        hourlyWindowHours
+      })
+    }
+  }
+  return [...byKey.values()]
+}
+
+function requestQuotaCostKeyFromParts(systemAccountId: string, scopeType: string, scopeId: string, statDate?: string, statWeek?: string, statMonth?: string, hourlyWindowHours?: number): string {
+  return [systemAccountId, scopeType, scopeId, statDate ?? '', statWeek ?? '', statMonth ?? '', hourlyWindowHours ?? ''].join('\u0000')
+}
+
+function loadCostRows(database: DatabaseSync, tableName: string, costAlias: string, columns: string[], tuples: Array<Array<string | number | undefined>>): CostRow[] {
+  const normalizedTuples = uniqueTuples(tuples).filter((tuple) => tuple.every((value) => value !== undefined))
+  if (!normalizedTuples.length) return []
+  const rows: CostRow[] = []
+  const chunkSize = Math.max(1, Math.floor(800 / Math.max(1, columns.length)))
+  for (let index = 0; index < normalizedTuples.length; index += chunkSize) {
+    const chunk = normalizedTuples.slice(index, index + chunkSize)
+    const where = chunk
+      .map(() => `(${columns.map((column) => `${column} = ?`).join(' AND ')})`)
+      .join(' OR ')
+    const selectColumns = new Set(['system_account_id', 'scope_type', 'scope_id', ...columns])
+    rows.push(...database.prepare(`
+      SELECT ${[...selectColumns].join(', ')}, COALESCE(total_cost_usd, 0) AS ${costAlias}
+      FROM ${tableName}
+      WHERE ${where}
+    `).all(...chunk.flat()) as unknown as CostRow[])
+  }
+  return rows
+}
+
+function requestKeysByTuple(requests: RequestQuotaCostLookup[], toTuple: (request: RequestQuotaCostLookup) => Array<string | number | undefined>): Map<string, string[]> {
+  const output = new Map<string, string[]>()
+  for (const request of requests) {
+    const key = tupleKey(toTuple(request))
+    output.set(key, [...(output.get(key) ?? []), request.key])
+  }
+  return output
+}
+
+function tupleKey(tuple: Array<string | number | undefined>): string {
+  return tuple.map((value) => value ?? '').join('\u0000')
+}
+
+function splitTupleKey(key: string): Array<string | number> {
+  return key.split('\u0000')
+}
+
+function uniqueTuples(tuples: Array<Array<string | number | undefined>>): Array<Array<string | number | undefined>> {
+  const seen = new Set<string>()
+  const output: Array<Array<string | number | undefined>> = []
+  for (const tuple of tuples) {
+    const key = tupleKey(tuple)
+    if (seen.has(key)) continue
+    seen.add(key)
+    output.push(tuple)
+  }
+  return output
 }

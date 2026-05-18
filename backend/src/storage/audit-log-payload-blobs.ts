@@ -42,6 +42,7 @@ const auditBlobRoot = resolve(backendRoot, 'data', 'audit', 'blobs')
 const auditBlobCompressionThresholdBytes = 4 * 1024
 const auditPayloadDefaultReadLimitBytes = 256 * 1024
 const auditPayloadMaxReadLimitBytes = 1024 * 1024
+const auditBlobCompressionMaxBytes = auditPayloadMaxReadLimitBytes
 
 export function prepareAuditPayloadBlob(
   input: Buffer | undefined,
@@ -201,6 +202,9 @@ function compressPayloadBytes(
   contentEncoding?: string
 ): { bytes: Buffer; compression: StoredAuditPayloadCompression } {
   if (input.byteLength < auditBlobCompressionThresholdBytes || !isCompressiblePayload(contentType, contentEncoding)) {
+    return { bytes: input, compression: 'none' }
+  }
+  if (input.byteLength > auditBlobCompressionMaxBytes) {
     return { bytes: input, compression: 'none' }
   }
   try {

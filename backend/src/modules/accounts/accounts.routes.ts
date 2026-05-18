@@ -3,7 +3,7 @@ import { z } from 'zod'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, listAccountsPage, listGroups, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, listAccountsPage, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
@@ -167,7 +167,7 @@ accountsRouter.post('/', mutationGuard({
   }
   const groupId = typeof parsed.data.groupId === 'string' && parsed.data.groupId ? parsed.data.groupId : undefined
   if (groupId) {
-    const group = listGroups(requestAccess).find((item) => item.id === groupId)
+    const group = findGroupSummary(groupId, requestAccess)
     if (!group || group.providerCode !== providerCode) {
       res.status(400).json(badRequest('账户分组无效'))
       return
@@ -429,7 +429,7 @@ accountsRouter.patch('/:id', (req, res) => {
     return
   }
   if (hasGroupId) {
-    const group = listGroups(requestAccess).find((item) => item.id === body.groupId)
+    const group = findGroupSummary(String(body.groupId), requestAccess)
     if (!group || group.providerCode !== existingAccount.providerCode) {
       res.status(400).json(badRequest('账户分组无效'))
       return
@@ -586,7 +586,7 @@ accountsRouter.delete('/:id', (req, res) => {
     return
   }
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
-  const before = findAccountForTest(req.params.id, requestAccess) ?? listAccountsPage(requestAccess, { limit: 200 }).items.find((item) => item.id === req.params.id)
+  const before = findAccountSummary(req.params.id, requestAccess)
   const ownerSystemAccountId = resolveOperationOwner(before as unknown as Record<string, unknown> | undefined, requestAccess)
   try {
     runLoggedOperation(() => {

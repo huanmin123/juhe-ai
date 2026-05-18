@@ -354,7 +354,7 @@ const addMembers = submitAction('system_teams.add_members', async () => {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('添加成员失败')
+    message.error(extractApiErrorMessage(error, '添加成员失败'))
   } finally {
   }
 })
@@ -367,7 +367,7 @@ async function removeMember(memberId: string) {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('移除成员失败')
+    message.error(extractApiErrorMessage(error, '移除成员失败'))
   }
 }
 

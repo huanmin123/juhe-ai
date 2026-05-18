@@ -5,6 +5,7 @@ import { badRequest, ok } from '../../shared/http.js'
 import {
   createAnnouncement,
   deleteAnnouncement,
+  findAnnouncement,
   listAnnouncements,
   listPublicAnnouncements,
   markPublicAnnouncementsRead,
@@ -109,7 +110,7 @@ announcementsRouter.patch('/:id', requireAdmin, (req, res) => {
     res.status(400).json(badRequest('公告参数无效'))
     return
   }
-  const before = listAnnouncements().find((item) => item.id === req.params.id)
+  const before = findAnnouncement(req.params.id)
   if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
@@ -145,7 +146,7 @@ announcementsRouter.patch('/:id', requireAdmin, (req, res) => {
 })
 
 announcementsRouter.post('/:id/publish', requireAdmin, (req, res) => {
-  const before = listAnnouncements().find((item) => item.id === req.params.id)
+  const before = findAnnouncement(req.params.id)
   if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
@@ -179,7 +180,7 @@ announcementsRouter.post('/:id/publish', requireAdmin, (req, res) => {
 })
 
 announcementsRouter.post('/:id/unpublish', requireAdmin, (req, res) => {
-  const before = listAnnouncements().find((item) => item.id === req.params.id)
+  const before = findAnnouncement(req.params.id)
   if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return
@@ -212,7 +213,7 @@ announcementsRouter.post('/:id/unpublish', requireAdmin, (req, res) => {
 })
 
 announcementsRouter.delete('/:id', requireAdmin, (req, res) => {
-  const before = listAnnouncements().find((item) => item.id === req.params.id)
+  const before = findAnnouncement(req.params.id)
   if (!before) {
     res.status(404).json({ message: '公告不存在' })
     return

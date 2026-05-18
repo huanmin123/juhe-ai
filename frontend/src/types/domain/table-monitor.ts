@@ -46,11 +46,8 @@ export interface UsageRecordsCleanupResult {
   maxBatches: number
   hasMore: boolean
   queued?: boolean
+  eligibleRows?: number
   jobId?: string
   submittedAt?: string
-  safetyCursor?: {
-    createdAt: string
-    id: string
-  }
   blockedReason?: string
 }

@@ -10,7 +10,6 @@ export type AccountSavePayload = {
   name?: string
   type: AccountFormModel['type']
   credentials: Record<string, unknown>
-  status: AccountFormModel['status']
   concurrencyLimit: number
   priority: number
   proxyProfileId?: string
@@ -63,7 +62,6 @@ export function buildAccountSavePayload(input: {
     name: input.form.name.trim() || undefined,
     type: input.form.type,
     credentials: accountCredentials(input),
-    status: input.form.status,
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
     proxyProfileId: input.form.proxyProfileId,

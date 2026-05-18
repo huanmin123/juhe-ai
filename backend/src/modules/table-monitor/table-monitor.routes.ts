@@ -3,11 +3,12 @@ import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { inspectUsageRecordsCleanupBefore } from '../../storage/data-retention.repository.js'
 import { nowIso } from '../../storage/database.js'
 import { getTableStorageOverview, listTableStorageHistory, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
 import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
-import { enqueueRecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
+import { enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export const tableMonitorRouter = Router()
 
@@ -43,12 +44,9 @@ interface UsageRecordsCleanupResult {
   maxBatches: number
   hasMore: boolean
   queued: boolean
+  eligibleRows?: number
   jobId?: string
   submittedAt?: string
-  safetyCursor?: {
-    createdAt: string
-    id: string
-  }
   blockedReason?: string
 }
 
@@ -95,22 +93,44 @@ tableMonitorRouter.post('/usage-records/cleanup', mutationGuard({
 
   const batchSize = parsed.data.batchSize ?? defaultCleanupBatchSize
   const maxBatches = parsed.data.maxBatches ?? defaultCleanupMaxBatches
-  const job = enqueueRecordMaintenanceJob({
+  const preview = inspectUsageRecordsCleanupBefore(cutoff.iso, batchSize)
+  const baseResult: UsageRecordsCleanupResult = {
+    cutoffAt: cutoff.iso,
+    deletedRows: 0,
+    batches: 0,
+    batchSize,
+    maxBatches,
+    hasMore: preview.hasMore,
+    queued: false,
+    eligibleRows: preview.eligibleRows
+  }
+
+  if (preview.eligibleRows <= 0) {
+    try {
+      recordUsageRecordsCleanupOperation(baseResult, req)
+    } catch (error) {
+      logger.warn(errorLogFields(error, { event: 'table_monitor_usage_records_cleanup_operation_log_failed' }), '表监控使用记录清理操作日志写入失败')
+    }
+    res.json(ok(baseResult))
+    return
+  }
+
+  const enqueueResult = enqueueRecordMaintenanceJobWithResult({
     type: 'usage_records_cleanup',
     cutoffAt: cutoff.iso,
     batchSize,
     maxBatches
   })
   const result: UsageRecordsCleanupResult = {
-    cutoffAt: cutoff.iso,
-    deletedRows: 0,
-    batches: 0,
-    batchSize,
-    maxBatches,
-    hasMore: false,
-    queued: true,
-    jobId: job.id,
-    submittedAt: job.createdAt ?? nowIso()
+    ...baseResult,
+    queued: enqueueResult.queued,
+    jobId: enqueueResult.job.id,
+    submittedAt: enqueueResult.job.createdAt ?? nowIso(),
+    blockedReason: enqueueResult.queued
+      ? undefined
+      : enqueueResult.droppedReason === 'worker_ipc_unavailable'
+        ? '后台 worker 投递通道不可用，使用记录清理任务未提交；请确认后端主进程、DB service 和 background worker 都由同一个 supervisor 启动'
+        : '后台 worker 投递失败，使用记录清理任务未提交；请稍后重试或查看后台日志'
   }
 
   try {
@@ -135,22 +155,30 @@ function recordUsageRecordsCleanupOperation(result: UsageRecordsCleanupResult, r
     resourceType: 'usage_records',
     resourceId: 'usage_records',
     resourceName: 'usage_records',
-    summary: `提交使用记录清理任务：${result.jobId ?? result.cutoffAt}`,
+    summary: result.queued
+      ? `提交使用记录清理任务：${result.jobId ?? result.cutoffAt}`
+      : result.blockedReason
+        ? `使用记录清理未提交：${result.blockedReason}`
+        : '使用记录清理未提交：没有可清理记录',
     detailLevel: 'full',
     visibilityScope: 'admin_only',
     changes: [
       safeChange('cutoffAt', '清理截止时间', undefined, result.cutoffAt),
       safeChange('batchSize', '单批数量', undefined, result.batchSize),
       safeChange('maxBatches', '最大批次', undefined, result.maxBatches),
-      safeChange('jobId', '后台任务', undefined, result.jobId)
+      safeChange('eligibleRows', '首批可清理记录', undefined, result.eligibleRows),
+      safeChange('jobId', '后台任务', undefined, result.jobId),
+      safeChange('blockedReason', '未提交原因', undefined, result.blockedReason)
     ],
     metadata: {
       cutoffAt: result.cutoffAt,
       batchSize: result.batchSize,
       maxBatches: result.maxBatches,
+      eligibleRows: result.eligibleRows,
       queued: result.queued,
       jobId: result.jobId,
-      submittedAt: result.submittedAt
+      submittedAt: result.submittedAt,
+      blockedReason: result.blockedReason
     }
   }, req)
 }

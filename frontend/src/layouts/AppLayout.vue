@@ -83,6 +83,7 @@ import {
   type AppMenuMode
 } from '@/composables/useMenuMode'
 import { menuRoutes } from '@/router'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import type { AnnouncementSummary } from '@/types/domain'
 import AnnouncementModal from './AnnouncementModal.vue'
 import AppHeader from './AppHeader.vue'
@@ -361,7 +362,7 @@ async function handleChangePassword() {
     passwordModalOpen.value = false
   } catch (error) {
     console.error(error)
-    message.error('修改密码失败')
+    message.error(extractApiErrorMessage(error, '修改密码失败'))
   } finally {
     passwordSaving.value = false
   }

@@ -433,7 +433,7 @@ async function revokeManualSource(item: ResourceAuthorizationSummary) {
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('收回个人授权失败')
+    message.error(extractApiErrorMessage(error, '收回个人授权失败'))
   }
 }
 
@@ -448,7 +448,7 @@ async function revokeTeamSource(item: ResourceAuthorizationSummary, sourceTeamId
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('收回团队授权失败')
+    message.error(extractApiErrorMessage(error, '收回团队授权失败'))
   }
 }
 

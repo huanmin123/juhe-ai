@@ -82,7 +82,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
@@ -90,7 +90,7 @@ import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import { disposeChart, ensureChart, resizeEcharts, type ECharts } from '@/composables/useEcharts'
+import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
 import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview, SystemAccountSummary } from '@/types/domain'
@@ -133,9 +133,17 @@ const averageFirstTokenChart = shallowRef<ECharts>()
 const maxFirstTokenChart = shallowRef<ECharts>()
 const averageDurationChart = shallowRef<ECharts>()
 const maxDurationChart = shallowRef<ECharts>()
-const pageActive = ref(false)
-const chartRenderPending = ref(false)
-let resizeListenerAttached = false
+const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
+  renderCharts: renderPerformanceCharts,
+  resizeCharts,
+  disposeCharts,
+  onMounted: () => {
+    void loadAccounts()
+    void loadPerformance()
+  },
+  onDeactivate: clearAccountSearchTimer,
+  onBeforeUnmount: clearAccountSearchTimer
+})
 
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
@@ -427,22 +435,10 @@ function toggleAccountFilter(id: string) {
   renderCharts()
 }
 
-function renderCharts() {
-  if (!pageActive.value) {
-    chartRenderPending.value = true
-    return
+function renderPerformanceCharts() {
+  for (const chart of performanceCharts.value) {
+    renderPerformanceChart(chart.metric, chart.chartRef, chart.hasData)
   }
-  void nextTick(() => {
-    if (!pageActive.value) {
-      chartRenderPending.value = true
-      return
-    }
-    chartRenderPending.value = false
-    for (const chart of performanceCharts.value) {
-      renderPerformanceChart(chart.metric, chart.chartRef, chart.hasData)
-    }
-    resizeCharts()
-  })
 }
 
 function renderPerformanceChart(metric: AiPerformanceMetric, chartRef: ShallowRef<ECharts | undefined>, hasData: boolean) {
@@ -456,20 +452,13 @@ function renderPerformanceChart(metric: AiPerformanceMetric, chartRef: ShallowRe
 }
 
 function resizeCharts() {
-  if (!pageActive.value) return
   resizeEcharts(performanceCharts.value.map((item) => item.chartRef.value))
 }
 
-function addResizeListener() {
-  if (resizeListenerAttached || typeof window === 'undefined') return
-  resizeListenerAttached = true
-  window.addEventListener('resize', resizeCharts)
-}
-
-function removeResizeListener() {
-  if (!resizeListenerAttached || typeof window === 'undefined') return
-  resizeListenerAttached = false
-  window.removeEventListener('resize', resizeCharts)
+function disposeCharts() {
+  for (const chart of performanceCharts.value) {
+    disposeChart(chart.chartRef)
+  }
 }
 
 function clearAccountSearchTimer() {
@@ -557,41 +546,6 @@ function pruneAccountState() {
   activeAccountIds.value = activeAccountIds.value.filter((id) => currentIds.has(id))
 }
 
-onMounted(() => {
-  pageActive.value = true
-  addResizeListener()
-  void loadAccounts()
-  void loadPerformance()
-})
-
-onActivated(() => {
-  pageActive.value = true
-  addResizeListener()
-  if (chartRenderPending.value) {
-    renderCharts()
-    return
-  }
-  void nextTick(resizeCharts)
-})
-
-onDeactivated(() => {
-  pageActive.value = false
-  chartRenderPending.value = true
-  removeResizeListener()
-  clearAccountSearchTimer()
-  for (const chart of performanceCharts.value) {
-    disposeChart(chart.chartRef)
-  }
-})
-
-onBeforeUnmount(() => {
-  pageActive.value = false
-  removeResizeListener()
-  clearAccountSearchTimer()
-  for (const chart of performanceCharts.value) {
-    disposeChart(chart.chartRef)
-  }
-})
 </script>
 
 <style scoped>

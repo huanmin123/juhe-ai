@@ -94,6 +94,11 @@ export function listAnnouncements(): AnnouncementSummary[] {
   return announcementSummaries(rows, true)
 }
 
+export function findAnnouncement(id: string): AnnouncementSummary | undefined {
+  const row = getAnnouncementRow(id)
+  return row ? announcementSummaries([row], true)[0] : undefined
+}
+
 export function createAnnouncement(input: AnnouncementInput, actorSystemAccountId: string): AnnouncementSummary {
   const now = nowIso()
   const status = normalizeStatus(input.status, 'draft')

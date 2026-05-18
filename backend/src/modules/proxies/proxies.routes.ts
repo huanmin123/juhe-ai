@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createProxy, deleteProxy, listProxies, listProxyOptions, ProxyInUseError, updateProxy, updateProxyTestState } from '../../storage/repositories.js'
+import { createProxy, deleteProxy, findProxy, listProxies, listProxyOptions, ProxyInUseError, updateProxy, updateProxyTestState } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
@@ -85,7 +85,7 @@ proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
   try {
     const body = req.body as Record<string, unknown>
     const proxy = runLoggedOperation(() => {
-      const before = listProxies().find((item) => item.id === req.params.id)
+      const before = findProxy(req.params.id)
       const proxy = updateProxy(req.params.id, body)
       if (!proxy) {
         throw new Error('代理不存在')
@@ -133,7 +133,7 @@ proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
 
 proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
   try {
-    const before = listProxies().find((item) => item.id === req.params.id)
+    const before = findProxy(req.params.id)
     const report = await testProxyById(req.params.id, { persist: false })
     if (!report) {
       res.status(404).json({ message: '代理不存在' })
@@ -187,7 +187,7 @@ proxiesRouter.post('/:id/test', requireAdmin, async (req, res) => {
 proxiesRouter.delete('/:id', requireAdmin, (req, res) => {
   try {
     runLoggedOperation(() => {
-      const before = listProxies().find((item) => item.id === req.params.id)
+      const before = findProxy(req.params.id)
       if (!deleteProxy(req.params.id)) {
         throw new Error('代理不存在')
       }

@@ -3,6 +3,7 @@ import type { IncomingHttpHeaders } from 'node:http'
 import type { Request, Response } from 'express'
 
 import type { AccountSummary, AccountTestResult } from '../../domain/types.js'
+import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
@@ -21,6 +22,7 @@ const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'
 const gatewayModelsPath = '/v1/models'
+const maxAccountTestResponseBytes = 1024 * 1024
 
 export async function testOpenAIAccount(
   account: AccountSummary,
@@ -88,6 +90,7 @@ export async function testOpenAIAccount(
     const streamFailureMessage = parseOpenAIStreamFailureMessage(responseText)
     const outputText = extractOpenAIResponseOutputText(responseText)
     const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
+    const responseTruncated = response.bodyTruncated()
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
     return {
       accountId: account.id,
@@ -96,13 +99,16 @@ export async function testOpenAIAccount(
       type: account.type,
       success,
       statusCode: response.statusCode,
-      message: success ? 'OpenAI Responses 测试通过' : proxyFailureMessage || streamFailureMessage || upstreamMessage || `API 返回 HTTP ${response.statusCode}`,
+      message: success
+        ? responseTruncated ? 'OpenAI Responses 测试通过（响应体过大，已截断展示）' : 'OpenAI Responses 测试通过'
+        : proxyFailureMessage || streamFailureMessage || upstreamMessage || `API 返回 HTTP ${response.statusCode}`,
       model: testRequest.model,
       requestUrl,
       requestBody,
       responseHeaders: response.headersObject(),
       responseBody: parseJsonBody(responseText),
       responseText,
+      responseTruncated,
       outputText,
       modelsUrl,
       proxyUrl: accountTestProxyMarker(account, finalAccount),
@@ -244,12 +250,12 @@ class MemoryGatewayRequest extends EventEmitter {
   }
 }
 
-class MemoryGatewayResponse extends EventEmitter {
+export class MemoryGatewayResponse extends EventEmitter {
   statusCode = 200
   writableEnded = false
   destroyed = false
   private readonly headers = new Map<string, string | string[]>()
-  private readonly chunks: Buffer[] = []
+  private readonly body = new BoundedBufferCollector(maxAccountTestResponseBytes)
   private readonly streamInspector = new OpenAIStreamInspector()
   private firstOutputMs: number | undefined
 
@@ -284,18 +290,18 @@ class MemoryGatewayResponse extends EventEmitter {
 
   send(value?: Buffer | string | object): this {
     if (Buffer.isBuffer(value)) {
-      this.chunks.push(value)
+      this.body.append(value)
     } else if (typeof value === 'string') {
-      this.chunks.push(Buffer.from(value, 'utf8'))
+      this.body.append(value)
     } else if (value !== undefined) {
-      this.chunks.push(Buffer.from(JSON.stringify(value), 'utf8'))
+      this.body.append(JSON.stringify(value))
     }
     return this.end()
   }
 
   write(value: Buffer | string | Uint8Array): boolean {
     const buffer = Buffer.isBuffer(value) ? value : Buffer.from(value)
-    this.chunks.push(buffer)
+    this.body.append(buffer)
     const inspection = this.streamInspector.pushChunk(buffer)
     if (this.firstOutputMs === undefined && inspection.outputReceived) {
       this.firstOutputMs = Date.now() - this.startedAt
@@ -316,7 +322,11 @@ class MemoryGatewayResponse extends EventEmitter {
   }
 
   bodyText(): string {
-    return Buffer.concat(this.chunks).toString('utf8')
+    return this.body.text({ includeTruncationMarker: true })
+  }
+
+  bodyTruncated(): boolean {
+    return this.body.truncated
   }
 
   headersObject(): Record<string, string | string[]> {

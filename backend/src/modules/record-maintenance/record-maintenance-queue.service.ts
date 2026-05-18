@@ -1,9 +1,9 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { cleanupUsageRecordsBeforeWithResult } from '../../storage/data-retention.repository.js'
 import { newId, nowIso } from '../../storage/database.js'
 import {
   cleanupDeletedApiKeyRelatedRecordData,
-  cleanupProcessedUsageRecordsBeforeWithResult,
   upsertAccountUsageSnapshot
 } from '../../storage/repositories.js'
 import { sendRecordMaintenanceJobsToWorker } from '../background/background-ipc.js'
@@ -39,6 +39,13 @@ const recordMaintenanceFlushIntervalMs = 100
 const recordMaintenanceRetryDelayMs = 1000
 const recordMaintenanceBatchSize = 50
 const recordMaintenanceMaxPending = 5000
+const minimumUsageRecordCleanupAgeMs = 24 * 60 * 60 * 1000
+
+export interface RecordMaintenanceEnqueueResult {
+  job: RecordMaintenanceJob
+  queued: boolean
+  droppedReason?: string
+}
 
 let pendingJobs: RecordMaintenanceJob[] = []
 let flushTimer: NodeJS.Timeout | undefined
@@ -56,19 +63,36 @@ interface RecordMaintenanceFlushOptions {
 }
 
 export function enqueueRecordMaintenanceJob(input: RecordMaintenanceJob): RecordMaintenanceJob {
+  return enqueueRecordMaintenanceJobWithResult(input).job
+}
+
+export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJob): RecordMaintenanceEnqueueResult {
   const job = normalizeRecordMaintenanceJob(input)
   if (runtimeConfig.processRole === 'server') {
-    sendRecordMaintenanceJobsToWorker([job])
-    return job
+    return {
+      job,
+      queued: sendRecordMaintenanceJobsToWorker([job])
+    }
   }
 
   if (runtimeConfig.processRole === 'db-service') {
     if (process.send) {
-      process.send({
-        type: 'background_worker_record_maintenance',
-        items: [job]
-      })
-      return job
+      try {
+        process.send({
+          type: 'background_worker_record_maintenance',
+          items: [job]
+        })
+        return { job, queued: true }
+      } catch (error) {
+        droppedDispatchCount += 1
+        logger.warn(errorLogFields(error, {
+          event: 'record_maintenance_queue_dispatch_failed',
+          jobType: job.type,
+          jobId: job.id,
+          droppedDispatchCount
+        }), 'DB service 记录库维护任务投递失败')
+        return { job, queued: false, droppedReason: 'worker_dispatch_failed' }
+      }
     }
     droppedDispatchCount += 1
     logger.warn({
@@ -77,11 +101,11 @@ export function enqueueRecordMaintenanceJob(input: RecordMaintenanceJob): Record
       jobId: job.id,
       droppedDispatchCount
     }, 'DB service 无父进程 IPC，记录库维护任务已跳过投递')
-    return job
+    return { job, queued: false, droppedReason: 'worker_ipc_unavailable' }
   }
 
   enqueueRecordMaintenanceJobLocal(job)
-  return job
+  return { job, queued: true }
 }
 
 export function enqueueRecordMaintenanceJobsLocal(inputs: RecordMaintenanceJob[]): void {
@@ -249,31 +273,38 @@ function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number;
   batchSize: number
   maxBatches: number
   hasMore: boolean
-  safetyCursor?: {
-    createdAt: string
-    id: string
-  }
   blockedReason?: string
 } {
   let deletedRows = 0
   let batches = 0
   let hasMore = false
-  let safetyCursor: { createdAt: string; id: string } | undefined
   let blockedReason: string | undefined
+  const cutoffTime = Date.parse(input.cutoffAt)
+  if (Number.isNaN(cutoffTime)) {
+    return {
+      cutoffAt: input.cutoffAt,
+      deletedRows: 0,
+      batches: 0,
+      batchSize: input.batchSize,
+      maxBatches: input.maxBatches,
+      hasMore: false,
+      blockedReason: '使用记录清理截止时间无效'
+    }
+  }
+  if (cutoffTime > Date.now() - minimumUsageRecordCleanupAgeMs) {
+    return {
+      cutoffAt: input.cutoffAt,
+      deletedRows: 0,
+      batches: 0,
+      batchSize: input.batchSize,
+      maxBatches: input.maxBatches,
+      hasMore: false,
+      blockedReason: '不能清理最近 1 天内的使用记录'
+    }
+  }
 
   for (let index = 0; index < input.maxBatches; index += 1) {
-    const batch = cleanupProcessedUsageRecordsBeforeWithResult(input.cutoffAt, input.batchSize)
-    if (batch.safetyCursorCreatedAt && batch.safetyCursorId) {
-      safetyCursor = {
-        createdAt: batch.safetyCursorCreatedAt,
-        id: batch.safetyCursorId
-      }
-    }
-    if (batch.blockedReason) {
-      blockedReason = batch.blockedReason
-      hasMore = false
-      break
-    }
+    const batch = cleanupUsageRecordsBeforeWithResult(input.cutoffAt, input.batchSize)
     deletedRows += batch.deletedRows
     hasMore = batch.hasMore
     if (batch.deletedRows > 0) {
@@ -291,7 +322,6 @@ function cleanupUsageRecordsBefore(input: { cutoffAt: string; batchSize: number;
     batchSize: input.batchSize,
     maxBatches: input.maxBatches,
     hasMore,
-    safetyCursor,
     blockedReason
   }
 }

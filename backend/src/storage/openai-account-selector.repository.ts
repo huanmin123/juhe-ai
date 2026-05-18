@@ -3,7 +3,8 @@ import { buildSystemAccountScopeClause, currentSystemAccountId } from './access-
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile } from './proxy.repository.js'
-import { activeResourceAuthorization, groupSystemAccountId } from './resource-authorization-helpers.js'
+import { activeResourceAuthorization, activeResourceAuthorizationsByResourceIds, groupSystemAccountId } from './resource-authorization-helpers.js'
+import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
 
@@ -68,6 +69,21 @@ interface GroupAccountRow {
   local_last_error_message?: string | null
   local_super_priority_enabled?: number | null
   local_fallback_enabled?: number | null
+}
+
+type OpenAIGroupAccountSelectionRow = GroupAccountRow & OpenAIAccountRow
+
+type OpenAIAccountAccess = {
+  accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'
+  accountAuthorizationId?: string
+  accountAuthorizationExpiresAt?: string
+  accountAuthorizationSourceType?: ResourceAuthorizationSourceType
+  accountAuthorizationSourceTeamId?: string
+}
+
+type OpenAIAccountSecretOptions = {
+  enforceSchedulableAuthorization?: boolean
+  accountAuthorizationsByResourceId?: Map<string, ResourceAuthorizationRow>
 }
 
 export function selectOpenAIAccountForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret | undefined {
@@ -172,10 +188,23 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.account_authorization_id,
         group_accounts.local_status, group_accounts.local_cooldown_until, group_accounts.local_last_error_message,
-        group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled
+        group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
+        accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
+        accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
+        accounts.account_expires_at,
+        NULL AS quality_score,
+        NULL AS quality_state,
+        NULL AS quality_ewma_first_token_ms
       FROM group_accounts
       INNER JOIN accounts ON accounts.id = group_accounts.account_id
-      WHERE group_accounts.group_id = ? AND group_accounts.enabled = 1
+      WHERE group_accounts.group_id = ?
+        AND group_accounts.enabled = 1
+        AND accounts.provider_code = 'openai'
+        AND accounts.type IN ('api_key', 'oauth')
+        AND accounts.schedulable = 1
+        AND (accounts.account_expires_at IS NULL OR accounts.account_expires_at > ?)
+        AND accounts.status = 'active'
+        AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)
       ORDER BY
         CASE WHEN group_accounts.account_authorization_id IS NOT NULL THEN group_accounts.local_fallback_enabled ELSE accounts.fallback_enabled END ASC,
         CASE WHEN group_accounts.account_authorization_id IS NOT NULL THEN group_accounts.local_super_priority_enabled ELSE accounts.super_priority_enabled END DESC,
@@ -184,61 +213,22 @@ export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = cu
         group_accounts.created_at ASC,
         group_accounts.account_id ASC
     `)
-    .all(groupId) as unknown as GroupAccountRow[]
+    .all(groupId, now, now) as unknown as OpenAIGroupAccountSelectionRow[]
   const qualityByAccountId = loadFreshAccountQualityRows(groupAccountRows.map((row) => row.account_id), qualityFreshAfter)
+  const accountAuthorizationsByResourceId = loadAccountAuthorizationsForSelection(groupAccountRows, groupAccess, systemAccountId)
 
   const accounts: OpenAIAccountSecret[] = []
-  for (const groupAccount of groupAccountRows) {
-    const row = database
-      .prepare(`
-        SELECT accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
-          accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
-          accounts.account_expires_at,
-          NULL AS quality_score,
-          NULL AS quality_state,
-          NULL AS quality_ewma_first_token_ms
-        FROM accounts
-        WHERE accounts.id = ?
-          AND accounts.provider_code = 'openai'
-          AND type IN ('api_key', 'oauth')
-          AND schedulable = 1
-          AND (account_expires_at IS NULL OR account_expires_at > ?)
-          AND status = 'active'
-          AND (cooldown_until IS NULL OR cooldown_until <= ?)
-      `)
-      .get(groupAccount.account_id, now, now) as unknown as OpenAIAccountRow | undefined
-    if (!row) {
-      continue
-    }
+  for (const row of groupAccountRows) {
     const quality = qualityByAccountId.get(row.id)
     if (quality) {
       row.quality_score = quality.quality_score
       row.quality_state = quality.quality_state
       row.quality_ewma_first_token_ms = quality.quality_ewma_first_token_ms
     }
-    const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
-    const apiKey = row.type === 'oauth'
-      ? typeof credentials.access_token === 'string' ? credentials.access_token : ''
-      : typeof credentials.api_key === 'string' ? credentials.api_key : ''
-    if (!apiKey) {
+    if (!isGroupAccountLocallyAvailable(row, now)) {
       continue
     }
-    if (!isGroupAccountLocallyAvailable(groupAccount, now)) {
-      continue
-    }
-    const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, groupAccount.account_authorization_id ?? undefined)
-    if (!accountAccess) {
-      continue
-    }
-    if (!canScheduleAuthorizedAccount({
-      accountId: row.id,
-      accountAccessType: accountAccess.accountAccessType,
-      authorizationId: accountAccess.accountAuthorizationId,
-      systemAccountId
-    })) {
-      continue
-    }
-    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount)
+    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByResourceId })
     if (account) {
       accounts.push(account)
     }
@@ -276,7 +266,7 @@ function openAIAccountSecretFromRow(
   groupAccess: GroupUsageAccessMetadata,
   systemAccountId: string,
   groupAccount?: GroupAccountRow,
-  options: { enforceSchedulableAuthorization?: boolean } = {}
+  options: OpenAIAccountSecretOptions = {}
 ): OpenAIAccountSecret | undefined {
   const credentials = decryptJson<Record<string, unknown>>(row.credentials_encrypted)
   const apiKey = row.type === 'oauth'
@@ -285,7 +275,7 @@ function openAIAccountSecretFromRow(
   if (!apiKey) {
     return undefined
   }
-  const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, groupAccount?.account_authorization_id ?? undefined)
+  const accountAccess = resolveOpenAIAccountAccess(row.id, row.system_account_id, systemAccountId, groupAccess, groupAccount?.account_authorization_id ?? undefined, options.accountAuthorizationsByResourceId)
   if (!accountAccess) {
     return undefined
   }
@@ -293,7 +283,8 @@ function openAIAccountSecretFromRow(
     accountId: row.id,
     accountAccessType: accountAccess.accountAccessType,
     authorizationId: accountAccess.accountAuthorizationId,
-    systemAccountId
+    systemAccountId,
+    accountAuthorizationsByResourceId: options.accountAuthorizationsByResourceId
   })) {
     return undefined
   }
@@ -423,6 +414,19 @@ function loadFreshAccountQualityRows(accountIds: string[], freshAfter: string): 
   return new Map(rows.map((row) => [row.account_id, row]))
 }
 
+function loadAccountAuthorizationsForSelection(
+  rows: OpenAIGroupAccountSelectionRow[],
+  groupAccess: GroupUsageAccessMetadata,
+  systemAccountId: string
+): Map<string, ResourceAuthorizationRow> | undefined {
+  if (groupAccess.groupAccessType === 'authorized') return undefined
+  const authorizedAccountIds = rows
+    .filter((row) => row.system_account_id !== systemAccountId)
+    .map((row) => row.id)
+  if (!authorizedAccountIds.length) return undefined
+  return activeResourceAuthorizationsByResourceIds('account', authorizedAccountIds, systemAccountId)
+}
+
 function resolveOpenAIAccountProxyUrl(proxyProfileId: string | null): { proxyUrl?: string; unavailable?: boolean; errorMessage?: string } {
   try {
     return { proxyUrl: resolveProxyUrlForProfile(proxyProfileId) }
@@ -439,8 +443,9 @@ function resolveOpenAIAccountAccess(
   accountOwnerSystemAccountId: string,
   callerSystemAccountId: string,
   groupAccess: GroupUsageAccessMetadata,
-  boundAccountAuthorizationId?: string
-): { accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'; accountAuthorizationId?: string; accountAuthorizationExpiresAt?: string; accountAuthorizationSourceType?: ResourceAuthorizationSourceType; accountAuthorizationSourceTeamId?: string } | undefined {
+  boundAccountAuthorizationId?: string,
+  accountAuthorizationsByResourceId?: Map<string, ResourceAuthorizationRow>
+): OpenAIAccountAccess | undefined {
   if (accountOwnerSystemAccountId === callerSystemAccountId) {
     return { accountAccessType: 'owner' }
   }
@@ -449,7 +454,9 @@ function resolveOpenAIAccountAccess(
       ? { accountAccessType: 'group_authorized' }
       : undefined
   }
-  const authorization = activeResourceAuthorization('account', accountId, callerSystemAccountId)
+  const authorization = accountAuthorizationsByResourceId
+    ? accountAuthorizationsByResourceId.get(accountId)
+    : activeResourceAuthorization('account', accountId, callerSystemAccountId)
   if (boundAccountAuthorizationId && authorization?.id !== boundAccountAuthorizationId) {
     return undefined
   }
@@ -469,6 +476,7 @@ function canScheduleAuthorizedAccount(input: {
   accountAccessType: 'owner' | 'account_authorized' | 'group_authorized'
   authorizationId?: string
   systemAccountId: string
+  accountAuthorizationsByResourceId?: Map<string, ResourceAuthorizationRow>
 }): boolean {
   if (input.accountAccessType === 'owner' || input.accountAccessType === 'group_authorized') {
     return true
@@ -476,7 +484,9 @@ function canScheduleAuthorizedAccount(input: {
   if (!input.authorizationId) {
     return false
   }
-  const authorization = activeResourceAuthorization('account', input.accountId, input.systemAccountId)
+  const authorization = input.accountAuthorizationsByResourceId
+    ? input.accountAuthorizationsByResourceId.get(input.accountId)
+    : activeResourceAuthorization('account', input.accountId, input.systemAccountId)
   return authorization?.id === input.authorizationId
 }
 

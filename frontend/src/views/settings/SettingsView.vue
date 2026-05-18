@@ -129,6 +129,7 @@ import { onMounted, reactive, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { applyAppBrand } from '@/composables/useAppBrand'
+import { extractApiErrorMessage } from '@/shared/apiError'
 import {
   defaultGlobalSettings,
   defaultSystemSettings,
@@ -167,7 +168,7 @@ async function saveGlobalSettings() {
     message.success('全局配置已保存')
   } catch (error) {
     console.error(error)
-    message.error('保存全局配置失败')
+    message.error(extractApiErrorMessage(error, '保存全局配置失败'))
   } finally {
     savingGlobal.value = false
   }
@@ -181,7 +182,7 @@ async function saveSystemSettings() {
     message.success('系统设置已保存')
   } catch (error) {
     console.error(error)
-    message.error('保存系统设置失败')
+    message.error(extractApiErrorMessage(error, '保存系统设置失败'))
   } finally {
     savingSystem.value = false
   }

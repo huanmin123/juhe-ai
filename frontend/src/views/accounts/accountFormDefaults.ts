@@ -21,7 +21,6 @@ export function defaultAccountForm(
     oauthMode: 'manual',
     callbackUrl: '',
     accountExpiresAt: undefined,
-    status: 'active',
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
     proxyProfileId: undefined,

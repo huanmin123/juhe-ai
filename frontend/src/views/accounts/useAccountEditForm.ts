@@ -28,11 +28,10 @@ import {
   accountTypeText,
   accountTypeTitle as buildAccountTypeTitle,
   asString,
-  isTemporaryAccountStatus,
   parseDatePickerValue
 } from './accountFormatters'
 import type { AccountFormModel } from './accountFormTypes'
-import { FALLBACK_PROVIDER, statusOptions } from './accountOptions'
+import { FALLBACK_PROVIDER } from './accountOptions'
 import { authUrl, buildOAuthCreatePayload } from './accountOAuthPayload'
 import { buildAccountSavePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm } from './accountSavePayload'
 
@@ -61,19 +60,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const editingId = ref<string>()
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
-
-  const currentEditingAccount = computed(() => editingId.value ? options.accounts.value.find((account) => account.id === editingId.value) : undefined)
-
-  const statusEditOptions = computed(() => {
-    const options = statusOptions.filter((item) => item.value !== 'all')
-    if (currentEditingAccount.value?.status === 'error') {
-      return options.filter((item) => item.value === 'error')
-    }
-    if (currentEditingAccount.value && isTemporaryAccountStatus(currentEditingAccount.value)) {
-      return options.filter((item) => item.value !== 'active')
-    }
-    return options
-  })
 
   const targetSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return undefined
@@ -185,7 +171,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       providerCode: account.providerCode,
       name: account.name,
       type: account.type,
-      status: account.status,
       concurrencyLimit: account.concurrencyLimit,
       priority: account.priority,
       proxyProfileId: account.proxyProfileId,
@@ -255,7 +240,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       message.success('授权链接已生成')
     } catch (error) {
       console.error(error)
-      message.error('生成授权链接失败')
+      message.error(options.extractApiErrorMessage(error, '生成授权链接失败'))
     } finally {
       authLoading.value = false
     }
@@ -326,7 +311,6 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     selectedAccountTypeTitle,
     selectedProvider,
     selectProvider,
-    statusEditOptions,
     targetSystemAccountLabel
   }
 }

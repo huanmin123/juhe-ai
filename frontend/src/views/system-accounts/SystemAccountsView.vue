@@ -247,7 +247,7 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
     await loadData()
   } catch (error) {
     console.error(error)
-    message.error('重置密码失败')
+    message.error(extractApiErrorMessage(error, '重置密码失败'))
   } finally {
   }
 })

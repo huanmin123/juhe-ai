@@ -216,7 +216,8 @@ export class AuditCaptureContext {
     activeAuditCaptureCount = Math.max(0, activeAuditCaptureCount - 1)
 
     const endedAtMs = Date.now()
-    const outcome = this.clientAborted
+    const clientAborted = this.clientAborted && !input.success
+    const outcome = clientAborted
       ? 'client_aborted'
       : input.success && this.hadFailedAttempt
         ? 'success_after_retry'
@@ -256,9 +257,9 @@ export class AuditCaptureContext {
       auditOutcome: outcome,
       success,
       finalStatusCode: input.statusCode,
-      errorPhase: this.clientAborted ? input.errorPhase ?? 'client' : input.errorPhase,
+      errorPhase: clientAborted ? input.errorPhase ?? 'client' : input.errorPhase,
       errorCode: input.errorCode,
-      errorMessage: this.clientAborted ? input.errorMessage ?? 'Client aborted request' : input.errorMessage,
+      errorMessage: clientAborted ? input.errorMessage ?? 'Client aborted request' : input.errorMessage,
       sampleBucket,
       sampleReason: outcome === 'success' ? `success_sample_${this.successSampleRate}` : 'full_capture',
       captureStatus: this.overflowed ? 'overflow' : 'complete',

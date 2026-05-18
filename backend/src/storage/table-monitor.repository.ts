@@ -126,7 +126,7 @@ interface LatestDatabaseSnapshotRow {
 export const tableMonitorSampleRetentionDays = 30
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
-  const tableScanMode = options.tableScanMode ?? 'full'
+  const tableScanMode = options.tableScanMode ?? 'cursor'
   const rowCountMode = options.rowCountMode ?? 'none'
   const recordDatabase = getRecordDatabase()
   const targets: MonitoredDatabaseTarget[] = [
