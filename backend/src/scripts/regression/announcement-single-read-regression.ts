@@ -36,17 +36,29 @@ try {
       targetId = announcement.id
     }
   }
+  const largeContent = Array.from({ length: 80 }, (_, index) => `公告长内容-${index}`).join('\n')
+  const largeAnnouncement = repositories.createAnnouncement({
+    title: '公告列表预览回归',
+    content: largeContent,
+    level: 'info',
+    status: 'draft'
+  }, actor)
 
   databaseModule.getDatabase()
     .prepare("UPDATE announcements SET created_at = '2000-01-01T00:00:00.000Z', updated_at = '2000-01-01T00:00:00.000Z' WHERE id = ?")
     .run(targetId)
 
-  const firstPageLikeList = repositories.listAnnouncements().slice(0, 200)
+  const announcementList = repositories.listAnnouncements()
+  const firstPageLikeList = announcementList.slice(0, 200)
   assert.equal(firstPageLikeList.some((announcement) => announcement.id === targetId), false, '最早创建的第 250 条外公告不应出现在前 200 条列表窗口里')
+  const largeListItem = announcementList.find((announcement) => announcement.id === largeAnnouncement.id)
+  assert(largeListItem, '列表应返回公告摘要')
+  assert(largeListItem.content.endsWith('...') && largeListItem.content.length < largeContent.length, '公告列表应只返回内容预览')
 
   const target = repositories.findAnnouncement(targetId)
   assert.equal(target?.id, targetId, '按 ID 单条读取应能找到前 200 条之外的公告')
   assert.equal(target?.title, '公告单条读取回归-000', '按 ID 单条读取应返回完整公告摘要')
+  assert.equal(repositories.findAnnouncement(largeAnnouncement.id)?.content, largeContent, '公告详情应返回完整内容')
 
   const updated = repositories.updateAnnouncement(targetId, { content: '已通过单条读取更新' }, actor)
   assert.equal(updated?.content, '已通过单条读取更新', '更新公告应通过单条读取返回目标公告摘要')

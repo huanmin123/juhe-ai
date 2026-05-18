@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountUsageStatsRange, AccountUsageSummary, ResourceAuthorizationSummary } from '../domain/types.js'
+import type { AccountUsageStatsRange, AccountUsageSummary, ResourceAuthorizationListResult, ResourceAuthorizationSummary } from '../domain/types.js'
 import { loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase } from './database.js'
@@ -18,14 +18,33 @@ import { usageScope } from './resource-authorization-helpers.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountsByIds, loadSystemTeamNameMap } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
+import { compatiblePagedTotal, takePageRows } from './query-utils.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
 const RUNTIME_AUTHORIZATION_BATCH_SIZE = 200
+const defaultResourceAuthorizationPageSize = 50
+const maxResourceAuthorizationPageSize = 500
 
 export interface ResourceAuthorizationListOptions {
   usageRange?: AccountUsageStatsRange
   includeUsage?: boolean
+  page?: number
+  pageSize?: number
+  limit?: number
+}
+
+interface NormalizedResourceAuthorizationPageOptions {
+  page: number
+  pageSize: number
+}
+
+interface ResourceAuthorizationGrantRowsPage {
+  rows: ResourceAuthorizationGrantRow[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
 }
 
 export function listResourceAuthorizationSummaries(filters: Record<string, unknown>, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
@@ -38,6 +57,25 @@ export function listResourceAuthorizationSummaries(filters: Record<string, unkno
     viewerSystemAccountId,
     access
   ))
+}
+
+export function listResourceAuthorizationSummariesPage(filters: Record<string, unknown>, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationListResult {
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const page = listResourceAuthorizationGrantOperationRowsPage(filters, access, options)
+  const items = resourceAuthorizationGrantSummaries(page.rows, options)
+    .sort(compareResourceAuthorizationOperations)
+    .map((summary) => withResourceAuthorizationPermissions(
+      sanitizeResourceAuthorizationSummaryForAccess(summary, access),
+      viewerSystemAccountId,
+      access
+    ))
+  return {
+    items,
+    total: page.total,
+    hasMore: page.hasMore,
+    page: page.page,
+    pageSize: page.pageSize
+  }
 }
 
 export function findResourceAuthorizationSummary(id: string, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary | undefined {
@@ -53,7 +91,33 @@ export function findResourceAuthorizationSummary(id: string, access?: AccessScop
     : undefined
 }
 
-function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access?: AccessScope): ResourceAuthorizationGrantRow[] {
+function listResourceAuthorizationGrantOperationRowsPage(filters: Record<string, unknown>, access: AccessScope | undefined, options: ResourceAuthorizationListOptions): ResourceAuthorizationGrantRowsPage {
+  const pageOptions = normalizeResourceAuthorizationPageOptions(options)
+  const rows = listResourceAuthorizationGrantOperationRows(filters, access, {
+    limit: pageOptions.pageSize + 1,
+    offset: (pageOptions.page - 1) * pageOptions.pageSize
+  })
+  const pageRows = takePageRows(rows, pageOptions.pageSize)
+  return {
+    rows: pageRows.rows,
+    total: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: pageOptions.page,
+    pageSize: pageOptions.pageSize
+  }
+}
+
+function normalizeResourceAuthorizationPageOptions(options: ResourceAuthorizationListOptions): NormalizedResourceAuthorizationPageOptions {
+  const rawPage = options.page
+  const rawPageSize = options.pageSize ?? options.limit
+  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
+    ? Math.min(maxResourceAuthorizationPageSize, Math.max(1, rawPageSize))
+    : defaultResourceAuthorizationPageSize
+  return { page, pageSize }
+}
+
+function listResourceAuthorizationGrantOperationRows(filters: Record<string, unknown>, access?: AccessScope, pagination?: { limit: number; offset: number }): ResourceAuthorizationGrantRow[] {
   const clauses: string[] = []
   const params: Array<string | number | null> = []
   const grantId = optionalString(filters.id ?? filters.authorizationId ?? filters.authorization_id)
@@ -133,7 +197,9 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
     }
   }
   const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
-  return getDatabase().prepare(`SELECT rag.* FROM resource_authorization_grants rag ${where} ORDER BY CASE rag.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, rag.updated_at DESC, rag.created_at DESC, rag.id DESC`).all(...params) as unknown as ResourceAuthorizationGrantRow[]
+  const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
+  const pageParams = pagination ? [pagination.limit, pagination.offset] : []
+  return getDatabase().prepare(`SELECT rag.* FROM resource_authorization_grants rag ${where} ORDER BY CASE rag.status WHEN 'active' THEN 0 WHEN 'paused' THEN 1 WHEN 'expired' THEN 2 WHEN 'revoked' THEN 3 ELSE 4 END, rag.updated_at DESC, rag.created_at DESC, rag.id DESC${pageClause}`).all(...params, ...pageParams) as unknown as ResourceAuthorizationGrantRow[]
 }
 
 export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationGrantRow, database = getDatabase()): ResourceAuthorizationRow | undefined {

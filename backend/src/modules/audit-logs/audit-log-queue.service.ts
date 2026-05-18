@@ -85,7 +85,13 @@ export function recordDroppedAuditCapture(input: {
 export function enqueueAuditLog(input: AuditLogInput): void {
   const queuedInput = normalizeAuditLogInput(input)
   if (runtimeConfig.processRole === 'server') {
-    sendAuditLogsToWorker([queuedInput])
+    if (!sendAuditLogsToWorker([queuedInput])) {
+      recordDrop({
+        input: queuedInput,
+        bytes: estimateAuditLogBytes(queuedInput),
+        success: queuedInput.success
+      }, 'overflow')
+    }
     return
   }
 

@@ -26,7 +26,13 @@ export interface SessionWithAccount {
 }
 
 export function listSystemAccounts(): SystemAccountSummary[] {
-  const rows = getDatabase().prepare('SELECT * FROM system_accounts ORDER BY created_at ASC, id ASC').all() as unknown as SystemAccountRow[]
+  const rows = getDatabase()
+    .prepare(`
+      SELECT id, username, display_name, description, role, status, must_change_password, last_login_at, created_at, updated_at
+      FROM system_accounts
+      ORDER BY created_at ASC, id ASC
+    `)
+    .all() as unknown as SystemAccountRow[]
   return rows.map(systemAccountSummaryFromRow)
 }
 
@@ -38,7 +44,13 @@ export function listSystemAccountOptions(): SystemAccountPrincipalSummary[] {
 }
 
 export function findSystemAccountById(id: string): SystemAccountSummary | undefined {
-  const row = getDatabase().prepare('SELECT * FROM system_accounts WHERE id = ?').get(id) as unknown as SystemAccountRow | undefined
+  const row = getDatabase()
+    .prepare(`
+      SELECT id, username, display_name, description, role, status, must_change_password, last_login_at, created_at, updated_at
+      FROM system_accounts
+      WHERE id = ?
+    `)
+    .get(id) as unknown as SystemAccountRow | undefined
   return row ? systemAccountSummaryFromRow(row) : undefined
 }
 

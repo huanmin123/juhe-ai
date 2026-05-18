@@ -194,6 +194,14 @@ export interface GroupSummary {
   permissions?: ResourcePermissions
 }
 
+export interface GroupListResult {
+  items: GroupSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 export type GroupOptionSummary = Pick<
   GroupSummary,
   | 'id'

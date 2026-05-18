@@ -12,7 +12,7 @@
       :active-filter-count="activeFilterCount"
       :loading="loading"
       @reset="resetFilters"
-      @refresh="loadData"
+      @refresh="refreshData"
       @help="helpOpen = true"
       @create="openCreateModal"
       @resource-type-change="handleResourceTypeChange"
@@ -25,7 +25,12 @@
       :empty-description="authorizationEmptyDescription"
       :is-management-view="isManagementView"
       :loading="loading"
-      @refresh="loadData"
+      :loading-more="mobileLoadingMore"
+      :mobile-has-more="mobileHasMore"
+      :pagination="tablePagination"
+      @change="handleTableChange"
+      @mobile-load-more="loadMoreMobileAuthorizations"
+      @refresh="refreshData"
       @menu-click="handleActionMenuClick"
     />
 
@@ -67,6 +72,7 @@ import { useRoute } from 'vue-router'
 import { api } from '@/api/client'
 import { authState } from '@/composables/useAuth'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
@@ -92,7 +98,7 @@ import {
   createAuthorizationResourceTypeOptions
 } from './authorizationTableColumns'
 
-const loading = ref(false)
+const pageSize = 50
 const { submitAction, submittingRef } = useSubmitAction('authorizations')
 const authorizationCreating = submittingRef('authorizations.create')
 const createModalOpen = ref(false)
@@ -101,7 +107,6 @@ const expireModalOpen = ref(false)
 const route = useRoute()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
-const authorizations = ref<ResourceAuthorizationSummary[]>([])
 const accounts = ref<AccountOptionSummary[]>([])
 const groups = ref<GroupOptionSummary[]>([])
 const createAccounts = ref<AccountOptionSummary[]>([])
@@ -110,8 +115,6 @@ const teams = ref<SystemTeamPrincipalSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
 
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
-let loadRequestId = 0
-let loadingRequestId = 0
 let createOwnerResourceRequestId = 0
 
 type AuthorizationFilters = {
@@ -124,6 +127,7 @@ type AuthorizationFilters = {
 }
 type AuthorizationsPageState = {
   filters: AuthorizationFilters
+  pagination?: { current: number; pageSize: number }
 }
 const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
   filters: {
@@ -133,7 +137,8 @@ const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
     resourceId: undefined,
     teamId: undefined,
     granteeSystemAccountId: undefined
-  }
+  },
+  pagination: { current: 1, pageSize }
 })
 const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
   version: 4,
@@ -142,12 +147,19 @@ const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, def
     const filters = state.filters && typeof state.filters === 'object'
       ? state.filters as Partial<AuthorizationFilters> & { direction?: unknown; sourceType?: unknown }
       : {}
+    const pagination = state.pagination && typeof state.pagination === 'object'
+      ? state.pagination as Partial<{ current: number; pageSize: number }>
+      : {}
     return {
       filters: {
         ...fallback.filters,
         ...filters,
         direction: filters.direction === 'inbound' ? 'inbound' : 'outbound',
         sourceType: filters.sourceType === 'manual' || filters.sourceType === 'team' ? filters.sourceType : 'all'
+      },
+      pagination: {
+        current: typeof pagination.current === 'number' && Number.isFinite(pagination.current) && pagination.current > 0 ? Math.trunc(pagination.current) : fallback.pagination?.current ?? 1,
+        pageSize: typeof pagination.pageSize === 'number' && Number.isFinite(pagination.pageSize) && pagination.pageSize > 0 ? Math.trunc(pagination.pageSize) : fallback.pagination?.pageSize ?? pageSize
       }
     }
   }
@@ -155,6 +167,35 @@ const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, def
 const initialPageState = pageStateCache.read()
 
 const filters = reactive<AuthorizationFilters>({ ...initialPageState.filters })
+const {
+  items: authorizations,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  pagination,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileAuthorizations,
+  resetPagination
+} = useResponsivePagedList<ResourceAuthorizationSummary, Record<string, never>>({
+  pageSize,
+  initialPagination: initialPageState.pagination,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${range?.[1] ?? total - 1} 条授权，还有更多`
+    : `共 ${total} 条授权`,
+  fetchPage: async (_options, pageState) => {
+    const systemAccountId = isManagementView.value ? authorizationScopeParams.value?.systemAccountId : undefined
+    const params = authorizationListParams(systemAccountId, pageState)
+    return isManagementView.value
+      ? await api.authorizations.listPage(params)
+      : await api.myAuthorizations.listPage(params)
+  },
+  onError: (error) => {
+    console.error(error)
+    message.error('加载授权列表失败')
+  }
+})
 
 const createForm = reactive<AuthorizationCreateFormModel>({
   ownerSystemAccountId: undefined,
@@ -275,36 +316,24 @@ async function loadMetaData() {
   }
 }
 
-async function loadData() {
-  const requestId = loadRequestId + 1
-  loadRequestId = requestId
-  loadingRequestId = requestId
-  loading.value = true
-  try {
-    const systemAccountId = isManagementView.value ? authorizationScopeParams.value?.systemAccountId : undefined
-    const params = {
-      resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
-      resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
-      teamId: isManagementView.value ? filters.teamId : undefined,
-      granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
-      direction: isManagementView.value ? undefined : filters.direction,
-      sourceType: !isManagementView.value && filters.sourceType !== 'all' ? filters.sourceType : undefined,
-      status: 'all' as const
-    }
-    const authorizationList = isManagementView.value
-      ? await api.authorizations.list(systemAccountId ? { ...params, systemAccountId } : params)
-      : await api.myAuthorizations.list(params)
-    if (requestId !== loadRequestId) return
-    authorizations.value = authorizationList
-  } catch (error) {
-    if (requestId !== loadRequestId) return
-    console.error(error)
-    message.error('加载授权列表失败')
-  } finally {
-    if (loadingRequestId === requestId) {
-      loading.value = false
-    }
+function authorizationListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
+  return {
+    resourceType: filters.resourceType === 'all' ? undefined : filters.resourceType,
+    resourceId: filters.resourceType === 'all' ? undefined : filters.resourceId,
+    teamId: isManagementView.value ? filters.teamId : undefined,
+    granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
+    direction: isManagementView.value ? undefined : filters.direction,
+    sourceType: !isManagementView.value && filters.sourceType !== 'all' ? filters.sourceType : undefined,
+    status: 'all' as const,
+    systemAccountId,
+    page: pageState.current,
+    pageSize: pageState.pageSize
   }
+}
+
+function refreshData() {
+  resetPagination()
+  void loadData()
 }
 
 function openCreateModal() {
@@ -373,11 +402,12 @@ async function loadCreateOwnerResources() {
 
 function handleResourceTypeChange() {
   filters.resourceId = undefined
-  void loadData()
+  refreshData()
 }
 
 function resetFilters() {
   Object.assign(filters, defaultAuthorizationsPageState().filters)
+  resetPagination()
   pageStateCache.clear()
   void loadData()
 }
@@ -600,7 +630,8 @@ function applyRouteFilters() {
 
 function snapshotPageState(): AuthorizationsPageState {
   return {
-    filters: { ...filters }
+    filters: { ...filters },
+    pagination: { current: pagination.current, pageSize: pagination.pageSize }
   }
 }
 

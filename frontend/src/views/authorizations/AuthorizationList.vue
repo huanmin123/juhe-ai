@@ -5,9 +5,15 @@
     :data-source="authorizations"
     row-key="id"
     :loading="loading"
+    :loading-more="loadingMore"
+    :mobile-has-more="mobileHasMore"
+    :pagination="pagination"
     :scroll-x="tableScrollX"
+    mobile-pagination
     pull-refresh-enabled
     :refreshing="loading"
+    @change="$emit('change', $event)"
+    @mobile-load-more="$emit('mobile-load-more')"
     @mobile-refresh="$emit('refresh')"
   >
     <template #emptyText>
@@ -102,10 +108,15 @@ const props = defineProps<{
   direction: AuthorizationDirectionFilter
   isManagementView: boolean
   loading: boolean
+  loadingMore?: boolean
+  mobileHasMore?: boolean
+  pagination?: false | Record<string, any>
 }>()
 
 defineEmits<{
+  (event: 'change', paginationInfo: unknown): void
   (event: 'menu-click', menuEvent: { key: string | number }, authorization: ResourceAuthorizationSummary): void
+  (event: 'mobile-load-more'): void
   (event: 'refresh'): void
 }>()
 

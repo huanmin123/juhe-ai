@@ -40,7 +40,24 @@ try {
   const after = getOperationLogQueueRuntime().droppedCount
   assert.equal(after, before + 1, 'IPC 投递失败应累计 droppedCount')
 
-  console.log('操作日志 DB service IPC 回归通过：父进程通道异常时不会打崩 DB service')
+  process.send = ((message: unknown, callback?: (error: Error | null) => void) => {
+    void message
+    callback?.(new Error('模拟父进程 IPC 异步失败'))
+    return true
+  }) as NodeJS.Process['send']
+  const asyncBefore = getOperationLogQueueRuntime().droppedCount
+  enqueueOperationLog({
+    actorSystemAccountId: 'sys_admin',
+    actorRole: 'admin',
+    module: 'regression',
+    action: 'db_service_ipc_async_failed',
+    operationKey: 'regression.operation_log_db_service_ipc_async_failed',
+    resourceType: 'operation_log',
+    summary: 'DB service 操作日志 IPC 异步失败回归'
+  })
+  assert.equal(getOperationLogQueueRuntime().droppedCount, asyncBefore + 1, 'IPC 异步投递失败也应累计 droppedCount')
+
+  console.log('操作日志 DB service IPC 回归通过：父进程通道异常时不会打崩 DB service，并能记录异步发送失败')
 } finally {
   process.send = originalSend
   try {

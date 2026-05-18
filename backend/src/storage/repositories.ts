@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupOptionSummary, GroupSummary, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSummary, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions } from './account-list-options.js'
@@ -17,12 +17,12 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRe
 import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
-import { findGroupRowForAccess, listGroupRowsForAccess, loadGroupAuthorizationUsageSummaries } from './group-read.repository.js'
+import { findGroupRowForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions } from './group-read.repository.js'
 import { loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
-import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import {
   accountSystemAccountId,
   activeAccountAuthorization,
@@ -38,7 +38,7 @@ import {
 import {
   normalizeResourceType
 } from './resource-authorization-list-helpers.js'
-import { findResourceAuthorizationSummary, listResourceAuthorizationSummaries, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
+import { findResourceAuthorizationSummary, listResourceAuthorizationSummaries, listResourceAuthorizationSummariesPage, type ResourceAuthorizationListOptions } from './resource-authorization-read.repository.js'
 import {
   activeTeamMemberRows,
   applyActiveTeamGrantsToMember,
@@ -76,6 +76,7 @@ import {
 
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 const manualTrafficMigrationReason = '手动迁移流量'
+const defaultResourceAuthorizationUsageDetailPageSize = 200
 
 export type { AccountListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
 
@@ -95,6 +96,8 @@ export class DefaultGroupReadonlyError extends Error {
 
 export interface ResourceAuthorizationUsageOptions {
   range?: AccountUsageStatsRange
+  page?: number
+  pageSize?: number
 }
 
 export type { AccountUsageSummary, SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '../domain/types.js'
@@ -1688,6 +1691,17 @@ export function listGroups(access?: AccessScope): GroupSummary[] {
   return buildGroupSummaries(listGroupRowsForAccess(access), access)
 }
 
+export function listGroupsPage(access?: AccessScope, options?: GroupListOptions): GroupListResult {
+  const page = listGroupRowsPageForAccess(access, options)
+  return {
+    items: buildGroupSummaries(page.rows, access),
+    total: page.total,
+    hasMore: page.hasMore,
+    page: page.page,
+    pageSize: page.pageSize
+  }
+}
+
 export function listGroupOptions(access?: AccessScope): GroupOptionSummary[] {
   return buildGroupOptionSummaries(listGroupRowsForAccess(access), access)
 }
@@ -1953,7 +1967,7 @@ export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
   const rows = scopedId
     ? getDatabase()
       .prepare(`
-        SELECT DISTINCT system_teams.*
+        SELECT DISTINCT system_teams.id, system_teams.name, system_teams.description, system_teams.status, system_teams.created_by, system_teams.created_at, system_teams.updated_at
         FROM system_teams
         INNER JOIN system_team_members ON system_team_members.team_id = system_teams.id
         WHERE system_team_members.system_account_id = ?
@@ -1961,7 +1975,7 @@ export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
         ORDER BY system_teams.status ASC, system_teams.updated_at DESC, system_teams.name ASC, system_teams.id ASC
       `)
       .all(scopedId) as unknown as SystemTeamRow[]
-    : getDatabase().prepare('SELECT * FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC, id ASC').all() as unknown as SystemTeamRow[]
+    : getDatabase().prepare('SELECT id, name, description, status, created_by, created_at, updated_at FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC, id ASC').all() as unknown as SystemTeamRow[]
   const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
   return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
 }
@@ -1994,7 +2008,7 @@ export function listAuthorizationGranteeAccounts(access?: AccessScope): SystemAc
 
 export function listAuthorizationGranteeTeams(access?: AccessScope): SystemTeamPrincipalSummary[] {
   const database = getDatabase()
-  const rows = database.prepare('SELECT * FROM system_teams ORDER BY status ASC, name ASC, id ASC').all() as unknown as SystemTeamRow[]
+  const rows = database.prepare('SELECT id, name, status FROM system_teams ORDER BY status ASC, name ASC, id ASC').all() as unknown as SystemTeamRow[]
   return rows.map(systemTeamPrincipalSummaryFromRow)
 }
 
@@ -2098,6 +2112,11 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
 export function listResourceAuthorizations(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   expireDueResourceAuthorizations()
   return listResourceAuthorizationSummaries(filters, access, options)
+}
+
+export function listResourceAuthorizationsPage(filters: Record<string, unknown> = {}, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationListResult {
+  expireDueResourceAuthorizations()
+  return listResourceAuthorizationSummariesPage(filters, access, options)
 }
 
 export function findResourceAuthorization(authorizationId: string, access?: AccessScope, options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary | undefined {
@@ -2235,12 +2254,16 @@ export function getResourceAuthorizationUsage(authorizationId: string, access?: 
   const authorization = findResourceAuthorization(authorizationId, access, { includeUsage: false })
   if (!authorization) return undefined
   const range = options.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
-  const detail = loadResourceAuthorizationUsageDetail(authorization, range)
+  const detail = loadResourceAuthorizationUsageDetail(authorization, range, options)
   return {
     ...authorization,
     usage: detail.usage,
     lastUsedAt: detail.usage.lastUsedAt,
     usageBySystemAccount: detail.usageBySystemAccount,
+    usageBySystemAccountTotal: detail.usageBySystemAccountTotal,
+    usageBySystemAccountPage: detail.usageBySystemAccountPage,
+    usageBySystemAccountPageSize: detail.usageBySystemAccountPageSize,
+    usageBySystemAccountHasMore: detail.usageBySystemAccountHasMore,
     usageRange: range
   }
 }
@@ -2292,17 +2315,23 @@ function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourc
 
 function loadResourceAuthorizationUsageDetail(
   authorization: ResourceAuthorizationSummary,
-  range: AccountUsageStatsRange
+  range: AccountUsageStatsRange,
+  options: ResourceAuthorizationUsageOptions = {}
 ): {
   usage: AccountUsageSummary
   usageBySystemAccount: ResourceAuthorizationUsageDetail[]
+  usageBySystemAccountTotal: number
+  usageBySystemAccountPage: number
+  usageBySystemAccountPageSize: number
+  usageBySystemAccountHasMore: boolean
 } {
+  const pageOptions = normalizeResourceAuthorizationUsagePageOptions(options)
   if (authorization.granteeType === 'team') {
-    return loadResourceAuthorizationGrantUsageDetailForTeam(authorization, range)
+    return loadResourceAuthorizationGrantUsageDetailForTeam(authorization, range, pageOptions)
   }
   const granteeSystemAccountId = authorization.granteeSystemAccountId
   if (!granteeSystemAccountId) {
-    return { usage: emptyAccountUsageSummary(), usageBySystemAccount: [] }
+    return emptyResourceAuthorizationUsageDetailPage(pageOptions)
   }
   const runtime = getDatabase().prepare(`
     SELECT *
@@ -2313,7 +2342,7 @@ function loadResourceAuthorizationUsageDetail(
     LIMIT 1
   `).get(authorization.resourceType, authorization.resourceId, granteeSystemAccountId) as unknown as ResourceAuthorizationRow | undefined
   if (!runtime) {
-    return { usage: emptyAccountUsageSummary(), usageBySystemAccount: [] }
+    return emptyResourceAuthorizationUsageDetailPage(pageOptions)
   }
   const scopeType = authorization.resourceType === 'account' ? 'account_authorization' : 'group_authorization'
   const rangeUsage = loadUsageRangeSummaryForScope({
@@ -2333,27 +2362,36 @@ function loadResourceAuthorizationUsageDetail(
 
   return {
     usage: rangeUsage,
-    usageBySystemAccount: usageBySystemAccount.sort((left, right) => {
+    usageBySystemAccount: pageOptions.page === 1 ? usageBySystemAccount.sort((left, right) => {
       const leftTime = left.lastUsedAt ? Date.parse(left.lastUsedAt) : 0
       const rightTime = right.lastUsedAt ? Date.parse(right.lastUsedAt) : 0
       if (rightTime !== leftTime) {
         return rightTime - leftTime
       }
       return left.systemAccountId.localeCompare(right.systemAccountId)
-    })
+    }) : [],
+    usageBySystemAccountTotal: 1,
+    usageBySystemAccountPage: pageOptions.page,
+    usageBySystemAccountPageSize: pageOptions.pageSize,
+    usageBySystemAccountHasMore: false
   }
 }
 
 function loadResourceAuthorizationGrantUsageDetailForTeam(
   authorization: ResourceAuthorizationSummary,
-  range: AccountUsageStatsRange
+  range: AccountUsageStatsRange,
+  pageOptions: { page: number; pageSize: number }
 ): {
   usage: AccountUsageSummary
   usageBySystemAccount: ResourceAuthorizationUsageDetail[]
+  usageBySystemAccountTotal: number
+  usageBySystemAccountPage: number
+  usageBySystemAccountPageSize: number
+  usageBySystemAccountHasMore: boolean
 } {
   const teamId = authorization.granteeTeamId
   if (!teamId) {
-    return { usage: emptyAccountUsageSummary(), usageBySystemAccount: [] }
+    return emptyResourceAuthorizationUsageDetailPage(pageOptions)
   }
   const database = getDatabase()
   const rows = database.prepare(`
@@ -2367,14 +2405,17 @@ function loadResourceAuthorizationGrantUsageDetailForTeam(
       AND ra.resource_id = ?
       AND ra.resource_owner_system_account_id = ?
     ORDER BY ra.created_at ASC, ra.id ASC
-  `).all(teamId, authorization.resourceType, authorization.resourceId, authorization.resourceOwnerSystemAccountId) as unknown as ResourceAuthorizationRow[]
-  const details = rows.map((row) => loadResourceAuthorizationUsageDetail({
-    ...authorization,
-    id: row.id,
-    granteeType: 'system_account',
-    granteeSystemAccountId: row.grantee_system_account_id
-  }, range))
-  const usageBySystemAccount = details.flatMap((detail) => detail.usageBySystemAccount)
+    LIMIT ? OFFSET ?
+  `).all(
+    teamId,
+    authorization.resourceType,
+    authorization.resourceId,
+    authorization.resourceOwnerSystemAccountId,
+    pageOptions.pageSize + 1,
+    (pageOptions.page - 1) * pageOptions.pageSize
+  ) as unknown as ResourceAuthorizationRow[]
+  const pageRows = takePageRows(rows, pageOptions.pageSize)
+  const usageBySystemAccount = buildRuntimeAuthorizationUsageDetails(authorization, pageRows.rows, range)
   const scopeType = authorization.resourceType === 'account' ? 'account_authorization_team' : 'group_authorization_team'
   const rangeUsage = loadUsageRangeSummaryForScope({
     systemAccountId: authorization.resourceOwnerSystemAccountId,
@@ -2391,6 +2432,55 @@ function loadResourceAuthorizationGrantUsageDetailForTeam(
         return rightTime - leftTime
       }
       return left.systemAccountId.localeCompare(right.systemAccountId)
-    })
+    }),
+    usageBySystemAccountTotal: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, usageBySystemAccount.length, pageRows.hasMore),
+    usageBySystemAccountPage: pageOptions.page,
+    usageBySystemAccountPageSize: pageOptions.pageSize,
+    usageBySystemAccountHasMore: pageRows.hasMore
+  }
+}
+
+function buildRuntimeAuthorizationUsageDetails(
+  authorization: ResourceAuthorizationSummary,
+  rows: ResourceAuthorizationRow[],
+  range: AccountUsageStatsRange
+): ResourceAuthorizationUsageDetail[] {
+  if (!rows.length) return []
+  const scopes = rows.map((row) => usageScope(row.id, authorization.resourceOwnerSystemAccountId, row.id))
+  const usageByAuthorization = authorization.resourceType === 'account'
+    ? loadAccountAuthorizationUsageSummaries(scopes, range)
+    : loadGroupAuthorizationUsageSummaries(scopes, range)
+  const accounts = loadSystemAccountsByIds(rows.map((row) => row.grantee_system_account_id ?? ''))
+  return rows.flatMap((row) => {
+    const systemAccountId = row.grantee_system_account_id
+    if (!systemAccountId) return []
+    const account = accounts.get(systemAccountId)
+    const rangeUsage = usageByAuthorization.get(row.id) ?? emptyAccountUsageSummary()
+    return [{
+      systemAccountId,
+      systemAccountName: account?.displayName ?? account?.username ?? systemAccountId,
+      username: account?.username,
+      ...rangeUsage,
+      rangeUsage
+    }]
+  })
+}
+
+function normalizeResourceAuthorizationUsagePageOptions(options: ResourceAuthorizationUsageOptions): { page: number; pageSize: number } {
+  const page = typeof options.page === 'number' && Number.isInteger(options.page) ? Math.max(1, options.page) : 1
+  const pageSize = typeof options.pageSize === 'number' && Number.isInteger(options.pageSize)
+    ? Math.max(1, options.pageSize)
+    : defaultResourceAuthorizationUsageDetailPageSize
+  return { page, pageSize }
+}
+
+function emptyResourceAuthorizationUsageDetailPage(pageOptions: { page: number; pageSize: number }) {
+  return {
+    usage: emptyAccountUsageSummary(),
+    usageBySystemAccount: [],
+    usageBySystemAccountTotal: 0,
+    usageBySystemAccountPage: pageOptions.page,
+    usageBySystemAccountPageSize: pageOptions.pageSize,
+    usageBySystemAccountHasMore: false
   }
 }

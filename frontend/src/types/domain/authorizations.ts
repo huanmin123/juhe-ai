@@ -97,11 +97,23 @@ export interface ResourceAuthorizationSummary {
   usage: AccountUsageSummary
   lastUsedAt?: string
   usageBySystemAccount?: AuthorizationUserUsageDetail[]
+  usageBySystemAccountTotal?: number
+  usageBySystemAccountPage?: number
+  usageBySystemAccountPageSize?: number
+  usageBySystemAccountHasMore?: boolean
   usageRange?: AccountUsageStatsRange
   permissions?: {
     canEdit: boolean
     canAuthorize: boolean
   }
+}
+
+export interface ResourceAuthorizationListResult {
+  items: ResourceAuthorizationSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
 }
 
 export interface AuthorizationTeamUsageRow {

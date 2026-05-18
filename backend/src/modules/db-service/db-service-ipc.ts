@@ -4,11 +4,13 @@ import type { ChildProcess } from 'node:child_process'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample, type ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
+import type { BackgroundWorkerIpcQueuesRuntime } from '../background/background-ipc.js'
 import type {
   DbServiceChildMessage,
   DbServiceOperation,
   DbServiceOperationResult,
   DbServiceParentMessage,
+  DbServiceRuntimeQueueSnapshot,
   DbServiceRuntimeSnapshot,
   DbServiceServerRuntimeSnapshot,
   DbServiceServerRuntimeSnapshotScope
@@ -521,6 +523,7 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       ready: workerSnapshot?.ready ?? workerState.ready,
       pendingMessageCount: workerState.pendingMessageCount,
       pendingMessageBytes: workerState.pendingMessageBytes,
+      pendingQueues: backgroundPendingQueuesSnapshot(workerState.pendingQueues),
       snapshot: workerSnapshot
         ? {
           pid: workerSnapshot.pid,
@@ -549,6 +552,10 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
   }
 }
 
+function backgroundPendingQueuesSnapshot(queues: BackgroundWorkerIpcQueuesRuntime): Record<string, DbServiceRuntimeQueueSnapshot> {
+  return Object.fromEntries(Object.entries(queues).map(([key, value]) => [key, { ...value }])) as Record<string, DbServiceRuntimeQueueSnapshot>
+}
+
 async function buildServerAccountConcurrencySnapshot(): Promise<DbServiceServerRuntimeSnapshot> {
   const accountConcurrency = await import('../../shared/account-concurrency.js')
   return {
@@ -565,8 +572,11 @@ async function forwardOperationLogsToWorker(items: unknown[]): Promise<void> {
   const backgroundIpc = await import('../background/background-ipc.js')
   const operationLogQueue = await import('../operation-logs/operation-log-queue.service.js')
   const operationLogs = items.filter(operationLogQueue.isOperationLogInput)
-  if (operationLogs.length > 0) {
-    backgroundIpc.sendOperationLogsToWorker(operationLogs)
+  if (operationLogs.length > 0 && !backgroundIpc.sendOperationLogsToWorker(operationLogs)) {
+    logger.warn({
+      event: 'db_service_operation_logs_forward_failed',
+      itemCount: operationLogs.length
+    }, 'DB service 转发操作日志到后台 worker 失败')
   }
 }
 
@@ -574,7 +584,10 @@ async function forwardRecordMaintenanceJobsToWorker(items: unknown[]): Promise<v
   const backgroundIpc = await import('../background/background-ipc.js')
   const recordMaintenanceQueue = await import('../record-maintenance/record-maintenance-queue.service.js')
   const jobs = items.filter(recordMaintenanceQueue.isRecordMaintenanceJob)
-  if (jobs.length > 0) {
-    backgroundIpc.sendRecordMaintenanceJobsToWorker(jobs)
+  if (jobs.length > 0 && !backgroundIpc.sendRecordMaintenanceJobsToWorker(jobs)) {
+    logger.warn({
+      event: 'db_service_record_maintenance_forward_failed',
+      itemCount: jobs.length
+    }, 'DB service 转发记录库维护任务到后台 worker 失败')
   }
 }

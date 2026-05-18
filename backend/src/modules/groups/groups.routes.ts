@@ -2,12 +2,12 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroups, listProviders, updateGroup } from '../../storage/repositories.js'
+import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroups, listGroupsPage, listProviders, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
-import { applyServerAccountConcurrencyToGroups } from '../gateway/gateway-runtime-snapshot.service.js'
+import { applyServerAccountConcurrencyToGroupList, applyServerAccountConcurrencyToGroups } from '../gateway/gateway-runtime-snapshot.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const groupsRouter = Router()
@@ -21,12 +21,35 @@ const groupSchema = z.object({
 
 groupsRouter.get('/', async (req, res, next) => {
   try {
+    if (hasGroupPageQuery(req.query)) {
+      const page = listGroupsPage(getRequestAccessScope(req.query.systemAccountId), parseGroupListOptions(req.query))
+      res.json(ok(await applyServerAccountConcurrencyToGroupList(page)))
+      return
+    }
     const groups = listGroups(getRequestAccessScope(req.query.systemAccountId))
     res.json(ok(await applyServerAccountConcurrencyToGroups(groups)))
   } catch (error) {
     next(error)
   }
 })
+
+function parseGroupListOptions(query: Record<string, unknown>) {
+  return {
+    page: integerQueryValue(query.page),
+    pageSize: integerQueryValue(query.pageSize),
+    limit: integerQueryValue(query.limit)
+  }
+}
+
+function hasGroupPageQuery(query: Record<string, unknown>): boolean {
+  return query.page !== undefined || query.pageSize !== undefined || query.limit !== undefined
+}
+
+function integerQueryValue(value: unknown): number | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  const number = typeof text === 'string' ? Number(text) : typeof text === 'number' ? text : undefined
+  return Number.isInteger(number) ? number : undefined
+}
 
 groupsRouter.get('/options', (req, res, next) => {
   try {

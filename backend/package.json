@@ -37,6 +37,7 @@
     "test:usage-pricing": "tsx src/scripts/regression/usage-pricing-regression.ts",
     "test:usage-record-batch-lookup": "tsx src/scripts/regression/usage-record-batch-lookup-regression.ts",
     "test:usage-stats-batch-statement": "tsx src/scripts/regression/usage-stats-batch-statement-regression.ts",
+    "test:usage-stats-backfill-cursor": "tsx src/scripts/regression/usage-stats-backfill-cursor-regression.ts",
     "test:usage-overview-window-atomic": "tsx src/scripts/regression/usage-overview-window-atomic-regression.ts",
     "test:upstream-request-failure": "tsx src/scripts/regression/upstream-request-failure-regression.ts",
     "test:openai-oauth-codex-adapter": "tsx src/scripts/regression/openai-oauth-codex-adapter-regression.ts",

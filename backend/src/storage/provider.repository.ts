@@ -14,7 +14,13 @@ interface ProviderRow {
 }
 
 export function listProviders(): ProviderDefinition[] {
-  const rows = getDatabase().prepare('SELECT * FROM providers ORDER BY name ASC, code ASC').all() as unknown as ProviderRow[]
+  const rows = getDatabase()
+    .prepare(`
+      SELECT id, code, name, description, enabled, base_url, account_types_json, capabilities_json
+      FROM providers
+      ORDER BY name ASC, code ASC
+    `)
+    .all() as unknown as ProviderRow[]
   return rows.map((row) => ({
     id: row.id,
     code: row.code,

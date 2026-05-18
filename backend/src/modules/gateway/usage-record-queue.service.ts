@@ -16,6 +16,7 @@ let flushTimer: NodeJS.Timeout | undefined
 let flushing = false
 let retainedOverflowWarningCount = 0
 let flushFailureCount = 0
+let droppedDispatchCount = 0
 let shutdownHooksInstalled = false
 
 interface UsageRecordFlushOptions {
@@ -27,7 +28,9 @@ interface UsageRecordFlushOptions {
 export function enqueueUsageRecord(input: UsageRecordInput): void {
   const queuedInput = normalizeUsageRecordInput(input)
   if (runtimeConfig.processRole === 'server') {
-    sendUsageRecordsToWorker([queuedInput])
+    if (!sendUsageRecordsToWorker([queuedInput])) {
+      recordUsageRecordDispatchFailure(new Error('后台 worker IPC 队列已满或不可用'), queuedInput)
+    }
     return
   }
 
@@ -121,7 +124,7 @@ export function getUsageRecordQueueRuntime(): {
 } {
   return {
     queueLength: pendingUsageRecords.length,
-    droppedCount: 0,
+    droppedCount: droppedDispatchCount,
     retainedOverflowWarningCount,
     flushFailureCount
   }
@@ -156,6 +159,21 @@ function scheduleUsageRecordFlush(delayMs: number): void {
     flushTimer = undefined
     flushUsageRecordQueue()
   }, delayMs)
+  flushTimer.unref()
+}
+
+function recordUsageRecordDispatchFailure(error: unknown, input: UsageRecordInput): void {
+  droppedDispatchCount += 1
+  logger.warn(errorLogFields(error, {
+    event: 'usage_record_queue_dispatch_failed',
+    usageRecordId: input.id,
+    traceId: input.traceId,
+    systemAccountId: input.systemAccountId,
+    endpoint: input.endpoint,
+    statusCode: input.statusCode,
+    errorCode: input.errorCode,
+    droppedDispatchCount
+  }), '使用记录投递后台 worker 失败，已跳过投递')
 }
 
 function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {

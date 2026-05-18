@@ -124,6 +124,7 @@ interface LatestDatabaseSnapshotRow {
 }
 
 export const tableMonitorSampleRetentionDays = 30
+const defaultTableStorageHistoryLimit = 720
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
@@ -178,7 +179,7 @@ export function getTableStorageOverview(input: { startAt?: string; endAt?: strin
   const range = normalizeDateRange(input.startAt, input.endAt)
   const databases = database
     .prepare(`
-      SELECT d.*
+      SELECT ${databaseStorageSnapshotSelectColumns('d')}
       FROM database_storage_snapshots d
       INNER JOIN (
         SELECT database_role, MAX(sampled_at) AS sampled_at
@@ -263,7 +264,7 @@ export function listTableStorageHistory(input: {
   const range = normalizeDateRange(input.startAt, input.endAt)
   const rows = getRecordDatabase()
     .prepare(`
-      SELECT *
+      SELECT ${tableStorageSnapshotSelectColumns()}
       FROM table_storage_snapshots
       WHERE database_role = ?
         AND table_name = ?
@@ -277,7 +278,7 @@ export function listTableStorageHistory(input: {
       input.tableName,
       range.startAt,
       range.endAt,
-      normalizeLimit(input.limit ?? 10000)
+      normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
     ) as unknown as LatestTableSnapshotRow[]
   return rows.reverse().map(tableSnapshotFromRow)
 }
@@ -543,7 +544,7 @@ function findPreviousTableSnapshot(databaseRole: MonitoredDatabaseRole, tableNam
   const targetTime = new Date(Date.parse(sampledAt) - minutesBack * 60 * 1000).toISOString()
   return getRecordDatabase()
     .prepare(`
-      SELECT *
+      SELECT ${tableStorageSnapshotSelectColumns()}
       FROM table_storage_snapshots
       WHERE database_role = ?
         AND table_name = ?
@@ -552,6 +553,44 @@ function findPreviousTableSnapshot(databaseRole: MonitoredDatabaseRole, tableNam
       LIMIT 1
     `)
     .get(databaseRole, tableName, targetTime) as unknown as LatestTableSnapshotRow | undefined
+}
+
+function databaseStorageSnapshotSelectColumns(alias?: string): string {
+  const prefix = alias ? `${alias}.` : ''
+  return [
+    'database_role',
+    'database_path',
+    'sampled_at',
+    'file_bytes',
+    'wal_bytes',
+    'shm_bytes',
+    'page_size',
+    'page_count',
+    'freelist_count',
+    'used_bytes',
+    'free_bytes',
+    'table_count',
+    'index_count'
+  ].map((column) => `${prefix}${column}`).join(', ')
+}
+
+function tableStorageSnapshotSelectColumns(alias?: string): string {
+  const prefix = alias ? `${alias}.` : ''
+  return [
+    'database_role',
+    'table_name',
+    'sampled_at',
+    'row_count',
+    'table_bytes',
+    'index_bytes',
+    'total_bytes',
+    'page_count',
+    'index_count',
+    'growth_bytes_1h',
+    'growth_rows_1h',
+    'growth_bytes_24h',
+    'growth_rows_24h'
+  ].map((column) => `${prefix}${column}`).join(', ')
 }
 
 function cleanupOldTableStorageSnapshots(database: DatabaseSync, sampledAt: string): void {

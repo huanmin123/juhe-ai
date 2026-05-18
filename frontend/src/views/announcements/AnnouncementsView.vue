@@ -63,7 +63,7 @@
       </template>
     </ResponsiveDataList>
 
-    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑公告' : '新增公告'" width="720px" :confirm-loading="announcementSaving" :ok-button-props="{ disabled: announcementSaving }" @ok="saveAnnouncement">
+    <a-modal v-model:open="modalOpen" :title="editingId ? '编辑公告' : '新增公告'" width="720px" :confirm-loading="announcementSaving || detailLoading" :ok-button-props="{ disabled: announcementSaving || detailLoading }" @ok="saveAnnouncement">
       <a-form layout="vertical" class="modal-form">
         <a-form-item label="标题" required>
           <a-input v-model:value="form.title" :maxlength="120" show-count placeholder="请输入公告标题" />
@@ -113,6 +113,7 @@ const loading = ref(false)
 const { submitAction, submittingRef } = useSubmitAction('announcements')
 const announcementSaving = submittingRef('announcements.save')
 const modalOpen = ref(false)
+const detailLoading = ref(false)
 const editingId = ref<string>()
 const announcements = ref<AnnouncementSummary[]>([])
 
@@ -183,15 +184,25 @@ function openCreate() {
   modalOpen.value = true
 }
 
-function openEdit(record: AnnouncementSummary) {
+async function openEdit(record: AnnouncementSummary) {
+  detailLoading.value = true
   editingId.value = record.id
-  Object.assign(form, {
-    title: record.title,
-    content: record.content,
-    level: record.level,
-    status: record.status
-  })
-  modalOpen.value = true
+  try {
+    const detail = await api.announcements.detail(record.id)
+    Object.assign(form, {
+      title: detail.title,
+      content: detail.content,
+      level: detail.level,
+      status: detail.status
+    })
+    modalOpen.value = true
+  } catch (error) {
+    editingId.value = undefined
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载公告详情失败'))
+  } finally {
+    detailLoading.value = false
+  }
 }
 
 const saveAnnouncement = submitAction('announcements.save', async () => {
@@ -254,7 +265,7 @@ async function removeAnnouncement(id: string) {
 
 function handleAction(key: string, record: AnnouncementSummary) {
   if (key === 'edit') {
-    openEdit(record)
+    void openEdit(record)
     return
   }
   if (key === 'publish') {

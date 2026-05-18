@@ -1,23 +1,80 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, nowIso } from './database.js'
+import { compatiblePagedTotal, takePageRows } from './query-utils.js'
 import type { GroupListRow } from './repository-row-types.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
+export interface GroupListOptions {
+  page?: number
+  pageSize?: number
+  limit?: number
+}
+
+export interface GroupRowsPage {
+  rows: GroupListRow[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
+interface NormalizedGroupListOptions {
+  page: number
+  pageSize: number
+}
+
+const defaultGroupListPageSize = 50
+const maxGroupListPageSize = 500
+
 export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
+  return queryGroupRowsForAccess(access).rows
+}
+
+export function listGroupRowsPageForAccess(access: AccessScope | undefined, options?: GroupListOptions): GroupRowsPage {
+  const listOptions = normalizeGroupListOptions(options)
+  const rows = queryGroupRowsForAccess(access, {
+    limit: listOptions.pageSize + 1,
+    offset: (listOptions.page - 1) * listOptions.pageSize
+  }).rows
+  const pageRows = takePageRows(rows, listOptions.pageSize)
+  return {
+    rows: pageRows.rows,
+    total: compatiblePagedTotal(listOptions.page, listOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize
+  }
+}
+
+function normalizeGroupListOptions(options?: GroupListOptions): NormalizedGroupListOptions {
+  const rawPage = options?.page
+  const rawPageSize = options?.pageSize ?? options?.limit
+  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
+    ? Math.min(maxGroupListPageSize, Math.max(1, rawPageSize))
+    : defaultGroupListPageSize
+  return { page, pageSize }
+}
+
+function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }): { rows: GroupListRow[] } {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const ownerSystemAccountId = manageableSystemAccountId(access)
+  const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
+  const pageParams = pagination ? [pagination.limit, pagination.offset] : []
   if (!ownerSystemAccountId && canAccessAll(access)) {
-    return getDatabase()
-      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC")
-      .all() as unknown as GroupListRow[]
+    const rows = getDatabase()
+      .prepare(`SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC${pageClause}`)
+      .all(...pageParams) as unknown as GroupListRow[]
+    return { rows }
   }
   if (!viewerSystemAccountId) {
-    return getDatabase()
-      .prepare("SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC")
-      .all() as unknown as GroupListRow[]
+    const rows = getDatabase()
+      .prepare(`SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC${pageClause}`)
+      .all(...pageParams) as unknown as GroupListRow[]
+    return { rows }
   }
-  return getDatabase()
+  const rows = getDatabase()
     .prepare(`
       SELECT * FROM (
         SELECT groups.*, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
@@ -34,8 +91,10 @@ export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
           AND groups.system_account_id <> ?
       )
       ORDER BY updated_at DESC, id DESC
+      ${pageClause}
     `)
-    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId) as unknown as GroupListRow[]
+    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, ...pageParams) as unknown as GroupListRow[]
+  return { rows }
 }
 
 export function findGroupRowForAccess(access: AccessScope | undefined, groupId: string): GroupListRow | undefined {

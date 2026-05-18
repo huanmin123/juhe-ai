@@ -64,6 +64,15 @@ announcementsRouter.get('/', requireAdmin, (_req, res) => {
   res.json(ok(listAnnouncements()))
 })
 
+announcementsRouter.get('/:id', requireAdmin, (req, res) => {
+  const announcement = findAnnouncement(req.params.id)
+  if (!announcement) {
+    res.status(404).json({ message: '公告不存在' })
+    return
+  }
+  res.json(ok(announcement))
+})
+
 announcementsRouter.post('/', requireAdmin, mutationGuard({
   operationKey: 'announcements.create',
   fingerprint: (req) => ({

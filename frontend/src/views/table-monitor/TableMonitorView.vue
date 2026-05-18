@@ -209,6 +209,7 @@ const cleanupSubmitting = ref(false)
 const cleanupCutoffAt = ref<Dayjs | undefined>(defaultCleanupCutoffAt())
 const cleanupResult = ref<UsageRecordsCleanupResult>()
 const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'records']
+const historyChartPointLimit = 720
 const selectedTableKeys = ref<Record<MonitoredDatabaseRole, string | undefined>>({
   business: undefined,
   records: undefined
@@ -388,9 +389,7 @@ function resetFilters() {
 }
 
 async function loadAllHistory() {
-  for (const role of databaseSummaryRoles) {
-    await loadHistoryForRole(role)
-  }
+  await Promise.all(databaseSummaryRoles.map((role) => loadHistoryForRole(role)))
 }
 
 async function loadHistoryForRole(role: MonitoredDatabaseRole) {
@@ -406,7 +405,7 @@ async function loadHistoryForRole(role: MonitoredDatabaseRole) {
       databaseRole: table.databaseRole,
       tableName: table.tableName,
       ...historyRangeParams(),
-      limit: 10000
+      limit: historyChartPointLimit
     })
   } catch (error) {
     console.error(error)

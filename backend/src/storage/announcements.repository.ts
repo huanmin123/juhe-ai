@@ -86,7 +86,7 @@ export function markPublicAnnouncementsRead(systemAccountId: string, announcemen
 export function listAnnouncements(): AnnouncementSummary[] {
   const rows = getDatabase()
     .prepare(`
-      SELECT *
+      SELECT ${announcementListSelectColumns()}
       FROM announcements
       ORDER BY updated_at DESC, created_at DESC, id DESC
     `)
@@ -226,6 +226,21 @@ function normalizeStatus(value: unknown, fallback: AnnouncementStatus): Announce
 
 function getAnnouncementRow(id: string): AnnouncementRow | undefined {
   return getDatabase().prepare('SELECT * FROM announcements WHERE id = ?').get(id) as unknown as AnnouncementRow | undefined
+}
+
+function announcementListSelectColumns(): string {
+  return [
+    'id',
+    'title',
+    "CASE WHEN length(content) > 240 THEN substr(content, 1, 240) || '...' ELSE content END AS content",
+    'level',
+    'status',
+    'created_by',
+    'updated_by',
+    'published_at',
+    'created_at',
+    'updated_at'
+  ].join(', ')
 }
 
 function getAnnouncementOrThrow(id: string): AnnouncementSummary {

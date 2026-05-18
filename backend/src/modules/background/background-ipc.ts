@@ -29,6 +29,23 @@ export interface BackgroundWorkerRuntimeLogQueueRuntime extends BackgroundWorker
   retentionDays: number
 }
 
+export interface BackgroundWorkerIpcQueueRuntime extends BackgroundWorkerQueueRuntime {
+  rejectedCount?: number
+}
+
+export interface BackgroundWorkerIpcQueuesRuntime {
+  usageRecords: BackgroundWorkerIpcQueueRuntime
+  auditLogs: BackgroundWorkerIpcQueueRuntime
+  operationLogs: BackgroundWorkerIpcQueueRuntime
+  recordMaintenance: BackgroundWorkerIpcQueueRuntime
+  runtimeLogLines: BackgroundWorkerIpcQueueRuntime
+  statusRequests: BackgroundWorkerIpcQueueRuntime
+  processEventLoopRequests: BackgroundWorkerIpcQueueRuntime
+  processEventLoopResponses: BackgroundWorkerIpcQueueRuntime
+  gatewayRuntimeCacheInvalidations: BackgroundWorkerIpcQueueRuntime
+  other: BackgroundWorkerIpcQueueRuntime
+}
+
 export interface BackgroundWorkerRuntimeSnapshot {
   pid: number
   ready: boolean
@@ -71,6 +88,7 @@ interface BackgroundWorkerState {
   lastSnapshot?: BackgroundWorkerRuntimeSnapshot
   pendingMessageCount: number
   pendingMessageBytes: number
+  pendingQueues: BackgroundWorkerIpcQueuesRuntime
 }
 
 class HeadIndexedQueue<T> {
@@ -166,6 +184,8 @@ let regularWorkerMessageQueueBytes = 0
 let sendingMessage = false
 let sendingWorkerMessage: BackgroundWorkerMessage | undefined
 let pendingPendingMessagesWarningCount = 0
+const pendingMessageDropCounts = emptyIpcQueueCounts()
+const pendingMessageRejectCounts = emptyIpcQueueCounts()
 let pendingRequests = new Map<string, PendingRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let lastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
@@ -319,7 +339,8 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
     ready: workerReady,
     lastSnapshot,
     pendingMessageCount: usageRecordMessageQueue.length + regularWorkerMessageQueue.length,
-    pendingMessageBytes: usageRecordMessageQueueBytes + regularWorkerMessageQueueBytes
+    pendingMessageBytes: usageRecordMessageQueueBytes + regularWorkerMessageQueueBytes,
+    pendingQueues: buildPendingQueuesRuntime()
   }
 }
 
@@ -384,12 +405,20 @@ function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
     regularWorkerMessageQueueBytes += messageBytes
   }
   const droppedMessages = enforceWorkerMessageQueueLimits()
-  const retained = !droppedMessages.includes(message)
-
-  if (retained) {
-    flushWorkerMessageQueue()
+  const currentMessageDropped = droppedMessages.includes(message)
+  if (currentMessageDropped) {
+    return false
   }
-  return retained
+  if (isWorkerQueueStillOverLimit(message)) {
+    removeNewestWorkerMessage(message)
+    recordPendingMessageRejected(message)
+    pendingPendingMessagesWarningCount += 1
+    process.stderr.write(`[background-worker] 消息队列已满，已拒绝 ${describeDroppedWorkerMessage(message)} ${pendingPendingMessagesWarningCount} 次\n`)
+    return false
+  }
+
+  flushWorkerMessageQueue()
+  return true
 }
 
 function flushWorkerMessageQueue(): void {
@@ -452,6 +481,24 @@ function requeueWorkerMessageFirst(message: BackgroundWorkerMessage): void {
   enforceWorkerMessageQueueLimits()
 }
 
+function isWorkerQueueStillOverLimit(message: BackgroundWorkerMessage): boolean {
+  if (message.type === 'background_worker_usage_records') {
+    return usageRecordMessageQueue.length > maxPendingMessages || usageRecordMessageQueueBytes > maxPendingMessageBytes
+  }
+  return regularWorkerMessageQueue.length > maxPendingMessages || regularWorkerMessageQueueBytes > maxPendingMessageBytes
+}
+
+function removeNewestWorkerMessage(message: BackgroundWorkerMessage): void {
+  if (message.type === 'background_worker_usage_records') {
+    const dropped = usageRecordMessageQueue.removeAt(usageRecordMessageQueue.length - 1)
+    if (dropped) {
+      usageRecordMessageQueueBytes = Math.max(0, usageRecordMessageQueueBytes - estimateWorkerMessageBytes(dropped))
+    }
+    return
+  }
+  removeRegularWorkerMessageAt(regularWorkerMessageQueue.length - 1)
+}
+
 function enforceWorkerMessageQueueLimits(): BackgroundWorkerMessage[] {
   const droppedMessages: BackgroundWorkerMessage[] = []
   while (usageRecordMessageQueue.length > maxPendingMessages || usageRecordMessageQueueBytes > maxPendingMessageBytes) {
@@ -461,6 +508,7 @@ function enforceWorkerMessageQueueLimits(): BackgroundWorkerMessage[] {
     }
     usageRecordMessageQueueBytes = Math.max(0, usageRecordMessageQueueBytes - estimateWorkerMessageBytes(dropped))
     droppedMessages.push(dropped)
+    recordPendingMessageDropped(dropped)
     pendingPendingMessagesWarningCount += 1
     process.stderr.write(`[background-worker] 消息队列已满，已丢弃 ${describeDroppedWorkerMessage(dropped)} ${pendingPendingMessagesWarningCount} 次\n`)
   }
@@ -471,6 +519,7 @@ function enforceWorkerMessageQueueLimits(): BackgroundWorkerMessage[] {
       break
     }
     droppedMessages.push(dropped)
+    recordPendingMessageDropped(dropped)
     pendingPendingMessagesWarningCount += 1
     process.stderr.write(`[background-worker] 消息队列已满，已丢弃 ${describeDroppedWorkerMessage(dropped)} ${pendingPendingMessagesWarningCount} 次\n`)
   }
@@ -534,6 +583,102 @@ function describeDroppedWorkerMessage(message: BackgroundWorkerMessage): string 
   const successCount = message.items.filter(isSuccessAuditSample).length
   const retainedCount = message.items.length - successCount
   return `审计日志消息（成功样本 ${successCount} 条，需保留事件 ${retainedCount} 条）`
+}
+
+function buildPendingQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
+  const runtime = emptyIpcQueuesRuntime()
+  addQueueRuntimeMessages(runtime, usageRecordMessageQueue)
+  addQueueRuntimeMessages(runtime, regularWorkerMessageQueue)
+  for (const key of ipcQueueKeys()) {
+    runtime[key].droppedCount = pendingMessageDropCounts[key]
+    runtime[key].rejectedCount = pendingMessageRejectCounts[key]
+  }
+  return runtime
+}
+
+function addQueueRuntimeMessages(runtime: BackgroundWorkerIpcQueuesRuntime, queue: HeadIndexedQueue<BackgroundWorkerMessage>): void {
+  for (let index = 0; index < queue.length; index += 1) {
+    const message = queue.at(index)
+    if (!message) continue
+    const item = runtime[ipcQueueKeyForMessage(message)]
+    item.queueLength += 1
+    item.queueBytes = (item.queueBytes ?? 0) + estimateWorkerMessageBytes(message)
+  }
+}
+
+function recordPendingMessageDropped(message: BackgroundWorkerMessage): void {
+  pendingMessageDropCounts[ipcQueueKeyForMessage(message)] += 1
+}
+
+function recordPendingMessageRejected(message: BackgroundWorkerMessage): void {
+  pendingMessageRejectCounts[ipcQueueKeyForMessage(message)] += 1
+}
+
+type IpcQueueKey = keyof BackgroundWorkerIpcQueuesRuntime
+
+function ipcQueueKeyForMessage(message: BackgroundWorkerMessage): IpcQueueKey {
+  switch (message.type) {
+    case 'background_worker_usage_records':
+      return 'usageRecords'
+    case 'background_worker_audit_logs':
+      return 'auditLogs'
+    case 'background_worker_operation_logs':
+      return 'operationLogs'
+    case 'background_worker_record_maintenance':
+      return 'recordMaintenance'
+    case 'background_worker_runtime_log_line':
+      return 'runtimeLogLines'
+    case 'background_worker_status_request':
+      return 'statusRequests'
+    case 'background_worker_process_event_loop_request':
+      return 'processEventLoopRequests'
+    case 'background_worker_process_event_loop_response':
+      return 'processEventLoopResponses'
+    case 'gateway_runtime_cache_invalidate':
+      return 'gatewayRuntimeCacheInvalidations'
+    default:
+      return 'other'
+  }
+}
+
+function emptyIpcQueueCounts(): Record<IpcQueueKey, number> {
+  return Object.fromEntries(ipcQueueKeys().map((key) => [key, 0])) as Record<IpcQueueKey, number>
+}
+
+function emptyIpcQueuesRuntime(): BackgroundWorkerIpcQueuesRuntime {
+  const emptyQueueRuntime = (): BackgroundWorkerIpcQueueRuntime => ({
+    queueLength: 0,
+    queueBytes: 0,
+    droppedCount: 0,
+    rejectedCount: 0
+  })
+  return {
+    usageRecords: emptyQueueRuntime(),
+    auditLogs: emptyQueueRuntime(),
+    operationLogs: emptyQueueRuntime(),
+    recordMaintenance: emptyQueueRuntime(),
+    runtimeLogLines: emptyQueueRuntime(),
+    statusRequests: emptyQueueRuntime(),
+    processEventLoopRequests: emptyQueueRuntime(),
+    processEventLoopResponses: emptyQueueRuntime(),
+    gatewayRuntimeCacheInvalidations: emptyQueueRuntime(),
+    other: emptyQueueRuntime()
+  }
+}
+
+function ipcQueueKeys(): IpcQueueKey[] {
+  return [
+    'usageRecords',
+    'auditLogs',
+    'operationLogs',
+    'recordMaintenance',
+    'runtimeLogLines',
+    'statusRequests',
+    'processEventLoopRequests',
+    'processEventLoopResponses',
+    'gatewayRuntimeCacheInvalidations',
+    'other'
+  ]
 }
 
 function estimateWorkerMessageBytes(message: BackgroundWorkerMessage): number {

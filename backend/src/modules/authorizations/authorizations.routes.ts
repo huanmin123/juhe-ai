@@ -8,6 +8,7 @@ import {
   findResourceAuthorization,
   getResourceAuthorizationUsage,
   listResourceAuthorizations,
+  listResourceAuthorizationsPage,
   revokeResourceAuthorization,
   updateResourceAuthorization
 } from '../../storage/repositories.js'
@@ -37,13 +38,17 @@ const authorizationsQuerySchema = z.object({
   sourceType: z.enum(['all', 'manual', 'team']).optional(),
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
-  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
+  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional(),
+  page: z.coerce.number().int().min(1, '页码必须大于 0').optional(),
+  pageSize: z.coerce.number().int().min(1, '每页数量必须大于 0').max(500, '每页最多 500 条').optional()
 })
 
 const authorizationUsageQuerySchema = z.object({
   systemAccountId: z.string().trim().min(1, '系统账号 ID 不能为空').optional(),
   startDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '开始日期格式应为 YYYY-MM-DD').optional(),
-  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional()
+  endDate: z.string().trim().regex(/^\d{4}-\d{2}-\d{2}$/, '结束日期格式应为 YYYY-MM-DD').optional(),
+  page: z.coerce.number().int().min(1, '页码必须大于 0').optional(),
+  pageSize: z.coerce.number().int().min(1, '每页数量必须大于 0').optional()
 })
 
 const authorizationUsageOverviewQuerySchema = z.object({
@@ -111,12 +116,16 @@ authorizationsRouter.get('/', (req, res) => {
     sendBadRequest(res, parsed.message)
     return
   }
-  const { systemAccountId, direction, sourceType, startDate, endDate, ...filters } = parsed.data
+  const { systemAccountId, direction, sourceType, startDate, endDate, page, pageSize, ...filters } = parsed.data
   const usageRange = normalizeAuthorizationListUsageRange({ startDate, endDate })
   const sourceTypeFilter = sourceType && sourceType !== 'all' ? { sourceType } : {}
   const routeFilters = req.baseUrl.endsWith('/my-authorizations') && direction && direction !== 'all'
     ? { ...filters, ...sourceTypeFilter, direction }
     : { ...filters, ...sourceTypeFilter }
+  if (page !== undefined || pageSize !== undefined) {
+    res.json(ok(listResourceAuthorizationsPage(routeFilters, getRequestAccessScope(systemAccountId), { usageRange, page, pageSize })))
+    return
+  }
   res.json(ok(listResourceAuthorizations(routeFilters, getRequestAccessScope(systemAccountId), { usageRange })))
 })
 
@@ -402,7 +411,9 @@ authorizationsRouter.get('/:id/usage', (req, res) => {
       range: normalizeAccountUsageStatsRange({
         startDate: queryParsed.data.startDate,
         endDate: queryParsed.data.endDate
-      }, usageStatsTimezone())
+      }, usageStatsTimezone()),
+      page: queryParsed.data.page,
+      pageSize: queryParsed.data.pageSize
     }
   )
   if (!authorization) {

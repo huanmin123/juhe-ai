@@ -126,6 +126,7 @@ function recordUsageStatsBackfillComplete(database: DatabaseSync, jobName: strin
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
     VALUES ('global', '', ?, '', ?, ?, NULL, 0, ?)
     ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = excluded.cursor_created_at,
       cursor_id = excluded.cursor_id,
       last_success_at = excluded.last_success_at,
       last_error_message = NULL,
@@ -139,9 +140,8 @@ function recordUsageStatsBackfillFailure(database: DatabaseSync, jobName: string
   const message = error instanceof Error ? error.message : fallbackMessage
   database.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, '', 'failed', NULL, ?, 0, ?)
+    VALUES ('global', '', ?, '', '', NULL, ?, 0, ?)
     ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_id = excluded.cursor_id,
       last_success_at = NULL,
       last_error_message = excluded.last_error_message,
       lag_seconds = 0,

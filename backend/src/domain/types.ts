@@ -436,6 +436,14 @@ export interface GroupSummary {
   permissions?: ResourcePermissions
 }
 
+export interface GroupListResult {
+  items: GroupSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 export type GroupOptionSummary = Pick<
   GroupSummary,
   | 'id'
@@ -500,6 +508,10 @@ export interface ResourceAuthorizationSummary {
   usage: AccountUsageSummary
   lastUsedAt?: string
   usageBySystemAccount?: ResourceAuthorizationUsageDetail[]
+  usageBySystemAccountTotal?: number
+  usageBySystemAccountPage?: number
+  usageBySystemAccountPageSize?: number
+  usageBySystemAccountHasMore?: boolean
   usageRange?: AccountUsageStatsRange
   permissions?: Pick<ResourcePermissions, 'canEdit' | 'canAuthorize'>
   createdBy: string
@@ -508,6 +520,14 @@ export interface ResourceAuthorizationSummary {
   revokedAt?: string
   revokedReason?: string
   updatedAt: string
+}
+
+export interface ResourceAuthorizationListResult {
+  items: ResourceAuthorizationSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
 }
 
 export type ResourceAuthorizationUsageSummary = ResourceAuthorizationSummary

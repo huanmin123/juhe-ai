@@ -6,6 +6,7 @@ import type {
   AccountUsageStatsOverview,
   AccountUsageStatsRow
 } from '../domain/types.js'
+import { runtimeConfig } from '../config/runtime.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
@@ -13,6 +14,8 @@ import { latestUsageStatsLagSeconds } from './usage-stats.repository.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { GLOBAL_STATS_SCOPE_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
 import { loadUsageDailySeriesForScopeRequests, type UsageStatsDailySeries } from './usage-window-loaders.js'
+
+const accountUsageBusinessDatabaseAlias = 'account_usage_business'
 
 export function getAccountUsageStatsOverview(input: {
   access?: AccessScope
@@ -98,11 +101,8 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
   const page = Math.max(1, Math.trunc(input.page))
   const pageSize = Math.max(1, Math.min(Math.trunc(input.pageSize), 200))
   const usageScope = accountUsageListScope(input.access)
-  const filter = accountUsageFilterPredicate(accountUsageFilterScopeIds(input, usageScope.scopeType))
-  if (filter.empty) {
-    return emptyAccountUsageStatsOverview(input, page, pageSize)
-  }
   const database = getRecordDatabase()
+  const filter = accountUsageFilterPredicate(input, usageScope.scopeType, database)
   const countRow = database.prepare(`
     SELECT COUNT(*) AS total
     FROM usage_scope_range_windows usage_window
@@ -286,36 +286,24 @@ function accountUsageListScope(access?: AccessScope): { systemAccountId: string;
   return { systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID, scopeType: 'account' }
 }
 
-function accountUsageFilterPredicate(scopeIds: string[] | undefined): { sql: string; params: Array<string>; empty: boolean } {
-  if (!scopeIds) {
-    return { sql: '', params: [], empty: false }
-  }
-  const ids = [...new Set(scopeIds.filter(Boolean))]
-  if (!ids.length) {
-    return { sql: '', params: [], empty: true }
-  }
-  const chunks = []
-  const params: string[] = []
-  for (let index = 0; index < ids.length; index += 400) {
-    const chunk = ids.slice(index, index + 400)
-    chunks.push(`usage_window.scope_id IN (${sqlPlaceholders(chunk.length)})`)
-    params.push(...chunk)
-  }
-  return {
-    sql: `AND (${chunks.join(' OR ')})`,
-    params,
-    empty: false
-  }
-}
-
-function accountUsageFilterScopeIds(input: Pick<AccountUsageStatsPageOptions, 'keyword' | 'type' | 'access'>, scopeType: AccountUsageScopeType): string[] | undefined {
+function accountUsageFilterPredicate(
+  input: Pick<AccountUsageStatsPageOptions, 'keyword' | 'type' | 'access'>,
+  scopeType: AccountUsageScopeType,
+  database: ReturnType<typeof getRecordDatabase>
+): { sql: string; params: string[] } {
   const type = input.type?.trim()
   const keyword = input.keyword?.trim()
   if (scopeType === 'account' && (!type || type === 'all') && !keyword) {
-    return undefined
+    return { sql: '', params: [] }
   }
   const clauses: string[] = []
   const params: string[] = []
+  const accountsTable = `${accountUsageBusinessDatabaseAlias}.accounts`
+  const groupAccountsTable = `${accountUsageBusinessDatabaseAlias}.group_accounts`
+  const groupsTable = `${accountUsageBusinessDatabaseAlias}.groups`
+  const authorizationsTable = `${accountUsageBusinessDatabaseAlias}.resource_authorizations`
+  ensureAccountUsageBusinessDatabaseAttached(database)
+  clauses.push('accounts.id = usage_window.scope_id')
   if (type && type !== 'all') {
     clauses.push('accounts.type = ?')
     params.push(type)
@@ -330,8 +318,8 @@ function accountUsageFilterScopeIds(input: Pick<AccountUsageStatsPageOptions, 'k
       OR accounts.id LIKE ?
       OR EXISTS (
         SELECT 1
-        FROM group_accounts
-        INNER JOIN groups ON groups.id = group_accounts.group_id
+        FROM ${groupAccountsTable} group_accounts
+        INNER JOIN ${groupsTable} groups ON groups.id = group_accounts.group_id
         WHERE group_accounts.account_id = accounts.id
           AND group_accounts.system_account_id = ?
           AND group_accounts.enabled = 1
@@ -346,7 +334,7 @@ function accountUsageFilterScopeIds(input: Pick<AccountUsageStatsPageOptions, 'k
       accounts.system_account_id = ?
       OR EXISTS (
         SELECT 1
-        FROM resource_authorizations visible_authorization
+        FROM ${authorizationsTable} visible_authorization
         WHERE visible_authorization.resource_type = 'account'
           AND visible_authorization.resource_id = accounts.id
           AND visible_authorization.grantee_system_account_id = ?
@@ -356,11 +344,16 @@ function accountUsageFilterScopeIds(input: Pick<AccountUsageStatsPageOptions, 'k
     )`)
     params.push(viewerSystemAccountId, viewerSystemAccountId, nowIso())
   }
-  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : ''
-  const rows = getDatabase()
-    .prepare(`SELECT accounts.id FROM accounts ${where} ORDER BY accounts.id ASC`)
-    .all(...params) as unknown as Array<{ id?: string }>
-  return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
+  return {
+    sql: `AND EXISTS (SELECT 1 FROM ${accountsTable} accounts WHERE ${clauses.join(' AND ')})`,
+    params
+  }
+}
+
+function ensureAccountUsageBusinessDatabaseAttached(database: ReturnType<typeof getRecordDatabase>): void {
+  const rows = database.prepare('PRAGMA database_list').all() as unknown as Array<{ name?: string }>
+  if (rows.some((row) => row.name === accountUsageBusinessDatabaseAlias)) return
+  database.prepare(`ATTACH DATABASE ? AS ${accountUsageBusinessDatabaseAlias}`).run(runtimeConfig.databasePath)
 }
 
 function loadAccountUsageMetadataRows(access: AccessScope | undefined, accountIds: string[], scopeType: AccountUsageScopeType): AccountUsageMetadataRow[] {

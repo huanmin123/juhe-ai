@@ -26,27 +26,29 @@ interface OperationLogFlushOptions {
 export function enqueueOperationLog(input: OperationLogInput): void {
   const queuedInput = normalizeOperationLogInput(input)
   if (runtimeConfig.processRole === 'server') {
-    sendOperationLogsToWorker([queuedInput])
+    if (!sendOperationLogsToWorker([queuedInput])) {
+      recordOperationLogDispatchFailure(new Error('后台 worker IPC 队列已满或不可用'), queuedInput)
+    }
     return
   }
 
   if (runtimeConfig.processRole === 'db-service') {
-    if (process.send) {
+    if (process.send && process.connected !== false) {
       try {
         process.send({
           type: 'background_worker_operation_logs',
           items: [queuedInput]
         }, (error) => {
           if (error) {
-            recordOperationLogDispatchFailure(error)
+            recordOperationLogDispatchFailure(error, queuedInput)
           }
         })
       } catch (error) {
-        recordOperationLogDispatchFailure(error)
+        recordOperationLogDispatchFailure(error, queuedInput)
       }
       return
     }
-    recordOperationLogDispatchFailure(new Error('DB service 无父进程 IPC'))
+    recordOperationLogDispatchFailure(new Error('DB service 无父进程 IPC'), queuedInput)
     return
   }
 
@@ -178,12 +180,18 @@ function scheduleOperationLogFlush(delayMs: number): void {
   flushTimer.unref()
 }
 
-function recordOperationLogDispatchFailure(error: unknown): void {
+function recordOperationLogDispatchFailure(error: unknown, input?: OperationLogInput): void {
   droppedDispatchCount += 1
   logger.warn(errorLogFields(error, {
     event: 'operation_log_queue_dispatch_failed',
+    operationLogId: input?.id,
+    actorSystemAccountId: input?.actorSystemAccountId,
+    module: input?.module,
+    action: input?.action,
+    operationKey: input?.operationKey,
+    resourceType: input?.resourceType,
     droppedDispatchCount
-  }), 'DB service 操作日志投递失败，已跳过投递')
+  }), '操作日志投递后台 worker 失败，已跳过投递')
 }
 
 function normalizeOperationLogInput(input: OperationLogInput): OperationLogInput {

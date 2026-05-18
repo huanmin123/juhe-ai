@@ -28,6 +28,7 @@ export interface DbServiceServerRuntimeSnapshot {
     ready: boolean
     pendingMessageCount: number
     pendingMessageBytes?: number
+    pendingQueues?: Record<string, DbServiceRuntimeQueueSnapshot>
     snapshot?: {
       pid: number
       ready: boolean

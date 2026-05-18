@@ -40,6 +40,13 @@ export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary
   })
 }
 
+export async function applyServerAccountConcurrencyToGroupList<T extends { items: GroupSummary[] }>(result: T): Promise<T> {
+  return {
+    ...result,
+    items: await applyServerAccountConcurrencyToGroups(result.items)
+  }
+}
+
 async function loadServerAccountConcurrencySnapshot(): Promise<AccountConcurrencySnapshot | undefined> {
   return await requestServerAccountConcurrencySnapshot(80).catch(() => undefined)
 }

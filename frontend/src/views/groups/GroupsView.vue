@@ -15,7 +15,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="filteredGroups" row-key="id" :loading="loading" :scroll-x="isManagementView ? 1480 : 1300" pull-refresh-enabled :refreshing="loading" @mobile-refresh="refreshGroups">
+    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1480 : 1300" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileGroups" @mobile-refresh="refreshMobileGroups">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页选择账户的归属分组。" />
       </template>
@@ -136,6 +136,7 @@ import RowActions from '@/components/RowActions.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -143,7 +144,7 @@ import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
 import type { GroupSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
-import { allSystemAccountsValue, matchesSystemAccountFilter, systemAccountDisplayText } from '@/utils/systemAccountFilter'
+import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
@@ -155,22 +156,21 @@ const FALLBACK_PROVIDER: ProviderDefinition = {
   capabilities: ['models', 'responses', 'stream', 'passthrough']
 }
 
-const loading = ref(false)
+const pageSize = 50
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('groups')
 const groupSaving = submittingRef('groups.save')
-const groups = ref<GroupSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
-let loadRequestId = 0
-let loadingRequestId = 0
 type GroupsPageState = {
+  pagination?: { current: number; pageSize: number }
   systemAccountFilter: string
 }
 const defaultGroupsPageState = (): GroupsPageState => ({
+  pagination: { current: 1, pageSize },
   systemAccountFilter: allSystemAccountsValue
 })
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
@@ -178,6 +178,37 @@ const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const form = reactive({ name: '', providerCode: 'openai', description: '', enabled: true })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const {
+  items: groups,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  pagination,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileGroups,
+  refreshMobile: refreshMobileGroupsData,
+  resetPagination
+} = useResponsivePagedList<GroupSummary, { forceOptions?: boolean }>({
+  pageSize,
+  initialPagination: initialPageState.pagination,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${range?.[1] ?? total - 1} 个分组，还有更多`
+    : `共 ${formatNumber(total)} 个分组`,
+  fetchPage: async (options, pageState) => {
+    const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
+    const [groupPage] = await Promise.all([
+      isManagementView.value ? api.groups.listPage(groupListParams(systemAccountId, pageState)) : api.myGroups.listPage(groupListParams(undefined, pageState)),
+      loadGroupOptions(options.forceOptions === true)
+    ])
+    return groupPage
+  },
+  onError: (error) => {
+    console.error(error)
+    message.error('加载分组失败')
+  }
+})
 
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -199,7 +230,6 @@ const columns = computed(() => {
 })
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
-const filteredGroups = computed(() => groups.value.filter((group) => matchesSystemAccountFilter(group, systemAccountFilter.value, isManagementView.value)))
 const groupScopeParams = computed(() => {
   const systemAccountId = scopedSystemAccountId(systemAccountFilter.value)
   return systemAccountId ? { systemAccountId } : undefined
@@ -302,27 +332,11 @@ function defaultProviderCode() {
   return availableProviders.value.find((provider) => provider.enabled)?.code ?? 'openai'
 }
 
-async function loadData(options: { forceOptions?: boolean } = {}) {
-  const requestId = loadRequestId + 1
-  loadRequestId = requestId
-  loadingRequestId = requestId
-  loading.value = true
-  try {
-    const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-    const [groupList] = await Promise.all([
-      isManagementView.value ? api.groups.list({ systemAccountId }) : api.myGroups.list(),
-      loadGroupOptions(options.forceOptions === true)
-    ])
-    if (requestId !== loadRequestId) return
-    groups.value = groupList
-  } catch (error) {
-    if (requestId !== loadRequestId) return
-    console.error(error)
-    message.error('加载分组失败')
-  } finally {
-    if (loadingRequestId === requestId) {
-      loading.value = false
-    }
+function groupListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
+  return {
+    systemAccountId,
+    page: pageState.current,
+    pageSize: pageState.pageSize
   }
 }
 
@@ -343,15 +357,22 @@ async function loadGroupOptions(force = false): Promise<void> {
 }
 
 function refreshGroups() {
+  resetPagination()
   void loadData({ forceOptions: true })
 }
 
+function refreshMobileGroups() {
+  void refreshMobileGroupsData({ forceOptions: true })
+}
+
 function handleSystemAccountFilterChange() {
+  resetPagination()
   void loadData()
 }
 
 function resetFilters() {
   systemAccountFilter.value = allSystemAccountsValue
+  resetPagination()
   pageStateCache.clear()
   void loadData({ forceOptions: true })
 }
@@ -431,13 +452,16 @@ async function removeGroup(id: string) {
 
 function snapshotPageState(): GroupsPageState {
   return {
+    pagination: { current: pagination.current, pageSize: pagination.pageSize },
     systemAccountFilter: systemAccountFilter.value
   }
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
-onMounted(loadData)
+onMounted(() => {
+  void loadData()
+})
 </script>
 
 <style scoped>

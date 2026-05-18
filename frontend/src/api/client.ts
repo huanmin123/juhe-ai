@@ -32,6 +32,7 @@ import type {
   CurrentUserSummary,
   ErrorPolicySummary,
   GlobalSettings,
+  GroupListResult,
   GroupOptionSummary,
   GroupSummary,
   OpenAIAuthURLResult,
@@ -48,6 +49,7 @@ import type {
   RuntimeLogSummary,
   RuntimeLogSearchResult,
   UpstreamErrorFeatureRuleCatalogItem,
+  ResourceAuthorizationListResult,
   SystemTeamMemberSummary,
   SystemTeamPrincipalSummary,
   SystemTeamSummary,
@@ -71,6 +73,12 @@ interface ApiResponse<T> {
 
 interface ListParams {
   systemAccountId?: string
+}
+
+interface GroupListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  limit?: number
 }
 
 interface RequestControlOptions {
@@ -233,6 +241,8 @@ export interface AuthorizationListParams extends ListParams {
   sourceType?: 'all' | 'manual' | 'team'
   startDate?: string
   endDate?: string
+  page?: number
+  pageSize?: number
 }
 
 export type AuthorizationScopeParams = ListParams
@@ -240,6 +250,8 @@ export type AuthorizationScopeParams = ListParams
 export interface AuthorizationUsageParams extends AuthorizationScopeParams {
   startDate?: string
   endDate?: string
+  page?: number
+  pageSize?: number
 }
 
 export interface AuthorizationUsageOverviewParams extends AuthorizationScopeParams {
@@ -310,6 +322,7 @@ export const api = {
     publicList: (params?: AnnouncementListParams) => unwrap<AnnouncementSummary[]>(http.get('/announcements/public', { params })),
     markRead: (payload: { announcementIds: string[] }) => unwrap<AnnouncementReadResult>(http.post('/announcements/public/read', payload)),
     list: () => unwrap<AnnouncementSummary[]>(http.get('/announcements')),
+    detail: (id: string) => unwrap<AnnouncementSummary>(http.get(`/announcements/${id}`)),
     create: (payload: AnnouncementPayload) => unwrap<AnnouncementSummary>(http.post('/announcements', payload)),
     update: (id: string, payload: Partial<AnnouncementPayload>) => unwrap<AnnouncementSummary>(http.patch(`/announcements/${id}`, payload)),
     publish: (id: string) => unwrap<AnnouncementSummary>(http.post(`/announcements/${id}/publish`)),
@@ -353,6 +366,7 @@ export const api = {
   },
   groups: {
     list: (params?: ListParams) => unwrap<GroupSummary[]>(http.get('/groups', { params })),
+    listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/groups', { params })),
     options: (params?: ListParams) => unwrap<GroupOptionSummary[]>(http.get('/groups/options', { params })),
     accountOptions: (params?: ListParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.post('/groups', payload, { params })),
@@ -361,6 +375,7 @@ export const api = {
   },
   myGroups: {
     list: () => unwrap<GroupSummary[]>(http.get('/my-groups')),
+    listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/my-groups', { params })),
     options: () => unwrap<GroupOptionSummary[]>(http.get('/my-groups/options')),
     accountOptions: () => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options')),
     create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/my-groups', payload)),
@@ -379,6 +394,7 @@ export const api = {
   },
   authorizations: {
     list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/authorizations', { params })),
+    listPage: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationListResult>(http.get('/authorizations', { params })),
     create: (payload: {
       resourceType: AuthorizationResourceType
       resourceId: string
@@ -397,6 +413,7 @@ export const api = {
   },
   myAuthorizations: {
     list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/my-authorizations', { params: stripSystemAccountParam(params) })),
+    listPage: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationListResult>(http.get('/my-authorizations', { params: stripSystemAccountParam(params) })),
     create: (payload: {
       resourceType: AuthorizationResourceType
       resourceId: string

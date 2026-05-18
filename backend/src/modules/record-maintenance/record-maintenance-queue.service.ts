@@ -70,9 +70,14 @@ export function enqueueRecordMaintenanceJob(input: RecordMaintenanceJob): Record
 export function enqueueRecordMaintenanceJobWithResult(input: RecordMaintenanceJob): RecordMaintenanceEnqueueResult {
   const job = normalizeRecordMaintenanceJob(input)
   if (runtimeConfig.processRole === 'server') {
+    const queued = sendRecordMaintenanceJobsToWorker([job])
+    if (!queued) {
+      recordRecordMaintenanceDispatchFailure(new Error('后台 worker IPC 队列已满或不可用'), job)
+    }
     return {
       job,
-      queued: sendRecordMaintenanceJobsToWorker([job])
+      queued,
+      droppedReason: queued ? undefined : 'worker_dispatch_failed'
     }
   }
 
