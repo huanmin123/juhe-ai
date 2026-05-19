@@ -48,7 +48,7 @@
 | `backend/src/modules/db-service/` | DB service 进程、内部系统 API app、HTTP 代理、IPC 操作和 supervisor | 系统管理 API 与高频 SQLite 读写只在 DB service 或 worker 内执行，主 Web 进程不能回退同步访问 SQLite |
 | `backend/src/storage/` | SQLite 连接、当前 schema、seed、repository、加解密 | 所有数据库读写从这里收口，避免 routes 直接写 SQL |
 | `backend/src/shared/` | 通用响应、跨模块小工具 | 只放稳定复用能力，不堆业务逻辑 |
-| `backend/src/scripts/maintenance/` | 生产或上线可用维护脚本 | 发布包统一调用 `backend/dist/scripts/maintenance/*.js`，脚本必须说明会改哪些数据 |
+| `backend/src/scripts/maintenance/` | 生产或上线可用维护脚本；Mockdata 统一承接可复用本地造数能力 | 发布包统一调用 `backend/dist/scripts/maintenance/*.js`，脚本必须说明会改哪些数据；本地演示、联调、烟测 fallback 和压测夹具等可复用造数都收口到 `mockdata.ts` / `mockdata-fixtures.ts` |
 | `backend/src/scripts/regression/` | 本地回归脚本 | 只通过 `pnpm test:*` 调用，不作为生产运维入口 |
 | `backend/src/scripts/smoke/` | 真实链路烟测脚本 | 用于发布前验证，不承担迁移或维护职责 |
 | `backend/src/types/` | 第三方或运行时类型补充 | 只补缺失类型，不放业务模型 |

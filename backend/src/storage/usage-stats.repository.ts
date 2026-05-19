@@ -718,18 +718,23 @@ function refreshSystemMetricsTrendWindows(
   todayKey: string,
   updatedAt: string
 ): void {
-  const rows = database.prepare('SELECT * FROM system_metrics_hourly WHERE stat_hour >= ? AND stat_hour <= ? ORDER BY stat_hour ASC').all(`${earliestDate}T00`, `${todayKey}T23`) as unknown as Array<Record<string, unknown>>
+  const rows = database.prepare(`
+    SELECT ${systemMetricsHourlySelectColumns()}
+    FROM system_metrics_hourly
+    WHERE stat_hour >= ? AND stat_hour <= ?
+    ORDER BY stat_hour ASC
+  `).all(`${earliestDate}T00`, `${todayKey}T23`) as unknown as Array<Record<string, unknown>>
   const rowsByDate = rowsByStatHourDate(rows.map((row) => ({ ...row, stat_hour: String(row.stat_hour ?? '') })))
   const insert = database.prepare(`
     INSERT INTO system_metrics_trend_windows (
       window_key, start_date, end_date, bucket_key, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
       memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
-      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_max,
+      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
       network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
       network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
       network_rx_total_bytes_max, network_tx_total_bytes_max,
       db_file_bytes_max, stats_lag_seconds_max, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `)
   for (const range of ranges) {
     const buckets = aggregateSystemMetricsRows(rowsForDateRange(rowsByDate, range), trendBucketHours(range))
@@ -749,6 +754,7 @@ function refreshSystemMetricsTrendWindows(
         Number(row.process_heap_used_bytes_sum ?? 0),
         nullableNumber(row.process_heap_used_bytes_max),
         Number(row.event_loop_lag_ms_sum ?? 0),
+        Number(row.event_loop_lag_ms_count ?? 0),
         nullableNumber(row.event_loop_lag_ms_max),
         Number(row.network_rx_bytes_per_sec_sum ?? 0),
         nullableNumber(row.network_rx_bytes_per_sec_max),
@@ -773,7 +779,12 @@ function refreshProcessEventLoopTrendWindows(
   todayKey: string,
   updatedAt: string
 ): void {
-  const rows = database.prepare('SELECT * FROM process_event_loop_hourly WHERE stat_hour >= ? AND stat_hour <= ? ORDER BY stat_hour ASC, process_role ASC').all(`${earliestDate}T00`, `${todayKey}T23`) as unknown as Array<Record<string, unknown>>
+  const rows = database.prepare(`
+    SELECT ${processEventLoopHourlySelectColumns()}
+    FROM process_event_loop_hourly
+    WHERE stat_hour >= ? AND stat_hour <= ?
+    ORDER BY stat_hour ASC, process_role ASC
+  `).all(`${earliestDate}T00`, `${todayKey}T23`) as unknown as Array<Record<string, unknown>>
   const rowsByDate = rowsByStatHourDate(rows.map((row) => ({ ...row, stat_hour: String(row.stat_hour ?? '') })))
   const insert = database.prepare(`
     INSERT INTO process_event_loop_trend_windows (
@@ -817,6 +828,44 @@ function aggregateProcessEventLoopRows(rows: Array<Record<string, unknown>>, buc
     buckets.set(bucketKey, bucket)
   }
   return [...buckets.values()]
+}
+
+function systemMetricsHourlySelectColumns(): string {
+  return [
+    'stat_hour',
+    'sample_count',
+    'cpu_percent_sum',
+    'cpu_percent_max',
+    'memory_used_percent_sum',
+    'memory_used_percent_max',
+    'process_rss_bytes_sum',
+    'process_rss_bytes_max',
+    'process_heap_used_bytes_sum',
+    'process_heap_used_bytes_max',
+    'event_loop_lag_ms_sum',
+    'event_loop_lag_ms_count',
+    'event_loop_lag_ms_max',
+    'network_rx_bytes_per_sec_sum',
+    'network_rx_bytes_per_sec_max',
+    'network_rx_bytes_per_sec_count',
+    'network_tx_bytes_per_sec_sum',
+    'network_tx_bytes_per_sec_max',
+    'network_tx_bytes_per_sec_count',
+    'network_rx_total_bytes_max',
+    'network_tx_total_bytes_max',
+    'db_file_bytes_max',
+    'stats_lag_seconds_max'
+  ].join(', ')
+}
+
+function processEventLoopHourlySelectColumns(): string {
+  return [
+    'stat_hour',
+    'process_role',
+    'sample_count',
+    'event_loop_lag_ms_sum',
+    'event_loop_lag_ms_max'
+  ].join(', ')
 }
 
 function refreshUsageScopeRangeWindowSnapshots(database: DatabaseSync, updatedAt: string, timezone: string): void {
@@ -1129,12 +1178,17 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
 
 export function getSystemMetricsOverview(range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): SystemMetricsOverview {
   const database = getRecordDatabase()
-  const latest = database.prepare('SELECT * FROM system_metrics_samples ORDER BY sampled_at DESC, id DESC LIMIT 1').get() as unknown as Record<string, unknown> | undefined
+  const latest = database.prepare(`
+    SELECT ${systemMetricsLatestSelectColumns()}
+    FROM system_metrics_samples
+    ORDER BY sampled_at DESC, id DESC
+    LIMIT 1
+  `).get() as unknown as Record<string, unknown> | undefined
   const windowKey = rangeWindowKey(range)
   const rows = database.prepare(`
     SELECT bucket_key AS stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
       memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
-      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_max,
+      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
       network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
       network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
       network_rx_total_bytes_max, network_tx_total_bytes_max,
@@ -1144,7 +1198,7 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
     ORDER BY bucket_key ASC
   `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
   const processLatestStatement = database.prepare(`
-    SELECT process_role, process_pid, sampled_at, event_loop_lag_ms
+    SELECT ${processEventLoopLatestSelectColumns()}
     FROM process_event_loop_samples
     WHERE process_role = ?
     ORDER BY sampled_at DESC, id DESC
@@ -1166,6 +1220,35 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
     processEventLoopTrend: processRows.map(mapProcessEventLoopHourly),
     backgroundJobs: []
   }
+}
+
+function systemMetricsLatestSelectColumns(): string {
+  return [
+    'sampled_at',
+    'cpu_percent',
+    'memory_used_percent',
+    'memory_total_bytes',
+    'memory_free_bytes',
+    'process_rss_bytes',
+    'process_heap_used_bytes',
+    'process_heap_total_bytes',
+    'event_loop_lag_ms',
+    'network_rx_bytes_per_sec',
+    'network_tx_bytes_per_sec',
+    'network_rx_total_bytes',
+    'network_tx_total_bytes',
+    'db_file_bytes',
+    'stats_lag_seconds'
+  ].join(', ')
+}
+
+function processEventLoopLatestSelectColumns(): string {
+  return [
+    'process_role',
+    'process_pid',
+    'sampled_at',
+    'event_loop_lag_ms'
+  ].join(', ')
 }
 
 function mapUsageTrendRows(
@@ -1281,13 +1364,13 @@ function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, inp
     INSERT INTO system_metrics_hourly (
       stat_hour, sample_count, cpu_percent_sum, cpu_percent_max, memory_used_percent_sum,
       memory_used_percent_max, process_rss_bytes_sum, process_rss_bytes_max, process_heap_used_bytes_sum,
-      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_max,
+      process_heap_used_bytes_max, event_loop_lag_ms_sum, event_loop_lag_ms_count, event_loop_lag_ms_max,
       network_rx_bytes_per_sec_sum, network_rx_bytes_per_sec_max, network_rx_bytes_per_sec_count,
       network_tx_bytes_per_sec_sum, network_tx_bytes_per_sec_max, network_tx_bytes_per_sec_count,
       network_rx_total_bytes_max, network_tx_total_bytes_max,
       db_file_bytes_max, stats_lag_seconds_max, updated_at
     )
-    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    VALUES (?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(stat_hour) DO UPDATE SET
       sample_count = sample_count + 1,
       cpu_percent_sum = cpu_percent_sum + excluded.cpu_percent_sum,
@@ -1299,6 +1382,7 @@ function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, inp
       process_heap_used_bytes_sum = process_heap_used_bytes_sum + excluded.process_heap_used_bytes_sum,
       process_heap_used_bytes_max = CASE WHEN excluded.process_heap_used_bytes_max IS NULL THEN system_metrics_hourly.process_heap_used_bytes_max WHEN system_metrics_hourly.process_heap_used_bytes_max IS NULL OR excluded.process_heap_used_bytes_max > system_metrics_hourly.process_heap_used_bytes_max THEN excluded.process_heap_used_bytes_max ELSE system_metrics_hourly.process_heap_used_bytes_max END,
       event_loop_lag_ms_sum = event_loop_lag_ms_sum + excluded.event_loop_lag_ms_sum,
+      event_loop_lag_ms_count = event_loop_lag_ms_count + excluded.event_loop_lag_ms_count,
       event_loop_lag_ms_max = CASE WHEN excluded.event_loop_lag_ms_max IS NULL THEN system_metrics_hourly.event_loop_lag_ms_max WHEN system_metrics_hourly.event_loop_lag_ms_max IS NULL OR excluded.event_loop_lag_ms_max > system_metrics_hourly.event_loop_lag_ms_max THEN excluded.event_loop_lag_ms_max ELSE system_metrics_hourly.event_loop_lag_ms_max END,
       network_rx_bytes_per_sec_sum = network_rx_bytes_per_sec_sum + excluded.network_rx_bytes_per_sec_sum,
       network_rx_bytes_per_sec_max = CASE WHEN excluded.network_rx_bytes_per_sec_max IS NULL THEN system_metrics_hourly.network_rx_bytes_per_sec_max WHEN system_metrics_hourly.network_rx_bytes_per_sec_max IS NULL OR excluded.network_rx_bytes_per_sec_max > system_metrics_hourly.network_rx_bytes_per_sec_max THEN excluded.network_rx_bytes_per_sec_max ELSE system_metrics_hourly.network_rx_bytes_per_sec_max END,
@@ -1322,6 +1406,7 @@ function upsertSystemMetricsHourly(database: DatabaseSync, statHour: string, inp
     input.processHeapUsedBytes ?? 0,
     input.processHeapUsedBytes ?? null,
     input.eventLoopLagMs ?? 0,
+    input.eventLoopLagMs === undefined ? 0 : 1,
     input.eventLoopLagMs ?? null,
     input.networkRxBytesPerSecond ?? 0,
     input.networkRxBytesPerSecond ?? null,

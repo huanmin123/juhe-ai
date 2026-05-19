@@ -16,6 +16,7 @@ export function aggregateSystemMetricsRows(rows: Array<Record<string, unknown>>,
     addMetric(bucket, row, 'process_heap_used_bytes_sum')
     maxMetric(bucket, row, 'process_heap_used_bytes_max')
     addMetric(bucket, row, 'event_loop_lag_ms_sum')
+    addMetric(bucket, row, 'event_loop_lag_ms_count')
     maxMetric(bucket, row, 'event_loop_lag_ms_max')
     addMetric(bucket, row, 'network_rx_bytes_per_sec_sum')
     maxMetric(bucket, row, 'network_rx_bytes_per_sec_max')

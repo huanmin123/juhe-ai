@@ -1,7 +1,7 @@
 import { currentSystemAccountId } from './access-scope.js'
 import { getDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { accountSystemAccountId, activeResourceAuthorization, groupSystemAccountId } from './resource-authorization-helpers.js'
+import { accountSystemAccountId, activeResourceAuthorization, groupSystemAccountId, resourceAuthorizationSelectColumns } from './resource-authorization-helpers.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import type { ResourceAuthorizationSourceType } from '../domain/types.js'
 
@@ -196,6 +196,6 @@ function accountAccessTypeCandidate(
 
 function resourceAuthorizationSnapshot(authorizationId: string): ResourceAuthorizationRow | undefined {
   return getDatabase()
-    .prepare('SELECT * FROM resource_authorizations WHERE id = ? LIMIT 1')
+    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE id = ? LIMIT 1`)
     .get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
 }

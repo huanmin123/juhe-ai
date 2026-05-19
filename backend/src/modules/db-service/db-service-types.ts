@@ -29,6 +29,12 @@ export interface DbServiceServerRuntimeSnapshot {
     pendingMessageCount: number
     pendingMessageBytes?: number
     pendingQueues?: Record<string, DbServiceRuntimeQueueSnapshot>
+    pendingSnapshotRequestCount?: number
+    timedOutSnapshotRequestCount?: number
+    rejectedSnapshotRequestCount?: number
+    pendingProcessEventLoopRequestCount?: number
+    timedOutProcessEventLoopRequestCount?: number
+    failedProcessEventLoopRequestCount?: number
     snapshot?: {
       pid: number
       ready: boolean
@@ -61,6 +67,13 @@ export interface DbServiceServerRuntimeSnapshot {
     pendingRequestCount: number
     timedOutRequestCount: number
     failedRequestCount: number
+    pendingProcessEventLoopRequestCount?: number
+    timedOutProcessEventLoopRequestCount?: number
+    failedProcessEventLoopRequestCount?: number
+    processEventLoopTimeoutStreak?: number
+    pendingServerRuntimeRequestCount?: number
+    timedOutServerRuntimeRequestCount?: number
+    failedServerRuntimeRequestCount?: number
     unavailableCircuitOpenUntil?: string
     httpHost?: string
     httpPort?: number

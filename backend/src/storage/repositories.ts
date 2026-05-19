@@ -31,6 +31,7 @@ import {
   canManageResourceOwner,
   groupOwnerAndProvider,
   isResourceAuthorizationExpired,
+  resourceAuthorizationSelectColumns,
   resolveAccountSystemAccountId,
   sanitizeAuthorizationSourcesForViewer,
   usageScope
@@ -2287,7 +2288,13 @@ function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false):
   const rows: Array<SystemTeamMemberRow & { display_name?: string; username?: string }> = []
   const database = getDatabase()
   for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...database.prepare(`SELECT system_team_members.*, system_accounts.display_name, system_accounts.username FROM system_team_members INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id WHERE system_team_members.team_id IN (${sqlPlaceholders(chunk.length)})${statusClause} ORDER BY system_team_members.status ASC, system_team_members.joined_at ASC, system_team_members.id ASC`).all(...chunk) as unknown as Array<SystemTeamMemberRow & { display_name?: string; username?: string }>)
+    rows.push(...database.prepare(`
+      SELECT ${systemTeamMemberSelectColumns('system_team_members')}, system_accounts.display_name, system_accounts.username
+      FROM system_team_members
+      INNER JOIN system_accounts ON system_accounts.id = system_team_members.system_account_id
+      WHERE system_team_members.team_id IN (${sqlPlaceholders(chunk.length)})${statusClause}
+      ORDER BY system_team_members.status ASC, system_team_members.joined_at ASC, system_team_members.id ASC
+    `).all(...chunk) as unknown as Array<SystemTeamMemberRow & { display_name?: string; username?: string }>)
   }
   const result = new Map<string, SystemTeamMemberSummary[]>()
   for (const row of rows) {
@@ -2295,6 +2302,21 @@ function listSystemTeamMembersForTeamIds(teamIds: string[], activeOnly = false):
     result.set(row.team_id, [...(result.get(row.team_id) ?? []), member])
   }
   return result
+}
+
+function systemTeamMemberSelectColumns(alias: string): string {
+  return [
+    'id',
+    'team_id',
+    'system_account_id',
+    'member_role',
+    'status',
+    'joined_at',
+    'removed_at',
+    'created_by',
+    'created_at',
+    'updated_at'
+  ].map((column) => `${alias}.${column}`).join(', ')
 }
 
 function ensureSystemTeamNameUnique(name: string, excludeId?: string, database = getDatabase()): void {
@@ -2334,7 +2356,7 @@ function loadResourceAuthorizationUsageDetail(
     return emptyResourceAuthorizationUsageDetailPage(pageOptions)
   }
   const runtime = getDatabase().prepare(`
-    SELECT *
+    SELECT ${resourceAuthorizationSelectColumns()}
     FROM resource_authorizations
     WHERE resource_type = ?
       AND resource_id = ?

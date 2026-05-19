@@ -36,6 +36,7 @@ import { WorkerScheduler } from './worker-scheduler.js'
 
 let started = false
 let usageStatsAggregationRunning = false
+let missingRemoteProcessEventLoopSampleWarningCount = 0
 let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
 const dailyIntervalMs = 24 * 60 * 60 * 1000
@@ -118,7 +119,23 @@ async function runSystemMetricsSample(): Promise<void> {
   const memoryMetrics = await currentMemoryMetrics()
   const memoryUsage = process.memoryUsage()
   const networkMetrics = await currentNetworkMetrics()
-  const remoteProcessSamples = await requestServerProcessEventLoopSamples().catch(() => [])
+  const remoteProcessSamples = await requestServerProcessEventLoopSamples().catch((error) => {
+    logger.warn(errorLogFields(error, {
+      event: 'background_system_metrics_remote_event_loop_sample_failed'
+    }), '系统指标远端事件循环采样失败')
+    return []
+  })
+  if (remoteProcessSamples.length === 0) {
+    missingRemoteProcessEventLoopSampleWarningCount += 1
+    if (missingRemoteProcessEventLoopSampleWarningCount === 1 || missingRemoteProcessEventLoopSampleWarningCount % 10 === 0) {
+      logger.warn({
+        event: 'background_system_metrics_remote_event_loop_sample_missing',
+        missingRemoteProcessEventLoopSampleWarningCount
+      }, '系统指标远端事件循环采样缺失')
+    }
+  } else {
+    missingRemoteProcessEventLoopSampleWarningCount = 0
+  }
   const workerEventLoopSample = buildProcessEventLoopSample('worker')
   try {
     insertSystemMetricsSample({

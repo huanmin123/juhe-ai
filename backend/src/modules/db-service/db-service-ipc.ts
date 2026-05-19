@@ -34,6 +34,13 @@ interface DbServiceState {
   pendingRequestCount: number
   timedOutRequestCount: number
   failedRequestCount: number
+  pendingProcessEventLoopRequestCount: number
+  timedOutProcessEventLoopRequestCount: number
+  failedProcessEventLoopRequestCount: number
+  processEventLoopTimeoutStreak: number
+  pendingServerRuntimeRequestCount: number
+  timedOutServerRuntimeRequestCount: number
+  failedServerRuntimeRequestCount: number
   unavailableCircuitOpenUntil?: string
 }
 
@@ -52,6 +59,11 @@ let pendingServerRuntimeRequests = new Map<string, PendingServerRuntimeRequest>(
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
 let timedOutRequestCount = 0
 let failedRequestCount = 0
+let timedOutProcessEventLoopRequestCount = 0
+let failedProcessEventLoopRequestCount = 0
+let processEventLoopTimeoutStreak = 0
+let timedOutServerRuntimeRequestCount = 0
+let failedServerRuntimeRequestCount = 0
 let lastSnapshot: DbServiceRuntimeSnapshot | undefined
 let unavailableCircuitOpenUntilMs = 0
 let dbServiceReadyHandler: (() => void) | undefined
@@ -72,6 +84,7 @@ export function attachDbServiceProcess(child: ChildProcess, options: { onReady?:
   dbServiceHttpHost = undefined
   dbServiceHttpPort = undefined
   dbServiceReady = false
+  processEventLoopTimeoutStreak = 0
   dbServiceReadyHandler = options.onReady
 
   child.removeAllListeners('message')
@@ -196,6 +209,13 @@ export function getDbServiceState(): DbServiceState {
     pendingRequestCount: pendingRequests.size,
     timedOutRequestCount,
     failedRequestCount,
+    pendingProcessEventLoopRequestCount: pendingProcessEventLoopRequests.size,
+    timedOutProcessEventLoopRequestCount,
+    failedProcessEventLoopRequestCount,
+    processEventLoopTimeoutStreak,
+    pendingServerRuntimeRequestCount: pendingServerRuntimeRequests.size,
+    timedOutServerRuntimeRequestCount,
+    failedServerRuntimeRequestCount,
     unavailableCircuitOpenUntil: unavailableCircuitOpenUntilMs > Date.now() ? new Date(unavailableCircuitOpenUntilMs).toISOString() : undefined
   }
 }
@@ -218,8 +238,21 @@ export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): P
   const requestId = randomUUID()
   return await new Promise<ProcessEventLoopSample | undefined>((resolve) => {
     const timeout = setTimeout(() => {
-      pendingProcessEventLoopRequests.delete(requestId)
-      resolve(undefined)
+      const pending = pendingProcessEventLoopRequests.get(requestId)
+      if (!pending) {
+        return
+      }
+      timedOutProcessEventLoopRequestCount += 1
+      if (dbServiceProcess === child) {
+        processEventLoopTimeoutStreak += 1
+        logger.warn({
+          event: 'db_service_process_event_loop_sample_timeout',
+          pid: child.pid,
+          timeoutMs,
+          processEventLoopTimeoutStreak
+        }, 'DB service 事件循环采样超时')
+      }
+      finishProcessEventLoopRequest(requestId, undefined)
     }, timeoutMs)
     pendingProcessEventLoopRequests.set(requestId, { resolve, timeout })
     try {
@@ -228,11 +261,13 @@ export async function requestDbServiceProcessEventLoopSample(timeoutMs = 800): P
         requestId
       } satisfies DbServiceParentMessage, (error) => {
         if (error) {
+          failedProcessEventLoopRequestCount += 1
           markDbServiceIpcBroken(error, child)
           finishProcessEventLoopRequest(requestId, undefined)
         }
       })
     } catch (error) {
+      failedProcessEventLoopRequestCount += 1
       markDbServiceIpcBroken(error, child)
       finishProcessEventLoopRequest(requestId, undefined)
     }
@@ -246,11 +281,12 @@ export function handleDbServiceParentRuntimeMessage(message: unknown): boolean {
 
   const record = message as Partial<DbServiceParentMessage> & Record<string, unknown>
   if (record.type === 'db_service_process_event_loop_request' && typeof record.requestId === 'string') {
-    sendDbServiceChildMessage({
+    const response: DbServiceChildMessage = {
       type: 'db_service_process_event_loop_response',
       requestId: record.requestId,
       sample: buildProcessEventLoopSample('db-service')
-    })
+    }
+    sendDbServiceChildMessage(response, () => exitDbServiceAfterChildIpcFailure(response.type))
     return true
   }
 
@@ -276,6 +312,7 @@ function handleDbServiceMessage(message: unknown): void {
     case 'db_service_ready':
       dbServiceReady = true
       unavailableCircuitOpenUntilMs = 0
+      processEventLoopTimeoutStreak = 0
       dbServicePid = typeof record.pid === 'number' ? record.pid : dbServicePid
       dbServiceHttpHost = typeof record.httpHost === 'string' ? record.httpHost : dbServiceHttpHost
       dbServiceHttpPort = typeof record.httpPort === 'number' ? record.httpPort : dbServiceHttpPort
@@ -375,6 +412,9 @@ function finishProcessEventLoopRequest(requestId: string, sample: ProcessEventLo
 
   clearTimeout(pending.timeout)
   pendingProcessEventLoopRequests.delete(requestId)
+  if (sample) {
+    processEventLoopTimeoutStreak = 0
+  }
   pending.resolve(sample)
 }
 
@@ -418,6 +458,14 @@ function sendDbServiceChildMessage(message: DbServiceChildMessage, onFailure?: (
     }), 'DB service 向父进程发送 IPC 消息失败')
     onFailure?.()
   }
+}
+
+function exitDbServiceAfterChildIpcFailure(messageType: string): void {
+  logger.error({
+    event: 'db_service_child_ipc_unavailable',
+    messageType
+  }, 'DB service 向父进程发送 IPC 消息失败，进程将退出等待 supervisor 重启')
+  process.exit(1)
 }
 
 function openUnavailableCircuit(): void {
@@ -473,8 +521,13 @@ async function requestServerRuntimeSnapshotByScope(
   const requestId = randomUUID()
   return await new Promise<DbServiceServerRuntimeSnapshot | undefined>((resolve) => {
     const timeout = setTimeout(() => {
+      const pending = pendingServerRuntimeRequests.get(requestId)
+      if (!pending) {
+        return
+      }
+      timedOutServerRuntimeRequestCount += 1
       pendingServerRuntimeRequests.delete(requestId)
-      resolve(undefined)
+      pending.resolve(undefined)
     }, timeoutMs)
     pendingServerRuntimeRequests.set(requestId, { resolve, timeout })
     sendDbServiceChildMessage({
@@ -482,6 +535,7 @@ async function requestServerRuntimeSnapshotByScope(
       requestId,
       scope
     }, () => {
+      failedServerRuntimeRequestCount += 1
       finishServerRuntimeRequest(requestId, undefined)
     })
   })
@@ -538,6 +592,12 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       pendingMessageCount: workerState.pendingMessageCount,
       pendingMessageBytes: workerState.pendingMessageBytes,
       pendingQueues: backgroundPendingQueuesSnapshot(workerState.pendingQueues),
+      pendingSnapshotRequestCount: workerState.pendingSnapshotRequestCount,
+      timedOutSnapshotRequestCount: workerState.timedOutSnapshotRequestCount,
+      rejectedSnapshotRequestCount: workerState.rejectedSnapshotRequestCount,
+      pendingProcessEventLoopRequestCount: workerState.pendingProcessEventLoopRequestCount,
+      timedOutProcessEventLoopRequestCount: workerState.timedOutProcessEventLoopRequestCount,
+      failedProcessEventLoopRequestCount: workerState.failedProcessEventLoopRequestCount,
       snapshot: workerSnapshot
         ? {
           pid: workerSnapshot.pid,
@@ -557,6 +617,13 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
       pendingRequestCount: dbServiceState.pendingRequestCount,
       timedOutRequestCount,
       failedRequestCount,
+      pendingProcessEventLoopRequestCount: dbServiceState.pendingProcessEventLoopRequestCount,
+      timedOutProcessEventLoopRequestCount: dbServiceState.timedOutProcessEventLoopRequestCount,
+      failedProcessEventLoopRequestCount: dbServiceState.failedProcessEventLoopRequestCount,
+      processEventLoopTimeoutStreak: dbServiceState.processEventLoopTimeoutStreak,
+      pendingServerRuntimeRequestCount: dbServiceState.pendingServerRuntimeRequestCount,
+      timedOutServerRuntimeRequestCount: dbServiceState.timedOutServerRuntimeRequestCount,
+      failedServerRuntimeRequestCount: dbServiceState.failedServerRuntimeRequestCount,
       unavailableCircuitOpenUntil: dbServiceState.unavailableCircuitOpenUntil,
       httpHost: dbServiceState.httpHost,
       httpPort: dbServiceState.httpPort

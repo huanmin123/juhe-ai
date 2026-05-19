@@ -333,6 +333,36 @@ function operationLogListSelectColumns(alias: string): string {
   ].map((column) => column.includes(' AS ') ? column : `${alias}.${column}`).join(', ')
 }
 
+function operationLogOuterListSelectColumns(): string {
+  return [
+    'id',
+    'trace_id',
+    'actor_system_account_id',
+    'actor_username',
+    'actor_display_name',
+    'actor_role',
+    'operation_scope_system_account_id',
+    'mode',
+    'module',
+    'action',
+    'operation_key',
+    'resource_type',
+    'resource_id',
+    'resource_name',
+    'summary',
+    'detail_level',
+    'visibility_scope',
+    'changes_json',
+    'metadata_json',
+    'method',
+    'path',
+    'status_code',
+    'client_ip',
+    'user_agent',
+    'created_at'
+  ].join(', ')
+}
+
 function listVisibleOperationLogsForViewer(systemAccountId: string, options: OperationLogListOptions): OperationLogListResult {
   const pageSize = normalizeOperationLogPageSize(options.pageSize ?? options.limit)
   const page = normalizeOperationLogPage(options.page)
@@ -353,7 +383,7 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
   `
   const rows = database
     .prepare(`
-      SELECT *
+      SELECT ${operationLogOuterListSelectColumns()}
       FROM (
         SELECT ${operationLogListSelectColumns('ol')}
         FROM operation_logs ol

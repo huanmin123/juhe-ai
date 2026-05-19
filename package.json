@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "pnpm -r --parallel dev",
+    "mockdata": "pnpm --filter juhe-ai-backend mockdata",
     "build": "pnpm -r build",
     "package:release": "pwsh ./scripts/package-release.ps1",
     "package:release:windows": "pwsh ./scripts/package-release.ps1",

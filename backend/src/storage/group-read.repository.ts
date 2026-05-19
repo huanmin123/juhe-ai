@@ -76,7 +76,7 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
   }
   const rows = getDatabase()
     .prepare(`
-      SELECT * FROM (
+      SELECT ${groupListRowOuterSelectColumns()} FROM (
         SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM groups
         WHERE groups.system_account_id = ?
@@ -112,7 +112,7 @@ export function findGroupRowForAccess(access: AccessScope | undefined, groupId: 
   }
   return getDatabase()
     .prepare(`
-      SELECT * FROM (
+      SELECT ${groupListRowOuterSelectColumns()} FROM (
         SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
         FROM groups
         WHERE groups.id = ?
@@ -145,6 +145,23 @@ function groupRowSelectColumns(alias: string): string {
     'created_at',
     'updated_at'
   ].map((column) => `${alias}.${column}`).join(', ')
+}
+
+function groupListRowOuterSelectColumns(): string {
+  return [
+    'id',
+    'system_account_id',
+    'name',
+    'provider_code',
+    'description',
+    'enabled',
+    'is_default',
+    'created_at',
+    'updated_at',
+    'access_type',
+    'authorization_id',
+    'authorization_status'
+  ].join(', ')
 }
 
 export function loadGroupAuthorizationUsageSummaries(

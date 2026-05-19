@@ -139,6 +139,7 @@ export interface SystemMetricsOverview {
     cpuPercentMax?: number
     memoryUsedPercentAvg?: number
     memoryUsedPercentMax?: number
+    eventLoopLagMsSampleCount?: number
     eventLoopLagMsAvg?: number
     eventLoopLagMsMax?: number
     networkRxBytesPerSecondAvg?: number

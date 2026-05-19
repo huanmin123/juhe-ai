@@ -89,6 +89,12 @@ interface BackgroundWorkerState {
   pendingMessageCount: number
   pendingMessageBytes: number
   pendingQueues: BackgroundWorkerIpcQueuesRuntime
+  pendingSnapshotRequestCount: number
+  timedOutSnapshotRequestCount: number
+  rejectedSnapshotRequestCount: number
+  pendingProcessEventLoopRequestCount: number
+  timedOutProcessEventLoopRequestCount: number
+  failedProcessEventLoopRequestCount: number
 }
 
 class HeadIndexedQueue<T> {
@@ -188,6 +194,10 @@ const pendingMessageDropCounts = emptyIpcQueueCounts()
 const pendingMessageRejectCounts = emptyIpcQueueCounts()
 let pendingRequests = new Map<string, PendingRequest>()
 let pendingProcessEventLoopRequests = new Map<string, PendingProcessEventLoopRequest>()
+let timedOutSnapshotRequestCount = 0
+let rejectedSnapshotRequestCount = 0
+let timedOutProcessEventLoopRequestCount = 0
+let failedProcessEventLoopRequestCount = 0
 let lastSnapshot: BackgroundWorkerRuntimeSnapshot | undefined
 let backgroundWorkerReadyHandler: (() => void) | undefined
 
@@ -196,6 +206,9 @@ const maxPendingMessageBytes = 128 * 1024 * 1024
 
 if (runtimeConfig.processRole === 'worker') {
   process.on('message', handleParentMessage)
+  process.once('disconnect', () => {
+    markParentIpcBroken(new Error('后台 worker 父进程 IPC 已断开'))
+  })
 }
 
 export function attachBackgroundWorkerProcess(child: ChildProcess, options: { onReady?: () => void } = {}): void {
@@ -299,13 +312,18 @@ export async function requestBackgroundWorkerSnapshot(timeoutMs = 5000): Promise
   return await new Promise<BackgroundWorkerRuntimeSnapshot | undefined>((resolve, reject) => {
     const timeout = setTimeout(() => {
       pendingRequests.delete(requestId)
+      timedOutSnapshotRequestCount += 1
       resolve(lastSnapshot)
     }, timeoutMs)
     pendingRequests.set(requestId, { resolve, reject, timeout })
-    queueWorkerMessage({
+    const queued = queueWorkerMessage({
       type: 'background_worker_status_request',
       requestId
     })
+    if (!queued) {
+      rejectedSnapshotRequestCount += 1
+      finishPendingRequest(requestId, lastSnapshot)
+    }
   })
 }
 
@@ -318,18 +336,31 @@ export async function requestServerProcessEventLoopSamples(timeoutMs = 1000): Pr
   const requestId = randomUUID()
   return await new Promise<ProcessEventLoopSample[]>((resolve) => {
     const timeout = setTimeout(() => {
+      const pending = pendingProcessEventLoopRequests.get(requestId)
+      if (!pending) {
+        return
+      }
+      timedOutProcessEventLoopRequestCount += 1
       pendingProcessEventLoopRequests.delete(requestId)
-      resolve([])
+      pending.resolve([])
     }, timeoutMs)
     pendingProcessEventLoopRequests.set(requestId, { resolve, timeout })
-    sendToParent({
-      type: 'background_worker_process_event_loop_request',
-      requestId
-    } satisfies BackgroundWorkerMessage, (error) => {
-      if (error) {
-        finishProcessEventLoopRequest(requestId, [])
-      }
-    })
+    try {
+      sendToParent({
+        type: 'background_worker_process_event_loop_request',
+        requestId
+      } satisfies BackgroundWorkerMessage, (error) => {
+        if (error) {
+          failedProcessEventLoopRequestCount += 1
+          finishProcessEventLoopRequest(requestId, [])
+          markParentIpcBroken(error)
+        }
+      })
+    } catch (error) {
+      failedProcessEventLoopRequestCount += 1
+      finishProcessEventLoopRequest(requestId, [])
+      markParentIpcBroken(error)
+    }
   })
 }
 
@@ -340,7 +371,13 @@ export function getBackgroundWorkerState(): BackgroundWorkerState {
     lastSnapshot,
     pendingMessageCount: usageRecordMessageQueue.length + regularWorkerMessageQueue.length,
     pendingMessageBytes: usageRecordMessageQueueBytes + regularWorkerMessageQueueBytes,
-    pendingQueues: buildPendingQueuesRuntime()
+    pendingQueues: buildPendingQueuesRuntime(),
+    pendingSnapshotRequestCount: pendingRequests.size,
+    timedOutSnapshotRequestCount,
+    rejectedSnapshotRequestCount,
+    pendingProcessEventLoopRequestCount: pendingProcessEventLoopRequests.size,
+    timedOutProcessEventLoopRequestCount,
+    failedProcessEventLoopRequestCount
   }
 }
 
@@ -774,6 +811,15 @@ function failPendingRequests(): void {
     pending.resolve(lastSnapshot)
     pendingRequests.delete(requestId)
   }
+  failPendingProcessEventLoopRequests()
+}
+
+function failPendingProcessEventLoopRequests(): void {
+  for (const [requestId, pending] of pendingProcessEventLoopRequests) {
+    clearTimeout(pending.timeout)
+    pending.resolve([])
+    pendingProcessEventLoopRequests.delete(requestId)
+  }
 }
 
 function finishProcessEventLoopRequest(requestId: string, samples: ProcessEventLoopSample[]): void {
@@ -804,6 +850,12 @@ function markWorkerIpcBroken(error: unknown, child = workerProcess): void {
   if (error) {
     process.stderr.write(`[background-worker] worker IPC 已断开：${error instanceof Error ? error.message : String(error)}\n`)
   }
+}
+
+function markParentIpcBroken(error: unknown): void {
+  failPendingProcessEventLoopRequests()
+  process.stderr.write(`[background-worker] 父进程 IPC 已断开：${error instanceof Error ? error.message : String(error)}\n`)
+  process.exit(1)
 }
 
 async function clearServerGatewayRuntimeCache(): Promise<void> {

@@ -31,7 +31,7 @@ export function activeGroupAuthorization(groupId: string, granteeSystemAccountId
 export function activeResourceAuthorization(resourceType: ResourceAuthorizationResourceType, resourceId: string, granteeSystemAccountId: string): ResourceAuthorizationRow | undefined {
   const now = nowIso()
   return getDatabase()
-    .prepare("SELECT * FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1")
+    .prepare(`SELECT ${resourceAuthorizationSelectColumns()} FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' AND (expires_at IS NULL OR expires_at > ?) LIMIT 1`)
     .get(resourceType, resourceId, granteeSystemAccountId, now) as unknown as ResourceAuthorizationRow | undefined
 }
 
@@ -44,7 +44,7 @@ export function activeResourceAuthorizationsByResourceIds(resourceType: Resource
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database
       .prepare(`
-        SELECT *
+        SELECT ${resourceAuthorizationSelectColumns()}
         FROM resource_authorizations
         WHERE resource_type = ?
           AND grantee_system_account_id = ?
@@ -55,6 +55,33 @@ export function activeResourceAuthorizationsByResourceIds(resourceType: Resource
       .all(resourceType, granteeSystemAccountId, now, ...chunk) as unknown as ResourceAuthorizationRow[])
   }
   return new Map(rows.map((row) => [row.resource_id, row]))
+}
+
+export function resourceAuthorizationSelectColumns(alias?: string): string {
+  const prefix = alias ? `${alias}.` : ''
+  return [
+    'id',
+    'resource_type',
+    'resource_id',
+    'resource_owner_system_account_id',
+    'grantee_system_account_id',
+    'scope',
+    'status',
+    'effective_source_type',
+    'effective_source_team_id',
+    'activated_at',
+    'last_source_changed_at',
+    'remark',
+    'expires_at',
+    'limits_json',
+    'model_policy_json',
+    'created_by',
+    'created_at',
+    'revoked_by',
+    'revoked_at',
+    'revoked_reason',
+    'updated_at'
+  ].map((column) => `${prefix}${column}`).join(', ')
 }
 
 export function resolveAccountSystemAccountId(accountId: string): string | undefined {

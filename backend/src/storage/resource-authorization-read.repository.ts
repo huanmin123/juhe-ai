@@ -14,7 +14,7 @@ import {
   sanitizeResourceAuthorizationSummaryForAccess,
   withResourceAuthorizationPermissions
 } from './resource-authorization-list-helpers.js'
-import { usageScope } from './resource-authorization-helpers.js'
+import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountsByIds, loadSystemTeamNameMap } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
@@ -228,7 +228,7 @@ function resourceAuthorizationGrantSelectColumns(alias: string): string {
 export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationGrantRow, database = getDatabase()): ResourceAuthorizationRow | undefined {
   if (!row.grantee_system_account_id) return undefined
   return database.prepare(`
-    SELECT *
+    SELECT ${resourceAuthorizationSelectColumns()}
     FROM resource_authorizations
     WHERE resource_type = ?
       AND resource_id = ?

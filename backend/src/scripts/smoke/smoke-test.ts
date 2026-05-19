@@ -2,6 +2,7 @@ import http from 'node:http'
 
 import { runtimeConfig } from '../../config/runtime.js'
 import { systemSettingKeys } from '../../storage/settings.repository.js'
+import { createMockGatewayFixture } from '../maintenance/mockdata-fixtures.js'
 
 const backendUrl = trimTrailingSlash(runtimeConfig.smokeTest.backendUrl)
 const accountName = runtimeConfig.smokeTest.accountName
@@ -41,12 +42,6 @@ interface ApiKeySummary {
   key?: string
   status: string
   groupId?: string
-}
-
-interface GroupSummary {
-  id: string
-  name: string
-  accountIds?: string[]
 }
 
 interface AccountTestResult {
@@ -158,6 +153,7 @@ interface SmokeResourceState {
 async function main(): Promise<void> {
   const summary: string[] = []
   const resourceState: SmokeResourceState = { temporaryGroupIds: [] }
+  let seededGatewayKey: (ApiKeySummary & { key: string }) | undefined
 
   try {
     await checkHealth()
@@ -206,9 +202,10 @@ async function main(): Promise<void> {
 
     let accounts = await fetchSmokeAccounts()
     if (!accountName && !accounts.some(isOpenAIAccountCandidate)) {
-      const seeded = await createTemporaryMockOpenAIAccount(resourceState)
-      accounts = [seeded, ...accounts.filter((account) => account.id !== seeded.id)]
-      summary.push(`空库自动创建临时 mock OpenAI 账户：${seeded.name}`)
+      const seeded = await createTemporaryMockOpenAIGateway(resourceState)
+      seededGatewayKey = seeded.apiKey
+      accounts = [seeded.account, ...accounts.filter((account) => account.id !== seeded.account.id)]
+      summary.push(`空库通过 Mockdata 生成临时 mock OpenAI 账户：${seeded.account.name}`)
     }
     assert(accounts.length > 0, '账户列表为空，且未能创建临时 mock OpenAI 账户')
     const selectedAccount = accountName
@@ -223,7 +220,9 @@ async function main(): Promise<void> {
     summary.push(`账户检查通过：${targetAccount.name}`)
     summary.push(`账户测试通过：${accountTest.message}${accountTest.proxyUrl ? '，代理已配置' : ''}`)
 
-    const gatewayKey = await createTemporaryGatewayKeyForAccount(targetAccount, resourceState)
+    const gatewayKey = seededGatewayKey && targetAccount.id === resourceState.temporaryAccountId
+      ? seededGatewayKey
+      : await createTemporaryGatewayKeyForAccount(targetAccount, resourceState)
     const models = await requestJson<Record<string, unknown>>('/v1/models', {
       headers: { authorization: `Bearer ${gatewayKey.key}` }
     }, gatewayKeyTestTimeoutMs)
@@ -323,44 +322,37 @@ async function loginAsAdmin(): Promise<void> {
   assert(loginResult.data.role === 'admin', `烟测登录账号不是管理员：${loginResult.data.username ?? 'unknown'}`)
 }
 
-async function createTemporaryMockOpenAIAccount(resourceState: SmokeResourceState): Promise<AccountSummary> {
+async function createTemporaryMockOpenAIGateway(
+  resourceState: SmokeResourceState
+): Promise<{ account: AccountSummary; apiKey: ApiKeySummary & { key: string } }> {
   const ownerSystemAccountId = await resolveSmokeOwnerSystemAccountId()
-  const runId = smokeRunId()
   const upstream = createMockOpenAIUpstream()
   await listen(upstream)
   resourceState.temporaryMockUpstream = upstream
   resourceState.ownerSystemAccountId = ownerSystemAccountId
 
-  const ownerScope = ownerScopeQuery(resourceState)
-  const group = await postEnvelope<GroupSummary>(apiPath(`/groups${ownerScope}`), {
-    name: `${temporaryResourcePrefix}-Mock分组-${runId}`,
-    providerCode: 'openai',
-    description: '空库烟测自动创建的临时 mock 分组',
-    enabled: true
+  const fixture = createMockGatewayFixture({
+    label: '烟测',
+    upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
+    systemAccountId: ownerSystemAccountId,
+    accountCount: 1,
+    accountConcurrencyLimit: 20
   })
-  resourceState.activeGatewayGroupId = group.id
-  resourceState.temporaryGroupIds.push(group.id)
-
-  const account = await postEnvelope<AccountSummary>(apiPath(`/accounts${ownerScope}`), {
-    providerCode: 'openai',
-    name: `${temporaryResourcePrefix}-Mock账户-${runId}`,
-    type: 'api_key',
-    credentials: {
-      api_key: `sk-smoke-mock-${runId}`,
-      base_url: `http://127.0.0.1:${serverPort(upstream)}/v1`
-    },
-    status: 'active',
-    groupId: group.id,
-    schedulable: true,
-    concurrencyLimit: 20,
-    notes: '空库烟测自动创建，测试结束后删除'
-  }, accountTestTimeoutMs)
+  const account = fixture.accounts[0]
+  assert(account, 'Mockdata 烟测夹具未生成账户')
+  assert(fixture.apiKey?.key, 'Mockdata 烟测夹具未生成本地网关 Key')
+  resourceState.activeGatewayGroupId = fixture.group.id
+  resourceState.temporaryGroupIds.push(fixture.group.id)
   resourceState.accountId = account.id
   resourceState.temporaryAccountId = account.id
+  resourceState.temporaryApiKeyId = fixture.apiKey.id
   return {
-    ...account,
-    ownerSystemAccountId,
-    boundGroupId: account.boundGroupId ?? group.id
+    account: {
+      ...account,
+      ownerSystemAccountId: account.ownerSystemAccountId ?? ownerSystemAccountId,
+      boundGroupId: account.boundGroupId ?? fixture.group.id
+    },
+    apiKey: fixture.apiKey
   }
 }
 

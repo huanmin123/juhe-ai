@@ -60,6 +60,7 @@ export function mapSystemMetricsLatest(row: Record<string, unknown>): SystemMetr
 
 export function mapSystemMetricsHourly(row: Record<string, unknown>): SystemMetricsOverview['hourlyTrend'][number] {
   const sampleCount = Number(row.sample_count ?? 0)
+  const eventLoopLagMsSampleCount = Number(row.event_loop_lag_ms_count ?? 0)
   return {
     statHour: String(row.stat_hour),
     sampleCount,
@@ -67,7 +68,8 @@ export function mapSystemMetricsHourly(row: Record<string, unknown>): SystemMetr
     cpuPercentMax: numberFromUnknown(row.cpu_percent_max),
     memoryUsedPercentAvg: averageFromSum(row.memory_used_percent_sum, sampleCount),
     memoryUsedPercentMax: numberFromUnknown(row.memory_used_percent_max),
-    eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, sampleCount),
+    eventLoopLagMsSampleCount,
+    eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, eventLoopLagMsSampleCount),
     eventLoopLagMsMax: numberFromUnknown(row.event_loop_lag_ms_max),
     networkRxBytesPerSecondAvg: averageFromSum(row.network_rx_bytes_per_sec_sum, row.network_rx_bytes_per_sec_count),
     networkRxBytesPerSecondMax: numberFromUnknown(row.network_rx_bytes_per_sec_max),

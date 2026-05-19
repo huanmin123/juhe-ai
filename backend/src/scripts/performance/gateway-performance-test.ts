@@ -116,7 +116,7 @@ const [
   { captureGatewayRawBody },
   { requestContextMiddleware },
   databaseModule,
-  repositories,
+  mockdataFixtures,
   gatewayCache,
   usageRecordQueue,
   auditLogQueue
@@ -125,7 +125,7 @@ const [
   import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
-  import('../../storage/repositories.js'),
+  import('../maintenance/mockdata-fixtures.js'),
   import('../../modules/gateway/gateway-runtime-cache.service.js'),
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
@@ -209,40 +209,18 @@ function loadConfig(): PerfConfig {
 }
 
 function seedGatewayData(config: PerfConfig, upstreamBaseUrl: string): SeededGateway {
-  const access = { systemAccountId: 'sys_admin', role: 'user' as const }
-  const group = repositories.createGroup({
-    name: `性能压测分组-${Date.now()}`,
-    providerCode: 'openai',
-    enabled: true
-  }, access)
-  const accountIds: string[] = []
-  for (let index = 0; index < config.accountCount; index += 1) {
-    const account = repositories.createAccount({
-      providerCode: 'openai',
-      name: `性能压测账户-${index + 1}`,
-      type: 'api_key',
-      credentials: {
-        api_key: `sk-perf-${index + 1}`,
-        base_url: upstreamBaseUrl
-      },
-      groupId: group.id,
-      status: 'active',
-      schedulable: true,
-      concurrencyLimit: config.accountConcurrencyLimit,
-      priority: index
-    }, access)
-    accountIds.push(account.id)
-  }
-  const apiKey = repositories.createApiKeyRecord({
-    name: `性能压测 Key-${Date.now()}`,
-    groupId: group.id,
-    status: 'active'
-  }, access)
+  const fixture = mockdataFixtures.createMockGatewayFixture({
+    label: '性能压测',
+    upstreamBaseUrl,
+    accountCount: config.accountCount,
+    accountConcurrencyLimit: config.accountConcurrencyLimit
+  })
+  if (!fixture.apiKey) throw new Error('Mockdata 压测夹具未生成本地网关 Key')
   return {
-    apiKey: apiKey.key,
-    apiKeyId: apiKey.id,
-    groupId: group.id,
-    accountIds
+    apiKey: fixture.apiKey.key,
+    apiKeyId: fixture.apiKey.id,
+    groupId: fixture.group.id,
+    accountIds: fixture.accounts.map((account) => account.id)
   }
 }
 
