@@ -291,16 +291,17 @@ function loadAiPerformanceAccountOptionRows(
     return loadDefaultAiPerformanceAccounts(database, systemAccountId, options.limit)
   }
 
-  const keywordPrefix = `${keyword}%`
+  const keywordPrefix = `${escapeLikePrefix(keyword)}%`
   const ownerIds = loadAiPerformanceAccountOptionOwnerIds(systemAccountId, keyword, options.limit)
   const keywordClauses = [
     'accounts.id = ?',
-    'accounts.id LIKE ?',
-    'accounts.name LIKE ?',
+    "accounts.id LIKE ? ESCAPE '\\'",
+    'accounts.name COLLATE NOCASE = ?',
+    "accounts.name LIKE ? ESCAPE '\\'",
     'accounts.provider_code = ?',
-    'accounts.provider_code LIKE ?'
+    "accounts.provider_code LIKE ? ESCAPE '\\'"
   ]
-  const keywordParams: string[] = [keyword, keywordPrefix, keywordPrefix, keyword, keywordPrefix]
+  const keywordParams: string[] = [keyword, keywordPrefix, keyword, keywordPrefix, keyword, keywordPrefix]
   if (ownerIds.length) {
     keywordClauses.push(`accounts.system_account_id IN (${sqlPlaceholders(ownerIds.length)})`)
     keywordParams.push(...ownerIds)
@@ -322,26 +323,30 @@ function loadAiPerformanceAccountOptionRows(
 }
 
 function loadAiPerformanceAccountOptionOwnerIds(systemAccountId: string, keyword: string, limit: number): string[] {
-  const keywordPrefix = `${keyword}%`
+  const keywordPrefix = `${escapeLikePrefix(keyword)}%`
   const database = getDatabase()
   if (systemAccountId !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID) {
     const row = database.prepare(`
       SELECT id
       FROM system_accounts
       WHERE id = ?
-        AND (username = ? OR username LIKE ? OR display_name LIKE ?)
+        AND (username = ? OR username LIKE ? ESCAPE '\\' OR display_name COLLATE NOCASE = ? OR display_name LIKE ? ESCAPE '\\')
       LIMIT 1
-    `).get(systemAccountId, keyword, keywordPrefix, keywordPrefix) as unknown as { id?: string } | undefined
+    `).get(systemAccountId, keyword, keywordPrefix, keyword, keywordPrefix) as unknown as { id?: string } | undefined
     return row?.id ? [row.id] : []
   }
   const rows = database.prepare(`
     SELECT id
     FROM system_accounts
-    WHERE username = ? OR username LIKE ? OR display_name LIKE ?
+    WHERE username = ? OR username LIKE ? ESCAPE '\\' OR display_name COLLATE NOCASE = ? OR display_name LIKE ? ESCAPE '\\'
     ORDER BY lower(display_name) ASC, id ASC
     LIMIT ?
-  `).all(keyword, keywordPrefix, keywordPrefix, limit) as unknown as Array<{ id?: string }>
+  `).all(keyword, keywordPrefix, keyword, keywordPrefix, limit) as unknown as Array<{ id?: string }>
   return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 function mergeAiPerformanceStatsWithAccounts(

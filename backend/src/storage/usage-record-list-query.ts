@@ -55,11 +55,11 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
   if (accountKeyword) {
     const matchedAccountIds = accountIdsForKeyword(accountKeyword)
     if (matchedAccountIds.length > 0) {
-      clauses.push(`(ur.account_id = ? OR ur.account_id LIKE ? OR ur.account_id IN (${matchedAccountIds.map(() => '?').join(', ')}))`)
-      params.push(accountKeyword, `${accountKeyword}%`, ...matchedAccountIds)
+      clauses.push(`(ur.account_id = ? OR ur.account_id LIKE ? ESCAPE '\\' OR ur.account_id IN (${matchedAccountIds.map(() => '?').join(', ')}))`)
+      params.push(accountKeyword, `${escapeLikePrefix(accountKeyword)}%`, ...matchedAccountIds)
     } else {
-      clauses.push('(ur.account_id = ? OR ur.account_id LIKE ?)')
-      params.push(accountKeyword, `${accountKeyword}%`)
+      clauses.push("(ur.account_id = ? OR ur.account_id LIKE ? ESCAPE '\\')")
+      params.push(accountKeyword, `${escapeLikePrefix(accountKeyword)}%`)
     }
   }
   if (options?.result === 'success') {
@@ -93,11 +93,15 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
 }
 
 function accountIdsForKeyword(keyword: string): string[] {
-  const pattern = `%${keyword}%`
+  const pattern = `${escapeLikePrefix(keyword)}%`
   const rows = getDatabase()
-    .prepare('SELECT id FROM accounts WHERE name LIKE ? OR id LIKE ? LIMIT 200')
-    .all(pattern, pattern) as unknown as Array<{ id?: string }>
+    .prepare("SELECT id FROM accounts WHERE (name COLLATE NOCASE = ? OR name LIKE ? ESCAPE '\\' OR id = ? OR id LIKE ? ESCAPE '\\') LIMIT 200")
+    .all(keyword, pattern, keyword, pattern) as unknown as Array<{ id?: string }>
   return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 function isHttpStatusCode(value: unknown): value is number {

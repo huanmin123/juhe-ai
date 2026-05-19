@@ -314,6 +314,10 @@ function accountBindingSubquery(): string {
   return `group_accounts`
 }
 
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
+}
+
 function buildAccountListFilters(options: AccountRowQueryOptions): { clause: string; params: AccountFilterValue[] } {
   const clauses: string[] = []
   const params: AccountFilterValue[] = []
@@ -323,15 +327,35 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
   }
   const keyword = options.keyword?.trim()
   if (keyword) {
+    const keywordPrefix = `${escapeLikePrefix(keyword)}%`
     clauses.push(`(
-      account_rows.name LIKE ?
-      OR COALESCE(account_rows.notes, '') LIKE ?
-      OR account_rows.provider_code LIKE ?
-      OR account_rows.type LIKE ?
-      OR account_rows.id LIKE ?
-      OR COALESCE(bound_groups.name, '') LIKE ?
+      account_rows.id = ?
+      OR account_rows.id LIKE ? ESCAPE '\\'
+      OR account_rows.name COLLATE NOCASE = ?
+      OR account_rows.name LIKE ? ESCAPE '\\'
+      OR account_rows.notes COLLATE NOCASE = ?
+      OR account_rows.notes LIKE ? ESCAPE '\\'
+      OR account_rows.provider_code COLLATE NOCASE = ?
+      OR account_rows.provider_code LIKE ? ESCAPE '\\'
+      OR account_rows.type COLLATE NOCASE = ?
+      OR account_rows.type LIKE ? ESCAPE '\\'
+      OR bound_groups.name COLLATE NOCASE = ?
+      OR bound_groups.name LIKE ? ESCAPE '\\'
     )`)
-    params.push(...Array.from({ length: 6 }, () => `%${keyword}%`))
+    params.push(
+      keyword,
+      keywordPrefix,
+      keyword,
+      keywordPrefix,
+      keyword,
+      keywordPrefix,
+      keyword,
+      keywordPrefix,
+      keyword,
+      keywordPrefix,
+      keyword,
+      keywordPrefix
+    )
   }
   if (options.type && options.type !== 'all') {
     clauses.push('account_rows.type = ?')

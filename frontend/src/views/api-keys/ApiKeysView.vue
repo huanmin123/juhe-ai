@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card api-keys-page-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="搜索 API Key..." filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
+    <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="名称 / Key 前缀 / 说明前缀" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
       <template #inline-filters>
         <a-select v-model:value="statusFilter" class="toolbar-select responsive-list-inline-filter" :options="listStatusOptions" @change="applyFilters" />
         <a-select v-model:value="groupFilter" allow-clear class="toolbar-select responsive-list-inline-filter" :options="groupFilterOptions" placeholder="全部分组" @change="applyFilters" />

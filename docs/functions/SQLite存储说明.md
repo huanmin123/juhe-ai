@@ -167,9 +167,12 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `system_accounts(username, id)`、`system_accounts(display_name, id)`：AI 性能账号选项按系统账号名前缀解析 owner ID。
 - `accounts(system_account_id, provider_code, lower(name))`：保证同一用户同一供应商下 AI 账户名称唯一，凭据唯一仍由 `credential_fingerprint` 兜底。
 - `accounts(name, id)`、`accounts(system_account_id, name, id)`：AI 性能账号选项和账号候选按账号名前缀定位。
+- `accounts(provider_code, id)`、`accounts(system_account_id, provider_code, id)`、`accounts(type, id)`、`accounts(system_account_id, type, id)`、`accounts(notes, id)`、`accounts(system_account_id, notes, id)`：AI 账户列表和选项搜索只支持精确 / 前缀匹配，不做无边界包含匹配。
 - `groups(system_account_id, provider_code, lower(name))`：保证同一用户同一供应商下分组名称唯一。
+- `groups(name, id)`、`groups(system_account_id, name, id)`：账户绑定分组和分组选项按分组名前缀定位。
 - `groups(system_account_id, provider_code) WHERE is_default = 1`：保证同一用户同一供应商只有一个默认分组。
 - `api_keys(system_account_id, lower(name))`：保证同一用户下 API Key 名称唯一，密钥本身仍由 `key_hash` 兜底。
+- `api_keys(key_prefix, id)`、`api_keys(system_account_id, key_prefix, id)`、`api_keys(name, id)`、`api_keys(system_account_id, name, id)`、`api_keys(description, id)`、`api_keys(system_account_id, description, id)`：API Key 列表搜索只支持精确 / 前缀匹配，不做无边界包含匹配。
 - `proxy_profiles(lower(name))`：保证代理配置名称全局唯一。
 - 业务唯一索引直接落到当前 schema；若本地旧库已有重复记录，应先离线清理旧数据或重建库，不在启动路径保留跳过索引的兼容逻辑。
 - `usage_records(system_account_id, created_at, id)`：统计 worker 增量扫描。

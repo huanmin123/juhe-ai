@@ -39,6 +39,16 @@ try {
     },
     groupId: group.id
   }, access)
+  const middleNameAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '普通使用记录查询防护账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-usage-record-list-query-guard-middle',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id
+  }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '使用记录查询防护 Key',
     groupId: group.id
@@ -71,8 +81,37 @@ try {
       statusCode: 200,
       success: true,
       createdAt: '2026-01-02T00:00:01.000Z'
+    },
+    {
+      id: 'usage_list_query_guard_middle_name',
+      traceId: 'trace-usage-list-query-guard-middle-name',
+      apiKeyId: apiKey.id,
+      groupId: group.id,
+      accountId: middleNameAccount.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-4.1',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:02.000Z'
     }
   ])
+
+  const businessDatabase = databaseModule.getDatabase()
+  const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
+  const accountLookupCalls: Array<{ sql: string; params: unknown[] }> = []
+  businessDatabase.prepare = ((sql: string) => {
+    const statement = originalBusinessPrepare(sql)
+    if (/^\s*SELECT\s+id\s+FROM\s+accounts\b/i.test(sql)) {
+      const originalAll = statement.all.bind(statement) as typeof statement.all
+      statement.all = ((...params: SQLInputValue[]) => {
+        accountLookupCalls.push({ sql, params })
+        return originalAll(...params)
+      }) as typeof statement.all
+    }
+    return statement
+  }) as typeof businessDatabase.prepare
 
   const recordDatabase = databaseModule.getRecordDatabase()
   const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
@@ -93,12 +132,21 @@ try {
     const exactModel = repositories.listUsageRecords(access, { model: 'gpt-5.5', page: 1, pageSize: 10 })
     assert.deepEqual(exactModel.items.map((item) => item.id), ['usage_list_query_guard_exact'], 'model 筛选应按精确值匹配，不应把前缀模型一并查出')
 
-    const accountPrefix = repositories.listUsageRecords(access, { accountKeyword: account.id.slice(0, 12), page: 1, pageSize: 10 })
+    const accountNamePrefix = repositories.listUsageRecords(access, { accountKeyword: '使用记录查询防护', page: 1, pageSize: 10 })
+    assert.deepEqual(accountNamePrefix.items.map((item) => item.id), ['usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '账号名称关键字应按前缀匹配，不应命中中间包含名称')
+
+    const accountPrefix = repositories.listUsageRecords(access, { accountKeyword: uniquePrefix(account.id, middleNameAccount.id), page: 1, pageSize: 10 })
     assert.equal(accountPrefix.items.length, 2, '账号关键字仍应支持账号 ID 前缀定位使用记录')
   } finally {
     recordDatabase.prepare = originalPrepare
+    businessDatabase.prepare = originalBusinessPrepare
   }
 
+  assert(accountLookupCalls.length >= 2, '回归应捕获账号关键词预解析 SQL')
+  for (const call of accountLookupCalls) {
+    assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账号关键词预解析应显式转义 LIKE 通配符')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号关键词预解析不应传入前导通配符参数')
+  }
   assert(usageRecordListCalls.length >= 2, '回归应捕获使用记录列表 SQL')
   for (const call of usageRecordListCalls) {
     assert(!/\bur\.model\s+LIKE\s+\?/i.test(call.sql), 'model 筛选不应在 usage_records 上使用 LIKE')
@@ -136,4 +184,12 @@ function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexNam
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))
     .join('\n')
   assert(details.includes(indexName), `查询计划应使用 ${indexName}，实际计划：${details}`)
+}
+
+function uniquePrefix(value: string, otherValue: string): string {
+  for (let length = 1; length <= value.length; length += 1) {
+    const prefix = value.slice(0, length)
+    if (!otherValue.startsWith(prefix)) return prefix
+  }
+  return value
 }

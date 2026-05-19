@@ -37,7 +37,7 @@
             :filter-option="filterAccountOption"
             :max-tag-count="0"
             :options="accountOptions"
-            placeholder="搜索并添加账户"
+            placeholder="输入名称 / ID 前缀添加账户"
             @select="handleAccountSelect"
           />
         </div>

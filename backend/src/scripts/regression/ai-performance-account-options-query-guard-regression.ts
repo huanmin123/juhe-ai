@@ -59,6 +59,24 @@ try {
       base_url: 'https://api.openai.com/v1'
     }
   }, adminAccess)
+  const wildcardAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: 'perf%literal 主账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ai-performance-options-query-guard-wildcard-literal',
+      base_url: 'https://api.openai.com/v1'
+    }
+  }, ownerAccess)
+  const wildcardNeighborAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: 'perfXliteral 主账号',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-ai-performance-options-query-guard-wildcard-neighbor',
+      base_url: 'https://api.openai.com/v1'
+    }
+  }, ownerAccess)
 
   const database = databaseModule.getDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
@@ -101,6 +119,13 @@ try {
     })
     assert(ownerKeyword.some((account) => account.id === matchedAccount.id), '管理员全局视图应支持按系统账号名前缀定位账号')
 
+    const wildcardKeyword = usageStatsRepository.listAiPerformanceAccountOptions(adminAccess, {
+      keyword: 'perf%',
+      limit: 10
+    })
+    assert.deepEqual(wildcardKeyword.map((account) => account.id), [wildcardAccount.id], 'AI 性能账号选项应把 % 当作字面量前缀处理')
+    assert(!wildcardKeyword.some((account) => account.id === wildcardNeighborAccount.id), 'AI 性能账号选项不应把用户输入的 % 当作 LIKE 通配符')
+
     const userScopedKeyword = usageStatsRepository.listAiPerformanceAccountOptions(ownerAccess, {
       keyword: '管理员',
       limit: 10
@@ -114,6 +139,9 @@ try {
   assert(accountOptionCalls.length >= 4, '回归应捕获 AI 性能账号选项账号查询')
   for (const call of capturedCalls) {
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), 'AI 性能账号选项查询不应传入前导通配符参数')
+    if (/\bLIKE\s+\?/i.test(call.sql)) {
+      assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'AI 性能账号选项前缀搜索应显式转义 LIKE 通配符')
+    }
   }
   for (const call of accountOptionCalls) {
     assert(!/\bLEFT\s+JOIN\s+system_accounts\b/i.test(call.sql), 'AI 性能账号选项关键词查询不应为 owner 名称挂系统账号表')

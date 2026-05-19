@@ -36,8 +36,9 @@ export function buildApiKeyFilters(scope: { clause: string; params: string[] }, 
     params.push(...scope.params)
   }
   if (options.keyword) {
-    clauses.push('(name LIKE ? OR COALESCE(description, \'\') LIKE ? OR key_prefix LIKE ?)')
-    params.push(`%${options.keyword}%`, `%${options.keyword}%`, `%${options.keyword}%`)
+    const keywordPrefix = `${escapeLikePrefix(options.keyword)}%`
+    clauses.push("(key_prefix = ? OR key_prefix LIKE ? ESCAPE '\\' OR name COLLATE NOCASE = ? OR name LIKE ? ESCAPE '\\' OR description COLLATE NOCASE = ? OR description LIKE ? ESCAPE '\\')")
+    params.push(options.keyword, keywordPrefix, options.keyword, keywordPrefix, options.keyword, keywordPrefix)
   }
   if (options.status) {
     clauses.push('status = ?')
@@ -55,4 +56,8 @@ export function buildApiKeyFilters(scope: { clause: string; params: string[] }, 
 
 function textFilter(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }

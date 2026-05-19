@@ -39,7 +39,7 @@ try {
   }, access)
   const matchedAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: '账号用量 keywordneedle 账户',
+    name: 'keywordneedle 账号用量账户',
     type: 'api_key',
     credentials: {
       api_key: 'sk-account-usage-query-guard-matched',
@@ -49,7 +49,7 @@ try {
   }, access)
   const otherAccount = repositories.createAccount({
     providerCode: 'openai',
-    name: '账号用量普通账户',
+    name: '普通 keywordneedle 账号用量账户',
     type: 'api_key',
     credentials: {
       api_key: 'sk-account-usage-query-guard-other',
@@ -60,6 +60,21 @@ try {
 
   seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', matchedAccount.id, 7)
   seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', otherAccount.id, 3)
+
+  const businessDatabase = databaseModule.getDatabase()
+  const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
+  const businessCalls: Array<{ sql: string; params: unknown[] }> = []
+  businessDatabase.prepare = ((sql: string) => {
+    const statement = originalBusinessPrepare(sql)
+    if (/^\s*SELECT\s+accounts\.id\s+FROM\s+accounts\b/i.test(sql)) {
+      const originalAll = statement.all.bind(statement) as typeof statement.all
+      statement.all = ((...params: SQLInputValue[]) => {
+        businessCalls.push({ sql, params })
+        return originalAll(...params)
+      }) as typeof statement.all
+    }
+    return statement
+  }) as typeof businessDatabase.prepare
 
   const recordDatabase = databaseModule.getRecordDatabase()
   const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
@@ -108,8 +123,15 @@ try {
     assert.equal(missResult.total, 0, '账号用量关键词无匹配账号时应直接返回空窗口')
   } finally {
     recordDatabase.prepare = originalPrepare
+    businessDatabase.prepare = originalBusinessPrepare
   }
 
+  assert(businessCalls.length >= 3, '回归应捕获账号用量关键词预解析 SQL')
+  for (const call of businessCalls) {
+    assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账号用量关键词预解析不应通过 COALESCE 做包含扫描')
+    assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账号用量关键词预解析前缀搜索应显式转义 LIKE 通配符')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量关键词预解析不应接收前导通配符参数')
+  }
   assert(capturedCalls.length >= 4, '回归应捕获账号用量窗口查询 SQL')
   assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql)), '账号用量关键词窗口查询应使用 scope_id 命中预解析账号')
   assert(capturedCalls.some((call) => /\bAND\s+0\s+=\s+1\b/i.test(call.sql)), '账号用量关键词无匹配时应避免扫描窗口表')

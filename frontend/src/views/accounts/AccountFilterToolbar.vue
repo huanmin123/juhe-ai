@@ -1,7 +1,7 @@
 <template>
   <ResponsiveListToolbar
     :keyword="filters.keyword"
-    search-placeholder="搜索账号..."
+    search-placeholder="名称 / ID / 分组 / 备注前缀"
     filter-title="筛选账户"
     :active-filter-count="activeFilterCount"
     :mobile-action-count="1"

@@ -357,15 +357,18 @@ function loadAccountUsageKeywordAccountIds(input: {
   const clauses: string[] = []
   const params: string[] = []
   const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
-  const containsKeyword = `%${keyword}%`
-  const prefixKeyword = `${keyword}%`
+  const prefixKeyword = `${escapeLikePrefix(keyword)}%`
   clauses.push(`(
     accounts.id = ?
-    OR accounts.id LIKE ?
-    OR accounts.name LIKE ?
-    OR COALESCE(accounts.notes, '') LIKE ?
-    OR accounts.provider_code LIKE ?
-    OR accounts.type LIKE ?
+    OR accounts.id LIKE ? ESCAPE '\\'
+    OR accounts.name COLLATE NOCASE = ?
+    OR accounts.name LIKE ? ESCAPE '\\'
+    OR accounts.notes COLLATE NOCASE = ?
+    OR accounts.notes LIKE ? ESCAPE '\\'
+    OR accounts.provider_code COLLATE NOCASE = ?
+    OR accounts.provider_code LIKE ? ESCAPE '\\'
+    OR accounts.type COLLATE NOCASE = ?
+    OR accounts.type LIKE ? ESCAPE '\\'
     OR EXISTS (
       SELECT 1
       FROM group_accounts
@@ -373,10 +376,24 @@ function loadAccountUsageKeywordAccountIds(input: {
       WHERE group_accounts.account_id = accounts.id
         AND group_accounts.system_account_id = ?
         AND group_accounts.enabled = 1
-        AND groups.name LIKE ?
+        AND (groups.name COLLATE NOCASE = ? OR groups.name LIKE ? ESCAPE '\\')
     )
   )`)
-  params.push(keyword, prefixKeyword, containsKeyword, containsKeyword, containsKeyword, containsKeyword, viewerSystemAccountId, containsKeyword)
+  params.push(
+    keyword,
+    prefixKeyword,
+    keyword,
+    prefixKeyword,
+    keyword,
+    prefixKeyword,
+    keyword,
+    prefixKeyword,
+    keyword,
+    prefixKeyword,
+    viewerSystemAccountId,
+    keyword,
+    prefixKeyword
+  )
   if (input.type) {
     clauses.push('accounts.type = ?')
     params.push(input.type)
@@ -405,6 +422,10 @@ function loadAccountUsageKeywordAccountIds(input: {
     `)
     .all(...params) as unknown as Array<{ id?: string }>
   return [...new Set(rows.map((row) => row.id).filter((id): id is string => Boolean(id)))]
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 function buildAccountUsageScopeIdFilter(accountIds: string[]): { sql: string; params: string[] } {

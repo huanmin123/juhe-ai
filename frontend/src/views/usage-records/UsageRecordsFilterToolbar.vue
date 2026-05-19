@@ -1,7 +1,7 @@
 <template>
   <ResponsiveListToolbar
     :keyword="keyword"
-    search-placeholder="按AI账户名称筛选"
+    search-placeholder="AI 账户名称 / ID 前缀"
     filter-title="筛选使用记录"
     :active-filter-count="activeFilterCount"
     :refresh-loading="refreshLoading"

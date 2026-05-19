@@ -1,0 +1,150 @@
+import { strict as assert } from 'node:assert'
+import type { SQLInputValue } from 'node:sqlite'
+import { mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
+
+const tempRoot = resolve(tmpdir(), `juhe-ai-account-list-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.secret = 'account-list-query-guard-secret'
+runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.fileEnabled = false
+runtimeConfig.processRole = 'worker'
+mkdirSync(tempRoot, { recursive: true })
+logger.level = 'silent'
+
+const [databaseModule, repositories] = await Promise.all([
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js')
+])
+
+try {
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const matchedGroup = repositories.createGroup({
+    name: '账户绑定前缀分组',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  const middleGroup = repositories.createGroup({
+    name: '普通账户绑定前缀分组',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  const matchedByName = createGuardAccount('账户检索目标', 'sk-account-list-query-guard-name', '普通备注', matchedGroup.id)
+  const matchedByNamePrefix = createGuardAccount('账户检索目标扩展', 'sk-account-list-query-guard-name-prefix', '普通备注扩展', matchedGroup.id)
+  const middleNameOnly = createGuardAccount('普通账户检索目标', 'sk-account-list-query-guard-name-middle', '普通备注中间', matchedGroup.id)
+  const matchedByNotes = createGuardAccount('备注前缀账户', 'sk-account-list-query-guard-notes', '备注前缀命中', matchedGroup.id)
+  const middleNotesOnly = createGuardAccount('普通备注账户', 'sk-account-list-query-guard-notes-middle', '普通备注前缀命中', matchedGroup.id)
+  const matchedByGroup = createGuardAccount('绑定分组命中账户', 'sk-account-list-query-guard-group', '普通备注绑定分组', matchedGroup.id)
+  const middleGroupOnly = createGuardAccount('绑定分组中间账户', 'sk-account-list-query-guard-group-middle', '普通备注绑定分组中间', middleGroup.id)
+  const wildcardLiteral = createGuardAccount('percent%literal 账户', 'sk-account-list-query-guard-percent-literal', '通配符字面量', matchedGroup.id)
+  const wildcardNeighbor = createGuardAccount('percentXliteral 账户', 'sk-account-list-query-guard-percent-neighbor', '通配符邻近值', matchedGroup.id)
+
+  const database = databaseModule.getDatabase()
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
+  database.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    if (/\baccount_rows\.name\b/i.test(sql) && /\bFROM\s+\(/i.test(sql) && /\bORDER\s+BY\b/i.test(sql)) {
+      const originalAll = statement.all.bind(statement) as typeof statement.all
+      statement.all = ((...params: SQLInputValue[]) => {
+        capturedCalls.push({ sql, params })
+        return originalAll(...params)
+      }) as typeof statement.all
+    }
+    return statement
+  }) as typeof database.prepare
+
+  try {
+    const nameResult = repositories.listAccountsPage(access, { keyword: '账户检索目标', page: 1, pageSize: 20 })
+    const nameIds = nameResult.items.map((item) => item.id)
+    assert(nameIds.includes(matchedByName.id), 'AI 账户搜索应命中名称精确值')
+    assert(nameIds.includes(matchedByNamePrefix.id), 'AI 账户搜索应命中名称前缀值')
+    assert(!nameIds.includes(middleNameOnly.id), 'AI 账户搜索不应命中名称中间包含值')
+
+    const notesResult = repositories.listAccountsPage(access, { keyword: '备注前缀', page: 1, pageSize: 20 })
+    const notesIds = notesResult.items.map((item) => item.id)
+    assert(notesIds.includes(matchedByNotes.id), 'AI 账户搜索应命中备注前缀值')
+    assert(!notesIds.includes(middleNotesOnly.id), 'AI 账户搜索不应命中备注中间包含值')
+
+    const groupResult = repositories.listAccountsPage(access, { keyword: '账户绑定前缀', page: 1, pageSize: 20 })
+    const groupIds = groupResult.items.map((item) => item.id)
+    assert(groupIds.includes(matchedByGroup.id), 'AI 账户搜索应命中绑定分组名前缀值')
+    assert(!groupIds.includes(middleGroupOnly.id), 'AI 账户搜索不应命中绑定分组名中间包含值')
+
+    const idPrefix = uniquePrefix(matchedByName.id, matchedByNamePrefix.id)
+    const idResult = repositories.listAccountsPage(access, { keyword: idPrefix, page: 1, pageSize: 20 })
+    assert(idResult.items.some((item) => item.id === matchedByName.id), 'AI 账户搜索应支持账户 ID 前缀定位')
+
+    const wildcardResult = repositories.listAccountsPage(access, { keyword: 'percent%', page: 1, pageSize: 20 })
+    const wildcardIds = wildcardResult.items.map((item) => item.id)
+    assert(wildcardIds.includes(wildcardLiteral.id), 'AI 账户搜索应把 % 当作字面量前缀处理')
+    assert(!wildcardIds.includes(wildcardNeighbor.id), 'AI 账户搜索不应把用户输入的 % 当作 LIKE 通配符')
+  } finally {
+    database.prepare = originalPrepare
+  }
+
+  assert(capturedCalls.length >= 5, '回归应捕获 AI 账户列表 SQL')
+  for (const call of capturedCalls) {
+    assert(!/\bCOALESCE\s*\(\s*account_rows\.notes\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描备注字段')
+    assert(!/\bCOALESCE\s*\(\s*bound_groups\.name\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描分组名称')
+    assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'AI 账户列表前缀搜索应显式转义 LIKE 通配符')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), 'AI 账户列表搜索不应传入前导通配符参数')
+  }
+  for (const indexName of [
+    'idx_accounts_name_lookup',
+    'idx_accounts_system_account_name_lookup',
+    'idx_accounts_provider_lookup',
+    'idx_accounts_system_account_provider_lookup',
+    'idx_accounts_notes_lookup',
+    'idx_accounts_system_account_notes_lookup',
+    'idx_accounts_type_lookup',
+    'idx_accounts_system_account_type_lookup',
+    'idx_groups_name_lookup',
+    'idx_groups_system_account_name_lookup'
+  ]) {
+    assertBusinessIndexExists(indexName)
+  }
+
+  console.log('AI 账户列表查询防护回归通过：搜索仅支持精确/前缀匹配，不再使用前导通配符或包含匹配')
+} finally {
+  try {
+    databaseModule.getDatabase().close()
+    databaseModule.getRecordDatabase().close()
+  } catch {
+  }
+  rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function createGuardAccount(name: string, apiKey: string, notes: string, groupId: string): { id: string } {
+  return repositories.createAccount({
+    providerCode: 'openai',
+    name,
+    type: 'api_key',
+    credentials: {
+      api_key: apiKey,
+      base_url: 'https://api.openai.com/v1'
+    },
+    notes,
+    groupId
+  }, { systemAccountId: 'sys_admin', role: 'admin' as const })
+}
+
+function uniquePrefix(value: string, otherValue: string): string {
+  for (let length = 1; length <= value.length; length += 1) {
+    const prefix = value.slice(0, length)
+    if (!otherValue.startsWith(prefix)) return prefix
+  }
+  return value
+}
+
+function assertBusinessIndexExists(indexName: string): void {
+  const row = databaseModule.getDatabase()
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+    .get(indexName) as unknown as { name?: string } | undefined
+  assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
+}
