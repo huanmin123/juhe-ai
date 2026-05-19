@@ -1,4 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
+import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { hashSecret } from '../../storage/crypto.js'
 import {
@@ -215,3 +216,5 @@ function runtimeCacheExpiryCandidates(runtime: DbServiceGatewayRuntime): string[
   }
   return candidates.filter((value): value is string => Boolean(value))
 }
+
+registerGatewayRuntimeCacheInvalidator(clearGatewayRuntimeCache)

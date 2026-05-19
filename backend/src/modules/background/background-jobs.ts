@@ -19,7 +19,7 @@ import {
   insertProcessEventLoopSample,
   insertSystemMetricsSample,
   latestUsageStatsLagSeconds,
-  refreshGroupAccountStatsCache,
+  refreshDirtyGroupAccountStatsCache,
   refreshUsageQuotaHourlyWindowsCache,
   refreshUsageRankSnapshotsInStages
 } from '../../storage/usage-stats.repository.js'
@@ -30,7 +30,9 @@ import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refre
 import { flushUsageRecordQueue, pendingUsageRecordCount } from '../gateway/usage-record-queue.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
-import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
+import { backfillRuntimeLogSearchIndex, ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
+import { backfillOperationLogSearchIndex } from '../../storage/operation-logs.repository.js'
+import { cleanupPendingDeletedApiKeyRecordTargets } from '../../storage/api-key-record-cleanup.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { requestServerProcessEventLoopSamples } from './background-ipc.js'
 import { WorkerScheduler } from './worker-scheduler.js'
@@ -41,6 +43,7 @@ let missingRemoteProcessEventLoopSampleWarningCount = 0
 let previousCpuSnapshot = cpuSnapshot()
 let previousNetworkSnapshot: NetworkCounterSnapshot | undefined
 const dailyIntervalMs = 24 * 60 * 60 * 1000
+const logSearchIndexBackfillBatchSize = 1000
 const scheduler = new WorkerScheduler()
 
 export function startBackgroundJobs(): void {
@@ -51,6 +54,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'group-account-stats-refresh', intervalMs: settingsNumber('groupAccountStatsRefreshIntervalSeconds', 60, 5, 3600) * 1000, task: runGroupAccountStatsRefresh })
   scheduler.schedule({ name: 'usage-rank-snapshots-refresh', intervalMs: 30 * 60 * 1000, task: runUsageRankSnapshotsRefresh })
   scheduler.schedule({ name: 'usage-stats-consistency-check', intervalMs: 60 * 60 * 1000, task: runUsageStatsConsistencyCheck })
+  scheduler.schedule({ name: 'api-key-record-cleanup-retry', intervalMs: 60 * 1000, task: runApiKeyRecordCleanupRetry })
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: 60 * 1000, task: runResourceAuthorizationExpirySweep })
   scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000, task: runSystemMetricsSample })
   scheduler.schedule({ name: 'table-storage-monitor', intervalMs: 10 * 60 * 1000, task: runTableStorageMonitor })
@@ -58,6 +62,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'account-quality-refresh', intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 600, 60, 3600) * 1000, task: runAccountQualityRefresh })
   scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runOpenAIOAuthAccessTokenRefresh })
   scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000, task: runCooldownAccountRetest })
+  scheduler.schedule({ name: 'log-search-index-backfill', intervalMs: 60 * 60 * 1000, task: runLogSearchIndexBackfill })
   scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * 60 * 1000, task: runRuntimeLogIndexMaintenance })
   scheduler.schedule({ name: 'data-retention-cleanup', intervalMs: dailyIntervalMs, task: runDataRetentionCleanup })
 }
@@ -99,7 +104,7 @@ function flushUsageRecordsBeforeStatsAggregation(): void {
 
 async function runGroupAccountStatsRefresh(): Promise<void> {
   try {
-    refreshGroupAccountStatsCache()
+    refreshDirtyGroupAccountStatsCache()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_group_account_stats_refresh_failed' }), '分组账户统计刷新失败')
     throw error
@@ -108,12 +113,24 @@ async function runGroupAccountStatsRefresh(): Promise<void> {
 
 async function runResourceAuthorizationExpirySweep(): Promise<void> {
   try {
-    const changed = expireDueResourceAuthorizations()
-    if (changed > 0) {
-      clearGatewayRuntimeCache()
-    }
+    expireDueResourceAuthorizations()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_resource_authorization_expiry_sweep_failed' }), '资源授权过期扫描失败')
+    throw error
+  }
+}
+
+async function runApiKeyRecordCleanupRetry(): Promise<void> {
+  try {
+    const summary = cleanupPendingDeletedApiKeyRecordTargets(50)
+    if (summary.attempted > 0) {
+      logger.info({
+        event: 'background_api_key_record_cleanup_retry_completed',
+        ...summary
+      }, '已删除 API Key 关联记录库清理重试完成')
+    }
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_api_key_record_cleanup_retry_failed' }), '已删除 API Key 关联记录库清理重试失败')
     throw error
   }
 }
@@ -324,6 +341,23 @@ async function runRuntimeLogIndexMaintenance(): Promise<void> {
     ensureRuntimeLogFacetSnapshots()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_runtime_log_index_maintenance_failed' }), '运行日志索引维护失败')
+    throw error
+  }
+}
+
+async function runLogSearchIndexBackfill(): Promise<void> {
+  try {
+    const operationLogs = backfillOperationLogSearchIndex(logSearchIndexBackfillBatchSize)
+    const runtimeLogs = backfillRuntimeLogSearchIndex(logSearchIndexBackfillBatchSize)
+    if (operationLogs.processed > 0 || runtimeLogs.processed > 0) {
+      logger.info({
+        event: 'background_log_search_index_backfill_completed',
+        operationLogs,
+        runtimeLogs
+      }, '日志搜索索引历史补齐完成一批')
+    }
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_log_search_index_backfill_failed' }), '日志搜索索引历史补齐失败')
     throw error
   }
 }

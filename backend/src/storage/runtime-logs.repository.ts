@@ -39,6 +39,13 @@ export interface RuntimeLogListResult {
   pageSize: number
 }
 
+export interface RuntimeLogSearchBackfillResult {
+  processed: number
+  hasMore: boolean
+  cursorCreatedAt?: string
+  cursorId?: string
+}
+
 export interface RuntimeLogSummary {
   id: string
   time: string
@@ -97,6 +104,8 @@ const runtimeLogFacetBucketKey = 'current'
 const runtimeLogFacetMaxEvents = 80
 const runtimeLogMaxRawJsonChars = 128 * 1024
 const runtimeLogMinKeywordLength = 3
+const runtimeLogSearchBackfillJobName = 'runtime_log_search_backfill'
+const runtimeLogSearchBackfillMaxBatchSize = 5000
 
 export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
   if (inputs.length === 0) return
@@ -357,7 +366,7 @@ export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit =
     let deleted = 0
     for (const chunk of chunkValues(ids, 900)) {
       const placeholders = sqlPlaceholders(chunk.length)
-      database.prepare(`DELETE FROM runtime_log_search WHERE log_id IN (${placeholders})`).run(...chunk)
+      deleteRuntimeLogSearchByIds(database, chunk)
       const result = database.prepare(`DELETE FROM runtime_logs WHERE id IN (${placeholders})`).run(...chunk)
       deleted += Number(result.changes ?? 0)
     }
@@ -376,6 +385,83 @@ export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit =
     } catch {
     }
     throw error
+  }
+}
+
+export function backfillRuntimeLogSearchIndex(limit = 1000): RuntimeLogSearchBackfillResult {
+  const database = getRecordDatabase()
+  const batchLimit = positiveRuntimeLogSearchBackfillLimit(limit)
+  const state = runtimeLogSearchBackfillState(database)
+  const rows = database
+    .prepare(`
+      SELECT id, trace_id, event, message, error_message, raw_json, created_at
+      FROM runtime_logs
+      WHERE created_at > ? OR (created_at = ? AND id > ?)
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, batchLimit + 1) as RuntimeLogRow[]
+  const batchRows = rows.slice(0, batchLimit)
+  const hasMore = rows.length > batchLimit
+  if (batchRows.length === 0) {
+    updateRuntimeLogSearchBackfillState(database, {
+      cursorCreatedAt: state.cursorCreatedAt || undefined,
+      cursorId: state.cursorId || undefined,
+      lastSuccessAt: nowIso(),
+      lagSeconds: 0
+    })
+    return {
+      processed: 0,
+      hasMore: false,
+      cursorCreatedAt: state.cursorCreatedAt || undefined,
+      cursorId: state.cursorId || undefined
+    }
+  }
+
+  const ids = batchRows.map((row) => String(row.id)).filter(Boolean)
+  const insertSearch = database.prepare(`
+    INSERT INTO runtime_log_search (
+      log_id, trace_id, event, message, error_message, raw_json
+    ) VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  const updatedAt = nowIso()
+  const last = batchRows[batchRows.length - 1]
+  const cursorCreatedAt = String(last.created_at)
+  const cursorId = String(last.id)
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    deleteRuntimeLogSearchByIds(database, ids)
+    for (const row of batchRows) {
+      insertSearch.run(
+        String(row.id),
+        optionalString(row.trace_id) ?? '',
+        optionalString(row.event) ?? '',
+        optionalString(row.message) ?? '',
+        optionalString(row.error_message) ?? '',
+        truncateRuntimeLogRawJson(optionalString(row.raw_json) ?? '')
+      )
+    }
+    updateRuntimeLogSearchBackfillState(database, {
+      cursorCreatedAt,
+      cursorId,
+      lastSuccessAt: updatedAt,
+      lagSeconds: hasMore ? searchBackfillLagSeconds(cursorCreatedAt) : 0
+    })
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    try {
+      rollbackDatabaseTransaction(database, transactionStarted)
+    } catch {
+    }
+    markRuntimeLogSearchBackfillFailed(database, error)
+    throw error
+  }
+
+  return {
+    processed: batchRows.length,
+    hasMore,
+    cursorCreatedAt,
+    cursorId
   }
 }
 
@@ -495,6 +581,67 @@ function splitKeywordTerms(value: string): string[] {
 
 function quoteFts5Term(value: string): string {
   return `"${value.replace(/"/g, '""')}"`
+}
+
+function deleteRuntimeLogSearchByIds(database: ReturnType<typeof getRecordDatabase>, ids: string[]): void {
+  for (const chunk of chunkValues(ids, 900)) {
+    if (chunk.length === 0) continue
+    database.prepare(`DELETE FROM runtime_log_search WHERE log_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
+  }
+}
+
+function runtimeLogSearchBackfillState(database: ReturnType<typeof getRecordDatabase>): { cursorCreatedAt: string; cursorId: string } {
+  const row = database
+    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
+    .get(runtimeLogSearchBackfillJobName) as RuntimeLogRow | undefined
+  return {
+    cursorCreatedAt: optionalString(row?.cursor_created_at) ?? '',
+    cursorId: optionalString(row?.cursor_id) ?? ''
+  }
+}
+
+function updateRuntimeLogSearchBackfillState(
+  database: ReturnType<typeof getRecordDatabase>,
+  input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }
+): void {
+  const updatedAt = nowIso()
+  database.prepare(`
+    INSERT INTO stats_job_state (
+      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at
+    ) VALUES ('global', '', ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = COALESCE(excluded.cursor_created_at, stats_job_state.cursor_created_at),
+      cursor_id = COALESCE(excluded.cursor_id, stats_job_state.cursor_id),
+      last_success_at = COALESCE(excluded.last_success_at, stats_job_state.last_success_at),
+      last_error_message = excluded.last_error_message,
+      lag_seconds = excluded.lag_seconds,
+      updated_at = excluded.updated_at
+  `).run(
+    runtimeLogSearchBackfillJobName,
+    input.cursorCreatedAt ?? null,
+    input.cursorId ?? null,
+    input.lastSuccessAt ?? null,
+    input.lastErrorMessage ?? null,
+    input.lagSeconds ?? null,
+    updatedAt
+  )
+}
+
+function markRuntimeLogSearchBackfillFailed(database: ReturnType<typeof getRecordDatabase>, error: unknown): void {
+  updateRuntimeLogSearchBackfillState(database, {
+    lastErrorMessage: error instanceof Error ? error.message : '运行日志搜索索引回填失败'
+  })
+}
+
+function positiveRuntimeLogSearchBackfillLimit(value: number): number {
+  return Number.isFinite(value)
+    ? Math.min(runtimeLogSearchBackfillMaxBatchSize, Math.max(1, Math.trunc(value)))
+    : 1000
+}
+
+function searchBackfillLagSeconds(cursorTime: string): number {
+  const cursorMs = Date.parse(cursorTime)
+  return Number.isFinite(cursorMs) ? Math.max(0, Math.floor((Date.now() - cursorMs) / 1000)) : 0
 }
 
 function truncateRuntimeLogRawJson(value: string): string {

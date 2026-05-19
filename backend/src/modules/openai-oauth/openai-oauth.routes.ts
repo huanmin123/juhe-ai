@@ -8,7 +8,6 @@ import type { AccessScope } from '../../storage/access-scope.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint, textValue } from '../deduplication/mutation-guard.middleware.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer, type OperationLogRecordInput } from '../operation-logs/operation-log.service.js'
 import {
   buildOpenAIOAuthCredentials,
@@ -134,7 +133,6 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
       }, requestAccess)
       return {
         result: account,
-        afterCommit: clearGatewayRuntimeCache,
         log: buildOAuthCreateLog(account, requestAccess, 'openai_oauth.create_from_code', '通过授权码创建 OpenAI OAuth 账户')
       }
     }, req)
@@ -204,7 +202,6 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
       }, requestAccess)
       return {
         result: account,
-        afterCommit: clearGatewayRuntimeCache,
         log: buildOAuthCreateLog(account, requestAccess, 'openai_oauth.create_from_refresh_token', '通过 Refresh Token 创建 OpenAI OAuth 账户')
       }
     }, req)
@@ -299,7 +296,6 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-code', async (req, res) =
       const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo, undefined, requestAccess)
       return {
         result: updated,
-        afterCommit: clearGatewayRuntimeCache,
         log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_code', '重新授权 OpenAI OAuth 账户')
       }
     }, req)
@@ -341,7 +337,6 @@ openAIOAuthRouter.post('/accounts/:id/reauthorize-from-refresh-token', async (re
       const updated = updateOpenAIOAuthAccountCredentials(account, tokenInfo, { refreshToken: parsed.data.refreshToken }, requestAccess)
       return {
         result: updated,
-        afterCommit: clearGatewayRuntimeCache,
         log: buildOAuthUpdateLog(account, updated, requestAccess, 'reauthorize_from_refresh_token', '使用 Refresh Token 重新授权 OpenAI OAuth 账户')
       }
     }, req)

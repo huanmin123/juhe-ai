@@ -245,3 +245,8 @@ pnpm test:smoke
 ## QQ 群
 
 ![QQ群](resources/images/qq.png)
+
+
+## 友链:
+
+LINUX DO 社区: https://linux.do/

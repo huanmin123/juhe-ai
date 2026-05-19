@@ -6,6 +6,7 @@ import type {
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { averageFromSum, dateKey, hourKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapProcessEventLoopHourly, mapProcessEventLoopLatestRows, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
@@ -65,6 +66,7 @@ const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
 const CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME = 'caller_account_usage_stats_backfill'
 const ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME = 'account_quality_minute_stats_backfill'
 const PROCESS_EVENT_LOOP_ROLES: ProcessRole[] = ['server', 'worker', 'db-service']
+const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
   const database = getRecordDatabase()
@@ -149,43 +151,83 @@ function ensureAccountQualityMinuteStatsBackfill(database: DatabaseSync, limit: 
   })
 }
 
-export function refreshGroupAccountStatsCache(): void {
+export function markGroupAccountStatsDirty(groupIds: Array<string | null | undefined> | string | null | undefined, reason = 'write'): void {
+  const ids = uniqueGroupAccountStatsIds(Array.isArray(groupIds) ? groupIds : [groupIds])
+  if (!ids.length) return
+  const database = getRecordDatabase()
+  const updatedAt = nowIso()
+  const insert = database.prepare(`
+    INSERT INTO group_account_stats_dirty (group_id, reason, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(group_id) DO UPDATE SET
+      reason = excluded.reason,
+      updated_at = excluded.updated_at
+  `)
+  for (const id of ids) {
+    insert.run(id, reason, updatedAt)
+  }
+}
+
+export function markAllGroupAccountStatsDirty(reason = 'write'): void {
+  markGroupAccountStatsDirty(GROUP_ACCOUNT_STATS_DIRTY_ALL, reason)
+}
+
+export function markGroupAccountStatsDirtyByAccountIds(accountIds: Array<string | null | undefined>, reason = 'account_write'): void {
+  const ids = uniqueGroupAccountStatsIds(accountIds)
+  if (!ids.length) return
+  const groupIds: string[] = []
+  const database = getDatabase()
+  for (const chunk of chunkValues(ids, 900)) {
+    groupIds.push(...(database.prepare(`
+      SELECT DISTINCT group_id
+      FROM group_accounts
+      WHERE account_id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...chunk) as unknown as Array<{ group_id: string }>).map((row) => row.group_id))
+  }
+  markGroupAccountStatsDirty(groupIds, reason)
+}
+
+export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
+  const database = getRecordDatabase()
+  const allDirty = database
+    .prepare('SELECT updated_at FROM group_account_stats_dirty WHERE group_id = ? LIMIT 1')
+    .get(GROUP_ACCOUNT_STATS_DIRTY_ALL) as unknown as { updated_at: string } | undefined
+  if (allDirty) {
+    refreshGroupAccountStatsCache()
+    database
+      .prepare('DELETE FROM group_account_stats_dirty WHERE group_id = ? AND updated_at = ?')
+      .run(GROUP_ACCOUNT_STATS_DIRTY_ALL, allDirty.updated_at)
+    return 1
+  }
+
+  const rows = database
+    .prepare('SELECT group_id, updated_at FROM group_account_stats_dirty WHERE group_id <> ? ORDER BY updated_at ASC, group_id ASC LIMIT ?')
+    .all(GROUP_ACCOUNT_STATS_DIRTY_ALL, Math.max(1, Math.trunc(limit))) as unknown as Array<{ group_id: string; updated_at: string }>
+
+  if (!rows.length) {
+    const hasStats = database.prepare('SELECT 1 FROM group_account_stats LIMIT 1').get()
+    if (!hasStats) {
+      refreshGroupAccountStatsCache()
+    }
+    return 0
+  }
+
+  refreshGroupAccountStatsCache(rows.map((row) => row.group_id))
+  const deleteDirty = database.prepare('DELETE FROM group_account_stats_dirty WHERE group_id = ? AND updated_at = ?')
+  for (const row of rows) {
+    deleteDirty.run(row.group_id, row.updated_at)
+  }
+  return rows.length
+}
+
+export function refreshGroupAccountStatsCache(groupIds?: Array<string | null | undefined>): void {
   const database = getRecordDatabase()
   const businessDatabase = getDatabase()
   const updatedAt = nowIso()
-  const groups = businessDatabase.prepare('SELECT id, system_account_id FROM groups').all() as unknown as Array<{ id: string; system_account_id: string }>
-  const groupAccountRows = businessDatabase.prepare(`
-    SELECT
-      group_accounts.group_id,
-      group_accounts.account_id,
-      group_accounts.account_authorization_id,
-      groups.system_account_id AS group_system_account_id,
-      accounts.system_account_id AS account_system_account_id,
-      accounts.status,
-      accounts.schedulable,
-      accounts.cooldown_until,
-      accounts.concurrency_limit,
-      account_authorizations.status AS authorization_status,
-      account_authorizations.expires_at AS authorization_expires_at
-    FROM group_accounts
-    INNER JOIN groups ON groups.id = group_accounts.group_id
-    LEFT JOIN accounts ON accounts.id = group_accounts.account_id
-    LEFT JOIN resource_authorizations account_authorizations
-      ON account_authorizations.id = group_accounts.account_authorization_id
-    WHERE group_accounts.enabled = 1
-  `).all() as unknown as Array<{
-    group_id: string
-    account_id: string | null
-    account_authorization_id: string | null
-    group_system_account_id: string
-    account_system_account_id: string | null
-    status: string | null
-    schedulable: number | null
-    cooldown_until: string | null
-    concurrency_limit: number | null
-    authorization_status: string | null
-    authorization_expires_at: string | null
-  }>
+  const targetGroupIds = groupIds === undefined ? undefined : uniqueGroupAccountStatsIds(groupIds)
+  if (targetGroupIds && !targetGroupIds.length) return
+  const groups = loadGroupAccountStatsGroups(businessDatabase, targetGroupIds)
+  const groupAccountRows = loadGroupAccountStatsRows(businessDatabase, targetGroupIds)
   const statsByGroup = new Map<string, GroupAccountStatsAccumulator>()
   for (const group of groups) {
     statsByGroup.set(group.id, emptyGroupAccountStatsAccumulator(group.id, group.system_account_id))
@@ -215,7 +257,11 @@ export function refreshGroupAccountStatsCache(): void {
   }
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    database.prepare('DELETE FROM group_account_stats').run()
+    if (targetGroupIds) {
+      deleteGroupAccountStatsRows(database, targetGroupIds)
+    } else {
+      database.prepare('DELETE FROM group_account_stats').run()
+    }
     const insert = database.prepare(`
       INSERT INTO group_account_stats (
         system_account_id, group_id, total, available, active, disabled, error,
@@ -241,6 +287,91 @@ export function refreshGroupAccountStatsCache(): void {
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
+}
+
+function loadGroupAccountStatsGroups(
+  database: DatabaseSync,
+  groupIds?: string[]
+): Array<{ id: string; system_account_id: string }> {
+  if (!groupIds) {
+    return database.prepare('SELECT id, system_account_id FROM groups').all() as unknown as Array<{ id: string; system_account_id: string }>
+  }
+  const rows: Array<{ id: string; system_account_id: string }> = []
+  for (const chunk of chunkValues(groupIds, 900)) {
+    rows.push(...database.prepare(`
+      SELECT id, system_account_id
+      FROM groups
+      WHERE id IN (${sqlPlaceholders(chunk.length)})
+    `).all(...chunk) as unknown as Array<{ id: string; system_account_id: string }>)
+  }
+  return rows
+}
+
+function loadGroupAccountStatsRows(
+  database: DatabaseSync,
+  groupIds?: string[]
+): Array<{
+  group_id: string
+  account_id: string | null
+  account_authorization_id: string | null
+  group_system_account_id: string
+  account_system_account_id: string | null
+  status: string | null
+  schedulable: number | null
+  cooldown_until: string | null
+  concurrency_limit: number | null
+  authorization_status: string | null
+  authorization_expires_at: string | null
+}> {
+  const rows: Array<{
+    group_id: string
+    account_id: string | null
+    account_authorization_id: string | null
+    group_system_account_id: string
+    account_system_account_id: string | null
+    status: string | null
+    schedulable: number | null
+    cooldown_until: string | null
+    concurrency_limit: number | null
+    authorization_status: string | null
+    authorization_expires_at: string | null
+  }> = []
+  const chunks = groupIds ? chunkValues(groupIds, 900) : [undefined]
+  for (const chunk of chunks) {
+    const where = chunk ? `AND group_accounts.group_id IN (${sqlPlaceholders(chunk.length)})` : ''
+    rows.push(...database.prepare(`
+      SELECT
+        group_accounts.group_id,
+        group_accounts.account_id,
+        group_accounts.account_authorization_id,
+        groups.system_account_id AS group_system_account_id,
+        accounts.system_account_id AS account_system_account_id,
+        accounts.status,
+        accounts.schedulable,
+        accounts.cooldown_until,
+        accounts.concurrency_limit,
+        account_authorizations.status AS authorization_status,
+        account_authorizations.expires_at AS authorization_expires_at
+      FROM group_accounts
+      INNER JOIN groups ON groups.id = group_accounts.group_id
+      LEFT JOIN accounts ON accounts.id = group_accounts.account_id
+      LEFT JOIN resource_authorizations account_authorizations
+        ON account_authorizations.id = group_accounts.account_authorization_id
+      WHERE group_accounts.enabled = 1
+        ${where}
+    `).all(...(chunk ?? [])) as unknown as typeof rows)
+  }
+  return rows
+}
+
+function deleteGroupAccountStatsRows(database: DatabaseSync, groupIds: string[]): void {
+  for (const chunk of chunkValues(groupIds, 900)) {
+    database.prepare(`DELETE FROM group_account_stats WHERE group_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
+  }
+}
+
+function uniqueGroupAccountStatsIds(values: Array<string | null | undefined>): string[] {
+  return [...new Set(values.map((value) => value?.trim()).filter((value): value is string => Boolean(value)))]
 }
 
 interface GroupAccountStatsAccumulator {

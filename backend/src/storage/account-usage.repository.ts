@@ -292,41 +292,37 @@ function accountUsageFilterPredicate(
   database: ReturnType<typeof getRecordDatabase>
 ): { sql: string; params: string[] } {
   const type = input.type?.trim()
+  const normalizedType = type && type !== 'all' ? type : undefined
   const keyword = input.keyword?.trim()
-  if (scopeType === 'account' && (!type || type === 'all') && !keyword) {
+  if (scopeType === 'account' && !normalizedType && !keyword) {
     return { sql: '', params: [] }
   }
+  if (keyword) {
+    const accountIds = loadAccountUsageKeywordAccountIds({
+      access: input.access,
+      keyword,
+      scopeType,
+      type: normalizedType
+    })
+    if (!accountIds.length) {
+      return { sql: 'AND 0 = 1', params: [] }
+    }
+    const scopeFilter = buildAccountUsageScopeIdFilter(accountIds)
+    return {
+      sql: `AND ${scopeFilter.sql}`,
+      params: scopeFilter.params
+    }
+  }
+
   const clauses: string[] = []
   const params: string[] = []
   const accountsTable = `${accountUsageBusinessDatabaseAlias}.accounts`
-  const groupAccountsTable = `${accountUsageBusinessDatabaseAlias}.group_accounts`
-  const groupsTable = `${accountUsageBusinessDatabaseAlias}.groups`
   const authorizationsTable = `${accountUsageBusinessDatabaseAlias}.resource_authorizations`
   ensureAccountUsageBusinessDatabaseAttached(database)
   clauses.push('accounts.id = usage_window.scope_id')
-  if (type && type !== 'all') {
+  if (normalizedType) {
     clauses.push('accounts.type = ?')
-    params.push(type)
-  }
-  if (keyword) {
-    const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
-    clauses.push(`(
-      accounts.name LIKE ?
-      OR COALESCE(accounts.notes, '') LIKE ?
-      OR accounts.provider_code LIKE ?
-      OR accounts.type LIKE ?
-      OR accounts.id LIKE ?
-      OR EXISTS (
-        SELECT 1
-        FROM ${groupAccountsTable} group_accounts
-        INNER JOIN ${groupsTable} groups ON groups.id = group_accounts.group_id
-        WHERE group_accounts.account_id = accounts.id
-          AND group_accounts.system_account_id = ?
-          AND group_accounts.enabled = 1
-          AND groups.name LIKE ?
-      )
-    )`)
-    params.push(...Array.from({ length: 5 }, () => `%${keyword}%`), viewerSystemAccountId, `%${keyword}%`)
+    params.push(normalizedType)
   }
   if (scopeType === 'caller_account') {
     const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
@@ -347,6 +343,82 @@ function accountUsageFilterPredicate(
   return {
     sql: `AND EXISTS (SELECT 1 FROM ${accountsTable} accounts WHERE ${clauses.join(' AND ')})`,
     params
+  }
+}
+
+function loadAccountUsageKeywordAccountIds(input: {
+  access?: AccessScope
+  keyword: string
+  scopeType: AccountUsageScopeType
+  type?: string
+}): string[] {
+  const keyword = input.keyword.trim()
+  if (!keyword) return []
+  const clauses: string[] = []
+  const params: string[] = []
+  const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
+  const containsKeyword = `%${keyword}%`
+  const prefixKeyword = `${keyword}%`
+  clauses.push(`(
+    accounts.id = ?
+    OR accounts.id LIKE ?
+    OR accounts.name LIKE ?
+    OR COALESCE(accounts.notes, '') LIKE ?
+    OR accounts.provider_code LIKE ?
+    OR accounts.type LIKE ?
+    OR EXISTS (
+      SELECT 1
+      FROM group_accounts
+      INNER JOIN groups ON groups.id = group_accounts.group_id
+      WHERE group_accounts.account_id = accounts.id
+        AND group_accounts.system_account_id = ?
+        AND group_accounts.enabled = 1
+        AND groups.name LIKE ?
+    )
+  )`)
+  params.push(keyword, prefixKeyword, containsKeyword, containsKeyword, containsKeyword, containsKeyword, viewerSystemAccountId, containsKeyword)
+  if (input.type) {
+    clauses.push('accounts.type = ?')
+    params.push(input.type)
+  }
+  if (input.scopeType === 'caller_account') {
+    clauses.push(`(
+      accounts.system_account_id = ?
+      OR EXISTS (
+        SELECT 1
+        FROM resource_authorizations visible_authorization
+        WHERE visible_authorization.resource_type = 'account'
+          AND visible_authorization.resource_id = accounts.id
+          AND visible_authorization.grantee_system_account_id = ?
+          AND visible_authorization.status = 'active'
+          AND (visible_authorization.expires_at IS NULL OR visible_authorization.expires_at > ?)
+      )
+    )`)
+    params.push(viewerSystemAccountId, viewerSystemAccountId, nowIso())
+  }
+  const rows = getDatabase()
+    .prepare(`
+      SELECT accounts.id
+      FROM accounts
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY lower(accounts.name) ASC, accounts.id ASC
+    `)
+    .all(...params) as unknown as Array<{ id?: string }>
+  return [...new Set(rows.map((row) => row.id).filter((id): id is string => Boolean(id)))]
+}
+
+function buildAccountUsageScopeIdFilter(accountIds: string[]): { sql: string; params: string[] } {
+  const ids = [...new Set(accountIds.filter(Boolean))]
+  if (!ids.length) {
+    return { sql: '0 = 1', params: [] }
+  }
+  const chunks = chunkValues(ids, 400)
+  const [firstChunk] = chunks
+  return {
+    sql: chunks.length === 1 && firstChunk
+      ? `usage_window.scope_id IN (${sqlPlaceholders(firstChunk.length)})`
+      : `(${chunks.map((chunk) => `usage_window.scope_id IN (${sqlPlaceholders(chunk.length)})`).join(' OR ')})`,
+    params: chunks.flat()
   }
 }
 

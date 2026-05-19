@@ -6,7 +6,6 @@ import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, 
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { applyServerAccountConcurrencyToGroupList, applyServerAccountConcurrencyToGroups } from '../gateway/gateway-runtime-snapshot.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
@@ -103,7 +102,6 @@ groupsRouter.post('/', mutationGuard({
       const ownerSystemAccountId = resolveOperationOwner(group as unknown as Record<string, unknown>, requestAccess)
       return {
         result: group,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -161,7 +159,6 @@ groupsRouter.patch('/:id', (req, res) => {
       const ownerSystemAccountId = resolveOperationOwner(group as unknown as Record<string, unknown>, requestAccess)
       return {
         result: group,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -214,7 +211,6 @@ groupsRouter.delete('/:id', (req, res) => {
       }
       return {
         result: true,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),

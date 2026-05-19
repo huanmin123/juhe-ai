@@ -1,4 +1,5 @@
 import type { ApiKeySummary } from '../domain/types.js'
+import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { apiKeyGroupAuthorization, apiKeyGroupOwnerAndProvider, apiKeySystemAccountId, canManageApiKeyOwner, canUseApiKeyGroup } from './api-key-access.js'
 import { createApiKey, encryptJson, hashSecret } from './crypto.js'
@@ -139,6 +140,8 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     throw error
   }
   invalidateApiKeyLookupCache(record.id)
+  notifyGatewayRuntimeCacheInvalidation('api_key_created')
+  notifyApiKeyQuotaCacheInvalidation(record.id, 'api_key_created')
   return record
 }
 
@@ -185,6 +188,8 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   }
   invalidateGatewayApiKeyCacheById(id)
   invalidateApiKeyLookupCache(id)
+  notifyGatewayRuntimeCacheInvalidation('api_key_updated')
+  notifyApiKeyQuotaCacheInvalidation(id, 'api_key_updated')
   return next
 }
 
@@ -217,6 +222,8 @@ export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope)
     if (result.changes > 0) {
       invalidateGatewayApiKeyCacheById(row.id)
       invalidateApiKeyLookupCache(row.id)
+      notifyGatewayRuntimeCacheInvalidation('api_key_deleted')
+      notifyApiKeyQuotaCacheInvalidation(row.id, 'api_key_deleted')
     }
     return {
       deleted: result.changes > 0,

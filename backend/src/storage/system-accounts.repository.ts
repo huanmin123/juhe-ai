@@ -4,6 +4,8 @@ import type { SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountSta
 import { hashPassword, hashSecret, verifyPassword } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
+import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
@@ -177,6 +179,10 @@ export function updateSystemAccount(id: string, input: {
       .run(next.displayName, next.description ?? null, next.role, next.status, next.mustChangePassword ? 1 : 0, now, id)
   }
   invalidateSystemAccountLookupCache(id)
+  if (next.status !== current.status) {
+    clearGatewayApiKeyValidationCache()
+    notifyGatewayRuntimeCacheInvalidation('system_account_status_changed')
+  }
   return { ...next, updatedAt: now }
 }
 

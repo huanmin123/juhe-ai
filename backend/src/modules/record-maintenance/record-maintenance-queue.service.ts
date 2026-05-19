@@ -227,18 +227,19 @@ function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): void {
 
 function processRecordMaintenanceJob(job: RecordMaintenanceJob): void {
   switch (job.type) {
-    case 'api_key_related_cleanup':
-      cleanupDeletedApiKeyRelatedRecordData({
+    case 'api_key_related_cleanup': {
+      const result = cleanupDeletedApiKeyRelatedRecordData({
         apiKeyId: job.apiKeyId,
         systemAccountId: job.systemAccountId
       })
+      const deferred = result.hasMore || Boolean(result.blockedReason)
       logger.info({
-        event: 'record_maintenance_api_key_cleanup_completed',
+        event: deferred ? 'record_maintenance_api_key_cleanup_deferred' : 'record_maintenance_api_key_cleanup_completed',
         jobId: job.id,
-        apiKeyId: job.apiKeyId,
-        systemAccountId: job.systemAccountId
-      }, 'API Key 关联记录库数据清理完成')
+        ...result
+      }, deferred ? 'API Key 关联记录库数据清理等待统计游标追平' : 'API Key 关联记录库数据清理完成')
       return
+    }
     case 'usage_records_cleanup': {
       const result = cleanupUsageRecordsBefore({
         cutoffAt: job.cutoffAt,

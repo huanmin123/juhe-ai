@@ -7,7 +7,6 @@ import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAcc
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { applyServerAccountConcurrencyToAccountList } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
@@ -241,7 +240,6 @@ accountsRouter.post('/', mutationGuard({
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {
         result: account,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -306,7 +304,6 @@ accountsRouter.post('/:id/group', (req, res) => {
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {
         result: account,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -359,7 +356,6 @@ accountsRouter.post('/:id/traffic-migration', (req, res) => {
         afterCommit: () => {
           const affinityScope = authorizedMigrationAffinityScope(migration.sourceAccount, requestAccess)
           affinityResult = migrateOpenAIAccountSessionAffinity(req.params.id, parsed.data.targetAccountId, affinityScope)
-          clearGatewayRuntimeCache()
         },
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
@@ -438,7 +434,6 @@ accountsRouter.patch('/:id/authorized-dispatch', (req, res) => {
       const ownerSystemAccountId = effectiveRequestSystemAccountId(requestAccess)
       return {
         result: account,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -515,7 +510,6 @@ accountsRouter.patch('/:id', (req, res) => {
       const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       return {
         result: account,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -653,7 +647,6 @@ accountsRouter.delete('/:id', (req, res) => {
       }
       return {
         result: true,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),

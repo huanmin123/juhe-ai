@@ -1,5 +1,6 @@
 import { decryptJson, encryptJson } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
 
@@ -176,6 +177,7 @@ export function createProxy(input: Record<string, unknown>): ProxyProfileSummary
     }
     throw error
   }
+  notifyGatewayRuntimeCacheInvalidation('proxy_created')
   return proxy
 }
 
@@ -240,6 +242,7 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
     }
     throw error
   }
+  notifyGatewayRuntimeCacheInvalidation('proxy_updated')
   return findProxy(id) ?? next
 }
 
@@ -293,6 +296,7 @@ export function updateProxyTestState(
   getDatabase()
     .prepare(sql)
     .run(...params)
+  notifyGatewayRuntimeCacheInvalidation('proxy_test_state_updated')
   return findProxy(id)
 }
 
@@ -302,6 +306,9 @@ export function deleteProxy(id: string): boolean {
     throw new ProxyInUseError(usage.accountCount, usage.accountNames)
   }
   const result = getDatabase().prepare('DELETE FROM proxy_profiles WHERE id = ?').run(id)
+  if (Number(result.changes ?? 0) > 0) {
+    notifyGatewayRuntimeCacheInvalidation('proxy_deleted')
+  }
   return result.changes > 0
 }
 

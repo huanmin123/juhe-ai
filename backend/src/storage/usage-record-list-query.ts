@@ -55,11 +55,11 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
   if (accountKeyword) {
     const matchedAccountIds = accountIdsForKeyword(accountKeyword)
     if (matchedAccountIds.length > 0) {
-      clauses.push(`(ur.account_id LIKE ? OR ur.account_id IN (${matchedAccountIds.map(() => '?').join(', ')}))`)
-      params.push(`%${accountKeyword}%`, ...matchedAccountIds)
+      clauses.push(`(ur.account_id = ? OR ur.account_id LIKE ? OR ur.account_id IN (${matchedAccountIds.map(() => '?').join(', ')}))`)
+      params.push(accountKeyword, `${accountKeyword}%`, ...matchedAccountIds)
     } else {
-      clauses.push('ur.account_id LIKE ?')
-      params.push(`%${accountKeyword}%`)
+      clauses.push('(ur.account_id = ? OR ur.account_id LIKE ?)')
+      params.push(accountKeyword, `${accountKeyword}%`)
     }
   }
   if (options?.result === 'success') {
@@ -83,8 +83,8 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
   }
   const model = options?.model?.trim()
   if (model) {
-    clauses.push('ur.model LIKE ?')
-    params.push(`%${model}%`)
+    clauses.push('ur.model = ?')
+    params.push(model)
   }
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',

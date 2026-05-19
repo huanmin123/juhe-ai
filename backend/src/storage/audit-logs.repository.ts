@@ -837,17 +837,11 @@ function getAuditPayloadRows(auditLogId: string): AuditLogRow[] {
 function buildAuditLogFilters(options: AuditLogListOptions): { clause: string; params: AuditLogFilterValue[] } {
   const clauses: string[] = []
   const params: AuditLogFilterValue[] = []
-  const pushTextFilter = (column: string, value?: string) => {
-    const text = value?.trim()
-    if (!text) return
-    clauses.push(`${column} LIKE ?`)
-    params.push(`%${text}%`)
-  }
 
-  pushTextFilter('al.trace_id', options.traceId)
-  pushTextFilter('al.path', options.path)
-  pushTextFilter('al.model', options.model)
-  pushTextFilter('al.client_ip', options.clientIp)
+  pushPrefixFilter(clauses, params, 'al.trace_id', options.traceId)
+  pushExactFilter(clauses, params, 'al.path', options.path)
+  pushExactFilter(clauses, params, 'al.model', options.model)
+  pushPrefixFilter(clauses, params, 'al.client_ip', options.clientIp)
   if (options.outcome && options.outcome !== 'all') {
     clauses.push('al.audit_outcome = ?')
     params.push(options.outcome)
@@ -878,15 +872,9 @@ function buildAuditLogFilters(options: AuditLogListOptions): { clause: string; p
 function buildAuditErrorGroupFilters(options: AuditErrorGroupListOptions): { clause: string; params: AuditLogFilterValue[] } {
   const clauses: string[] = []
   const params: AuditLogFilterValue[] = []
-  const pushTextFilter = (column: string, value?: string) => {
-    const text = value?.trim()
-    if (!text) return
-    clauses.push(`${column} LIKE ?`)
-    params.push(`%${text}%`)
-  }
 
-  pushTextFilter('aeg.path', options.path)
-  pushTextFilter('aeg.model', options.model)
+  pushExactFilter(clauses, params, 'aeg.path', options.path)
+  pushExactFilter(clauses, params, 'aeg.model', options.model)
   if (isHttpStatusCode(options.statusCode)) {
     clauses.push('aeg.status_code = ?')
     params.push(options.statusCode)
@@ -907,6 +895,20 @@ function buildAuditErrorGroupFilters(options: AuditErrorGroupListOptions): { cla
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params
   }
+}
+
+function pushExactFilter(clauses: string[], params: AuditLogFilterValue[], column: string, value?: string): void {
+  const text = value?.trim()
+  if (!text) return
+  clauses.push(`${column} = ?`)
+  params.push(text)
+}
+
+function pushPrefixFilter(clauses: string[], params: AuditLogFilterValue[], column: string, value?: string): void {
+  const text = value?.trim()
+  if (!text) return
+  clauses.push(`${column} >= ? AND ${column} < ?`)
+  params.push(text, `${text}\uffff`)
 }
 
 function auditErrorGroupListSelectColumns(alias: string): string {

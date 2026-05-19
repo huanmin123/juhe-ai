@@ -17,8 +17,6 @@ import { normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } fro
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, textValue } from '../deduplication/mutation-guard.middleware.js'
-import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 import type { ResourceAuthorizationSummary } from '../../domain/types.js'
 
@@ -183,7 +181,6 @@ authorizationsRouter.post('/', mutationGuard({
       const authorization = createResourceAuthorization(parsed.data, requestAccess)
       return {
         result: authorization,
-        afterCommit: clearAuthorizationRuntimeCaches,
         log: {
           operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -245,7 +242,6 @@ authorizationsRouter.delete('/:id', (req, res) => {
       }
       return {
         result: authorization,
-        afterCommit: clearAuthorizationRuntimeCaches,
         log: {
           operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -305,7 +301,6 @@ authorizationsRouter.patch('/:id', (req, res) => {
       }
       return {
         result: authorization,
-        afterCommit: clearAuthorizationRuntimeCaches,
         log: {
           operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -362,7 +357,6 @@ authorizationsRouter.patch('/:id/expire', (req, res) => {
       }
       return {
         result: authorization,
-        afterCommit: clearAuthorizationRuntimeCaches,
         log: {
           operationScopeSystemAccountId: authorization.resourceOwnerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -464,11 +458,6 @@ function authorizationGranteeName(authorization: ResourceAuthorizationSummary): 
     return authorization.granteeTeamName ?? authorization.granteeTeamId ?? '团队'
   }
   return authorization.granteeSystemAccountName ?? authorization.granteeUsername ?? authorization.granteeSystemAccountId ?? '被授权用户'
-}
-
-function clearAuthorizationRuntimeCaches(): void {
-  clearGatewayRuntimeCache()
-  clearAuthorizationQuotaCache()
 }
 
 function normalizeAuthorizationListUsageRange(input: { startDate?: string; endDate?: string }) {

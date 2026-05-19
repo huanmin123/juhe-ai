@@ -1,0 +1,139 @@
+import { strict as assert } from 'node:assert'
+import type { SQLInputValue } from 'node:sqlite'
+import { mkdirSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+import { runtimeConfig } from '../../config/runtime.js'
+import { logger } from '../../shared/logger.js'
+
+const tempRoot = resolve(tmpdir(), `juhe-ai-usage-record-list-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
+runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.secret = 'usage-record-list-query-guard-secret'
+runtimeConfig.log.consoleEnabled = false
+runtimeConfig.log.fileEnabled = false
+runtimeConfig.processRole = 'worker'
+mkdirSync(tempRoot, { recursive: true })
+logger.level = 'silent'
+
+const [databaseModule, repositories] = await Promise.all([
+  import('../../storage/database.js'),
+  import('../../storage/repositories.js')
+])
+
+try {
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const group = repositories.createGroup({
+    name: '使用记录查询防护分组',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
+  const account = repositories.createAccount({
+    providerCode: 'openai',
+    name: '使用记录查询防护账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-usage-record-list-query-guard',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id
+  }, access)
+  const apiKey = repositories.createApiKeyRecord({
+    name: '使用记录查询防护 Key',
+    groupId: group.id
+  }, access)
+  repositories.createUsageRecordsBatch([
+    {
+      id: 'usage_list_query_guard_exact',
+      traceId: 'trace-usage-list-query-guard-exact',
+      apiKeyId: apiKey.id,
+      groupId: group.id,
+      accountId: account.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.5',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:00.000Z'
+    },
+    {
+      id: 'usage_list_query_guard_prefix_only',
+      traceId: 'trace-usage-list-query-guard-prefix-only',
+      apiKeyId: apiKey.id,
+      groupId: group.id,
+      accountId: account.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.5-mini',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:01.000Z'
+    }
+  ])
+
+  const recordDatabase = databaseModule.getRecordDatabase()
+  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const usageRecordListCalls: Array<{ sql: string; params: unknown[] }> = []
+  recordDatabase.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    if (/\bFROM\s+usage_records\s+ur\b/i.test(sql)) {
+      const originalAll = statement.all.bind(statement) as typeof statement.all
+      statement.all = ((...params: SQLInputValue[]) => {
+        usageRecordListCalls.push({ sql, params })
+        return originalAll(...params)
+      }) as typeof statement.all
+    }
+    return statement
+  }) as typeof recordDatabase.prepare
+
+  try {
+    const exactModel = repositories.listUsageRecords(access, { model: 'gpt-5.5', page: 1, pageSize: 10 })
+    assert.deepEqual(exactModel.items.map((item) => item.id), ['usage_list_query_guard_exact'], 'model 筛选应按精确值匹配，不应把前缀模型一并查出')
+
+    const accountPrefix = repositories.listUsageRecords(access, { accountKeyword: account.id.slice(0, 12), page: 1, pageSize: 10 })
+    assert.equal(accountPrefix.items.length, 2, '账号关键字仍应支持账号 ID 前缀定位使用记录')
+  } finally {
+    recordDatabase.prepare = originalPrepare
+  }
+
+  assert(usageRecordListCalls.length >= 2, '回归应捕获使用记录列表 SQL')
+  for (const call of usageRecordListCalls) {
+    assert(!/\bur\.model\s+LIKE\s+\?/i.test(call.sql), 'model 筛选不应在 usage_records 上使用 LIKE')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '使用记录列表不应向大表筛选传入前导通配符参数')
+  }
+  assertQueryPlanUsesIndex(`
+    SELECT id
+    FROM usage_records ur
+    WHERE ur.model = ?
+    ORDER BY ur.created_at DESC, ur.id DESC
+    LIMIT ?
+  `, ['gpt-5.5', 10], 'idx_usage_records_model_created_sort')
+  assertQueryPlanUsesIndex(`
+    SELECT id
+    FROM usage_records ur
+    WHERE ur.system_account_id = ? AND ur.model = ?
+    ORDER BY ur.created_at DESC, ur.id DESC
+    LIMIT ?
+  `, ['sys_admin', 'gpt-5.5', 10], 'idx_usage_records_system_account_model_created_sort')
+
+  console.log('使用记录列表查询防护回归通过：model 精确匹配，accountKeyword 不再对 usage_records 做前导通配符扫描')
+} finally {
+  try {
+    databaseModule.getDatabase().close()
+    databaseModule.getRecordDatabase().close()
+  } catch {
+  }
+  rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
+  const details = databaseModule.getRecordDatabase()
+    .prepare(`EXPLAIN QUERY PLAN ${sql}`)
+    .all(...params)
+    .map((row) => String((row as { detail?: unknown }).detail ?? ''))
+    .join('\n')
+  assert(details.includes(indexName), `查询计划应使用 ${indexName}，实际计划：${details}`)
+}

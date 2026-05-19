@@ -291,22 +291,57 @@ function loadAiPerformanceAccountOptionRows(
     return loadDefaultAiPerformanceAccounts(database, systemAccountId, options.limit)
   }
 
-  const likeKeyword = `%${keyword}%`
+  const keywordPrefix = `${keyword}%`
+  const ownerIds = loadAiPerformanceAccountOptionOwnerIds(systemAccountId, keyword, options.limit)
+  const keywordClauses = [
+    'accounts.id = ?',
+    'accounts.id LIKE ?',
+    'accounts.name LIKE ?',
+    'accounts.provider_code = ?',
+    'accounts.provider_code LIKE ?'
+  ]
+  const keywordParams: string[] = [keyword, keywordPrefix, keywordPrefix, keyword, keywordPrefix]
+  if (ownerIds.length) {
+    keywordClauses.push(`accounts.system_account_id IN (${sqlPlaceholders(ownerIds.length)})`)
+    keywordParams.push(...ownerIds)
+  }
   const systemAccountWhere = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND accounts.system_account_id = ?'
   const systemAccountParams = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [systemAccountId]
   const accountRows = getDatabase().prepare(`
     SELECT accounts.id
     FROM accounts
-    LEFT JOIN system_accounts ON system_accounts.id = accounts.system_account_id
-    WHERE (accounts.name LIKE ? OR accounts.id LIKE ? OR accounts.provider_code LIKE ? OR COALESCE(system_accounts.display_name, '') LIKE ? OR COALESCE(system_accounts.username, '') LIKE ?)
+    WHERE (${keywordClauses.join(' OR ')})
       ${systemAccountWhere}
     ORDER BY lower(accounts.name) ASC, accounts.id ASC
     LIMIT ?
-  `).all(likeKeyword, likeKeyword, likeKeyword, likeKeyword, likeKeyword, ...systemAccountParams, options.limit) as unknown as Array<{ id: string }>
+  `).all(...keywordParams, ...systemAccountParams, options.limit) as unknown as Array<{ id: string }>
   const accountIds = accountRows.map((row) => row.id)
   return accountIds.length
     ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, accountIds)
     : []
+}
+
+function loadAiPerformanceAccountOptionOwnerIds(systemAccountId: string, keyword: string, limit: number): string[] {
+  const keywordPrefix = `${keyword}%`
+  const database = getDatabase()
+  if (systemAccountId !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID) {
+    const row = database.prepare(`
+      SELECT id
+      FROM system_accounts
+      WHERE id = ?
+        AND (username = ? OR username LIKE ? OR display_name LIKE ?)
+      LIMIT 1
+    `).get(systemAccountId, keyword, keywordPrefix, keywordPrefix) as unknown as { id?: string } | undefined
+    return row?.id ? [row.id] : []
+  }
+  const rows = database.prepare(`
+    SELECT id
+    FROM system_accounts
+    WHERE username = ? OR username LIKE ? OR display_name LIKE ?
+    ORDER BY lower(display_name) ASC, id ASC
+    LIMIT ?
+  `).all(keyword, keywordPrefix, keywordPrefix, limit) as unknown as Array<{ id?: string }>
+  return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
 }
 
 function mergeAiPerformanceStatsWithAccounts(

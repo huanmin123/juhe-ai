@@ -39,6 +39,7 @@ const apiKeyScopeStatsTables = [
   'usage_stats_weekly',
   'usage_stats_monthly'
 ] as const
+const deletedApiKeyRecordCleanupBatchLimit = 1000
 
 export function registerDeletedApiKeyRecordCleanupTarget(input: DeletedApiKeyRecordCleanupTarget): void {
   upsertDeletedApiKeyRecordCleanupTarget(getRecordDatabase(), input, nowIso())
@@ -112,12 +113,11 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
     return result
   }
 
-  const batchLimit = 1000
+  const batchLimit = deletedApiKeyRecordCleanupBatchLimit
   let deletedRows = 0
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    while (true) {
-      const usageRows = database.prepare(`
+    const usageRows = database.prepare(`
         SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
         FROM usage_records
         WHERE api_key_id = ?
@@ -125,26 +125,25 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
           AND (created_at < ? OR (created_at = ? AND id <= ?))
         ORDER BY created_at ASC, id ASC
         LIMIT ?
-      `).all(input.apiKeyId, input.systemAccountId, cursorCreatedAt, cursorCreatedAt, cursorId, batchLimit) as unknown as UsageStatsRecordRow[]
-      if (usageRows.length === 0) {
-        break
-      }
-      const deleteUsageRecord = database.prepare('DELETE FROM usage_records WHERE id = ? AND api_key_id = ? AND system_account_id = ?')
-      for (const usageRow of usageRows) {
-        subtractUsageStatsRecord(database, usageRow, updatedAt)
-        deletedRows += changed(deleteUsageRecord.run(usageRow.id, input.apiKeyId, input.systemAccountId))
-      }
-      if (usageRows.length < batchLimit) {
-        break
-      }
+      `).all(input.apiKeyId, input.systemAccountId, cursorCreatedAt, cursorCreatedAt, cursorId, batchLimit + 1) as unknown as UsageStatsRecordRow[]
+    const rowsToDelete = usageRows.slice(0, batchLimit)
+    const deleteUsageRecord = database.prepare('DELETE FROM usage_records WHERE id = ? AND api_key_id = ? AND system_account_id = ?')
+    for (const usageRow of rowsToDelete) {
+      subtractUsageStatsRecord(database, usageRow, updatedAt)
+      deletedRows += changed(deleteUsageRecord.run(usageRow.id, input.apiKeyId, input.systemAccountId))
     }
 
     const hasMore = hasApiKeyUsageRecords(database, input)
+    const hasMoreCoveredRows = usageRows.length > batchLimit
     const result: DeletedApiKeyRecordCleanupResult = {
       ...input,
       deletedRows,
       hasMore,
-      blockedReason: hasMore ? '仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理' : undefined,
+      blockedReason: hasMore
+        ? (hasMoreCoveredRows
+          ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
+          : '仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理')
+        : undefined,
       safetyCursorCreatedAt: cursorCreatedAt,
       safetyCursorId: cursorId
     }

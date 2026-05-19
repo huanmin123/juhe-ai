@@ -2,6 +2,7 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSummary, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
+import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions } from './account-list-options.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
@@ -68,7 +69,7 @@ import { getSettings } from './settings.repository.js'
 import { systemAccountPrincipalSummaryFromRow } from './system-account-mappers.js'
 import type { SystemAccountRow } from './system-account-mappers.js'
 import { findSystemAccountById } from './system-accounts.repository.js'
-import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
+import { markAllGroupAccountStatsDirty, markGroupAccountStatsDirty, markGroupAccountStatsDirtyByAccountIds } from './usage-stats.repository.js'
 import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
 import { emptyAccountUsageSummary, normalizeAccountUsageStatsRange, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { loadAccountUsageSummariesForScopes, loadGroupUsageSummariesForScopes, loadUsageRangeSummaryForScope, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
@@ -124,6 +125,10 @@ export {
 } from './announcements.repository.js'
 export {
   cleanupDeletedApiKeyRelatedRecordData,
+  cleanupPendingDeletedApiKeyRecordTargets,
+  listDeletedApiKeyRecordCleanupTargets,
+  registerDeletedApiKeyRecordCleanupTarget,
+  type DeletedApiKeyRecordCleanupResult,
   type DeletedApiKeyRecordCleanupTarget
 } from './api-key-record-cleanup.js'
 export {
@@ -241,6 +246,7 @@ export {
   type AuditPayloadPartType
 } from './audit-logs.repository.js'
 export {
+  backfillOperationLogSearchIndex,
   cleanupOperationLogsBefore,
   createOperationLog,
   createOperationLogsBatch,
@@ -255,6 +261,7 @@ export {
   type OperationLogListOptions,
   type OperationLogListResult,
   type OperationLogMode,
+  type OperationLogSearchBackfillResult,
   type OperationLogSummary,
   type OperationLogTargetInput,
   type OperationLogTargetRelation,
@@ -265,6 +272,7 @@ export {
   type OperationLogVisibilityScope
 } from './operation-logs.repository.js'
 export {
+  backfillRuntimeLogSearchIndex,
   cleanupRuntimeLogIndex,
   createRuntimeLogsBatch,
   getRuntimeLogFacets,
@@ -275,6 +283,7 @@ export {
   type RuntimeLogLevel,
   type RuntimeLogListResult,
   type RuntimeLogListOptions,
+  type RuntimeLogSearchBackfillResult,
   type RuntimeLogSummary
 } from './runtime-logs.repository.js'
 export {
@@ -445,7 +454,8 @@ function disableExpiredAccounts(access?: AccessScope): void {
     `)
     .run('账户套餐已过期，已自动停用', now, now, ...scope.params)
   if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite()
+    refreshGroupAccountStatsAfterWrite({ all: true, reason: 'account_expired' })
+    invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
   }
 }
 
@@ -591,11 +601,35 @@ function defaultTemporaryUnschedulableMinutes(): number {
   return Math.min(Math.max(Math.trunc(number), 1), 1440)
 }
 
-function refreshGroupAccountStatsAfterWrite(): void {
-  if (getDatabase().isTransaction) {
+function refreshGroupAccountStatsAfterWrite(input: {
+  groupIds?: Array<string | null | undefined>
+  accountIds?: Array<string | null | undefined>
+  all?: boolean
+  reason?: string
+} = {}): void {
+  const reason = input.reason ?? 'business_write'
+  if (input.all) {
+    markAllGroupAccountStatsDirty(reason)
     return
   }
-  refreshGroupAccountStatsCache()
+  if (input.groupIds?.length) {
+    markGroupAccountStatsDirty(input.groupIds, reason)
+  }
+  if (input.accountIds?.length) {
+    markGroupAccountStatsDirtyByAccountIds(input.accountIds, reason)
+  }
+  if (!input.groupIds?.length && !input.accountIds?.length) {
+    markAllGroupAccountStatsDirty(reason)
+  }
+}
+
+function invalidateGatewayRuntimeAfterBusinessWrite(reason: string): void {
+  notifyGatewayRuntimeCacheInvalidation(reason)
+}
+
+function invalidateAuthorizationRuntimeAfterBusinessWrite(reason: string): void {
+  notifyGatewayRuntimeCacheInvalidation(reason)
+  notifyAuthorizationQuotaCacheInvalidation(reason)
 }
 
 export interface AccountListResult {
@@ -1060,9 +1094,10 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     }
     throw error
   }
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ groupIds: [groupId], reason: 'account_created' })
   invalidateAccountLookupCache(account.id)
   invalidateGroupAccountIdsCache(groupId)
+  invalidateGatewayRuntimeAfterBusinessWrite('account_created')
 
   return account
 }
@@ -1228,8 +1263,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         systemAccountId
     )
     if (Number(result.changes ?? 0) > 0) {
-      refreshGroupAccountStatsAfterWrite()
+      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_updated' })
       invalidateAccountLookupCache(id)
+      invalidateGatewayRuntimeAfterBusinessWrite('account_updated')
     }
   } catch (error) {
     if (isDuplicateAccountCredentialError(error)) {
@@ -1248,9 +1284,10 @@ export function deleteAccount(id: string, access?: AccessScope): boolean {
   const scope = buildSystemAccountScopeClause(access)
   const result = getDatabase().prepare(`DELETE FROM accounts WHERE id = ?${scope.clause}`).run(id, ...scope.params)
   if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite()
+    refreshGroupAccountStatsAfterWrite({ all: true, reason: 'account_deleted' })
     invalidateAccountLookupCache(id)
     invalidateGroupAccountIdsCache()
+    invalidateGatewayRuntimeAfterBusinessWrite('account_deleted')
   }
   return result.changes > 0
 }
@@ -1287,7 +1324,8 @@ export function clearAccountFailureState(
       `)
       .run('账户套餐已过期，已自动停用', nowIso(), id)
     if (Number(result.changes ?? 0) > 0) {
-      refreshGroupAccountStatsAfterWrite()
+      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
+      invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     }
     return findAccountSummary(id, access)
   }
@@ -1307,7 +1345,8 @@ export function clearAccountFailureState(
     `)
     .run(nowIso(), id)
   if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite()
+    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_restored' })
+    invalidateGatewayRuntimeAfterBusinessWrite('account_restored')
   }
 
   return findAccountSummary(id, access)
@@ -1338,7 +1377,11 @@ export function clearAccountStreamFailureState(id: string): boolean {
         )
     `)
     .run(nowIso(), id)
-  return Number(result.changes ?? 0) > 0
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    invalidateGatewayRuntimeAfterBusinessWrite('account_stream_failure_cleared')
+  }
+  return changed
 }
 
 export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
@@ -1367,7 +1410,8 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
       `)
       .run('账户套餐已过期，已自动停用', nowIso(), id)
     if (Number(result.changes ?? 0) > 0) {
-      refreshGroupAccountStatsAfterWrite()
+      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
+      invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     }
     return findAccountSummary(id)
   }
@@ -1389,7 +1433,8 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
     `)
     .run(cooldownStatus, until, reason || null, nowIso(), id)
   if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite()
+    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown' })
+    invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
   }
 
   return findAccountSummary(id)
@@ -1477,7 +1522,8 @@ export function migrateAccountTraffic(input: {
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ accountIds: [sourceRow.id], reason: 'traffic_migration' })
+  invalidateGatewayRuntimeAfterBusinessWrite('traffic_migration')
 
   const ownerAccess = { systemAccountId: sourceRow.system_account_id, role: 'user' as const }
   const sourceAccount = findAccountSummary(input.sourceAccountId, ownerAccess)
@@ -1537,7 +1583,8 @@ export function updateAuthorizedAccountBindingDispatch(
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ groupIds: [current.boundGroupId], reason: 'authorized_binding_dispatch' })
+  invalidateGatewayRuntimeAfterBusinessWrite('authorized_binding_dispatch')
   return findAccountSummary(accountId, { systemAccountId, role: 'user' })
 }
 
@@ -1590,7 +1637,8 @@ function migrateAuthorizedAccountBindingTraffic(input: {
   if (Number(result.changes ?? 0) <= 0) {
     return undefined
   }
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ groupIds: [sourceAccount.boundGroupId], reason: 'authorized_binding_migration' })
+  invalidateGatewayRuntimeAfterBusinessWrite('authorized_binding_migration')
   const nextSource = findAccountSummary(input.sourceAccountId, accountAccess)
   const nextTarget = findAccountSummary(input.targetAccountId, accountAccess)
   return nextSource && nextTarget ? { sourceAccount: nextSource, targetAccount: nextTarget, sourceCooldownUntil: sourceCooldownUntil ?? undefined } : undefined
@@ -1625,7 +1673,8 @@ export function markAccountException(
     `)
     .run(errorCode || null, reason || null, nowIso(), id)
   if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite()
+    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_exception' })
+    invalidateGatewayRuntimeAfterBusinessWrite('account_exception')
   }
 
   return findAccountSummary(id)
@@ -1695,7 +1744,7 @@ export function recordAccountStreamFailure(input: {
       WHERE id = ?
     `)
     .run(nowIsoValue, input.accountId)
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ accountIds: [input.accountId], reason: 'stream_failure_threshold' })
 
   return { count, triggered: true, account: findAccountSummary(input.accountId) }
 }
@@ -1838,6 +1887,7 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
     throw error
   }
   invalidateGroupLookupCache(group.id)
+  invalidateGatewayRuntimeAfterBusinessWrite('group_created')
   return group
 }
 
@@ -1881,6 +1931,7 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
     throw error
   }
   invalidateGroupLookupCache(id)
+  invalidateGatewayRuntimeAfterBusinessWrite('group_updated')
   return findGroupSummary(id, access)
 }
 
@@ -1895,9 +1946,10 @@ export function deleteGroup(id: string, access?: AccessScope): boolean {
   }
   const result = getDatabase().prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
   if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite()
+    refreshGroupAccountStatsAfterWrite({ groupIds: [id], reason: 'group_deleted' })
     invalidateGroupLookupCache(id)
     invalidateGroupAccountIdsCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite('group_deleted')
   }
   return result.changes > 0
 }
@@ -1943,11 +1995,12 @@ export function setAccountGroup(accountId: string, groupId: string | null, acces
         updated_at = excluded.updated_at
     `)
     .run(group.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, 1, now, now)
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ groupIds: [previousGroupId, groupId], reason: 'group_account_binding' })
   if (previousGroupId && previousGroupId !== groupId) {
     invalidateGroupAccountIdsCache(previousGroupId)
   }
   invalidateGroupAccountIdsCache(groupId)
+  invalidateGatewayRuntimeAfterBusinessWrite('group_account_binding')
 
   return findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
 }
@@ -1981,11 +2034,12 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
       ON CONFLICT(group_id, account_id) DO UPDATE SET account_authorization_id = excluded.account_authorization_id, enabled = 1, updated_at = excluded.updated_at
     `)
     .run(current.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, weight, now, now)
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ groupIds: [previousGroupId, groupId], reason: 'group_account_binding' })
   if (previousGroupId && previousGroupId !== groupId) {
     invalidateGroupAccountIdsCache(previousGroupId)
   }
   invalidateGroupAccountIdsCache(groupId)
+  invalidateGatewayRuntimeAfterBusinessWrite('group_account_binding')
   return findGroupSummary(groupId)
 }
 
@@ -2083,7 +2137,8 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
     throw error
   }
   if (authorizationChanged) {
-    refreshGroupAccountStatsAfterWrite()
+    refreshGroupAccountStatsAfterWrite({ all: true, reason: 'team_authorization_changed' })
+    invalidateAuthorizationRuntimeAfterBusinessWrite('team_authorization_changed')
   }
   invalidateSystemTeamLookupCache(id)
   invalidateSystemAccountTeamMembershipLookupCache()
@@ -2118,7 +2173,8 @@ export function addSystemTeamMembers(teamId: string, input: Record<string, unkno
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'team_members_changed' })
+  invalidateAuthorizationRuntimeAfterBusinessWrite('team_members_changed')
   for (const systemAccountId of systemAccountIds) {
     invalidateSystemAccountTeamMembershipLookupCache(systemAccountId)
   }
@@ -2139,7 +2195,8 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'team_members_changed' })
+  invalidateAuthorizationRuntimeAfterBusinessWrite('team_members_changed')
   invalidateSystemAccountTeamMembershipLookupCache(member.system_account_id)
   return findSystemTeamSummary(teamId, access)
 }
@@ -2197,7 +2254,8 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_created' })
+  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_created')
   const created = createdGrantId ? findResourceAuthorization(createdGrantId, access) : undefined
   if (created) return created
   const fallback = listResourceAuthorizations({ resourceType, resourceId, granteeSystemAccountId: granteeType === 'system_account' ? granteeId : undefined, teamId: granteeType === 'team' ? granteeId : undefined, status: 'all' }, access)[0]
@@ -2219,7 +2277,8 @@ export function revokeResourceAuthorization(authorizationId: string, input: Reco
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
-  refreshGroupAccountStatsAfterWrite()
+  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_revoked' })
+  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_revoked')
   return findResourceAuthorization(authorizationId, access)
 }
 
@@ -2282,6 +2341,8 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
     throw error
   }
   cleanupInactiveAuthorizationBindings(database)
+  refreshGroupAccountStatsAfterWrite({ all: true, reason: 'resource_authorization_updated' })
+  invalidateAuthorizationRuntimeAfterBusinessWrite('resource_authorization_updated')
   return findResourceAuthorization(authorizationId, access)
 }
 

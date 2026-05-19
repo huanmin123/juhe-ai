@@ -112,15 +112,30 @@ try {
   assert(second.apiKey?.id === apiKey.id, '第二次读取应仍返回 API Key 运行配置')
   assert.equal(fakeChild.sentOperationCount, 1, '第二次读取应命中网关 server 本地运行配置缓存')
 
+  const updatedCredentials = {
+    api_key: 'sk-runtime-cache-account-updated',
+    base_url: 'http://127.0.0.1:9/v1'
+  }
+  const updateResult = await runWithDbServiceParentMessageBridge(fakeChild, () => dbServiceIpc.requestDbService({
+    type: 'update_openai_oauth_credentials',
+    accountId: apiKey.accountId,
+    credentials: updatedCredentials
+  }))
+  assert.equal(updateResult.updated, true, 'DB service 直写账号凭据应成功')
+  await delay(10)
+  const reloadedAfterDbServiceStorageWrite = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
+  assert.equal(reloadedAfterDbServiceStorageWrite.accounts[0]?.apiKey, updatedCredentials.api_key, 'DB service 仓储写入后应清掉 server 本地运行配置缓存')
+  assert.equal(fakeChild.sentOperationCount, 3, 'DB service 仓储写入触发失效后应重新请求 DB service')
+
   await simulateDbServiceRuntimeCacheInvalidation(fakeChild)
   const reloadedAfterDbServiceInvalidation = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert(reloadedAfterDbServiceInvalidation.apiKey?.id === apiKey.id, 'DB service 触发失效后读取应返回 API Key 运行配置')
-  assert.equal(fakeChild.sentOperationCount, 2, 'DB service 触发失效后应清掉 server 本地运行配置缓存')
+  assert.equal(fakeChild.sentOperationCount, 4, 'DB service 触发失效后应清掉 server 本地运行配置缓存')
 
   gatewayCache.clearGatewayRuntimeCacheLocal()
   const third = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert(third.apiKey?.id === apiKey.id, '清缓存后读取应返回 API Key 运行配置')
-  assert.equal(fakeChild.sentOperationCount, 3, '清缓存后应重新请求 DB service')
+  assert.equal(fakeChild.sentOperationCount, 5, '清缓存后应重新请求 DB service')
 
   console.log('网关运行配置缓存回归通过：server 按需缓存 API Key、分组和候选账号，清缓存后重新加载')
 } finally {
@@ -132,7 +147,7 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function seedGatewayRuntime(): { id: string; key: string } {
+function seedGatewayRuntime(): { accountId: string; id: string; key: string } {
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '运行配置缓存账号',
@@ -149,7 +164,7 @@ function seedGatewayRuntime(): { id: string; key: string } {
     name: '运行配置缓存 API Key',
     groupId: account.boundGroupId
   }, { systemAccountId: 'sys_admin', role: 'admin' })
-  return { id: apiKey.id, key: apiKey.key }
+  return { accountId: account.id, id: apiKey.id, key: apiKey.key }
 }
 
 function isDbServiceRequest(value: unknown): value is { type: 'db_service_request'; requestId: string; operation: Parameters<typeof dbServiceHandlers.handleDbServiceOperation>[0] } {
@@ -163,6 +178,14 @@ function isDbServiceRequest(value: unknown): value is { type: 'db_service_reques
 }
 
 async function simulateDbServiceRuntimeCacheInvalidation(fakeChild: FakeDbServiceChild): Promise<void> {
+  await runWithDbServiceParentMessageBridge(fakeChild, async () => {
+    runtimeConfig.processRole = 'db-service'
+    gatewayCache.clearGatewayRuntimeCache()
+    await delay(10)
+  })
+}
+
+async function runWithDbServiceParentMessageBridge<T>(fakeChild: FakeDbServiceChild, operation: () => Promise<T> | T): Promise<T> {
   const previousProcessRole = runtimeConfig.processRole
   const previousSend = process.send
   try {
@@ -178,11 +201,13 @@ async function simulateDbServiceRuntimeCacheInvalidation(fakeChild: FakeDbServic
       })
       return true
     }
-    runtimeConfig.processRole = 'db-service'
-    gatewayCache.clearGatewayRuntimeCache()
-    await new Promise((resolve) => setTimeout(resolve, 10))
+    return await operation()
   } finally {
     runtimeConfig.processRole = previousProcessRole
     ;(process as typeof process & { send?: (message: unknown) => boolean }).send = previousSend
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

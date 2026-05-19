@@ -6,6 +6,7 @@ import type {
   ResourceAuthorizationSourceStatus,
   ResourceAuthorizationSourceType
 } from '../domain/types.js'
+import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { currentSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, newId, nowIso } from './database.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
@@ -20,7 +21,7 @@ import type {
   ResourceAuthorizationSourceRow,
   SystemTeamMemberRow
 } from './repository-row-types.js'
-import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
+import { markAllGroupAccountStatsDirty } from './usage-stats.repository.js'
 import { jsonObjectOrNull, parseOptionalJsonObject } from './value-utils.js'
 
 export function expireDueResourceAuthorizations(): number {
@@ -47,6 +48,9 @@ export function expireDueResourceAuthorizations(): number {
   if (changed > 0) {
     cleanupInactiveAuthorizationBindings(database)
     invalidateAuthorizationLookupCaches()
+    markAllGroupAccountStatsDirty('authorization_expired')
+    notifyGatewayRuntimeCacheInvalidation('authorization_expired')
+    notifyAuthorizationQuotaCacheInvalidation('authorization_expired')
   }
   return changed
 }
@@ -323,11 +327,9 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
 
 export function cleanupInactiveAuthorizationBindings(database = getDatabase(), authorizationIds?: string[]): void {
   void authorizationIds
+  void database
   clearGatewayApiKeyValidationCache()
   invalidateAuthorizationLookupCaches()
-  if (!database.isTransaction) {
-    refreshGroupAccountStatsCache()
-  }
 }
 
 export function upsertResourceAuthorizationGrant(input: { resourceType: ResourceAuthorizationResourceType; resourceId: string; ownerSystemAccountId: string; granteeType: 'system_account' | 'team'; granteeId: string; remark?: string; expiresAt?: string | null; limits?: unknown; modelPolicy?: unknown; actor: string; now: string; database: DatabaseSync }): ResourceAuthorizationGrantRow {

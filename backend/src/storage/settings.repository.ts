@@ -1,4 +1,5 @@
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
+import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
 
 interface GlobalSettingRow {
@@ -100,6 +101,7 @@ export function updateSettings(input: Record<string, unknown>): Record<string, u
     }
     statement.run(systemAccountId, key, JSON.stringify(value), now)
   }
+  notifyGatewayRuntimeCacheInvalidation('settings_updated')
   return getSettings()
 }
 

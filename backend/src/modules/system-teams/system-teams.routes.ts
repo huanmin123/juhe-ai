@@ -14,8 +14,6 @@ import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, getRequestAuthContext } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sortedTextValues } from '../deduplication/mutation-guard.middleware.js'
-import { clearAuthorizationQuotaCache } from '../gateway/authorization-quota.service.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, ownerTarget, runLoggedOperation, safeChange, viewer, viewers } from '../operation-logs/operation-log.service.js'
 
 export const systemTeamsRouter = Router()
@@ -88,7 +86,6 @@ systemTeamsRouter.post('/', requireAdmin, mutationGuard({
       const team = createSystemTeam(parsed.data, requestAccess)
       return {
         result: team,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           mode: operationMode(requestAccess),
           module: 'system_teams',
@@ -140,7 +137,6 @@ systemTeamsRouter.patch('/:id', requireAdmin, (req, res) => {
       }
       return {
         result: team,
-        afterCommit: clearSystemTeamRuntimeCaches,
         log: {
           mode: operationMode(requestAccess),
           module: 'system_teams',
@@ -206,7 +202,6 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
       const addedMembers = (team.members ?? []).filter((member) => !beforeMemberIds.has(member.systemAccountId))
       return {
         result: team,
-        afterCommit: clearSystemTeamRuntimeCaches,
         log: {
           mode: operationMode(requestAccess),
           module: 'system_teams',
@@ -263,7 +258,6 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
       }
       return {
         result: team,
-        afterCommit: clearSystemTeamRuntimeCaches,
         log: {
           mode: operationMode(requestAccess),
           module: 'system_teams',
@@ -310,9 +304,4 @@ function teamMemberTargets(team: ReturnType<typeof listSystemTeams>[number]) {
 
 function teamMemberViewers(team: ReturnType<typeof listSystemTeams>[number]) {
   return viewers(...(team.members ?? []).map((member) => viewer(member.systemAccountId, 'team_member')))
-}
-
-function clearSystemTeamRuntimeCaches(): void {
-  clearGatewayRuntimeCache()
-  clearAuthorizationQuotaCache()
 }

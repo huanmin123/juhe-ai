@@ -7,8 +7,6 @@ import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
 import { submitApiKeyRelatedCleanup } from './api-key-cleanup.service.js'
-import { clearApiKeyQuotaCache, invalidateApiKeyQuotaCacheById } from '../gateway/api-key-quota.service.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const apiKeysRouter = Router()
@@ -78,10 +76,6 @@ apiKeysRouter.post('/', mutationGuard({
       const ownerSystemAccountId = resolveOperationOwner(apiKey as unknown as Record<string, unknown>, requestAccess)
       return {
         result: apiKey,
-        afterCommit: () => {
-          clearGatewayRuntimeCache()
-          clearApiKeyQuotaCache()
-        },
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -126,10 +120,6 @@ apiKeysRouter.patch('/:id', (req, res) => {
       const ownerSystemAccountId = resolveOperationOwner(apiKey as unknown as Record<string, unknown>, requestAccess)
       return {
         result: apiKey,
-        afterCommit: () => {
-          clearGatewayRuntimeCache()
-          invalidateApiKeyQuotaCacheById(req.params.id)
-        },
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,
           mode: operationMode(requestAccess),
@@ -184,8 +174,6 @@ apiKeysRouter.delete('/:id', (req, res) => {
           if (deleteResult.cleanupTarget) {
             submitApiKeyRelatedCleanup(deleteResult.cleanupTarget)
           }
-          clearGatewayRuntimeCache()
-          invalidateApiKeyQuotaCacheById(req.params.id)
         },
         log: {
           operationScopeSystemAccountId: ownerSystemAccountId,

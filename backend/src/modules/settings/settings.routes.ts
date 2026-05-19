@@ -3,7 +3,6 @@ import { Router } from 'express'
 import { ok } from '../../shared/http.js'
 import { getSettings, listGlobalSettings, updateGlobalSettings, updateSettings } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, runLoggedOperation } from '../operation-logs/operation-log.service.js'
 
 export const settingsRouter = Router()
@@ -50,7 +49,6 @@ settingsRouter.patch('/', requireAdmin, (req, res) => {
     const settings = updateSettings(body)
     return {
       result: settings,
-      afterCommit: clearGatewayRuntimeCache,
       log: {
         mode: 'admin',
         module: 'settings',

@@ -3,9 +3,8 @@ import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { clearGatewayApiKeyValidationCache, createSystemAccount, findSystemAccountById, listSystemAccountOptions, listSystemAccounts, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
+import { createSystemAccount, findSystemAccountById, listSystemAccountOptions, listSystemAccounts, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
 export const systemAccountsRouter = Router()
@@ -103,10 +102,6 @@ systemAccountsRouter.patch('/:id', requireAdmin, (req, res) => {
       }
       return {
         result: account,
-        afterCommit: parsed.data.status ? () => {
-          clearGatewayApiKeyValidationCache()
-          clearGatewayRuntimeCache()
-        } : undefined,
         log: {
           operationScopeSystemAccountId: account.id,
           mode: 'admin',

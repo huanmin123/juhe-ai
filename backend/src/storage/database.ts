@@ -3,11 +3,14 @@ import { dirname } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
+import { errorLogFields, logger } from '../shared/logger.js'
 import { applyBusinessSchema, applyRecordSchema, seedDefaults } from './schema.js'
 
 let businessDatabase: DatabaseSync | undefined
 let recordDatabase: DatabaseSync | undefined
 const sqliteBusyTimeoutMs = 5000
+type AfterCommitEffect = () => void
+const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
 
 export function getDatabase(): DatabaseSync {
   return getBusinessDatabase()
@@ -53,12 +56,17 @@ export function beginDatabaseTransaction(target = getDatabase()): boolean {
 export function commitDatabaseTransaction(target: DatabaseSync, started: boolean): void {
   if (started) {
     target.exec('COMMIT')
+    flushAfterCommitEffects(target)
   }
 }
 
 export function rollbackDatabaseTransaction(target: DatabaseSync, started: boolean): void {
   if (started) {
-    target.exec('ROLLBACK')
+    try {
+      target.exec('ROLLBACK')
+    } finally {
+      discardAfterCommitEffects(target)
+    }
   }
 }
 
@@ -86,4 +94,38 @@ export function nowIso(): string {
 
 export function newId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`
+}
+
+export function runAfterDatabaseCommit(effect: AfterCommitEffect, target = getDatabase()): void {
+  if (!target.isTransaction) {
+    effect()
+    return
+  }
+  const queue = afterCommitEffectsByDatabase.get(target)
+  if (queue) {
+    queue.push(effect)
+    return
+  }
+  afterCommitEffectsByDatabase.set(target, [effect])
+}
+
+function flushAfterCommitEffects(target: DatabaseSync): void {
+  const effects = afterCommitEffectsByDatabase.get(target)
+  if (!effects?.length) {
+    return
+  }
+  afterCommitEffectsByDatabase.delete(target)
+  for (const effect of effects) {
+    try {
+      effect()
+    } catch (error) {
+      logger.warn(errorLogFields(error, {
+        event: 'database_after_commit_effect_failed'
+      }), '数据库提交后副作用执行失败')
+    }
+  }
+}
+
+function discardAfterCommitEffects(target: DatabaseSync): void {
+  afterCommitEffectsByDatabase.delete(target)
 }

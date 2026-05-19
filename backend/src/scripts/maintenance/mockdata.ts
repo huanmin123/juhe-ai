@@ -1822,6 +1822,7 @@ function cleanupRecordMockdata(database: Database, mockAccountIds: string[]): vo
     deleteWhereIn(database, 'audit_logs', 'id', auditIds)
 
     const operationIds = selectIds(database, 'SELECT id FROM operation_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
+    deleteWhereIn(database, 'operation_log_search', 'log_id', operationIds)
     deleteWhereIn(database, 'operation_logs', 'id', operationIds)
 
     const runtimeIds = selectIds(database, 'SELECT id FROM runtime_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)

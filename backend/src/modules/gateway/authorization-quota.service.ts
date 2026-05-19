@@ -1,4 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
+import { registerAuthorizationQuotaCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import type { RequestQuotaLimits } from '../../domain/types.js'
 import { getDatabase, getRecordDatabase } from '../../storage/database.js'
@@ -344,3 +345,5 @@ function assertLocalGatewayDatabaseAccess(operation: string): void {
     throw new Error(`server 角色禁止直接同步读取 SQLite：${operation} 必须通过 DB service`)
   }
 }
+
+registerAuthorizationQuotaCacheInvalidator(clearAuthorizationQuotaCache)

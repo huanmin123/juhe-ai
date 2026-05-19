@@ -1,4 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
+import { registerApiKeyQuotaCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { getRecordDatabase } from '../../storage/database.js'
 import type { GatewayApiKeyRow } from '../../storage/repositories.js'
@@ -83,3 +84,11 @@ function assertLocalGatewayDatabaseAccess(operation: string): void {
     throw new Error(`server 角色禁止直接同步读取 SQLite：${operation} 必须通过 DB service`)
   }
 }
+
+registerApiKeyQuotaCacheInvalidator((apiKeyId) => {
+  if (apiKeyId) {
+    invalidateApiKeyQuotaCacheById(apiKeyId)
+    return
+  }
+  clearApiKeyQuotaCache()
+})

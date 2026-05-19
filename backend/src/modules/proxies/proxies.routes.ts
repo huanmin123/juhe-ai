@@ -5,7 +5,6 @@ import { badRequest, ok } from '../../shared/http.js'
 import { createProxy, deleteProxy, findProxy, listProxies, listProxyOptions, ProxyInUseError, updateProxy, updateProxyTestState } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
-import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
 import { testProxyById } from './proxy-test.service.js'
 
@@ -51,7 +50,6 @@ proxiesRouter.post('/', requireAdmin, mutationGuard({
       const proxy = createProxy(parsed.data)
       return {
         result: proxy,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           mode: 'admin',
           module: 'proxies',
@@ -92,7 +90,6 @@ proxiesRouter.patch('/:id', requireAdmin, (req, res) => {
       }
       return {
         result: proxy,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           mode: 'admin',
           module: 'proxies',
@@ -193,7 +190,6 @@ proxiesRouter.delete('/:id', requireAdmin, (req, res) => {
       }
       return {
         result: true,
-        afterCommit: clearGatewayRuntimeCache,
         log: {
           mode: 'admin',
           module: 'proxies',
