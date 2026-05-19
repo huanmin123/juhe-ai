@@ -7,8 +7,9 @@ import express, { type NextFunction, type Request, type Response } from 'express
 import { startBackgroundWorkerSupervisor } from './modules/background/background-worker-supervisor.js'
 import { createDbServiceHttpProxy } from './modules/db-service/db-service-http-proxy.js'
 import { startDbServiceSupervisor } from './modules/db-service/db-service-supervisor.js'
-import { openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
+import { handleGatewayDbServiceUnavailable, openAIGatewayRouter } from './modules/gateway/openai-gateway.routes.js'
 import { captureGatewayRawBody } from './modules/gateway/openai-gateway-request-body-middleware.js'
+import { preResolveOpenAIGatewayRuntime } from './modules/gateway/openai-gateway-request.js'
 import { recordDroppedAuditCapture } from './modules/audit-logs/audit-log-queue.service.js'
 import { backendRoot, runtimeConfig } from './config/runtime.js'
 import { installProcessLogHandlers, logger } from './shared/logger.js'
@@ -127,7 +128,14 @@ app.use(systemPrefix, (_req, res) => {
   res.status(404).json({ message: '资源不存在' })
 })
 
-app.use(express.raw({ type: () => true, limit: gatewayRawBodyLimit }), handleGatewayRawBodyError, captureGatewayRawBody, openAIGatewayRouter)
+app.use(
+  preResolveOpenAIGatewayRuntime,
+  handleGatewayDbServiceUnavailable,
+  express.raw({ type: () => true, limit: gatewayRawBodyLimit }),
+  handleGatewayRawBodyError,
+  captureGatewayRawBody,
+  openAIGatewayRouter
+)
 
 app.use((_req, res) => {
   res.status(404).json({ message: '资源不存在' })

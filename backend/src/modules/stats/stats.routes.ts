@@ -135,9 +135,14 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
   }
   const overview = getSystemMetricsOverview(normalizeStatsDateRange(parsed.data))
   const runtime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
+  const workerSnapshot = runtime?.worker?.snapshot
+  const backgroundJobs = workerSnapshot?.jobs
   res.json(ok({
     ...overview,
-    backgroundJobs: runtime?.worker?.snapshot?.jobs ?? []
+    runtimeSnapshotAvailable: Boolean(runtime),
+    workerSnapshotAvailable: Boolean(workerSnapshot),
+    backgroundJobsAvailable: Array.isArray(backgroundJobs),
+    backgroundJobs: backgroundJobs ?? null
   }))
 })
 

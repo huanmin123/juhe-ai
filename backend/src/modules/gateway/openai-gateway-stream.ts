@@ -588,11 +588,10 @@ function readNextStreamChunk(
 }
 
 interface StreamReadPlan {
-  phase: 'first_chunk' | 'active_stream' | 'sse_event' | 'no_circuit_breaker'
+  phase: 'first_chunk' | 'active_stream' | 'no_circuit_breaker'
   timeoutMs?: number
   rawTimeoutMs?: number
-  sseEventTimeoutMs?: number
-  timeoutKind?: 'first_chunk' | 'upstream_activity' | 'sse_event'
+  timeoutKind?: 'first_chunk' | 'upstream_activity'
   timeoutMessage: string
   deadlineExceeded: boolean
 }
@@ -619,25 +618,12 @@ function buildStreamReadPlan(
     const streamIdleTimeoutSeconds = Math.max(1, settings.streamIdleTimeoutSeconds)
     const now = Date.now()
     const rawTimeoutMs = streamIdleTimeoutSeconds * 1000 - (now - status.lastUpstreamActivityAt)
-    const sseEventTimeoutMs = status.lastSseEventActivityAt === undefined
-      ? undefined
-      : streamIdleTimeoutSeconds * 1000 - (now - status.lastSseEventActivityAt)
-    if (sseEventTimeoutMs !== undefined && sseEventTimeoutMs < rawTimeoutMs) {
-      return {
-        phase: 'sse_event',
-        timeoutMs: sseEventTimeoutMs,
-        rawTimeoutMs,
-        sseEventTimeoutMs,
-        timeoutKind: 'sse_event',
-        timeoutMessage: streamSseEventTimeoutMessage(streamIdleTimeoutSeconds),
-        deadlineExceeded: sseEventTimeoutMs <= 0
-      }
-    }
+    // Raw upstream activity is the hard timeout. Incomplete SSE events are diagnostic only:
+    // large or fragmented events can stay valid while bytes continue to arrive.
     return {
       phase: 'active_stream',
       timeoutMs: rawTimeoutMs,
       rawTimeoutMs,
-      sseEventTimeoutMs,
       timeoutKind: 'upstream_activity',
       timeoutMessage: streamIdleTimeoutMessage(streamIdleTimeoutSeconds),
       deadlineExceeded: rawTimeoutMs <= 0
@@ -661,10 +647,6 @@ function firstChunkTimeoutMessage(timeoutSeconds: number): string {
 
 function streamIdleTimeoutMessage(timeoutSeconds: number): string {
   return `上游流式响应 ${timeoutSeconds}s 内未返回任何新数据`
-}
-
-function streamSseEventTimeoutMessage(timeoutSeconds: number): string {
-  return `上游流式响应 ${timeoutSeconds}s 内未形成完整 SSE 事件`
 }
 
 function streamFailureContext(downstreamBytesWritten: number, outputReceived: boolean): StreamFailureContext {

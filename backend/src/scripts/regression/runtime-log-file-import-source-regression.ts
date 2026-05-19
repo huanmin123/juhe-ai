@@ -152,6 +152,42 @@ try {
     '文件导入的正常日志应带准确来源位置'
   )
 
+  const flushFailureLine = JSON.stringify({
+    time: now,
+    level: 30,
+    event: 'runtime_log_cursor_flush_failure',
+    msg: '索引写入失败时不能推进文件游标'
+  })
+  writeFileSync(logPath, `${longLine}\n${normalLine}\n${flushFailureLine}\n`)
+  database.exec(`
+    CREATE TRIGGER runtime_log_cursor_flush_failure_guard
+    BEFORE INSERT ON runtime_logs
+    WHEN NEW.event = 'runtime_log_cursor_flush_failure'
+    BEGIN
+      SELECT RAISE(ABORT, 'forced runtime log flush failure');
+    END;
+  `)
+  await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
+  const cursorAfterFlushFailure = runtimeLogsRepository.getRuntimeLogFileCursor(logPath)
+  assert.equal(cursorAfterFlushFailure?.cursorOffset, statSync(logPath).size - Buffer.byteLength(`${flushFailureLine}\n`, 'utf8'), '运行日志索引写入失败时文件游标不应越过未落库行')
+  assert.equal(cursorAfterFlushFailure?.lineNumber, 2, '运行日志索引写入失败时行号应保留在最近一次成功写入位置')
+  assert.match(cursorAfterFlushFailure?.lastErrorMessage ?? '', /索引写入失败/, '运行日志索引写入失败应在文件游标留下错误原因')
+  const failedFlushCount = database
+    .prepare('SELECT COUNT(*) AS count FROM runtime_logs WHERE event = ?')
+    .get('runtime_log_cursor_flush_failure') as { count: number }
+  assert.equal(Number(failedFlushCount.count ?? 0), 0, '运行日志索引写入失败时不应写入失败行')
+
+  database.exec('DROP TRIGGER runtime_log_cursor_flush_failure_guard')
+  await runtimeLogFileImport.importRuntimeLogFileDeltaForTest({ path: logPath, role: 'db-service-current' })
+  const cursorAfterFlushRetry = runtimeLogsRepository.getRuntimeLogFileCursor(logPath)
+  assert.equal(cursorAfterFlushRetry?.cursorOffset, statSync(logPath).size, '运行日志索引恢复后文件游标应推进到文件末尾')
+  assert.equal(cursorAfterFlushRetry?.lineNumber, 3, '运行日志索引恢复后行号应继续推进')
+  assert.equal(cursorAfterFlushRetry?.lastErrorMessage, undefined, '运行日志索引恢复后应清除失败游标错误')
+  const recoveredFlushCount = database
+    .prepare('SELECT COUNT(*) AS count FROM runtime_logs WHERE event = ?')
+    .get('runtime_log_cursor_flush_failure') as { count: number }
+  assert.equal(Number(recoveredFlushCount.count ?? 0), 1, '运行日志索引恢复后应重读并写入之前失败的日志行且保持幂等')
+
   console.log('运行日志文件导入来源回归通过：重复来源、DB service tail 和超长单行游标均符合预期')
 } finally {
   try {

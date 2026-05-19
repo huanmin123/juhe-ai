@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { usageRecordsCleanupCursor } from './data-retention.repository.js'
 import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
 import { subtractUsageStatsRecord } from './usage-stats-writers.js'
 
@@ -9,18 +10,110 @@ export interface DeletedApiKeyRecordCleanupTarget {
   systemAccountId: string
 }
 
-type UsageStatsAggregationCursor = {
-  cursorCreatedAt: string
-  cursorId: string
+export interface DeletedApiKeyRecordCleanupResult extends DeletedApiKeyRecordCleanupTarget {
+  deletedRows: number
+  hasMore: boolean
+  blockedReason?: string
+  safetyCursorCreatedAt?: string
+  safetyCursorId?: string
 }
 
-export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecordCleanupTarget): void {
+export interface PendingDeletedApiKeyRecordCleanupSummary {
+  attempted: number
+  completed: number
+  deferred: number
+  failed: number
+  deletedRows: number
+}
+
+type PendingDeletedApiKeyRecordCleanupTargetRow = {
+  api_key_id?: string | null
+  system_account_id?: string | null
+}
+
+const apiKeyScopeStatsTables = [
+  'usage_stats_totals',
+  'usage_stats_minute',
+  'usage_stats_hourly',
+  'usage_stats_daily',
+  'usage_stats_weekly',
+  'usage_stats_monthly'
+] as const
+
+export function registerDeletedApiKeyRecordCleanupTarget(input: DeletedApiKeyRecordCleanupTarget): void {
+  upsertDeletedApiKeyRecordCleanupTarget(getRecordDatabase(), input, nowIso())
+}
+
+export function cleanupPendingDeletedApiKeyRecordTargets(limit = 50): PendingDeletedApiKeyRecordCleanupSummary {
+  const targets = listDeletedApiKeyRecordCleanupTargets(Math.max(1, Math.trunc(limit)))
+  const summary: PendingDeletedApiKeyRecordCleanupSummary = {
+    attempted: 0,
+    completed: 0,
+    deferred: 0,
+    failed: 0,
+    deletedRows: 0
+  }
+  for (const target of targets) {
+    summary.attempted += 1
+    try {
+      const result = cleanupDeletedApiKeyRelatedRecordData(target)
+      summary.deletedRows += result.deletedRows
+      if (result.hasMore || result.blockedReason) {
+        summary.deferred += 1
+      } else {
+        summary.completed += 1
+      }
+    } catch (error) {
+      summary.failed += 1
+      markDeletedApiKeyRecordCleanupTargetError(getRecordDatabase(), target, errorMessage(error), nowIso())
+    }
+  }
+  return summary
+}
+
+export function listDeletedApiKeyRecordCleanupTargets(limit = 50): DeletedApiKeyRecordCleanupTarget[] {
+  const rows = getRecordDatabase()
+    .prepare(`
+      SELECT api_key_id, system_account_id
+      FROM api_key_record_cleanup_targets
+      ORDER BY COALESCE(last_attempt_at, created_at) ASC, created_at ASC, api_key_id ASC
+      LIMIT ?
+    `)
+    .all(Math.max(1, Math.trunc(limit))) as PendingDeletedApiKeyRecordCleanupTargetRow[]
+  return rows
+    .map((row) => ({
+      apiKeyId: String(row.api_key_id ?? ''),
+      systemAccountId: String(row.system_account_id ?? '')
+    }))
+    .filter((row) => row.apiKeyId && row.systemAccountId)
+}
+
+export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecordCleanupTarget): DeletedApiKeyRecordCleanupResult {
   const database = getRecordDatabase()
   const updatedAt = nowIso()
-  const cursor = usageStatsAggregationCursor(database)
-  let cursorCreatedAt = ''
-  let cursorId = ''
+  upsertDeletedApiKeyRecordCleanupTarget(database, input, updatedAt)
+  const cursor = usageRecordsCleanupCursor(database)
+  const cursorCreatedAt = cursor.cursorCreatedAt
+  const cursorId = cursor.cursorId
+  if (!cursorCreatedAt || !cursorId) {
+    const hasMore = hasApiKeyUsageRecords(database, input)
+    const result: DeletedApiKeyRecordCleanupResult = {
+      ...input,
+      deletedRows: 0,
+      hasMore,
+      blockedReason: hasMore ? cursor.blockedReason ?? '统计安全游标尚未建立，暂不清理已删除 API Key 的使用记录' : undefined
+    }
+    if (hasMore) {
+      markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '统计安全游标尚未建立', updatedAt)
+    } else {
+      deleteApiKeyScopeStats(database, input)
+      clearDeletedApiKeyRecordCleanupTarget(database, input)
+    }
+    return result
+  }
+
   const batchLimit = 1000
+  let deletedRows = 0
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     while (true) {
@@ -28,44 +121,105 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
         SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
         FROM usage_records
         WHERE api_key_id = ?
-          AND (created_at > ? OR (created_at = ? AND id > ?))
+          AND system_account_id = ?
+          AND (created_at < ? OR (created_at = ? AND id <= ?))
         ORDER BY created_at ASC, id ASC
         LIMIT ?
-      `).all(input.apiKeyId, cursorCreatedAt, cursorCreatedAt, cursorId, batchLimit) as unknown as UsageStatsRecordRow[]
+      `).all(input.apiKeyId, input.systemAccountId, cursorCreatedAt, cursorCreatedAt, cursorId, batchLimit) as unknown as UsageStatsRecordRow[]
       if (usageRows.length === 0) {
         break
       }
+      const deleteUsageRecord = database.prepare('DELETE FROM usage_records WHERE id = ? AND api_key_id = ? AND system_account_id = ?')
       for (const usageRow of usageRows) {
-        if (isUsageRecordAlreadyAggregated(usageRow, cursor)) {
-          subtractUsageStatsRecord(database, usageRow, updatedAt)
-        }
+        subtractUsageStatsRecord(database, usageRow, updatedAt)
+        deletedRows += changed(deleteUsageRecord.run(usageRow.id, input.apiKeyId, input.systemAccountId))
       }
-      const last = usageRows[usageRows.length - 1]
-      cursorCreatedAt = last.created_at
-      cursorId = last.id
       if (usageRows.length < batchLimit) {
         break
       }
     }
-    for (const tableName of ['usage_stats_totals', 'usage_stats_minute', 'usage_stats_hourly', 'usage_stats_daily', 'usage_stats_weekly', 'usage_stats_monthly']) {
-      database.prepare(`DELETE FROM ${tableName} WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`).run(input.systemAccountId, input.apiKeyId)
+
+    const hasMore = hasApiKeyUsageRecords(database, input)
+    const result: DeletedApiKeyRecordCleanupResult = {
+      ...input,
+      deletedRows,
+      hasMore,
+      blockedReason: hasMore ? '仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理' : undefined,
+      safetyCursorCreatedAt: cursorCreatedAt,
+      safetyCursorId: cursorId
     }
-    database.prepare('DELETE FROM usage_records WHERE api_key_id = ?').run(input.apiKeyId)
+    if (hasMore) {
+      markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '等待统计安全游标追平', updatedAt)
+    } else {
+      deleteApiKeyScopeStats(database, input)
+      clearDeletedApiKeyRecordCleanupTarget(database, input)
+    }
     commitDatabaseTransaction(database, transactionStarted)
+    return result
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
+    markDeletedApiKeyRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
     throw error
   }
 }
 
-function usageStatsAggregationCursor(database: DatabaseSync): UsageStatsAggregationCursor {
-  const row = database
-    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
-    .get() as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
-  return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
+function upsertDeletedApiKeyRecordCleanupTarget(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget, updatedAt: string): void {
+  database.prepare(`
+    INSERT INTO api_key_record_cleanup_targets (api_key_id, system_account_id, created_at, updated_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(api_key_id) DO UPDATE SET
+      system_account_id = excluded.system_account_id,
+      updated_at = excluded.updated_at
+  `).run(input.apiKeyId, input.systemAccountId, updatedAt, updatedAt)
 }
 
-function isUsageRecordAlreadyAggregated(row: UsageStatsRecordRow, cursor: UsageStatsAggregationCursor): boolean {
-  if (!cursor.cursorCreatedAt) return false
-  return row.created_at < cursor.cursorCreatedAt || (row.created_at === cursor.cursorCreatedAt && row.id <= cursor.cursorId)
+function markDeletedApiKeyRecordCleanupTargetDeferred(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget, blockedReason: string, updatedAt: string): void {
+  database.prepare(`
+    UPDATE api_key_record_cleanup_targets
+    SET attempt_count = attempt_count + 1,
+        last_attempt_at = ?,
+        last_blocked_reason = ?,
+        last_error_message = NULL,
+        updated_at = ?
+    WHERE api_key_id = ? AND system_account_id = ?
+  `).run(updatedAt, blockedReason, updatedAt, input.apiKeyId, input.systemAccountId)
+}
+
+function markDeletedApiKeyRecordCleanupTargetError(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget, message: string, updatedAt: string): void {
+  database.prepare(`
+    UPDATE api_key_record_cleanup_targets
+    SET attempt_count = attempt_count + 1,
+        last_attempt_at = ?,
+        last_blocked_reason = NULL,
+        last_error_message = ?,
+        updated_at = ?
+    WHERE api_key_id = ? AND system_account_id = ?
+  `).run(updatedAt, message, updatedAt, input.apiKeyId, input.systemAccountId)
+}
+
+function clearDeletedApiKeyRecordCleanupTarget(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): void {
+  database.prepare('DELETE FROM api_key_record_cleanup_targets WHERE api_key_id = ? AND system_account_id = ?')
+    .run(input.apiKeyId, input.systemAccountId)
+}
+
+function hasApiKeyUsageRecords(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): boolean {
+  const row = database
+    .prepare('SELECT id FROM usage_records WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
+    .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
+  return Boolean(row?.id)
+}
+
+function deleteApiKeyScopeStats(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): void {
+  for (const tableName of apiKeyScopeStatsTables) {
+    database.prepare(`DELETE FROM ${tableName} WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`)
+      .run(input.systemAccountId, input.apiKeyId)
+  }
+}
+
+function changed(result: { changes?: number | bigint }): number {
+  return Number(result.changes ?? 0)
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : '已删除 API Key 记录库清理失败'
 }

@@ -6,10 +6,10 @@ import { createApiKeyRecord, deleteApiKeyWithRelatedCleanup, findApiKeySummary, 
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField } from '../deduplication/mutation-guard.middleware.js'
+import { submitApiKeyRelatedCleanup } from './api-key-cleanup.service.js'
 import { clearApiKeyQuotaCache, invalidateApiKeyQuotaCacheById } from '../gateway/api-key-quota.service.js'
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { diffSafeFields, operationMode, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
-import { enqueueRecordMaintenanceJob } from '../record-maintenance/record-maintenance-queue.service.js'
 
 export const apiKeysRouter = Router()
 
@@ -182,11 +182,7 @@ apiKeysRouter.delete('/:id', (req, res) => {
         result: true,
         afterCommit: () => {
           if (deleteResult.cleanupTarget) {
-            enqueueRecordMaintenanceJob({
-              type: 'api_key_related_cleanup',
-              apiKeyId: deleteResult.cleanupTarget.apiKeyId,
-              systemAccountId: deleteResult.cleanupTarget.systemAccountId
-            })
+            submitApiKeyRelatedCleanup(deleteResult.cleanupTarget)
           }
           clearGatewayRuntimeCache()
           invalidateApiKeyQuotaCacheById(req.params.id)

@@ -70,9 +70,9 @@ export function enqueueRuntimeLogLineLocal(rawLine: string, options: RuntimeLogL
   scheduleRuntimeLogFlush(pendingRuntimeLogs.length >= runtimeLogBatchSize ? 0 : runtimeLogFlushIntervalMs)
 }
 
-export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}): void {
+export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}): boolean {
   if (flushing || pendingRuntimeLogs.length === 0) {
-    return
+    return true
   }
 
   if (flushTimer) {
@@ -116,10 +116,11 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
   if (pendingRuntimeLogs.length > 0 && (!failed || shouldRetry)) {
     scheduleRuntimeLogFlush(shouldRetry ? runtimeLogRetryDelayMs : 0)
   }
+  return !failed
 }
 
-export function flushAllRuntimeLogIndexQueue(): void {
-  flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
+export function flushAllRuntimeLogIndexQueue(): boolean {
+  return flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
 }
 
 export function getRuntimeLogIndexRuntime(): RuntimeLogIndexRuntime {

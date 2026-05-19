@@ -31,6 +31,8 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMoun
 
 import { message } from '@/lib/antd'
 
+const jsonAutoFormatMaxChars = 256 * 1024
+
 const props = withDefaults(defineProps<{
   attachedToolbar?: boolean
   contentType?: string
@@ -135,6 +137,9 @@ function cancelScheduledFormat(): void {
 function formatForDisplay(text: string, shouldFormatJson: boolean): { text: string; error: string } {
   if (!text) return { text: '', error: '' }
   if (!shouldFormatJson) return { text, error: '' }
+  if (text.length > jsonAutoFormatMaxChars) {
+    return { text, error: '内容较大，已按原文展示' }
+  }
   try {
     return { text: JSON.stringify(JSON.parse(text), null, 2), error: '' }
   } catch {

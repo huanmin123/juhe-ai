@@ -1,8 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { estimateProviderCacheReadCostUsd } from '../modules/model-pricing/model-pricing.service.js'
-import { getDatabase } from './database.js'
-import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
 import {
@@ -54,7 +52,6 @@ interface AuthorizationReportSummaryKey {
 }
 
 export interface UsageStatsAggregationContext {
-  apiKeyExistsById: Map<string, boolean>
   usageStatsUpsertStatements?: UsageStatsUpsertStatements
 }
 
@@ -101,30 +98,12 @@ const usageLatencyTimeBuckets: TimeBucketDefinition[] = [
 const latencyBucketUpperBoundsMs = [100, 250, 500, 1000, 2000, 5000, 10000, 30000, 60000, -1] as const
 
 export function createUsageStatsAggregationContext(rows: UsageStatsRecordRow[]): UsageStatsAggregationContext {
-  const apiKeyIds = [...new Set(rows.map((row) => row.api_key_id).filter((id): id is string => Boolean(id)))]
-  const apiKeyExistsById = new Map(apiKeyIds.map((id) => [id, false]))
-  if (apiKeyIds.length === 0) {
-    return { apiKeyExistsById }
-  }
-  const businessDatabase = getDatabase()
-  for (const chunk of chunkValues(apiKeyIds, 900)) {
-    const existingRows = businessDatabase
-      .prepare(`SELECT id FROM api_keys WHERE id IN (${sqlPlaceholders(chunk.length)})`)
-      .all(...chunk) as unknown as Array<{ id?: string }>
-    for (const row of existingRows) {
-      if (row.id) {
-        apiKeyExistsById.set(row.id, true)
-      }
-    }
-  }
-  return { apiKeyExistsById }
+  void rows
+  return {}
 }
 
 export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string, context?: UsageStatsAggregationContext): void {
   if (!shouldAggregateUsageStatsRecord(row)) {
-    return
-  }
-  if (isDeletedApiKeyRecord(row, context)) {
     return
   }
   persistEstimatedCacheReadCost(database, row)
@@ -143,7 +122,7 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
 }
 
 export function aggregateCallerAccountUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string, context?: UsageStatsAggregationContext): void {
-  if (!row.account_id || !shouldAggregateUsageStatsRecord(row) || isDeletedApiKeyRecord(row, context)) {
+  if (!row.account_id || !shouldAggregateUsageStatsRecord(row)) {
     return
   }
   const timeKeys = usageStatsTimeKeys(database, row)
@@ -158,7 +137,8 @@ export function aggregateCallerAccountUsageStatsRecord(database: DatabaseSync, r
 }
 
 export function aggregateAccountQualityMinuteStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string, context?: UsageStatsAggregationContext): void {
-  if (!shouldAggregateUsageStatsRecord(row) || isDeletedApiKeyRecord(row, context)) {
+  void context
+  if (!shouldAggregateUsageStatsRecord(row)) {
     return
   }
   upsertAccountQualityMinuteStats(database, row, updatedAt)
@@ -395,18 +375,6 @@ function statsSubtractParams(stats: UsageStatsAccumulator): number[] {
     stats.requestCount,
     stats.errorCount
   ]
-}
-
-function isDeletedApiKeyRecord(row: UsageStatsRecordRow, context?: UsageStatsAggregationContext): boolean {
-  if (!row.api_key_id) return false
-  const cached = context?.apiKeyExistsById.get(row.api_key_id)
-  if (cached !== undefined) {
-    return !cached
-  }
-  const apiKey = getDatabase().prepare('SELECT id FROM api_keys WHERE id = ?').get(row.api_key_id) as unknown as { id?: string } | undefined
-  const exists = Boolean(apiKey?.id)
-  context?.apiKeyExistsById.set(row.api_key_id, exists)
-  return !exists
 }
 
 function deleteEmptyUsageStatsTotal(database: DatabaseSync, systemAccountId: string, scopeType: string, scopeId: string): void {

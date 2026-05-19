@@ -192,6 +192,33 @@ async function main(): Promise<void> {
     assert.equal(transientResponseText, transient502SuccessBody, `同账号重试成功响应体异常：${transientResponseText}`)
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '未知非 2xx 失败同账号重试成功前不应本地屏蔽账号')
 
+    settingsRepository.updateSettings({
+      temporaryUnschedulableRetryAttempts: 0,
+      temporaryUnschedulableRetryIntervalSeconds: 0
+    })
+    gatewayCache.clearGatewayRuntimeCache()
+    currentScenario = 'unknown_failure_switch_account_success'
+    const switchResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${apiKey.key}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [{ role: 'user', content: 'unknown first account failure should not cooldown' }],
+        stream: false
+      })
+    })
+    const switchResponseText = await switchResponse.text()
+
+    assert.equal(switchResponse.status, 200, `未知失败切到后续账号成功时应返回成功响应，实际 HTTP ${switchResponse.status}: ${switchResponseText}`)
+    assert.equal(unknownSwitchFirstAccountHitCount, 1, `未知失败切号场景首账号应命中 1 次，实际 ${unknownSwitchFirstAccountHitCount}`)
+    assert.equal(unknownSwitchSecondAccountHitCount, 1, `未知失败切号场景后续账号应命中 1 次，实际 ${unknownSwitchSecondAccountHitCount}`)
+    assert.equal(switchResponseText, unknownSwitchSuccessBody, `未知失败切号成功响应体异常：${switchResponseText}`)
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '未知失败切到后续账号成功后不应本地屏蔽首账号')
+
     usageRecordQueue.flushAllUsageRecordQueue()
     const accounts = repositories.listAccounts()
     for (const account of [firstAccount, secondAccount]) {
@@ -203,7 +230,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('请求级上游失败回归通过：无效 JSON 由网关拒绝；工具输出缺失和 Instructions are required 特征直接返回客户端；未知非 2xx 失败先同账号重试；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
+    console.log('请求级上游失败回归通过：无效 JSON 由网关拒绝；工具输出缺失和 Instructions are required 特征直接返回客户端；未知非 2xx 失败先同账号重试或切号；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -218,13 +245,20 @@ async function main(): Promise<void> {
   }
 }
 
-type RegressionScenario = 'tool_output_missing_feature' | 'same_signature_confirmation' | 'instructions_required_feature' | 'unknown_failure_same_account_retry'
+type RegressionScenario =
+  | 'tool_output_missing_feature'
+  | 'same_signature_confirmation'
+  | 'instructions_required_feature'
+  | 'unknown_failure_same_account_retry'
+  | 'unknown_failure_switch_account_success'
 
 let currentScenario: RegressionScenario = 'tool_output_missing_feature'
 let toolOutputMissingUpstreamHitCount = 0
 let sameSignatureUpstreamHitCount = 0
 let instructionsRequiredUpstreamHitCount = 0
 let transient502UpstreamHitCount = 0
+let unknownSwitchFirstAccountHitCount = 0
+let unknownSwitchSecondAccountHitCount = 0
 const toolOutputMissingRejectedRequestMessage = 'No tool output found for function call fc_request_failure_regression.'
 const toolOutputMissingRejectedRequestBody = JSON.stringify({
   error: {
@@ -261,9 +295,21 @@ const transient502SuccessBody = JSON.stringify({
   ],
   usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
 })
+const unknownSwitchSuccessBody = JSON.stringify({
+  id: 'chatcmpl-unknown-switch-regression',
+  object: 'chat.completion',
+  choices: [
+    {
+      index: 0,
+      message: { role: 'assistant', content: 'ok from second account' },
+      finish_reason: 'stop'
+    }
+  ],
+  usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 }
+})
 
 function createRejectedRequestUpstream(): http.Server {
-  return http.createServer((_req, res) => {
+  return http.createServer((req, res) => {
     if (currentScenario === 'unknown_failure_same_account_retry') {
       transient502UpstreamHitCount += 1
       if (transient502UpstreamHitCount <= 2) {
@@ -273,6 +319,19 @@ function createRejectedRequestUpstream(): http.Server {
       }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
       res.end(transient502SuccessBody)
+      return
+    }
+    if (currentScenario === 'unknown_failure_switch_account_success') {
+      const authorization = String(req.headers.authorization ?? '')
+      if (authorization.includes('sk-request-failure-1')) {
+        unknownSwitchFirstAccountHitCount += 1
+        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' })
+        res.end(JSON.stringify({ error: { message: 'temporary first account upstream error', type: 'server_error', code: 'bad_gateway' } }))
+        return
+      }
+      unknownSwitchSecondAccountHitCount += 1
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8' })
+      res.end(unknownSwitchSuccessBody)
       return
     }
     if (currentScenario === 'instructions_required_feature') {

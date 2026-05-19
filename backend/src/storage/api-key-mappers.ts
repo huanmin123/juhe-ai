@@ -1,7 +1,7 @@
 import type { ApiKeySummary } from '../domain/types.js'
 import { includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { decryptJson } from './crypto.js'
-import { loadSystemAccountNameMap } from './repository-lookups.js'
+import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import { loadApiKeyUsageSummariesForScopes } from './usage-summary-loaders.js'
@@ -23,7 +23,7 @@ export interface ApiKeyRow {
 export function apiKeySummariesFromRows(rows: ApiKeyRow[], access?: AccessScope, options: { includeSecret?: boolean } = {}): ApiKeySummary[] {
   const includeSecret = options.includeSecret ?? true
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
+  const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
   const usageScopes = rows.map((row) => ({ rowKey: row.id, systemAccountId: row.system_account_id, scopeId: row.id }))
   const usageByApiKey = loadApiKeyUsageSummariesForScopes(usageScopes)
   return rows.map((row) => ({

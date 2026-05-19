@@ -49,7 +49,9 @@
           </div>
         </template>
         <template v-else-if="column.key === 'concurrency'">
-          <a-tag color="blue">{{ groupStats(record).currentConcurrency }}</a-tag>
+          <a-tooltip :title="groupConcurrencyTooltip(record)">
+            <a-tag :color="groupConcurrencyAvailable(record) ? 'blue' : 'default'">{{ groupConcurrencyText(record) }}</a-tag>
+          </a-tooltip>
         </template>
         <template v-else-if="column.key === 'usage'">
           <UsageSummaryTags :usage="groupStats(record).todayUsage" />
@@ -89,7 +91,9 @@
             </div>
             <div class="mobile-list-meta-item">
               <span>并发</span>
-              <strong>{{ groupStats(record).currentConcurrency }}</strong>
+              <a-tooltip :title="groupConcurrencyTooltip(record)">
+                <strong>{{ groupConcurrencyText(record) }}</strong>
+              </a-tooltip>
             </div>
             <div class="mobile-list-meta-item">
               <span>用量(日)</span>
@@ -250,6 +254,18 @@ const targetSystemAccountLabel = computed(() => {
 
 function groupStats(group: GroupSummary) {
   return group.accountStats
+}
+
+function groupConcurrencyAvailable(group: GroupSummary): boolean {
+  return groupStats(group).currentConcurrencyAvailable !== false
+}
+
+function groupConcurrencyText(group: GroupSummary): string {
+  return groupConcurrencyAvailable(group) ? String(groupStats(group).currentConcurrency) : '暂不可用'
+}
+
+function groupConcurrencyTooltip(group: GroupSummary): string {
+  return groupConcurrencyAvailable(group) ? '当前正在转发的请求数' : '实时并发快照暂不可用'
 }
 
 function groupStatusText(group: GroupSummary) {

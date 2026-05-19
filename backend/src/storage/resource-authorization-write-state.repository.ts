@@ -9,6 +9,8 @@ import type {
 import { currentSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, newId, nowIso } from './database.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
+import { invalidateGroupAccountIdsCache } from './group-read-loaders.js'
+import { clearResourceAuthorizationLookupCaches } from './authorization-read-loaders.js'
 import { isResourceAuthorizationExpired } from './resource-authorization-helpers.js'
 import { loadRuntimeAuthorizationForUserGrant } from './resource-authorization-read.repository.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
@@ -44,6 +46,7 @@ export function expireDueResourceAuthorizations(): number {
   const changed = Number(grantResult.changes ?? 0)
   if (changed > 0) {
     cleanupInactiveAuthorizationBindings(database)
+    invalidateAuthorizationLookupCaches()
   }
   return changed
 }
@@ -199,6 +202,7 @@ function upsertResourceAuthorizationSource(database: DatabaseSync, authorization
 }
 
 function refreshResourceAuthorizationEffectiveSource(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
+  invalidateAuthorizationLookupCaches()
   const activeTeamSource = database.prepare(`
     SELECT ras.source_team_id
     FROM resource_authorization_sources ras
@@ -320,6 +324,7 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
 export function cleanupInactiveAuthorizationBindings(database = getDatabase(), authorizationIds?: string[]): void {
   void authorizationIds
   clearGatewayApiKeyValidationCache()
+  invalidateAuthorizationLookupCaches()
   if (!database.isTransaction) {
     refreshGroupAccountStatsCache()
   }
@@ -400,6 +405,7 @@ export function upsertResourceAuthorizationGrant(input: { resourceType: Resource
   }
   const row = input.database.prepare('SELECT * FROM resource_authorization_grants WHERE id = ?').get(id) as unknown as ResourceAuthorizationGrantRow | undefined
   if (!row) throw new Error('创建资源授权失败')
+  invalidateAuthorizationLookupCaches()
   return row
 }
 
@@ -589,4 +595,9 @@ export function reactivateTeamGrantSources(teamId: string, access: AccessScope |
 
 export function deactivateAuthorizationIfNoActiveSources(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
   refreshResourceAuthorizationEffectiveSource(authorizationId, actor, now, database)
+}
+
+function invalidateAuthorizationLookupCaches(): void {
+  clearResourceAuthorizationLookupCaches()
+  invalidateGroupAccountIdsCache()
 }

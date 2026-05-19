@@ -77,6 +77,9 @@ export async function checkGatewayAuthorizationQuotaAsync(input: {
   groupAccess: GroupUsageAccessMetadata
   account?: OpenAIAccountSecret
 }): Promise<AuthorizationQuotaDecision> {
+  if (!input.groupAccess.groupAuthorizationId && !input.account?.accountAuthorizationId) {
+    return { allowed: true }
+  }
   return await requestDbService({
     type: 'check_authorization_quota',
     groupAuthorizationId: input.groupAccess.groupAuthorizationId,
@@ -88,17 +91,29 @@ export async function checkGatewayAuthorizationQuotaBatchAsync(input: {
   groupAccess: GroupUsageAccessMetadata
   accounts: OpenAIAccountSecret[]
 }): Promise<Map<string, AuthorizationQuotaDecision>> {
+  const hasGroupAuthorizationQuota = Boolean(input.groupAccess.groupAuthorizationId)
+  const accountsToCheck = hasGroupAuthorizationQuota
+    ? input.accounts
+    : input.accounts.filter((account) => Boolean(account.accountAuthorizationId))
+  if (!accountsToCheck.length) {
+    return new Map(input.accounts.map((account) => [account.id, { allowed: true }]))
+  }
   const decisions = await requestDbService({
     type: 'check_authorization_quota_batch',
     groupAuthorizationId: input.groupAccess.groupAuthorizationId,
-    accounts: input.accounts.map((account) => ({
+    accounts: accountsToCheck.map((account) => ({
       accountId: account.id,
       accountAuthorizationId: account.accountAuthorizationId
     }))
   })
   const output = new Map<string, AuthorizationQuotaDecision>()
-  input.accounts.forEach((account, index) => {
+  accountsToCheck.forEach((account, index) => {
     output.set(account.id, decisions[index] ?? { allowed: true })
+  })
+  input.accounts.forEach((account) => {
+    if (!output.has(account.id)) {
+      output.set(account.id, { allowed: true })
+    }
   })
   return output
 }

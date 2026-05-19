@@ -22,7 +22,7 @@ import {
   type AuditLogRow
 } from './audit-log-mappers.js'
 import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMap } from './repository-lookups.js'
+import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
 export { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.js'
@@ -502,7 +502,7 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
     .all(...filters.params, pageSize + 1, offset) as AuditLogRow[]
   const pageRows = takePageRows(rows, pageSize)
   const rowsWithNames = hydrateAuditRows(pageRows.rows)
-  const systemAccountNames = loadSystemAccountNameMap()
+  const systemAccountNames = loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
   const items = rowsWithNames.map((row) => auditLogSummaryFromRow(row, systemAccountNames))
   return {
     items,
@@ -530,7 +530,7 @@ export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): 
     .all(...filters.params, pageSize + 1, offset) as AuditLogRow[]
   const pageRows = takePageRows(rows, pageSize)
   const rowsWithNames = hydrateAuditRows(pageRows.rows)
-  const systemAccountNames = loadSystemAccountNameMap()
+  const systemAccountNames = loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
   const items = rowsWithNames.map((row) => auditErrorGroupFromRow(row, systemAccountNames))
   return {
     items,
@@ -561,19 +561,19 @@ export function getAuditLogDetail(id: string): AuditLogDetail | undefined {
     .prepare('SELECT * FROM audit_log_attempts WHERE audit_log_id = ? ORDER BY attempt_index ASC, id ASC')
     .all(id) as AuditLogRow[]
   const payloadRows = getAuditPayloadRows(id)
-  const systemAccountNames = loadSystemAccountNameMap()
+  const systemAccountNames = loadSystemAccountNameMapByIds([optionalString(namedRow.system_account_id)])
   const errorGroupId = optionalString(namedRow.error_group_id)
   const accountNames = loadAccountNameMap(attemptRows.map((attempt) => String(attempt.account_id ?? '')).filter(Boolean))
   const groupNames = loadGroupNameMap(attemptRows.map((attempt) => String(attempt.group_id ?? '')).filter(Boolean))
   return {
     ...auditLogSummaryFromRow(namedRow, systemAccountNames),
     attempts: attemptRows.map((attempt) => auditLogAttemptFromRow(attempt, accountNames, groupNames)),
-    errorGroup: errorGroupId ? getAuditErrorGroupById(errorGroupId, systemAccountNames) : undefined,
+    errorGroup: errorGroupId ? getAuditErrorGroupById(errorGroupId) : undefined,
     payloads: payloadRows.map(auditLogPayloadSummaryFromRow)
   }
 }
 
-function getAuditErrorGroupById(id: string, systemAccountNames: Map<string, string>): AuditErrorGroupSummary | undefined {
+function getAuditErrorGroupById(id: string): AuditErrorGroupSummary | undefined {
   const row = getRecordDatabase()
     .prepare(`
       SELECT
@@ -583,6 +583,7 @@ function getAuditErrorGroupById(id: string, systemAccountNames: Map<string, stri
     `)
     .get(id) as AuditLogRow | undefined
   const namedRow = row ? hydrateAuditRows([row])[0] : undefined
+  const systemAccountNames = loadSystemAccountNameMapByIds([optionalString(namedRow?.system_account_id)])
   return namedRow ? auditErrorGroupFromRow(namedRow, systemAccountNames) : undefined
 }
 

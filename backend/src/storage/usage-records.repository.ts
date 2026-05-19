@@ -1,7 +1,7 @@
 import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { compatiblePagedTotal, takePageRows } from './query-utils.js'
-import { loadSystemAccountNameMap } from './repository-lookups.js'
+import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
 import { buildUsageRecordFilters, buildUsageRecordOrderClause, normalizeUsageRecordListOptions } from './usage-record-list-query.js'
 import { hydrateUsageRecordNames, usageRecordSummaryFromRow, type UsageRecordRow } from './usage-record-mappers.js'
@@ -123,7 +123,6 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   const listOptions = normalizeUsageRecordListOptions(options)
   const orderClause = buildUsageRecordOrderClause(listOptions)
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
   const database = getRecordDatabase()
   const offset = (listOptions.page - 1) * listOptions.pageSize
   const rows = database
@@ -162,6 +161,9 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
     .all(...filters.params, listOptions.pageSize + 1, offset) as UsageRecordRow[]
   const pageRows = takePageRows(rows, listOptions.pageSize)
   const rowsWithNames = hydrateUsageRecordNames(pageRows.rows)
+  const accountNames = shouldIncludeSystemAccountFields
+    ? loadSystemAccountNameMapByIds(rowsWithNames.map((row) => optionalString(row.system_account_id)))
+    : new Map<string, string>()
   const items = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
   return {
     items,
@@ -177,7 +179,6 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
   if (!recordId) return undefined
   const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const accountNames = shouldIncludeSystemAccountFields ? loadSystemAccountNameMap() : new Map<string, string>()
   const row = getRecordDatabase()
     .prepare(`
       SELECT
@@ -189,6 +190,9 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
     `)
     .get(recordId, ...scope.params) as UsageRecordRow | undefined
   const namedRow = row ? hydrateUsageRecordNames([row])[0] : undefined
+  const accountNames = shouldIncludeSystemAccountFields
+    ? loadSystemAccountNameMapByIds([optionalString(namedRow?.system_account_id)])
+    : new Map<string, string>()
   return namedRow ? usageRecordSummaryFromRow(namedRow, shouldIncludeSystemAccountFields, accountNames, true) : undefined
 }
 

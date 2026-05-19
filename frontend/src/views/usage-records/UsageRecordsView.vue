@@ -177,6 +177,7 @@ const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const systemAccountsLoaded = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>(initialPageState.sortState)
+let systemAccountsLoadingPromise: Promise<void> | undefined
 const {
   items: records,
   loading,
@@ -195,11 +196,8 @@ const {
     ? `已加载到第 ${range?.[1] ?? total - 1} 条使用记录，还有更多`
     : `共 ${total} 条使用记录`,
   fetchPage: async (options, pageState) => {
-    const [recordList] = await Promise.all([
-      fetchRecords(pageState),
-      loadSystemAccountOptions(options.forceOptions === true)
-    ])
-    return recordList
+    queueSystemAccountOptionsLoad(options.forceOptions === true)
+    return fetchRecords(pageState)
   },
   onError: (error) => {
     console.error(error)
@@ -307,7 +305,7 @@ function applyFilters(): void {
 
 function refreshRecords(): void {
   resetPagination()
-  void loadData()
+  void loadData({ forceOptions: true })
 }
 
 async function fetchRecords(pageState: { current: number; pageSize: number }) {
@@ -340,8 +338,28 @@ async function loadSystemAccountOptions(force = false): Promise<void> {
   if (!force && systemAccountsLoaded.value) {
     return
   }
-  systemAccounts.value = await api.systemAccounts.options()
-  systemAccountsLoaded.value = true
+  if (systemAccountsLoadingPromise) {
+    return systemAccountsLoadingPromise
+  }
+  const loadingPromise = api.systemAccounts.options()
+    .then((accounts) => {
+      systemAccounts.value = accounts
+      systemAccountsLoaded.value = true
+    })
+    .finally(() => {
+      if (systemAccountsLoadingPromise === loadingPromise) {
+        systemAccountsLoadingPromise = undefined
+      }
+    })
+  systemAccountsLoadingPromise = loadingPromise
+  return systemAccountsLoadingPromise
+}
+
+function queueSystemAccountOptionsLoad(force = false): void {
+  void loadSystemAccountOptions(force).catch((error) => {
+    console.error(error)
+    message.error('加载系统账户筛选项失败')
+  })
 }
 
 function normalizedStatusCode(value: string): number | undefined {

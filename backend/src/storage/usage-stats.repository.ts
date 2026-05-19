@@ -300,6 +300,18 @@ export function refreshUsageRankSnapshots(): void {
   }
 }
 
+export function refreshUsageQuotaHourlyWindowsCache(): void {
+  const database = getRecordDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    refreshUsageQuotaHourlyWindowSnapshots(database, nowIso(), usageStatsTimezone())
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
 export async function refreshUsageRankSnapshotsInStages(options: {
   yieldToEventLoop?: () => Promise<void>
 } = {}): Promise<void> {
@@ -375,10 +387,6 @@ function usageRankSnapshotStages(): UsageRankSnapshotStage[] {
     {
       name: 'system_metrics_trend_windows',
       run: refreshSystemMetricsTrendWindowSnapshotsStage
-    },
-    {
-      name: 'usage_quota_hourly_windows',
-      run: (database, context) => refreshUsageQuotaHourlyWindowSnapshots(database, context.updatedAt, context.timezone)
     },
     {
       name: 'usage_scope_range_windows',
@@ -1459,7 +1467,7 @@ function updateStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: 
       last_error_message = excluded.last_error_message,
       lag_seconds = excluded.lag_seconds,
       updated_at = excluded.updated_at
-  `).run(input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? 0, nowIso())
+  `).run(input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
 }
 
 function statsLagSecondsFromCursor(cursorCreatedAt: string): number {

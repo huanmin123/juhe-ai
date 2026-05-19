@@ -1,5 +1,5 @@
 import type { AccountStatus, AccountType, ResourceAuthorizationSourceType } from '../domain/types.js'
-import { buildSystemAccountScopeClause, currentSystemAccountId } from './access-scope.js'
+import { currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
@@ -7,7 +7,6 @@ import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { activeResourceAuthorization, activeResourceAuthorizationsByResourceIds, groupSystemAccountId } from './resource-authorization-helpers.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
-import { refreshGroupAccountStatsCache } from './usage-stats.repository.js'
 
 export interface OpenAIAccountSecret {
   id: string
@@ -104,7 +103,6 @@ export function findOpenAIAccountForGroup(
   if (!groupAccess) {
     return undefined
   }
-  disableExpiredAccountsForSelection(groupAccess.groupOwnerSystemAccountId)
   const forceAvailability = options.ignoreAvailability === true
   const groupAccount = getDatabase()
     .prepare(`
@@ -178,15 +176,18 @@ export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId
   }
 }
 
-export function listOpenAIAccountsForGroup(groupId: string, systemAccountId = currentSystemAccountId()): OpenAIAccountSecret[] {
+export function listOpenAIAccountsForGroup(
+  groupId: string,
+  systemAccountId = currentSystemAccountId(),
+  options: { preResolvedGroupAccess?: GroupUsageAccessMetadata } = {}
+): OpenAIAccountSecret[] {
   const database = getDatabase()
   const now = nowIso()
   const qualityFreshAfter = qualityFreshAfterIso()
-  const groupAccess = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
+  const groupAccess = options.preResolvedGroupAccess ?? resolveGroupUsageAccessMetadata(groupId, systemAccountId)
   if (!groupAccess) {
     return []
   }
-  disableExpiredAccountsForSelection(groupAccess.groupOwnerSystemAccountId)
   const groupAccountRows = database
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.account_authorization_id,
@@ -530,32 +531,4 @@ function canScheduleAuthorizedAccount(input: {
     ? input.accountAuthorizationsByResourceId.get(input.accountId)
     : activeResourceAuthorization('account', input.accountId, input.systemAccountId)
   return authorization?.id === input.authorizationId
-}
-
-function disableExpiredAccountsForSelection(systemAccountId: string): void {
-  const scope = buildSystemAccountScopeClause({ systemAccountId, role: 'user' })
-  const now = nowIso()
-  const result = getDatabase()
-    .prepare(`
-      UPDATE accounts
-      SET status = 'disabled',
-          schedulable = 0,
-          cooldown_until = NULL,
-          last_error_code = NULL,
-          last_error_message = ?,
-          updated_at = ?
-      WHERE account_expires_at IS NOT NULL
-        AND account_expires_at <= ?
-        AND (
-          status <> 'disabled'
-          OR schedulable <> 0
-          OR cooldown_until IS NOT NULL
-          OR last_error_code IS NOT NULL
-          OR last_error_message IS NULL
-        )${scope.clause}
-    `)
-    .run('账户套餐已过期，已自动停用', now, now, ...scope.params)
-  if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsCache()
-  }
 }

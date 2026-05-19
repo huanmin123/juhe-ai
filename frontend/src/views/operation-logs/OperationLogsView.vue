@@ -227,7 +227,7 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import dayjs, { type Dayjs } from 'dayjs'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
 
 import { api, type OperationLogListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -276,6 +276,7 @@ const detail = ref<OperationLogDetail>()
 const detailOpen = ref(false)
 const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const systemAccountsLoaded = ref(false)
+let detailRequestId = 0
 const keywordFilter = ref(initialPageState.keywordFilter)
 const moduleFilter = ref(initialPageState.moduleFilter)
 const actionFilter = ref(initialPageState.actionFilter)
@@ -470,16 +471,30 @@ async function loadSystemAccounts(force = false): Promise<void> {
 }
 
 async function openDetail(record: OperationLogSummary): Promise<void> {
+  const requestId = detailRequestId + 1
+  detailRequestId = requestId
   detailOpen.value = true
   detailLoading.value = true
   try {
-    detail.value = isManagementView.value ? await api.operationLogs.detail(record.id) : await api.myOperationLogs.detail(record.id)
+    const nextDetail = isManagementView.value ? await api.operationLogs.detail(record.id) : await api.myOperationLogs.detail(record.id)
+    if (requestId === detailRequestId) {
+      detail.value = nextDetail
+    }
   } catch (error) {
     console.error(error)
     message.error('加载操作日志详情失败')
   } finally {
-    detailLoading.value = false
+    if (requestId === detailRequestId) {
+      detailLoading.value = false
+    }
   }
+}
+
+function closeTransientDetails(): void {
+  detailRequestId += 1
+  detailOpen.value = false
+  detailLoading.value = false
+  detail.value = undefined
 }
 
 function adminAccountFilter(value: string): string | undefined {
@@ -659,6 +674,7 @@ const visibilityReasonTextMap: Record<string, string> = {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
+onDeactivated(closeTransientDetails)
 </script>
 
 <style scoped>

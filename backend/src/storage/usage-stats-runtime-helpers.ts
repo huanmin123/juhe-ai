@@ -13,9 +13,13 @@ export function normalizeDefaultUsageStatsRange(timezone = usageStatsTimezone())
   }
 }
 
-export function latestUsageStatsLagSeconds(): number {
+export function latestUsageStatsLagSeconds(): number | undefined {
   const row = getRecordDatabase()
     .prepare("SELECT lag_seconds FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
-    .get() as unknown as { lag_seconds?: number } | undefined
-  return Number(row?.lag_seconds ?? 0)
+    .get() as unknown as { lag_seconds?: number | null } | undefined
+  return numberOrUndefined(row?.lag_seconds)
+}
+
+function numberOrUndefined(value: number | null | undefined): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }

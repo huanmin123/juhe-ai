@@ -146,16 +146,15 @@ async function main(): Promise<void> {
       `首段后空闲超时没有按 1s 左右及时结束，耗时 ${firstChunkThenIdleResult.durationMs}ms`
     )
 
-    const fragmentedSseEventResult = await requestFragmentedSseEventTimeout(baseUrl, fragmentedSseEventCredential.apiKey.key)
-    assert(fragmentedSseEventResult.streamText.includes('response.failed'), `客户端未收到完整 SSE 事件等待失败事件：${fragmentedSseEventResult.streamText}`)
-    assert(fragmentedSseEventResult.streamText.includes('未形成完整 SSE 事件'), `失败事件未说明完整 SSE 事件等待超时：${fragmentedSseEventResult.streamText}`)
-    assert(fragmentedSseEventResult.streamText.includes('"code":"upstream_retryable_error"'), `完整 SSE 事件等待应改写为可重试错误码：${fragmentedSseEventResult.streamText}`)
+    const fragmentedSseEventResult = await requestFragmentedSseEventKeepalive(baseUrl, fragmentedSseEventCredential.apiKey.key)
+    assert(fragmentedSseEventResult.streamText.includes('response.completed'), `碎片化 SSE 事件持续有原始字节时应等到上游完成：${fragmentedSseEventResult.streamText}`)
+    assert(!fragmentedSseEventResult.streamText.includes('response.failed'), `碎片化 SSE 事件持续有原始字节时不应补发失败事件：${fragmentedSseEventResult.streamText}`)
     assert(
-      fragmentedSseEventResult.durationMs >= 900 && fragmentedSseEventResult.durationMs < 5000,
-      `完整 SSE 事件等待超时没有按 1s 左右及时结束，耗时 ${fragmentedSseEventResult.durationMs}ms`
+      fragmentedSseEventResult.durationMs >= 1200 && fragmentedSseEventResult.durationMs < 5000,
+      `碎片化 SSE 事件没有持续等待到上游完成，耗时 ${fragmentedSseEventResult.durationMs}ms`
     )
     usageRecordQueue.flushAllUsageRecordQueue()
-    assertFailedUsageRecordErrorCode(fragmentedSseEventCredential.account.id, 'upstream_retryable_error')
+    assertSuccessfulUsageRecord(fragmentedSseEventCredential.account.id)
 
     const parserSkippedResult = await requestParserSkippedRawForward(baseUrl, parserSkippedCredential.apiKey.key)
     assert(!parserSkippedResult.streamText.includes('response.failed'), '解析跳过后仍有原始上游数据持续到来时不应补发失败事件')
@@ -248,6 +247,7 @@ async function main(): Promise<void> {
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     const overloadedAfterOutputAccount = repositories.listAccounts().find((item) => item.id === overloadedAfterOutputCredential.account.id)
     assert.equal(overloadedAfterOutputAccount?.streamFailureCount, 1, '输出后容量错误应按通用流失败累计计数')
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '流失败未达到阈值前不应本地屏蔽账号')
     assertFailedUsageRecordHasTokenCost(overloadedAfterOutputCredential.account.id)
 
     const outputItemThenFailureResult = await requestStreamScenario(baseUrl, outputItemThenFailureCredential.apiKey.key, 'output-item-then-failure')
@@ -264,7 +264,7 @@ async function main(): Promise<void> {
     assert(topLevelCodeMessageResult.streamText.includes('"code":"diagnostic_code"'), `普通事件的 code 字段应原样透传：${topLevelCodeMessageResult.streamText}`)
     assert(!topLevelCodeMessageResult.streamText.includes('upstream_retryable_error'), `普通事件顶层 code/message 不应误判为失败：${topLevelCodeMessageResult.streamText}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、完整 SSE 事件等待、解析跳过后原样转发、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、Codex 终止类错误不改写、非 Codex 不伪造可重试码、输出后通用流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、Codex 终止类错误不改写、非 Codex 不伪造可重试码、输出后通用流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -334,20 +334,26 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
       if (scenario === 'no-first-chunk') {
         return
       }
-      if (scenario === 'fragmented-sse-event-timeout') {
+      if (scenario === 'fragmented-sse-event-keepalive') {
         res.write('event: response.created\n')
         res.write('data: {"type":"response.created"')
         const chunks = [
           ',"response":{"id":"resp_regression"',
           ',"status":"in_progress"',
           ',"metadata":{"fragment":1}',
-          ',"metadata":{"fragment":2}'
+          '}}\n\n',
+          'event: response.completed\n',
+          'data: {"type":"response.completed","response":{"id":"resp_regression","status":"completed","usage":{"input_tokens":1,"output_tokens":0}}}\n\n'
         ]
         let index = 0
         const interval = setInterval(() => {
-          res.write(chunks[index % chunks.length])
+          res.write(chunks[index])
           index += 1
-        }, 200)
+          if (index >= chunks.length) {
+            clearInterval(interval)
+            res.end()
+          }
+        }, 350)
         res.on('close', () => {
           clearInterval(interval)
         })
@@ -496,7 +502,7 @@ async function requestFirstChunkThenIdleTimeout(baseUrl: string, apiKey: string)
   }
 }
 
-async function requestFragmentedSseEventTimeout(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
+async function requestFragmentedSseEventKeepalive(baseUrl: string, apiKey: string): Promise<{ streamText: string; durationMs: number }> {
   settingsRepository.updateSettings({
     streamCircuitBreakerEnabled: true,
     streamRequestTimeoutSeconds: 10,
@@ -508,15 +514,15 @@ async function requestFragmentedSseEventTimeout(baseUrl: string, apiKey: string)
   const startedAt = Date.now()
   const response = await fetch(`${baseUrl}/v1/responses`, {
     method: 'POST',
-    headers: codexStreamHeaders(apiKey, 'fragmented-sse-event-timeout'),
+    headers: codexStreamHeaders(apiKey, 'fragmented-sse-event-keepalive'),
     body: JSON.stringify({
       model: 'gpt-4o-mini',
-      input: 'fragmented-sse-event-timeout',
+      input: 'fragmented-sse-event-keepalive',
       stream: true
     })
   })
   if (response.status !== 200) {
-    throw new Error(`完整 SSE 事件等待场景状态码异常：${response.status} ${await response.text()}`)
+    throw new Error(`碎片化 SSE 事件保活场景状态码异常：${response.status} ${await response.text()}`)
   }
   assert(response.headers.get('content-type')?.includes('text/event-stream'), '网关应保持 SSE content-type')
   const streamText = await response.text()

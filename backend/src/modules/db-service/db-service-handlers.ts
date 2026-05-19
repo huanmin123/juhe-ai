@@ -190,7 +190,7 @@ function readGatewayRuntime(operation: Extract<DbServiceOperation, { type: 'read
     apiKey,
     settings,
     groupAccess,
-    accounts: listOpenAIAccountsForGroup(groupId, systemAccountId)
+    accounts: listOpenAIAccountsForGroup(groupId, systemAccountId, { preResolvedGroupAccess: groupAccess })
   }
 }
 

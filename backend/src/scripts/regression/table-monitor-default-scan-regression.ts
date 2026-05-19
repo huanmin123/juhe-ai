@@ -39,6 +39,10 @@ try {
     .all() as Array<{ row_count?: number | null }>
   assert(sampledRows.length === result.tableSnapshots, '采样结果数量应与表快照记录数一致')
   assert(sampledRows.every((row) => row.row_count === null || row.row_count === undefined), '默认采样不应写入行数，避免 COUNT(*) 扫描大表')
+  const jobState = databaseModule.getRecordDatabase()
+    .prepare("SELECT lag_seconds FROM stats_job_state WHERE scope_type = 'table_monitor' AND scope_id = 'business' AND job_name = 'table_storage_snapshots'")
+    .get() as { lag_seconds?: number | null } | undefined
+  assert.equal(jobState?.lag_seconds, null, '表监控游标状态不应伪装成 0')
 
   console.log('表监控默认采样回归通过：默认 cursor/none，不做全表扫描和 COUNT(*)')
 } finally {

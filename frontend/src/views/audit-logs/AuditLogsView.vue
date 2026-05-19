@@ -241,7 +241,7 @@
 
 <script setup lang="ts">
 import { ArrowRightOutlined, CopyOutlined } from '@ant-design/icons-vue'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
@@ -285,6 +285,8 @@ const payloadContentTab = ref<'headers' | 'body'>('body')
 const payloadCodeViewer = ref<{ copyDisplayText: () => Promise<void> }>()
 const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const systemAccountsLoaded = ref(false)
+let detailRequestId = 0
+let payloadRequestId = 0
 
 const pageSize = 100
 type AuditLogsPageState = {
@@ -421,53 +423,84 @@ async function loadSystemAccounts(force = false): Promise<void> {
 }
 
 async function openDetail(record: AuditLogSummary): Promise<void> {
+  const requestId = detailRequestId + 1
+  detailRequestId = requestId
   detailOpen.value = true
   detailLoading.value = true
   selectedPayload.value = undefined
   try {
-    detail.value = await api.auditLogs.detail(record.id)
+    const nextDetail = await api.auditLogs.detail(record.id)
+    if (requestId === detailRequestId) {
+      detail.value = nextDetail
+    }
   } catch (error) {
     console.error(error)
     message.error('加载审计详情失败')
   } finally {
-    detailLoading.value = false
+    if (requestId === detailRequestId) {
+      detailLoading.value = false
+    }
   }
 }
 
 async function loadPayload(payloadId: string): Promise<void> {
   if (!detail.value) return
+  const requestId = payloadRequestId + 1
+  payloadRequestId = requestId
   payloadLoadingId.value = payloadId
   try {
-    selectedPayload.value = await api.auditLogs.payload(detail.value.id, payloadId)
-    payloadContentTab.value = 'body'
+    const nextPayload = await api.auditLogs.payload(detail.value.id, payloadId)
+    if (requestId === payloadRequestId) {
+      selectedPayload.value = nextPayload
+      payloadContentTab.value = 'body'
+    }
   } catch (error) {
     console.error(error)
     message.error('加载原始内容失败')
   } finally {
-    payloadLoadingId.value = ''
+    if (requestId === payloadRequestId) {
+      payloadLoadingId.value = ''
+    }
   }
 }
 
 async function loadNextPayloadWindow(): Promise<void> {
   if (!detail.value || !selectedPayload.value?.bodyTruncated || selectedPayload.value.bodyNextOffset === undefined) return
   const payloadId = selectedPayload.value.id
+  const requestId = payloadRequestId + 1
+  payloadRequestId = requestId
   payloadLoadingId.value = payloadId
   try {
-    selectedPayload.value = await api.auditLogs.payload(detail.value.id, payloadId, {
+    const nextPayload = await api.auditLogs.payload(detail.value.id, payloadId, {
       offset: selectedPayload.value.bodyNextOffset,
       limit: selectedPayload.value.bodyLimit
     })
-    payloadContentTab.value = 'body'
+    if (requestId === payloadRequestId) {
+      selectedPayload.value = nextPayload
+      payloadContentTab.value = 'body'
+    }
   } catch (error) {
     console.error(error)
     message.error('加载下一段正文失败')
   } finally {
-    payloadLoadingId.value = ''
+    if (requestId === payloadRequestId) {
+      payloadLoadingId.value = ''
+    }
   }
 }
 
 async function copySelectedPayloadText(): Promise<void> {
   await payloadCodeViewer.value?.copyDisplayText()
+}
+
+function closeTransientDetails(): void {
+  detailRequestId += 1
+  payloadRequestId += 1
+  detailOpen.value = false
+  detailLoading.value = false
+  payloadLoadingId.value = ''
+  detail.value = undefined
+  selectedPayload.value = undefined
 }
 
 function payloadActions(payloadId: string): RowActionItem[] {
@@ -496,6 +529,7 @@ function snapshotPageState(): AuditLogsPageState {
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(loadData)
+onDeactivated(closeTransientDetails)
 </script>
 
 <style scoped>

@@ -38,6 +38,12 @@ export function applyRecordSchema(database: DatabaseSync): void {
       PRIMARY KEY (system_account_id, group_id)
     );
 
+    CREATE TABLE IF NOT EXISTS group_account_stats_dirty (
+      group_id TEXT PRIMARY KEY,
+      reason TEXT,
+      updated_at TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS account_quality_scores (
       account_id TEXT PRIMARY KEY,
       system_account_id TEXT NOT NULL,
@@ -948,9 +954,20 @@ export function applyRecordSchema(database: DatabaseSync): void {
       cursor_id TEXT,
       last_success_at TEXT,
       last_error_message TEXT,
-      lag_seconds INTEGER NOT NULL DEFAULT 0,
+      lag_seconds INTEGER,
       updated_at TEXT NOT NULL,
       PRIMARY KEY (scope_type, scope_id, job_name)
+    );
+
+    CREATE TABLE IF NOT EXISTS api_key_record_cleanup_targets (
+      api_key_id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      attempt_count INTEGER NOT NULL DEFAULT 0,
+      last_attempt_at TEXT,
+      last_blocked_reason TEXT,
+      last_error_message TEXT
     );
 
     CREATE TABLE IF NOT EXISTS system_metrics_samples (
@@ -1087,10 +1104,10 @@ export function applyRecordSchema(database: DatabaseSync): void {
       table_name TEXT NOT NULL,
       sampled_at TEXT NOT NULL,
       row_count INTEGER,
-      table_bytes INTEGER NOT NULL DEFAULT 0,
-      index_bytes INTEGER NOT NULL DEFAULT 0,
-      total_bytes INTEGER NOT NULL DEFAULT 0,
-      page_count INTEGER NOT NULL DEFAULT 0,
+      table_bytes INTEGER,
+      index_bytes INTEGER,
+      total_bytes INTEGER,
+      page_count INTEGER,
       index_count INTEGER NOT NULL DEFAULT 0,
       growth_bytes_1h INTEGER,
       growth_rows_1h INTEGER,
@@ -1102,6 +1119,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_account_quality_minute_stats_minute ON account_quality_minute_stats(stat_minute, account_id);
     CREATE INDEX IF NOT EXISTS idx_group_account_stats_group ON group_account_stats(group_id);
+    CREATE INDEX IF NOT EXISTS idx_group_account_stats_dirty_updated ON group_account_stats_dirty(updated_at);
     CREATE INDEX IF NOT EXISTS idx_account_quality_scores_sort ON account_quality_scores(provider_code, quality_score, quality_state);
     CREATE INDEX IF NOT EXISTS idx_usage_records_created_at ON usage_records(created_at);
     CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);
@@ -1173,9 +1191,11 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_stats_monthly_month ON usage_stats_monthly(stat_month);
     CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_summary_daily_lookup ON authorization_team_usage_summary_daily(system_account_id, stat_date, team_filter_id, resource_filter_type, resource_filter_id);
     CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_range_lookup ON authorization_team_usage_range_windows(system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_range_sort ON authorization_team_usage_range_windows(system_account_id, start_date, end_date, total_cost_usd DESC, request_count DESC, last_used_at DESC, team_filter_id, resource_filter_type, resource_filter_id);
     CREATE INDEX IF NOT EXISTS idx_authorization_team_usage_range_end ON authorization_team_usage_range_windows(end_date);
     CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_summary_daily_lookup ON authorization_user_usage_summary_daily(system_account_id, stat_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id);
     CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_range_lookup ON authorization_user_usage_range_windows(system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id);
+    CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_range_sort ON authorization_user_usage_range_windows(system_account_id, start_date, end_date, team_filter_id, total_cost_usd DESC, request_count DESC, last_used_at DESC, grantee_filter_system_account_id, resource_filter_type, resource_filter_id);
     CREATE INDEX IF NOT EXISTS idx_authorization_user_usage_range_end ON authorization_user_usage_range_windows(end_date);
     CREATE INDEX IF NOT EXISTS idx_usage_model_minute_minute ON usage_model_minute(system_account_id, stat_minute, model);
     CREATE INDEX IF NOT EXISTS idx_usage_model_minute_stat_minute ON usage_model_minute(stat_minute);
@@ -1219,6 +1239,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_lookup ON usage_scope_range_windows(system_account_id, scope_type, scope_id, start_date, end_date);
     CREATE INDEX IF NOT EXISTS idx_usage_scope_range_windows_end ON usage_scope_range_windows(end_date);
     CREATE INDEX IF NOT EXISTS idx_account_usage_snapshots_updated ON account_usage_snapshots(updated_at);
+    CREATE INDEX IF NOT EXISTS idx_api_key_record_cleanup_targets_attempt ON api_key_record_cleanup_targets(COALESCE(last_attempt_at, created_at), created_at, api_key_id);
     CREATE INDEX IF NOT EXISTS idx_system_metrics_trend_windows_lookup ON system_metrics_trend_windows(window_key, bucket_key);
     CREATE INDEX IF NOT EXISTS idx_system_metrics_trend_windows_end ON system_metrics_trend_windows(end_date);
     CREATE INDEX IF NOT EXISTS idx_system_metrics_samples_sampled_at ON system_metrics_samples(sampled_at);

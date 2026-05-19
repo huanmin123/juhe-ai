@@ -120,7 +120,7 @@
           description="展示后台 worker 内各定时任务的最近耗时、失败和跳过情况。"
           :loading="systemInitialLoading"
           :has-data="hasBackgroundJobs"
-          empty-description="等待后台 worker 返回任务状态"
+          :empty-description="backgroundJobEmptyDescription"
         >
           <a-table
             class="stats-background-jobs-table"
@@ -242,7 +242,8 @@ const processEventLoopLatestRows = computed(() => {
 })
 const hasProcessEventLoopData = computed(() => hasProcessEventLoopTrend.value || processEventLoopLatestRows.value.length > 0)
 const backgroundJobRows = computed(() => systemMetrics.value?.backgroundJobs ?? [])
-const hasBackgroundJobs = computed(() => backgroundJobRows.value.length > 0)
+const backgroundJobsAvailable = computed(() => systemMetrics.value?.backgroundJobsAvailable === true)
+const hasBackgroundJobs = computed(() => backgroundJobsAvailable.value && backgroundJobRows.value.length > 0)
 const hasUsageOverview = computed(() => Boolean(usageOverview.value))
 const initialLoading = computed(() => loading.value && !hasUsageOverview.value)
 const systemInitialLoading = computed(() => loading.value && isManagementView.value && !systemMetrics.value)
@@ -256,6 +257,7 @@ const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.v
 const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无失败请求` : `${currentWindowLabel.value}暂无失败请求`)
 const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
 const processEventLoopEmptyDescription = computed(() => '等待进程事件循环采样')
+const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台任务' : '暂时无法获取后台 worker 任务状态')
 const usageTrendDescription = computed(() => '请求和失败按次数统计；Token 为输入 + 输出；平均总耗时取网关均值。')
 const backgroundJobColumns = [
   { title: '任务', dataIndex: 'name', key: 'name', width: 220 },
@@ -410,7 +412,7 @@ function formatJobDuration(value?: number) {
   return value === undefined ? '-' : formatDuration(value)
 }
 
-function formatJobCounts(row: SystemMetricsOverview['backgroundJobs'][number]) {
+function formatJobCounts(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {
   return `${formatInteger(row.successCount)} / ${formatInteger(row.failureCount)} / ${formatInteger(row.skippedCount)}`
 }
 

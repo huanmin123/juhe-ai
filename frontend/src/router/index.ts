@@ -131,8 +131,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '我的使用记录',
       description: '查看自己的网关请求、命中账户、Token 用量、成本和错误状态。',
       viewScope: 'self',
-      heavy: true,
-      keepAlive: false
+      heavy: true
     }
   },
   {
@@ -142,8 +141,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       title: '我的操作日志',
       description: '查看自己发起、管理员代操作和影响到自己的业务变更记录。',
       viewScope: 'self',
-      heavy: true,
-      keepAlive: false
+      heavy: true
     }
   },
   {
@@ -306,8 +304,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',
       roles: ['admin'],
-      heavy: true,
-      keepAlive: false
+      heavy: true
     }
   },
   {
@@ -320,8 +317,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
       roles: ['admin'],
-      heavy: true,
-      keepAlive: false
+      heavy: true
     }
   },
   {
@@ -334,8 +330,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
       roles: ['admin'],
-      heavy: true,
-      keepAlive: false
+      heavy: true
     }
   },
   {
@@ -348,8 +343,7 @@ export const menuRoutes: RouteRecordRaw[] = [
       menuGroupTitle: '日志管理',
       viewScope: 'admin',
       roles: ['admin'],
-      heavy: true,
-      keepAlive: false
+      heavy: true
     }
   },
   {

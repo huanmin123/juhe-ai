@@ -165,6 +165,9 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
   const page = normalizeRuntimeLogPage(options.page)
   const offset = (page - 1) * pageSize
   const keywordFilter = buildRuntimeLogKeywordFilter(options.keyword)
+  const keywordWhereClause = keywordFilter
+    ? buildRuntimeLogKeywordWhereClause(filters.clause, keywordFilter.clause)
+    : ''
   const database = getRecordDatabase()
 
   const rows = keywordFilter
@@ -173,8 +176,7 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
         SELECT ${runtimeLogListSelectColumns('rl')}
         FROM runtime_log_search
         INNER JOIN runtime_logs rl ON rl.id = runtime_log_search.log_id
-        ${filters.clause}
-        AND ${keywordFilter.clause}
+        ${keywordWhereClause}
         ORDER BY rl.time DESC, rl.id DESC
         LIMIT ? OFFSET ?
       `)
@@ -445,6 +447,12 @@ function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: strin
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params
   }
+}
+
+function buildRuntimeLogKeywordWhereClause(filterClause: string, keywordClause: string): string {
+  return filterClause
+    ? `${filterClause} AND ${keywordClause}`
+    : `WHERE ${keywordClause}`
 }
 
 function pushExactTextFilter(clauses: string[], params: RuntimeLogFilterValue[], column: string, value?: string): void {

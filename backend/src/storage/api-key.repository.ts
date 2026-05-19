@@ -8,7 +8,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId
 import { defaultOpenAIGroupIdForSystemAccount } from './default-group.repository.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
 import { compatiblePagedTotal, takePageRows } from './query-utils.js'
-import { loadSystemAccountNameMap } from './repository-lookups.js'
+import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimitsJson } from './request-quota-limits.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import { optionalNullableString, optionalServerDateTimeIso, optionalString } from './value-utils.js'
@@ -46,9 +46,9 @@ export function listApiKeysPage(access?: AccessScope, options?: ApiKeyListOption
 export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySummary | undefined {
   const scope = buildSystemAccountScopeClause(access)
   const row = getDatabase()
-    .prepare(`SELECT * FROM api_keys WHERE id = ?${scope.clause}`)
+    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys WHERE id = ?${scope.clause}`)
     .get(id, ...scope.params) as unknown as ApiKeyRow | undefined
-  return row ? apiKeySummariesFromRows([row], access)[0] : undefined
+  return row ? apiKeySummariesFromRows([row], access, { includeSecret: false })[0] : undefined
 }
 
 function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult {
@@ -113,7 +113,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   const record: ApiKeySummary & { key: string } = {
     id: newId('key'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
+    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     name: normalizedApiKeyName(input.name, '未命名 API Key'),
     description: optionalString(input.description),
     keyPrefix,
@@ -138,6 +138,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
     }
     throw error
   }
+  invalidateApiKeyLookupCache(record.id)
   return record
 }
 
@@ -147,9 +148,9 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     return undefined
   }
   const currentRow = getDatabase()
-    .prepare('SELECT * FROM api_keys WHERE id = ? AND system_account_id = ?')
+    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys WHERE id = ? AND system_account_id = ?`)
     .get(id, systemAccountId) as unknown as ApiKeyRow | undefined
-  const current = currentRow ? apiKeySummariesFromRows([currentRow], { systemAccountId, role: 'user' })[0] : undefined
+  const current = currentRow ? apiKeySummariesFromRows([currentRow], { systemAccountId, role: 'user' }, { includeSecret: false })[0] : undefined
   if (!current) {
     return undefined
   }
@@ -183,6 +184,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     throw error
   }
   invalidateGatewayApiKeyCacheById(id)
+  invalidateApiKeyLookupCache(id)
   return next
 }
 
@@ -214,6 +216,7 @@ export function deleteApiKeyWithRelatedCleanup(id: string, access?: AccessScope)
     commitDatabaseTransaction(database, transactionStarted)
     if (result.changes > 0) {
       invalidateGatewayApiKeyCacheById(row.id)
+      invalidateApiKeyLookupCache(row.id)
     }
     return {
       deleted: result.changes > 0,

@@ -3,7 +3,7 @@ import { sqlPlaceholders } from './query-utils.js'
 
 type CleanupRow = Record<string, unknown>
 
-interface UsageRecordsCleanupCursor {
+export interface UsageRecordsCleanupCursor {
   cursorCreatedAt?: string
   cursorId?: string
   blockedReason?: string
@@ -27,7 +27,7 @@ export interface ProcessedUsageRecordsCleanupPreviewResult {
   blockedReason?: string
 }
 
-export interface UsageRecordsCleanupBatchResult {
+interface UsageRecordsCleanupBatchResult {
   cutoffCreatedAt: string
   deletedRows: number
   hasMore: boolean
@@ -99,7 +99,7 @@ export function inspectUsageRecordsCleanupBefore(cutoffCreatedAt: string, limit 
   }
 }
 
-export function cleanupUsageRecordsBeforeWithResult(cutoffCreatedAt: string, limit = 10000): UsageRecordsCleanupBatchResult {
+function cleanupUsageRecordsBeforeWithResult(cutoffCreatedAt: string, limit = 10000): UsageRecordsCleanupBatchResult {
   const batchLimit = positiveLimit(limit)
   const rows = selectUsageRecordCleanupRows(getRecordDatabase(), cutoffCreatedAt, batchLimit + 1)
   return {
@@ -215,7 +215,7 @@ function hasUsageRecordsBefore(database: ReturnType<typeof getRecordDatabase>, c
   return Boolean(row?.id)
 }
 
-function usageRecordsCleanupCursor(database: ReturnType<typeof getRecordDatabase>): UsageRecordsCleanupCursor {
+export function usageRecordsCleanupCursor(database: ReturnType<typeof getRecordDatabase>): UsageRecordsCleanupCursor {
   const aggregationCursor = requiredJobCursor(database, 'usage_stats_aggregation')
   if (!aggregationCursor) {
     return {

@@ -126,6 +126,7 @@ try {
   let batchResourceAuthorizationSelects = 0
   let proxyProfileSelects = 0
   let batchProxyProfileSelects = 0
+  let accountUpdateStatements = 0
   database.prepare = ((sql: string) => {
     if (/^\s*SELECT\b/i.test(sql) && /\bFROM\s+resource_authorizations\b/i.test(sql)) {
       resourceAuthorizationSelects += 1
@@ -140,6 +141,9 @@ try {
       if (/\bid\s+IN\s*\(/i.test(sql)) {
         batchProxyProfileSelects += 1
       }
+    }
+    if (/^\s*UPDATE\s+accounts\b/i.test(sql)) {
+      accountUpdateStatements += 1
     }
     return originalPrepare(sql)
   }) as typeof database.prepare
@@ -161,6 +165,7 @@ try {
     assert.equal(batchResourceAuthorizationSelects, 1, '授权账户调度应批量读取账号授权')
     assert.equal(singleResourceAuthorizationSelects, 0, '授权账户调度不应逐账号读取账号授权')
     assert.equal(resourceAuthorizationSelects, 1, '授权账户调度授权查询数应保持常量')
+    assert.equal(accountUpdateStatements, 0, '授权账户调度读路径不应写 accounts 或刷新统计')
   } finally {
     database.prepare = originalPrepare
   }

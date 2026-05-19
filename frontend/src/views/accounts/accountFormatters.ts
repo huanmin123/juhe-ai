@@ -40,7 +40,6 @@ export function formatErrorPolicyAction(action: NonNullable<AccountTestResult['e
   if (action === 'retry_next') return '切换下一个账号'
   if (action === 'cooldown') return '账号冷却'
   if (action === 'disable') return '标记异常'
-  if (action === 'default_cooldown') return '默认临时不可调用'
   return '无'
 }
 

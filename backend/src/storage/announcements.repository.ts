@@ -1,7 +1,7 @@
 import type { AnnouncementLevel, AnnouncementStatus, AnnouncementSummary } from '../domain/types.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
-import { loadSystemAccountsByIds } from './repository-lookups.js'
+import { loadSystemAccountPrincipalMapByIds } from './repository-lookups.js'
 import type { AnnouncementRow } from './repository-row-types.js'
 
 const announcementLevels: readonly AnnouncementLevel[] = ['critical', 'warning', 'info', 'normal']
@@ -251,7 +251,7 @@ function getAnnouncementOrThrow(id: string): AnnouncementSummary {
 
 function announcementSummaries(rows: Array<AnnouncementRow | PublicAnnouncementRow>, includeActors: boolean): AnnouncementSummary[] {
   const accountMap = includeActors
-    ? loadSystemAccountsByIds(rows.flatMap((row) => [row.created_by, row.updated_by ?? '']).filter(Boolean))
+    ? loadSystemAccountPrincipalMapByIds(rows.flatMap((row) => [row.created_by, row.updated_by ?? '']).filter(Boolean))
     : new Map()
   return rows.map((row) => {
     const createdBy = accountMap.get(row.created_by)

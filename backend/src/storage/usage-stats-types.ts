@@ -88,7 +88,7 @@ export const USAGE_STATS_RECORD_SELECT_COLUMNS = `
 export interface StatsJobStateRow {
   cursor_created_at: string | null
   cursor_id: string | null
-  lag_seconds: number
+  lag_seconds: number | null
 }
 
 export interface UsageStatsAccumulator {
@@ -166,7 +166,7 @@ export interface UsageStatsOverview {
   hourlyTrend: Array<{ statHour: string; requestCount: number; totalTokens: number; totalCost: number; averageDurationMs?: number; errorCount: number }>
   modelDistribution: Array<{ model: string; providerCode: string; requestCount: number; totalTokens: number; totalCost: number }>
   errors: Array<{ errorCode: string; providerCode: string; statusCode?: number; errorMessage?: string; errorCount: number }>
-  statsLagSeconds: number
+  statsLagSeconds?: number
 }
 
 export interface SystemMetricsOverview {

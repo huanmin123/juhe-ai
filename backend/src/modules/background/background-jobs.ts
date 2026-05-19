@@ -20,6 +20,7 @@ import {
   insertSystemMetricsSample,
   latestUsageStatsLagSeconds,
   refreshGroupAccountStatsCache,
+  refreshUsageQuotaHourlyWindowsCache,
   refreshUsageRankSnapshotsInStages
 } from '../../storage/usage-stats.repository.js'
 import { collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
@@ -78,6 +79,8 @@ async function runUsageStatsAggregation(): Promise<void> {
       if (processed < batchSize) break
       await yieldToEventLoop()
     }
+    await yieldToEventLoop()
+    refreshUsageQuotaHourlyWindowsCache()
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_usage_stats_aggregation_failed' }), '用量统计聚合失败')
     throw error

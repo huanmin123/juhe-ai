@@ -1,3 +1,4 @@
+import { createAppCache } from '../shared/cache.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
@@ -18,13 +19,32 @@ function uniqueIds(values: string[]): string[] {
   return [...new Set(values)].filter(Boolean)
 }
 
+const groupAccountIdsCache = createAppCache<string, string[]>({
+  name: 'lookup:group-account-ids',
+  max: 10_000,
+  ttlMs: 60 * 1000,
+  updateAgeOnGet: true
+})
+
 export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, string[]> {
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
+  const result = new Map<string, string[]>()
+  const missingIds: string[] = []
+  for (const id of ids) {
+    const cached = groupAccountIdsCache.get(id)
+    if (cached !== undefined) {
+      result.set(id, [...cached])
+    } else {
+      missingIds.push(id)
+    }
+  }
+  if (!missingIds.length) return result
+
   const now = nowIso()
   const rows: Array<{ group_id: string; account_id: string }> = []
   const database = getDatabase()
-  for (const chunk of chunkValues(ids, 900)) {
+  for (const chunk of chunkValues(missingIds, 900)) {
     rows.push(...database
       .prepare(`
         SELECT group_accounts.group_id, group_accounts.account_id
@@ -46,11 +66,25 @@ export function loadGroupAccountIdsByGroupIds(groupIds: string[]): Map<string, s
       `)
       .all(...chunk, now) as unknown as Array<{ group_id: string; account_id: string }>)
   }
-  const result = new Map<string, string[]>()
+  const loaded = new Map<string, string[]>()
   for (const row of rows) {
-    result.set(row.group_id, [...(result.get(row.group_id) ?? []), row.account_id])
+    loaded.set(row.group_id, [...(loaded.get(row.group_id) ?? []), row.account_id])
+  }
+  for (const id of missingIds) {
+    const accountIds = loaded.get(id) ?? []
+    groupAccountIdsCache.set(id, accountIds)
+    result.set(id, [...accountIds])
   }
   return result
+}
+
+export function invalidateGroupAccountIdsCache(groupId?: string): void {
+  const id = groupId?.trim()
+  if (id) {
+    groupAccountIdsCache.delete(id)
+    return
+  }
+  groupAccountIdsCache.clear()
 }
 
 export function loadGroupAccountStatsByGroupIds(groupIds: string[]): Map<string, GroupAccountStatsRow> {

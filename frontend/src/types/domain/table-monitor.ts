@@ -21,10 +21,10 @@ export interface TableStorageSnapshotSummary {
   tableName: string
   sampledAt: string
   rowCount?: number
-  tableBytes: number
-  indexBytes: number
-  totalBytes: number
-  pageCount: number
+  tableBytes?: number
+  indexBytes?: number
+  totalBytes?: number
+  pageCount?: number
   indexCount: number
   growthBytes1h?: number
   growthRows1h?: number

@@ -215,7 +215,7 @@ export interface AiPerformanceOverview {
     averageDurationMs?: number
     maxDurationMs?: number
   }
-  statsLagSeconds: number
+  statsLagSeconds?: number
 }
 
 export interface AccountUsageStatsRange {
@@ -266,6 +266,7 @@ export interface GroupAccountStats {
   error: number
   rateLimited: number
   currentConcurrency: number
+  currentConcurrencyAvailable?: boolean
   concurrencyLimit: number
   todayUsage: AccountUsageSummary
   usage: AccountUsageSummary
@@ -283,6 +284,7 @@ export interface AccountSummary {
   status: AccountStatus
   concurrencyLimit: number
   currentConcurrency: number
+  currentConcurrencyAvailable?: boolean
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -379,7 +381,7 @@ export interface AccountUsageStatsOverview {
   total: number
   page: number
   pageSize: number
-  statsLagSeconds: number
+  statsLagSeconds?: number
 }
 
 export interface AccountTestResult {
@@ -405,7 +407,7 @@ export interface AccountTestResult {
   firstTokenMs?: number
   accountStatusChanged?: boolean
   accountStatus?: AccountStatus
-  errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable' | 'default_cooldown'
+  errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable'
   errorPolicyReason?: string
 }
 

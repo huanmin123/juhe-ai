@@ -198,5 +198,5 @@ export interface AccountUsageStatsOverview {
   total: number
   page: number
   pageSize: number
-  statsLagSeconds: number
+  statsLagSeconds?: number
 }

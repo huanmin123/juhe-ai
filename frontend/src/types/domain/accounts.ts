@@ -49,6 +49,7 @@ export interface GroupAccountStats {
   error: number
   rateLimited: number
   currentConcurrency: number
+  currentConcurrencyAvailable?: boolean
   concurrencyLimit: number
   todayUsage: AccountUsageSummary
   usage: AccountUsageSummary
@@ -66,6 +67,7 @@ export interface AccountSummary {
   status: AccountStatus
   concurrencyLimit: number
   currentConcurrency: number
+  currentConcurrencyAvailable?: boolean
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
@@ -114,6 +116,9 @@ export interface AccountListResult {
   hasMore?: boolean
   page: number
   pageSize: number
+  runtimeSnapshot?: {
+    accountConcurrencyAvailable: boolean
+  }
 }
 
 export type AccountOptionSummary = Pick<
@@ -156,7 +161,7 @@ export interface AccountTestResult {
   firstTokenMs?: number
   accountStatusChanged?: boolean
   accountStatus?: AccountStatus
-  errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable' | 'default_cooldown'
+  errorPolicyAction?: 'none' | 'retry_next' | 'cooldown' | 'disable'
   errorPolicyReason?: string
 }
 
@@ -200,6 +205,9 @@ export interface GroupListResult {
   hasMore: boolean
   page: number
   pageSize: number
+  runtimeSnapshot?: {
+    accountConcurrencyAvailable: boolean
+  }
 }
 
 export type GroupOptionSummary = Pick<

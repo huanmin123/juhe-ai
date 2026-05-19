@@ -182,7 +182,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
 import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
@@ -246,6 +246,7 @@ const selectedGrepItem = ref<RuntimeLogGrepItem>()
 const detailOpen = ref(false)
 const grepDetailOpen = ref(false)
 let detailRequestId = 0
+let grepSearchRequestId = 0
 const viewMode = ref<RuntimeLogViewMode>(initialPageState.viewMode === 'grep' ? 'grep' : 'index')
 
 const traceIdFilter = ref(initialPageState.traceIdFilter)
@@ -422,6 +423,8 @@ function resetFilters(): void {
 }
 
 function resetGrepSearch(): void {
+  grepSearchRequestId += 1
+  loading.value = false
   grepKeywordFilter.value = ''
   grepTimeRange.value = defaultGrepRange()
   grepRecords.value = []
@@ -439,9 +442,21 @@ function refreshIndexLogs(): void {
   void loadData({ refreshFacets: true })
 }
 
+async function loadRuntimeLogFacets(): Promise<void> {
+  if (facets.value) return
+  try {
+    facets.value = await api.runtimeLogs.facets()
+  } catch (error) {
+    console.error(error)
+    message.error('加载运行日志筛选项失败')
+  }
+}
+
 async function searchGrepLogs(): Promise<void> {
+  const requestId = ++grepSearchRequestId
   const keywords = splitGrepKeywords(grepKeywordFilter.value)
   if (!keywords.length) {
+    loading.value = false
     grepRecords.value = []
     grepResult.value = undefined
     message.warning('请输入要搜索的关键字')
@@ -457,6 +472,7 @@ async function searchGrepLogs(): Promise<void> {
       endAt: range[1].toISOString(),
       limit: 100
     })
+    if (requestId !== grepSearchRequestId) return
     grepResult.value = result
     grepTimeRange.value = normalizeGrepRange([dayjs(result.startAt), dayjs(result.endAt)])
     grepRecords.value = result.items
@@ -464,10 +480,13 @@ async function searchGrepLogs(): Promise<void> {
       message.warning(result.message || 'grep 模式不可用')
     }
   } catch (error) {
+    if (requestId !== grepSearchRequestId) return
     console.error(error)
     message.error('grep 搜索失败')
   } finally {
-    loading.value = false
+    if (requestId === grepSearchRequestId) {
+      loading.value = false
+    }
   }
 }
 
@@ -498,6 +517,14 @@ function openRuntimeLogDetail(record: RuntimeLogListRecord): void {
 
 function openRuntimeGrepDetail(record: RuntimeLogListRecord): void {
   openGrepDetail(record as RuntimeLogGrepItem)
+}
+
+function closeTransientDetails(): void {
+  detailRequestId += 1
+  detailOpen.value = false
+  grepDetailOpen.value = false
+  selectedLog.value = undefined
+  selectedGrepItem.value = undefined
 }
 
 function searchTrace(traceId?: string): void {
@@ -540,16 +567,21 @@ function normalizeOptionalTimeRange(value: RuntimeLogTimeRangeValue): [Dayjs, Da
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
 
 onMounted(() => {
-  void loadData({ quiet: viewMode.value === 'grep' }).then(() => {
-    grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
-  })
   if (viewMode.value === 'grep') {
-    if (grepKeywordFilter.value.trim()) {
-      void searchGrepLogs()
-    }
+    void loadRuntimeLogFacets().then(() => {
+      grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
+      if (grepKeywordFilter.value.trim()) {
+        void searchGrepLogs()
+      }
+    })
     return
   }
+  void loadData().then(() => {
+    grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
+  })
 })
+
+onDeactivated(closeTransientDetails)
 </script>
 
 <style scoped>

@@ -41,6 +41,13 @@ try {
   const target = repositories.findApiKeySummary(targetId, access)
   assert.equal(target?.id, targetId, '按 ID 单条读取应能找到前 200 条之外的 API Key')
   assert.equal(target?.name, '单条读取回归-000', '按 ID 单条读取应返回完整摘要供操作日志使用')
+  assert.equal(target?.key, '', '按 ID 单条读取不应返回密钥明文')
+
+  const updated = repositories.updateApiKey(targetId, {
+    description: '单条读取回归更新'
+  }, access)
+  assert.equal(updated?.id, targetId, '更新 API Key 应返回目标记录')
+  assert.equal(updated?.key, '', '更新 API Key 不应返回密钥明文')
 
   console.log('API Key 单条读取回归通过：更新/删除日志 before 不再依赖前 200 条列表')
 } finally {

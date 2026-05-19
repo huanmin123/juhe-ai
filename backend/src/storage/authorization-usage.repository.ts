@@ -12,7 +12,7 @@ import { canAccessAll, manageableSystemAccountId, type AccessScope } from './acc
 import { getDatabase, getRecordDatabase } from './database.js'
 import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
-import { loadSystemAccountsByIds } from './repository-lookups.js'
+import { loadAccountLookupMap, loadActiveSystemAccountTeamNameMapByIds, loadGroupLookupMap, loadSystemAccountNameMapByIds, loadSystemAccountPrincipalMapByIds, loadSystemTeamLookupMap } from './repository-lookups.js'
 
 interface AuthorizationUsageFilters {
   resourceType?: ResourceAuthorizationResourceType
@@ -181,9 +181,9 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     (pageOptions.page - 1) * pageOptions.pageSize
   ) as unknown as AuthorizationUserUsageReportRow[]
   const pageRows = takePageRows(rows, pageOptions.pageSize)
-  const accounts = loadSystemAccountsByIds(pageRows.rows.map((row) => row.grantee_system_account_id))
+  const accounts = loadSystemAccountPrincipalMapByIds(pageRows.rows.map((row) => row.grantee_system_account_id))
   const teams = loadTeamRowsByIds(pageRows.rows.map((row) => row.team_filter_id))
-  const teamMemberships = loadActiveTeamMembershipsBySystemAccountIds(pageRows.rows.map((row) => row.grantee_system_account_id))
+  const teamMemberships = loadActiveSystemAccountTeamNameMapByIds(pageRows.rows.map((row) => row.grantee_system_account_id))
   const resources = loadAuthorizationResourceInfoMap(pageRows.rows)
   const resourceOwners = loadAuthorizationResourceOwners(resources)
   const summary = loadAuthorizationUserUsageSummary(filterKey)
@@ -395,48 +395,14 @@ function userUsageSourceLabels(teamFilterId: string): string[] {
 }
 
 function loadTeamRowsByIds(teamIds: string[]): Map<string, { name: string; status: SystemTeamStatus }> {
-  const ids = [...new Set(teamIds.filter(Boolean))]
-  if (!ids.length) return new Map()
-  const rows: Array<{ id: string; name: string; status: SystemTeamStatus }> = []
-  const database = getDatabase()
-  for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...database
-      .prepare(`SELECT id, name, status FROM system_teams WHERE id IN (${sqlPlaceholders(chunk.length)})`)
-      .all(...chunk) as unknown as Array<{ id: string; name: string; status: SystemTeamStatus }>)
-  }
-  return new Map(rows.map((row) => [row.id, { name: row.name, status: row.status }]))
-}
-
-function loadActiveTeamMembershipsBySystemAccountIds(systemAccountIds: string[]): Map<string, string[]> {
-  const ids = [...new Set(systemAccountIds.filter(Boolean))]
-  if (!ids.length) return new Map()
-  const rows: Array<{ system_account_id: string; name: string }> = []
-  const database = getDatabase()
-  for (const chunk of chunkValues(ids, 900)) {
-    rows.push(...database
-      .prepare(`
-        SELECT members.system_account_id, teams.name
-        FROM system_team_members members
-        INNER JOIN system_teams teams ON teams.id = members.team_id
-        WHERE members.status = 'active'
-          AND members.system_account_id IN (${sqlPlaceholders(chunk.length)})
-        ORDER BY teams.name COLLATE NOCASE ASC, teams.id ASC
-      `)
-      .all(...chunk) as unknown as Array<{ system_account_id: string; name: string }>)
-  }
-  const result = new Map<string, string[]>()
-  for (const row of rows) {
-    const names = result.get(row.system_account_id) ?? []
-    names.push(row.name)
-    result.set(row.system_account_id, names)
-  }
-  return result
+  const teams = loadSystemTeamLookupMap(teamIds)
+  return new Map([...teams].map(([id, team]) => [id, { name: team.name, status: team.status }]))
 }
 
 function userUsageTeamNames(
   row: Pick<AuthorizationUserUsageReportRow, 'team_filter_id' | 'grantee_system_account_id'>,
   teams: ReturnType<typeof loadTeamRowsByIds>,
-  memberships: ReturnType<typeof loadActiveTeamMembershipsBySystemAccountIds>
+  memberships: ReturnType<typeof loadActiveSystemAccountTeamNameMapByIds>
 ): string[] {
   if (row.team_filter_id) {
     return [teams.get(row.team_filter_id)?.name ?? row.team_filter_id]
@@ -448,29 +414,11 @@ function loadAuthorizationResourceInfoMap(rows: Array<{ resource_filter_type: Re
   const accountIds = [...new Set(rows.filter((row) => row.resource_filter_type === 'account').map((row) => row.resource_filter_id).filter(Boolean))]
   const groupIds = [...new Set(rows.filter((row) => row.resource_filter_type === 'group').map((row) => row.resource_filter_id).filter(Boolean))]
   const resources = new Map<string, AuthorizationResourceInfo>()
-  if (accountIds.length) {
-    const accountRows: Array<{ id: string; name: string; system_account_id: string }> = []
-    const database = getDatabase()
-    for (const chunk of chunkValues(accountIds, 900)) {
-      accountRows.push(...database
-        .prepare(`SELECT id, name, system_account_id FROM accounts WHERE id IN (${sqlPlaceholders(chunk.length)})`)
-        .all(...chunk) as unknown as Array<{ id: string; name: string; system_account_id: string }>)
-    }
-    for (const row of accountRows) {
-      resources.set(authorizationResourceKey('account', row.id), { name: row.name, ownerSystemAccountId: row.system_account_id })
-    }
+  for (const [id, account] of loadAccountLookupMap(accountIds)) {
+    resources.set(authorizationResourceKey('account', id), { name: account.name, ownerSystemAccountId: account.systemAccountId })
   }
-  if (groupIds.length) {
-    const groupRows: Array<{ id: string; name: string; system_account_id: string }> = []
-    const database = getDatabase()
-    for (const chunk of chunkValues(groupIds, 900)) {
-      groupRows.push(...database
-        .prepare(`SELECT id, name, system_account_id FROM groups WHERE id IN (${sqlPlaceholders(chunk.length)})`)
-        .all(...chunk) as unknown as Array<{ id: string; name: string; system_account_id: string }>)
-    }
-    for (const row of groupRows) {
-      resources.set(authorizationResourceKey('group', row.id), { name: row.name, ownerSystemAccountId: row.system_account_id })
-    }
+  for (const [id, group] of loadGroupLookupMap(groupIds)) {
+    resources.set(authorizationResourceKey('group', id), { name: group.name, ownerSystemAccountId: group.systemAccountId })
   }
   return resources
 }
@@ -480,15 +428,14 @@ function authorizationResourceKey(resourceType: ResourceAuthorizationResourceTyp
 }
 
 function loadAuthorizationResourceOwners(resources: Map<string, AuthorizationResourceInfo>) {
-  return loadSystemAccountsByIds([...resources.values()].map((resource) => resource.ownerSystemAccountId))
+  return loadSystemAccountNameMapByIds([...resources.values()].map((resource) => resource.ownerSystemAccountId))
 }
 
-function resourceOwnerFields(resource: AuthorizationResourceInfo | undefined, owners: ReturnType<typeof loadSystemAccountsByIds>) {
+function resourceOwnerFields(resource: AuthorizationResourceInfo | undefined, owners: ReturnType<typeof loadAuthorizationResourceOwners>) {
   const ownerSystemAccountId = resource?.ownerSystemAccountId
-  const owner = ownerSystemAccountId ? owners.get(ownerSystemAccountId) : undefined
   return {
     accountOwnerSystemAccountId: ownerSystemAccountId || undefined,
-    accountOwnerSystemAccountName: ownerSystemAccountId ? owner?.displayName ?? owner?.username ?? ownerSystemAccountId : undefined
+    accountOwnerSystemAccountName: ownerSystemAccountId ? owners.get(ownerSystemAccountId) ?? ownerSystemAccountId : undefined
   }
 }
 

@@ -1,6 +1,6 @@
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
-import { loadSystemAccountsByIds } from './repository-lookups.js'
+import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
 export type OperationLogActorRole = 'admin' | 'user'
@@ -817,7 +817,7 @@ function dedupeViewers(viewers: OperationLogViewerInput[]): OperationLogViewerIn
 function loadSystemAccountNames(ids: Array<string | undefined>): Map<string, string> {
   const uniqueIds = [...new Set(ids.filter((id): id is string => Boolean(id?.trim())))]
   if (uniqueIds.length === 0) return new Map()
-  return new Map([...loadSystemAccountsByIds(uniqueIds)].map(([id, account]) => [id, account.displayName ?? account.username]))
+  return loadSystemAccountNameMapByIds(uniqueIds)
 }
 
 function parseJsonArray(value: unknown): OperationLogChange[] {

@@ -76,7 +76,7 @@ function queryAccountRowsForAccess(
   }
   if (!ownerSystemAccountId && canAccessAll(access)) {
     return queryRows(`
-        SELECT account_rows.*, ${groupBindingSelectColumns()},
+        SELECT ${accountListOuterSelectColumns()}, ${groupBindingSelectColumns()},
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
           ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
@@ -94,7 +94,7 @@ function queryAccountRowsForAccess(
   }
   if (!viewerSystemAccountId) {
     return queryRows(`
-        SELECT account_rows.*, ${groupBindingSelectColumns()},
+        SELECT ${accountListOuterSelectColumns()}, ${groupBindingSelectColumns()},
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
           ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
@@ -111,7 +111,7 @@ function queryAccountRowsForAccess(
       `)
   }
   return queryRows(`
-      SELECT account_rows.*, ${groupBindingSelectColumns()},
+      SELECT ${accountListOuterSelectColumns()}, ${groupBindingSelectColumns()},
         COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
         ${accountQualitySelectColumns(includeQualityInQuery)}
       FROM (
@@ -204,6 +204,40 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.updated_at'
   ]
   return columns.join(', ')
+}
+
+function accountListOuterSelectColumns(): string {
+  return [
+    'id',
+    'system_account_id',
+    'provider_code',
+    'name',
+    'notes',
+    'type',
+    'status',
+    'credential_mask',
+    'credentials_encrypted',
+    'proxy_profile_id',
+    'concurrency_limit',
+    'passthrough_enabled',
+    'error_policy_id',
+    'priority',
+    'super_priority_enabled',
+    'fallback_enabled',
+    'schedulable',
+    'account_expires_at',
+    'last_used_at',
+    'cooldown_until',
+    'last_error_code',
+    'last_error_message',
+    'stream_failure_count',
+    'stream_failure_window_started_at',
+    'created_at',
+    'updated_at',
+    'access_type',
+    'authorization_id',
+    'authorization_status'
+  ].map((column) => `account_rows.${column}`).join(', ')
 }
 
 export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): AccountListRow[] {

@@ -60,20 +60,21 @@ try {
   )
 
   const stateAfterTimeout = dbServiceIpc.getDbServiceState()
-  assert.equal(child.killed, true, 'DB service 普通请求超时应终止当前 child 触发 supervisor 重启')
-  assert.equal(child.killSignal, 'SIGTERM', '超时恢复应使用 SIGTERM 结束异常 child')
-  assert.equal(stateAfterTimeout.ready, false, '超时后 DB service ready 状态应关闭')
+  assert.equal(child.killed, false, 'DB service 单个普通请求超时不应终止当前 child，避免慢请求放大全局 503')
+  assert.equal(child.killSignal, undefined, '单个普通请求超时不应触发终止信号')
+  assert.equal(stateAfterTimeout.ready, true, '单个普通请求超时后 DB service ready 状态应保持')
   assert.equal(stateAfterTimeout.pendingRequestCount, 0, '超时后普通请求 pending 应清空')
+  assert.equal(stateAfterTimeout.unavailableCircuitOpenUntil, undefined, '单个普通请求超时不应打开 DB service 全局不可用熔断')
   assert(stateAfterTimeout.timedOutRequestCount >= 1, '超时计数应递增，便于运行态排障')
 
   await assert.rejects(
     dbServiceIpc.requestDbService({ type: 'status' }, { timeoutMs: 10 }),
-    /DB service (暂时不可用|未就绪|请求队列已满)/,
-    '异常 child 被终止后，后续请求应快速失败等待 supervisor 重新挂载'
+    /DB service 请求超时/,
+    '后续普通请求仍应独立按自身 timeout 失败，而不是被全局熔断拦截'
   )
-  assert.equal(child.sentMessageCount, 1, '超时后的请求不应继续发送给同一个异常 child')
+  assert.equal(child.sentMessageCount, 2, '单次超时后仍应允许后续请求继续发送给 DB service')
 
-  console.log('DB service IPC 超时恢复回归通过：普通请求超时会终止异常 child 并快速失败')
+  console.log('DB service IPC 超时恢复回归通过：普通请求超时只失败当前请求，不终止 child、不打开全局熔断')
 } finally {
   rmSync(tempRoot, { recursive: true, force: true })
 }

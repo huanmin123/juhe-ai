@@ -101,15 +101,27 @@ export interface AuditLogPayloadDetail extends AuditLogPayloadSummary {
 }
 
 export interface AuditLogRuntime {
-  queueLength: number
-  queueBytes: number
+  runtimeAvailable: boolean
+  workerSnapshotAvailable: boolean
+  auditLogQueueAvailable: boolean
+  activeCaptureAvailable: boolean
+  unavailableReason?: string
+  queueLength: number | null
+  queueBytes: number | null
   flushLastSuccessAt?: string
   flushLastError?: string
-  droppedSuccessCount: number
-  droppedFailureCount: number
-  droppedOverflowCount: number
-  droppedOversizeCount: number
-  activeCaptureCount: number
+  droppedSuccessCount: number | null
+  droppedFailureCount: number | null
+  droppedOverflowCount: number | null
+  droppedOversizeCount: number | null
+  activeCaptureCount: number | null
+  worker: {
+    available: boolean
+    snapshotAvailable: boolean
+    pid?: number
+    ready: boolean | null
+    pendingMessageCount: number | null
+  }
   settings: {
     enabled: boolean
     successSampleRate: number

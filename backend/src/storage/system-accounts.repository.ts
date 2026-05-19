@@ -4,6 +4,7 @@ import type { SystemAccountPrincipalSummary, SystemAccountRole, SystemAccountSta
 import { hashPassword, hashSecret, verifyPassword } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
+import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
 
@@ -55,7 +56,11 @@ export function findSystemAccountById(id: string): SystemAccountSummary | undefi
 }
 
 export function findSystemAccountByUsername(username: string): (SystemAccountSummary & { passwordHash: string }) | undefined {
-  const row = getDatabase().prepare('SELECT * FROM system_accounts WHERE lower(username) = lower(?)').get(username) as unknown as SystemAccountRow | undefined
+  const row = getDatabase().prepare(`
+    SELECT id, username, display_name, description, role, status, password_hash, must_change_password, last_login_at, created_at, updated_at
+    FROM system_accounts
+    WHERE lower(username) = lower(?)
+  `).get(username) as unknown as SystemAccountRow | undefined
   if (!row) {
     return undefined
   }
@@ -127,6 +132,7 @@ export function createSystemAccount(input: {
     rollbackDatabaseTransaction(database, transactionStarted)
     throw error
   }
+  invalidateSystemAccountLookupCache(summary.id)
   return summary
 }
 
@@ -170,6 +176,7 @@ export function updateSystemAccount(id: string, input: {
       `)
       .run(next.displayName, next.description ?? null, next.role, next.status, next.mustChangePassword ? 1 : 0, now, id)
   }
+  invalidateSystemAccountLookupCache(id)
   return { ...next, updatedAt: now }
 }
 

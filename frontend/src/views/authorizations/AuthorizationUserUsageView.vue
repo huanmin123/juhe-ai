@@ -254,6 +254,7 @@ const teams = ref<SystemTeamPrincipalSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
 let optionsLoaded = false
 let optionsLoading: Promise<void> | undefined
+let usageRequestSeq = 0
 
 const filters = reactive<UserUsageFilters>(defaultFilters())
 const {
@@ -366,6 +367,7 @@ async function loadOptionsNow() {
 }
 
 async function fetchUserUsagePage(loadPageOptions: ResponsivePagedListLoadOptions & { forceOptions?: boolean }, pageState: { current: number; pageSize: number }) {
+  const requestSeq = ++usageRequestSeq
   const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
   const rangeParams = selectedRangeParams()
   const params = {
@@ -382,8 +384,10 @@ async function fetchUserUsagePage(loadPageOptions: ResponsivePagedListLoadOption
     isManagementView.value ? api.authorizations.userUsage(params) : api.myAuthorizations.userUsage(params),
     loadOptions({ force: loadPageOptions.forceOptions === true })
   ])
-  overview.value = usageOverview
-  syncDateRangeFromResponse(usageOverview.range)
+  if (requestSeq === usageRequestSeq) {
+    overview.value = usageOverview
+    syncDateRangeFromResponse(usageOverview.range)
+  }
   return {
     items: usageOverview.rows,
     page: usageOverview.page,

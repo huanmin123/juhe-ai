@@ -58,7 +58,7 @@
           </div>
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="临时不可调用暂停时长（分钟）" extra="未知异常、策略冷却和流熔断都会使用这个用户级默认时长。">
+              <a-form-item label="临时不可调用暂停时长（分钟）" extra="命中账号错误策略或流熔断后使用这个默认时长；未知异常不会默认冷却账号。">
                 <a-input-number v-model:value="systemForm.defaultTemporaryUnschedulableMinutes" :min="1" :max="1440" style="width: 100%" />
               </a-form-item>
             </div>
@@ -68,7 +68,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="临时状态重试次数" extra="默认失败后重试 3 次，仍失败才进入临时不可调用。">
+              <a-form-item label="临时状态重试次数" extra="未知失败会先按该次数短暂重试；仍失败则切换账号并记录失败，不默认冷却账号。">
                 <a-input-number v-model:value="systemForm.temporaryUnschedulableRetryAttempts" :min="0" :max="10" style="width: 100%" />
               </a-form-item>
             </div>
@@ -95,7 +95,7 @@
               </a-form-item>
             </div>
             <div class="setting-item">
-              <a-form-item label="输出停顿上限（秒）" extra="只作用于当前这次流式响应：收到首段上游内容后，超过该时间没有任何上游新数据，或持续有原始字节但没有形成完整 SSE 事件，就发送失败事件并结束本次响应；任意上游 chunk 仍会刷新原始数据计时。">
+              <a-form-item label="输出停顿上限（秒）" extra="只作用于当前这次流式响应：收到首段上游内容后，超过该时间没有任何上游新数据，就发送失败事件并结束本次响应；任意上游 chunk 都会刷新原始数据计时，未形成完整 SSE 事件只记录诊断。">
                 <a-input-number v-model:value="systemForm.streamIdleTimeoutSeconds" :min="1" :max="3600" style="width: 100%" />
               </a-form-item>
             </div>

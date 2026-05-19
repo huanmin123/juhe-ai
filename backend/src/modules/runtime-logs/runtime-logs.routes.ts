@@ -23,10 +23,15 @@ runtimeLogsRouter.get('/', async (req, res, next) => {
       }),
       requestServerRuntimeSnapshot()
     ])
+    const runtimeLogIndexQueue = serverRuntime?.worker?.snapshot?.runtimeLogIndexQueue
     res.json(ok({
       ...result,
       elapsedMs: Math.round(performance.now() - startedAt),
-      retentionDays: serverRuntime?.worker?.snapshot?.runtimeLogIndexQueue.retentionDays ?? 3
+      retentionDays: runtimeLogIndexQueue?.retentionDays ?? null,
+      retentionDaysSource: runtimeLogIndexQueue ? 'worker_snapshot' : 'unavailable',
+      runtimeAvailable: Boolean(serverRuntime),
+      workerSnapshotAvailable: Boolean(serverRuntime?.worker?.snapshot),
+      runtimeLogIndexQueueAvailable: Boolean(runtimeLogIndexQueue)
     }))
   } catch (error) {
     next(error)
@@ -41,26 +46,31 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
       requestDbService({ type: 'get_runtime_log_facets' })
     ])
     const workerSnapshot = serverRuntime?.worker?.snapshot
+    const workerRuntime = serverRuntime?.worker
+    const runtimeLogIndexQueue = workerSnapshot?.runtimeLogIndexQueue
     const dbServiceState = serverRuntime?.dbService
-    const gatewayAccountSideEffects = serverRuntime?.gatewayAccountSideEffects ?? {}
+    const gatewayAccountSideEffects = serverRuntime?.gatewayAccountSideEffects
     res.json(ok({
       ...facets,
-      runtime: workerSnapshot?.runtimeLogIndexQueue ?? {
-        queueLength: 0,
-        droppedCount: 0,
-        retentionDays: 3
-      },
+      runtimeAvailable: Boolean(serverRuntime),
+      workerSnapshotAvailable: Boolean(workerSnapshot),
+      runtimeLogIndexQueueAvailable: Boolean(runtimeLogIndexQueue),
+      runtime: runtimeLogIndexQueue ?? null,
       worker: {
-        pid: workerSnapshot?.pid ?? serverRuntime?.worker?.pid,
-        ready: workerSnapshot?.ready ?? serverRuntime?.worker?.ready ?? false,
-        pendingMessageCount: serverRuntime?.worker?.pendingMessageCount ?? 0
+        available: Boolean(workerSnapshot ?? workerRuntime),
+        snapshotAvailable: Boolean(workerSnapshot),
+        pid: workerSnapshot?.pid ?? workerRuntime?.pid,
+        ready: workerSnapshot?.ready ?? workerRuntime?.ready ?? null,
+        pendingMessageCount: workerRuntime?.pendingMessageCount ?? null
       },
       dbService: {
+        statusAvailable: Boolean(dbServiceSnapshot),
+        stateAvailable: Boolean(dbServiceState),
         pid: dbServiceSnapshot?.pid ?? dbServiceState?.pid,
-        ready: dbServiceSnapshot?.ready ?? dbServiceState?.ready ?? false,
-        pendingRequestCount: dbServiceState?.pendingRequestCount ?? dbServiceSnapshot?.pendingRequestCount ?? 0,
-        timedOutRequestCount: dbServiceState?.timedOutRequestCount ?? 0,
-        failedRequestCount: dbServiceState?.failedRequestCount ?? dbServiceSnapshot?.failedRequestCount ?? 0,
+        ready: dbServiceSnapshot?.ready ?? dbServiceState?.ready ?? null,
+        pendingRequestCount: dbServiceState?.pendingRequestCount ?? dbServiceSnapshot?.pendingRequestCount ?? null,
+        timedOutRequestCount: dbServiceState?.timedOutRequestCount ?? null,
+        failedRequestCount: dbServiceState?.failedRequestCount ?? dbServiceSnapshot?.failedRequestCount ?? null,
         unavailableCircuitOpenUntil: dbServiceState?.unavailableCircuitOpenUntil,
         httpHost: dbServiceSnapshot?.httpHost ?? dbServiceState?.httpHost,
         httpPort: dbServiceSnapshot?.httpPort ?? dbServiceState?.httpPort,
@@ -69,17 +79,20 @@ runtimeLogsRouter.get('/facets', async (_req, res, next) => {
         lastError: dbServiceSnapshot?.lastError
       },
       grep: getRuntimeLogGrepRuntime(),
-      gatewayAccountSideEffects: {
-        queueLength: numberField(gatewayAccountSideEffects, 'queueLength'),
-        processing: booleanField(gatewayAccountSideEffects, 'processing'),
-        enqueuedCount: numberField(gatewayAccountSideEffects, 'enqueuedCount'),
-        completedCount: numberField(gatewayAccountSideEffects, 'completedCount'),
-        failedAttemptCount: numberField(gatewayAccountSideEffects, 'failedAttemptCount'),
-        droppedCount: numberField(gatewayAccountSideEffects, 'droppedCount'),
-        expiredCount: numberField(gatewayAccountSideEffects, 'expiredCount'),
-        localSuppressedAccountCount: numberField(gatewayAccountSideEffects, 'localSuppressedAccountCount'),
-        nextAttemptAt: stringField(gatewayAccountSideEffects, 'nextAttemptAt')
-      }
+      gatewayAccountSideEffectsAvailable: Boolean(gatewayAccountSideEffects),
+      gatewayAccountSideEffects: gatewayAccountSideEffects
+        ? {
+            queueLength: numberField(gatewayAccountSideEffects, 'queueLength'),
+            processing: booleanField(gatewayAccountSideEffects, 'processing'),
+            enqueuedCount: numberField(gatewayAccountSideEffects, 'enqueuedCount'),
+            completedCount: numberField(gatewayAccountSideEffects, 'completedCount'),
+            failedAttemptCount: numberField(gatewayAccountSideEffects, 'failedAttemptCount'),
+            droppedCount: numberField(gatewayAccountSideEffects, 'droppedCount'),
+            expiredCount: numberField(gatewayAccountSideEffects, 'expiredCount'),
+            localSuppressedAccountCount: numberField(gatewayAccountSideEffects, 'localSuppressedAccountCount'),
+            nextAttemptAt: stringField(gatewayAccountSideEffects, 'nextAttemptAt')
+          }
+        : null
     }))
   } catch (error) {
     next(error)

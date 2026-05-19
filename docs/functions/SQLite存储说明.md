@@ -71,6 +71,30 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 登录验证码挑战暂不写入 SQLite，使用后端进程内存保存短时一次性验证码；过期和已提交的挑战会被清理。
 - 登录失败限频和账号临时锁定暂不写入 SQLite，使用后端进程内存保存短时窗口和锁定状态；后续多实例部署时再迁移到共享存储。
 
+## 列表补数与缓存策略
+
+后端列表接口不能因为 DTO 需要展示补充字段就拖慢首屏。凡是主列表当前页一次查询拿不齐、需要按 ID 反查其他业务表补充的数据，都必须先判断数据变化频率，再选择缓存策略。
+
+低频业务数据走正向按需缓存：
+
+- 适用对象：系统账户、AI 账户、分组、API Key、系统团队、展示名称、资源归属、低频绑定关系、授权来源摘要等不频繁变化的数据。
+- 读取方式：repository / DAO lookup 层接收当前页 ID，先查内存 LRU 缓存；缓存 miss 时按 ID 分批查询 SQLite，再写入缓存。
+- 写入方式：创建、更新、删除、绑定、授权、团队成员变化等写路径必须主动失效对应 ID 或对应缓存域，不能只等 TTL。
+- 禁止模式：列表 hydration 阶段逐行查库、拉全量名称表、拉全量关系表、在前端再次请求一组名称或关系来补页面。
+
+高频业务数据走反向主动缓存：
+
+- 适用对象：当前并发、账号质量分、运行时可用性、额度快照、网关校验运行态、频繁变化的授权可用性、近期统计窗口等。
+- 写入方式：事实变化发生时由网关副作用、写接口或后台 worker 主动把最新结果写入内存缓存或预聚合表；列表读取时先读缓存或窗口表。
+- 刷新节奏：高频缓存有效期必须跟对应后台定时统计或刷新间隔一致，不能单独拍一个 TTL。用量统计默认跟随 `statsAggregationIntervalSeconds = 60`，分组账户状态默认跟随 `groupAccountStatsRefreshIntervalSeconds = 60`，账号质量默认跟随 `accountQualityRefreshIntervalSeconds = 600`；后台任务刷新统计时，应同时补齐 API 列表需要的缓存行、窗口行或轻量快照。
+- 进程边界：worker 定时刷新如果只写 worker 自己的内存缓存，API server 和 DB service 不会自动拿到。需要给前端列表读取的高频缓存，优先写入紧凑 SQLite 缓存 / 预聚合 / 窗口表；确需内存预热时必须明确由 API 进程预热或通过 IPC 同步，不能假设跨进程内存共享。
+- 兜底方式：缓存 miss 时可以按主键读 SQLite 或读取最近预聚合行，并在读取后回填缓存；不能在请求路径扫描明细、现场 `SUM/GROUP BY` 或逐条补齐。
+- 用户告知：如果某类高频数据无法可靠主动缓存，必须在需求或实现说明中告知用户存在实时查询成本或统计滞后，并优先改为后台预聚合、窗口表或事件驱动缓存。
+
+敏感和大体积数据不得进入通用 lookup 缓存：API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文、日志大字段和可能造成越权的权限判定中间结果，必须走专门的受控读取、脱敏和分块策略。
+
+当前轻量缓存优先使用 `backend/src/shared/cache.ts` 的进程内 LRU 封装；多实例或跨进程一致性需求出现前，不引入 Redis 等分布式依赖。缓存只用于降低请求链路反查成本，事实源仍是 SQLite 表、记录库预聚合表或网关运行态事实。
+
 ## 大文件与频繁读取底线
 
 记录库会持有日志索引、审计 payload、使用记录和监控采样等持续增长数据。任何运行路径只要涉及大文件或高频文件读取，都必须按 offset / cursor / stream / 分块窗口推进，不能先全量读入内存再 `split`、过滤、排序或分页。
@@ -101,7 +125,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `usage_model_rank_windows`：按 `system_account_id + window_key + start_date + end_date + rank` 保存统计概览模型 TopN，接口只按范围窗口读取排名行。
 - `usage_error_rank_windows`：按 `system_account_id + window_key + start_date + end_date + rank` 保存统计概览错误 TopN，接口只按范围窗口读取排名行。
 - `ai_performance_summary_windows`：按 `system_account_id + window_key + start_date + end_date` 保存 AI 性能监控摘要，前端账户筛选只影响图表显隐，不重新计算摘要。
-- `usage_quota_hourly_windows`：按 `system_account_id + scope_type + scope_id + window_hours` 保存 n 小时额度成本，网关额度判断不再 `SUM usage_stats_hourly`。
+- `usage_quota_hourly_windows`：按 `system_account_id + scope_type + scope_id + window_hours` 保存 n 小时额度成本，随 `statsAggregationIntervalSeconds` 刷新，网关额度判断不再 `SUM usage_stats_hourly`。
 - `usage_scope_range_windows`：按 `system_account_id + scope_type + scope_id + start_date + end_date` 保存最近 31 天范围内的范围总量，用量统计和授权详情只按范围 key 直读。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 保存请求数、Token 和成本，用于自然日模型分布。
 - `usage_model_hourly`：按 `system_account_id + stat_hour + model` 保存小时级模型分布，用于统计概览监控窗口。
@@ -115,9 +139,9 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟样本数、平均值所需求和字段和最大值。
 - `process_event_loop_trend_windows`：按统计概览日期范围和进程角色预生成事件循环趋势，接口只直读窗口行，不在请求时聚合小时桶。
 - `database_storage_snapshots`：按采样时间保存业务库 / 记录库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；这是 10 分钟常规采样的主指标。
-- `table_storage_snapshots`：按采样时间保存表级可选行数、表大小、索引大小、总大小和 1 小时 / 24 小时增长；表级数据按游标轮转分批刷新，不要求所有表在同一采样时间都有新快照。后台常规采样默认不执行精确 `COUNT(*)`，`row_count` 可为空。
+- `table_storage_snapshots`：按采样时间保存表级可选行数、表大小、索引大小、总大小和 1 小时 / 24 小时增长；表级数据按游标轮转分批刷新，不要求所有表在同一采样时间都有新快照。后台常规采样默认不执行精确 `COUNT(*)`，`row_count` 可为空；SQLite `dbstat` 不可用时，表大小、索引大小、总大小和页数保持为空，不写入伪造的 0。
 - 表监控文件级采样由后台 worker 每 10 分钟执行一次；表级采样默认每轮每个库最多刷新 4 张表，历史默认保留最近一月。
-- `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。
+- `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。任务尚未写入状态或滞后无法判断时，`lag_seconds` 保持为空，不按 0 处理。
 - `operation_logs`：保存业务操作主事件，包括操作人、业务作用域、模块、动作、主资源、安全差异和 trace ID。
 - `operation_log_targets`：保存一次操作涉及或影响的资源，支持按资源反查历史操作。
 - `operation_log_viewers`：保存普通用户可见性和可见原因，资源删除或授权撤销后仍按当时关系追溯。
@@ -235,7 +259,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 代理延迟刷新 worker 固定每 1 分钟检测最多 20 个启用代理，测试目标来自已启用供应商的默认地址，并把最近状态、延迟和检测时间写回 `proxy_profiles`；出口 IP / 地区只由手动测试刷新，不提供系统设置项调整。
 - 授权账户调用需要同时写入调用方统计、调用方命中账户统计、真实账户统计、授权额度统计和授权报表：调用方列表、分组、API Key 和日志按 `system_account_id` 聚合；`我的用量` 按 `system_account_id + scope_type = caller_account + account_id` 读取本人对该账户的消耗；账户所有者的账户总用量按 `account_owner_system_account_id + scope_type = account + account_id` 聚合；授权额度按 `account_owner_system_account_id + account_authorization_id` 聚合；管理侧团队 / 用户消耗按授权范围窗口表直读，并过滤资源归属人自用消耗。
 - 授权分组调用需要同时写入调用方统计、真实分组统计、授权额度统计和授权报表：调用方 API Key 和日志按 `system_account_id` 聚合；分组所有者的分组总用量按 `group_owner_system_account_id + group_id` 聚合；授权额度按 `group_owner_system_account_id + group_authorization_id` 聚合；管理侧团队 / 用户消耗按授权范围窗口表直读，并过滤资源归属人自用消耗。
-- `统一授权` / `授权操作` 关系列表不展示额度和用量统计；团队 / 用户授权消耗明细只读取 `authorization_team_usage_range_windows` 和 `authorization_user_usage_range_windows`，其数据由 `authorization_team_usage_summary_daily` 和 `authorization_user_usage_summary_daily` 刷新而来。统计 worker 随 `usage_records` 游标增量写入日摘要，并预先写好 `all`、资源类型汇总和指定资源三种资源筛选行；接口只能按最近 31 天内日期范围和筛选条件直读一组窗口行，不能临时 `SUM usage_records`，也不能把 `usage_stats_daily/weekly/monthly` 或报表缓存再二次聚合。
+- `统一授权` / `授权操作` 关系列表不展示额度和用量统计；团队 / 用户授权消耗明细只读取 `authorization_team_usage_range_windows` 和 `authorization_user_usage_range_windows`，其数据由 `authorization_team_usage_summary_daily` 和 `authorization_user_usage_summary_daily` 刷新而来。统计 worker 随 `usage_records` 游标增量写入日摘要，并预先写好 `all`、资源类型汇总和指定资源三种资源筛选行；接口只能按最近 31 天内日期范围、`page/pageSize` 和筛选条件直读一组窗口行，不能临时 `SUM usage_records`，也不能把 `usage_stats_daily/weekly/monthly` 或报表缓存再二次聚合。
 - 统一授权可选美元成本额度保存在业务主表 `resource_authorization_grants.limits_json`，并同步到最终用户授权 `resource_authorizations.limits_json`；JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily`、`usage_stats_weekly`、`usage_stats_monthly` 和 `usage_quota_hourly_windows` 的 `account_authorization` / `group_authorization` 维度直读成本，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`，也不在请求内按小时桶求和。
 - 团队授权美元额度读取 `account_authorization_team` / `group_authorization_team` 作用域缓存，`scope_id = resource_id + ':' + team_id`，由统计 worker 随使用记录增量写入；网关不再枚举成员授权并求和。统计 worker 默认每 1 分钟增量推进并刷新额度小时窗口，网关额度判断带短 TTL 内存缓存，因此允许轻微超额，统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
 - API Key 列表展示累计用量，读取 `usage_stats_totals` 中 `scope_type = api_key` 的缓存，不使用今日 `usage_stats_daily` 口径；API Key 可选美元成本额度保存在 `api_keys.quota_limits_json`，JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily`、`usage_stats_weekly`、`usage_stats_monthly` 和 `usage_quota_hourly_windows` 的 API Key 维度直读成本，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`，也不在请求内按小时桶求和。
@@ -243,7 +267,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 删除 API Key 时业务库删除同步提交；该 Key 的历史使用记录和 API Key 维度统计缓存清理由记录库维护队列投递给 worker 后执行，并基于该 Key 的历史使用记录从调用方、账户、分组、授权、模型和错误等相关聚合缓存中反向扣减。
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
 - 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属；`event_loop_lag_ms` 来自 worker 内独立事件循环直方图，记录上个采样窗口内去除采样分辨率基线后的额外最大延迟，保留为主机采样兼容字段。多进程事件循环延迟单独写入 `process_event_loop_samples`：worker 本地采样自身，server 通过 IPC 返回主进程样本，并通过专用诊断 IPC 读取 DB service 样本；诊断 IPC 不进入 DB service 业务请求计数，也不触发不可用熔断。采样频率跟随系统监控间隔，只有少量 IPC 和一次直方图读取，不扫描业务数据。
-- 后台 worker 是一个固定常驻子进程，不是每个后台任务临时创建一个进程；内部各定时任务由同一个调度器注册、不可重入执行并记录运行快照。管理侧系统监控可查看每个后台任务的最近耗时、最长耗时、运行中状态、成功次数、失败次数、跳过次数和最近错误，用于判断具体是哪一个任务拖慢 worker。
+- 后台 worker 是一个固定常驻子进程，不是每个后台任务临时创建一个进程；内部各定时任务由同一个调度器注册、不可重入执行并记录运行快照。管理侧系统监控可查看每个后台任务的最近耗时、最长耗时、运行中状态、成功次数、失败次数、跳过次数和最近错误，用于判断具体是哪一个任务拖慢 worker；worker snapshot 不可用时接口必须返回显式可用性标记和 `null`，不能把未知状态压成空任务数组。
 - 系统采样的 `memory_used_percent` 表示主机实际内存压力口径，不是所有平台都等同于 `totalmem - freemem`。macOS 会把可回收文件缓存、inactive 和 speculative 页面排除在已用内存外，按 `vm_stat` 的 `Anonymous pages + Pages wired down + Pages occupied by compressor` 计算，避免把系统缓存误报为应用内存占用；读取失败时才回退到 Node 默认口径。
 - 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；超过单次读取窗口的大 blob 保持 plain，文件写入本地数据目录。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
@@ -254,7 +278,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - “日志搜索”的 `grep 模式` 通过后端 `rg` 直接扫描日志目录中当前保留的 `.log` 文件，不受索引表 3 天保留期限制；文件日志默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制。该模式默认按文件时间搜索最近 3 天，单次文件时间范围最多 7 天，时间范围只用于筛选参与扫描的文件，不读取文件内容判断行时间；不设置查询超时，最多展示 100 行；多关键字必须在同一行同时命中，后端按日志时间或文件时间返回最新匹配。运行环境缺少 `rg` 时直接返回错误提示，不回退到慢速文件扫描。
 - 使用记录、操作日志、记录库维护、审计和运行日志索引队列都是 best-effort 队列，系统重启、进程崩溃或队列溢出导致记录库数据丢失或维护延迟可以接受；队列丢弃或投递失败计数应进入运维监控。
 - 账户、分组、API Key 等列表接口只读 `usage_stats_totals` / `usage_stats_daily`，不要在列表查询里 `SUM usage_records`。
-- 概览图表接口读取 `usage_overview_*_windows`、`usage_model_rank_windows`、`usage_error_rank_windows`、`system_metrics_trend_windows` 和 `process_event_loop_trend_windows`；后台任务运行状态来自 worker 运行态快照，不落表；`AI性能监控` 图表只读 `usage_stats_hourly` 和账户元数据，摘要只读 `ai_performance_summary_windows`。
+- 概览图表接口读取 `usage_overview_*_windows`、`usage_model_rank_windows`、`usage_error_rank_windows`、`system_metrics_trend_windows` 和 `process_event_loop_trend_windows`；后台任务运行状态来自 worker 运行态快照，不落表；运行态快照缺失时通过可用性字段表达不可观测，不用 `0`、`false`、`[]` 或默认天数伪装正常；`AI性能监控` 图表只读 `usage_stats_hourly` 和账户元数据，摘要只读 `ai_performance_summary_windows`。
 - 全局规则：除独立 background worker、离线清洗脚本、使用记录分页明细外，任何前端列表、概览、详情和下拉元数据接口都不能在请求时做统计聚合。
 
 表数据保留与统一清理：
@@ -266,7 +290,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 | `audit_logs`、`audit_log_attempts` | 原始审计事件和上游尝试 | 成功样本默认 7 天，失败 / 异常事件默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 完全成功请求未命中 10% 采样时不写入原始审计 |
 | `audit_payload_refs`、`audit_payload_blobs` | 原始审计 payload 引用和压缩 blob 元数据 | 成功样本正文默认 7 天，失败 / 异常正文默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 先删除过期引用，再删除无引用 blob 和本地 blob 文件 |
 | `audit_error_groups` | 重复错误聚合 | 默认 30 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 只做展示和排障聚合，不替代事件记录 |
-| `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理；管理员也可在表监控按截止时间手动清理 | 自动保留任务按统计游标安全清理；手动清理只强制保留最近 1 天，按管理员选择的截止时间分批删除 |
+| `usage_records` | 网关请求事实明细 | 默认 7 天，最多 7 天 | 是，`data-retention-cleanup` 每天在 worker 内清理；管理员也可在表监控按截止时间手动清理 | 自动保留任务和手动清理都必须按统计聚合 / 回填游标保护，只删除已确认进入缓存的旧明细；手动清理额外强制保留最近 1 天 |
 | `account_quality_minute_stats` | 账号质量分钟桶 | 默认 24 小时 | 是，`data-retention-cleanup` 每天在 worker 内清理；账号质量刷新任务也会兜底清理 | 只保存真实网关请求短窗口质量样本，不回扫 `usage_records` |
 | `usage_stats_minute`、`usage_model_minute`、`usage_error_minute`、`usage_latency_minute` | 分钟级统计缓存 | 默认 48 小时 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 供短窗口、账号质量和后续精细统计使用，不作为页面大范围查询事实源 |
 | `usage_stats_hourly`、`usage_model_hourly`、`usage_error_hourly`、`usage_latency_hourly` | 小时级统计缓存 | 默认 60 天 | 是，`data-retention-cleanup` 每天在 worker 内清理 | 覆盖 AI 性能最近 31 天小时趋势，并供 worker 刷新概览、排行、额度和 AI 性能窗口快照；API 摘要不在请求时聚合这些小时桶 |
@@ -290,7 +314,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 不按保留期物理清理：
 
 - `usage_stats_totals` 长期保留，作为账户、分组、授权和全局总量缓存。
-- `stats_job_state` 长期保留，作为统计游标和任务状态；它是自动保留任务删除 `usage_records` 的安全边界，管理员手动清理不再按该游标阻塞。
+- `stats_job_state` 长期保留，作为统计游标和任务状态；它是自动保留任务和管理员手动清理删除 `usage_records` 的安全边界。
 - `group_account_stats` 是当前分组账户状态缓存，由刷新任务整表重建，不属于历史日志。
 - `runtime_log_file_cursors` 长期保留，只记录当前日志文件增量读取位置；日志索引清理不会删除游标。
 - `runtime_log_search_data`、`runtime_log_search_idx`、`runtime_log_search_content`、`runtime_log_search_docsize`、`runtime_log_search_config` 是 FTS5 影子表，不作为独立清理目标；删除 `runtime_log_search` 虚表记录时由 SQLite 自动维护。
@@ -300,7 +324,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 
 - 表数据保留期统一由 `data-retention-cleanup` 每天在独立 background worker 进程内执行；表监控页面额外提供 `usage_records` 按截止时间手动清理入口，用于容量异常时提前释放可复用页。
 - 清理任务按批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 10000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 10` 批，避免长时间占用 SQLite 写锁。
-- 手动清理 `usage_records` 同样按批次执行，但只强制保护最近 1 天；截止时间不能晚于当前时间 24 小时前。提交前先按 `created_at < cutoffAt` 做有限预检查，没有可清理记录或 worker 投递不可用时返回 `queued = false` 和原因；预检查通过后才返回 `queued = true` 并交给 worker 分批清理。
+- 手动清理 `usage_records` 同样按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合游标和必要回填游标保护。提交前先按 `created_at < cutoffAt` 与统计安全游标交集做有限预检查；没有可安全清理记录、统计游标尚未建立或 worker 投递不可用时返回 `queued = false` 和原因；预检查通过后才返回 `queued = true` 并交给 worker 分批清理。
 - 统计聚合、系统指标采样、审计日志落库和运行日志索引队列只负责写入或聚合，不再在各自流程里顺手删除历史表数据。
 - 如果统计缓存损坏或统计口径升级，可以停服务后在发布包根目录运行 `node backend/dist/scripts/maintenance/rebuild-usage-stats.js`，从尚未清理的 `usage_records` 重新构建缓存。该命令会清空并重建当前 `backend/.env` 指向数据库里的统计缓存，执行前应确认数据库路径并先备份。
 
@@ -714,15 +738,15 @@ OpenAI OAuth 的 `5h` / `7d` 额度进度是账号运行态快照，不属于本
 
 系统设置默认写入：
 
-- `defaultTemporaryUnschedulableMinutes = 5`：未知异常、策略冷却和流熔断共用的临时不可调用时长。
+- `defaultTemporaryUnschedulableMinutes = 5`：命中账号错误策略或流熔断需要临时不可调用时使用的默认时长；未知异常只记录失败并切换账号，不默认冷却。
 - `temporaryUnschedulableRetryIntervalSeconds = 3`：进入临时不可调用前的默认短暂重试间隔。
-- `temporaryUnschedulableRetryAttempts = 3`：进入临时不可调用前的默认短暂重试次数。
+- `temporaryUnschedulableRetryAttempts = 3`：未知失败进入切换账号前的默认短暂重试次数。
 - `streamCircuitBreakerEnabled = true`：流熔断默认开启。
 - `streamRequestTimeoutSeconds = 180`：流式请求首段上游内容前的总熔断时间；超过该时间没有收到任何上游 chunk，网关补发 `response.failed` 并结束本次 SSE。
-- `streamIdleTimeoutSeconds = 60`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；同一个值也限制持续有 raw chunk 但没有形成完整 SSE 事件的等待时间。若流式解析器因单行或单事件过大跳过解析，后续只按 raw chunk 活动计时。
+- `streamIdleTimeoutSeconds = 60`：流式响应首段内容后，没有任何上游 chunk 的输出停顿上限；只把 raw chunk 完全停顿作为硬超时，持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。
 - `streamFailureThresholdCount = 3`、`streamFailureThresholdWindowMinutes = 10`：流式响应异常的轻量阈值。
 - `statsAggregationIntervalSeconds = 60`：统计缓存默认增量汇总间隔。
-- `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合批量上限；连续批次之间让出事件循环，排行和窗口快照由独立 worker 任务刷新。
+- `statsAggregationBatchSize = 2000`、`statsAggregationMaxBatchesPerRun = 5`：统计缓存每轮聚合批量上限；连续批次之间让出事件循环，额度小时窗口随本任务刷新，排行和概览窗口快照由独立 worker 任务刷新。
 - `groupAccountStatsRefreshIntervalSeconds = 60`：分组账户统计缓存默认刷新间隔。
 - `systemMetricsSampleIntervalSeconds = 30`：系统监控默认采样间隔。
 - `tableMonitorMaxTablesPerRun = 4`：表监控每轮每个库最多刷新多少张表级快照；设置为 `0` 时只采样文件级指标。后台表级采样只读取本轮表和索引大小，默认不做精确行数统计。

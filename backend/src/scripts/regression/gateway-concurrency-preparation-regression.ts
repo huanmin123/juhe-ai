@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import http from 'node:http'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -60,8 +61,40 @@ const auditCapture = {
   addGatewayMetadata: () => undefined
 } as unknown as AuditCaptureContext
 
+let holdAndReleaseServer: http.Server | undefined
+
 try {
   clearAccountConcurrency()
+  const holdAndReleaseUpstream = await createHoldAndReleaseServer()
+  holdAndReleaseServer = holdAndReleaseUpstream.server
+  const retryAccount = buildAccount({
+    id: 'acct_retry',
+    name: '短等后继续账号',
+    concurrencyLimit: 1,
+    type: 'api_key',
+    baseUrl: holdAndReleaseUpstream.baseUrl
+  })
+  const retrySlot = tryAcquireAccountConcurrency(retryAccount.id, retryAccount.concurrencyLimit)
+  assert.equal(retrySlot.acquired, true, '短等回归前应成功占用账号并发槽')
+  setTimeout(() => retrySlot.release(), 950)
+
+  const retryResult = await fetchFirstAvailableUpstream(
+    buildRequest(),
+    [retryAccount],
+    settings,
+    usageContext,
+    auditCapture,
+    undefined,
+    new AbortController().signal
+  )
+  assert.equal(retryResult.account.id, retryAccount.id, '账号并发短等后应继续使用原账号')
+  assert.equal(retryResult.upstreamUrl, `${retryAccount.baseUrl}/chat/completions`, '账号并发短等后应命中同一上游地址')
+  assert.equal(retryResult.response.status, 200, '账号并发短等后应成功拿到上游响应')
+  for await (const _chunk of retryResult.response.body ?? []) {
+  }
+  retryResult.releaseConcurrency()
+  clearAccountConcurrency()
+
   const saturatedAccount = buildAccount({
     id: 'acct_saturated',
     name: '饱和账号',
@@ -97,15 +130,39 @@ try {
 
   heldSlot.release()
   clearAccountConcurrency()
-  console.log('网关并发准备回归通过：饱和账号不会进入上游准备阶段，并会记录失败用量')
+  console.log('网关并发准备回归通过：短等释放的账号会继续复用，持续饱和的账号会记录失败用量并退出')
 } finally {
   clearAccountConcurrency()
+  holdAndReleaseServer?.close()
   try {
     databaseModule.getDatabase().close()
     databaseModule.getRecordDatabase().close()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+async function createHoldAndReleaseServer(): Promise<{ server: http.Server; baseUrl: string }> {
+  const server = http.createServer((_req, res) => {
+    res.writeHead(200, {
+      'content-type': 'application/json; charset=utf-8'
+    })
+    res.end(JSON.stringify({
+      id: 'resp_concurrency_retry',
+      object: 'response'
+    }))
+  })
+  await new Promise<void>((resolvePromise) => {
+    server.listen(0, '127.0.0.1', () => resolvePromise())
+  })
+  const address = server.address()
+  if (!address || typeof address === 'string') {
+    throw new Error('无法启动并发回归测试上游服务器')
+  }
+  return {
+    server,
+    baseUrl: `http://127.0.0.1:${address.port}/v1`
+  }
 }
 
 function buildRequest(): Parameters<typeof fetchFirstAvailableUpstream>[0] {

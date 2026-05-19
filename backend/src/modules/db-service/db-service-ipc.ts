@@ -25,6 +25,9 @@ interface PendingRequest {
 class DbServiceOperationFailedError extends Error {
 }
 
+class DbServiceRequestTimedOutError extends Error {
+}
+
 interface DbServiceState {
   pid?: number
   ready: boolean
@@ -44,9 +47,9 @@ interface DbServiceState {
   unavailableCircuitOpenUntil?: string
 }
 
-const requestTimeoutMs = 1500
+const requestTimeoutMs = 5000
 const invalidateTimeoutMs = 500
-const maxPendingRequests = 1000
+const maxPendingRequests = 10000
 const unavailableCircuitOpenMs = 3000
 
 let dbServiceProcess: ChildProcess | undefined
@@ -114,12 +117,16 @@ export async function requestDbService<T extends DbServiceOperation>(
   }
 
   const child = dbServiceProcess
-  if (!child || !child.connected || !dbServiceReady || pendingRequests.size >= maxPendingRequests) {
+  if (!child || !child.connected || !dbServiceReady) {
     openUnavailableCircuit()
     if (child && !child.connected) {
       markDbServiceIpcBroken(new Error('DB service IPC 已断开'), child)
     }
-    throw new Error('DB service 未就绪或请求队列已满')
+    throw new Error('DB service 未就绪')
+  }
+  if (pendingRequests.size >= maxPendingRequests) {
+    failedRequestCount += 1
+    throw new Error('DB service 请求队列已满')
   }
 
   const requestId = randomUUID()
@@ -136,12 +143,8 @@ export async function requestDbService<T extends DbServiceOperation>(
           return
         }
         timedOutRequestCount += 1
-        const timeoutError = new Error('DB service 请求超时')
-        if (dbServiceProcess === child) {
-          markDbServiceIpcBroken(timeoutError, child)
-          return
-        }
         pendingRequests.delete(requestId)
+        const timeoutError = new DbServiceRequestTimedOutError('DB service 请求超时')
         pending.reject(timeoutError)
       }, options.timeoutMs ?? requestTimeoutMs)
       pendingRequests.set(requestId, { resolve: resolve as (value: unknown) => void, reject, timeout })
@@ -167,7 +170,7 @@ export async function requestDbService<T extends DbServiceOperation>(
     })
   } catch (error) {
     failedRequestCount += 1
-    if (!(error instanceof DbServiceOperationFailedError)) {
+    if (!(error instanceof DbServiceOperationFailedError) && !(error instanceof DbServiceRequestTimedOutError)) {
       openUnavailableCircuit()
     }
     throw error

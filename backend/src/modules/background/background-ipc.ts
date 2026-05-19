@@ -305,7 +305,7 @@ export async function requestBackgroundWorkerSnapshot(timeoutMs = 5000): Promise
   }
 
   if (!workerProcess) {
-    return lastSnapshot
+    return undefined
   }
 
   const requestId = randomUUID()
@@ -313,7 +313,7 @@ export async function requestBackgroundWorkerSnapshot(timeoutMs = 5000): Promise
     const timeout = setTimeout(() => {
       pendingRequests.delete(requestId)
       timedOutSnapshotRequestCount += 1
-      resolve(lastSnapshot)
+      resolve(undefined)
     }, timeoutMs)
     pendingRequests.set(requestId, { resolve, reject, timeout })
     const queued = queueWorkerMessage({
@@ -322,7 +322,7 @@ export async function requestBackgroundWorkerSnapshot(timeoutMs = 5000): Promise
     })
     if (!queued) {
       rejectedSnapshotRequestCount += 1
-      finishPendingRequest(requestId, lastSnapshot)
+      finishPendingRequest(requestId, undefined)
     }
   })
 }
@@ -808,7 +808,7 @@ function finishPendingRequest(requestId: string, snapshot: BackgroundWorkerRunti
 function failPendingRequests(): void {
   for (const [requestId, pending] of pendingRequests) {
     clearTimeout(pending.timeout)
-    pending.resolve(lastSnapshot)
+    pending.resolve(undefined)
     pendingRequests.delete(requestId)
   }
   failPendingProcessEventLoopRequests()

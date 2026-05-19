@@ -22,6 +22,7 @@ export interface GatewayRequestBodyState {
 export type GatewayRawBodyRequest = Request & {
   rawBody?: Buffer
   gatewayRequestBody?: GatewayRequestBodyState
+  gatewayUpstreamBodyCache?: Partial<Record<'normalized' | 'passthrough', { body: Buffer | string | undefined }>>
 }
 
 export function isGatewayJsonContentType(contentType: unknown): boolean {

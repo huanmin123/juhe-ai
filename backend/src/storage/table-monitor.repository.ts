@@ -13,10 +13,10 @@ export interface TableStorageSnapshotSummary {
   tableName: string
   sampledAt: string
   rowCount?: number
-  tableBytes: number
-  indexBytes: number
-  totalBytes: number
-  pageCount: number
+  tableBytes?: number
+  indexBytes?: number
+  totalBytes?: number
+  pageCount?: number
   indexCount: number
   growthBytes1h?: number
   growthRows1h?: number
@@ -96,10 +96,10 @@ interface LatestTableSnapshotRow {
   table_name: string
   sampled_at: string
   row_count: number | null
-  table_bytes: number
-  index_bytes: number
-  total_bytes: number
-  page_count: number
+  table_bytes: number | null
+  index_bytes: number | null
+  total_bytes: number | null
+  page_count: number | null
   index_count: number
   growth_bytes_1h: number | null
   growth_rows_1h: number | null
@@ -305,14 +305,15 @@ function collectTargetTableRows(
   }
   const dbstatSizes = loadDbstatObjectSizes(target.database, [...objectNames])
   return tableNames.map((tableName) => {
-    const tableSize = dbstatSizes.get(tableName)
+    const tableSize = dbstatSizes?.get(tableName)
     const indexNames = indexesByTable.get(tableName) ?? []
-    const indexSizes = indexNames.map((indexName) => dbstatSizes.get(indexName)).filter((row): row is ObjectSizeRow => Boolean(row))
-    const tableBytes = Number(tableSize?.bytes ?? 0)
-    const tablePages = Number(tableSize?.page_count ?? 0)
-    const indexBytes = indexSizes.reduce((sum, row) => sum + Number(row.bytes ?? 0), 0)
-    const indexPages = indexSizes.reduce((sum, row) => sum + Number(row.page_count ?? 0), 0)
-    const totalBytes = tableBytes + indexBytes
+    const indexSizes = indexNames.map((indexName) => dbstatSizes?.get(indexName)).filter((row): row is ObjectSizeRow => Boolean(row))
+    const tableBytes = dbstatSizes ? Number(tableSize?.bytes ?? 0) : undefined
+    const tablePages = dbstatSizes ? Number(tableSize?.page_count ?? 0) : undefined
+    const indexBytes = dbstatSizes ? indexSizes.reduce((sum, row) => sum + Number(row.bytes ?? 0), 0) : undefined
+    const indexPages = dbstatSizes ? indexSizes.reduce((sum, row) => sum + Number(row.page_count ?? 0), 0) : undefined
+    const totalBytes = tableBytes !== undefined && indexBytes !== undefined ? tableBytes + indexBytes : undefined
+    const pageCount = tablePages !== undefined && indexPages !== undefined ? tablePages + indexPages : undefined
     const rowCount = rowCountMode === 'full' ? countRows(target.database, tableName) : undefined
     const previous1h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 60)
     const previous24h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 24 * 60)
@@ -324,11 +325,11 @@ function collectTargetTableRows(
       tableBytes,
       indexBytes,
       totalBytes,
-      pageCount: tablePages + indexPages,
+      pageCount,
       indexCount: indexNames.length,
-      growthBytes1h: previous1h ? totalBytes - previous1h.total_bytes : undefined,
+      growthBytes1h: previous1h && totalBytes !== undefined && previous1h.total_bytes !== null ? totalBytes - previous1h.total_bytes : undefined,
       growthRows1h: previous1h && rowCount !== undefined && previous1h.row_count !== null ? rowCount - previous1h.row_count : undefined,
-      growthBytes24h: previous24h ? totalBytes - previous24h.total_bytes : undefined,
+      growthBytes24h: previous24h && totalBytes !== undefined && previous24h.total_bytes !== null ? totalBytes - previous24h.total_bytes : undefined,
       growthRows24h: previous24h && rowCount !== undefined && previous24h.row_count !== null ? rowCount - previous24h.row_count : undefined
     }
   })
@@ -381,10 +382,10 @@ function insertTableSnapshots(database: DatabaseSync, target: MonitoredDatabaseT
       table.tableName,
       sampledAt,
       table.rowCount ?? null,
-      table.tableBytes,
-      table.indexBytes,
-      table.totalBytes,
-      table.pageCount,
+      table.tableBytes ?? null,
+      table.indexBytes ?? null,
+      table.totalBytes ?? null,
+      table.pageCount ?? null,
       table.indexCount,
       table.growthBytes1h ?? null,
       table.growthRows1h ?? null,
@@ -427,7 +428,7 @@ function listIndexesByTable(database: DatabaseSync): Map<string, string[]> {
   return result
 }
 
-function loadDbstatObjectSizes(database: DatabaseSync, objectNames: string[]): Map<string, ObjectSizeRow> {
+function loadDbstatObjectSizes(database: DatabaseSync, objectNames: string[]): Map<string, ObjectSizeRow> | undefined {
   const names = [...new Set(objectNames.filter(Boolean))]
   if (names.length === 0) {
     return new Map()
@@ -444,7 +445,7 @@ function loadDbstatObjectSizes(database: DatabaseSync, objectNames: string[]): M
       .all(...names) as unknown as ObjectSizeRow[]
     return new Map(rows.map((row) => [row.name, row]))
   } catch {
-    return new Map()
+    return undefined
   }
 }
 
@@ -513,12 +514,12 @@ function recordTableScanCursor(database: DatabaseSync, databaseRole: MonitoredDa
     .prepare(`
       INSERT INTO stats_job_state (
         scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, lag_seconds, updated_at
-      ) VALUES ('table_monitor', ?, 'table_storage_snapshots', ?, ?, ?, 0, ?)
+      ) VALUES ('table_monitor', ?, 'table_storage_snapshots', ?, ?, ?, NULL, ?)
       ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
         cursor_created_at = excluded.cursor_created_at,
         cursor_id = excluded.cursor_id,
         last_success_at = excluded.last_success_at,
-        lag_seconds = 0,
+        lag_seconds = NULL,
         updated_at = excluded.updated_at
     `)
     .run(databaseRole, sampledAt, tableName, sampledAt, sampledAt)
@@ -678,10 +679,10 @@ function tableSnapshotFromRow(row: LatestTableSnapshotRow): TableStorageSnapshot
     tableName: row.table_name,
     sampledAt: row.sampled_at,
     rowCount: optionalNumber(row.row_count),
-    tableBytes: Number(row.table_bytes ?? 0),
-    indexBytes: Number(row.index_bytes ?? 0),
-    totalBytes: Number(row.total_bytes ?? 0),
-    pageCount: Number(row.page_count ?? 0),
+    tableBytes: optionalNumber(row.table_bytes),
+    indexBytes: optionalNumber(row.index_bytes),
+    totalBytes: optionalNumber(row.total_bytes),
+    pageCount: optionalNumber(row.page_count),
     indexCount: Number(row.index_count ?? 0),
     growthBytes1h: optionalNumber(row.growth_bytes_1h),
     growthRows1h: optionalNumber(row.growth_rows_1h),

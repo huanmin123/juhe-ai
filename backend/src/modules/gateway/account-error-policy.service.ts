@@ -31,7 +31,7 @@ export interface AccountErrorPolicyDecision {
 }
 
 export interface AccountErrorHandlingResult {
-  action: 'none' | 'retry_next' | 'cooldown' | 'disable' | 'default_cooldown'
+  action: 'none' | 'retry_next' | 'cooldown' | 'disable'
   changed: boolean
   accountStatus?: AccountStatus
   reason?: string
@@ -95,15 +95,13 @@ export function applyAccountErrorHandling(
     }
   }
 
-  const reason = statusCode !== undefined
-    ? '未配置处理策略的上游状态码 ' + statusCode
-    : '未配置处理策略的上游异常：' + (input.errorMessage ?? '请求失败')
-  const updated = markDefaultTemporaryUnschedulable(account, settings, reason)
   return {
-    action: 'default_cooldown',
-    changed: Boolean(updated),
-    accountStatus: updated?.status,
-    reason
+    action: 'none',
+    changed: false,
+    accountStatus: account.status,
+    reason: statusCode !== undefined
+      ? '未配置处理策略的上游状态码 ' + statusCode
+      : '未配置处理策略的上游异常：' + (input.errorMessage ?? '请求失败')
   }
 }
 
@@ -168,16 +166,6 @@ export function applyAccountErrorPolicySideEffect(
     return markAccountDisabledByFailure(account.id, reason)
   }
   return undefined
-}
-
-export function markDefaultTemporaryUnschedulable(
-  account: AccountErrorPolicyAccount,
-  settings: GatewaySettings,
-  reason: string
-): { status: AccountStatus } | undefined {
-  const minutes = Math.max(1, settings.defaultTemporaryUnschedulableMinutes)
-  const until = new Date(Date.now() + minutes * 60_000).toISOString()
-  return markAccountCooldown(account.id, until, reason, 'temporary_unavailable')
 }
 
 export function parseErrorPayload(text: string, headers: Headers): Record<string, unknown> {

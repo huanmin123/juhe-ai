@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto'
+import type { AgentOptions } from 'node:http'
 import { request as httpsRequest } from 'node:https'
 
 import { runtimeConfig } from '../../config/runtime.js'
@@ -246,13 +247,13 @@ async function performTokenRequest(bodyText: string, proxyUrl?: string, signal?:
   return response
 }
 
-export function createProxyAgent(proxyUrl: string): HttpsProxyAgent<string> | SocksProxyAgent {
+export function createProxyAgent(proxyUrl: string, options: AgentOptions = {}): HttpsProxyAgent<string> | SocksProxyAgent {
   const parsed = new URL(proxyUrl)
   if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-    return new HttpsProxyAgent(proxyUrl)
+    return new HttpsProxyAgent(proxyUrl, options)
   }
   if (parsed.protocol === 'socks4:' || parsed.protocol === 'socks4a:' || parsed.protocol === 'socks5:' || parsed.protocol === 'socks5h:') {
-    return new SocksProxyAgent(proxyUrl)
+    return new SocksProxyAgent(proxyUrl, options)
   }
   throw new Error(`不支持的代理协议：${parsed.protocol}`)
 }

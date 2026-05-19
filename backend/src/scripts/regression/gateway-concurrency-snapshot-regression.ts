@@ -102,12 +102,15 @@ try {
     const accountPage = repositories.listAccountsPage(access, { limit: 20 })
     const accountPageWithRuntime = await runtimeSnapshot.applyServerAccountConcurrencyToAccountList(accountPage)
     assert.equal(findAccount(accountPageWithRuntime.items, accountA.id).currentConcurrency, 2, '账户列表应合并 server 当前并发 A')
+    assert.equal(findAccount(accountPageWithRuntime.items, accountA.id).currentConcurrencyAvailable, true, '账户列表应标记 server 并发快照可用')
     assert.equal(findAccount(accountPageWithRuntime.items, accountB.id).currentConcurrency, 1, '账户列表应合并 server 当前并发 B')
+    assert.equal(accountPageWithRuntime.runtimeSnapshot.accountConcurrencyAvailable, true, '账户分页结果应标记 server 并发快照可用')
 
     const groups = await runtimeSnapshot.applyServerAccountConcurrencyToGroups(repositories.listGroups(access))
     const targetGroup = groups.find((item) => item.id === group.id)
     assert(targetGroup, '测试分组应存在')
     assert.equal(targetGroup.accountStats.currentConcurrency, 3, '分组列表应汇总 server 当前并发')
+    assert.equal(targetGroup.accountStats.currentConcurrencyAvailable, true, '分组列表应标记 server 并发快照可用')
     assert.equal(requestedScopes.length, 2, '账户列表和分组列表应各请求一次 server 并发快照')
     assert(requestedScopes.every((scope) => scope === 'account_concurrency'), '系统 API 应只请求轻量并发快照')
   } finally {

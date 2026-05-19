@@ -53,7 +53,7 @@ export interface OpenAIGatewayHandleOptions {
   exposeUpstreamDiagnostics?: boolean
 }
 
-function handleGatewayDbServiceUnavailable(error: unknown, req: Request, res: Response, next: NextFunction): void {
+export function handleGatewayDbServiceUnavailable(error: unknown, req: Request, res: Response, next: NextFunction): void {
   const message = dbServiceUnavailableMessage(error)
   if (!message || res.headersSent) {
     next(error)
@@ -72,7 +72,7 @@ function dbServiceUnavailableMessage(error: unknown): string | undefined {
   if (!(error instanceof Error)) {
     return undefined
   }
-  return /^DB service (暂时不可用|未就绪|请求超时|已退出)/.test(error.message)
+  return /^DB service (暂时不可用|未就绪|请求超时|请求队列已满|已退出)/.test(error.message)
     ? error.message
     : undefined
 }

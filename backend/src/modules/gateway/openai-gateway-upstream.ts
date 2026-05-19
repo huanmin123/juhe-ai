@@ -45,6 +45,14 @@ export class UpstreamRequestAbortedError extends Error {
   }
 }
 
+const gatewayUpstreamAgentOptions: http.AgentOptions = {
+  keepAlive: true,
+  maxSockets: Infinity
+}
+let directHttpAgent: http.Agent | undefined
+let directHttpsAgent: https.Agent | undefined
+const proxyAgents = new Map<string, http.Agent>()
+
 class NodeGatewayUpstreamResponse implements GatewayUpstreamResponse {
   constructor(private readonly message: IncomingMessage) {}
 
@@ -87,7 +95,7 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
     const transport = url.protocol === 'http:' ? http : https
     let agent: http.Agent | undefined
     try {
-      agent = options.proxyUrl ? createProxyAgent(options.proxyUrl) as http.Agent : undefined
+      agent = gatewayUpstreamAgent(url, options.proxyUrl)
     } catch (error) {
       settleReject(error)
       return
@@ -136,6 +144,39 @@ export function requestUpstream(upstreamUrl: string, options: UpstreamRequestOpt
     upstreamRequestStarted = true
     request.end()
   })
+}
+
+export function closeGatewayUpstreamAgentsForTest(): void {
+  directHttpAgent?.destroy()
+  directHttpsAgent?.destroy()
+  directHttpAgent = undefined
+  directHttpsAgent = undefined
+  for (const agent of proxyAgents.values()) {
+    agent.destroy()
+  }
+  proxyAgents.clear()
+}
+
+function gatewayUpstreamAgent(url: URL, proxyUrl?: string): http.Agent {
+  if (proxyUrl) {
+    return cachedProxyAgent(proxyUrl)
+  }
+  if (url.protocol === 'http:') {
+    directHttpAgent = directHttpAgent ?? new http.Agent(gatewayUpstreamAgentOptions)
+    return directHttpAgent
+  }
+  directHttpsAgent = directHttpsAgent ?? new https.Agent(gatewayUpstreamAgentOptions)
+  return directHttpsAgent
+}
+
+function cachedProxyAgent(proxyUrl: string): http.Agent {
+  const cached = proxyAgents.get(proxyUrl)
+  if (cached) {
+    return cached
+  }
+  const agent = createProxyAgent(proxyUrl, gatewayUpstreamAgentOptions) as http.Agent
+  proxyAgents.set(proxyUrl, agent)
+  return agent
 }
 
 export function isUpstreamRequestAbortedError(error: unknown): boolean {
@@ -189,21 +230,31 @@ export function buildUpstreamRequestBody(req: Request, passthroughEnabled: boole
   if (req.method === 'GET' || req.method === 'HEAD') {
     return undefined
   }
+  const bodyCacheKey = passthroughEnabled ? 'passthrough' : 'normalized'
+  const requestWithBodyCache = req as GatewayRawBodyRequest
+  const cached = requestWithBodyCache.gatewayUpstreamBodyCache?.[bodyCacheKey]
+  if (cached) {
+    return cached.body
+  }
   const rawBody = (req as GatewayRawBodyRequest).rawBody
+  let body: Buffer | string | undefined
   if (!passthroughEnabled) {
     const bodyState = getGatewayRequestBodyState(req)
     if (bodyState?.jsonParseStatus === 'deferred_large_json' && rawBody && rawBody.length > 0) {
-      return rawBody
+      body = rawBody
+    } else {
+      body = JSON.stringify(req.body ?? {})
     }
-    return JSON.stringify(req.body ?? {})
+  } else if (rawBody && rawBody.length > 0) {
+    body = rawBody
+  } else if (req.body === undefined || isEmptyPlainObject(req.body)) {
+    body = undefined
+  } else {
+    body = JSON.stringify(req.body)
   }
-  if (rawBody && rawBody.length > 0) {
-    return rawBody
-  }
-  if (req.body === undefined || isEmptyPlainObject(req.body)) {
-    return undefined
-  }
-  return JSON.stringify(req.body)
+  requestWithBodyCache.gatewayUpstreamBodyCache = requestWithBodyCache.gatewayUpstreamBodyCache ?? {}
+  requestWithBodyCache.gatewayUpstreamBodyCache[bodyCacheKey] = { body }
+  return body
 }
 
 export async function buildUpstreamRequestParts(

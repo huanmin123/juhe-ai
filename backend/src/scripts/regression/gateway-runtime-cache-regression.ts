@@ -88,10 +88,25 @@ try {
     httpPort: 1
   })
 
-  const first = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
+  const database = databaseModule.getDatabase()
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  let groupOwnerLookupCount = 0
+  database.prepare = ((sql: string) => {
+    if (/\bSELECT\s+system_account_id\s+FROM\s+groups\s+WHERE\s+id\s*=\s*\?/i.test(sql.replace(/\s+/g, ' '))) {
+      groupOwnerLookupCount += 1
+    }
+    return originalPrepare(sql)
+  }) as typeof database.prepare
+  let first: Awaited<ReturnType<typeof gatewayCache.readCachedGatewayRuntimeAsync>>
+  try {
+    first = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
+  } finally {
+    database.prepare = originalPrepare
+  }
   assert(first.apiKey?.id === apiKey.id, '首次读取应返回 API Key 运行配置')
   assert.equal(first.accounts.length, 1, '首次读取应返回候选账号')
   assert.equal(fakeChild.sentOperationCount, 1, '首次读取应请求 DB service')
+  assert.equal(groupOwnerLookupCount, 1, 'read_gateway_runtime 应复用已解析的 groupAccess，避免账号选择阶段重复查询分组归属')
 
   const second = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert(second.apiKey?.id === apiKey.id, '第二次读取应仍返回 API Key 运行配置')

@@ -3,27 +3,41 @@ import { requestServerAccountConcurrencySnapshot } from '../db-service/db-servic
 
 type AccountConcurrencySnapshot = Record<string, number>
 
-export async function applyServerAccountConcurrencyToAccountList<T extends { items: AccountSummary[] }>(result: T): Promise<T> {
-  if (!result.items.some((account) => account.accessType !== 'authorized')) {
-    return result
+export interface AccountConcurrencyRuntimeSnapshotStatus {
+  accountConcurrencyAvailable: boolean
+}
+
+export async function applyServerAccountConcurrencyToAccountList<T extends { items: AccountSummary[] }>(
+  result: T
+): Promise<T & { runtimeSnapshot: AccountConcurrencyRuntimeSnapshotStatus }> {
+  if (!accountsRequireServerConcurrencySnapshot(result.items)) {
+    return {
+      ...result,
+      runtimeSnapshot: { accountConcurrencyAvailable: true }
+    }
   }
   const concurrency = await loadServerAccountConcurrencySnapshot()
   if (!concurrency) {
-    return result
+    return {
+      ...result,
+      runtimeSnapshot: { accountConcurrencyAvailable: false },
+      items: result.items.map(markAccountConcurrencyUnavailable)
+    }
   }
   return {
     ...result,
+    runtimeSnapshot: { accountConcurrencyAvailable: true },
     items: result.items.map((account) => applyAccountConcurrency(account, concurrency))
   }
 }
 
 export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary[]): Promise<GroupSummary[]> {
-  if (!groups.some((group) => group.accessType !== 'authorized' && group.accountIds.length > 0)) {
+  if (!groupsRequireServerConcurrencySnapshot(groups)) {
     return groups
   }
   const concurrency = await loadServerAccountConcurrencySnapshot()
   if (!concurrency) {
-    return groups
+    return groups.map(markGroupConcurrencyUnavailable)
   }
   return groups.map((group) => {
     if (group.accessType === 'authorized') {
@@ -34,16 +48,24 @@ export async function applyServerAccountConcurrencyToGroups(groups: GroupSummary
       ...group,
       accountStats: {
         ...group.accountStats,
-        currentConcurrency
+        currentConcurrency,
+        currentConcurrencyAvailable: true
       }
     }
   })
 }
 
-export async function applyServerAccountConcurrencyToGroupList<T extends { items: GroupSummary[] }>(result: T): Promise<T> {
+export async function applyServerAccountConcurrencyToGroupList<T extends { items: GroupSummary[] }>(
+  result: T
+): Promise<T & { runtimeSnapshot: AccountConcurrencyRuntimeSnapshotStatus }> {
+  const requiresSnapshot = groupsRequireServerConcurrencySnapshot(result.items)
+  const items = await applyServerAccountConcurrencyToGroups(result.items)
   return {
     ...result,
-    items: await applyServerAccountConcurrencyToGroups(result.items)
+    items,
+    runtimeSnapshot: {
+      accountConcurrencyAvailable: !requiresSnapshot || items.every((group) => group.accountStats.currentConcurrencyAvailable !== false)
+    }
   }
 }
 
@@ -57,8 +79,40 @@ function applyAccountConcurrency(account: AccountSummary, concurrency: AccountCo
   }
   return {
     ...account,
-    currentConcurrency: concurrency[account.id] ?? 0
+    currentConcurrency: concurrency[account.id] ?? 0,
+    currentConcurrencyAvailable: true
   }
+}
+
+function markAccountConcurrencyUnavailable(account: AccountSummary): AccountSummary {
+  if (account.accessType === 'authorized') {
+    return account
+  }
+  return {
+    ...account,
+    currentConcurrencyAvailable: false
+  }
+}
+
+function markGroupConcurrencyUnavailable(group: GroupSummary): GroupSummary {
+  if (group.accessType === 'authorized' || group.accountIds.length === 0) {
+    return group
+  }
+  return {
+    ...group,
+    accountStats: {
+      ...group.accountStats,
+      currentConcurrencyAvailable: false
+    }
+  }
+}
+
+function accountsRequireServerConcurrencySnapshot(accounts: AccountSummary[]): boolean {
+  return accounts.some((account) => account.accessType !== 'authorized')
+}
+
+function groupsRequireServerConcurrencySnapshot(groups: GroupSummary[]): boolean {
+  return groups.some((group) => group.accessType !== 'authorized' && group.accountIds.length > 0)
 }
 
 function sumCurrentConcurrency(accountIds: string[], concurrency: AccountConcurrencySnapshot): number {

@@ -14,7 +14,7 @@
 
         <div class="policy-content">
           <div class="policy-toolbar">
-            <span class="policy-tip">未命中规则的未知异常会短暂重试，再临时不可调用。</span>
+            <span class="policy-tip">未命中规则的未知异常只记录失败并切换账号，不会默认冷却账号。</span>
             <a-space class="error-policy-actions" :size="6" wrap>
               <a-dropdown>
                 <a-button size="small">添加预设</a-button>

@@ -122,6 +122,7 @@ const accountsLoading = ref(false)
 const accountSearchKeyword = ref('')
 let accountSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let accountSearchSeq = 0
+let performanceRequestSeq = 0
 let systemAccountsLoadingPromise: Promise<void> | undefined
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 
@@ -272,9 +273,11 @@ const summaryCards = computed(() => {
 })
 
 async function loadPerformance() {
+  const requestSeq = ++performanceRequestSeq
   loading.value = true
   try {
     await loadSystemAccounts()
+    if (requestSeq !== performanceRequestSeq) return
     const systemAccountId = selectedPerformanceSystemAccountId()
     const rangeParams = selectedRangeParams()
     const performanceParams = {
@@ -285,15 +288,19 @@ async function loadPerformance() {
     const performanceOverview = isManagementView.value
       ? await api.stats.aiPerformance(performanceParams)
       : await api.myStats.aiPerformance(performanceParams)
+    if (requestSeq !== performanceRequestSeq) return
     overview.value = performanceOverview
     syncDateRangeFromResponse(performanceOverview.range)
     pruneAccountState()
   } catch (error) {
+    if (requestSeq !== performanceRequestSeq) return
     console.error(error)
     message.error('AI性能监控数据加载失败')
   } finally {
-    loading.value = false
-    renderCharts()
+    if (requestSeq === performanceRequestSeq) {
+      loading.value = false
+      renderCharts()
+    }
   }
 }
 

@@ -1,6 +1,7 @@
 import type { Request } from 'express'
 
-import { tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
+import { tryAcquireAccountConcurrency, type AccountConcurrencySlot } from '../../shared/account-concurrency.js'
+import { getRequestLogger } from '../../shared/request-context.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import type { AuditCaptureContext } from './audit-capture.service.js'
 import {
@@ -44,6 +45,17 @@ export class UpstreamAttemptError extends Error {
   }
 }
 
+interface AccountConcurrencyAcquireResult {
+  slot: AccountConcurrencySlot
+  retryCount: number
+  waitedMs: number
+  remainingWaitBudgetMs: number
+}
+
+const accountConcurrencyRetryInitialDelayMs = 120
+const accountConcurrencyRetryMaxDelayMs = 480
+const accountConcurrencyRetryBudgetMs = 1200
+
 export async function fetchFirstAvailableUpstream(
   req: Request,
   accounts: UpstreamAccount[],
@@ -56,6 +68,7 @@ export async function fetchFirstAvailableUpstream(
   const retryAttempts = Math.max(0, settings.temporaryUnschedulableRetryAttempts)
   let lastAttempt: UpstreamAttempt | undefined
   let auditAttemptIndex = 0
+  let concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
   const failedProxyDispatchKeys = new Map<string, string>()
   const deferredAccountFailures: DeferredAccountFailure[] = []
 
@@ -71,9 +84,18 @@ export async function fetchFirstAvailableUpstream(
       lastAttempt = unavailableProxyAttempt
       continue
     }
-    const concurrencySlot = tryAcquireAccountConcurrency(originalAccount.id, originalAccount.concurrencyLimit)
+    const concurrencyAcquire = await acquireAccountConcurrencyWithShortRetry(
+      originalAccount.id,
+      originalAccount.concurrencyLimit,
+      concurrencyRetryWaitBudgetMs,
+      signal
+    )
+    concurrencyRetryWaitBudgetMs = concurrencyAcquire.remainingWaitBudgetMs
+    const concurrencySlot = concurrencyAcquire.slot
     if (!concurrencySlot.acquired) {
-      const message = `账户并发已达到上限 ${concurrencySlot.current}/${concurrencySlot.limit}`
+      const message = concurrencyAcquire.waitedMs > 0
+        ? `账户并发已达到上限 ${concurrencySlot.current}/${concurrencySlot.limit}（短等 ${concurrencyAcquire.waitedMs}ms 后仍未释放）`
+        : `账户并发已达到上限 ${concurrencySlot.current}/${concurrencySlot.limit}`
       lastAttempt = {
         accountId: originalAccount.id,
         accountName: originalAccount.name,
@@ -86,6 +108,17 @@ export async function fetchFirstAvailableUpstream(
         errorMessage: message
       })
       continue
+    }
+    if (concurrencyAcquire.waitedMs > 0) {
+      getRequestLogger().info({
+        event: 'gateway_account_concurrency_acquired_after_wait',
+        accountId: originalAccount.id,
+        accountName: originalAccount.name,
+        retryCount: concurrencyAcquire.retryCount,
+        waitedMs: concurrencyAcquire.waitedMs,
+        current: concurrencySlot.current,
+        limit: concurrencySlot.limit
+      }, '账号并发槽短等后释放，继续使用当前账号')
     }
     let skipAccount = false
     let keepConcurrencySlot = false
@@ -238,4 +271,71 @@ export async function fetchFirstAvailableUpstream(
       : '所有上游账户均失败',
     lastAttempt
   )
+}
+
+async function acquireAccountConcurrencyWithShortRetry(
+  accountId: string,
+  concurrencyLimit: number,
+  waitBudgetMs: number,
+  signal?: AbortSignal
+): Promise<AccountConcurrencyAcquireResult> {
+  let remainingWaitBudgetMs = Math.max(0, Math.trunc(waitBudgetMs))
+  let slot = tryAcquireAccountConcurrency(accountId, concurrencyLimit)
+  let waitedMs = 0
+  let retryCount = 0
+  let nextDelayMs = accountConcurrencyRetryInitialDelayMs
+  while (!slot.acquired && remainingWaitBudgetMs > 0) {
+    const delayMs = Math.min(nextDelayMs, remainingWaitBudgetMs)
+    const currentDelayMs = Math.min(delayMs, remainingWaitBudgetMs)
+    await waitForAccountConcurrencyRetry(currentDelayMs, signal)
+    waitedMs += currentDelayMs
+    remainingWaitBudgetMs -= currentDelayMs
+    retryCount += 1
+    slot = tryAcquireAccountConcurrency(accountId, concurrencyLimit)
+    nextDelayMs = Math.min(nextDelayMs * 2, accountConcurrencyRetryMaxDelayMs)
+  }
+  return {
+    slot,
+    retryCount,
+    waitedMs,
+    remainingWaitBudgetMs
+  }
+}
+
+async function waitForAccountConcurrencyRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
+  throwIfRequestAborted(signal)
+  if (delayMs <= 0) {
+    return
+  }
+  await new Promise<void>((resolve, reject) => {
+    let settled = false
+    let timer: NodeJS.Timeout | undefined
+    let abortListener: (() => void) | undefined
+    const finish = (error?: Error) => {
+      if (settled) {
+        return
+      }
+      settled = true
+      if (timer) {
+        clearTimeout(timer)
+      }
+      if (signal && abortListener) {
+        signal.removeEventListener('abort', abortListener)
+      }
+      if (error) {
+        reject(error)
+        return
+      }
+      resolve()
+    }
+    timer = setTimeout(() => finish(), delayMs)
+    if (signal) {
+      abortListener = () => finish()
+      signal.addEventListener('abort', abortListener, { once: true })
+      if (signal.aborted) {
+        finish()
+      }
+    }
+  })
+  throwIfRequestAborted(signal)
 }

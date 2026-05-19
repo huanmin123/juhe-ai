@@ -11,7 +11,7 @@
 
 对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 API 密钥页生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
-单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据、持续有 raw chunk 但同样超过输出停顿上限仍没有形成完整 SSE 事件，或连接读取异常中断，服务端不换账号也不重新请求上游续写。当前运行时按客户端策略处理可见输出前失败：只有命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时，才写出 Codex 可重试的 `response.failed/upstream_retryable_error`，并在同一 turn 第 4 次失败链路上避让已失败账号；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
+单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，服务端不换账号也不重新请求上游续写；持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。当前运行时按客户端策略处理可见输出前失败：只有命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时，才写出 Codex 可重试的 `response.failed/upstream_retryable_error`，并在同一 turn 第 4 次失败链路上避让已失败账号；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
 ## OpenAI 供应商定义
 
@@ -111,7 +111,7 @@ type OpenAIAccountType = 'oauth' | 'api_key'
 
 - 系统后台 API 统一在 `/__aisys__/api/*` 下，用户侧接口使用 `/__aisys__/api/my-*`，管理侧接口使用 `/__aisys__/api/*` 并按需要求管理员权限。
 - OpenAI 账号接入相关接口包括 `providers`、`accounts` / `my-accounts`、`openai-oauth` / `my-openai-oauth`、`groups` / `my-groups`、`api-keys` / `my-api-keys`、`authorizations` / `my-authorizations`、`system-teams` / `my-teams`、`proxies` 和 `stats` / `my-stats`。
-- 授权消耗明细接口固定使用 `startDate=YYYY-MM-DD` 和 `endDate=YYYY-MM-DD` 日期范围参数，管理侧为 `/__aisys__/api/authorizations/usage/team-details`、`/__aisys__/api/authorizations/usage/user-details`，用户侧为 `/__aisys__/api/my-authorizations/usage/team-details`、`/__aisys__/api/my-authorizations/usage/user-details`。
+- 授权消耗明细接口固定使用 `startDate=YYYY-MM-DD`、`endDate=YYYY-MM-DD`、`page` 和 `pageSize` 参数读取窗口分页，管理侧为 `/__aisys__/api/authorizations/usage/team-details`、`/__aisys__/api/authorizations/usage/user-details`，用户侧为 `/__aisys__/api/my-authorizations/usage/team-details`、`/__aisys__/api/my-authorizations/usage/user-details`。
 - 客户端网关入口是根路径和 `/v1/*`，不使用后台登录态，只使用本地 API Key。
 
 ## 当前不包含
@@ -171,7 +171,7 @@ OpenAI 网关使用短期内存会话亲和，只影响账号排序，不绕过�
 - 会话标识来源包括请求头或请求体里的 `previous_response_id`、`session_id`、`conversation_id`、`prompt_cache_key`，以及 `metadata.session_id`、`metadata.conversation_id`、`metadata.user_id`。
 - 亲和键按 `system_account_id + api_key_id + group_id + session` 隔离，避免不同本地 API Key、分组或系统账户共享同一个上游会话绑定。
 - 首次成功命中账号后写入短期绑定；同一会话后续请求在同一调度层级内优先尝试同一账号，降低 Codex / Responses 多轮会话被调度到不同 OAuth 账号的概率。
-- 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选，也不会等待绑定账号释放并发；绑定账号不可用、并发满或失败时立即让后续候选继续尝试。
+- 客户可用性优先于粘性：会话亲和不会跨过超级优先、账号优先级和更优质量候选。绑定账号并发满时会先在本请求内做很短的同账号等待和重查，尽量复用上游会话 / 缓存；短等后仍满、账号不可用或请求失败时才让后续候选继续尝试。
 - 绑定只保存在进程内存中，服务重启、缓存淘汰、账号失败、流式首包失败、流式中断、冷却、停用或到期都会自然失效或被清理。
 - 会话亲和不是客户端身份认证，也不是 Codex 重试计数依据。Codex 第 4 次切号这类 turn 级策略只能使用可解析的 `x-codex-turn-metadata.turn_id` 加本地 API Key / 分组 / 请求体哈希边界；识别不到时不使用 `session_id` 或 `x-client-request-id` 回退。
 

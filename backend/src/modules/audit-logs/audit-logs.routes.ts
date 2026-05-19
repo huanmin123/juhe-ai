@@ -30,20 +30,31 @@ auditLogsRouter.get('/runtime', async (_req, res) => {
   const serverRuntime = await requestServerRuntimeSnapshot()
   const workerSnapshot = serverRuntime?.worker?.snapshot
   const auditLogQueue = workerSnapshot?.auditLogQueue
+  const workerRuntime = serverRuntime?.worker
+  const runtimeAvailable = Boolean(serverRuntime)
+  const workerSnapshotAvailable = Boolean(workerSnapshot)
+  const auditLogQueueAvailable = Boolean(auditLogQueue)
   res.json(ok({
-    queueLength: auditLogQueue?.queueLength ?? 0,
-    queueBytes: auditLogQueue?.queueBytes ?? 0,
+    runtimeAvailable,
+    workerSnapshotAvailable,
+    auditLogQueueAvailable,
+    activeCaptureAvailable: serverRuntime?.activeAuditCaptureCount !== undefined,
+    unavailableReason: auditLogRuntimeUnavailableReason(runtimeAvailable, workerSnapshotAvailable, auditLogQueueAvailable),
+    queueLength: auditLogQueue?.queueLength ?? null,
+    queueBytes: auditLogQueue?.queueBytes ?? null,
     flushLastSuccessAt: auditLogQueue?.flushLastSuccessAt,
     flushLastError: auditLogQueue?.flushLastError,
-    droppedSuccessCount: auditLogQueue?.droppedSuccessCount ?? 0,
-    droppedFailureCount: auditLogQueue?.droppedFailureCount ?? 0,
-    droppedOverflowCount: auditLogQueue?.droppedOverflowCount ?? 0,
-    droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? auditLogQueue?.droppedCount ?? 0,
-    activeCaptureCount: serverRuntime?.activeAuditCaptureCount ?? 0,
+    droppedSuccessCount: auditLogQueue?.droppedSuccessCount ?? null,
+    droppedFailureCount: auditLogQueue?.droppedFailureCount ?? null,
+    droppedOverflowCount: auditLogQueue?.droppedOverflowCount ?? null,
+    droppedOversizeCount: auditLogQueue?.droppedOversizeCount ?? auditLogQueue?.droppedCount ?? null,
+    activeCaptureCount: serverRuntime?.activeAuditCaptureCount ?? null,
     worker: {
-      pid: workerSnapshot?.pid ?? serverRuntime?.worker?.pid,
-      ready: workerSnapshot?.ready ?? serverRuntime?.worker?.ready ?? false,
-      pendingMessageCount: serverRuntime?.worker?.pendingMessageCount ?? 0
+      available: Boolean(workerSnapshot ?? workerRuntime),
+      snapshotAvailable: workerSnapshotAvailable,
+      pid: workerSnapshot?.pid ?? workerRuntime?.pid,
+      ready: workerSnapshot?.ready ?? workerRuntime?.ready ?? null,
+      pendingMessageCount: workerRuntime?.pendingMessageCount ?? null
     },
     settings: readAuditLogSettings()
   }))
@@ -148,4 +159,15 @@ function isHttpStatusCode(value: unknown): value is number {
 function optionalQueryText(value: unknown): string | undefined {
   const text = Array.isArray(value) ? value[0] : value
   return typeof text === 'string' && text.trim() ? text.trim() : undefined
+}
+
+function auditLogRuntimeUnavailableReason(
+  runtimeAvailable: boolean,
+  workerSnapshotAvailable: boolean,
+  auditLogQueueAvailable: boolean
+): string | undefined {
+  if (!runtimeAvailable) return 'server_runtime_unavailable'
+  if (!workerSnapshotAvailable) return 'worker_snapshot_unavailable'
+  if (!auditLogQueueAvailable) return 'audit_log_queue_unavailable'
+  return undefined
 }

@@ -56,6 +56,10 @@ export function checkGatewayApiKeyQuota(apiKey: GatewayApiKeyRow, now = new Date
 }
 
 export async function checkGatewayApiKeyQuotaAsync(apiKey: GatewayApiKeyRow): Promise<ApiKeyQuotaDecision> {
+  const quotaLimits = parseRequestQuotaLimitsJson(apiKey.quota_limits_json)
+  if (!hasEnabledRequestQuotaLimit(quotaLimits)) {
+    return { allowed: true }
+  }
   return await requestDbService({
     type: 'check_api_key_quota',
     apiKey

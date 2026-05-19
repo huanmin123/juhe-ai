@@ -77,7 +77,7 @@ export interface AiPerformanceOverview {
     averageDurationMs?: number
     maxDurationMs?: number
   }
-  statsLagSeconds: number
+  statsLagSeconds?: number
 }
 
 export interface UsageStatsOverview {
@@ -111,7 +111,7 @@ export interface UsageStatsOverview {
     errorMessage?: string
     errorCount: number
   }>
-  statsLagSeconds: number
+  statsLagSeconds?: number
 }
 
 export interface SystemMetricsOverview {
@@ -166,6 +166,9 @@ export interface SystemMetricsOverview {
     eventLoopLagMsAvg?: number
     eventLoopLagMsMax?: number
   }>
+  runtimeSnapshotAvailable: boolean
+  workerSnapshotAvailable: boolean
+  backgroundJobsAvailable: boolean
   backgroundJobs: Array<{
     name: string
     intervalMs: number
@@ -181,5 +184,5 @@ export interface SystemMetricsOverview {
     successCount: number
     failureCount: number
     skippedCount: number
-  }>
+  }> | null
 }

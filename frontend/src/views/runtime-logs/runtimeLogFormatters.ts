@@ -1,5 +1,7 @@
 import type { RuntimeLogGrepItem } from '@/types/domain'
 
+const runtimeLogPrettyJsonMaxChars = 256 * 1024
+
 export const runtimeLogEventTextMap: Record<string, string> = {
   audit_log_queue_dropped: '审计日志队列丢弃',
   audit_log_queue_flush_failed: '审计日志队列写入失败',
@@ -138,6 +140,9 @@ export function levelColor(value: string): string {
 }
 
 export function prettyRawJson(rawJson: string): string {
+  if (rawJson.length > runtimeLogPrettyJsonMaxChars) {
+    return rawJson
+  }
   try {
     return JSON.stringify(JSON.parse(rawJson), null, 2)
   } catch {

@@ -50,7 +50,7 @@ export function recordDroppedAuditCapture(input: {
   auditOutcome: string
   success: boolean
   bytes: number
-  reason: 'active_capture_overflow' | 'gateway_body_rejected'
+  reason: 'active_capture_overflow' | 'gateway_auth_rejected' | 'gateway_body_rejected'
   method?: string
   path?: string
   queryString?: string
@@ -58,6 +58,8 @@ export function recordDroppedAuditCapture(input: {
   errorPhase?: string
   errorCode?: string
   errorMessage?: string
+  clientIp?: string
+  userAgent?: string
 }): void {
   const timestamp = nowIso()
   enqueueAuditLog({
@@ -68,13 +70,19 @@ export function recordDroppedAuditCapture(input: {
     method: input.method?.toUpperCase() ?? 'UNKNOWN',
     path: input.path ?? 'unknown',
     queryString: input.queryString,
+    clientIp: input.clientIp,
+    userAgent: input.userAgent,
     finalStatusCode: input.statusCode,
     errorPhase: input.errorPhase,
     errorCode: input.errorCode,
     errorMessage: input.errorMessage,
     sampleBucket: 0,
     sampleReason: input.reason,
-    captureStatus: input.reason === 'gateway_body_rejected' ? 'overflow' : 'dropped',
+    captureStatus: input.reason === 'gateway_body_rejected'
+      ? 'overflow'
+      : input.reason === 'gateway_auth_rejected'
+        ? 'complete'
+        : 'dropped',
     startedAt: timestamp,
     endedAt: timestamp,
     attempts: [],

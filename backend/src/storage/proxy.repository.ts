@@ -125,6 +125,26 @@ function proxySummarySelectColumns(): string {
   ].join(', ')
 }
 
+function proxyTestConfigSelectColumns(): string {
+  return [
+    'id',
+    'name',
+    'description',
+    'type',
+    'host',
+    'port',
+    'username',
+    'password_encrypted',
+    'enabled',
+    'test_status',
+    'latency_ms',
+    'outbound_ip',
+    'outbound_region',
+    'last_test_message',
+    'last_tested_at'
+  ].join(', ')
+}
+
 export function createProxy(input: Record<string, unknown>): ProxyProfileSummary {
   const now = nowIso()
   const proxy: ProxyProfileSummary = {
@@ -224,14 +244,14 @@ export function updateProxy(id: string, input: Record<string, unknown>): ProxyPr
 }
 
 export function getProxyTestConfig(id: string): ProxyProfileTestConfig | undefined {
-  const row = getDatabase().prepare('SELECT * FROM proxy_profiles WHERE id = ?').get(id) as unknown as ProxyRow | undefined
+  const row = getDatabase().prepare(`SELECT ${proxyTestConfigSelectColumns()} FROM proxy_profiles WHERE id = ?`).get(id) as unknown as ProxyRow | undefined
   return row ? { ...proxySummaryFromRow(row), proxyUrl: proxyUrlFromRow(row) } : undefined
 }
 
 export function listEnabledProxyTestConfigs(limit = 20): ProxyProfileTestConfig[] {
   const rows = getDatabase()
     .prepare(`
-      SELECT *
+      SELECT ${proxyTestConfigSelectColumns()}
       FROM proxy_profiles
       WHERE enabled = 1
       ORDER BY last_tested_at IS NOT NULL ASC, last_tested_at ASC, updated_at DESC, id ASC

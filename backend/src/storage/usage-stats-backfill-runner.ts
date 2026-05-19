@@ -110,13 +110,13 @@ function isUsageStatsBackfillComplete(
 function recordUsageStatsBackfillProgress(database: DatabaseSync, jobName: string, cursorCreatedAt: string, cursorId: string, updatedAt = nowIso()): void {
   database.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, ?, ?, NULL, NULL, 0, ?)
+    VALUES ('global', '', ?, ?, ?, NULL, NULL, NULL, ?)
     ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
       cursor_created_at = excluded.cursor_created_at,
       cursor_id = excluded.cursor_id,
       last_success_at = NULL,
       last_error_message = NULL,
-      lag_seconds = 0,
+      lag_seconds = NULL,
       updated_at = excluded.updated_at
   `).run(jobName, cursorCreatedAt, cursorId, updatedAt)
 }
@@ -124,13 +124,13 @@ function recordUsageStatsBackfillProgress(database: DatabaseSync, jobName: strin
 function recordUsageStatsBackfillComplete(database: DatabaseSync, jobName: string, cursorId: string, updatedAt = nowIso()): void {
   database.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, '', ?, ?, NULL, 0, ?)
+    VALUES ('global', '', ?, '', ?, ?, NULL, NULL, ?)
     ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
       cursor_created_at = excluded.cursor_created_at,
       cursor_id = excluded.cursor_id,
       last_success_at = excluded.last_success_at,
       last_error_message = NULL,
-      lag_seconds = 0,
+      lag_seconds = NULL,
       updated_at = excluded.updated_at
   `).run(jobName, cursorId, updatedAt, updatedAt)
 }
@@ -140,11 +140,11 @@ function recordUsageStatsBackfillFailure(database: DatabaseSync, jobName: string
   const message = error instanceof Error ? error.message : fallbackMessage
   database.prepare(`
     INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
-    VALUES ('global', '', ?, '', '', NULL, ?, 0, ?)
+    VALUES ('global', '', ?, '', '', NULL, ?, NULL, ?)
     ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
       last_success_at = NULL,
       last_error_message = excluded.last_error_message,
-      lag_seconds = 0,
+      lag_seconds = NULL,
       updated_at = excluded.updated_at
   `).run(jobName, message, updatedAt)
 }

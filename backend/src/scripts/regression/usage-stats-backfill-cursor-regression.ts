@@ -51,6 +51,7 @@ try {
   assert.equal(failedState?.cursor_id, 'a', 'backfill 失败不应把游标污染成 failed 或后续 id')
   assert.equal(failedState?.last_success_at, null, 'backfill 失败应保持未完成')
   assert.match(String(failedState?.last_error_message ?? ''), /模拟 backfill 批内失败/, 'backfill 失败应记录错误信息')
+  assert.equal(failedState?.lag_seconds, null, 'backfill 失败时 lag 不可判断，不应伪装成 0')
 
   const cleanup = cleanupProcessedUsageRecordsBeforeWithResult('2000-01-02T00:00:00.000Z', 10)
   assert.equal(cleanup.deletedRows, 1, '失败后的清理安全游标只能删到已成功回填的 a')
@@ -79,6 +80,7 @@ try {
   assert.equal(completedState?.cursor_id, 'processed:2', '完成态应记录本轮处理数量')
   assert.equal(typeof completedState?.last_success_at, 'string', '完成态应写入 last_success_at')
   assert.equal(completedState?.last_error_message, null, '完成态应清空失败信息')
+  assert.equal(completedState?.lag_seconds, null, 'backfill 完成态不提供 lag 指标，不应伪装成 0')
 
   console.log('用量统计 backfill 游标回归通过：失败不污染游标，清理不会越过已成功回填位置')
 } finally {
@@ -119,10 +121,11 @@ function readJobState(jobNameInput: string): {
   cursor_id: string | null
   last_success_at: string | null
   last_error_message: string | null
+  lag_seconds: number | null
 } | undefined {
   return databaseModule.getRecordDatabase()
     .prepare(`
-      SELECT cursor_created_at, cursor_id, last_success_at, last_error_message
+      SELECT cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds
       FROM stats_job_state
       WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
     `)
@@ -131,6 +134,7 @@ function readJobState(jobNameInput: string): {
       cursor_id: string | null
       last_success_at: string | null
       last_error_message: string | null
+      lag_seconds: number | null
     } | undefined
 }
 

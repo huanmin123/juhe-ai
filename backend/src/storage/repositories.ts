@@ -11,14 +11,14 @@ import {
 } from './account-usage.repository.js'
 import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } from './account-usage-snapshot.repository.js'
 import { createApiKeyRecord, deleteApiKey, findApiKeySummary, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
-import { loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
+import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
 import { findGroupRowForAccess, listGroupRowsForAccess, listGroupRowsPageForAccess, loadGroupAuthorizationUsageSummaries, type GroupListOptions } from './group-read.repository.js'
-import { loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
+import { invalidateGroupAccountIdsCache, loadGroupAccountIdsByGroupIds, loadGroupAccountStatsByGroupIds } from './group-read-loaders.js'
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
@@ -54,7 +54,14 @@ import {
   upsertResourceAuthorizationForUser,
   upsertResourceAuthorizationGrant
 } from './resource-authorization-write-state.repository.js'
-import { loadSystemAccountNameMap, loadSystemAccountsByIds } from './repository-lookups.js'
+import {
+  invalidateAccountLookupCache,
+  invalidateGroupLookupCache,
+  invalidateSystemAccountTeamMembershipLookupCache,
+  invalidateSystemTeamLookupCache,
+  loadSystemAccountNameMapByIds,
+  loadSystemAccountPrincipalMapByIds
+} from './repository-lookups.js'
 import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountFailureRow, AccountListRow, AccountRow, GroupListRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
@@ -651,7 +658,7 @@ export function findAccountSummary(accountId: string, access?: AccessScope): Acc
 function accountOptionSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountOptionSummary[] {
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows ? loadSystemAccountNameMap() : new Map<string, string>()
+  const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
     return {
@@ -694,7 +701,7 @@ function accountSummariesFromRows(
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => row.id))
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
-  const accountNames = includeSystemAccountFields(access) || hasAuthorizedRows ? loadSystemAccountNameMap() : new Map<string, string>()
+  const accountNames = includeSystemAccountFields(access) || hasAuthorizedRows ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
     const usage = isAuthorizedView && row.authorization_id
@@ -883,7 +890,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       LIMIT ?
     `)
     .all(nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
-  const accountNames = loadSystemAccountNameMap()
+  const accountNames = loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id))
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(rows.map((row) => row.id))
   return rows.map((row) => {
     const groupBinding = accountGroupBinding(row.id, row.system_account_id)
@@ -971,7 +978,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const account: AccountSummary = {
     id,
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
+    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     providerCode,
     name: normalizedEntityName(input.name, `未命名 ${provider?.name ?? providerCode.toUpperCase()} 账户`),
     notes: optionalString(input.notes),
@@ -1054,6 +1061,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
+  invalidateAccountLookupCache(account.id)
+  invalidateGroupAccountIdsCache(groupId)
 
   return account
 }
@@ -1217,9 +1226,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         nowIso(),
         id,
         systemAccountId
-      )
+    )
     if (Number(result.changes ?? 0) > 0) {
       refreshGroupAccountStatsAfterWrite()
+      invalidateAccountLookupCache(id)
     }
   } catch (error) {
     if (isDuplicateAccountCredentialError(error)) {
@@ -1239,6 +1249,8 @@ export function deleteAccount(id: string, access?: AccessScope): boolean {
   const result = getDatabase().prepare(`DELETE FROM accounts WHERE id = ?${scope.clause}`).run(id, ...scope.params)
   if (Number(result.changes ?? 0) > 0) {
     refreshGroupAccountStatsAfterWrite()
+    invalidateAccountLookupCache(id)
+    invalidateGroupAccountIdsCache()
   }
   return result.changes > 0
 }
@@ -1725,7 +1737,7 @@ function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessScope): 
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows ? loadSystemAccountNameMap() : new Map<string, string>()
+  const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
     return {
@@ -1762,7 +1774,7 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
   const todayUsageByAuthorization = loadGroupAuthorizationUsageSummaries(groupAuthorizationScopes, todayDateKey(timezone))
   const totalUsageByAuthorization = loadGroupAuthorizationUsageSummaries(groupAuthorizationScopes)
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
-  const accountNames = loadSystemAccountNameMap()
+  const accountNames = loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id))
   return rows.map((row) => {
     const isAuthorizedView = row.access_type === 'authorized'
     const todayUsage = isAuthorizedView && row.authorization_id
@@ -1806,7 +1818,7 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
   const group: GroupSummary = {
     id: newId('grp'),
     systemAccountId: includeSystemAccountFields(access) ? systemAccountId : undefined,
-    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMap().get(systemAccountId) : undefined,
+    systemAccountName: includeSystemAccountFields(access) ? loadSystemAccountNameMapByIds([systemAccountId]).get(systemAccountId) : undefined,
     name,
     providerCode,
     description: optionalString(input.description),
@@ -1825,6 +1837,7 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
     }
     throw error
   }
+  invalidateGroupLookupCache(group.id)
   return group
 }
 
@@ -1867,6 +1880,7 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
     }
     throw error
   }
+  invalidateGroupLookupCache(id)
   return findGroupSummary(id, access)
 }
 
@@ -1882,6 +1896,8 @@ export function deleteGroup(id: string, access?: AccessScope): boolean {
   const result = getDatabase().prepare('DELETE FROM groups WHERE id = ? AND system_account_id = ?').run(id, owner.systemAccountId)
   if (Number(result.changes ?? 0) > 0) {
     refreshGroupAccountStatsAfterWrite()
+    invalidateGroupLookupCache(id)
+    invalidateGroupAccountIdsCache(id)
   }
   return result.changes > 0
 }
@@ -1913,6 +1929,7 @@ export function setAccountGroup(accountId: string, groupId: string | null, acces
     return undefined
   }
 
+  const previousGroupId = accountEnabledGroupId(accountId, group.systemAccountId)
   database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, group.systemAccountId)
   const now = nowIso()
   database
@@ -1927,6 +1944,10 @@ export function setAccountGroup(accountId: string, groupId: string | null, acces
     `)
     .run(group.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, 1, now, now)
   refreshGroupAccountStatsAfterWrite()
+  if (previousGroupId && previousGroupId !== groupId) {
+    invalidateGroupAccountIdsCache(previousGroupId)
+  }
+  invalidateGroupAccountIdsCache(groupId)
 
   return findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
 }
@@ -1951,6 +1972,7 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
     return undefined
   }
   const now = nowIso()
+  const previousGroupId = accountEnabledGroupId(accountId, current.systemAccountId)
   database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, current.systemAccountId)
   database
     .prepare(`
@@ -1960,6 +1982,10 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
     `)
     .run(current.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, weight, now, now)
   refreshGroupAccountStatsAfterWrite()
+  if (previousGroupId && previousGroupId !== groupId) {
+    invalidateGroupAccountIdsCache(previousGroupId)
+  }
+  invalidateGroupAccountIdsCache(groupId)
   return findGroupSummary(groupId)
 }
 
@@ -2025,6 +2051,7 @@ export function createSystemTeam(input: Record<string, unknown>, access?: Access
     .run(id, name, optionalString(input.description) ?? null, input.status === 'disabled' ? 'disabled' : 'active', currentSystemAccountId(access), now, now)
   const created = findSystemTeamSummary(id, access)
   if (!created) throw new Error('创建团队失败')
+  invalidateSystemTeamLookupCache(id)
   return created
 }
 
@@ -2058,6 +2085,9 @@ export function updateSystemTeam(id: string, input: Record<string, unknown>, acc
   if (authorizationChanged) {
     refreshGroupAccountStatsAfterWrite()
   }
+  invalidateSystemTeamLookupCache(id)
+  invalidateSystemAccountTeamMembershipLookupCache()
+  clearResourceAuthorizationLookupCaches()
   return findSystemTeamSummary(id, access)
 }
 
@@ -2089,6 +2119,9 @@ export function addSystemTeamMembers(teamId: string, input: Record<string, unkno
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
+  for (const systemAccountId of systemAccountIds) {
+    invalidateSystemAccountTeamMembershipLookupCache(systemAccountId)
+  }
   return findSystemTeamSummary(teamId, access)
 }
 
@@ -2107,6 +2140,7 @@ export function removeSystemTeamMember(teamId: string, memberId: string, access?
     throw error
   }
   refreshGroupAccountStatsAfterWrite()
+  invalidateSystemAccountTeamMembershipLookupCache(member.system_account_id)
   return findSystemTeamSummary(teamId, access)
 }
 
@@ -2373,7 +2407,7 @@ function loadResourceAuthorizationUsageDetail(
     scopeId: runtime.id,
     range
   })
-  const account = loadSystemAccountsByIds([granteeSystemAccountId]).get(granteeSystemAccountId)
+  const account = loadSystemAccountPrincipalMapByIds([granteeSystemAccountId]).get(granteeSystemAccountId)
   const usageBySystemAccount: ResourceAuthorizationUsageDetail[] = [{
     systemAccountId: granteeSystemAccountId,
     systemAccountName: account?.displayName ?? account?.username ?? authorization.granteeSystemAccountName,
@@ -2472,7 +2506,7 @@ function buildRuntimeAuthorizationUsageDetails(
   const usageByAuthorization = authorization.resourceType === 'account'
     ? loadAccountAuthorizationUsageSummaries(scopes, range)
     : loadGroupAuthorizationUsageSummaries(scopes, range)
-  const accounts = loadSystemAccountsByIds(rows.map((row) => row.grantee_system_account_id ?? ''))
+  const accounts = loadSystemAccountPrincipalMapByIds(rows.map((row) => row.grantee_system_account_id ?? ''))
   return rows.flatMap((row) => {
     const systemAccountId = row.grantee_system_account_id
     if (!systemAccountId) return []

@@ -53,14 +53,11 @@ let expiredCount = 0
 export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
   if (operation.input.success) {
     clearLocalAccountSuppression(operation.account.id)
-  } else {
-    suppressLocalAccount(operation.account.id, localSuppressionMs(operation.input.settings), operation.input.errorMessage ?? '上游账号请求失败')
   }
   enqueueAccountSideEffect(operation)
 }
 
 export function enqueueGatewayStreamFailureSideEffect(operation: StreamFailureOperation): void {
-  suppressLocalAccount(operation.input.accountId, localSuppressionMsFromMinutes(operation.input.cooldownMinutes), operation.input.reason)
   enqueueAccountSideEffect(operation)
 }
 
@@ -218,12 +215,16 @@ async function executeAccountSideEffect(operation: AccountSideEffectOperation): 
   if (operation.type === 'apply_account_error_handling') {
     const result = await requestDbService(operation)
     if (result.changed) {
+      if (result.accountStatus === 'rate_limited' || result.accountStatus === 'temporary_unavailable') {
+        suppressLocalAccount(operation.account.id, localSuppressionMs(operation.input.settings), result.reason ?? operation.input.errorMessage ?? '上游账号请求失败')
+      }
       clearGatewayRuntimeCache()
     }
     return
   }
   const result = await requestDbService(operation)
   if (result.triggered) {
+    suppressLocalAccount(operation.input.accountId, localSuppressionMsFromMinutes(operation.input.cooldownMinutes), operation.input.reason)
     clearGatewayRuntimeCache()
   }
 }

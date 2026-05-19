@@ -15,7 +15,7 @@ import {
   withResourceAuthorizationPermissions
 } from './resource-authorization-list-helpers.js'
 import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
-import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountsByIds, loadSystemTeamNameMap } from './repository-lookups.js'
+import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountPrincipalMapByIds, loadSystemTeamNameMap } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
 import { compatiblePagedTotal, takePageRows } from './query-utils.js'
@@ -240,7 +240,7 @@ export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationG
 function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow[], options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
   const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
   const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
-  const systemAccounts = loadSystemAccountsByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
+  const systemAccounts = loadSystemAccountPrincipalMapByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
   const teamNames = loadSystemTeamNameMap(rows.map((row) => row.grantee_team_id ?? ''))
   const includeUsage = options.includeUsage ?? true
   const usage = includeUsage

@@ -59,7 +59,6 @@ export class UpstreamRejectedRequestError extends Error {
 
 export interface DeferredAccountFailure {
   account: UpstreamAccount
-  input: AccountFailureInput
   signature?: UpstreamFailureSignature
   lastAttempt: UpstreamAttempt
   response?: ClientVisibleUpstreamErrorResponse
@@ -260,14 +259,13 @@ export async function handleFailedUpstreamResponse(
       nextAttemptIndex: attemptIndex + 1,
       statusCode: response.status,
       retryIntervalSeconds: settings.temporaryUnschedulableRetryIntervalSeconds
-    }, '上游未知失败未命中策略，先按临时不可调用标准同账号重试')
+    }, '上游未知失败未命中策略，先按短重试策略同账号重试')
     await waitBeforeTemporaryUnschedulableRetry(settings)
     return { action: 'retry', lastAttempt }
   }
 
   deferUnknownAccountFailureOrRejectRequest(deferredAccountFailures, {
     account,
-    input: failureInput,
     signature: buildUpstreamFailureSignature(response.headers, responseBodyText),
     lastAttempt,
     response: responseBodyRead.truncated ? undefined : {
@@ -362,7 +360,6 @@ export async function handleUpstreamRequestError(
     return { action: 'retry', lastAttempt }
   }
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
-  applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   return { action: 'skip_account', lastAttempt }
 }
@@ -374,7 +371,6 @@ export function flushDeferredAccountFailures(deferredAccountFailures: DeferredAc
       continue
     }
     forgetOpenAIAccountForSession(sessionAffinityKey, failure.account.id)
-    applyAccountErrorHandlingWithCacheInvalidation(failure.account, failure.input)
   }
 }
 

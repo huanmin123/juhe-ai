@@ -101,6 +101,18 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<vo
       endOffset,
       initialLineNumber: cursor.lineNumber
     })
+    if (result.flushFailed) {
+      saveRuntimeLogFileCursor({
+        ...cursor,
+        cursorOffset: result.flushedOffset,
+        lineNumber: result.flushedLineNumber,
+        fileSize: stats.size,
+        fileMtimeMs: Math.trunc(stats.mtimeMs),
+        lastReadAt: nowIso(),
+        lastErrorMessage: '运行日志索引写入失败，游标已保留在最近一次成功写入位置，等待下一轮重试'
+      })
+      return
+    }
     if (result.nextOffset === startOffset && endOffset < stats.size) {
       const skippedLine = await skipOversizedRuntimeLogFileLine(file.path, {
         searchOffset: endOffset,
@@ -130,6 +142,20 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<vo
       return
     }
 
+    const finalFlushSucceeded = flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
+    if (!finalFlushSucceeded) {
+      saveRuntimeLogFileCursor({
+        ...cursor,
+        cursorOffset: result.flushedOffset,
+        lineNumber: result.flushedLineNumber,
+        fileSize: stats.size,
+        fileMtimeMs: Math.trunc(stats.mtimeMs),
+        lastReadAt: nowIso(),
+        lastErrorMessage: '运行日志索引写入失败，游标已保留在最近一次成功写入位置，等待下一轮重试'
+      })
+      return
+    }
+
     saveRuntimeLogFileCursor({
       logFile: file.path,
       fileIdentity: runtimeLogFileIdentity(file, stats),
@@ -140,7 +166,6 @@ async function importRuntimeLogFileDelta(file: ActiveRuntimeLogFile): Promise<vo
       lastReadAt: nowIso(),
       lastErrorMessage: undefined
     })
-    flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
   } catch (error) {
     const cursor = getRuntimeLogFileCursor(file.path)
     saveRuntimeLogFileCursor({
@@ -196,13 +221,21 @@ async function readRuntimeLogFileLines(logPath: string, input: {
   startOffset: number
   endOffset: number
   initialLineNumber: number
-}): Promise<{ nextOffset: number; nextLineNumber: number }> {
+}): Promise<{
+  nextOffset: number
+  nextLineNumber: number
+  flushedOffset: number
+  flushedLineNumber: number
+  flushFailed: boolean
+}> {
   const stream = createReadStream(logPath, {
     start: input.startOffset,
     end: Math.max(input.startOffset, input.endOffset - 1)
   })
   let nextOffset = input.startOffset
   let nextLineNumber = input.initialLineNumber
+  let flushedOffset = input.startOffset
+  let flushedLineNumber = input.initialLineNumber
   let importedLineCount = 0
   let pendingLine: Buffer<ArrayBufferLike> = Buffer.alloc(0)
 
@@ -232,10 +265,14 @@ async function readRuntimeLogFileLines(logPath: string, input: {
       cursor = newlineIndex + 1
 
       if (importedLineCount % runtimeLogImportFlushEveryLines === 0) {
-        flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })
+        if (!flushRuntimeLogIndexQueue({ drain: true, retryOnFailure: false })) {
+          return { nextOffset, nextLineNumber, flushedOffset, flushedLineNumber, flushFailed: true }
+        }
+        flushedOffset = nextOffset
+        flushedLineNumber = nextLineNumber
       }
       if (importedLineCount >= runtimeLogTailMaxLinesPerFile) {
-        return { nextOffset, nextLineNumber }
+        return { nextOffset, nextLineNumber, flushedOffset, flushedLineNumber, flushFailed: false }
       }
     }
     if (importedLineCount >= runtimeLogTailMaxLinesPerFile) {
@@ -243,7 +280,7 @@ async function readRuntimeLogFileLines(logPath: string, input: {
     }
   }
 
-  return { nextOffset, nextLineNumber }
+  return { nextOffset, nextLineNumber, flushedOffset, flushedLineNumber, flushFailed: false }
 }
 
 async function skipOversizedRuntimeLogFileLine(logPath: string, input: {
