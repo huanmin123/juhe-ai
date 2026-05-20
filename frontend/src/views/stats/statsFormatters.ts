@@ -29,7 +29,7 @@ export function formatDurationSeconds(value?: number) {
 }
 
 export function formatSeconds(value?: number) {
-  return value === undefined ? '-' : `${Math.round(value)} 秒`
+  return value === undefined ? '未知' : `${Math.round(value)} 秒`
 }
 
 export function bytesPerSecondToMbps(value?: number) {

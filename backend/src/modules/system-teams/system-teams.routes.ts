@@ -7,6 +7,7 @@ import {
   createSystemTeam,
   findSystemTeamSummary,
   listSystemTeams,
+  listSystemTeamsPage,
   removeSystemTeamMember,
   updateSystemTeam
 } from '../../storage/repositories.js'
@@ -49,8 +50,8 @@ function currentUserTeamScope() {
   return getRequestAccessScope(context?.systemAccountId)
 }
 
-myTeamsRouter.get('/', (_req, res) => {
-  res.json(ok(listSystemTeams(currentUserTeamScope())))
+myTeamsRouter.get('/', (req, res) => {
+  res.json(ok(listSystemTeamsPage(currentUserTeamScope(), parseSystemTeamListOptions(req.query))))
 })
 
 systemTeamsRouter.get('/', requireAdmin, (req, res) => {
@@ -59,8 +60,33 @@ systemTeamsRouter.get('/', requireAdmin, (req, res) => {
     sendBadRequest(res, scopeQuery.message)
     return
   }
-  res.json(ok(listSystemTeams(getRequestAccessScope(scopeQuery.data.systemAccountId))))
+  res.json(ok(listSystemTeamsPage(getRequestAccessScope(scopeQuery.data.systemAccountId), parseSystemTeamListOptions(req.query))))
 })
+
+function parseSystemTeamListOptions(query: Record<string, unknown>) {
+  return {
+    page: integerQueryValue(query.page),
+    pageSize: integerQueryValue(query.pageSize),
+    limit: integerQueryValue(query.limit),
+    keyword: optionalQueryText(query.keyword)
+  }
+}
+
+function integerQueryValue(value: unknown): number | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  if (typeof text === 'string') {
+    const trimmed = text.trim()
+    if (!trimmed) return undefined
+    const number = Number(trimmed)
+    return Number.isInteger(number) ? number : undefined
+  }
+  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
+}
+
+function optionalQueryText(value: unknown): string | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  return typeof text === 'string' && text.trim() ? text.trim() : undefined
+}
 
 systemTeamsRouter.post('/', requireAdmin, mutationGuard({
   operationKey: 'system_teams.create',

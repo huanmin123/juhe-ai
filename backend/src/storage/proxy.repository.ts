@@ -1,7 +1,7 @@
 import { decryptJson, encryptJson } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
 
 interface ProxyRow {
@@ -41,6 +41,21 @@ export interface ProxyProfileSummary {
 
 export type ProxyProfileOptionSummary = Pick<ProxyProfileSummary, 'id' | 'name' | 'type' | 'enabled'>
 
+export interface ProxyProfileListOptions {
+  page?: number
+  pageSize?: number
+  limit?: number
+  keyword?: string
+}
+
+export interface ProxyProfileListResult {
+  items: ProxyProfileSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 export interface ProxyProfileTestConfig extends ProxyProfileSummary {
   proxyUrl: string
 }
@@ -67,8 +82,11 @@ export class ProxyProfileUnavailableError extends Error {
 }
 
 export function listProxies(): ProxyProfileSummary[] {
-  const rows = getDatabase().prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles ORDER BY updated_at DESC, id DESC`).all() as unknown as ProxyRow[]
-  return rows.map(proxySummaryFromRow)
+  return queryProxies().items
+}
+
+export function listProxiesPage(options: ProxyProfileListOptions = {}): ProxyProfileListResult {
+  return queryProxies(options, true)
 }
 
 export function findProxy(id: string): ProxyProfileSummary | undefined {
@@ -76,16 +94,80 @@ export function findProxy(id: string): ProxyProfileSummary | undefined {
   return row ? proxySummaryFromRow(row) : undefined
 }
 
-export function listProxyOptions(): ProxyProfileOptionSummary[] {
+export function listProxyOptions(options: Pick<ProxyProfileListOptions, 'keyword' | 'limit'> = {}): ProxyProfileOptionSummary[] {
+  const keywordFilter = buildProxyKeywordFilter(options.keyword)
+  const safeLimit = typeof options.limit === 'number' && Number.isInteger(options.limit)
+    ? Math.min(500, Math.max(1, options.limit))
+    : 500
   const rows = getDatabase()
-    .prepare('SELECT id, name, type, enabled FROM proxy_profiles WHERE enabled = 1 ORDER BY name ASC, updated_at DESC, id ASC')
-    .all() as unknown as Array<Pick<ProxyRow, 'id' | 'name' | 'type' | 'enabled'>>
+    .prepare(`SELECT id, name, type, enabled FROM proxy_profiles WHERE enabled = 1${keywordFilter.clause ? ` AND ${keywordFilter.clause}` : ''} ORDER BY name ASC, updated_at DESC, id ASC LIMIT ?`)
+    .all(...keywordFilter.params, safeLimit) as unknown as Array<Pick<ProxyRow, 'id' | 'name' | 'type' | 'enabled'>>
   return rows.map((row) => ({
     id: row.id,
     name: row.name,
     type: row.type,
     enabled: row.enabled === 1
   }))
+}
+
+function queryProxies(options: ProxyProfileListOptions = {}, paged = false): ProxyProfileListResult {
+  const normalized = normalizeProxyListOptions(options)
+  const keywordFilter = buildProxyKeywordFilter(normalized.keyword)
+  const whereClause = keywordFilter.clause ? `WHERE ${keywordFilter.clause}` : ''
+  const pageClause = paged ? ' LIMIT ? OFFSET ?' : ''
+  const pageParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
+  const rows = getDatabase()
+    .prepare(`SELECT ${proxySummarySelectColumns()} FROM proxy_profiles ${whereClause} ORDER BY updated_at DESC, id DESC${pageClause}`)
+    .all(...keywordFilter.params, ...pageParams) as unknown as ProxyRow[]
+  const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
+  const items = pageRows.rows.map(proxySummaryFromRow)
+  return {
+    items,
+    total: paged ? compatiblePagedTotal(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
+    hasMore: pageRows.hasMore,
+    page: normalized.page,
+    pageSize: normalized.pageSize
+  }
+}
+
+function normalizeProxyListOptions(options: ProxyProfileListOptions): Required<Pick<ProxyProfileListOptions, 'page' | 'pageSize'>> & Pick<ProxyProfileListOptions, 'keyword'> {
+  const page = typeof options.page === 'number' && Number.isInteger(options.page) ? Math.max(1, options.page) : 1
+  const rawPageSize = options.pageSize ?? options.limit
+  const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
+    ? Math.min(200, Math.max(1, rawPageSize))
+    : 20
+  return {
+    page,
+    pageSize,
+    keyword: optionalString(options.keyword)
+  }
+}
+
+function buildProxyKeywordFilter(keyword?: string): { clause: string; params: string[] } {
+  const text = optionalString(keyword)
+  if (!text) return { clause: '', params: [] }
+  const prefix = `${escapeLikePrefix(text)}%`
+  return {
+    clause: `(
+      id = ?
+      OR id LIKE ? ESCAPE '\\'
+      OR name COLLATE NOCASE = ?
+      OR name LIKE ? ESCAPE '\\'
+      OR description COLLATE NOCASE = ?
+      OR description LIKE ? ESCAPE '\\'
+      OR type COLLATE NOCASE = ?
+      OR type LIKE ? ESCAPE '\\'
+      OR host = ?
+      OR host LIKE ? ESCAPE '\\'
+      OR username COLLATE NOCASE = ?
+      OR username LIKE ? ESCAPE '\\'
+    )`,
+    params: [text, prefix, text, prefix, text, prefix, text, prefix, text, prefix, text, prefix]
+  }
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 function proxySummaryFromRow(row: ProxyRow): ProxyProfileSummary {

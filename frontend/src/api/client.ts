@@ -41,6 +41,7 @@ import type {
   ProviderDefinition,
   ProviderModelPricing,
   ProxyProfileOptionSummary,
+  ProxyProfileListResult,
   ProxyProfileSummary,
   ProxyTestReport,
   RuntimeLogFacets,
@@ -51,6 +52,7 @@ import type {
   UpstreamErrorFeatureRuleCatalogItem,
   ResourceAuthorizationListResult,
   SystemTeamMemberSummary,
+  SystemTeamListResult,
   SystemTeamPrincipalSummary,
   SystemTeamSummary,
   SystemSettings,
@@ -81,6 +83,33 @@ interface GroupListParams extends ListParams {
   limit?: number
 }
 
+interface GroupOptionParams extends ListParams {
+  keyword?: string
+  providerCode?: string
+  limit?: number
+  manageableOnly?: boolean
+  preferDefault?: boolean
+}
+
+interface TeamListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  limit?: number
+  keyword?: string
+}
+
+interface ProxyListParams extends ListParams {
+  page?: number
+  pageSize?: number
+  limit?: number
+  keyword?: string
+}
+
+interface SystemAccountOptionsParams {
+  keyword?: string
+  limit?: number
+}
+
 interface RequestControlOptions {
   signal?: AbortSignal
 }
@@ -98,6 +127,7 @@ interface AccountUsageStatsParams extends ListParams {
   startDate?: string
   endDate?: string
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
+  accountIds?: string[]
   limit?: number
 }
 
@@ -247,6 +277,11 @@ export interface AuthorizationListParams extends ListParams {
 
 export type AuthorizationScopeParams = ListParams
 
+interface AuthorizationPrincipalOptionsParams {
+  keyword?: string
+  limit?: number
+}
+
 export interface AuthorizationUsageParams extends AuthorizationScopeParams {
   startDate?: string
   endDate?: string
@@ -310,13 +345,13 @@ export const api = {
   },
   systemAccounts: {
     list: () => unwrap<SystemAccountSummary[]>(http.get('/system-accounts')),
-    options: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/system-accounts/options')),
+    options: (params?: SystemAccountOptionsParams) => unwrap<SystemAccountPrincipalSummary[]>(http.get('/system-accounts/options', { params: systemAccountOptionsParams(params) })),
     create: (payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.post('/system-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.patch(`/system-accounts/${id}`, payload))
   },
   authorizationOptions: {
-    granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/authorization-options/grantee-accounts')),
-    granteeTeams: () => unwrap<SystemTeamPrincipalSummary[]>(http.get('/authorization-options/grantee-teams'))
+    granteeAccounts: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemAccountPrincipalSummary[]>(http.get('/authorization-options/grantee-accounts', { params: authorizationPrincipalOptionsParams(params) })),
+    granteeTeams: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemTeamPrincipalSummary[]>(http.get('/authorization-options/grantee-teams', { params: authorizationPrincipalOptionsParams(params) }))
   },
   announcements: {
     publicList: (params?: AnnouncementListParams) => unwrap<AnnouncementSummary[]>(http.get('/announcements/public', { params })),
@@ -330,8 +365,8 @@ export const api = {
     delete: (id: string) => http.delete(`/announcements/${id}`)
   },
   myAuthorizationOptions: {
-    granteeAccounts: () => unwrap<SystemAccountPrincipalSummary[]>(http.get('/my-authorization-options/grantee-accounts')),
-    granteeTeams: () => unwrap<SystemTeamPrincipalSummary[]>(http.get('/my-authorization-options/grantee-teams'))
+    granteeAccounts: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemAccountPrincipalSummary[]>(http.get('/my-authorization-options/grantee-accounts', { params: authorizationPrincipalOptionsParams(params) })),
+    granteeTeams: (params?: AuthorizationPrincipalOptionsParams) => unwrap<SystemTeamPrincipalSummary[]>(http.get('/my-authorization-options/grantee-teams', { params: authorizationPrincipalOptionsParams(params) }))
   },
   providers: {
     list: () => unwrap<ProviderDefinition[]>(http.get('/providers')),
@@ -367,8 +402,8 @@ export const api = {
   groups: {
     list: (params?: ListParams) => unwrap<GroupSummary[]>(http.get('/groups', { params })),
     listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/groups', { params })),
-    options: (params?: ListParams) => unwrap<GroupOptionSummary[]>(http.get('/groups/options', { params })),
-    accountOptions: (params?: ListParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params })),
+    options: (params?: GroupOptionParams) => unwrap<GroupOptionSummary[]>(http.get('/groups/options', { params: groupOptionParams(params) })),
+    accountOptions: (params?: GroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params: groupOptionParams(params) })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.post('/groups', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.patch(`/groups/${id}`, payload, { params })),
     delete: (id: string, params?: ListParams) => http.delete(`/groups/${id}`, { params })
@@ -376,21 +411,21 @@ export const api = {
   myGroups: {
     list: () => unwrap<GroupSummary[]>(http.get('/my-groups')),
     listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/my-groups', { params })),
-    options: () => unwrap<GroupOptionSummary[]>(http.get('/my-groups/options')),
-    accountOptions: () => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options')),
+    options: (params?: Pick<GroupOptionParams, 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<GroupOptionSummary[]>(http.get('/my-groups/options', { params: groupOptionParams(params, false) })),
+    accountOptions: (params?: Pick<GroupOptionParams, 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options', { params: groupOptionParams(params, false) })),
     create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/my-groups', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<GroupSummary>(http.patch(`/my-groups/${id}`, payload)),
     delete: (id: string) => http.delete(`/my-groups/${id}`)
   },
   systemTeams: {
-    list: (params?: ListParams) => unwrap<SystemTeamSummary[]>(http.get('/system-teams', { params })),
+    list: (params?: TeamListParams) => unwrap<SystemTeamListResult>(http.get('/system-teams', { params })),
     create: (payload: { name: string; description?: string; status?: 'active' | 'disabled' }) => unwrap<SystemTeamSummary>(http.post('/system-teams', payload)),
     update: (id: string, payload: { name?: string; description?: string; status?: 'active' | 'disabled' }) => unwrap<SystemTeamSummary>(http.patch(`/system-teams/${id}`, payload)),
     addMembers: (id: string, payload: { systemAccountIds: string[] }) => unwrap<SystemTeamSummary>(http.post(`/system-teams/${id}/members`, payload)),
     removeMember: (id: string, memberId: string) => unwrap<SystemTeamSummary>(http.delete(`/system-teams/${id}/members/${memberId}`))
   },
   myTeams: {
-    list: () => unwrap<SystemTeamSummary[]>(http.get('/my-teams'))
+    list: (params?: Omit<TeamListParams, 'systemAccountId'>) => unwrap<SystemTeamListResult>(http.get('/my-teams', { params }))
   },
   authorizations: {
     list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/authorizations', { params })),
@@ -459,8 +494,8 @@ export const api = {
     reauthorizeFromRefreshToken: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post(`/my-openai-oauth/accounts/${id}/reauthorize-from-refresh-token`, payload))
   },
   proxies: {
-    list: () => unwrap<ProxyProfileSummary[]>(http.get('/proxies')),
-    options: () => unwrap<ProxyProfileOptionSummary[]>(http.get('/proxies/options')),
+    list: (params?: ProxyListParams) => unwrap<ProxyProfileListResult>(http.get('/proxies', { params })),
+    options: (params?: Pick<ProxyListParams, 'keyword' | 'limit'>) => unwrap<ProxyProfileOptionSummary[]>(http.get('/proxies/options', { params })),
     create: (payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.post('/proxies', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<ProxyProfileSummary>(http.patch(`/proxies/${id}`, payload)),
     test: (id: string) => unwrap<ProxyTestReport>(http.post(`/proxies/${id}/test`, {}, { timeout: 120000 })),
@@ -496,7 +531,7 @@ export const api = {
   },
   stats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/stats/usage-overview', { params })),
-    accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params })),
+    accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/stats/account-usage', { params: accountUsageStatsParams(params) })),
     aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params) })),
     aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/stats/ai-performance', { params: aiPerformanceParams(params) })),
     systemMetrics: (params?: Pick<UsageOverviewParams, 'startDate' | 'endDate'>) => unwrap<SystemMetricsOverview>(http.get('/stats/system-metrics', { params }))
@@ -508,7 +543,7 @@ export const api = {
   },
   myStats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),
-    accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/my-stats/account-usage', { params: stripSystemAccountParam(params) })),
+    accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/my-stats/account-usage', { params: accountUsageStatsParams(params, false) })),
     aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params, false) })),
     aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params, false) }))
   },
@@ -567,6 +602,50 @@ function accountOptionsParams(params?: AccountListParams, includeSystemAccount =
   if (params.keyword) output.keyword = params.keyword
   if (params.type && params.type !== 'all') output.type = params.type
   if (params.status && params.status !== 'all') output.status = params.status
+  if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
+  return Object.keys(output).length ? output : undefined
+}
+
+function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>, includeSystemAccount = true): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (includeSystemAccount && 'systemAccountId' in params && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
+  if (params.providerCode?.trim()) output.providerCode = params.providerCode.trim()
+  if (params.limit) output.limit = params.limit
+  if (typeof params.manageableOnly === 'boolean') output.manageableOnly = params.manageableOnly
+  if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
+  return Object.keys(output).length ? output : undefined
+}
+
+function authorizationPrincipalOptionsParams(params?: AuthorizationPrincipalOptionsParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
+  if (params.limit) output.limit = params.limit
+  return Object.keys(output).length ? output : undefined
+}
+
+function systemAccountOptionsParams(params?: SystemAccountOptionsParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
+  if (params.limit) output.limit = params.limit
+  return Object.keys(output).length ? output : undefined
+}
+
+function accountUsageStatsParams(params?: AccountUsageStatsParams, includeSystemAccount = true): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.page) output.page = params.page
+  if (params.pageSize) output.pageSize = params.pageSize
+  if (params.limit) output.limit = params.limit
+  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
+  if (params.type && params.type !== 'all') output.type = params.type
+  if (params.startDate) output.startDate = params.startDate
+  if (params.endDate) output.endDate = params.endDate
+  if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
   if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
   return Object.keys(output).length ? output : undefined
 }

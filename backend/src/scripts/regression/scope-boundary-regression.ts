@@ -193,6 +193,14 @@ interface SystemTeamSummary {
   members?: SystemTeamMemberSummary[]
 }
 
+interface SystemTeamListResult {
+  items: SystemTeamSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 interface SystemAccountPrincipalSummary {
   id: string
   username: string
@@ -413,14 +421,17 @@ async function main(): Promise<void> {
     assert(userBAiPerformance.summary.requestCount === 4, `AI性能监控应按账户整体统计包含被授权人调用，实际 ${userBAiPerformance.summary.requestCount}`)
     summary.push('AI性能监控拥有者口径和授权账户隔离检查通过')
 
-    const userATeams = await getEnvelope<SystemTeamSummary[]>(baseUrl, '/__aisys__/api/my-teams', seed.userACookie)
+    const userATeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/my-teams', seed.userACookie)
+    const userATeams = userATeamsPage.items
     assert(userATeams.length === 1 && userATeams[0]?.id === seed.teamSharedId, '用户 A 我的团队没有只返回自己加入的团队')
     assert((userATeams[0]?.members ?? []).some((member) => member.systemAccountId === seed.userAId), '用户 A 我的团队缺少自己')
     assert((userATeams[0]?.members ?? []).some((member) => member.systemAccountId === seed.userBId), '用户 A 我的团队缺少同团队成员')
     assert(!userATeams.some((team) => team.id === seed.teamUserBOnlyId), '用户 A 我的团队返回了未加入团队')
-    const userBTeams = await getEnvelope<SystemTeamSummary[]>(baseUrl, '/__aisys__/api/my-teams', seed.userBCookie)
+    const userBTeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/my-teams', seed.userBCookie)
+    const userBTeams = userBTeamsPage.items
     assert(userBTeams.some((team) => team.id === seed.teamSharedId) && userBTeams.some((team) => team.id === seed.teamUserBOnlyId), '用户 B 我的团队没有返回自己加入的多个团队')
-    const adminTeams = await getEnvelope<SystemTeamSummary[]>(baseUrl, '/__aisys__/api/system-teams', seed.adminCookie)
+    const adminTeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/system-teams', seed.adminCookie)
+    const adminTeams = adminTeamsPage.items
     assert(adminTeams.some((team) => team.id === seed.teamSharedId) && adminTeams.some((team) => team.id === seed.teamUserBOnlyId), '管理员系统团队管理没有返回全量团队')
     summary.push('我的团队成员作用域检查通过')
 

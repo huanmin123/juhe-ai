@@ -9,11 +9,15 @@
             :accounts="systemAccounts"
             :active-only="false"
             :disabled="loading"
+            :filter-option="false"
+            :loading="systemAccountOptionsLoading"
             all-label="全部用户"
             class="usage-stats-system-account-select"
             include-all
             placeholder="筛选用户"
             @change="handleSystemAccountFilterChange"
+            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+            @search="handleSystemAccountOptionsSearch"
           />
           <a-range-picker
             v-model:value="dateRange"
@@ -33,11 +37,14 @@
             class="usage-stats-account-select"
             mode="multiple"
             show-search
-            :disabled="loading || !rows.length"
-            :filter-option="filterAccountOption"
+            :disabled="loading"
+            :filter-option="false"
+            :loading="accountOptionsLoading"
             :max-tag-count="0"
             :options="accountOptions"
             placeholder="输入名称 / ID 前缀添加账户"
+            @dropdown-visible-change="handleAccountOptionsDropdown"
+            @search="handleAccountOptionsSearch"
             @select="handleAccountSelect"
           />
         </div>
@@ -207,10 +214,11 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
-import type { AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText, statusColor, statusText } from '@/views/accounts/accountFormatters'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -233,6 +241,7 @@ type UsageStatsPageState = {
 
 const MAX_RANGE_DAYS = 31
 const accountUsagePageSize = 10
+const maxAddedTrendAccounts = 20
 const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
   code: 'openai',
@@ -264,13 +273,23 @@ const defaultUsageStatsPageState = (): UsageStatsPageState => {
 const loading = ref(false)
 const mobileRefreshing = ref(false)
 const overview = ref<AccountUsageStatsOverview>()
-const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const providers = ref<ProviderDefinition[]>([])
 const usageStatsOptionsLoaded = ref(false)
 const usageStatsOptionsScopeKey = ref('')
 const pageStateCache = usePageStateCache<UsageStatsPageState>(undefined, defaultUsageStatsPageState, { version: 5 })
 const initialPageState = pageStateCache.read()
 const filters = reactive<UsageStatsFilters>({ ...initialPageState.filters })
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  load: loadSystemAccountOptions,
+  loading: systemAccountOptionsLoading,
+  resetSearch: resetSystemAccountOptionsSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [filters.systemAccountId]
+})
 const selectedMetric = ref<UsageTrendMetric>(metricOptions.some((item) => item.value === initialPageState.metric) ? initialPageState.metric : 'cost')
 const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
@@ -278,10 +297,18 @@ const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedTrendAccountIds = ref<string[]>([])
 const addedTrendAccountIds = ref<string[]>([])
 const accountPickerValue = ref<string[]>([])
+const accountOptionRows = ref<AccountOptionSummary[]>([])
+const accountOptionsLoading = ref(false)
+const accountOptionsKeyword = ref('')
+let accountOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let accountOptionsRequestSeq = 0
+let accountOptionsLoadingKey: string | undefined
+let accountOptionsLoadingPromise: Promise<void> | undefined
 const accountUsagePagination = reactive({
   current: 1,
   pageSize: accountUsagePageSize,
-  total: 0
+  total: 0,
+  hasMore: false
 })
 
 const trendChartRef = ref<HTMLDivElement>()
@@ -290,7 +317,12 @@ const { pageActive, requestRender: renderChart } = useEchartsPageLifecycle({
   renderCharts: renderUsageTrendChart,
   resizeCharts,
   disposeCharts,
-  onMounted: loadData
+  onMounted: () => {
+    void loadAccountOptions()
+    void loadData()
+  },
+  onDeactivate: clearAccountOptionsSearchTimer,
+  onBeforeUnmount: clearAccountOptionsSearchTimer
 })
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
@@ -326,7 +358,9 @@ const tablePagination = computed(() => ({
   total: accountUsagePagination.total,
   hideOnSinglePage: false,
   showSizeChanger: false,
-  showTotal: (total: number) => `共 ${formatInteger(total)} 条`
+  showTotal: (total: number) => accountUsagePagination.hasMore
+    ? `已加载到第 ${formatInteger(Math.max(0, total - 1))} 条账户消耗，还有更多`
+    : `共 ${formatInteger(total)} 条账户消耗`
 }))
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
@@ -349,7 +383,7 @@ const columns = computed(() => {
   )
   return baseColumns
 })
-const accountOptions = computed(() => rows.value.map((account) => ({
+const accountOptions = computed(() => accountOptionRows.value.map((account) => ({
   label: accountOptionLabel(account),
   value: account.id
 })))
@@ -393,6 +427,7 @@ async function loadData(options: { quiet?: boolean; forceOptions?: boolean } = {
     accountUsagePagination.current = usageOverview.page
     accountUsagePagination.pageSize = usageOverview.pageSize || accountUsagePageSize
     accountUsagePagination.total = usageOverview.total
+    accountUsagePagination.hasMore = usageOverview.hasMore
     pruneSelectedTrendAccounts(usageOverview.rows)
   } catch (error) {
     console.error(error)
@@ -407,23 +442,25 @@ async function loadData(options: { quiet?: boolean; forceOptions?: boolean } = {
 
 async function loadUsageStatsOptions(force = false): Promise<void> {
   const scopeKey = isManagementView.value ? 'management' : 'self'
+  if (force) {
+    resetSystemAccountOptionsSearch()
+  }
   if (!force && usageStatsOptionsLoaded.value && usageStatsOptionsScopeKey.value === scopeKey) {
+    await loadSystemAccountOptions()
     return
   }
   if (!isManagementView.value) {
     providers.value = [FALLBACK_PROVIDER]
-    systemAccounts.value = []
     usageStatsOptionsLoaded.value = true
     usageStatsOptionsScopeKey.value = scopeKey
     return
   }
 
-  const [providerList, systemAccountList] = await Promise.all([
+  const [providerList] = await Promise.all([
     api.providers.list(),
-    api.systemAccounts.options()
+    loadSystemAccountOptions()
   ])
   providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
-  systemAccounts.value = systemAccountList
   usageStatsOptionsLoaded.value = true
   usageStatsOptionsScopeKey.value = scopeKey
 }
@@ -442,15 +479,22 @@ function resetFilters() {
   selectedTrendAccountIds.value = []
   addedTrendAccountIds.value = []
   accountPickerValue.value = []
+  accountOptionRows.value = []
+  accountOptionsKeyword.value = ''
+  clearAccountOptionsSearchTimer()
   accountUsagePagination.current = 1
   accountUsagePagination.pageSize = accountUsagePageSize
   accountUsagePagination.total = 0
+  accountUsagePagination.hasMore = false
+  resetSystemAccountOptionsSearch()
   pageStateCache.clear()
   void loadData({ forceOptions: true })
 }
 
 function handleSystemAccountFilterChange() {
   accountUsagePagination.current = 1
+  clearTrendAccountState()
+  void loadAccountOptions('', true)
   void loadData()
 }
 
@@ -469,10 +513,12 @@ function accountUsageParams(systemAccountId?: string) {
     systemAccountId?: string
     startDate?: string
     endDate?: string
+    accountIds?: string[]
     page: number
     pageSize: number
   } = {
     systemAccountId,
+    accountIds: addedTrendAccountIds.value,
     page: accountUsagePagination.current,
     pageSize: accountUsagePagination.pageSize
   }
@@ -525,20 +571,105 @@ function toggleTrendAccount(id: string) {
 function handleAccountSelect(value: unknown) {
   accountPickerValue.value = []
   const id = String(value ?? '').trim()
-  if (!rows.value.some((row) => row.id === id)) return
+  accountOptionsKeyword.value = ''
+  if (!id) return
   if (!defaultTrendAccountIdSet.value.has(id) && !addedTrendAccountIds.value.includes(id)) {
+    if (addedTrendAccountIds.value.length >= maxAddedTrendAccounts) {
+      message.warning(`趋势图最多添加 ${maxAddedTrendAccounts} 个账户`)
+      return
+    }
     addedTrendAccountIds.value = [...addedTrendAccountIds.value, id]
   }
   if (selectedTrendAccountIds.value.length && !selectedTrendAccountIds.value.includes(id)) {
     selectedTrendAccountIds.value = [...selectedTrendAccountIds.value, id]
   }
-  renderChart()
+  void loadAccountOptions()
+  void loadData({ quiet: true })
 }
 
-function filterAccountOption(input: string, option?: { label?: unknown; value?: unknown }) {
-  const keyword = input.trim().toLowerCase()
-  if (!keyword) return true
-  return `${option?.label ?? ''} ${option?.value ?? ''}`.toLowerCase().includes(keyword)
+async function loadAccountOptions(keyword = accountOptionsKeyword.value, force = false): Promise<void> {
+  accountOptionsKeyword.value = keyword
+  const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
+  const requestKeyword = keyword.trim() || undefined
+  const selectedIds = [...addedTrendAccountIds.value].sort()
+  const requestKey = JSON.stringify([isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self', requestKeyword ?? '', selectedIds])
+  if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
+    return accountOptionsLoadingPromise
+  }
+  const requestSeq = ++accountOptionsRequestSeq
+  accountOptionsLoading.value = true
+  accountOptionsLoadingKey = requestKey
+  accountOptionsLoadingPromise = (async () => {
+    try {
+      let nextOptions = isManagementView.value
+        ? await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
+        : await api.myAccounts.options({ keyword: requestKeyword, limit: 50 })
+      nextOptions = await ensureSelectedAccountOptions(nextOptions, systemAccountId)
+      if (requestSeq !== accountOptionsRequestSeq) return
+      accountOptionRows.value = nextOptions
+    } catch (error) {
+      if (requestSeq !== accountOptionsRequestSeq) return
+      console.error(error)
+      message.error('账户筛选项加载失败')
+    } finally {
+      if (accountOptionsLoadingKey === requestKey) {
+        accountOptionsLoadingKey = undefined
+        accountOptionsLoadingPromise = undefined
+      }
+      if (requestSeq === accountOptionsRequestSeq) {
+        accountOptionsLoading.value = false
+      }
+    }
+  })()
+  return accountOptionsLoadingPromise
+}
+
+async function ensureSelectedAccountOptions(nextOptions: AccountOptionSummary[], systemAccountId: string | undefined): Promise<AccountOptionSummary[]> {
+  const selectedIds = [...new Set(addedTrendAccountIds.value)]
+  const missingIds = selectedIds.filter((id) => !nextOptions.some((account) => account.id === id))
+  if (!missingIds.length) return nextOptions
+  const selectedOptions = await Promise.all(missingIds.map(async (id) => {
+    try {
+      return isManagementView.value
+        ? await api.accounts.options({ systemAccountId, keyword: id, limit: 1 })
+        : await api.myAccounts.options({ keyword: id, limit: 1 })
+    } catch {
+      return []
+    }
+  }))
+  return mergeOptionsById(selectedOptions.flat(), nextOptions)
+}
+
+function handleAccountOptionsSearch(value: string) {
+  accountOptionsKeyword.value = value
+  clearAccountOptionsSearchTimer()
+  accountOptionsSearchTimer = window.setTimeout(() => {
+    accountOptionsSearchTimer = undefined
+    if (!pageActive.value) return
+    void loadAccountOptions(accountOptionsKeyword.value)
+  }, 250)
+}
+
+function handleAccountOptionsDropdown(open: boolean) {
+  if (open) {
+    void loadAccountOptions()
+  }
+}
+
+function clearAccountOptionsSearchTimer() {
+  if (accountOptionsSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(accountOptionsSearchTimer)
+    accountOptionsSearchTimer = undefined
+  }
+}
+
+function clearTrendAccountState() {
+  selectedTrendAccountIds.value = []
+  addedTrendAccountIds.value = []
+  accountPickerValue.value = []
+  accountOptionRows.value = []
+  accountOptionsKeyword.value = ''
+  clearAccountOptionsSearchTimer()
 }
 
 function disabledDate(current: Dayjs) {
@@ -550,9 +681,10 @@ function providerName(providerCode?: string) {
   return availableProviders.value.find((provider) => provider.code === providerCode)?.name ?? providerCode
 }
 
-function accountOptionLabel(account: AccountUsageStatsRow) {
+function accountOptionLabel(account: AccountOptionSummary) {
   const statusSuffix = account.status === 'active' ? '' : `（${statusText(account.status)}）`
-  return `${account.name}${statusSuffix} · 本范围 ${formatInteger(account.rangeUsage.requestCount)} 次`
+  const ownerText = isManagementView.value && account.systemAccountName ? ` · ${account.systemAccountName}` : ''
+  return `${account.name}${statusSuffix}${ownerText} · ${providerName(account.providerCode)}`
 }
 
 function trendAccountLabel(account: AccountUsageStatsRow) {
@@ -627,6 +759,14 @@ function dedupeRowsById(items: AccountUsageStatsRow[]): AccountUsageStatsRow[] {
     result.push(item)
   }
   return result
+}
+
+function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
+  const merged = new Map<string, T>()
+  for (const item of [...leading, ...trailing]) {
+    merged.set(item.id, item)
+  }
+  return [...merged.values()]
 }
 
 function pruneSelectedTrendAccounts(currentRows: AccountUsageStatsRow[]) {

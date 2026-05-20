@@ -63,6 +63,12 @@
         </template>
       </ResponsiveListToolbar>
 
+      <RuntimeAvailabilityAlert
+        :visible="runtimeLogsAlertVisible"
+        message="日志运行态暂时不可观测"
+        :description="runtimeLogsAlertDescription"
+      />
+
       <RuntimeLogDataList
         table-class="page-table runtime-log-table"
         :records="records"
@@ -124,6 +130,12 @@
           </a-form>
         </template>
       </ResponsiveListToolbar>
+
+      <RuntimeAvailabilityAlert
+        :visible="runtimeLogsAlertVisible"
+        message="日志运行态暂时不可观测"
+        :description="runtimeLogsAlertDescription"
+      />
 
       <a-alert
         v-if="grepResult?.message"
@@ -189,6 +201,7 @@ import { api } from '@/api/client'
 import type { RuntimeLogFacets, RuntimeLogGrepItem, RuntimeLogGrepResult, RuntimeLogLevel, RuntimeLogSummary } from '@/types/domain'
 import { formatDateTime } from '@/shared/formatters'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
+import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import {
@@ -312,6 +325,32 @@ const grepRangeLimitText = computed(() => {
   if (!runtime) return '按文件时间筛选，默认最近 3 天，单次最多 7 天'
   return `按文件时间筛选，默认最近 ${runtime.defaultRangeDays} 天，单次最多 ${runtime.maxRangeDays} 天`
 })
+const runtimeLogsAlertVisible = computed(() => Boolean(facets.value && (
+  !facets.value.runtimeAvailable
+  || !facets.value.workerSnapshotAvailable
+  || !facets.value.runtimeLogIndexQueueAvailable
+  || !facets.value.dbService.statusAvailable
+  || !facets.value.dbService.stateAvailable
+  || !facets.value.gatewayAccountSideEffectsAvailable
+)))
+const runtimeLogsAlertDescription = computed(() => {
+  const info = facets.value
+  if (!info) return ''
+  const reasons: string[] = []
+  if (!info.runtimeAvailable) {
+    reasons.push('服务运行态不可用')
+  } else {
+    if (!info.workerSnapshotAvailable) reasons.push('后台进程快照不可用')
+    if (!info.runtimeLogIndexQueueAvailable) reasons.push('运行日志索引队列不可用')
+    if (!info.gatewayAccountSideEffectsAvailable) reasons.push('网关账户副作用状态不可用')
+  }
+  if (!info.dbService.statusAvailable) {
+    reasons.push('本地数据库服务状态不可用')
+  } else if (!info.dbService.stateAvailable) {
+    reasons.push('本地数据库服务父进程状态不可用')
+  }
+  return `${reasons.join('；') || '运行态状态未知'}。`
+})
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -400,9 +439,12 @@ function handleModeChange(value: string | number): void {
     }
     return
   }
-  if (grepKeywordFilter.value.trim()) {
-    void searchGrepLogs()
-  }
+  void loadRuntimeLogFacets().then(() => {
+    grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
+    if (grepKeywordFilter.value.trim()) {
+      void searchGrepLogs()
+    }
+  })
 }
 
 function applyIndexFilters(): void {

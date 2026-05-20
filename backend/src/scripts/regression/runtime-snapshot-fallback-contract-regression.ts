@@ -79,6 +79,13 @@ interface SystemMetricsResponse {
   workerSnapshotAvailable: boolean
   backgroundJobsAvailable: boolean
   backgroundJobs: unknown
+  processEventLoopLatestStatus: Array<{
+    processRole: string
+    sampleAvailable: boolean
+    processPid: number | null
+    sampledAt: string | null
+    eventLoopLagMs: number | null
+  }>
 }
 
 interface AccountListResponse {
@@ -149,6 +156,17 @@ try {
   assert.equal(systemMetrics.workerSnapshotAvailable, false, '系统指标应标记 worker snapshot 不可用')
   assert.equal(systemMetrics.backgroundJobsAvailable, false, '后台任务不可用时应有显式标记')
   assert.equal(systemMetrics.backgroundJobs, null, '后台任务不可用时不能伪装成空数组')
+  assert.deepEqual(
+    systemMetrics.processEventLoopLatestStatus.map((item) => item.processRole),
+    ['server', 'worker', 'db-service'],
+    '系统指标应固定返回所有进程角色的采样可用性'
+  )
+  for (const item of systemMetrics.processEventLoopLatestStatus) {
+    assert.equal(item.sampleAvailable, false, `${item.processRole} 无最新采样时应显式标记不可用`)
+    assert.equal(item.processPid, null, `${item.processRole} 无最新采样时 PID 不能伪装成 0`)
+    assert.equal(item.sampledAt, null, `${item.processRole} 无最新采样时采样时间不能伪装成默认值`)
+    assert.equal(item.eventLoopLagMs, null, `${item.processRole} 无最新采样时事件循环延迟不能伪装成 0`)
+  }
 
   const accountPage = await getEnvelope<AccountListResponse>(baseUrl, '/__aisys__/api/accounts?page=1&pageSize=20', seed.adminCookie)
   assert.equal(accountPage.runtimeSnapshot.accountConcurrencyAvailable, false, '账户分页应标记实时并发快照不可用')

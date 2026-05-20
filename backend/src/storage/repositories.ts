@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSummary, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSummary, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
@@ -166,6 +166,7 @@ export {
   listEnabledProxyTestConfigs,
   listProxyOptions,
   listProxies,
+  listProxiesPage,
   ProxyInUseError,
   ProxyProfileUnavailableError,
   resolveEnabledProxyProfileId,
@@ -176,6 +177,8 @@ export {
   updateProxy,
   type ProxyProfileUrlResolution,
   type ProxyProfileOptionSummary,
+  type ProxyProfileListOptions,
+  type ProxyProfileListResult,
   type ProxyProfileSummary,
   type ProxyProfileTestConfig
 } from './proxy.repository.js'
@@ -832,7 +835,7 @@ export function getAccountUsageStatsOverview(access?: AccessScope, range?: Accou
   return withAllAccountsDefaultTrendIds(access, overview)
 }
 
-export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange }): AccountUsageStatsOverview {
+export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?: AccountListOptions & { range?: AccountUsageStatsRange; accountIds?: string[] }): AccountUsageStatsOverview {
   const listOptions = normalizeAccountListOptions(options)
   const defaultTrendAccountIds = loadAccountUsageDefaultTrendAccountIds(access)
   const range = options?.range ?? normalizeAccountUsageStatsRange({}, usageStatsTimezone())
@@ -843,6 +846,7 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
     pageSize: listOptions.pageSize,
     keyword: listOptions.keyword,
     type: listOptions.type,
+    accountIds: options?.accountIds,
     defaultTrendAccountIds,
   })
   return withAllAccountsDefaultTrendIds(access, overview)
@@ -1764,12 +1768,12 @@ export function listGroupsPage(access?: AccessScope, options?: GroupListOptions)
   }
 }
 
-export function listGroupOptions(access?: AccessScope): GroupOptionSummary[] {
-  return buildGroupOptionSummaries(listGroupRowsForAccess(access), access)
+export function listGroupOptions(access?: AccessScope, options?: GroupListOptions): GroupOptionSummary[] {
+  return buildGroupOptionSummaries(listGroupRowsForAccess(access, options), access)
 }
 
-export function listAccountGroupOptions(access?: AccessScope): AccountGroupOptionSummary[] {
-  const rows = listGroupRowsForAccess(access)
+export function listAccountGroupOptions(access?: AccessScope, options?: GroupListOptions): AccountGroupOptionSummary[] {
+  const rows = listGroupRowsForAccess(access, options)
   const accountIdsByGroup = loadGroupAccountIdsByGroupIds(rows.map((row) => row.id))
   return buildGroupOptionSummaries(rows, access).map((group) => ({
     ...group,
@@ -2043,22 +2047,91 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
   return findGroupSummary(groupId)
 }
 
+export interface SystemTeamListOptions {
+  page?: number
+  pageSize?: number
+  limit?: number
+  keyword?: string
+}
+
+interface NormalizedSystemTeamListOptions {
+  page: number
+  pageSize: number
+  keyword?: string
+}
+
 export function listSystemTeams(access?: AccessScope): SystemTeamSummary[] {
-  const scopedId = scopedSystemAccountId(access)
-  const rows = scopedId
-    ? getDatabase()
-      .prepare(`
-        SELECT DISTINCT system_teams.id, system_teams.name, system_teams.description, system_teams.status, system_teams.created_by, system_teams.created_at, system_teams.updated_at
-        FROM system_teams
-        INNER JOIN system_team_members ON system_team_members.team_id = system_teams.id
-        WHERE system_team_members.system_account_id = ?
-          AND system_team_members.status = 'active'
-        ORDER BY system_teams.status ASC, system_teams.updated_at DESC, system_teams.name ASC, system_teams.id ASC
-      `)
-      .all(scopedId) as unknown as SystemTeamRow[]
-    : getDatabase().prepare('SELECT id, name, description, status, created_by, created_at, updated_at FROM system_teams ORDER BY status ASC, updated_at DESC, name ASC, id ASC').all() as unknown as SystemTeamRow[]
+  const rows = querySystemTeamRows(access, undefined, normalizeSystemTeamListOptions()).rows
   const members = listSystemTeamMembersForTeamIds(rows.map((row) => row.id), true)
   return rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
+}
+
+export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamListOptions = {}): SystemTeamListResult {
+  const listOptions = normalizeSystemTeamListOptions(options)
+  const rows = querySystemTeamRows(access, {
+    limit: listOptions.pageSize + 1,
+    offset: (listOptions.page - 1) * listOptions.pageSize
+  }, listOptions).rows
+  const pageRows = takePageRows(rows, listOptions.pageSize)
+  const members = listSystemTeamMembersForTeamIds(pageRows.rows.map((row) => row.id), true)
+  const items = pageRows.rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
+  return {
+    items,
+    total: compatiblePagedTotal(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: listOptions.page,
+    pageSize: listOptions.pageSize
+  }
+}
+
+function querySystemTeamRows(access: AccessScope | undefined, pagination: { limit: number; offset: number } | undefined, options: Pick<NormalizedSystemTeamListOptions, 'keyword'>): { rows: SystemTeamRow[] } {
+  const scopedId = scopedSystemAccountId(access)
+  const clauses: string[] = []
+  const params: string[] = []
+  if (scopedId) {
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM system_team_members
+      WHERE system_team_members.team_id = system_teams.id
+        AND system_team_members.system_account_id = ?
+        AND system_team_members.status = 'active'
+    )`)
+    params.push(scopedId)
+  }
+  const keyword = options.keyword?.trim()
+  if (keyword) {
+    const prefix = `${escapeLikePrefix(keyword)}%`
+    clauses.push(`(
+      system_teams.id = ?
+      OR system_teams.id LIKE ? ESCAPE '\\'
+      OR system_teams.name COLLATE NOCASE = ?
+      OR system_teams.name LIKE ? ESCAPE '\\'
+      OR system_teams.description COLLATE NOCASE = ?
+      OR system_teams.description LIKE ? ESCAPE '\\'
+    )`)
+    params.push(keyword, prefix, keyword, prefix, keyword, prefix)
+  }
+  const whereClause = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
+  const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
+  const pageParams = pagination ? [pagination.limit, pagination.offset] : []
+  const rows = getDatabase()
+    .prepare(`SELECT id, name, description, status, created_by, created_at, updated_at FROM system_teams${whereClause} ORDER BY status ASC, updated_at DESC, name ASC, id ASC${pageClause}`)
+    .all(...params, ...pageParams) as unknown as SystemTeamRow[]
+  return { rows }
+}
+
+function normalizeSystemTeamListOptions(options: SystemTeamListOptions = {}): NormalizedSystemTeamListOptions {
+  const rawPage = options.page
+  const rawPageSize = options.pageSize ?? options.limit
+  const page = typeof rawPage === 'number' && Number.isInteger(rawPage) ? Math.max(1, rawPage) : 1
+  const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
+    ? Math.min(200, Math.max(1, rawPageSize))
+    : 20
+  return {
+    page,
+    pageSize,
+    keyword: optionalString(options.keyword)
+  }
 }
 
 export function findSystemTeamSummary(id: string, access?: AccessScope): SystemTeamSummary | undefined {
@@ -2081,16 +2154,82 @@ export function findSystemTeamSummary(id: string, access?: AccessScope): SystemT
   return systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access)
 }
 
-export function listAuthorizationGranteeAccounts(access?: AccessScope): SystemAccountPrincipalSummary[] {
+interface AuthorizationPrincipalOptionListOptions {
+  keyword?: string
+  limit?: number
+}
+
+export function listAuthorizationGranteeAccounts(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): SystemAccountPrincipalSummary[] {
+  void access
   const database = getDatabase()
-  const rows = database.prepare('SELECT id, username, display_name, status FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC, id ASC').all() as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
+  const keywordFilter = buildSystemAccountPrincipalKeywordFilter(options.keyword)
+  const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
+  const rows = database.prepare(`
+    SELECT id, username, display_name, status
+    FROM system_accounts
+    ${keywordFilter.clause}
+    ORDER BY status ASC, display_name ASC, username ASC, id ASC
+    ${limitClause.clause}
+  `).all(...keywordFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
   return rows.map(systemAccountPrincipalSummaryFromRow)
 }
 
-export function listAuthorizationGranteeTeams(access?: AccessScope): SystemTeamPrincipalSummary[] {
+export function listAuthorizationGranteeTeams(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): SystemTeamPrincipalSummary[] {
+  void access
   const database = getDatabase()
-  const rows = database.prepare('SELECT id, name, status FROM system_teams ORDER BY status ASC, name ASC, id ASC').all() as unknown as SystemTeamRow[]
+  const keywordFilter = buildSystemTeamPrincipalKeywordFilter(options.keyword)
+  const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
+  const rows = database.prepare(`
+    SELECT id, name, status
+    FROM system_teams
+    ${keywordFilter.clause}
+    ORDER BY status ASC, name ASC, id ASC
+    ${limitClause.clause}
+  `).all(...keywordFilter.params, ...limitClause.params) as unknown as SystemTeamRow[]
   return rows.map(systemTeamPrincipalSummaryFromRow)
+}
+
+function buildSystemAccountPrincipalKeywordFilter(keyword?: string): { clause: string; params: string[] } {
+  const text = optionalString(keyword)
+  if (!text) return { clause: '', params: [] }
+  const prefix = `${escapeLikePrefix(text)}%`
+  return {
+    clause: `WHERE (
+      id = ?
+      OR id LIKE ? ESCAPE '\\'
+      OR username COLLATE NOCASE = ?
+      OR username LIKE ? ESCAPE '\\'
+      OR display_name COLLATE NOCASE = ?
+      OR display_name LIKE ? ESCAPE '\\'
+    )`,
+    params: [text, prefix, text, prefix, text, prefix]
+  }
+}
+
+function buildSystemTeamPrincipalKeywordFilter(keyword?: string): { clause: string; params: string[] } {
+  const text = optionalString(keyword)
+  if (!text) return { clause: '', params: [] }
+  const prefix = `${escapeLikePrefix(text)}%`
+  return {
+    clause: `WHERE (
+      id = ?
+      OR id LIKE ? ESCAPE '\\'
+      OR name COLLATE NOCASE = ?
+      OR name LIKE ? ESCAPE '\\'
+    )`,
+    params: [text, prefix, text, prefix]
+  }
+}
+
+function authorizationPrincipalOptionLimitClause(limit?: number): { clause: string; params: number[] } {
+  const safeLimit = typeof limit === 'number' && Number.isInteger(limit)
+    ? Math.min(500, Math.max(1, limit))
+    : 500
+  return { clause: 'LIMIT ?', params: [safeLimit] }
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 export function createSystemTeam(input: Record<string, unknown>, access?: AccessScope): SystemTeamSummary {

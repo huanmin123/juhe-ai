@@ -46,13 +46,18 @@ function hasGroupPageQuery(query: Record<string, unknown>): boolean {
 
 function integerQueryValue(value: unknown): number | undefined {
   const text = Array.isArray(value) ? value[0] : value
-  const number = typeof text === 'string' ? Number(text) : typeof text === 'number' ? text : undefined
-  return Number.isInteger(number) ? number : undefined
+  if (typeof text === 'string') {
+    const trimmed = text.trim()
+    if (!trimmed) return undefined
+    const number = Number(trimmed)
+    return Number.isInteger(number) ? number : undefined
+  }
+  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
 }
 
 groupsRouter.get('/options', (req, res, next) => {
   try {
-    res.json(ok(listGroupOptions(getRequestAccessScope(req.query.systemAccountId))))
+    res.json(ok(listGroupOptions(getRequestAccessScope(req.query.systemAccountId), parseGroupOptionListOptions(req.query))))
   } catch (error) {
     next(error)
   }
@@ -60,11 +65,36 @@ groupsRouter.get('/options', (req, res, next) => {
 
 groupsRouter.get('/account-options', (req, res, next) => {
   try {
-    res.json(ok(listAccountGroupOptions(getRequestAccessScope(req.query.systemAccountId))))
+    res.json(ok(listAccountGroupOptions(getRequestAccessScope(req.query.systemAccountId), parseGroupOptionListOptions(req.query))))
   } catch (error) {
     next(error)
   }
 })
+
+function parseGroupOptionListOptions(query: Record<string, unknown>) {
+  return {
+    keyword: optionalQueryText(query.keyword),
+    providerCode: optionalQueryText(query.providerCode),
+    limit: integerQueryValue(query.limit),
+    manageableOnly: booleanQueryValue(query.manageableOnly),
+    preferDefault: booleanQueryValue(query.preferDefault)
+  }
+}
+
+function optionalQueryText(value: unknown): string | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  return typeof text === 'string' && text.trim() ? text.trim() : undefined
+}
+
+function booleanQueryValue(value: unknown): boolean | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  if (typeof text === 'boolean') return text
+  if (typeof text !== 'string') return undefined
+  const normalized = text.trim().toLowerCase()
+  if (['1', 'true', 'yes'].includes(normalized)) return true
+  if (['0', 'false', 'no'].includes(normalized)) return false
+  return undefined
+}
 
 groupsRouter.post('/', mutationGuard({
   operationKey: 'groups.create',

@@ -244,6 +244,8 @@ pnpm test:smoke
 
 ## QQ 群
 
+加群有好用便宜的中转推荐
+
 ![QQ群](resources/images/qq.png)
 
 

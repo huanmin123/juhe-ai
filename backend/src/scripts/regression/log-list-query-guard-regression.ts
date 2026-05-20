@@ -84,6 +84,16 @@ try {
       actorDisplayName: '管理员丙',
       createdAt: '2026-02-01T00:30:00.000Z',
       viewers: [{ systemAccountId: 'sys_user', visibilityReason: 'resource_owner' }]
+    }),
+    operationLog({
+      id: 'op_log_guard_short_keyword_middle',
+      traceId: 'trace-op-list-guard-short-middle',
+      summary: '更新造数资源',
+      resourceId: 'resource_plain_mockdata',
+      resourceName: '普通造数资源',
+      actorDisplayName: '管理员丁',
+      createdAt: '2026-02-01T00:40:00.000Z',
+      viewers: [{ systemAccountId: 'sys_user', visibilityReason: 'resource_owner' }]
     })
   ])
 
@@ -137,7 +147,7 @@ try {
   for (const call of capturedCalls) {
     assert(!/\b(?:al|aeg)\.[a-z_]+\s+LIKE\s+\?/i.test(call.sql), '审计日志和错误组列表不应使用 LIKE 扫描结构化字段')
     assert(!/\bol\.trace_id\s+LIKE\s+\?/i.test(call.sql), '操作日志 traceId 不应使用 LIKE 扫描')
-    assert(!/\bol\.(summary|resource_name|actor_display_name|actor_username)\s+LIKE\s+\?/i.test(call.sql), '无时间窗操作日志关键词不应使用多列 LIKE 扫描')
+    assert(!/\bol\.(summary|resource_name|actor_display_name|actor_username)\s+LIKE\s+\?/i.test(call.sql), '操作日志关键词不应使用多列 LIKE 扫描')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '无边界日志列表查询不应传入前导通配符参数')
   }
   assert(capturedCalls.some((call) => /\bINNER\s+JOIN\s+operation_log_search\b/i.test(call.sql) && /\boperation_log_search\s+MATCH\s+\?/i.test(call.sql)), '操作日志长关键词应走 operation_log_search FTS')
@@ -163,15 +173,19 @@ try {
       endAt: '2026-02-01T01:00:00.000Z',
       pageSize: 10
     })
-    assert.deepEqual(shortKeywordWithWindow.items.map((item) => item.id), ['op_log_guard_short_keyword'], '短关键词只允许在明确小时间窗内做有界文本检索')
+    assert.deepEqual(shortKeywordWithWindow.items.map((item) => item.id), ['op_log_guard_short_keyword'], '短关键词只允许在明确小时间窗内做精确或前缀文本检索')
   } finally {
     boundedRecordDatabase.prepare = boundedOriginalPrepare
   }
   assert(boundedCalls.some((call) => /\bol\.created_at\s+>=\s+\?/i.test(call.sql)
     && /\bol\.created_at\s+<=\s+\?/i.test(call.sql)
-    && call.params.some((param) => typeof param === 'string' && param.startsWith('%'))), '短关键词 LIKE 必须绑定小时间窗')
+    && /\bol\.summary\s+COLLATE\s+NOCASE\s+>=\s+\?/i.test(call.sql)), '短关键词前缀检索必须绑定小时间窗')
+  for (const call of boundedCalls) {
+    assert(!/\bol\.(summary|resource_name|actor_display_name|actor_username)\s+LIKE\s+\?/i.test(call.sql), '小时间窗操作日志关键词也不应使用多列 LIKE 扫描')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '小时间窗操作日志关键词不应传入前导通配符参数')
+  }
 
-  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志长关键词走 FTS，短关键词仅允许小时间窗 LIKE')
+  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志长关键词走 FTS，短关键词仅允许小时间窗精确或前缀检索')
 } finally {
   try {
     databaseModule.getDatabase().close()

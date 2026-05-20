@@ -2,7 +2,7 @@
   <a-card class="page-card responsive-page-card">
     <ResponsiveListToolbar
       v-model:keyword="keywordFilter"
-      search-placeholder="搜索摘要或操作人"
+      search-placeholder="摘要 / 资源 / 操作人"
       filter-title="操作日志筛选"
       :active-filter-count="activeFilterCount"
       :refresh-loading="loading"
@@ -28,9 +28,13 @@
           v-model:value="affectedSystemAccountFilter"
           show-search
           class="toolbar-select account-filter responsive-list-inline-filter"
-          :options="systemAccountOptions"
-          :filter-option="filterSystemAccountOption"
-          @change="applyFilters"
+          :options="affectedSystemAccountOptions"
+          :filter-option="false"
+          :loading="affectedSystemAccountOptionsLoading"
+          placeholder="筛选影响用户"
+          @change="handleAffectedSystemAccountChange"
+          @dropdown-visible-change="handleAffectedSystemAccountOptionsDropdown"
+          @search="handleAffectedSystemAccountOptionsSearch"
         />
       </template>
       <template #filters>
@@ -57,13 +61,43 @@
           </a-form-item>
           <template v-if="isManagementView">
             <a-form-item label="操作人">
-              <a-select v-model:value="actorSystemAccountFilter" show-search :options="systemAccountOptions" :filter-option="filterSystemAccountOption" />
+              <a-select
+                v-model:value="actorSystemAccountFilter"
+                show-search
+                :filter-option="false"
+                :loading="actorSystemAccountOptionsLoading"
+                :options="actorSystemAccountOptions"
+                placeholder="筛选操作人"
+                @change="handleActorSystemAccountChange"
+                @dropdown-visible-change="handleActorSystemAccountOptionsDropdown"
+                @search="handleActorSystemAccountOptionsSearch"
+              />
             </a-form-item>
             <a-form-item label="影响用户">
-              <a-select v-model:value="affectedSystemAccountFilter" show-search :options="systemAccountOptions" :filter-option="filterSystemAccountOption" />
+              <a-select
+                v-model:value="affectedSystemAccountFilter"
+                show-search
+                :filter-option="false"
+                :loading="affectedSystemAccountOptionsLoading"
+                :options="affectedSystemAccountOptions"
+                placeholder="筛选影响用户"
+                @change="handleAffectedSystemAccountChange"
+                @dropdown-visible-change="handleAffectedSystemAccountOptionsDropdown"
+                @search="handleAffectedSystemAccountOptionsSearch"
+              />
             </a-form-item>
             <a-form-item label="业务归属">
-              <a-select v-model:value="operationScopeSystemAccountFilter" show-search :options="systemAccountOptions" :filter-option="filterSystemAccountOption" />
+              <a-select
+                v-model:value="operationScopeSystemAccountFilter"
+                show-search
+                :filter-option="false"
+                :loading="operationScopeSystemAccountOptionsLoading"
+                :options="operationScopeSystemAccountOptions"
+                placeholder="筛选业务归属"
+                @change="handleOperationScopeSystemAccountChange"
+                @dropdown-visible-change="handleOperationScopeSystemAccountOptionsDropdown"
+                @search="handleOperationScopeSystemAccountOptionsSearch"
+              />
             </a-form-item>
           </template>
         </a-form>
@@ -235,10 +269,11 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateTime } from '@/shared/formatters'
-import type { OperationLogChange, OperationLogDetail, OperationLogSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { OperationLogChange, OperationLogDetail, OperationLogSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
 type OperationLogsPageState = {
@@ -274,8 +309,6 @@ const { isManagementView } = useScopedMenuView()
 const detailLoading = ref(false)
 const detail = ref<OperationLogDetail>()
 const detailOpen = ref(false)
-const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
-const systemAccountsLoaded = ref(false)
 let detailRequestId = 0
 const keywordFilter = ref(initialPageState.keywordFilter)
 const moduleFilter = ref(initialPageState.moduleFilter)
@@ -285,6 +318,39 @@ const traceIdFilter = ref(initialPageState.traceIdFilter)
 const actorSystemAccountFilter = ref(initialPageState.actorSystemAccountFilter)
 const affectedSystemAccountFilter = ref(initialPageState.affectedSystemAccountFilter)
 const operationScopeSystemAccountFilter = ref(initialPageState.operationScopeSystemAccountFilter)
+const {
+  handleDropdown: handleActorSystemAccountOptionsDropdown,
+  handleSearch: handleActorSystemAccountOptionsSearch,
+  load: loadActorSystemAccounts,
+  loading: actorSystemAccountOptionsLoading,
+  resetSearch: resetActorSystemAccountOptionsSearch,
+  systemAccounts: actorSystemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [actorSystemAccountFilter.value]
+})
+const {
+  handleDropdown: handleAffectedSystemAccountOptionsDropdown,
+  handleSearch: handleAffectedSystemAccountOptionsSearch,
+  load: loadAffectedSystemAccounts,
+  loading: affectedSystemAccountOptionsLoading,
+  resetSearch: resetAffectedSystemAccountOptionsSearch,
+  systemAccounts: affectedSystemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [affectedSystemAccountFilter.value]
+})
+const {
+  handleDropdown: handleOperationScopeSystemAccountOptionsDropdown,
+  handleSearch: handleOperationScopeSystemAccountOptionsSearch,
+  load: loadOperationScopeSystemAccounts,
+  loading: operationScopeSystemAccountOptionsLoading,
+  resetSearch: resetOperationScopeSystemAccountOptionsSearch,
+  systemAccounts: operationScopeSystemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [operationScopeSystemAccountFilter.value]
+})
 const {
   items: records,
   loading,
@@ -304,7 +370,17 @@ const {
     ? `已加载到第 ${range?.[1] ?? total - 1} 条操作日志，还有更多`
     : `共 ${total} 条操作日志`,
   fetchPage: async (options, pageState) => {
-    const [result] = await Promise.all([fetchRecords(pageState), loadSystemAccounts(options.forceOptions === true)])
+    if (options.forceOptions === true) {
+      resetActorSystemAccountOptionsSearch()
+      resetAffectedSystemAccountOptionsSearch()
+      resetOperationScopeSystemAccountOptionsSearch()
+    }
+    const [result] = await Promise.all([
+      fetchRecords(pageState),
+      loadActorSystemAccounts(),
+      loadAffectedSystemAccounts(),
+      loadOperationScopeSystemAccounts()
+    ])
     return result
   },
   onError: (error) => {
@@ -356,14 +432,9 @@ const actionOptions = [
   { label: '清理使用记录', value: 'cleanup_usage_records' }
 ]
 
-const systemAccountOptions = computed(() => [
-  { label: '全部用户', value: allSystemAccountsValue },
-  ...systemAccounts.value.map((account) => ({
-    label: `${account.displayName}（${account.username}）`,
-    value: account.id,
-    keywords: `${account.displayName} ${account.username} ${account.id}`
-  }))
-])
+const actorSystemAccountOptions = computed(() => systemAccountSelectOptions(actorSystemAccounts.value))
+const affectedSystemAccountOptions = computed(() => systemAccountSelectOptions(affectedSystemAccounts.value))
+const operationScopeSystemAccountOptions = computed(() => systemAccountSelectOptions(operationScopeSystemAccounts.value))
 const activeFilterCount = computed(() => {
   let count = 0
   if (keywordFilter.value.trim()) count += 1
@@ -431,9 +502,27 @@ function resetFilters(): void {
   actorSystemAccountFilter.value = defaults.actorSystemAccountFilter
   affectedSystemAccountFilter.value = defaults.affectedSystemAccountFilter
   operationScopeSystemAccountFilter.value = defaults.operationScopeSystemAccountFilter
+  resetActorSystemAccountOptionsSearch()
+  resetAffectedSystemAccountOptionsSearch()
+  resetOperationScopeSystemAccountOptionsSearch()
   resetPagination()
   pageStateCache.clear()
   void loadData()
+}
+
+function handleActorSystemAccountChange(): void {
+  resetActorSystemAccountOptionsSearch()
+  applyFilters()
+}
+
+function handleAffectedSystemAccountChange(): void {
+  resetAffectedSystemAccountOptionsSearch()
+  applyFilters()
+}
+
+function handleOperationScopeSystemAccountChange(): void {
+  resetOperationScopeSystemAccountOptionsSearch()
+  applyFilters()
 }
 
 function handleCreatedAtRangeChange(): void {
@@ -457,17 +546,6 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     operationScopeSystemAccountId: adminAccountFilter(operationScopeSystemAccountFilter.value)
   }
   return isManagementView.value ? api.operationLogs.list(params) : api.myOperationLogs.list(params)
-}
-
-async function loadSystemAccounts(force = false): Promise<void> {
-  if (!isManagementView.value) {
-    systemAccounts.value = []
-    systemAccountsLoaded.value = true
-    return
-  }
-  if (!force && systemAccountsLoaded.value) return
-  systemAccounts.value = await api.systemAccounts.options()
-  systemAccountsLoaded.value = true
 }
 
 async function openDetail(record: OperationLogSummary): Promise<void> {
@@ -501,10 +579,15 @@ function adminAccountFilter(value: string): string | undefined {
   return isManagementView.value && value !== allSystemAccountsValue ? value : undefined
 }
 
-function filterSystemAccountOption(input: string, option?: { label?: string; value?: string; keywords?: string }): boolean {
-  const keyword = input.trim().toLowerCase()
-  if (!keyword) return true
-  return [option?.label, option?.value, option?.keywords].some((item) => String(item ?? '').toLowerCase().includes(keyword))
+function systemAccountSelectOptions(accounts: Array<{ id: string; displayName: string; username: string }>) {
+  return [
+    { label: '全部用户', value: allSystemAccountsValue },
+    ...accounts.map((account) => ({
+      label: `${account.displayName}（${account.username}）`,
+      value: account.id,
+      keywords: `${account.displayName} ${account.username} ${account.id}`
+    }))
+  ]
 }
 
 function moduleText(value: string): string {

@@ -1,8 +1,8 @@
 import { message } from '@/lib/antd'
-import { computed, reactive, ref, type ComputedRef } from 'vue'
+import { computed, nextTick, reactive, ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
-import type { AccountGroupOptionSummary, AccountSummary } from '@/types/domain'
+import type { AccountSummary, GroupOptionSummary } from '@/types/domain'
 import {
   bindGroupOptionsForAccount,
   bindGroupTip as buildBindGroupTip,
@@ -18,8 +18,9 @@ interface UseAccountBindGroupOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   groupIdForAccount: (accountId: string) => string | undefined
-  groups: ReadonlyValue<AccountGroupOptionSummary[]>
+  groups: ReadonlyValue<GroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
+  loadGroupOptions: (keyword?: string, force?: boolean) => Promise<void>
   loadData: () => Promise<void>
 }
 
@@ -32,7 +33,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
   const bindGroupOptions = computed(() => bindGroupOptionsForAccount(options.groups.value, bindingAccount.value))
   const bindGroupTip = computed(() => buildBindGroupTip(bindingAccount.value))
 
-  function openBindGroup(account: AccountSummary) {
+  async function openBindGroup(account: AccountSummary) {
     if (account.status === 'error') {
       message.warning('异常账户除编辑、删除外，只支持测试和恢复异常')
       return
@@ -40,6 +41,10 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     bindingAccount.value = account
     bindGroupForm.groupId = options.groupIdForAccount(account.id) ?? defaultGroupForProvider(options.groups.value, account.providerCode)?.id ?? ''
     bindGroupModalOpen.value = true
+    await nextTick()
+    await options.loadGroupOptions('', true)
+    if (bindingAccount.value?.id !== account.id || bindGroupForm.groupId) return
+    bindGroupForm.groupId = defaultGroupForProvider(options.groups.value, account.providerCode)?.id ?? ''
   }
 
   async function saveBindGroup() {

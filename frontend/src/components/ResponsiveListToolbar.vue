@@ -27,7 +27,7 @@
         </template>
         刷新
       </a-button>
-      <a-button v-if="shouldShowTopReset" class="responsive-list-reset" @click="emit('reset')">重置筛选</a-button>
+      <a-button v-if="shouldShowTopReset" class="responsive-list-reset" @click="emit('reset')">重置</a-button>
     </div>
     <div v-if="hasActions && shouldShowInlineActions" class="responsive-list-toolbar-actions" :class="{ 'mobile-inline': isMobile, single: isMobile && mobileVisibleActionCount === 1 }">
       <slot name="actions" />
@@ -43,7 +43,7 @@
       <slot name="filters" />
     </div>
     <div v-if="showReset" class="responsive-list-filter-actions">
-      <a-button v-if="showReset" block @click="handleDrawerReset">重置筛选</a-button>
+      <a-button v-if="showReset" block @click="handleDrawerReset">重置</a-button>
     </div>
   </a-drawer>
 

@@ -28,7 +28,9 @@ export interface ApiKeySummary {
   key: string
   status: 'active' | 'disabled'
   groupId: string
+  groupName?: string
   groupAuthorizationId?: string
+  groupOwnerSystemAccountName?: string
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
   usage: AccountUsageSummary
@@ -71,6 +73,14 @@ export interface ProxyProfileSummary {
 }
 
 export type ProxyProfileOptionSummary = Pick<ProxyProfileSummary, 'id' | 'name' | 'type' | 'enabled'>
+
+export interface ProxyProfileListResult {
+  items: ProxyProfileSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
 
 export type ProxyTestItemStatus = 'passed' | 'warning' | 'failed'
 export type ProxyTestOverallStatus = 'passed' | 'warning' | 'failed' | 'unknown'

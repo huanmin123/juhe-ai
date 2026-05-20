@@ -9,11 +9,15 @@
             :accounts="systemAccounts"
             :active-only="false"
             :disabled="loading"
+            :filter-option="false"
+            :loading="systemAccountOptionsLoading"
             all-label="全部用户"
             class="ai-performance-system-account-select"
             include-all
             placeholder="筛选用户"
             @change="handleSystemAccountChange"
+            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+            @search="handleSystemAccountOptionsSearch"
           />
           <a-range-picker
             v-model:value="dateRange"
@@ -44,7 +48,7 @@
           />
         </div>
         <div class="page-toolbar-actions">
-          <a-button :disabled="(!addedAccountIds.length && !activeAccountIds.length) || loading" @click="resetAccounts">重置</a-button>
+          <a-button :disabled="loading" @click="resetFilters">重置</a-button>
           <a-button :loading="loading" @click="loadPerformance">
             <template #icon>
               <ReloadOutlined />
@@ -91,9 +95,10 @@ import dayjs, { type Dayjs } from 'dayjs'
 import { api } from '@/api/client'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
-import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
@@ -114,17 +119,28 @@ const activeAccountIds = ref<string[]>([])
 const accountPickerValue = ref<string[]>([])
 const overview = ref<AiPerformanceOverview>()
 const accounts = ref<AiPerformanceAccountOption[]>([])
-const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
-const systemAccountsLoaded = ref(false)
 const selectedSystemAccountId = ref(allSystemAccountsValue)
 const loading = ref(false)
 const accountsLoading = ref(false)
 const accountSearchKeyword = ref('')
 let accountSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let accountSearchSeq = 0
+let loadedAccountOptionsKey: string | undefined
+let loadingAccountOptionsKey: string | undefined
+let loadingAccountOptionsPromise: Promise<void> | undefined
 let performanceRequestSeq = 0
-let systemAccountsLoadingPromise: Promise<void> | undefined
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  load: loadSystemAccounts,
+  loading: systemAccountOptionsLoading,
+  resetSearch: resetSystemAccountOptionsSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [selectedSystemAccountId.value]
+})
 
 const averageFirstTokenChartRef = ref<HTMLDivElement>()
 const maxFirstTokenChartRef = ref<HTMLDivElement>()
@@ -305,30 +321,55 @@ async function loadPerformance() {
 }
 
 async function loadAccounts() {
+  await loadSystemAccounts()
+  const request = currentAccountOptionsRequest()
+  if (loadedAccountOptionsKey === request.key) return
+  if (loadingAccountOptionsKey === request.key && loadingAccountOptionsPromise) {
+    return loadingAccountOptionsPromise
+  }
   const requestSeq = ++accountSearchSeq
   accountsLoading.value = true
-  try {
-    await loadSystemAccounts()
-    const keyword = accountSearchKeyword.value.trim()
-    const systemAccountId = selectedPerformanceSystemAccountId()
-    const accountParams = {
-      systemAccountId,
-      keyword,
-      accountIds: addedAccountIds.value,
-      limit: 30
+  loadingAccountOptionsKey = request.key
+  const loadingPromise = (async () => {
+    try {
+      const accountParams = {
+        systemAccountId: request.systemAccountId,
+        keyword: request.keyword,
+        accountIds: request.accountIds,
+        limit: 30
+      }
+      const nextAccounts = isManagementView.value
+        ? await api.stats.aiPerformanceAccounts(accountParams)
+        : await api.myStats.aiPerformanceAccounts(accountParams)
+      if (requestSeq !== accountSearchSeq) return
+      accounts.value = nextAccounts
+      loadedAccountOptionsKey = request.key
+    } catch (error) {
+      console.error(error)
+      message.error('AI账户列表加载失败')
+    } finally {
+      if (loadingAccountOptionsKey === request.key) {
+        loadingAccountOptionsPromise = undefined
+        loadingAccountOptionsKey = undefined
+      }
+      if (requestSeq === accountSearchSeq) {
+        accountsLoading.value = false
+      }
     }
-    const nextAccounts = isManagementView.value
-      ? await api.stats.aiPerformanceAccounts(accountParams)
-      : await api.myStats.aiPerformanceAccounts(accountParams)
-    if (requestSeq !== accountSearchSeq) return
-    accounts.value = nextAccounts
-  } catch (error) {
-    console.error(error)
-    message.error('AI账户列表加载失败')
-  } finally {
-    if (requestSeq === accountSearchSeq) {
-      accountsLoading.value = false
-    }
+  })()
+  loadingAccountOptionsPromise = loadingPromise
+  return loadingPromise
+}
+
+function currentAccountOptionsRequest(): { key: string; systemAccountId?: string; keyword: string; accountIds: string[] } {
+  const keyword = accountSearchKeyword.value.trim()
+  const systemAccountId = selectedPerformanceSystemAccountId()
+  const accountIds = [...addedAccountIds.value]
+  return {
+    key: JSON.stringify([isManagementView.value ? 'management' : 'self', systemAccountId ?? '', keyword, accountIds]),
+    systemAccountId,
+    keyword,
+    accountIds
   }
 }
 
@@ -347,20 +388,6 @@ function selectedRangeParams(): { startDate?: string; endDate?: string } {
 
 function selectedPerformanceSystemAccountId(): string | undefined {
   return isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
-}
-
-function loadSystemAccounts(): Promise<void> {
-  if (!isManagementView.value || systemAccountsLoaded.value) return Promise.resolve()
-  if (systemAccountsLoadingPromise) return systemAccountsLoadingPromise
-  systemAccountsLoadingPromise = api.systemAccounts.options()
-    .then((accounts) => {
-      systemAccounts.value = accounts
-      systemAccountsLoaded.value = true
-    })
-    .finally(() => {
-      systemAccountsLoadingPromise = undefined
-    })
-  return systemAccountsLoadingPromise
 }
 
 function handleSystemAccountChange() {
@@ -421,13 +448,18 @@ function handleAccountDropdownVisibleChange(open: boolean) {
   }
 }
 
-function resetAccounts() {
+function resetFilters() {
+  dateRange.value = parseDateRange()
+  calendarRange.value = [null, null]
+  selectedSystemAccountId.value = allSystemAccountsValue
+  resetSystemAccountOptionsSearch()
   clearAccountState()
   void loadAccounts()
   void loadPerformance()
 }
 
 function clearAccountState() {
+  clearAccountSearchTimer()
   addedAccountIds.value = []
   activeAccountIds.value = []
   accountPickerValue.value = []

@@ -67,6 +67,7 @@
       <div class="model-toolbar">
         <a-input-search v-model:value="modelKeyword" allow-clear placeholder="搜索模型名称、用途或接口协议" class="model-search" />
         <a-space wrap>
+          <a-button :disabled="modelLoading" @click="resetModelFilters">重置</a-button>
           <a-tag color="blue">{{ filteredModels.length }} / {{ currentCategoryModels.length }} 个模型</a-tag>
           <a-tag color="purple">价格单位：USD / 1M tokens</a-tag>
         </a-space>
@@ -336,6 +337,11 @@ function resetModelModal() {
   modelKeyword.value = ''
   selectedModelCategory.value = 'text'
   providerModels.value = []
+}
+
+function resetModelFilters() {
+  modelKeyword.value = ''
+  selectedModelCategory.value = findFirstModelCategory(providerModels.value)
 }
 
 function findFirstModelCategory(models: ProviderModelPricing[]): ModelCategoryKey {

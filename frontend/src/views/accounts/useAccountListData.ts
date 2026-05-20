@@ -4,7 +4,8 @@ import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
 import { api, type AccountListParams, type AccountListSortParam } from '@/api/client'
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { usePageStateCache } from '@/composables/usePageStateCache'
-import type { AccountGroupOptionSummary, AccountSummary, ProviderDefinition, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
+import type { AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
 import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDER } from './accountOptions'
@@ -38,8 +39,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const accounts = ref<AccountSummary[]>([])
   const providers = ref<ProviderDefinition[]>([])
   const proxies = ref<ProxyProfileOptionSummary[]>([])
-  const groups = ref<AccountGroupOptionSummary[]>([])
-  const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
   const accountOptionsLoaded = ref(false)
   const accountOptionsScopeKey = ref('')
   const accountOptionsInFlight = new Map<string, Promise<void>>()
@@ -51,6 +50,17 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     current: initialPageState.pagination.current,
     pageSize: initialPageState.pagination.pageSize,
     total: 0
+  })
+  const {
+    handleDropdown: handleSystemAccountOptionsDropdown,
+    handleSearch: handleSystemAccountOptionsSearch,
+    load: loadSystemAccountOptions,
+    loading: systemAccountOptionsLoading,
+    resetSearch: resetSystemAccountOptionsSearch,
+    systemAccounts
+  } = useRemoteSystemAccountOptions({
+    enabled: () => options.isManagementView.value,
+    selectedIds: () => [filters.systemAccountId]
   })
 
   const accountScopeParams = computed(() => {
@@ -133,6 +143,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   function refreshData() {
+    resetSystemAccountOptionsSearch()
     void loadData({ forceOptions: true })
   }
 
@@ -154,6 +165,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   }
 
   function handleSystemAccountFilterChange() {
+    resetSystemAccountOptionsSearch()
     resetAccountPagination()
     void loadData({ forceOptions: true })
   }
@@ -164,6 +176,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     accountSorts.value = defaults.sorts
     accountPagination.current = defaults.pagination.current
     accountPagination.pageSize = defaults.pagination.pageSize
+    resetSystemAccountOptionsSearch()
     resetAccountListPagination()
     pageStateCache.clear()
     void loadData()
@@ -197,19 +210,16 @@ export function useAccountListData(options: UseAccountListDataOptions) {
 
     const requestRef: { current?: Promise<void> } = {}
     const request = (async () => {
-      const [providerList, proxyList, groupList, systemAccountList] = await Promise.all([
+      const [providerList, proxyList] = await Promise.all([
         options.isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
         api.proxies.options(),
-        options.isManagementView.value ? api.groups.accountOptions({ systemAccountId }) : api.myGroups.accountOptions(),
-        options.isManagementView.value ? api.systemAccounts.options() : Promise.resolve([] as SystemAccountPrincipalSummary[])
+        loadSystemAccountOptions()
       ])
       if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
         return
       }
       providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
       proxies.value = proxyList
-      groups.value = groupList
-      systemAccounts.value = systemAccountList
       accountOptionsLoaded.value = true
       accountOptionsScopeKey.value = scopeKey
     })().finally(() => {
@@ -242,7 +252,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     accounts,
     providers,
     proxies,
-    groups,
     systemAccounts,
     filters,
     accountSorts,
@@ -255,6 +264,9 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     mobileRefreshing,
     mobileVisibleAccounts,
     accountTablePagination,
+    systemAccountOptionsLoading,
+    handleSystemAccountOptionsDropdown,
+    handleSystemAccountOptionsSearch,
     loadMoreMobileAccounts,
     refreshMobileAccounts,
     loadData,

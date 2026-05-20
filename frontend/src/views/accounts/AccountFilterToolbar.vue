@@ -20,10 +20,14 @@
         :value="filters.systemAccountId"
         :accounts="systemAccounts"
         :active-only="false"
+        :filter-option="false"
+        :loading="systemAccountsLoading"
         include-all
         class="toolbar-select responsive-list-inline-filter"
         @update:value="handleSystemAccountUpdate"
         @change="emit('system-account-change')"
+        @dropdown-visible-change="emit('system-account-dropdown', $event)"
+        @search="emit('system-account-search', $event)"
       />
     </template>
     <template #actions>
@@ -48,9 +52,13 @@
           :value="filters.systemAccountId"
           :accounts="systemAccounts"
           :active-only="false"
+          :filter-option="false"
+          :loading="systemAccountsLoading"
           include-all
           @update:value="handleSystemAccountUpdate"
           @change="emit('system-account-change')"
+          @dropdown-visible-change="emit('system-account-dropdown', $event)"
+          @search="emit('system-account-search', $event)"
         />
       </label>
     </template>
@@ -78,6 +86,7 @@ defineProps<{
   schedulableOptions: ReadonlyArray<FilterOption<SchedulableFilter>>
   statusOptions: Array<FilterOption<'all' | AccountStatus>>
   systemAccounts: SystemAccountPrincipalSummary[]
+  systemAccountsLoading?: boolean
   typeOptions: Array<FilterOption<'all' | AccountType>>
 }>()
 
@@ -87,6 +96,8 @@ const emit = defineEmits<{
   (event: 'reset'): void
   (event: 'search'): void
   (event: 'system-account-change'): void
+  (event: 'system-account-dropdown', open: boolean): void
+  (event: 'system-account-search', value: string): void
   (event: 'update:keyword', value: string): void
   (event: 'update:schedulable', value: SchedulableFilter): void
   (event: 'update:status', value: 'all' | AccountStatus): void

@@ -11,10 +11,13 @@
       :refresh-loading="loading"
       :result-options="resultOptions"
       :system-accounts="systemAccounts"
+      :system-accounts-loading="systemAccountOptionsLoading"
       @reset="resetFilters"
       @refresh="refreshRecords"
       @search="applyFilters"
       @system-account-change="applyFilters"
+      @system-account-dropdown="handleSystemAccountOptionsDropdown"
+      @system-account-search="handleSystemAccountOptionsSearch"
     />
 
     <ResponsiveDataList
@@ -122,10 +125,11 @@ import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
-import type { SystemAccountPrincipalSummary, UsageRecordSummary } from '@/types/domain'
+import type { UsageRecordSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
@@ -173,11 +177,19 @@ const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseDateRange(initialPa
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
-const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
-const systemAccountsLoaded = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>(initialPageState.sortState)
-let systemAccountsLoadingPromise: Promise<void> | undefined
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  load: loadSystemAccountOptions,
+  loading: systemAccountOptionsLoading,
+  resetSearch: resetSystemAccountOptionsSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [systemAccountFilter.value]
+})
 const {
   items: records,
   loading,
@@ -196,8 +208,14 @@ const {
     ? `已加载到第 ${range?.[1] ?? total - 1} 条使用记录，还有更多`
     : `共 ${total} 条使用记录`,
   fetchPage: async (options, pageState) => {
-    queueSystemAccountOptionsLoad(options.forceOptions === true)
-    return fetchRecords(pageState)
+    if (options.forceOptions === true) {
+      resetSystemAccountOptionsSearch()
+    }
+    const [result] = await Promise.all([
+      fetchRecords(pageState),
+      loadSystemAccountOptions()
+    ])
+    return result
   },
   onError: (error) => {
     console.error(error)
@@ -258,6 +276,7 @@ function resetFilters(): void {
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
   sortState.value = defaults.sortState
+  resetSystemAccountOptionsSearch()
   resetPagination()
   pageStateCache.clear()
   void loadData()
@@ -327,39 +346,6 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
   return isManagementView.value
     ? api.usageRecords.list(params)
     : api.myUsageRecords.list(params)
-}
-
-async function loadSystemAccountOptions(force = false): Promise<void> {
-  if (!isManagementView.value) {
-    systemAccounts.value = []
-    systemAccountsLoaded.value = true
-    return
-  }
-  if (!force && systemAccountsLoaded.value) {
-    return
-  }
-  if (systemAccountsLoadingPromise) {
-    return systemAccountsLoadingPromise
-  }
-  const loadingPromise = api.systemAccounts.options()
-    .then((accounts) => {
-      systemAccounts.value = accounts
-      systemAccountsLoaded.value = true
-    })
-    .finally(() => {
-      if (systemAccountsLoadingPromise === loadingPromise) {
-        systemAccountsLoadingPromise = undefined
-      }
-    })
-  systemAccountsLoadingPromise = loadingPromise
-  return systemAccountsLoadingPromise
-}
-
-function queueSystemAccountOptionsLoad(force = false): void {
-  void loadSystemAccountOptions(force).catch((error) => {
-    console.error(error)
-    message.error('加载系统账户筛选项失败')
-  })
 }
 
 function normalizedStatusCode(value: string): number | undefined {

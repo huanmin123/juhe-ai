@@ -16,11 +16,14 @@
         v-model:value="filters.resourceId"
         show-search
         allow-clear
-        option-filter-prop="label"
+        :filter-option="false"
+        :loading="resourceLoading"
         class="filter-select filter-resource responsive-list-inline-filter"
         :options="resourceOptions"
         :disabled="filters.resourceType === 'all'"
         :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
+        @dropdown-visible-change="$emit('resource-dropdown', $event)"
+        @search="$emit('resource-search', $event)"
         @change="$emit('refresh')"
       />
       <SystemPrincipalSelect
@@ -29,9 +32,13 @@
         :teams="teams"
         :active-only="false"
         allow-clear
+        :filter-option="false"
+        :loading="teamLoading"
         class="filter-select responsive-list-inline-filter"
         placeholder="筛选授权团队"
         scope="team"
+        @dropdown-visible-change="$emit('team-dropdown', $event)"
+        @search="$emit('team-search', $event)"
         @change="$emit('refresh')"
       />
       <SystemPrincipalSelect
@@ -40,8 +47,12 @@
         :accounts="users"
         :active-only="false"
         allow-clear
+        :filter-option="false"
+        :loading="userLoading"
         class="filter-select filter-user responsive-list-inline-filter"
         placeholder="筛选被授权用户"
+        @dropdown-visible-change="$emit('user-dropdown', $event)"
+        @search="$emit('user-search', $event)"
         @change="$emit('refresh')"
       />
     </template>
@@ -71,20 +82,46 @@
           v-model:value="filters.resourceId"
           show-search
           allow-clear
-          option-filter-prop="label"
+          :filter-option="false"
+          :loading="resourceLoading"
           :options="resourceOptions"
           :disabled="filters.resourceType === 'all'"
           :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
+          @dropdown-visible-change="$emit('resource-dropdown', $event)"
+          @search="$emit('resource-search', $event)"
           @change="$emit('refresh')"
         />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
         <span>授权团队</span>
-        <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选授权团队" @change="$emit('refresh')" />
+        <SystemPrincipalSelect
+          v-model:value="filters.teamId"
+          :teams="teams"
+          :active-only="false"
+          allow-clear
+          :filter-option="false"
+          :loading="teamLoading"
+          scope="team"
+          placeholder="筛选授权团队"
+          @dropdown-visible-change="$emit('team-dropdown', $event)"
+          @search="$emit('team-search', $event)"
+          @change="$emit('refresh')"
+        />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
         <span>被授权用户</span>
-        <SystemPrincipalSelect v-model:value="filters.granteeSystemAccountId" :accounts="users" :active-only="false" allow-clear placeholder="筛选被授权用户" @change="$emit('refresh')" />
+        <SystemPrincipalSelect
+          v-model:value="filters.granteeSystemAccountId"
+          :accounts="users"
+          :active-only="false"
+          allow-clear
+          :filter-option="false"
+          :loading="userLoading"
+          placeholder="筛选被授权用户"
+          @dropdown-visible-change="$emit('user-dropdown', $event)"
+          @search="$emit('user-search', $event)"
+          @change="$emit('refresh')"
+        />
       </label>
     </template>
   </ResponsiveListToolbar>
@@ -112,8 +149,11 @@ const props = defineProps<{
   sourceOptions: Array<{ label: string; value: AuthorizationSourceFilter }>
   resourceTypeOptions: Array<{ label: string; value: AuthorizationFilterResourceType }>
   resourceOptions: Array<{ label: string; value: string }>
+  resourceLoading?: boolean
   teams: SystemTeamPrincipalSummary[]
+  teamLoading?: boolean
   users: SystemAccountPrincipalSummary[]
+  userLoading?: boolean
   activeFilterCount: number
   loading: boolean
 }>()
@@ -124,6 +164,12 @@ defineEmits<{
   (event: 'refresh'): void
   (event: 'reset'): void
   (event: 'resource-type-change'): void
+  (event: 'resource-search', value: string): void
+  (event: 'resource-dropdown', open: boolean): void
+  (event: 'team-search', value: string): void
+  (event: 'team-dropdown', open: boolean): void
+  (event: 'user-search', value: string): void
+  (event: 'user-dropdown', open: boolean): void
 }>()
 
 </script>

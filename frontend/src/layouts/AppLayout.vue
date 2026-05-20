@@ -72,7 +72,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import { authState, changePassword, logout } from '@/composables/useAuth'
-import { appBrand, loadAppBrandSettings } from '@/composables/useAppBrand'
+import { appBrand, loadAppBrandSettings, syncDocumentTitle } from '@/composables/useAppBrand'
 import {
   appMenuMode,
   getDefaultPathForMenuMode,
@@ -440,6 +440,14 @@ watch(
     if (viewScope === 'admin' || viewScope === 'self') {
       setMenuModeFromRoute(currentUser.value, viewScope)
     }
+  },
+  { immediate: true }
+)
+
+watch(
+  () => [route.meta.title, appBrand.appName],
+  () => {
+    syncDocumentTitle(typeof route.meta.title === 'string' ? route.meta.title : undefined)
   },
   { immediate: true }
 )

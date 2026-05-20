@@ -167,7 +167,62 @@ try {
     LIMIT ?
   `, ['sys_admin', 'gpt-5.5', 10], 'idx_usage_records_system_account_model_created_sort')
 
-  console.log('使用记录列表查询防护回归通过：model 精确匹配，accountKeyword 不再对 usage_records 做前导通配符扫描')
+  repositories.createUsageRecordsBatch([
+    {
+      id: 'usage_recent_shape_compact',
+      traceId: 'trace-usage-recent-shape-compact',
+      apiKeyId: apiKey.id,
+      groupId: group.id,
+      accountId: account.id,
+      endpoint: 'POST /v1/responses/compact',
+      providerCode: 'openai',
+      model: 'gpt-5.5',
+      stream: true,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:03.000Z'
+    },
+    {
+      id: 'usage_recent_shape_middle_endpoint',
+      traceId: 'trace-usage-recent-shape-middle-endpoint',
+      apiKeyId: apiKey.id,
+      groupId: group.id,
+      accountId: account.id,
+      endpoint: 'POST /proxy/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.5',
+      stream: true,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:04.000Z'
+    }
+  ])
+
+  const recentShapeCalls: Array<{ sql: string; params: unknown[] }> = []
+  recordDatabase.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    if (/\bSELECT\s+endpoint,\s+model,\s+stream,\s+created_at\b/i.test(sql) && /\bFROM\s+usage_records\b/i.test(sql)) {
+      const originalGet = statement.get.bind(statement) as typeof statement.get
+      statement.get = ((...params: SQLInputValue[]) => {
+        recentShapeCalls.push({ sql, params })
+        return originalGet(...params)
+      }) as typeof statement.get
+    }
+    return statement
+  }) as typeof recordDatabase.prepare
+  try {
+    const shape = repositories.findRecentOpenAIRequestShapeForAccount(account.id, group.id)
+    assert.equal(shape?.endpoint, 'POST /v1/responses/compact', '最近 OpenAI 请求形态应按 endpoint 精确或子路径前缀识别，不应命中中间包含路径')
+  } finally {
+    recordDatabase.prepare = originalPrepare
+  }
+  assert(recentShapeCalls.length >= 1, '回归应捕获最近请求形态 SQL')
+  for (const call of recentShapeCalls) {
+    assert(!/\bLOWER\s*\(\s*endpoint\s*\)\s+LIKE\s+'%/i.test(call.sql), '最近请求形态不应使用 endpoint 前导通配符 LIKE')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '最近请求形态不应传入前导通配符参数')
+  }
+
+  console.log('使用记录列表查询防护回归通过：model 精确匹配，accountKeyword 和最近请求形态都不再对 usage_records 做前导通配符扫描')
 } finally {
   try {
     databaseModule.getDatabase().close()

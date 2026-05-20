@@ -14,7 +14,17 @@
         <a-input :value="account?.name || '-'" readonly />
       </a-form-item>
       <a-form-item label="绑定到我的分组" required>
-        <a-select :value="groupId" :options="groupOptions" placeholder="请选择同供应商分组" @update:value="$emit('update:groupId', String($event))" />
+        <a-select
+          :value="groupId"
+          show-search
+          :filter-option="false"
+          :loading="groupOptionsLoading"
+          :options="groupOptions"
+          placeholder="输入分组名称或 ID 前缀"
+          @dropdown-visible-change="$emit('group-options-dropdown', $event)"
+          @search="$emit('group-options-search', $event)"
+          @update:value="$emit('update:groupId', String($event))"
+        />
         <div class="form-help">API Key 只能调用绑定分组内的账户；授权账户需要先加入你的分组。</div>
       </a-form-item>
     </a-form>
@@ -28,6 +38,7 @@ defineProps<{
   account?: AccountSummary
   groupId: string
   groupOptions: Array<{ label: string; value: string }>
+  groupOptionsLoading: boolean
   open: boolean
   saving: boolean
   tip: string
@@ -35,6 +46,8 @@ defineProps<{
 
 defineEmits<{
   (event: 'save'): void
+  (event: 'group-options-dropdown', open: boolean): void
+  (event: 'group-options-search', value: string): void
   (event: 'update:groupId', value: string): void
   (event: 'update:open', value: boolean): void
 }>()

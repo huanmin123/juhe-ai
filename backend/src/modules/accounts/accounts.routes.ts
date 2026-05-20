@@ -167,8 +167,13 @@ function stringValues(value: unknown): string[] {
 
 function integerQueryValue(value: unknown): number | undefined {
   const text = Array.isArray(value) ? value[0] : value
-  const number = typeof text === 'string' ? Number(text) : typeof text === 'number' ? text : undefined
-  return Number.isInteger(number) ? number : undefined
+  if (typeof text === 'string') {
+    const trimmed = text.trim()
+    if (!trimmed) return undefined
+    const number = Number(trimmed)
+    return Number.isInteger(number) ? number : undefined
+  }
+  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
 }
 
 function optionalQueryText(value: unknown): string | undefined {

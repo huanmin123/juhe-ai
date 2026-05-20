@@ -29,6 +29,14 @@ export interface SystemTeamSummary {
   members?: SystemTeamMemberSummary[]
 }
 
+export interface SystemTeamListResult {
+  items: SystemTeamSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 export type SystemTeamPrincipalSummary = Pick<SystemTeamSummary, 'id' | 'name' | 'status'>
 
 export interface AuthorizationSourceSummary {
@@ -196,6 +204,7 @@ export interface AccountUsageStatsOverview {
   rows: AccountUsageStatsRow[]
   defaultTrendAccountIds: string[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
   statsLagSeconds?: number

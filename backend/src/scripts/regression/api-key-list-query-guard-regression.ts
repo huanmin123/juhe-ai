@@ -70,7 +70,7 @@ try {
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   database.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
-    if (/\bFROM\s+api_keys\b/i.test(sql) && /\bORDER\s+BY\s+updated_at\s+DESC\b/i.test(sql)) {
+    if (/\bFROM\s+api_keys\b/i.test(sql) && /\bORDER\s+BY\s+(?:api_keys\.)?updated_at\s+DESC\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
         capturedCalls.push({ sql, params })

@@ -66,7 +66,7 @@ statsRouter.get('/account-usage', (req, res) => {
   res.json(ok(getAccountUsageStatsOverviewPage(getRequestAccessScope(req.query.systemAccountId), parseAccountUsageOptions(req.query))))
 })
 
-function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOptions & { range: ReturnType<typeof normalizeAccountUsageStatsRange> } {
+function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOptions & { range: ReturnType<typeof normalizeAccountUsageStatsRange>; accountIds?: string[] } {
   const timezone = usageStatsTimezone()
   const startDate = optionalQueryText(query.startDate)
   const endDate = optionalQueryText(query.endDate)
@@ -81,6 +81,7 @@ function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOp
     limit: undefined,
     keyword: optionalQueryText(query.keyword),
     type: optionalQueryText(query.type),
+    accountIds: parseAccountIds(query.accountIds),
     schedulable: schedulableQueryValue(query.schedulable),
     range
   }
@@ -97,8 +98,13 @@ function defaultAccountUsageDateRange(timezone: string): { startDate: string; en
 
 function integerQueryValue(value: unknown): number | undefined {
   const text = Array.isArray(value) ? value[0] : value
-  const number = typeof text === 'string' ? Number(text) : typeof text === 'number' ? text : undefined
-  return Number.isInteger(number) ? number : undefined
+  if (typeof text === 'string') {
+    const trimmed = text.trim()
+    if (!trimmed) return undefined
+    const number = Number(trimmed)
+    return Number.isInteger(number) ? number : undefined
+  }
+  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
 }
 
 function optionalQueryText(value: unknown): string | undefined {

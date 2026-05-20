@@ -20,6 +20,12 @@ interface SystemSessionRow {
 }
 
 const sessionTouchMinIntervalMs = 60 * 1000
+const defaultSystemAccountOptionLimit = 500
+
+export interface SystemAccountOptionListOptions {
+  keyword?: string
+  limit?: number
+}
 
 export interface SessionWithAccount {
   sessionId: string
@@ -39,11 +45,47 @@ export function listSystemAccounts(): SystemAccountSummary[] {
   return rows.map(systemAccountSummaryFromRow)
 }
 
-export function listSystemAccountOptions(): SystemAccountPrincipalSummary[] {
+export function listSystemAccountOptions(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
+  const keywordFilter = buildSystemAccountOptionKeywordFilter(options.keyword)
+  const limitClause = systemAccountOptionLimitClause(options.limit)
   const rows = getDatabase()
-    .prepare('SELECT id, username, display_name, status FROM system_accounts ORDER BY status ASC, display_name ASC, username ASC, id ASC')
-    .all() as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
+    .prepare(`
+      SELECT id, username, display_name, status
+      FROM system_accounts
+      ${keywordFilter.clause}
+      ORDER BY status ASC, display_name ASC, username ASC, id ASC
+      ${limitClause.clause}
+    `)
+    .all(...keywordFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
   return rows.map(systemAccountPrincipalSummaryFromRow)
+}
+
+function buildSystemAccountOptionKeywordFilter(keyword?: string): { clause: string; params: string[] } {
+  const text = optionalString(keyword)
+  if (!text) return { clause: '', params: [] }
+  const prefix = `${escapeLikePrefix(text)}%`
+  return {
+    clause: `WHERE (
+      id = ?
+      OR id LIKE ? ESCAPE '\\'
+      OR username COLLATE NOCASE = ?
+      OR username LIKE ? ESCAPE '\\'
+      OR display_name COLLATE NOCASE = ?
+      OR display_name LIKE ? ESCAPE '\\'
+    )`,
+    params: [text, prefix, text, prefix, text, prefix]
+  }
+}
+
+function systemAccountOptionLimitClause(limit?: number): { clause: string; params: number[] } {
+  const safeLimit = typeof limit === 'number' && Number.isInteger(limit)
+    ? Math.min(defaultSystemAccountOptionLimit, Math.max(1, limit))
+    : defaultSystemAccountOptionLimit
+  return { clause: 'LIMIT ?', params: [safeLimit] }
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 export function findSystemAccountById(id: string): SystemAccountSummary | undefined {

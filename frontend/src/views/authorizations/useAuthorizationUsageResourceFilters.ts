@@ -1,5 +1,5 @@
 import { message } from '@/lib/antd'
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -16,6 +16,14 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
   const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
   const accounts = ref<AccountOptionSummary[]>([])
   const groups = ref<GroupOptionSummary[]>([])
+  const resourceOptionsLoading = ref(false)
+  const resourceOptionLimit = 50
+  const searchDelayMs = 250
+  let requestId = 0
+  let loadingKey: string | undefined
+  let loadingPromise: Promise<void> | undefined
+  let searchKeyword = ''
+  let searchTimer: ReturnType<typeof window.setTimeout> | undefined
   const selectedResourceOwnerSystemAccountId = computed(() => {
     return isManagementView.value ? scopedSystemAccountId(filters.resourceOwnerSystemAccountId) : undefined
   })
@@ -33,28 +41,115 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
       .map((group) => ({ label: group.name, value: group.id }))
   })
 
-  async function loadAuthorizableResourceOptions() {
+  async function loadAuthorizableResourceOptions(keyword = searchKeyword) {
+    searchKeyword = keyword
+    if (filters.resourceType === 'all') {
+      accounts.value = []
+      groups.value = []
+      loadingKey = undefined
+      loadingPromise = undefined
+      return
+    }
     const ownerSystemAccountId = selectedResourceOwnerSystemAccountId.value
-    const [accountResult, groupResult] = await Promise.allSettled([
-      isManagementView.value ? api.accounts.options({ systemAccountId: ownerSystemAccountId, limit: 500 }) : api.myAccounts.options({ limit: 500 }),
-      isManagementView.value ? api.groups.options({ systemAccountId: ownerSystemAccountId }) : api.myGroups.options()
-    ])
-    if (accountResult.status === 'fulfilled') {
-      accounts.value = accountResult.value
-    } else {
-      console.error(accountResult.reason)
-      message.error('加载 AI 账户失败')
+    const normalizedKeyword = normalizeSearchKeyword(keyword)
+    const requestKey = JSON.stringify([filters.resourceType, ownerSystemAccountId ?? '', normalizedKeyword ?? '', filters.resourceId ?? ''])
+    if (loadingKey === requestKey && loadingPromise) {
+      return loadingPromise
     }
-    if (groupResult.status === 'fulfilled') {
-      groups.value = groupResult.value
-    } else {
-      console.error(groupResult.reason)
-      message.error('加载分组失败')
-    }
+    const currentRequestId = ++requestId
+    resourceOptionsLoading.value = true
+    loadingKey = requestKey
+    loadingPromise = (async () => {
+      try {
+        if (filters.resourceType === 'account') {
+          let nextAccounts = isManagementView.value
+            ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
+            : await api.myAccounts.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
+          nextAccounts = await ensureSelectedAccountOption(nextAccounts, ownerSystemAccountId)
+          if (currentRequestId !== requestId) return
+          accounts.value = nextAccounts
+          groups.value = []
+        } else {
+          let nextGroups = isManagementView.value
+            ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
+            : await api.myGroups.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
+          nextGroups = await ensureSelectedGroupOption(nextGroups, ownerSystemAccountId)
+          if (currentRequestId !== requestId) return
+          groups.value = nextGroups
+          accounts.value = []
+        }
+      } catch (error) {
+        if (currentRequestId !== requestId) return
+        console.error(error)
+        message.error(filters.resourceType === 'account' ? '加载 AI 账户失败' : '加载分组失败')
+      } finally {
+        if (loadingKey === requestKey) {
+          loadingKey = undefined
+          loadingPromise = undefined
+        }
+        if (currentRequestId === requestId) {
+          resourceOptionsLoading.value = false
+        }
+      }
+    })()
+    return loadingPromise
   }
 
   function resetResourceId() {
     filters.resourceId = undefined
+  }
+
+  function handleResourceOptionsDropdown(open: boolean) {
+    if (open) {
+      void loadAuthorizableResourceOptions()
+    }
+  }
+
+  function handleResourceOptionsSearch(value: string) {
+    searchKeyword = value
+    clearSearchTimer()
+    searchTimer = window.setTimeout(() => {
+      searchTimer = undefined
+      void loadAuthorizableResourceOptions(searchKeyword)
+    }, searchDelayMs)
+  }
+
+  function resetResourceOptionsSearch() {
+    searchKeyword = ''
+    clearSearchTimer()
+  }
+
+  function clearSearchTimer() {
+    if (searchTimer && typeof window !== 'undefined') {
+      window.clearTimeout(searchTimer)
+      searchTimer = undefined
+    }
+  }
+
+  async function ensureSelectedAccountOption(nextAccounts: AccountOptionSummary[], ownerSystemAccountId: string | undefined): Promise<AccountOptionSummary[]> {
+    const selectedId = filters.resourceId?.trim()
+    if (!selectedId || nextAccounts.some((account) => account.id === selectedId)) return nextAccounts
+    try {
+      const selected = isManagementView.value
+        ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: selectedId, limit: 1 })
+        : await api.myAccounts.options({ keyword: selectedId, limit: 1 })
+      return mergeOptionsById(selected, nextAccounts)
+    } catch {
+      return nextAccounts
+    }
+  }
+
+  async function ensureSelectedGroupOption(nextGroups: GroupOptionSummary[], ownerSystemAccountId: string | undefined): Promise<GroupOptionSummary[]> {
+    const selectedId = filters.resourceId?.trim()
+    if (!selectedId || nextGroups.some((group) => group.id === selectedId)) return nextGroups
+    try {
+      const selected = isManagementView.value
+        ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: selectedId, limit: 1 })
+        : await api.myGroups.options({ keyword: selectedId, limit: 1 })
+      return mergeOptionsById(selected, nextGroups)
+    } catch {
+      return nextGroups
+    }
   }
 
   function matchesSelectedResourceOwner(resource: Pick<AccountOptionSummary | GroupOptionSummary, 'ownerSystemAccountId' | 'systemAccountId'>): boolean {
@@ -63,6 +158,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     return (resource.ownerSystemAccountId ?? resource.systemAccountId) === ownerSystemAccountId
   }
 
+  onBeforeUnmount(clearSearchTimer)
+
   return {
     isManagementView,
     scopedSystemAccountId,
@@ -70,7 +167,24 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     groups,
     selectedResourceOwnerSystemAccountId,
     resourceOptions,
+    resourceOptionsLoading,
+    handleResourceOptionsDropdown,
+    handleResourceOptionsSearch,
     loadAuthorizableResourceOptions,
-    resetResourceId
+    resetResourceId,
+    resetResourceOptionsSearch
   }
+}
+
+function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
+  const merged = new Map<string, T>()
+  for (const item of [...leading, ...trailing]) {
+    merged.set(item.id, item)
+  }
+  return [...merged.values()]
+}
+
+function normalizeSearchKeyword(value?: string): string | undefined {
+  const keyword = value?.trim()
+  return keyword ? keyword : undefined
 }

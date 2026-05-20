@@ -1,7 +1,10 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { usageRecordsCleanupCursor } from './data-retention.repository.js'
+import { sqlPlaceholders } from './query-utils.js'
+import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
 import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
 import { subtractUsageStatsRecord } from './usage-stats-writers.js'
 
@@ -37,7 +40,15 @@ const apiKeyScopeStatsTables = [
   'usage_stats_hourly',
   'usage_stats_daily',
   'usage_stats_weekly',
-  'usage_stats_monthly'
+  'usage_stats_monthly',
+  'usage_latency_minute',
+  'usage_latency_hourly',
+  'usage_latency_daily',
+  'usage_latency_weekly',
+  'usage_latency_monthly',
+  'usage_rank_snapshots',
+  'usage_quota_hourly_windows',
+  'usage_scope_range_windows'
 ] as const
 const deletedApiKeyRecordCleanupBatchLimit = 1000
 
@@ -96,21 +107,40 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
   const cursor = usageRecordsCleanupCursor(database)
   const cursorCreatedAt = cursor.cursorCreatedAt
   const cursorId = cursor.cursorId
+  let shouldRefreshDerivedWindows = false
   if (!cursorCreatedAt || !cursorId) {
-    const hasMore = hasApiKeyUsageRecords(database, input)
-    const result: DeletedApiKeyRecordCleanupResult = {
-      ...input,
-      deletedRows: 0,
-      hasMore,
-      blockedReason: hasMore ? cursor.blockedReason ?? '统计安全游标尚未建立，暂不清理已删除 API Key 的使用记录' : undefined
+    const transactionStarted = beginDatabaseTransaction(database)
+    try {
+      const deletedRows = deleteApiKeyAuditDataBatch(database, input, deletedApiKeyRecordCleanupBatchLimit)
+      const hasUsageMore = hasApiKeyUsageRecords(database, input)
+      const hasAuditMore = hasApiKeyAuditLogs(database, input)
+      const hasMore = hasUsageMore || hasAuditMore
+      const result: DeletedApiKeyRecordCleanupResult = {
+        ...input,
+        deletedRows,
+        hasMore,
+        blockedReason: hasMore
+          ? hasUsageMore
+            ? cursor.blockedReason ?? '统计安全游标尚未建立，暂不清理已删除 API Key 的使用记录'
+            : '仍有已删除 API Key 的原始审计记录待后续批次清理'
+          : undefined
+      }
+      if (hasMore) {
+        markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '仍有关联记录待后台重试', updatedAt)
+      } else {
+        deleteApiKeyScopeStats(database, input)
+        clearDeletedApiKeyRecordCleanupTarget(database, input)
+        shouldRefreshDerivedWindows = true
+      }
+      commitDatabaseTransaction(database, transactionStarted)
+      refreshDeletedApiKeyDerivedWindowsIfNeeded(input, shouldRefreshDerivedWindows)
+      cleanupAuditPayloadBlobsBestEffort(deletedApiKeyRecordCleanupBatchLimit)
+      return result
+    } catch (error) {
+      rollbackDatabaseTransaction(database, transactionStarted)
+      markDeletedApiKeyRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
+      throw error
     }
-    if (hasMore) {
-      markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '统计安全游标尚未建立', updatedAt)
-    } else {
-      deleteApiKeyScopeStats(database, input)
-      clearDeletedApiKeyRecordCleanupTarget(database, input)
-    }
-    return result
   }
 
   const batchLimit = deletedApiKeyRecordCleanupBatchLimit
@@ -132,15 +162,20 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
       subtractUsageStatsRecord(database, usageRow, updatedAt)
       deletedRows += changed(deleteUsageRecord.run(usageRow.id, input.apiKeyId, input.systemAccountId))
     }
+    deletedRows += deleteApiKeyAuditDataBatch(database, input, batchLimit)
 
-    const hasMore = hasApiKeyUsageRecords(database, input)
+    const hasUsageMore = hasApiKeyUsageRecords(database, input)
+    const hasAuditMore = hasApiKeyAuditLogs(database, input)
+    const hasMore = hasUsageMore || hasAuditMore
     const hasMoreCoveredRows = usageRows.length > batchLimit
     const result: DeletedApiKeyRecordCleanupResult = {
       ...input,
       deletedRows,
       hasMore,
       blockedReason: hasMore
-        ? (hasMoreCoveredRows
+        ? (hasAuditMore
+          ? '仍有已删除 API Key 的原始审计记录待后续批次清理，已保留待后台重试'
+          : hasMoreCoveredRows
           ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
           : '仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理')
         : undefined,
@@ -152,8 +187,11 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
     } else {
       deleteApiKeyScopeStats(database, input)
       clearDeletedApiKeyRecordCleanupTarget(database, input)
+      shouldRefreshDerivedWindows = true
     }
     commitDatabaseTransaction(database, transactionStarted)
+    refreshDeletedApiKeyDerivedWindowsIfNeeded(input, shouldRefreshDerivedWindows)
+    cleanupAuditPayloadBlobsBestEffort(batchLimit)
     return result
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -208,10 +246,65 @@ function hasApiKeyUsageRecords(database: DatabaseSync, input: DeletedApiKeyRecor
   return Boolean(row?.id)
 }
 
+function hasApiKeyAuditLogs(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): boolean {
+  const row = database
+    .prepare('SELECT id FROM audit_logs WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
+    .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
+  return Boolean(row?.id)
+}
+
+function deleteApiKeyAuditDataBatch(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget, limit: number): number {
+  const rows = database
+    .prepare(`
+      SELECT id
+      FROM audit_logs
+      WHERE api_key_id = ?
+        AND system_account_id = ?
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(input.apiKeyId, input.systemAccountId, Math.max(1, Math.trunc(limit))) as unknown as Array<{ id?: string }>
+  const auditLogIds = rows.map((row) => String(row.id ?? '')).filter(Boolean)
+  let deletedRows = 0
+  if (auditLogIds.length > 0) {
+    const placeholders = sqlPlaceholders(auditLogIds.length)
+    deletedRows += changed(database.prepare(`DELETE FROM audit_payload_refs WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
+    deletedRows += changed(database.prepare(`DELETE FROM audit_log_attempts WHERE audit_log_id IN (${placeholders})`).run(...auditLogIds))
+    deletedRows += changed(database.prepare(`DELETE FROM audit_logs WHERE id IN (${placeholders}) AND api_key_id = ? AND system_account_id = ?`).run(...auditLogIds, input.apiKeyId, input.systemAccountId))
+  }
+  deletedRows += changed(database
+    .prepare('DELETE FROM audit_error_groups WHERE api_key_id = ? AND system_account_id = ?')
+    .run(input.apiKeyId, input.systemAccountId))
+  return deletedRows
+}
+
 function deleteApiKeyScopeStats(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): void {
   for (const tableName of apiKeyScopeStatsTables) {
     database.prepare(`DELETE FROM ${tableName} WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`)
       .run(input.systemAccountId, input.apiKeyId)
+  }
+  database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'api_key' AND scope_id = ?")
+    .run(input.apiKeyId)
+}
+
+function refreshDeletedApiKeyDerivedWindowsIfNeeded(input: DeletedApiKeyRecordCleanupTarget, shouldRefresh: boolean): void {
+  if (!shouldRefresh) return
+  try {
+    refreshUsageQuotaHourlyWindowsCache()
+    refreshUsageRankSnapshots()
+  } catch (error) {
+    const database = getRecordDatabase()
+    const updatedAt = nowIso()
+    upsertDeletedApiKeyRecordCleanupTarget(database, input, updatedAt)
+    markDeletedApiKeyRecordCleanupTargetError(database, input, `已删除 API Key 衍生统计窗口刷新失败：${errorMessage(error)}`, updatedAt)
+    throw error
+  }
+}
+
+function cleanupAuditPayloadBlobsBestEffort(limit: number): void {
+  try {
+    cleanupUnreferencedAuditPayloadBlobs(limit)
+  } catch {
   }
 }
 

@@ -130,7 +130,7 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
     range: filterKey.range,
     summary,
     rows: overviewRows,
-    teamCount: countAuthorizationTeamUsageTeams(filterKey, resourcePredicate),
+    teamCount: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     total: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     page: pageOptions.page,
     pageSize: pageOptions.pageSize,
@@ -210,7 +210,7 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     range: filterKey.range,
     summary,
     rows: overviewRows,
-    userCount: countAuthorizationUserUsageUsers(filterKey, resourcePredicate),
+    userCount: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     total: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     page: pageOptions.page,
     pageSize: pageOptions.pageSize,
@@ -318,50 +318,6 @@ function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountU
     filterKey.resourceFilterId
   ) as unknown as AuthorizationUsageSummaryRow | undefined
   return row ? usageSummaryFromAggregate(row) : emptyAccountUsageSummary()
-}
-
-function countAuthorizationTeamUsageTeams(filterKey: ReportFilterKey, resourcePredicate: ReturnType<typeof authorizationDetailResourcePredicate>): number {
-  const row = getRecordDatabase().prepare(`
-    SELECT COUNT(DISTINCT report.team_filter_id) AS total
-    FROM authorization_team_usage_range_windows report
-    WHERE report.system_account_id = ?
-      AND report.start_date = ?
-      AND report.end_date = ?
-      AND report.team_filter_id <> ''
-      AND (? = '' OR report.team_filter_id = ?)
-      AND ${resourcePredicate.sql}
-  `).get(
-    filterKey.systemAccountId,
-    filterKey.range.startDate,
-    filterKey.range.endDate,
-    filterKey.teamFilterId,
-    filterKey.teamFilterId,
-    ...resourcePredicate.params
-  ) as unknown as { total?: number } | undefined
-  return Number(row?.total ?? 0)
-}
-
-function countAuthorizationUserUsageUsers(filterKey: ReportFilterKey, resourcePredicate: ReturnType<typeof authorizationDetailResourcePredicate>): number {
-  const row = getRecordDatabase().prepare(`
-    SELECT COUNT(DISTINCT report.grantee_filter_system_account_id) AS total
-    FROM authorization_user_usage_range_windows report
-    WHERE report.system_account_id = ?
-      AND report.start_date = ?
-      AND report.end_date = ?
-      AND report.team_filter_id = ?
-      AND report.grantee_filter_system_account_id <> ''
-      AND (? = '' OR report.grantee_filter_system_account_id = ?)
-      AND ${resourcePredicate.sql}
-  `).get(
-    filterKey.systemAccountId,
-    filterKey.range.startDate,
-    filterKey.range.endDate,
-    filterKey.teamFilterId,
-    filterKey.granteeFilterSystemAccountId,
-    filterKey.granteeFilterSystemAccountId,
-    ...resourcePredicate.params
-  ) as unknown as { total?: number } | undefined
-  return Number(row?.total ?? 0)
 }
 
 function emptyAuthorizationTeamUsageOverview(range: AccountUsageStatsRange, options: Required<AuthorizationUsagePageOptions>): AuthorizationTeamUsageOverview {

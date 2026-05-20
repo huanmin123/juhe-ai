@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { createProxy, deleteProxy, findProxy, listProxies, listProxyOptions, ProxyInUseError, updateProxy, updateProxyTestState } from '../../storage/repositories.js'
+import { createProxy, deleteProxy, findProxy, listProxiesPage, listProxyOptions, ProxyInUseError, updateProxy, updateProxyTestState } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, runLoggedOperation, safeChange } from '../operation-logs/operation-log.service.js'
@@ -21,13 +21,45 @@ const proxySchema = z.object({
   enabled: z.boolean().optional()
 })
 
-proxiesRouter.get('/options', (_req, res) => {
-  res.json(ok(listProxyOptions()))
+proxiesRouter.get('/options', (req, res) => {
+  res.json(ok(listProxyOptions(parseProxyOptionListOptions(req.query))))
 })
 
-proxiesRouter.get('/', requireAdmin, (_req, res) => {
-  res.json(ok(listProxies()))
+proxiesRouter.get('/', requireAdmin, (req, res) => {
+  res.json(ok(listProxiesPage(parseProxyListOptions(req.query))))
 })
+
+function parseProxyListOptions(query: Record<string, unknown>) {
+  return {
+    page: integerQueryValue(query.page),
+    pageSize: integerQueryValue(query.pageSize),
+    limit: integerQueryValue(query.limit),
+    keyword: optionalQueryText(query.keyword)
+  }
+}
+
+function parseProxyOptionListOptions(query: Record<string, unknown>) {
+  return {
+    keyword: optionalQueryText(query.keyword),
+    limit: integerQueryValue(query.limit)
+  }
+}
+
+function integerQueryValue(value: unknown): number | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  if (typeof text === 'string') {
+    const trimmed = text.trim()
+    if (!trimmed) return undefined
+    const number = Number(trimmed)
+    return Number.isInteger(number) ? number : undefined
+  }
+  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
+}
+
+function optionalQueryText(value: unknown): string | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  return typeof text === 'string' && text.trim() ? text.trim() : undefined
+}
 
 proxiesRouter.post('/', requireAdmin, mutationGuard({
   operationKey: 'proxies.create',

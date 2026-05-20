@@ -57,9 +57,20 @@ try {
     },
     groupId: group.id
   }, access)
+  const selectedAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: 'selected-account 账号用量账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-query-guard-selected',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id
+  }, access)
 
   seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', matchedAccount.id, 7)
   seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', otherAccount.id, 3)
+  seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', selectedAccount.id, 1)
 
   const businessDatabase = databaseModule.getDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
@@ -121,6 +132,25 @@ try {
       range
     })
     assert.equal(missResult.total, 0, '账号用量关键词无匹配账号时应直接返回空窗口')
+
+    const selectedResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      accountIds: [selectedAccount.id],
+      page: 1,
+      pageSize: 1,
+      range
+    })
+    assert.deepEqual(selectedResult.rows.map((row) => row.id), [matchedAccount.id, selectedAccount.id], '账号用量手动选择的账户应按 ID 补入当前页结果')
+    assert.equal(selectedResult.rows[1]?.rangeUsage.requestCount, 1, '账号用量手动选择补入行应读取预聚合范围窗口')
+    assert.equal(selectedResult.hasMore, true, '账号用量手动补入不应抹掉原始分页 hasMore')
+
+    const selectedPageTwoResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      accountIds: [selectedAccount.id],
+      page: 2,
+      pageSize: 1,
+      range
+    })
+    assert.deepEqual(selectedPageTwoResult.rows.map((row) => row.id), [otherAccount.id, selectedAccount.id], '账号用量翻页后仍应把手动选择账户补入当前页结果')
+    assert.equal(selectedPageTwoResult.total, 3, '账号用量手动补入行不应让兼容 total 低估总结果数')
   } finally {
     recordDatabase.prepare = originalPrepare
     businessDatabase.prepare = originalBusinessPrepare
@@ -134,6 +164,7 @@ try {
   }
   assert(capturedCalls.length >= 4, '回归应捕获账号用量窗口查询 SQL')
   assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql)), '账号用量关键词窗口查询应使用 scope_id 命中预解析账号')
+  assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql) && call.params.includes(selectedAccount.id)), '账号用量手动选择补入应使用 scope_id 命中选中账号')
   assert(capturedCalls.some((call) => /\bAND\s+0\s+=\s+1\b/i.test(call.sql)), '账号用量关键词无匹配时应避免扫描窗口表')
   for (const call of capturedCalls) {
     assert(!/\bLIKE\s+\?/i.test(call.sql), '账号用量窗口查询不应拼入业务字段 LIKE')
@@ -159,7 +190,7 @@ try {
     LIMIT ?
   `, [GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', range.startDate, range.endDate, 10], 'idx_usage_scope_range_windows_range_lookup')
 
-  console.log('账号用量查询防护回归通过：关键词先解析账号 ID，窗口查询不再接收前导通配符，并使用日期范围索引')
+  console.log('账号用量查询防护回归通过：关键词先解析账号 ID，手动选中账户按窗口 scope_id 补入，窗口查询不再接收前导通配符，并使用日期范围索引')
 } finally {
   try {
     databaseModule.getDatabase().close()

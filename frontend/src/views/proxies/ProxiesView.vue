@@ -1,11 +1,11 @@
 <template>
   <a-card class="page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadData">
+    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索代理名称 / 地址 / 用户 / ID 前缀" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchProxies" @reset="resetSearch" @refresh="loadData">
       <template #actions>
         <a-button type="primary" @click="openCreate">新建代理</a-button>
       </template>
     </ResponsiveListToolbar>
-    <ResponsiveDataList table-class="page-table proxy-table" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :scroll-x="1160" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table proxy-table" :columns="columns" :data-source="proxies" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1160" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileProxies" @mobile-refresh="refreshMobileProxies">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建代理，再在 OAuth 账户里选择绑定。" />
       </template>
@@ -246,17 +246,18 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import { formatDateTime } from '@/shared/formatters'
+import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type { ProxyProfileSummary, ProxyTestItemStatus, ProxyTestReport } from '@/types/domain'
 
-const loading = ref(false)
+const pageSize = 20
 const modalOpen = ref(false)
 const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('proxies')
 const proxySaving = submittingRef('proxies.save')
-const proxies = ref<ProxyProfileSummary[]>([])
+const keyword = ref('')
 const testingProxyId = ref<string>()
 const testReportOpen = ref(false)
 const selectedTestProxy = ref<ProxyProfileSummary>()
@@ -307,6 +308,33 @@ const typeOptions = [
   { label: 'SOCKS5H', value: 'socks5h' }
 ]
 
+const {
+  items: proxies,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileProxies,
+  refreshMobile: refreshMobileProxies,
+  resetPagination
+} = useResponsivePagedList<ProxyProfileSummary>({
+  pageSize,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${formatNumber(range?.[1] ?? total - 1)} 个代理，还有更多`
+    : `共 ${formatNumber(total)} 个代理`,
+  fetchPage: (_options, pageState) => api.proxies.list({
+    keyword: keyword.value.trim() || undefined,
+    page: pageState.current,
+    pageSize: pageState.pageSize
+  }),
+  onError: (error) => {
+    console.error(error)
+    message.error('加载代理失败')
+  }
+})
+
 function proxyTypeColor(type: string) {
   if (type === 'socks5' || type === 'socks5h') return 'purple'
   if (type === 'https') return 'green'
@@ -345,18 +373,6 @@ function latencyTooltip(proxy: ProxyProfileSummary) {
     proxy.lastTestedAt ? `检测时间：${formatDateTime(proxy.lastTestedAt)}` : ''
   ].filter(Boolean)
   return parts.join('\n') || '尚未检测'
-}
-
-async function loadData() {
-  loading.value = true
-  try {
-    proxies.value = await api.proxies.list()
-  } catch (error) {
-    console.error(error)
-    message.error('加载代理失败')
-  } finally {
-    loading.value = false
-  }
 }
 
 function openCreate() {
@@ -405,6 +421,7 @@ const saveProxy = submitAction('proxies.save', async () => {
       message.success('代理已创建')
     }
     modalOpen.value = false
+    resetPagination()
     await loadData()
   } catch (error) {
     console.error(error)
@@ -437,6 +454,16 @@ async function removeProxy(id: string) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '删除代理失败'))
   }
+}
+
+function searchProxies() {
+  resetPagination()
+  void loadData()
+}
+
+function resetSearch() {
+  keyword.value = ''
+  searchProxies()
 }
 
 onMounted(loadData)

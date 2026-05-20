@@ -1,4 +1,4 @@
-import type { AccountGroupOptionSummary, AccountSummary, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountSummary, GroupOptionSummary, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import { canManageGroupAccounts, canUseAsTrafficMigrationTarget, type AccountGroupIdResolver } from './accountRules'
 import { defaultTestModelOptions } from './accountOptions'
 
@@ -35,7 +35,7 @@ export function proxyByIdMap(proxies: ProxyProfileOptionSummary[]): Map<string, 
   return new Map(proxies.map((proxy) => [proxy.id, proxy]))
 }
 
-export function groupByIdMap(groups: AccountGroupOptionSummary[]): Map<string, AccountGroupOptionSummary> {
+export function groupByIdMap(groups: GroupOptionSummary[]): Map<string, GroupOptionSummary> {
   return new Map(groups.map((group) => [group.id, group]))
 }
 
@@ -43,28 +43,9 @@ export function accountByIdMap(accounts: AccountSummary[]): Map<string, AccountS
   return new Map(accounts.map((account) => [account.id, account]))
 }
 
-export function groupIdByAccountIdMap(groups: AccountGroupOptionSummary[]): Map<string, string> {
-  const map = new Map<string, string>()
-  for (const group of groups) {
-    for (const accountId of group.accountIds ?? []) {
-      if (!map.has(accountId)) {
-        map.set(accountId, group.id)
-      }
-    }
-  }
-  return map
-}
-
-export function groupNameByAccountIdMap(accounts: AccountSummary[], groups: AccountGroupOptionSummary[]): Map<string, string> {
+export function groupNameByAccountIdMap(accounts: AccountSummary[], groups: GroupOptionSummary[]): Map<string, string> {
   const map = new Map<string, string>()
   const groupsById = groupByIdMap(groups)
-  for (const group of groups) {
-    for (const accountId of group.accountIds ?? []) {
-      if (!map.has(accountId)) {
-        map.set(accountId, group.name)
-      }
-    }
-  }
   for (const account of accounts) {
     if (account.boundGroupName) {
       map.set(account.id, account.boundGroupName)
@@ -80,24 +61,24 @@ export function groupNameByAccountIdMap(accounts: AccountSummary[], groups: Acco
   return map
 }
 
-export function manageableGroupsForProvider(groups: AccountGroupOptionSummary[], providerCode?: string): AccountGroupOptionSummary[] {
+export function manageableGroupsForProvider(groups: GroupOptionSummary[], providerCode?: string): GroupOptionSummary[] {
   return groups.filter((group) => isManageableGroupForProvider(group, providerCode))
 }
 
-export function isManageableGroupForProvider(group: AccountGroupOptionSummary, providerCode?: string): boolean {
+export function isManageableGroupForProvider(group: GroupOptionSummary, providerCode?: string): boolean {
   return canManageGroupAccounts(group) && (!providerCode || group.providerCode === providerCode)
 }
 
-export function groupOptionsForProvider(groups: AccountGroupOptionSummary[], providerCode?: string): SelectOption[] {
+export function groupOptionsForProvider(groups: GroupOptionSummary[], providerCode?: string): SelectOption[] {
   return manageableGroupsForProvider(groups, providerCode).map((group) => ({ label: group.name, value: group.id }))
 }
 
-export function defaultGroupForProvider(groups: AccountGroupOptionSummary[], providerCode: string): AccountGroupOptionSummary | undefined {
+export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCode: string): GroupOptionSummary | undefined {
   const candidates = manageableGroupsForProvider(groups, providerCode)
   return candidates.find((group) => group.isDefault) ?? candidates[0]
 }
 
-export function bindGroupOptionsForAccount(groups: AccountGroupOptionSummary[], account?: AccountSummary): SelectOption[] {
+export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountSummary): SelectOption[] {
   if (!account) return []
   return groupOptionsForProvider(groups, account.providerCode)
 }

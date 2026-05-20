@@ -1,12 +1,12 @@
 <template>
   <a-card class="page-card system-teams-page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="refreshTeams">
+    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索团队名称 / 说明 / ID 前缀" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchTeams" @reset="resetSearch" @refresh="refreshTeams">
       <template #actions>
         <a-button v-if="isManagementView" type="primary" @click="openCreateTeam">新建授权团队</a-button>
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table system-teams-table" :columns="columns" :data-source="teams" row-key="id" :loading="loading" :scroll-x="900" pull-refresh-enabled :refreshing="loading" @mobile-refresh="refreshTeams">
+    <ResponsiveDataList table-class="page-table system-teams-table" :columns="columns" :data-source="teams" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="900" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileTeams" @mobile-refresh="refreshMobileTeams">
       <template #emptyText>
         <a-empty class="page-empty-card" :description="emptyTeamDescription" />
       </template>
@@ -83,10 +83,14 @@
             v-model:value="memberForm.systemAccountIds"
             :accounts="systemAccounts"
             :excluded-ids="usedMemberIds"
+            :filter-option="false"
+            :loading="memberOptionsLoading"
             mode="multiple"
             class="team-member-selector"
             :disabled="selectedTeam?.status !== 'active'"
-            placeholder="选择一个或多个系统账户"
+            placeholder="输入用户名称 / 账号 / ID 前缀搜索"
+            @dropdown-visible-change="handleMemberOptionsDropdown"
+            @search="handleMemberOptionsSearch"
           />
           <a-button type="primary" :loading="memberSaving" :disabled="selectedTeam?.status !== 'active' || memberSaving" v-submit-lock="{ key: 'system_teams.add_members', pending: memberSaving }" @click="addMembers">添加成员</a-button>
         </div>
@@ -145,21 +149,33 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
-import type { SystemAccountPrincipalSummary, SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
+import { formatNumber } from '@/shared/formatters'
+import type { SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
-const loading = ref(false)
+const pageSize = 20
 const { submitAction, submittingRef } = useSubmitAction('system-teams')
 const teamSaving = submittingRef('system_teams.save')
 const memberSaving = submittingRef('system_teams.add_members')
 
-const teams = ref<SystemTeamSummary[]>([])
-const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
-const memberOptionsLoaded = ref(false)
-const memberOptionsScopeKey = ref('')
+const keyword = ref('')
 const { isManagementView } = useScopedMenuView()
+const {
+  handleDropdown: handleMemberOptionsDropdown,
+  handleSearch: handleMemberOptionsSearch,
+  load: loadMemberOptions,
+  loading: memberOptionsLoading,
+  resetSearch: resetMemberOptionSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  errorMessage: '加载系统账户候选失败',
+  selectedIds: () => memberForm.systemAccountIds
+})
 
 const teamModalOpen = ref(false)
 const memberModalOpen = ref(false)
@@ -174,6 +190,36 @@ const teamForm = reactive({
 
 const memberForm = reactive({
   systemAccountIds: [] as string[]
+})
+
+const {
+  items: teams,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileTeams,
+  refreshMobile: refreshMobileTeams,
+  resetPagination
+} = useResponsivePagedList<SystemTeamSummary>({
+  pageSize,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${formatNumber(range?.[1] ?? total - 1)} 个授权团队，还有更多`
+    : `共 ${formatNumber(total)} 个授权团队`,
+  fetchPage: async (_options, pageState) => {
+    const params = {
+      keyword: keyword.value.trim() || undefined,
+      page: pageState.current,
+      pageSize: pageState.pageSize
+    }
+    return isManagementView.value ? api.systemTeams.list(params) : api.myTeams.list(params)
+  },
+  onError: (error) => {
+    console.error(error)
+    message.error('加载授权团队数据失败')
+  }
 })
 
 const columns = [
@@ -234,36 +280,18 @@ function formatDateTime(value?: string): string {
   return date.toLocaleString('zh-CN', { hour12: false })
 }
 
-async function loadData(options: { forceOptions?: boolean } = {}) {
-  loading.value = true
-  try {
-    const [teamList] = await Promise.all([
-      isManagementView.value ? api.systemTeams.list() : api.myTeams.list(),
-      loadMemberOptions(options.forceOptions === true)
-    ])
-    teams.value = teamList
-  } catch (error) {
-    console.error(error)
-    message.error('加载授权团队数据失败')
-  } finally {
-    loading.value = false
-  }
-}
-
-async function loadMemberOptions(force = false): Promise<void> {
-  const scopeKey = isManagementView.value ? 'management' : 'self'
-  if (!force && memberOptionsLoaded.value && memberOptionsScopeKey.value === scopeKey) {
-    return
-  }
-  systemAccounts.value = isManagementView.value
-    ? await api.systemAccounts.options()
-    : []
-  memberOptionsLoaded.value = true
-  memberOptionsScopeKey.value = scopeKey
-}
-
 function refreshTeams() {
-  void loadData({ forceOptions: true })
+  void loadData()
+}
+
+function searchTeams() {
+  resetPagination()
+  void loadData()
+}
+
+function resetSearch() {
+  keyword.value = ''
+  searchTeams()
 }
 
 function openCreateTeam() {
@@ -310,6 +338,7 @@ const saveTeam = submitAction('system_teams.save', async () => {
       message.success('授权团队已创建')
     }
     teamModalOpen.value = false
+    resetPagination()
     await loadData()
   } catch (error) {
     console.error(error)
@@ -320,7 +349,9 @@ const saveTeam = submitAction('system_teams.save', async () => {
 function openMemberModal(team: SystemTeamSummary) {
   selectedTeamId.value = team.id
   memberForm.systemAccountIds = []
+  resetMemberOptionSearch()
   memberModalOpen.value = true
+  void loadMemberOptions()
 }
 
 function handleTeamAction(key: string, team: SystemTeamSummary) {
@@ -352,10 +383,10 @@ const addMembers = submitAction('system_teams.add_members', async () => {
     memberForm.systemAccountIds = []
     message.success('成员已添加')
     await loadData()
+    await loadMemberOptions()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '添加成员失败'))
-  } finally {
   }
 })
 
@@ -365,6 +396,7 @@ async function removeMember(memberId: string) {
     await api.systemTeams.removeMember(selectedTeam.value.id, memberId)
     message.success('成员已移除')
     await loadData()
+    await loadMemberOptions()
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '移除成员失败'))

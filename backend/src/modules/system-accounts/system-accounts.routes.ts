@@ -32,9 +32,32 @@ systemAccountsRouter.get('/', requireAdmin, (_req, res) => {
   res.json(ok(listSystemAccounts()))
 })
 
-systemAccountsRouter.get('/options', requireAdmin, (_req, res) => {
-  res.json(ok(listSystemAccountOptions()))
+systemAccountsRouter.get('/options', requireAdmin, (req, res) => {
+  res.json(ok(listSystemAccountOptions(parseSystemAccountOptionListOptions(req.query))))
 })
+
+function parseSystemAccountOptionListOptions(query: Record<string, unknown>) {
+  return {
+    keyword: optionalQueryText(query.keyword),
+    limit: integerQueryValue(query.limit)
+  }
+}
+
+function optionalQueryText(value: unknown): string | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  return typeof text === 'string' && text.trim() ? text.trim() : undefined
+}
+
+function integerQueryValue(value: unknown): number | undefined {
+  const text = Array.isArray(value) ? value[0] : value
+  if (typeof text === 'string') {
+    const trimmed = text.trim()
+    if (!trimmed) return undefined
+    const number = Number(trimmed)
+    return Number.isInteger(number) ? number : undefined
+  }
+  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
+}
 
 systemAccountsRouter.post('/', requireAdmin, mutationGuard({
   operationKey: 'system_accounts.create',

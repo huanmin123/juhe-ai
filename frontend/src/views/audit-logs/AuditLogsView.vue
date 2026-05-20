@@ -16,11 +16,15 @@
           v-model:value="systemAccountFilter"
           :accounts="systemAccounts"
           :active-only="false"
+          :filter-option="false"
+          :loading="systemAccountOptionsLoading"
           include-all
           all-label="全部用户"
           class="toolbar-select audit-user-filter responsive-list-inline-filter"
           placeholder="筛选用户"
           @change="applyFilters"
+          @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+          @search="handleSystemAccountOptionsSearch"
         />
         <a-input v-model:value="pathFilter" allow-clear class="toolbar-select audit-path-filter responsive-list-inline-filter" placeholder="接口路径" @press-enter="applyFilters" />
         <a-input v-model:value="statusCodeFilter" allow-clear class="toolbar-select audit-status-filter responsive-list-inline-filter" placeholder="状态码" @press-enter="applyFilters" />
@@ -35,9 +39,13 @@
               v-model:value="systemAccountFilter"
               :accounts="systemAccounts"
               :active-only="false"
+              :filter-option="false"
+              :loading="systemAccountOptionsLoading"
               include-all
               all-label="全部用户"
               placeholder="筛选用户"
+              @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+              @search="handleSystemAccountOptionsSearch"
             />
           </a-form-item>
           <a-form-item label="接口路径">
@@ -49,6 +57,12 @@
         </a-form>
       </template>
     </ResponsiveListToolbar>
+
+    <RuntimeAvailabilityAlert
+      :visible="auditRuntimeAlertVisible"
+      message="审计运行态暂时不可观测"
+      :description="auditRuntimeAlertDescription"
+    />
 
     <AuditLogList
       :records="records"
@@ -245,14 +259,16 @@ import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import ReadonlyCodeViewer from '@/components/ReadonlyCodeViewer.vue'
 import RowActions from '@/components/RowActions.vue'
+import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemAccountFilter'
 import AuditLogList from './AuditLogList.vue'
@@ -283,10 +299,18 @@ const selectedPayload = ref<AuditLogPayloadDetail>()
 const detailOpen = ref(false)
 const payloadContentTab = ref<'headers' | 'body'>('body')
 const payloadCodeViewer = ref<{ copyDisplayText: () => Promise<void> }>()
-const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
-const systemAccountsLoaded = ref(false)
 let detailRequestId = 0
 let payloadRequestId = 0
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  load: loadSystemAccounts,
+  loading: systemAccountOptionsLoading,
+  resetSearch: resetSystemAccountOptionsSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  selectedIds: () => [systemAccountFilter.value]
+})
 
 const pageSize = 100
 type AuditLogsPageState = {
@@ -332,10 +356,13 @@ const {
     ? `已加载到第 ${range?.[1] ?? total - 1} 条审计日志，还有更多`
     : `共 ${total} 条审计日志`,
   fetchPage: async (options, pageState) => {
+    if (options.forceOptions === true) {
+      resetSystemAccountOptionsSearch()
+    }
     const [listResult, runtimeInfo] = await Promise.all([
       fetchRecords(pageState),
       api.auditLogs.runtime(),
-      loadSystemAccounts(options.forceOptions === true)
+      loadSystemAccounts()
     ])
     runtime.value = runtimeInfo
     return listResult
@@ -357,6 +384,28 @@ const activeFilterCount = computed(() => {
   if (pathFilter.value.trim()) count += 1
   if (statusCodeFilter.value.trim()) count += 1
   return count
+})
+const auditRuntimeAlertVisible = computed(() => Boolean(runtime.value && (
+  !runtime.value.runtimeAvailable
+  || !runtime.value.workerSnapshotAvailable
+  || !runtime.value.auditLogQueueAvailable
+  || !runtime.value.activeCaptureAvailable
+)))
+const auditRuntimeAlertDescription = computed(() => {
+  const info = runtime.value
+  if (!info) return ''
+  const reasons: string[] = []
+  if (!info.runtimeAvailable) {
+    reasons.push('服务运行态不可用')
+  } else {
+    if (!info.workerSnapshotAvailable) reasons.push('后台进程快照不可用')
+    if (!info.auditLogQueueAvailable) reasons.push('审计队列状态不可用')
+    if (!info.activeCaptureAvailable) reasons.push('活跃捕获计数不可用')
+  }
+  const workerText = info.worker.available
+    ? `后台进程${runtimeReadyText(info.worker.ready)}`
+    : '后台进程状态不可用'
+  return `${reasons.join('；') || '运行态状态未知'}。${workerText}。`
 })
 
 const selectedPayloadCurrentText = computed(() => {
@@ -398,6 +447,7 @@ function resetFilters(): void {
   pathFilter.value = defaults.pathFilter
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
+  resetSystemAccountOptionsSearch()
   resetPagination()
   pageStateCache.clear()
   void loadData()
@@ -414,12 +464,6 @@ function fetchRecords(pageState: { current: number; pageSize: number }) {
     statusCode: normalizedStatusCode(statusCodeFilter.value),
     systemAccountId
   })
-}
-
-async function loadSystemAccounts(force = false): Promise<void> {
-  if (!force && systemAccountsLoaded.value) return
-  systemAccounts.value = await api.systemAccounts.options()
-  systemAccountsLoaded.value = true
 }
 
 async function openDetail(record: AuditLogSummary): Promise<void> {
@@ -513,6 +557,12 @@ function payloadActions(payloadId: string): RowActionItem[] {
       disabled: payloadLoadingId.value === payloadId
     }
   ]
+}
+
+function runtimeReadyText(value: boolean | null): string {
+  if (value === true) return '已就绪'
+  if (value === false) return '未就绪'
+  return '状态未知'
 }
 
 function snapshotPageState(): AuditLogsPageState {

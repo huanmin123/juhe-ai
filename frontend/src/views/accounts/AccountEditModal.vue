@@ -15,7 +15,15 @@
         @select-type="$emit('select-type', $event)"
       />
 
-      <AccountBasicInfoSection v-if="hasAccountType" :editing="editing" :form="form" :group-options="groupOptions" />
+      <AccountBasicInfoSection
+        v-if="hasAccountType"
+        :editing="editing"
+        :form="form"
+        :group-options="groupOptions"
+        :group-options-loading="groupOptionsLoading"
+        @group-options-dropdown="$emit('group-options-dropdown', $event)"
+        @group-options-search="$emit('group-options-search', $event)"
+      />
 
       <AccountApiKeySection
         v-if="isApiKeyForm"
@@ -85,6 +93,7 @@ defineProps<{
   editing: boolean
   form: AccountFormModel
   groupOptions: SelectOption[]
+  groupOptionsLoading: boolean
   hasAccountType: boolean
   isApiKeyForm: boolean
   isManagementView: boolean
@@ -102,6 +111,8 @@ defineEmits<{
   (event: 'cancel'): void
   (event: 'copy-auth-url', value: string): void
   (event: 'generate-auth-url'): void
+  (event: 'group-options-dropdown', open: boolean): void
+  (event: 'group-options-search', value: string): void
   (event: 'ok'): void
   (event: 'open-auth-url'): void
   (event: 'select-provider', providerCode: string): void

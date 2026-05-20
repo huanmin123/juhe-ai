@@ -38,10 +38,14 @@
         :value="systemAccountId"
         :accounts="systemAccounts"
         :active-only="false"
+        :filter-option="false"
+        :loading="systemAccountsLoading"
         include-all
         class="filter-select system-account-filter toolbar-select responsive-list-inline-filter"
         @update:value="handleSystemAccountUpdate"
         @change="emit('system-account-change')"
+        @dropdown-visible-change="emit('system-account-dropdown', $event)"
+        @search="emit('system-account-search', $event)"
       />
     </template>
     <template #filters>
@@ -70,9 +74,13 @@
           :value="systemAccountId"
           :accounts="systemAccounts"
           :active-only="false"
+          :filter-option="false"
+          :loading="systemAccountsLoading"
           include-all
           @update:value="handleSystemAccountUpdate"
           @change="emit('system-account-change')"
+          @dropdown-visible-change="emit('system-account-dropdown', $event)"
+          @search="emit('system-account-search', $event)"
         />
       </label>
     </template>
@@ -106,6 +114,7 @@ defineProps<{
   statusCode: string
   systemAccountId: string
   systemAccounts: SystemAccountPrincipalSummary[]
+  systemAccountsLoading?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -113,6 +122,8 @@ const emit = defineEmits<{
   (event: 'reset'): void
   (event: 'search'): void
   (event: 'system-account-change'): void
+  (event: 'system-account-dropdown', open: boolean): void
+  (event: 'system-account-search', value: string): void
   (event: 'update:dateRange', value?: [Dayjs, Dayjs]): void
   (event: 'update:keyword', value: string): void
   (event: 'update:result', value: ResultFilter): void

@@ -11,7 +11,16 @@
         <a-input v-model:value="form.name" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
       </a-form-item>
       <a-form-item label="归属分组" required>
-        <a-select v-model:value="form.groupId" :options="groupOptions" placeholder="请选择同供应商分组" />
+        <a-select
+          v-model:value="form.groupId"
+          show-search
+          :filter-option="false"
+          :loading="groupOptionsLoading"
+          :options="groupOptions"
+          placeholder="输入分组名称或 ID 前缀"
+          @dropdown-visible-change="$emit('group-options-dropdown', $event)"
+          @search="$emit('group-options-search', $event)"
+        />
         <div class="form-help">添加账户时会根据供应商默认选择默认分组。</div>
       </a-form-item>
       <a-form-item label="账户到期时间">
@@ -31,7 +40,13 @@ import type { AccountFormModel } from './accountFormTypes'
 defineProps<{
   editing: boolean
   form: AccountFormModel
+  groupOptionsLoading: boolean
   groupOptions: Array<{ label: string; value: string }>
+}>()
+
+defineEmits<{
+  (event: 'group-options-dropdown', open: boolean): void
+  (event: 'group-options-search', value: string): void
 }>()
 </script>
 

@@ -2,7 +2,19 @@
   <a-card class="page-card groups-page-card responsive-page-card">
     <ResponsiveListToolbar :show-search="false" :show-reset="isManagementView" :show-filters="isManagementView" filter-title="筛选分组" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshGroups">
       <template #inline-filters>
-        <SystemPrincipalSelect v-if="isManagementView" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
+        <SystemPrincipalSelect
+          v-if="isManagementView"
+          v-model:value="systemAccountFilter"
+          :accounts="systemAccounts"
+          :active-only="false"
+          :filter-option="false"
+          :loading="systemAccountOptionsLoading"
+          include-all
+          class="toolbar-select responsive-list-inline-filter"
+          @change="handleSystemAccountFilterChange"
+          @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+          @search="handleSystemAccountOptionsSearch"
+        />
       </template>
       <template #actions>
         <a-button type="primary" @click="openCreate">新建分组</a-button>
@@ -10,7 +22,17 @@
       <template #filters>
         <label v-if="isManagementView" class="mobile-filter-field">
           <span>系统账户</span>
-          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="handleSystemAccountFilterChange" />
+          <SystemPrincipalSelect
+            v-model:value="systemAccountFilter"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :filter-option="false"
+            :loading="systemAccountOptionsLoading"
+            include-all
+            @change="handleSystemAccountFilterChange"
+            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+            @search="handleSystemAccountOptionsSearch"
+          />
         </label>
       </template>
     </ResponsiveListToolbar>
@@ -143,11 +165,12 @@ import type { RowActionItem } from '@/components/rowActions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
-import type { GroupSummary, ProviderDefinition, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { GroupSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
@@ -166,7 +189,6 @@ const editingId = ref<string>()
 const { submitAction, submittingRef } = useSubmitAction('groups')
 const groupSaving = submittingRef('groups.save')
 const providers = ref<ProviderDefinition[]>([])
-const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
 type GroupsPageState = {
@@ -182,6 +204,17 @@ const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const form = reactive({ name: '', providerCode: 'openai', description: '', enabled: true })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  load: loadSystemAccountOptions,
+  loading: systemAccountOptionsLoading,
+  resetSearch: resetSystemAccountOptionsSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [systemAccountFilter.value]
+})
 const {
   items: groups,
   loading,
@@ -362,32 +395,35 @@ async function loadGroupOptions(force = false): Promise<void> {
     return
   }
 
-  const [providerList, systemAccountList] = await Promise.all([
+  const [providerList] = await Promise.all([
     isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-    isManagementView.value ? api.systemAccounts.options() : Promise.resolve([] as SystemAccountPrincipalSummary[])
+    loadSystemAccountOptions()
   ])
   providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
-  systemAccounts.value = systemAccountList
   groupOptionsLoaded.value = true
   groupOptionsScopeKey.value = scopeKey
 }
 
 function refreshGroups() {
+  resetSystemAccountOptionsSearch()
   resetPagination()
   void loadData({ forceOptions: true })
 }
 
 function refreshMobileGroups() {
+  resetSystemAccountOptionsSearch()
   void refreshMobileGroupsData({ forceOptions: true })
 }
 
 function handleSystemAccountFilterChange() {
+  resetSystemAccountOptionsSearch()
   resetPagination()
   void loadData()
 }
 
 function resetFilters() {
   systemAccountFilter.value = allSystemAccountsValue
+  resetSystemAccountOptionsSearch()
   resetPagination()
   pageStateCache.clear()
   void loadData({ forceOptions: true })

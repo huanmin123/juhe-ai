@@ -1352,13 +1352,40 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
     WHERE window_key = ? AND start_date = ? AND end_date = ?
     ORDER BY bucket_key ASC, process_role ASC
   `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
+  const processEventLoopLatestStatus = buildProcessEventLoopLatestStatus(processLatestRows)
   return {
     latest: latest ? mapSystemMetricsLatest(latest) : undefined,
     hourlyTrend: rows.map(mapSystemMetricsHourly),
     processEventLoopLatest: mapProcessEventLoopLatestRows(processLatestRows),
+    processEventLoopLatestStatus,
     processEventLoopTrend: processRows.map(mapProcessEventLoopHourly),
     backgroundJobs: []
   }
+}
+
+function buildProcessEventLoopLatestStatus(rows: Array<Record<string, unknown>>): SystemMetricsOverview['processEventLoopLatestStatus'] {
+  const latestByRole = new Map(
+    mapProcessEventLoopLatestRows(rows).map((row) => [row.processRole, row] as const)
+  )
+  return PROCESS_EVENT_LOOP_ROLES.map((processRole) => {
+    const row = latestByRole.get(processRole)
+    if (!row) {
+      return {
+        processRole,
+        sampleAvailable: false,
+        processPid: null,
+        sampledAt: null,
+        eventLoopLagMs: null
+      }
+    }
+    return {
+      processRole,
+      sampleAvailable: true,
+      processPid: row.processPid ?? null,
+      sampledAt: row.sampledAt,
+      eventLoopLagMs: row.eventLoopLagMs ?? null
+    }
+  })
 }
 
 function systemMetricsLatestSelectColumns(): string {

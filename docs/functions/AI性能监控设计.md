@@ -165,7 +165,7 @@ interface AiPerformanceOverview {
     averageDurationMs?: number
     maxDurationMs?: number
   }
-  statsLagSeconds: number
+  statsLagSeconds?: number
 }
 
 interface AiPerformanceAccount {
@@ -248,7 +248,7 @@ LIMIT 10
 | --- | --- | --- |
 | 账户过多导致图表不可读 | 图例拥挤、渲染变慢 | 默认只显示最近 7 天活跃前 10；搜索追加最多 20 个，用户可点击账户列表只看部分账户 |
 | 前端请求实时汇总明细 | SQLite 高峰期被页面查询拖慢 | 接口禁止 `SUM usage_records`；趋势只读小时缓存，摘要只读窗口快照 |
-| 统计缓存滞后 | 图表不是实时最新 | 返回并展示 `statsLagSeconds`，沿用现有统计 worker 滞后语义 |
+| 统计缓存滞后 | 图表不是实时最新 | 返回并展示可选的 `statsLagSeconds`，沿用现有统计 worker 滞后语义；任务尚未写入状态或滞后无法判断时可缺省，前端展示为“未知”而不是 0 秒 |
 | 搜索追加账户过多 | 返回体和 ECharts series 过大 | 后端限制 `accountIds` 数量，前端限制添加数量并给中文提示 |
 | 账户归属校验缺失 | 越权查看他人账号趋势 | 用户侧 AI 账户性能按账户所有者 `system_account_id + account_id` 聚合且只接受当前登录用户自有账户；管理侧由管理员权限和 `systemAccountId` 筛选决定范围，授权给自己的账户不会进入用户侧 |
 | 账户选项复用账户列表 | 可能暴露凭据字段且大用户预加载不完整 | 账户搜索添加使用轻量选项接口，只返回展示字段；前端远程搜索，不全量预加载 |

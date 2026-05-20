@@ -26,8 +26,14 @@ export function applyAppBrand(settings: Pick<GlobalSettings, 'appName' | 'appIco
   const next = normalizeAppBrand(settings)
   appBrand.appName = next.appName
   appBrand.appIcon = next.appIcon
-  syncDocumentBrand(next)
+  syncDocumentBrand(next.appIcon)
+  syncDocumentTitle()
   return next
+}
+
+export function syncDocumentTitle(pageTitle?: string): void {
+  const title = pageTitle?.trim()
+  document.title = title && title !== appBrand.appName ? `${title} - ${appBrand.appName}` : appBrand.appName
 }
 
 export async function loadAppBrandSettings(): Promise<GlobalSettings> {
@@ -46,15 +52,13 @@ function stringValue(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback
 }
 
-function syncDocumentBrand(brand: AppBrandSettings): void {
-  document.title = brand.appName
-
+function syncDocumentBrand(appIcon: string): void {
   let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]')
   if (!icon) {
     icon = document.createElement('link')
     icon.rel = 'icon'
     document.head.appendChild(icon)
   }
-  icon.href = brand.appIcon
-  icon.type = brand.appIcon.endsWith('.svg') ? 'image/svg+xml' : ''
+  icon.href = appIcon
+  icon.type = appIcon.endsWith('.svg') ? 'image/svg+xml' : ''
 }

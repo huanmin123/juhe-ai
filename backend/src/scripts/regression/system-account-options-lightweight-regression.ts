@@ -62,7 +62,11 @@ interface SeedState {
   activeUserId: string
   adminCookie: string
   disabledUserId: string
+  middleNameUserId: string
+  prefixUserId: string
   userCookie: string
+  wildcardLiteralUserId: string
+  wildcardNeighborUserId: string
 }
 
 let server: ReturnType<typeof app.listen> | undefined
@@ -87,27 +91,47 @@ try {
     return originalPrepare(sql)
   }) as typeof database.prepare
 
-  let adminOptions: SystemAccountOptionSummary[]
   try {
-    adminOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options', seed.adminCookie)
+    const adminOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options', seed.adminCookie)
+    const activeOption = adminOptions.find((account) => account.id === seed.activeUserId)
+    assert(activeOption, '系统账户选项应包含普通启用用户')
+    assert.equal(activeOption.displayName, '系统账户选项用户')
+    assert.equal(activeOption.status, 'active')
+    const disabledOption = adminOptions.find((account) => account.id === seed.disabledUserId)
+    assert(disabledOption, '系统账户选项应包含停用用户，供筛选和历史归属展示')
+    assert.equal(disabledOption.status, 'disabled')
+    assertLightweightSystemAccountOption(activeOption)
+    assertLightweightSystemAccountOption(disabledOption)
+
+    assert.equal(systemAccountOptionSqls.length, 1, '系统账户选项请求应只执行一次系统账户选项查询')
+    assert.equal(systemAccountOptionSqls.some((sql) => /SELECT\s+\*/i.test(sql)), false, '系统账户选项查询不应 SELECT *')
+    assert.equal(systemAccountOptionSqls.some((sql) => /\bpassword_hash\b/i.test(sql)), false, '系统账户选项查询不应读取 password_hash')
+    assert.equal(systemAccountOptionSqls.some((sql) => /\brole\b|\bmust_change_password\b|\blast_login_at\b|\bcreated_at\b|\bupdated_at\b/i.test(sql)), false, '系统账户选项查询不应读取管理字段')
+    assert.equal(systemAccountOptionSqls.some((sql) => /\bCOALESCE\s*\(/i.test(sql)), false, '系统账户选项查询不应通过 COALESCE 扫描展示字段')
+
+    const prefixOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options?keyword=系统账户选项用户&limit=10', seed.adminCookie)
+    const prefixIds = prefixOptions.map((account) => account.id)
+    assert(prefixIds.includes(seed.activeUserId), '系统账户选项关键词应命中名称精确匹配')
+    assert(prefixIds.includes(seed.prefixUserId), '系统账户选项关键词应命中名称前缀匹配')
+    assert(!prefixIds.includes(seed.middleNameUserId), '系统账户选项关键词不应命中名称中间包含')
+    assert(prefixOptions.length <= 10, '系统账户选项接口应遵守 limit 参数')
+
+    const usernameOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, '/__aisys__/api/system-accounts/options?keyword=system_account_options_user&limit=10', seed.adminCookie)
+    assert(usernameOptions.some((account) => account.id === seed.activeUserId), '系统账户选项关键词应命中用户名精确匹配')
+
+    const wildcardOptions = await getEnvelope<SystemAccountOptionSummary[]>(baseUrl, `/__aisys__/api/system-accounts/options?keyword=${encodeURIComponent('percent%literal')}&limit=10`, seed.adminCookie)
+    const wildcardIds = wildcardOptions.map((account) => account.id)
+    assert(wildcardIds.includes(seed.wildcardLiteralUserId), '系统账户选项关键词应支持 % 字面量')
+    assert(!wildcardIds.includes(seed.wildcardNeighborUserId), '系统账户选项关键词不应把用户输入的 % 当作 LIKE 通配符')
+
+    for (const sql of systemAccountOptionSqls) {
+      if (/\bLIKE\s+\?/i.test(sql)) {
+        assert(/\bESCAPE\s+'\\'/i.test(sql), '系统账户选项前缀搜索应显式转义 LIKE 通配符')
+      }
+    }
   } finally {
     database.prepare = originalPrepare
   }
-
-  const activeOption = adminOptions.find((account) => account.id === seed.activeUserId)
-  assert(activeOption, '系统账户选项应包含普通启用用户')
-  assert.equal(activeOption.displayName, '系统账户选项用户')
-  assert.equal(activeOption.status, 'active')
-  const disabledOption = adminOptions.find((account) => account.id === seed.disabledUserId)
-  assert(disabledOption, '系统账户选项应包含停用用户，供筛选和历史归属展示')
-  assert.equal(disabledOption.status, 'disabled')
-  assertLightweightSystemAccountOption(activeOption)
-  assertLightweightSystemAccountOption(disabledOption)
-
-  assert.equal(systemAccountOptionSqls.length, 1, '系统账户选项请求应只执行一次系统账户选项查询')
-  assert.equal(systemAccountOptionSqls.some((sql) => /SELECT\s+\*/i.test(sql)), false, '系统账户选项查询不应 SELECT *')
-  assert.equal(systemAccountOptionSqls.some((sql) => /\bpassword_hash\b/i.test(sql)), false, '系统账户选项查询不应读取 password_hash')
-  assert.equal(systemAccountOptionSqls.some((sql) => /\brole\b|\bmust_change_password\b|\blast_login_at\b|\bcreated_at\b|\bupdated_at\b/i.test(sql)), false, '系统账户选项查询不应读取管理字段')
 
   const forbiddenResponse = await fetch(`${baseUrl}/__aisys__/api/system-accounts/options`, { headers: { cookie: seed.userCookie } })
   assert.equal(forbiddenResponse.status, 403, '普通用户不应调用管理侧系统账户选项接口')
@@ -141,11 +165,47 @@ function seedData(): SeedState {
     status: 'disabled',
     mustChangePassword: true
   })
+  const prefixUser = repositories.createSystemAccount({
+    username: 'system_account_options_user_prefix',
+    displayName: '系统账户选项用户扩展',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const middleNameUser = repositories.createSystemAccount({
+    username: 'system_account_options_middle',
+    displayName: '普通系统账户选项用户中间',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const wildcardLiteralUser = repositories.createSystemAccount({
+    username: 'percent%literal_user',
+    displayName: 'percent%literal 用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
+  const wildcardNeighborUser = repositories.createSystemAccount({
+    username: 'percentXliteral_user',
+    displayName: 'percentXliteral 用户',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
   return {
     activeUserId: activeUser.id,
     adminCookie: sessionCookie(admin.id),
     disabledUserId: disabledUser.id,
-    userCookie: sessionCookie(activeUser.id)
+    middleNameUserId: middleNameUser.id,
+    prefixUserId: prefixUser.id,
+    userCookie: sessionCookie(activeUser.id),
+    wildcardLiteralUserId: wildcardLiteralUser.id,
+    wildcardNeighborUserId: wildcardNeighborUser.id
   }
 }
 

@@ -25,32 +25,44 @@
             v-model:value="filters.teamId"
             :teams="teams"
             :active-only="false"
+            :filter-option="false"
+            :loading="teamOptionsLoading"
             allow-clear
             class="authorization-usage-select responsive-list-inline-filter"
             placeholder="筛选所属团队"
             scope="team"
-            @change="reloadFromFirstPage"
+            @change="handleTeamChange"
+            @dropdown-visible-change="handleTeamOptionsDropdown"
+            @search="handleTeamOptionsSearch"
           />
           <SystemPrincipalSelect
             v-model:value="filters.granteeSystemAccountId"
-            :accounts="users"
+            :accounts="granteeUsers"
             :active-only="false"
+            :filter-option="false"
+            :loading="granteeUserOptionsLoading"
             allow-clear
             class="authorization-usage-select responsive-list-inline-filter"
             placeholder="筛选被授权用户"
-            @change="reloadFromFirstPage"
+            @change="handleUserChange"
+            @dropdown-visible-change="handleGranteeUserOptionsDropdown"
+            @search="handleGranteeUserOptionsSearch"
           />
           <a-select v-model:value="filters.resourceType" class="authorization-usage-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
           <SystemPrincipalSelect
             v-if="isManagementView"
             v-model:value="filters.resourceOwnerSystemAccountId"
-            :accounts="users"
+            :accounts="resourceOwnerUsers"
             :active-only="false"
+            :filter-option="false"
+            :loading="resourceOwnerUserOptionsLoading"
             include-all
             all-label="全部资源归属用户"
             class="authorization-usage-select responsive-list-inline-filter"
             placeholder="筛选资源归属用户"
             @change="handleResourceOwnerChange"
+            @dropdown-visible-change="handleResourceOwnerUserOptionsDropdown"
+            @search="handleResourceOwnerUserOptionsSearch"
           />
           <a-select
             v-model:value="filters.resourceId"
@@ -60,8 +72,12 @@
             class="authorization-usage-resource responsive-list-inline-filter"
             :options="resourceOptions"
             :disabled="filters.resourceType === 'all'"
+            :filter-option="false"
+            :loading="resourceOptionsLoading"
             :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
-            @change="reloadFromFirstPage"
+            @change="handleResourceChange"
+            @dropdown-visible-change="handleResourceOptionsDropdown"
+            @search="handleResourceOptionsSearch"
           />
         </template>
         <template #filters>
@@ -80,11 +96,34 @@
           </label>
           <label class="mobile-filter-field">
             <span>所属团队</span>
-            <SystemPrincipalSelect v-model:value="filters.teamId" :teams="teams" :active-only="false" allow-clear scope="team" placeholder="筛选所属团队" @change="reloadFromFirstPage" />
+            <SystemPrincipalSelect
+              v-model:value="filters.teamId"
+              :teams="teams"
+              :active-only="false"
+              :filter-option="false"
+              :loading="teamOptionsLoading"
+              allow-clear
+              scope="team"
+              placeholder="筛选所属团队"
+              @change="handleTeamChange"
+              @dropdown-visible-change="handleTeamOptionsDropdown"
+              @search="handleTeamOptionsSearch"
+            />
           </label>
           <label class="mobile-filter-field">
             <span>被授权用户</span>
-            <SystemPrincipalSelect v-model:value="filters.granteeSystemAccountId" :accounts="users" :active-only="false" allow-clear placeholder="筛选被授权用户" @change="reloadFromFirstPage" />
+            <SystemPrincipalSelect
+              v-model:value="filters.granteeSystemAccountId"
+              :accounts="granteeUsers"
+              :active-only="false"
+              :filter-option="false"
+              :loading="granteeUserOptionsLoading"
+              allow-clear
+              placeholder="筛选被授权用户"
+              @change="handleUserChange"
+              @dropdown-visible-change="handleGranteeUserOptionsDropdown"
+              @search="handleGranteeUserOptionsSearch"
+            />
           </label>
           <label class="mobile-filter-field">
             <span>授权内容</span>
@@ -94,12 +133,16 @@
             <span>资源归属用户</span>
             <SystemPrincipalSelect
               v-model:value="filters.resourceOwnerSystemAccountId"
-              :accounts="users"
+              :accounts="resourceOwnerUsers"
               :active-only="false"
+              :filter-option="false"
+              :loading="resourceOwnerUserOptionsLoading"
               include-all
               all-label="全部资源归属用户"
               placeholder="筛选资源归属用户"
               @change="handleResourceOwnerChange"
+              @dropdown-visible-change="handleResourceOwnerUserOptionsDropdown"
+              @search="handleResourceOwnerUserOptionsSearch"
             />
           </label>
           <label class="mobile-filter-field">
@@ -111,8 +154,12 @@
               option-filter-prop="label"
               :options="resourceOptions"
               :disabled="filters.resourceType === 'all'"
+              :filter-option="false"
+              :loading="resourceOptionsLoading"
               :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
-              @change="reloadFromFirstPage"
+              @change="handleResourceChange"
+              @dropdown-visible-change="handleResourceOptionsDropdown"
+              @search="handleResourceOptionsSearch"
             />
           </label>
         </template>
@@ -224,6 +271,7 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
+import { useRemoteAuthorizationPrincipalOptions } from '@/composables/useRemoteAuthorizationPrincipalOptions'
 import { useResponsivePagedList, type ResponsivePagedListLoadOptions } from '@/composables/useResponsivePagedList'
 import { isDateKey } from '@/shared/dateRange'
 import type { AuthorizationResourceType, AuthorizationUserUsageOverview, AuthorizationUserUsageRow, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
@@ -250,8 +298,6 @@ type UserUsageFilters = {
 const route = useRoute()
 const authorizationUsagePageSize = 20
 const overview = ref<AuthorizationUserUsageOverview>()
-const teams = ref<SystemTeamPrincipalSummary[]>([])
-const users = ref<SystemAccountPrincipalSummary[]>([])
 let optionsLoaded = false
 let optionsLoading: Promise<void> | undefined
 let usageRequestSeq = 0
@@ -261,9 +307,53 @@ const {
   isManagementView,
   selectedResourceOwnerSystemAccountId,
   resourceOptions,
+  resourceOptionsLoading,
+  handleResourceOptionsDropdown,
+  handleResourceOptionsSearch,
   loadAuthorizableResourceOptions,
-  resetResourceId
+  resetResourceId,
+  resetResourceOptionsSearch
 } = useAuthorizationUsageResourceFilters(filters)
+const {
+  handleDropdown: handleTeamOptionsDropdown,
+  handleSearch: handleTeamOptionsSearch,
+  load: loadTeamOptions,
+  loading: teamOptionsLoading,
+  options: teams,
+  resetSearch: resetTeamOptionsSearch
+} = useRemoteAuthorizationPrincipalOptions<SystemTeamPrincipalSummary>({
+  errorMessage: '加载授权团队失败',
+  isManagementView: () => isManagementView.value,
+  kind: 'team',
+  selectedIds: () => [filters.teamId]
+})
+const {
+  handleDropdown: handleGranteeUserOptionsDropdown,
+  handleSearch: handleGranteeUserOptionsSearch,
+  load: loadGranteeUserOptions,
+  loading: granteeUserOptionsLoading,
+  options: granteeUsers,
+  resetSearch: resetGranteeUserOptionsSearch
+} = useRemoteAuthorizationPrincipalOptions<SystemAccountPrincipalSummary>({
+  errorMessage: '加载被授权用户列表失败',
+  isManagementView: () => isManagementView.value,
+  kind: 'account',
+  selectedIds: () => [filters.granteeSystemAccountId]
+})
+const {
+  handleDropdown: handleResourceOwnerUserOptionsDropdown,
+  handleSearch: handleResourceOwnerUserOptionsSearch,
+  load: loadResourceOwnerUserOptions,
+  loading: resourceOwnerUserOptionsLoading,
+  options: resourceOwnerUsers,
+  resetSearch: resetResourceOwnerUserOptionsSearch
+} = useRemoteAuthorizationPrincipalOptions<SystemAccountPrincipalSummary>({
+  enabled: () => isManagementView.value,
+  errorMessage: '加载资源归属用户列表失败',
+  isManagementView: () => true,
+  kind: 'account',
+  selectedIds: () => [filters.resourceOwnerSystemAccountId]
+})
 const {
   dateRange,
   dateRangeExplicit,
@@ -324,13 +414,19 @@ const activeFilterCount = computed(() => {
 })
 const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
 const summaryCards = computed(() => [
-  { key: 'users', label: '被授权用户', value: formatNumber(overview.value?.userCount ?? 0), extra: `范围 ${rangeLabel.value}` },
+  { key: 'users', label: overview.value?.hasMore ? '已加载用户' : '被授权用户', value: formatNumber(overview.value?.userCount ?? 0), extra: overview.value?.hasMore ? '还有更多用户消耗' : `范围 ${rangeLabel.value}` },
   { key: 'requests', label: '范围请求', value: formatNumber(totalUsage.value.requestCount), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` },
   { key: 'tokens', label: 'Token 消耗', value: formatUsageAmount(totalUsage.value.totalTokens), extra: `输入 ${formatUsageAmount(totalUsage.value.inputTokens)}` },
   { key: 'cost', label: '成本', value: formatCost(totalUsage.value.totalCost), extra: `最后使用 ${formatDateTime(totalUsage.value.lastUsedAt)}` }
 ])
 
 async function loadOptions(options: { force?: boolean } = {}) {
+  if (options.force) {
+    resetTeamOptionsSearch()
+    resetGranteeUserOptionsSearch()
+    resetResourceOwnerUserOptionsSearch()
+    resetResourceOptionsSearch()
+  }
   if (optionsLoaded && !options.force) return
   if (optionsLoading && !options.force) return optionsLoading
   optionsLoading = loadOptionsNow()
@@ -343,22 +439,23 @@ async function loadOptions(options: { force?: boolean } = {}) {
 }
 
 async function loadOptionsNow() {
-  const [teamResult, userResult, resourceResult] = await Promise.allSettled([
-    isManagementView.value ? api.authorizationOptions.granteeTeams() : api.myAuthorizationOptions.granteeTeams(),
-    isManagementView.value ? api.authorizationOptions.granteeAccounts() : api.myAuthorizationOptions.granteeAccounts(),
+  const [teamResult, granteeUserResult, resourceOwnerUserResult, resourceResult] = await Promise.allSettled([
+    loadTeamOptions(),
+    loadGranteeUserOptions(),
+    loadResourceOwnerUserOptions(),
     loadAuthorizableResourceOptions()
   ])
-  if (teamResult.status === 'fulfilled') {
-    teams.value = teamResult.value
-  } else {
+  if (teamResult.status === 'rejected') {
     console.error(teamResult.reason)
     message.error('加载授权团队失败')
   }
-  if (userResult.status === 'fulfilled') {
-    users.value = userResult.value
-  } else {
-    console.error(userResult.reason)
-    message.error('加载系统账户列表失败')
+  if (granteeUserResult.status === 'rejected') {
+    console.error(granteeUserResult.reason)
+    message.error('加载被授权用户失败')
+  }
+  if (resourceOwnerUserResult.status === 'rejected') {
+    console.error(resourceOwnerUserResult.reason)
+    message.error('加载资源归属用户失败')
   }
   if (resourceResult.status === 'rejected') {
     console.error(resourceResult.reason)
@@ -397,9 +494,24 @@ async function fetchUserUsagePage(loadPageOptions: ResponsivePagedListLoadOption
   }
 }
 
-function reloadFromFirstPage() {
+function reloadFromFirstPage(options: { forceOptions?: boolean } = {}) {
   resetPagination()
-  void loadData()
+  void loadData(options)
+}
+
+function handleTeamChange() {
+  resetTeamOptionsSearch()
+  reloadFromFirstPage()
+}
+
+function handleUserChange() {
+  resetGranteeUserOptionsSearch()
+  reloadFromFirstPage()
+}
+
+function handleResourceChange() {
+  resetResourceOptionsSearch()
+  reloadFromFirstPage()
 }
 
 function resourceTypeTag(resourceType: AuthorizationResourceType) {
@@ -418,18 +530,25 @@ function teamDisplayName(row: AuthorizationUserUsageRow): string {
 
 function handleResourceTypeChange() {
   resetResourceId()
-  reloadFromFirstPage()
+  resetResourceOptionsSearch()
+  reloadFromFirstPage({ forceOptions: true })
 }
 
 function handleResourceOwnerChange() {
   resetResourceId()
-  reloadFromFirstPage()
+  resetResourceOwnerUserOptionsSearch()
+  resetResourceOptionsSearch()
+  reloadFromFirstPage({ forceOptions: true })
 }
 
 function resetFilters() {
   Object.assign(filters, defaultFilters())
+  resetTeamOptionsSearch()
+  resetGranteeUserOptionsSearch()
+  resetResourceOwnerUserOptionsSearch()
+  resetResourceOptionsSearch()
   resetDateRange()
-  reloadFromFirstPage()
+  reloadFromFirstPage({ forceOptions: true })
 }
 
 function applyRouteFilters() {
@@ -455,6 +574,10 @@ function applyRouteFilters() {
   if (isDateKey(startDate) || isDateKey(endDate)) {
     setExplicitDateRange({ startDate, endDate })
   }
+  resetTeamOptionsSearch()
+  resetGranteeUserOptionsSearch()
+  resetResourceOwnerUserOptionsSearch()
+  resetResourceOptionsSearch()
 }
 
 function hasRouteFilters(): boolean {

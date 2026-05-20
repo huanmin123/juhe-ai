@@ -84,6 +84,14 @@ export interface SystemTeamSummary {
   updatedAt: string
 }
 
+export interface SystemTeamListResult {
+  items: SystemTeamSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 export type SystemTeamPrincipalSummary = Pick<SystemTeamSummary, 'id' | 'name' | 'status'>
 
 export interface ResourceAuthorizationSourceSummary {
@@ -379,6 +387,7 @@ export interface AccountUsageStatsOverview {
   rows: AccountUsageStatsRow[]
   defaultTrendAccountIds: string[]
   total: number
+  hasMore: boolean
   page: number
   pageSize: number
   statsLagSeconds?: number
@@ -600,7 +609,9 @@ export interface ApiKeySummary {
   key: string
   status: 'active' | 'disabled'
   groupId: string
+  groupName?: string
   groupAuthorizationId?: string
+  groupOwnerSystemAccountName?: string
   expiresAt?: string
   quotaLimits: ApiKeyQuotaLimits
   usage: AccountUsageSummary

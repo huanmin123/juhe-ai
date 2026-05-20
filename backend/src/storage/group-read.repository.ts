@@ -9,6 +9,10 @@ export interface GroupListOptions {
   page?: number
   pageSize?: number
   limit?: number
+  keyword?: string
+  providerCode?: string
+  manageableOnly?: boolean
+  preferDefault?: boolean
 }
 
 export interface GroupRowsPage {
@@ -20,6 +24,10 @@ export interface GroupRowsPage {
 }
 
 interface NormalizedGroupListOptions {
+  keyword?: string
+  providerCode?: string
+  manageableOnly: boolean
+  preferDefault: boolean
   page: number
   pageSize: number
 }
@@ -27,8 +35,12 @@ interface NormalizedGroupListOptions {
 const defaultGroupListPageSize = 50
 const maxGroupListPageSize = 500
 
-export function listGroupRowsForAccess(access?: AccessScope): GroupListRow[] {
-  return queryGroupRowsForAccess(access).rows
+export function listGroupRowsForAccess(access?: AccessScope, options?: GroupListOptions): GroupListRow[] {
+  const listOptions = normalizeGroupListOptions(options)
+  const pagination = options
+    ? { limit: listOptions.pageSize, offset: (listOptions.page - 1) * listOptions.pageSize }
+    : undefined
+  return queryGroupRowsForAccess(access, pagination, listOptions).rows
 }
 
 export function listGroupRowsPageForAccess(access: AccessScope | undefined, options?: GroupListOptions): GroupRowsPage {
@@ -36,7 +48,7 @@ export function listGroupRowsPageForAccess(access: AccessScope | undefined, opti
   const rows = queryGroupRowsForAccess(access, {
     limit: listOptions.pageSize + 1,
     offset: (listOptions.page - 1) * listOptions.pageSize
-  }).rows
+  }, listOptions).rows
   const pageRows = takePageRows(rows, listOptions.pageSize)
   return {
     rows: pageRows.rows,
@@ -54,26 +66,43 @@ function normalizeGroupListOptions(options?: GroupListOptions): NormalizedGroupL
   const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
     ? Math.min(maxGroupListPageSize, Math.max(1, rawPageSize))
     : defaultGroupListPageSize
-  return { page, pageSize }
+  return {
+    keyword: normalizeTextFilter(options?.keyword),
+    providerCode: normalizeTextFilter(options?.providerCode),
+    manageableOnly: options?.manageableOnly === true,
+    preferDefault: options?.preferDefault === true,
+    page,
+    pageSize
+  }
 }
 
-function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }): { rows: GroupListRow[] } {
+function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { manageableOnly: false, preferDefault: false }): { rows: GroupListRow[] } {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
   const pageParams = pagination ? [pagination.limit, pagination.offset] : []
+  const orderClause = groupOrderClause(options.preferDefault)
+  const directFilter = buildGroupFilter('groups', options)
   if (!ownerSystemAccountId && canAccessAll(access)) {
     const rows = getDatabase()
-      .prepare(`SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC${pageClause}`)
-      .all(...pageParams) as unknown as GroupListRow[]
+      .prepare(`SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups${whereClause(directFilter.clauses)}${orderClause}${pageClause}`)
+      .all(...directFilter.params, ...pageParams) as unknown as GroupListRow[]
     return { rows }
   }
   if (!viewerSystemAccountId) {
     const rows = getDatabase()
-      .prepare(`SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups ORDER BY updated_at DESC, id DESC${pageClause}`)
-      .all(...pageParams) as unknown as GroupListRow[]
+      .prepare(`SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups${whereClause(directFilter.clauses)}${orderClause}${pageClause}`)
+      .all(...directFilter.params, ...pageParams) as unknown as GroupListRow[]
     return { rows }
   }
+  if (options.manageableOnly) {
+    const ownerFilter = buildGroupFilter('groups', options, ['groups.system_account_id = ?'], [ownerSystemAccountId ?? viewerSystemAccountId])
+    const rows = getDatabase()
+      .prepare(`SELECT ${groupRowSelectColumns('groups')}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status FROM groups${whereClause(ownerFilter.clauses)}${orderClause}${pageClause}`)
+      .all(...ownerFilter.params, ...pageParams) as unknown as GroupListRow[]
+    return { rows }
+  }
+  const outerFilter = buildGroupFilter(undefined, options)
   const rows = getDatabase()
     .prepare(`
       SELECT ${groupListRowOuterSelectColumns()} FROM (
@@ -90,10 +119,11 @@ function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: num
           AND (ra.expires_at IS NULL OR ra.expires_at > ?)
           AND groups.system_account_id <> ?
       )
-      ORDER BY updated_at DESC, id DESC
+      ${whereClause(outerFilter.clauses)}
+      ${orderClause}
       ${pageClause}
     `)
-    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, ...pageParams) as unknown as GroupListRow[]
+    .all(ownerSystemAccountId ?? viewerSystemAccountId, viewerSystemAccountId, nowIso(), ownerSystemAccountId ?? viewerSystemAccountId, ...outerFilter.params, ...pageParams) as unknown as GroupListRow[]
   return { rows }
 }
 
@@ -162,6 +192,52 @@ function groupListRowOuterSelectColumns(): string {
     'authorization_id',
     'authorization_status'
   ].join(', ')
+}
+
+function groupOrderClause(preferDefault: boolean): string {
+  return preferDefault ? ' ORDER BY is_default DESC, updated_at DESC, id DESC' : ' ORDER BY updated_at DESC, id DESC'
+}
+
+function buildGroupFilter(
+  alias: string | undefined,
+  options: Pick<NormalizedGroupListOptions, 'keyword' | 'providerCode'>,
+  initialClauses: string[] = [],
+  initialParams: string[] = []
+): { clauses: string[]; params: string[] } {
+  const clauses = [...initialClauses]
+  const params = [...initialParams]
+  const providerCode = options.providerCode?.trim()
+  const column = (name: string) => alias ? `${alias}.${name}` : name
+  if (providerCode) {
+    clauses.push(`${column('provider_code')} COLLATE NOCASE = ?`)
+    params.push(providerCode)
+  }
+  const text = options.keyword?.trim()
+  if (text) {
+    const prefix = `${escapeLikePrefix(text)}%`
+    clauses.push(`(
+      ${column('id')} = ?
+      OR ${column('id')} LIKE ? ESCAPE '\\'
+      OR ${column('name')} COLLATE NOCASE = ?
+      OR ${column('name')} LIKE ? ESCAPE '\\'
+      OR ${column('provider_code')} COLLATE NOCASE = ?
+      OR ${column('provider_code')} LIKE ? ESCAPE '\\'
+    )`)
+    params.push(text, prefix, text, prefix, text, prefix)
+  }
+  return { clauses, params }
+}
+
+function whereClause(clauses: string[]): string {
+  return clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
+}
+
+function normalizeTextFilter(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function escapeLikePrefix(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 export function loadGroupAuthorizationUsageSummaries(

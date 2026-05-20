@@ -45,21 +45,21 @@ export function listApiKeysPage(access?: AccessScope, options?: ApiKeyListOption
 }
 
 export function findApiKeySummary(id: string, access?: AccessScope): ApiKeySummary | undefined {
-  const scope = buildSystemAccountScopeClause(access)
+  const scope = buildSystemAccountScopeClause(access, 'api_keys.system_account_id')
   const row = getDatabase()
-    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys WHERE id = ?${scope.clause}`)
+    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN groups ON groups.id = api_keys.group_id LEFT JOIN system_accounts ON system_accounts.id = groups.system_account_id WHERE api_keys.id = ?${scope.clause}`)
     .get(id, ...scope.params) as unknown as ApiKeyRow | undefined
   return row ? apiKeySummariesFromRows([row], access, { includeSecret: false })[0] : undefined
 }
 
 function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged = false): ApiKeyListResult {
   const normalized = normalizeApiKeyListOptions(options)
-  const scope = buildSystemAccountWhereClause(access)
+  const scope = buildSystemAccountWhereClause(access, 'api_keys.system_account_id')
   const filters = buildApiKeyFilters(scope, normalized)
   const limitClause = paged ? 'LIMIT ? OFFSET ?' : ''
   const limitParams = paged ? [normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize] : []
   const rows = getDatabase()
-    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys ${filters.clause} ORDER BY updated_at DESC, created_at DESC, id DESC ${limitClause}`)
+    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN groups ON groups.id = api_keys.group_id LEFT JOIN system_accounts ON system_accounts.id = groups.system_account_id ${filters.clause} ORDER BY api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC ${limitClause}`)
     .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
   const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: false })
@@ -74,17 +74,19 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
 
 function apiKeyListColumns(): string {
   return [
-    'id',
-    'system_account_id',
-    'name',
-    'description',
-    'key_prefix',
+    'api_keys.id',
+    'api_keys.system_account_id',
+    'api_keys.name',
+    'api_keys.description',
+    'api_keys.key_prefix',
     'NULL AS key_secret_encrypted',
-    'status',
-    'group_id',
-    'group_authorization_id',
-    'expires_at',
-    'quota_limits_json'
+    'api_keys.status',
+    'api_keys.group_id',
+    'groups.name AS group_name',
+    'system_accounts.display_name AS group_owner_system_account_name',
+    'api_keys.group_authorization_id',
+    'api_keys.expires_at',
+    'api_keys.quota_limits_json'
   ].join(', ')
 }
 
@@ -151,7 +153,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
     return undefined
   }
   const currentRow = getDatabase()
-    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys WHERE id = ? AND system_account_id = ?`)
+    .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN groups ON groups.id = api_keys.group_id LEFT JOIN system_accounts ON system_accounts.id = groups.system_account_id WHERE api_keys.id = ? AND api_keys.system_account_id = ?`)
     .get(id, systemAccountId) as unknown as ApiKeyRow | undefined
   const current = currentRow ? apiKeySummariesFromRows([currentRow], { systemAccountId, role: 'user' }, { includeSecret: false })[0] : undefined
   if (!current) {
@@ -190,7 +192,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   invalidateApiKeyLookupCache(id)
   notifyGatewayRuntimeCacheInvalidation('api_key_updated')
   notifyApiKeyQuotaCacheInvalidation(id, 'api_key_updated')
-  return next
+  return findApiKeySummary(id, access) ?? next
 }
 
 export interface ApiKeyDeleteCleanupTarget {

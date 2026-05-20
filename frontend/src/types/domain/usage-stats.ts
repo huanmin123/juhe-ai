@@ -159,6 +159,13 @@ export interface SystemMetricsOverview {
     sampledAt: string
     eventLoopLagMs?: number
   }>
+  processEventLoopLatestStatus: Array<{
+    processRole: ProcessRole
+    sampleAvailable: boolean
+    processPid: number | null
+    sampledAt: string | null
+    eventLoopLagMs: number | null
+  }>
   processEventLoopTrend: Array<{
     statHour: string
     processRole: ProcessRole

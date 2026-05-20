@@ -1,12 +1,12 @@
 import { message } from '@/lib/antd'
-import { computed, reactive, ref, watch, type ComputedRef } from 'vue'
+import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import type {
   AccountSummary,
   AccountType,
-  AccountGroupOptionSummary,
+  GroupOptionSummary,
   OpenAIAuthURLResult,
   ProviderDefinition,
   SystemAccountPrincipalSummary
@@ -44,8 +44,9 @@ interface UseAccountEditFormOptions {
   accounts: ReadonlyValue<AccountSummary[]>
   extractApiErrorMessage: (error: unknown, fallback: string) => string
   groupIdForAccount: (accountId: string) => string | undefined
-  groups: ReadonlyValue<AccountGroupOptionSummary[]>
+  groups: ReadonlyValue<GroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
+  loadGroupOptions: (keyword?: string, force?: boolean) => Promise<void>
   loadData: () => Promise<void>
   providers: ReadonlyValue<ProviderDefinition[]>
   systemAccounts: ReadonlyValue<SystemAccountPrincipalSummary[]>
@@ -138,6 +139,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     }
     editingId.value = undefined
     resetForm('', '')
+    void options.loadGroupOptions('', true)
     modalOpen.value = true
   }
 
@@ -157,6 +159,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function selectProvider(providerCode: string) {
     if (editingId.value || form.providerCode === providerCode) return
     resetForm(providerCode, '')
+    void loadProviderGroupOptions(providerCode)
   }
 
   function selectAccountType(type: AccountType) {
@@ -171,6 +174,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       priority: form.priority,
       accountExpiresAt: form.accountExpiresAt
     })
+    void loadProviderGroupOptions(providerCode)
     ensureDefaultGroupSelected(providerCode)
     authResult.value = undefined
   }
@@ -196,7 +200,14 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
     authResult.value = undefined
     modalOpen.value = true
+    void options.loadGroupOptions('', true)
     void loadEditingAccountDetail(account.id)
+  }
+
+  async function loadProviderGroupOptions(providerCode: string): Promise<void> {
+    await nextTick()
+    await options.loadGroupOptions('', true)
+    ensureDefaultGroupSelected(providerCode)
   }
 
   async function loadEditingAccountDetail(accountId: string): Promise<void> {

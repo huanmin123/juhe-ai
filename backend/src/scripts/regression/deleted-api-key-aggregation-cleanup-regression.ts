@@ -24,13 +24,22 @@ const [databaseModule, usageStatsRepository, apiKeyRecordCleanup] = await Promis
 
 const apiKeyId = 'key_deleted_before_aggregation'
 const usageRecordId = 'usage_deleted_key_before_aggregation'
-const createdAt = '2000-01-01T00:00:00.000Z'
+const baseCreatedAtMs = Date.now() - 2 * 24 * 60 * 60 * 1000
+const createdAt = new Date(baseCreatedAtMs).toISOString()
+const createdDate = createdAt.slice(0, 10)
+const fallbackCreatedAt = new Date(baseCreatedAtMs + 60 * 60 * 1000).toISOString()
+const pendingCreatedAt = new Date(baseCreatedAtMs + 2 * 60 * 60 * 1000).toISOString()
+const largeCreatedAt = new Date(baseCreatedAtMs + 3 * 60 * 60 * 1000).toISOString()
 
 try {
   seedUsageRecord(usageRecordId, apiKeyId, createdAt)
+  seedAuditLog('audit_deleted_key_before_aggregation', apiKeyId, createdAt)
+  seedAuditErrorGroup('audit_group_deleted_key_before_aggregation', apiKeyId, createdAt)
 
   const processed = usageStatsRepository.aggregateUsageStatsBatch(10)
   assert.equal(processed, 1, '删除后的 API Key 历史使用记录仍应作为事实参与聚合')
+  usageStatsRepository.refreshUsageQuotaHourlyWindowsCache()
+  usageStatsRepository.refreshUsageRankSnapshots()
   assert.equal(
     usageStatsTotal('sys_admin', 'system_account', 'sys_admin'),
     1,
@@ -41,6 +50,12 @@ try {
     1,
     'API Key 维度统计可临时存在，后续删除清理会负责扣减'
   )
+  seedAuthorizationUsageRangeWindow('owner_deleted_key')
+  assert.equal(usageOverviewSummaryRequestCount('sys_admin'), 1, '删除前概览窗口应包含这把 Key 的历史消耗')
+  assert.equal(usageScopeRangeWindowRequestCount('sys_admin', 'api_key', apiKeyId), 1, '删除前账户用量范围窗口应包含 API Key 维度消耗')
+  assert.equal(usageQuotaHourlyWindowCost('sys_admin', 'api_key', apiKeyId), 0.12, '删除前额度小时窗口应包含 API Key 成本')
+  assert.equal(usageRankSnapshotMetric('sys_admin', 'api_key', apiKeyId), 0.12, '删除前 API Key 排行快照应包含 API Key 成本')
+  assert.equal(authorizationUserUsageRangeWindowRequestCount('owner_deleted_key'), 1, '删除前授权用户范围窗口应可见历史消耗')
 
   apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
     apiKeyId,
@@ -48,10 +63,17 @@ try {
   })
 
   assert.equal(usageRecordExists(usageRecordId), false, 'API Key 删除清理应删除关联使用记录')
+  assert.equal(auditLogExists('audit_deleted_key_before_aggregation'), false, 'API Key 删除清理应删除关联原始审计日志')
+  assert.equal(auditErrorGroupExists('audit_group_deleted_key_before_aggregation'), false, 'API Key 删除清理应删除关联审计错误组')
   assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 0, '清理已聚合使用记录时应反向扣减系统账户统计')
   assert.equal(usageStatsTotal('sys_admin', 'api_key', apiKeyId), 0, '清理后不应残留 API Key 维度统计')
+  assert.equal(usageOverviewSummaryRequestCount('sys_admin'), 0, '清理完成后概览窗口不应残留这把 Key 的历史消耗')
+  assert.equal(usageScopeRangeWindowRequestCount('sys_admin', 'api_key', apiKeyId), 0, '清理完成后账户用量范围窗口不应残留 API Key 维度消耗')
+  assert.equal(usageQuotaHourlyWindowCost('sys_admin', 'api_key', apiKeyId), 0, '清理完成后额度小时窗口不应残留 API Key 成本')
+  assert.equal(usageRankSnapshotMetric('sys_admin', 'api_key', apiKeyId), 0, '清理完成后 API Key 排行快照不应残留 API Key 成本')
+  assert.equal(authorizationUserUsageRangeWindowRequestCount('owner_deleted_key'), 0, '清理完成后授权用户范围窗口不应残留旧授权消耗')
 
-  seedUsageRecord('usage_deleted_key_after_queue_full', 'key_deleted_after_queue_full', '2000-01-02T00:00:00.000Z')
+  seedUsageRecord('usage_deleted_key_after_queue_full', 'key_deleted_after_queue_full', fallbackCreatedAt)
   usageStatsRepository.aggregateUsageStatsBatch(10)
   runtimeConfig.processRole = 'server'
   const recordMaintenanceQueue = await import('../../modules/record-maintenance/record-maintenance-queue.service.js')
@@ -79,13 +101,15 @@ try {
 
   const pendingApiKeyId = 'key_deleted_cleanup_pending_cursor'
   const pendingUsageRecordId = 'usage_deleted_key_pending_cursor'
-  seedUsageRecord(pendingUsageRecordId, pendingApiKeyId, '2000-01-03T00:00:00.000Z')
+  seedUsageRecord(pendingUsageRecordId, pendingApiKeyId, pendingCreatedAt)
+  seedAuditLog('audit_deleted_key_pending_cursor', pendingApiKeyId, pendingCreatedAt)
   const pendingResult = apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
     apiKeyId: pendingApiKeyId,
     systemAccountId: 'sys_admin'
   })
   assert.equal(pendingResult.hasMore, true, '统计安全游标尚未覆盖时清理应留下待重试标记')
   assert.equal(usageRecordExists(pendingUsageRecordId), true, '统计安全游标尚未覆盖的记录不能被 API Key 清理提前删除')
+  assert.equal(auditLogExists('audit_deleted_key_pending_cursor'), false, '原始审计日志不依赖统计安全游标，应先按批次删除')
   assert.equal(cleanupTargetExists(pendingApiKeyId), true, '未完成的 API Key 清理目标应持久登记，等待 worker 后续重试')
 
   assert.equal(usageStatsRepository.aggregateUsageStatsBatch(10), 1, '待清理记录应先被统计聚合处理')
@@ -101,7 +125,7 @@ try {
     seedUsageRecord(
       `usage_deleted_key_large_${String(index).padStart(4, '0')}`,
       largeApiKeyId,
-      '2000-01-04T00:00:00.000Z'
+      largeCreatedAt
     )
   }
   assert.equal(usageStatsRepository.aggregateUsageStatsBatch(2000), 1200, '大批量待清理记录应先全部完成统计聚合')
@@ -150,6 +174,40 @@ function seedUsageRecord(id: string, apiKeyIdInput: string, createdAtInput: stri
     .run(id, `trace_${id}`, apiKeyIdInput, createdAtInput)
 }
 
+function seedAuthorizationUsageRangeWindow(systemAccountId: string): void {
+  databaseModule.getRecordDatabase()
+    .prepare(`
+      INSERT INTO authorization_user_usage_range_windows (
+        system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id,
+        resource_filter_type, resource_filter_id, request_count, input_tokens, output_tokens,
+        cache_read_tokens, cache_read_cost_usd, total_cost_usd, last_used_at, updated_at
+      ) VALUES (?, ?, ?, '', 'grantee_deleted_key', 'account', 'account_deleted_key', 1, 10, 20, 0, 0, 0.12, ?, ?)
+    `)
+    .run(systemAccountId, createdDate, createdDate, createdAt, createdAt)
+}
+
+function seedAuditLog(id: string, apiKeyIdInput: string, createdAtInput: string): void {
+  databaseModule.getRecordDatabase()
+    .prepare(`
+      INSERT INTO audit_logs (
+        id, trace_id, system_account_id, api_key_id, method, path, audit_outcome,
+        success, sample_bucket, sample_reason, started_at, ended_at, created_at
+      ) VALUES (?, ?, 'sys_admin', ?, 'POST', '/v1/chat/completions', 'success', 1, 0, 'regression', ?, ?, ?)
+    `)
+    .run(id, `trace_${id}`, apiKeyIdInput, createdAtInput, createdAtInput, createdAtInput)
+}
+
+function seedAuditErrorGroup(id: string, apiKeyIdInput: string, createdAtInput: string): void {
+  databaseModule.getRecordDatabase()
+    .prepare(`
+      INSERT INTO audit_error_groups (
+        id, fingerprint, window_started_at, window_ended_at, system_account_id, api_key_id,
+        count, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, 'sys_admin', ?, 1, ?, ?)
+    `)
+    .run(id, `fp_${id}`, createdAtInput, createdAtInput, apiKeyIdInput, createdAtInput, createdAtInput)
+}
+
 function usageStatsTotal(systemAccountId: string, scopeType: string, scopeId: string): number {
   const row = databaseModule.getRecordDatabase()
     .prepare(`
@@ -161,9 +219,78 @@ function usageStatsTotal(systemAccountId: string, scopeType: string, scopeId: st
   return Number(row?.request_count ?? 0)
 }
 
+function usageOverviewSummaryRequestCount(systemAccountId: string): number {
+  const row = databaseModule.getRecordDatabase()
+    .prepare(`
+      SELECT COALESCE(MAX(request_count), 0) AS request_count
+      FROM usage_overview_summary_windows
+      WHERE system_account_id = ?
+    `)
+    .get(systemAccountId) as { request_count?: number } | undefined
+  return Number(row?.request_count ?? 0)
+}
+
+function usageScopeRangeWindowRequestCount(systemAccountId: string, scopeType: string, scopeId: string): number {
+  const row = databaseModule.getRecordDatabase()
+    .prepare(`
+      SELECT COALESCE(MAX(request_count), 0) AS request_count
+      FROM usage_scope_range_windows
+      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
+    `)
+    .get(systemAccountId, scopeType, scopeId) as { request_count?: number } | undefined
+  return Number(row?.request_count ?? 0)
+}
+
+function usageQuotaHourlyWindowCost(systemAccountId: string, scopeType: string, scopeId: string): number {
+  const row = databaseModule.getRecordDatabase()
+    .prepare(`
+      SELECT COALESCE(MAX(total_cost_usd), 0) AS total_cost_usd
+      FROM usage_quota_hourly_windows
+      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
+    `)
+    .get(systemAccountId, scopeType, scopeId) as { total_cost_usd?: number } | undefined
+  return Number(row?.total_cost_usd ?? 0)
+}
+
+function usageRankSnapshotMetric(systemAccountId: string, scopeType: string, scopeId: string): number {
+  const row = databaseModule.getRecordDatabase()
+    .prepare(`
+      SELECT COALESCE(MAX(metric_value), 0) AS metric_value
+      FROM usage_rank_snapshots
+      WHERE system_account_id = ? AND scope_type = ? AND scope_id = ?
+    `)
+    .get(systemAccountId, scopeType, scopeId) as { metric_value?: number } | undefined
+  return Number(row?.metric_value ?? 0)
+}
+
+function authorizationUserUsageRangeWindowRequestCount(systemAccountId: string): number {
+  const row = databaseModule.getRecordDatabase()
+    .prepare(`
+      SELECT COALESCE(MAX(request_count), 0) AS request_count
+      FROM authorization_user_usage_range_windows
+      WHERE system_account_id = ?
+    `)
+    .get(systemAccountId) as { request_count?: number } | undefined
+  return Number(row?.request_count ?? 0)
+}
+
 function usageRecordExists(id: string): boolean {
   const row = databaseModule.getRecordDatabase()
     .prepare('SELECT id FROM usage_records WHERE id = ?')
+    .get(id) as { id?: string } | undefined
+  return Boolean(row?.id)
+}
+
+function auditLogExists(id: string): boolean {
+  const row = databaseModule.getRecordDatabase()
+    .prepare('SELECT id FROM audit_logs WHERE id = ?')
+    .get(id) as { id?: string } | undefined
+  return Boolean(row?.id)
+}
+
+function auditErrorGroupExists(id: string): boolean {
+  const row = databaseModule.getRecordDatabase()
+    .prepare('SELECT id FROM audit_error_groups WHERE id = ?')
     .get(id) as { id?: string } | undefined
   return Boolean(row?.id)
 }

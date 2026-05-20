@@ -11,6 +11,13 @@
 
 对外中转入口统一使用 OpenAI 兼容协议：客户端 Base URL 可填服务根地址或 `/v1`，例如开发环境 `http://127.0.0.1:3000` 或 `http://127.0.0.1:3000/v1`；API Key 填 API 密钥页生成的本地网关密钥。后续即使增加其他主流厂商，也先适配为 OpenAI 兼容请求格式。
 
+“OpenAI 兼容”在这里指本地客户端入口、认证方式和返回错误结构尽量兼容 OpenAI 协议；不同账户类型的上游能力不完全相同，具体以能力矩阵为准。
+
+| 账户类型 | 上游链路 | 当前支持路径 | 主要限制 |
+| --- | --- | --- | --- |
+| OpenAI API Key | 公开 OpenAI-compatible API，默认上游归一到 `/v1/*` | `/models`、`/v1/models`、`/responses`、`/v1/responses`、`/chat/completions`、`/v1/chat/completions` 等公开 OpenAI-compatible 路径 | 请求体优先 raw passthrough；本地过滤危险 header 和本地认证 header；不自动生成 OpenAI 组织、项目或 Beta 配置。 |
+| OpenAI OAuth | ChatGPT / Codex backend 的 `openai_oauth_codex` adapter | Codex 原生 `POST /responses`、`POST /responses/compact`；`GET /v1/models` 由本地模型目录返回 | 不等价于公开 OpenAI API Key；不承诺 `/chat/completions` 到 Responses 的重型协议翻译，也不承诺公开 Responses API 全字段原样进入 Codex backend。 |
+
 单次流式响应收到首段上游内容后，如果本次响应超过输出停顿上限仍没有任何上游新数据，或连接读取异常中断，服务端不换账号也不重新请求上游续写；持续有 raw chunk 但暂未形成完整 SSE 事件时只记录诊断并继续转发。当前运行时按客户端策略处理可见输出前失败：只有命中 Codex profile、Responses SSE 和可解析的 `x-codex-turn-metadata.turn_id` 时，才写出 Codex 可重试的 `response.failed/upstream_retryable_error`，并在同一 turn 第 4 次失败链路上避让已失败账号；未命中 Codex profile 的 OpenAI-compatible 请求不伪造 Codex 可重试码。调研结论见 [流式中断与客户端重试调研](流式中断与客户端重试调研.md)。
 
 ## OpenAI 供应商定义

@@ -8,12 +8,15 @@
       :schedulable-options="schedulableOptions"
       :status-options="statusOptions"
       :system-accounts="systemAccounts"
+      :system-accounts-loading="systemAccountOptionsLoading"
       :type-options="typeOptions"
       @create="openCreate"
       @refresh="refreshData"
       @reset="resetFilters"
       @search="applyFilters"
       @system-account-change="handleSystemAccountFilterChange"
+      @system-account-dropdown="handleSystemAccountOptionsDropdown"
+      @system-account-search="handleSystemAccountOptionsSearch"
       @update:keyword="filters.keyword = $event"
       @update:schedulable="filters.schedulable = $event"
       @update:status="filters.status = $event"
@@ -50,7 +53,7 @@
       :row-selection="rowSelection"
       :table-scroll-x="tableScrollX"
       :table-scroll-y="tableScrollY"
-      @bind-group="openBindGroup"
+      @bind-group="handleOpenBindGroup"
       @change="handleAccountTableChange"
       @delete="removeAccount"
       @edit="openEdit"
@@ -91,6 +94,7 @@
       :editing="Boolean(editingId)"
       :form="form"
       :group-options="groupOptions"
+      :group-options-loading="groupOptionsLoading"
       :has-account-type="hasAccountType"
       :is-api-key-form="isApiKeyForm"
       :is-management-view="isManagementView"
@@ -105,6 +109,8 @@
       @cancel="handleModalCancel"
       @copy-auth-url="copyText"
       @generate-auth-url="generateOAuthUrl"
+      @group-options-dropdown="handleGroupOptionsDropdown"
+      @group-options-search="handleGroupOptionsSearch"
       @ok="saveAccount"
       @open-auth-url="openAuthUrl"
       @select-provider="selectProvider"
@@ -117,8 +123,11 @@
       v-model:group-id="bindGroupForm.groupId"
       :account="bindingAccount"
       :group-options="bindGroupOptions"
+      :group-options-loading="groupOptionsLoading"
       :saving="bindGroupSaving"
       :tip="bindGroupTip"
+      @group-options-dropdown="handleGroupOptionsDropdown"
+      @group-options-search="handleGroupOptionsSearch"
       @save="saveBindGroup"
     />
 
@@ -152,7 +161,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { computed, defineAsyncComponent, onMounted, ref } from 'vue'
+import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
@@ -165,8 +174,6 @@ import AccountList from './AccountList.vue'
 import {
   accountByIdMap,
   buildProxyOptions,
-  groupIdByAccountIdMap,
-  groupNameByAccountIdMap,
   proxyByIdMap
 } from './accountDerivedState'
 import {
@@ -191,6 +198,7 @@ import {
 import { useAccountBindGroup } from './useAccountBindGroup'
 import { useAccountBatchActions } from './useAccountBatchActions'
 import { useAccountEditForm } from './useAccountEditForm'
+import { useAccountGroupOptions } from './useAccountGroupOptions'
 import { useAccountListData } from './useAccountListData'
 import { useAccountMenuActions } from './useAccountMenuActions'
 import { useAccountReauthorize } from './useAccountReauthorize'
@@ -210,7 +218,6 @@ const {
   accounts,
   providers,
   proxies,
-  groups,
   systemAccounts,
   filters,
   accountSorts,
@@ -222,6 +229,9 @@ const {
   mobileRefreshing,
   mobileVisibleAccounts,
   accountTablePagination,
+  systemAccountOptionsLoading,
+  handleSystemAccountOptionsDropdown,
+  handleSystemAccountOptionsSearch,
   loadMoreMobileAccounts,
   refreshMobileAccounts,
   loadData: loadAccountListData,
@@ -266,6 +276,23 @@ function tableChangeAction(value: unknown): string | undefined {
 const accountById = computed(() => accountByIdMap(accounts.value))
 const selectedAccountIdSet = computed(() => new Set(selectedAccountIds.value))
 const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIdSet.value.has(account.id)))
+const groupOptionProviderCode = ref('')
+const selectedGroupIds = ref<Array<string | undefined>>([])
+const {
+  groups,
+  handleDropdown: handleGroupOptionsDropdown,
+  handleSearch: handleGroupOptionsSearch,
+  load: loadGroupOptions,
+  loading: groupOptionsLoading,
+  resetSearch: resetGroupOptionsSearch
+} = useAccountGroupOptions({
+  isManagementView: () => isManagementView.value,
+  scope: () => ({
+    providerCode: groupOptionProviderCode.value,
+    systemAccountId: isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined,
+    selectedIds: selectedGroupIds.value
+  })
+})
 const {
   accountErrorPolicyRules,
   accountTypeChoices,
@@ -303,6 +330,7 @@ const {
   groupIdForAccount,
   groups,
   isManagementView,
+  loadGroupOptions,
   loadData,
   providers,
   systemAccounts
@@ -340,6 +368,7 @@ const {
   groupIdForAccount,
   groups,
   isManagementView,
+  loadGroupOptions,
   loadData
 })
 const {
@@ -377,6 +406,17 @@ const {
   isManagementView,
   loadData
 })
+watch(
+  [() => form.providerCode, () => form.groupId, () => bindGroupModalOpen.value, () => bindingAccount.value?.providerCode, () => bindingAccount.value?.id, () => bindGroupForm.groupId],
+  () => {
+    groupOptionProviderCode.value = bindGroupModalOpen.value ? bindingAccount.value?.providerCode ?? '' : form.providerCode
+    selectedGroupIds.value = [form.groupId, bindGroupForm.groupId]
+  },
+  { immediate: true }
+)
+watch(groupOptionProviderCode, () => {
+  resetGroupOptionsSearch()
+})
 const {
   batchSetStatus,
   batchTestSelected
@@ -400,8 +440,6 @@ const {
   openTrafficMigration
 })
 const proxyByIdMapRef = computed(() => proxyByIdMap(proxies.value))
-const groupIdByAccountId = computed(() => groupIdByAccountIdMap(groups.value))
-const groupNameByAccountId = computed(() => groupNameByAccountIdMap(accounts.value, groups.value))
 
 const rowSelection = computed(() => ({
   columnWidth: accountSelectionColumnWidth,
@@ -427,11 +465,15 @@ const proxyOptions = computed(() => buildProxyOptions(proxies.value))
 const proxyById = (proxyProfileId?: string) => proxyProfileId ? proxyByIdMapRef.value.get(proxyProfileId) : undefined
 
 function groupIdForAccount(accountId: string) {
-  return accountById.value.get(accountId)?.boundGroupId ?? groupIdByAccountId.value.get(accountId)
+  return accountById.value.get(accountId)?.boundGroupId
 }
 
 function groupNameForAccount(accountId: string) {
-  return groupNameByAccountId.value.get(accountId)
+  return accountById.value.get(accountId)?.boundGroupName
+}
+
+function handleOpenBindGroup(account: AccountSummary): void {
+  void openBindGroup(account)
 }
 
 async function copyText(value: string) {
@@ -442,11 +484,13 @@ async function copyText(value: string) {
 
 function resetFilters() {
   selectedAccountIds.value = []
+  resetGroupOptionsSearch()
   resetAccountListFilters()
 }
 
 function handleSystemAccountFilterChange() {
   selectedAccountIds.value = []
+  resetGroupOptionsSearch()
   handleAccountListSystemAccountFilterChange()
 }
 

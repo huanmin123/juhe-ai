@@ -29,6 +29,8 @@
     "test:account-list-visible": "tsx src/scripts/regression/account-list-visible-regression.ts",
     "test:account-options-lightweight": "tsx src/scripts/regression/account-options-lightweight-regression.ts",
     "test:group-options-lightweight": "tsx src/scripts/regression/group-options-lightweight-regression.ts",
+    "test:authorization-options-query-guard": "tsx src/scripts/regression/authorization-options-query-guard-regression.ts",
+    "test:team-proxy-list-pagination": "tsx src/scripts/regression/team-proxy-list-pagination-regression.ts",
     "test:group-account-stats-dirty-cache": "tsx src/scripts/regression/group-account-stats-dirty-cache-regression.ts",
     "test:system-account-options-lightweight": "tsx src/scripts/regression/system-account-options-lightweight-regression.ts",
     "test:session-affinity": "tsx src/scripts/regression/session-affinity-regression.ts",

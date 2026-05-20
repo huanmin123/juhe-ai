@@ -216,6 +216,7 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
     params.push(input.groupId)
   }
   if (clauses.length === 0) return undefined
+  const endpointFilter = recentOpenAIEndpointFilter()
   const row = getRecordDatabase()
     .prepare(`
       SELECT endpoint, model, stream, created_at
@@ -225,14 +226,11 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
         AND provider_code = 'openai'
         AND endpoint IS NOT NULL
         AND TRIM(endpoint) <> ''
-        AND (
-          LOWER(endpoint) LIKE '%/v1/responses%'
-          OR LOWER(endpoint) LIKE '%/v1/chat/completions%'
-        )
+        AND (${endpointFilter.clause})
       ORDER BY created_at DESC, id DESC
       LIMIT 1
     `)
-    .get(...params) as unknown as { endpoint?: string | null; model?: string | null; stream?: number | null; created_at?: string | null } | undefined
+    .get(...params, ...endpointFilter.params) as unknown as { endpoint?: string | null; model?: string | null; stream?: number | null; created_at?: string | null } | undefined
   const endpoint = optionalString(row?.endpoint)
   const createdAt = optionalString(row?.created_at)
   if (!endpoint || !createdAt) return undefined
@@ -243,6 +241,23 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
     createdAt
   }
 }
+
+function recentOpenAIEndpointFilter(): { clause: string; params: string[] } {
+  const endpoints = ['/v1/responses', '/v1/chat/completions']
+  const prefixes = endpoints.flatMap((endpoint) => [`post ${endpoint}`, endpoint])
+  return {
+    clause: prefixes.map(() => `
+      ${recentOpenAIEndpointExpression} = ?
+      OR (${recentOpenAIEndpointExpression} >= ? AND ${recentOpenAIEndpointExpression} < ?)
+    `).join(' OR '),
+    params: prefixes.flatMap((prefix) => {
+      const childPrefix = `${prefix}/`
+      return [prefix, childPrefix, `${childPrefix}\uffff`]
+    })
+  }
+}
+
+const recentOpenAIEndpointExpression = 'LOWER(TRIM(endpoint))'
 
 export function createUsageRecord(input: UsageRecordInput): void {
   createUsageRecordsBatch([input])

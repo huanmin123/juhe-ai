@@ -195,7 +195,7 @@ interface PreparedOperationLogInput {
 const operationLogDefaultPageSize = 100
 const operationLogMaxPageSize = 100
 const operationLogMinKeywordLength = 3
-const operationLogKeywordLikeMaxWindowMs = 24 * 60 * 60 * 1000
+const operationLogShortKeywordMaxWindowMs = 24 * 60 * 60 * 1000
 const operationLogSearchBackfillJobName = 'operation_log_search_backfill'
 const operationLogSearchBackfillMaxBatchSize = 5000
 
@@ -657,18 +657,28 @@ function buildOperationLogKeywordFilter(options: OperationLogListOptions): { cla
       searchJoin: 'INNER JOIN operation_log_search ON operation_log_search.log_id = ol.id'
     }
   }
-  if (isBoundedKeywordLikeWindow(options.startAt, options.endAt)) {
-    const pattern = `%${keyword}%`
+  if (isBoundedShortKeywordWindow(options.startAt, options.endAt)) {
+    const keywordEnd = `${keyword}\uffff`
     return {
       clause: `(
-        ol.summary LIKE ?
-        OR ol.resource_name LIKE ?
-        OR ol.actor_display_name LIKE ?
-        OR ol.actor_username LIKE ?
+        ol.summary COLLATE NOCASE = ?
+        OR (ol.summary COLLATE NOCASE >= ? AND ol.summary COLLATE NOCASE < ?)
+        OR ol.resource_name COLLATE NOCASE = ?
+        OR (ol.resource_name COLLATE NOCASE >= ? AND ol.resource_name COLLATE NOCASE < ?)
+        OR ol.actor_display_name COLLATE NOCASE = ?
+        OR (ol.actor_display_name COLLATE NOCASE >= ? AND ol.actor_display_name COLLATE NOCASE < ?)
+        OR ol.actor_username COLLATE NOCASE = ?
+        OR (ol.actor_username COLLATE NOCASE >= ? AND ol.actor_username COLLATE NOCASE < ?)
         OR ol.resource_id = ?
         OR (ol.resource_id >= ? AND ol.resource_id < ?)
       )`,
-      params: [pattern, pattern, pattern, pattern, keyword, keyword, `${keyword}\uffff`]
+      params: [
+        keyword, keyword, keywordEnd,
+        keyword, keyword, keywordEnd,
+        keyword, keyword, keywordEnd,
+        keyword, keyword, keywordEnd,
+        keyword, keyword, keywordEnd
+      ]
     }
   }
   return {
@@ -677,14 +687,14 @@ function buildOperationLogKeywordFilter(options: OperationLogListOptions): { cla
   }
 }
 
-function isBoundedKeywordLikeWindow(startAt?: string, endAt?: string): boolean {
+function isBoundedShortKeywordWindow(startAt?: string, endAt?: string): boolean {
   if (!startAt?.trim() || !endAt?.trim()) return false
   const start = Date.parse(startAt)
   const end = Date.parse(endAt)
   return Number.isFinite(start)
     && Number.isFinite(end)
     && end >= start
-    && end - start <= operationLogKeywordLikeMaxWindowMs
+    && end - start <= operationLogShortKeywordMaxWindowMs
 }
 
 function quoteFts5Term(value: string): string {

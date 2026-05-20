@@ -20,14 +20,19 @@
             :accounts="systemAccounts"
             :active-only="false"
             :disabled="loading"
+            :filter-option="false"
+            :loading="systemAccountOptionsLoading"
             all-label="全部用户"
             class="stats-system-account-select"
             include-all
             placeholder="筛选用户"
             @change="handleSystemAccountChange"
+            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+            @search="handleSystemAccountOptionsSearch"
           />
         </div>
         <div class="page-toolbar-actions">
+          <a-button :disabled="loading" @click="resetFilters">重置</a-button>
           <a-button :loading="loading" @click="loadData">
             <template #icon>
               <ReloadOutlined />
@@ -105,10 +110,10 @@
           :empty-description="processEventLoopEmptyDescription"
         >
           <div v-if="processEventLoopLatestRows.length > 0" class="process-event-loop-latest">
-            <div v-for="item in processEventLoopLatestRows" :key="item.processRole" class="process-event-loop-latest-item">
+            <div v-for="item in processEventLoopLatestRows" :key="item.processRole" class="process-event-loop-latest-item" :class="{ unavailable: !item.sampleAvailable }">
               <span class="process-event-loop-latest-role">{{ processRoleLabel(item.processRole) }}</span>
-              <span class="process-event-loop-latest-value">{{ formatJobDuration(item.eventLoopLagMs) }}</span>
-              <span class="process-event-loop-latest-meta">PID {{ item.processPid ?? '-' }} · {{ formatDateTime(item.sampledAt) }}</span>
+              <span class="process-event-loop-latest-value">{{ item.sampleAvailable ? formatJobDuration(item.eventLoopLagMs ?? undefined) : '未知' }}</span>
+              <span class="process-event-loop-latest-meta">{{ item.sampleAvailable ? `PID ${item.processPid ?? '-'} · ${formatDateTime(item.sampledAt ?? undefined)}` : '暂无进程采样' }}</span>
             </div>
           </div>
           <div v-if="hasProcessEventLoopTrend" ref="processEventLoopChartRef" class="chart-panel chart-panel-large" />
@@ -122,6 +127,11 @@
           :has-data="hasBackgroundJobs"
           :empty-description="backgroundJobEmptyDescription"
         >
+          <RuntimeAvailabilityAlert
+            :visible="systemRuntimeAlertVisible"
+            message="后台运行态暂时不可观测"
+            :description="systemRuntimeAlertDescription"
+          />
           <a-table
             class="stats-background-jobs-table"
             :columns="backgroundJobColumns"
@@ -171,12 +181,14 @@ import type { Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
-import type { SystemAccountPrincipalSummary, SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
+import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from './StatsChartCard.vue'
 import StatsSummaryCards from './StatsSummaryCards.vue'
@@ -207,9 +219,18 @@ const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId || allSystemAccountsValue)
 const usageOverview = ref<UsageStatsOverview>()
 const systemMetrics = ref<SystemMetricsOverview>()
-const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
-const systemAccountsLoaded = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  load: loadSystemAccounts,
+  loading: systemAccountOptionsLoading,
+  resetSearch: resetSystemAccountOptionsSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [selectedSystemAccountId.value]
+})
 
 const usageTrendChartRef = ref<HTMLDivElement>()
 const modelDistributionChartRef = ref<HTMLDivElement>()
@@ -236,14 +257,43 @@ const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?
 const hasVisibleSystemTrend = computed(() => showAdminDetailCharts.value && hasSystemTrend.value)
 const hasProcessEventLoopTrend = computed(() => showAdminDetailCharts.value && (systemMetrics.value?.processEventLoopTrend.length ?? 0) > 0)
 const processEventLoopLatestRows = computed(() => {
-  const rows = systemMetrics.value?.processEventLoopLatest ?? []
+  const statusRows = systemMetrics.value?.processEventLoopLatestStatus
   const order = new Map([['server', 0], ['worker', 1], ['db-service', 2]])
-  return [...rows].sort((left, right) => (order.get(left.processRole) ?? 99) - (order.get(right.processRole) ?? 99))
+  if (statusRows?.length) {
+    return [...statusRows].sort((left, right) => (order.get(left.processRole) ?? 99) - (order.get(right.processRole) ?? 99))
+  }
+  const rows = systemMetrics.value?.processEventLoopLatest ?? []
+  return rows
+    .map((row) => ({
+      ...row,
+      sampleAvailable: true,
+      processPid: row.processPid ?? null,
+      sampledAt: row.sampledAt ?? null,
+      eventLoopLagMs: row.eventLoopLagMs ?? null
+    }))
+    .sort((left, right) => (order.get(left.processRole) ?? 99) - (order.get(right.processRole) ?? 99))
 })
 const hasProcessEventLoopData = computed(() => hasProcessEventLoopTrend.value || processEventLoopLatestRows.value.length > 0)
 const backgroundJobRows = computed(() => systemMetrics.value?.backgroundJobs ?? [])
 const backgroundJobsAvailable = computed(() => systemMetrics.value?.backgroundJobsAvailable === true)
 const hasBackgroundJobs = computed(() => backgroundJobsAvailable.value && backgroundJobRows.value.length > 0)
+const systemRuntimeAlertVisible = computed(() => Boolean(systemMetrics.value && (
+  !systemMetrics.value.runtimeSnapshotAvailable
+  || !systemMetrics.value.workerSnapshotAvailable
+  || !systemMetrics.value.backgroundJobsAvailable
+)))
+const systemRuntimeAlertDescription = computed(() => {
+  const metrics = systemMetrics.value
+  if (!metrics) return ''
+  const reasons: string[] = []
+  if (!metrics.runtimeSnapshotAvailable) {
+    reasons.push('服务运行态不可用')
+  } else {
+    if (!metrics.workerSnapshotAvailable) reasons.push('后台进程快照不可用')
+    if (!metrics.backgroundJobsAvailable) reasons.push('后台任务状态不可用')
+  }
+  return `${reasons.join('；') || '运行态状态未知'}。`
+})
 const hasUsageOverview = computed(() => Boolean(usageOverview.value))
 const initialLoading = computed(() => loading.value && !hasUsageOverview.value)
 const systemInitialLoading = computed(() => loading.value && isManagementView.value && !systemMetrics.value)
@@ -327,10 +377,15 @@ function handleSystemAccountChange() {
   void loadData()
 }
 
-async function loadSystemAccounts(): Promise<void> {
-  if (!isManagementView.value || systemAccountsLoaded.value) return
-  systemAccounts.value = await api.systemAccounts.options()
-  systemAccountsLoaded.value = true
+function resetFilters() {
+  const defaults = defaultStatsPageState()
+  dateRange.value = parseDateRange(defaults.range)
+  dateRangeExplicit.value = false
+  calendarRange.value = [null, null]
+  selectedSystemAccountId.value = defaults.selectedSystemAccountId
+  resetSystemAccountOptionsSearch()
+  pageStateCache.clear()
+  void loadData()
 }
 
 function renderStatsCharts() {
@@ -516,6 +571,11 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
   background: #fbfcff;
 }
 
+.process-event-loop-latest-item.unavailable {
+  border-color: #ffd591;
+  background: #fff7e6;
+}
+
 .process-event-loop-latest-role {
   color: #64748b;
   font-size: 12px;
@@ -526,6 +586,10 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
   font-size: 18px;
   font-weight: 700;
   line-height: 1.3;
+}
+
+.process-event-loop-latest-item.unavailable .process-event-loop-latest-value {
+  color: #ad6800;
 }
 
 .process-event-loop-latest-meta {

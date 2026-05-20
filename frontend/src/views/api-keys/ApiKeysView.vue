@@ -3,8 +3,32 @@
     <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="名称 / Key 前缀 / 说明前缀" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
       <template #inline-filters>
         <a-select v-model:value="statusFilter" class="toolbar-select responsive-list-inline-filter" :options="listStatusOptions" @change="applyFilters" />
-        <a-select v-model:value="groupFilter" allow-clear class="toolbar-select responsive-list-inline-filter" :options="groupFilterOptions" placeholder="全部分组" @change="applyFilters" />
-        <SystemPrincipalSelect v-if="isManagementView" v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all class="toolbar-select responsive-list-inline-filter" @change="handleSystemAccountFilterChange" />
+        <a-select
+          v-model:value="groupFilter"
+          allow-clear
+          show-search
+          class="toolbar-select responsive-list-inline-filter"
+          :filter-option="false"
+          :loading="groupOptionsLoading"
+          :options="groupFilterOptions"
+          placeholder="全部分组"
+          @change="handleGroupFilterChange"
+          @dropdown-visible-change="handleGroupOptionsDropdown"
+          @search="handleGroupOptionsSearch"
+        />
+        <SystemPrincipalSelect
+          v-if="isManagementView"
+          v-model:value="systemAccountFilter"
+          :accounts="systemAccounts"
+          :active-only="false"
+          :filter-option="false"
+          :loading="systemAccountOptionsLoading"
+          include-all
+          class="toolbar-select responsive-list-inline-filter"
+          @change="handleSystemAccountFilterChange"
+          @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+          @search="handleSystemAccountOptionsSearch"
+        />
       </template>
       <template #actions>
         <a-button @click="helpOpen = true">
@@ -20,11 +44,32 @@
         </label>
         <label class="mobile-filter-field">
           <span>分组</span>
-          <a-select v-model:value="groupFilter" allow-clear :options="groupFilterOptions" placeholder="全部分组" />
+          <a-select
+            v-model:value="groupFilter"
+            allow-clear
+            show-search
+            :filter-option="false"
+            :loading="groupOptionsLoading"
+            :options="groupFilterOptions"
+            placeholder="全部分组"
+            @change="handleGroupFilterChange"
+            @dropdown-visible-change="handleGroupOptionsDropdown"
+            @search="handleGroupOptionsSearch"
+          />
         </label>
         <label v-if="isManagementView" class="mobile-filter-field">
           <span>系统账户</span>
-          <SystemPrincipalSelect v-model:value="systemAccountFilter" :accounts="systemAccounts" :active-only="false" include-all @change="handleSystemAccountFilterChange" />
+          <SystemPrincipalSelect
+            v-model:value="systemAccountFilter"
+            :accounts="systemAccounts"
+            :active-only="false"
+            :filter-option="false"
+            :loading="systemAccountOptionsLoading"
+            include-all
+            @change="handleSystemAccountFilterChange"
+            @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+            @search="handleSystemAccountOptionsSearch"
+          />
         </label>
       </template>
     </ResponsiveListToolbar>
@@ -137,7 +182,16 @@
           <a-input v-model:value="form.name" />
         </a-form-item>
         <a-form-item label="绑定分组" required>
-          <a-select v-model:value="form.groupId" :options="groupOptions" placeholder="选择分组" />
+          <a-select
+            v-model:value="form.groupId"
+            show-search
+            :filter-option="false"
+            :loading="groupOptionsLoading"
+            :options="groupOptions"
+            placeholder="输入分组名称 / ID 前缀搜索"
+            @dropdown-visible-change="handleGroupOptionsDropdown"
+            @search="handleGroupOptionsSearch"
+          />
         </a-form-item>
         <a-form-item label="状态">
           <a-select v-model:value="form.status" :options="statusOptions" />
@@ -171,7 +225,7 @@
 import type { Dayjs } from 'dayjs'
 import { CopyOutlined, QuestionCircleOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
@@ -182,12 +236,13 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
+import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
-import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
 import { quotaLimitSummaryText } from '@/views/shared/requestQuotaFormatters'
@@ -221,7 +276,7 @@ const keywordFilter = ref(initialPageState.keywordFilter)
 const statusFilter = ref<'all' | 'active' | 'disabled'>(initialPageState.statusFilter)
 const groupFilter = ref<string | undefined>(initialPageState.groupFilter)
 const groups = ref<GroupOptionSummary[]>([])
-const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
+const groupOptionsLoading = ref(false)
 const apiKeyOptionsLoaded = ref(false)
 const apiKeyOptionsScopeKey = ref('')
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
@@ -234,6 +289,22 @@ const form = reactive({
   quotaLimits: createQuotaLimitForm()
 })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const {
+  handleDropdown: handleSystemAccountOptionsDropdown,
+  handleSearch: handleSystemAccountOptionsSearch,
+  load: loadSystemAccountOptions,
+  loading: systemAccountOptionsLoading,
+  resetSearch: resetSystemAccountOptionsSearch,
+  systemAccounts
+} = useRemoteSystemAccountOptions({
+  enabled: () => isManagementView.value,
+  selectedIds: () => [systemAccountFilter.value]
+})
+let groupOptionsRequestId = 0
+let groupOptionsLoadingKey: string | undefined
+let groupOptionsLoadingPromise: Promise<void> | undefined
+let groupOptionsKeyword = ''
+let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 const {
   items: apiKeys,
   loading,
@@ -330,8 +401,9 @@ const targetSystemAccountLabel = computed(() => {
 })
 
 function groupName(groupId: string) {
-  const group = groups.value.find((item) => item.id === groupId)
-  return group ? groupOptionLabel(group) : groupId
+  const apiKey = apiKeys.value.find((item) => item.groupId === groupId)
+  if (apiKey?.groupName) return apiKey.groupName
+  return groupFilterOptions.value.find((item) => item.value === groupId)?.label ?? groupId
 }
 
 function groupOptionLabel(group: GroupOptionSummary) {
@@ -351,14 +423,101 @@ async function loadApiKeyOptions(systemAccountId: string | undefined, force = fa
     return
   }
 
-  const [groupList, systemAccountList] = await Promise.all([
-    isManagementView.value ? api.groups.options({ systemAccountId }) : api.myGroups.options(),
-    isManagementView.value ? api.systemAccounts.options() : Promise.resolve([] as SystemAccountPrincipalSummary[])
-  ])
-  groups.value = groupList
-  systemAccounts.value = systemAccountList
+  await Promise.all([loadGroupOptions(), loadSystemAccountOptions()])
   apiKeyOptionsLoaded.value = true
   apiKeyOptionsScopeKey.value = scopeKey
+}
+
+async function loadGroupOptions(keyword = groupOptionsKeyword): Promise<void> {
+  groupOptionsKeyword = keyword
+  const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
+  const requestKeyword = normalizeOptionKeyword(keyword)
+  const requestKey = JSON.stringify([isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self', requestKeyword ?? '', groupFilter.value ?? '', form.groupId ?? ''])
+  if (groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
+    return groupOptionsLoadingPromise
+  }
+  const requestId = ++groupOptionsRequestId
+  groupOptionsLoading.value = true
+  groupOptionsLoadingKey = requestKey
+  groupOptionsLoadingPromise = (async () => {
+    try {
+      let nextGroups = isManagementView.value
+        ? await api.groups.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
+        : await api.myGroups.options({ keyword: requestKeyword, limit: 50 })
+      nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
+      if (requestId !== groupOptionsRequestId) return
+      groups.value = nextGroups
+    } catch (error) {
+      if (requestId !== groupOptionsRequestId) return
+      console.error(error)
+      message.error('加载分组选项失败')
+    } finally {
+      if (groupOptionsLoadingKey === requestKey) {
+        groupOptionsLoadingKey = undefined
+        groupOptionsLoadingPromise = undefined
+      }
+      if (requestId === groupOptionsRequestId) {
+        groupOptionsLoading.value = false
+      }
+    }
+  })()
+  return groupOptionsLoadingPromise
+}
+
+function handleGroupOptionsDropdown(open: boolean): void {
+  if (open) {
+    void loadGroupOptions()
+  }
+}
+
+function handleGroupOptionsSearch(value: string): void {
+  groupOptionsKeyword = value
+  clearGroupOptionsSearchTimer()
+  groupOptionsSearchTimer = window.setTimeout(() => {
+    groupOptionsSearchTimer = undefined
+    void loadGroupOptions(groupOptionsKeyword)
+  }, 250)
+}
+
+function resetGroupOptionsSearch(): void {
+  groupOptionsKeyword = ''
+  clearGroupOptionsSearchTimer()
+}
+
+function clearGroupOptionsSearchTimer(): void {
+  if (groupOptionsSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(groupOptionsSearchTimer)
+    groupOptionsSearchTimer = undefined
+  }
+}
+
+async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], systemAccountId: string | undefined): Promise<GroupOptionSummary[]> {
+  const selectedIds = [groupFilter.value, form.groupId].filter((id): id is string => Boolean(id))
+  const missingIds = [...new Set(selectedIds)].filter((id) => !nextGroups.some((group) => group.id === id))
+  if (!missingIds.length) return nextGroups
+  const selectedGroups = await Promise.all(missingIds.map(async (id) => {
+    try {
+      return isManagementView.value
+        ? await api.groups.options({ systemAccountId, keyword: id, limit: 1 })
+        : await api.myGroups.options({ keyword: id, limit: 1 })
+    } catch {
+      return []
+    }
+  }))
+  return mergeOptionsById(selectedGroups.flat(), nextGroups)
+}
+
+function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
+  const merged = new Map<string, T>()
+  for (const item of [...leading, ...trailing]) {
+    merged.set(item.id, item)
+  }
+  return [...merged.values()]
+}
+
+function normalizeOptionKeyword(value?: string): string | undefined {
+  const keyword = value?.trim()
+  return keyword ? keyword : undefined
 }
 
 function resetFilters() {
@@ -367,6 +526,8 @@ function resetFilters() {
   statusFilter.value = defaults.statusFilter
   groupFilter.value = defaults.groupFilter
   systemAccountFilter.value = defaults.systemAccountFilter
+  resetSystemAccountOptionsSearch()
+  resetGroupOptionsSearch()
   resetPagination()
   pageStateCache.clear()
   void loadData({ forceOptions: true })
@@ -378,19 +539,30 @@ function applyFilters() {
 }
 
 function refreshApiKeys() {
+  resetSystemAccountOptionsSearch()
+  resetGroupOptionsSearch()
   resetPagination()
   void loadData({ forceOptions: true })
 }
 
 function handleSystemAccountFilterChange() {
   groupFilter.value = undefined
+  resetSystemAccountOptionsSearch()
+  resetGroupOptionsSearch()
   resetPagination()
   void loadData({ forceOptions: true })
 }
 
 async function refreshMobileApiKeys() {
+  resetSystemAccountOptionsSearch()
+  resetGroupOptionsSearch()
   resetPagination()
   await loadData({ forceOptions: true })
+}
+
+function handleGroupFilterChange() {
+  resetGroupOptionsSearch()
+  applyFilters()
 }
 
 function snapshotPageState(): ApiKeysPageState {
@@ -430,25 +602,29 @@ function formatCost(value?: number): string {
   return formatUsd(value)
 }
 
-function openCreate() {
+async function openCreate() {
   if (isManagementView.value && !apiKeyScopeParams.value?.systemAccountId) {
     message.warning('请先在右侧选择目标系统账户，再创建 API Key')
     return
   }
+  resetGroupOptionsSearch()
+  await loadGroupOptions()
   editingId.value = undefined
   Object.assign(form, { name: '', groupId: groups.value[0]?.id ?? '', status: 'active', expiresAt: undefined, description: '', quotaLimits: createQuotaLimitForm() })
   modalOpen.value = true
 }
 
-function openEdit(apiKey: ApiKeySummary) {
+async function openEdit(apiKey: ApiKeySummary) {
   editingId.value = apiKey.id
   Object.assign(form, { name: apiKey.name, groupId: apiKey.groupId, status: apiKey.status, expiresAt: undefined, description: apiKey.description ?? '', quotaLimits: createQuotaLimitForm(apiKey.quotaLimits) })
+  resetGroupOptionsSearch()
+  await loadGroupOptions()
   modalOpen.value = true
 }
 
 function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
   if (key === 'edit') {
-    openEdit(apiKey)
+    void openEdit(apiKey)
     return
   }
   if (key === 'delete') {
@@ -544,6 +720,8 @@ async function removeApiKey(id: string) {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+
+onBeforeUnmount(clearGroupOptionsSearchTimer)
 
 onMounted(loadData)
 </script>

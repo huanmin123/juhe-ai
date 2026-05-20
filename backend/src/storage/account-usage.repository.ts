@@ -9,7 +9,7 @@ import type {
 import { runtimeConfig } from '../config/runtime.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
-import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { latestUsageStatsLagSeconds } from './usage-stats.repository.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { GLOBAL_STATS_SCOPE_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
@@ -56,6 +56,7 @@ export function getAccountUsageStatsOverview(input: {
     rows,
     defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
     total: input.total ?? input.accounts.length,
+    hasMore: false,
     page: input.page ?? 1,
     pageSize: input.pageSize ?? input.accounts.length,
     statsLagSeconds: latestUsageStatsLagSeconds()
@@ -69,6 +70,7 @@ export interface AccountUsageStatsPageOptions {
   pageSize: number
   keyword?: string
   type?: string
+  accountIds?: string[]
   defaultTrendAccountIds?: string[]
 }
 
@@ -97,29 +99,14 @@ interface AccountUsageMetadataRow {
   authorization_id: string | null
 }
 
+const accountUsageSelectedAccountLimit = 50
+
 export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageStatsPageOptions): AccountUsageStatsOverview {
   const page = Math.max(1, Math.trunc(input.page))
   const pageSize = Math.max(1, Math.min(Math.trunc(input.pageSize), 200))
   const usageScope = accountUsageListScope(input.access)
   const database = getRecordDatabase()
   const filter = accountUsageFilterPredicate(input, usageScope.scopeType, database)
-  const countRow = database.prepare(`
-    SELECT COUNT(*) AS total
-    FROM usage_scope_range_windows usage_window
-    WHERE usage_window.system_account_id = ?
-      AND usage_window.scope_type = ?
-      AND usage_window.start_date = ?
-      AND usage_window.end_date = ?
-      AND (
-        usage_window.request_count > 0
-        OR usage_window.input_tokens > 0
-        OR usage_window.output_tokens > 0
-        OR usage_window.cache_read_tokens > 0
-        OR usage_window.total_cost_usd > 0
-        OR usage_window.last_used_at IS NOT NULL
-      )
-      ${filter.sql}
-  `).get(usageScope.systemAccountId, usageScope.scopeType, input.range.startDate, input.range.endDate, ...filter.params) as unknown as { total?: number } | undefined
   const rows = database.prepare(`
     SELECT
       usage_window.scope_id,
@@ -152,19 +139,27 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
     input.range.startDate,
     input.range.endDate,
     ...filter.params,
-    pageSize,
+    pageSize + 1,
     (page - 1) * pageSize
   ) as unknown as AccountUsageStatsSourceRow[]
-  const metadataRows = loadAccountUsageMetadataRows(input.access, rows.map((row) => row.scope_id), usageScope.scopeType)
+  const pageRows = takePageRows(rows, pageSize)
+  const selectedRows = loadSelectedAccountUsageRows({
+    database,
+    excludeAccountIds: pageRows.rows.map((row) => row.scope_id),
+    input,
+    usageScope
+  })
+  const sourceRows = mergeAccountUsageSourceRows(pageRows.rows, selectedRows)
+  const metadataRows = loadAccountUsageMetadataRows(input.access, sourceRows.map((row) => row.scope_id), usageScope.scopeType)
   const metadataById = new Map(metadataRows.map((row) => [row.id, row]))
-  const scopes = rows.map((row): UsageScopeRequest => ({
+  const scopes = sourceRows.map((row): UsageScopeRequest => ({
     rowKey: accountUsageStatsRowKey({ id: row.scope_id, accountAuthorizationId: metadataById.get(row.scope_id)?.authorization_id ?? undefined }),
     systemAccountId: usageScope.systemAccountId,
     scopeType: usageScope.scopeType,
     scopeId: row.scope_id
   }))
   const dailySeriesByRowKey = loadUsageDailySeriesForScopeRequests(scopes, input.range)
-  const overviewRows = rows.flatMap((row): AccountUsageStatsRow[] => {
+  const overviewRows = sourceRows.flatMap((row): AccountUsageStatsRow[] => {
     const metadata = metadataById.get(row.scope_id)
     if (!metadata) return []
     const accountAuthorizationId = metadata.authorization_id ?? undefined
@@ -194,11 +189,59 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
     summary: loadAccountUsageOverviewSummary(input.access, input.range),
     rows: overviewRows,
     defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
-    total: Number(countRow?.total ?? 0),
+    total: Math.max(compatiblePagedTotal(page, pageSize, pageRows.rows.length, pageRows.hasMore), (page - 1) * pageSize + overviewRows.length),
+    hasMore: pageRows.hasMore,
     page,
     pageSize,
     statsLagSeconds: latestUsageStatsLagSeconds()
   }
+}
+
+function loadSelectedAccountUsageRows(input: {
+  database: ReturnType<typeof getRecordDatabase>
+  excludeAccountIds: string[]
+  input: AccountUsageStatsPageOptions
+  usageScope: { systemAccountId: string; scopeType: AccountUsageScopeType }
+}): AccountUsageStatsSourceRow[] {
+  const excludedIds = new Set(input.excludeAccountIds)
+  const accountIds = [...new Set((input.input.accountIds ?? []).filter((id) => id && !excludedIds.has(id)))].slice(0, accountUsageSelectedAccountLimit)
+  if (!accountIds.length) return []
+  const accountFilter = buildAccountUsageScopeIdFilter(accountIds)
+  return input.database.prepare(`
+    SELECT
+      usage_window.scope_id,
+      usage_window.request_count,
+      usage_window.input_tokens,
+      usage_window.output_tokens,
+      usage_window.cache_read_tokens,
+      usage_window.cache_read_cost_usd AS cache_read_cost,
+      usage_window.total_cost_usd AS total_cost,
+      usage_window.last_used_at
+    FROM usage_scope_range_windows usage_window
+    WHERE usage_window.system_account_id = ?
+      AND usage_window.scope_type = ?
+      AND usage_window.start_date = ?
+      AND usage_window.end_date = ?
+      AND ${accountFilter.sql}
+    ORDER BY usage_window.request_count DESC, usage_window.total_cost_usd DESC, (usage_window.input_tokens + usage_window.output_tokens) DESC, usage_window.last_used_at DESC, usage_window.scope_id ASC
+  `).all(
+    input.usageScope.systemAccountId,
+    input.usageScope.scopeType,
+    input.input.range.startDate,
+    input.input.range.endDate,
+    ...accountFilter.params
+  ) as unknown as AccountUsageStatsSourceRow[]
+}
+
+function mergeAccountUsageSourceRows(pageRows: AccountUsageStatsSourceRow[], selectedRows: AccountUsageStatsSourceRow[]): AccountUsageStatsSourceRow[] {
+  const seen = new Set<string>()
+  const merged: AccountUsageStatsSourceRow[] = []
+  for (const row of [...pageRows, ...selectedRows]) {
+    if (seen.has(row.scope_id)) continue
+    seen.add(row.scope_id)
+    merged.push(row)
+  }
+  return merged
 }
 
 function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, page: number, pageSize: number): AccountUsageStatsOverview {
@@ -208,6 +251,7 @@ function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, pag
     rows: [],
     defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
     total: 0,
+    hasMore: false,
     page,
     pageSize,
     statsLagSeconds: latestUsageStatsLagSeconds()
@@ -419,8 +463,9 @@ function loadAccountUsageKeywordAccountIds(input: {
       FROM accounts
       WHERE ${clauses.join(' AND ')}
       ORDER BY lower(accounts.name) ASC, accounts.id ASC
+      LIMIT ?
     `)
-    .all(...params) as unknown as Array<{ id?: string }>
+    .all(...params, 500) as unknown as Array<{ id?: string }>
   return [...new Set(rows.map((row) => row.id).filter((id): id is string => Boolean(id)))]
 }
 

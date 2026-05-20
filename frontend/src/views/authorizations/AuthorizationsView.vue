@@ -7,8 +7,11 @@
       :source-options="sourceOptions"
       :resource-type-options="resourceTypeOptions"
       :resource-options="resourceOptions"
+      :resource-loading="filterResourceOptionsLoading"
       :teams="teams"
+      :team-loading="filterTeamOptionsLoading"
       :users="users"
+      :user-loading="filterUserOptionsLoading"
       :active-filter-count="activeFilterCount"
       :loading="loading"
       @reset="resetFilters"
@@ -16,6 +19,12 @@
       @help="helpOpen = true"
       @create="openCreateModal"
       @resource-type-change="handleResourceTypeChange"
+      @resource-dropdown="handleFilterResourceDropdown"
+      @resource-search="handleFilterResourceSearch"
+      @team-dropdown="handleFilterTeamDropdown"
+      @team-search="handleFilterTeamSearch"
+      @user-dropdown="handleFilterUserDropdown"
+      @user-search="handleFilterUserSearch"
     />
 
     <AuthorizationList
@@ -42,15 +51,24 @@
       :excluded-grantee-ids="createExcludedGranteeIds"
       :has-grantee-options="hasCreateGranteeOptions"
       :is-management-view="isManagementView"
-      :owner-users="users"
+      :owner-users="createOwnerUsers"
+      :owner-users-loading="createOwnerUsersLoading"
+      :resource-loading="createResourceOptionsLoading"
       :resource-options="createResourceOptions"
       :resource-placeholder="createResourcePlaceholder"
       :resource-select-disabled="createResourceSelectDisabled"
       :resource-type-options="createResourceTypeOptions"
       :saving="authorizationCreating"
-      :teams="teams"
-      :users="users"
+      :teams="createTeams"
+      :grantee-loading="createGranteeOptionsLoading"
+      :users="createUsers"
+      @grantee-dropdown="handleCreateGranteeDropdown"
+      @grantee-search="handleCreateGranteeSearch"
       @owner-change="handleCreateOwnerChange"
+      @owner-dropdown="handleCreateOwnerDropdown"
+      @owner-search="handleCreateOwnerSearch"
+      @resource-dropdown="handleCreateResourceDropdown"
+      @resource-search="handleCreateResourceSearch"
       @ok="createAuthorization"
     />
 
@@ -66,7 +84,7 @@
 <script setup lang="ts">
 import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import { api } from '@/api/client'
@@ -113,9 +131,37 @@ const createAccounts = ref<AccountOptionSummary[]>([])
 const createGroups = ref<GroupOptionSummary[]>([])
 const teams = ref<SystemTeamPrincipalSummary[]>([])
 const users = ref<SystemAccountPrincipalSummary[]>([])
+const createOwnerUsers = ref<SystemAccountPrincipalSummary[]>([])
+const createUsers = ref<SystemAccountPrincipalSummary[]>([])
+const createTeams = ref<SystemTeamPrincipalSummary[]>([])
+const createOwnerUsersLoading = ref(false)
+const createResourceOptionsLoading = ref(false)
+const createGranteeOptionsLoading = ref(false)
+const filterResourceOptionsLoading = ref(false)
+const filterTeamOptionsLoading = ref(false)
+const filterUserOptionsLoading = ref(false)
+const createOwnerSearchKeyword = ref('')
+const createResourceSearchKeyword = ref('')
+const createGranteeSearchKeyword = ref('')
+const filterResourceSearchKeyword = ref('')
+const filterTeamSearchKeyword = ref('')
+const filterUserSearchKeyword = ref('')
 
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
+const remoteOptionLimit = 50
+const remoteSearchDelayMs = 250
+let createOwnerUserRequestId = 0
+let createOwnerUserSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let createOwnerResourceRequestId = 0
+let createResourceSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let createGranteeRequestId = 0
+let createGranteeSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let filterResourceRequestId = 0
+let filterResourceSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let filterTeamRequestId = 0
+let filterTeamSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+let filterUserRequestId = 0
+let filterUserSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 
 type AuthorizationFilters = {
   direction: AuthorizationDirectionFilter
@@ -237,18 +283,18 @@ const createResourceOptions = computed(() => {
 })
 const createResourceSelectDisabled = computed(() => {
   if (isManagementView.value && !createForm.ownerSystemAccountId) return true
-  return createResourceOptions.value.length === 0
+  return false
 })
 const createResourcePlaceholder = computed(() => {
   if (isManagementView.value && !createForm.ownerSystemAccountId) return '请先选择授权人'
-  if (createForm.resourceType === 'account') return createResourceOptions.value.length ? '请选择单个 AI 账户' : '该授权人暂无可授权 AI 账户'
-  return createResourceOptions.value.length ? '请选择整个分组账号池' : '该授权人暂无可授权分组'
+  if (createForm.resourceType === 'account') return '输入名称 / ID 前缀搜索 AI 账户'
+  return '输入名称 / ID 前缀搜索分组'
 })
 
 const createExcludedGranteeIds = computed(() => createForm.ownerSystemAccountId ? [createForm.ownerSystemAccountId] : [])
 const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'system_account'
-  ? users.value.some((user) => user.status === 'active' && !createExcludedGranteeIds.value.includes(user.id))
-  : teams.value.some((team) => team.status === 'active'))
+  ? createUsers.value.some((user) => user.status === 'active' && !createExcludedGranteeIds.value.includes(user.id))
+  : createTeams.value.some((team) => team.status === 'active'))
 const activeFilterCount = computed(() => {
   let count = 0
   if (!isManagementView.value && filters.sourceType !== 'all') count += 1
@@ -276,44 +322,31 @@ const createOwnedGroups = computed(() => createGroups.value.filter((group) => gr
 
 watch(() => createForm.granteeType, () => {
   createForm.granteeId = ''
+  createGranteeSearchKeyword.value = ''
+  clearCreateGranteeSearchTimer()
+  void loadCreateGranteeOptions()
 })
 
 watch(() => createForm.resourceType, () => {
   createForm.resourceId = ''
+  createResourceSearchKeyword.value = ''
+  clearCreateResourceSearchTimer()
+  void loadCreateResourceOptions()
 })
 
 async function loadMetaData() {
-  const systemAccountId = isManagementView.value ? scopedSystemAccountId() : undefined
-  const [accountResult, groupResult, teamResult, userResult] = await Promise.allSettled([
-    isManagementView.value ? api.accounts.options({ systemAccountId, limit: 200 }) : api.myAccounts.options({ limit: 200 }),
-    isManagementView.value ? api.groups.options({ systemAccountId }) : api.myGroups.options(),
-    isManagementView.value ? api.authorizationOptions.granteeTeams() : api.myAuthorizationOptions.granteeTeams(),
-    isManagementView.value ? api.authorizationOptions.granteeAccounts() : api.myAuthorizationOptions.granteeAccounts()
+  if (!isManagementView.value) {
+    accounts.value = []
+    groups.value = []
+    teams.value = []
+    users.value = []
+    return
+  }
+  await Promise.allSettled([
+    loadFilterResourceOptions(),
+    loadFilterTeamOptions(),
+    loadFilterUserOptions()
   ])
-  if (accountResult.status === 'fulfilled') {
-    accounts.value = accountResult.value
-  } else {
-    console.error(accountResult.reason)
-    message.error('加载可授权账户失败')
-  }
-  if (groupResult.status === 'fulfilled') {
-    groups.value = groupResult.value
-  } else {
-    console.error(groupResult.reason)
-    message.error('加载可授权分组失败')
-  }
-  if (teamResult.status === 'fulfilled') {
-    teams.value = teamResult.value
-  } else {
-    console.error(teamResult.reason)
-    message.error('加载团队列表失败')
-  }
-  if (userResult.status === 'fulfilled') {
-    users.value = userResult.value
-  } else {
-    console.error(userResult.reason)
-    message.error('加载系统账户列表失败')
-  }
 }
 
 function authorizationListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
@@ -345,63 +378,91 @@ function openCreateModal() {
   createForm.remark = ''
   createForm.expiresAt = undefined
   createForm.quotaLimits = createQuotaLimitForm()
+  resetCreateOptionSearchState()
   createModalOpen.value = true
-  void loadCreateOwnerResources()
+  void loadCreateOwnerOptions()
+  void loadCreateResourceOptions()
+  void loadCreateGranteeOptions()
 }
 
 function handleCreateOwnerChange() {
   createForm.resourceId = ''
+  createResourceSearchKeyword.value = ''
+  createGranteeSearchKeyword.value = ''
+  clearCreateResourceSearchTimer()
+  clearCreateGranteeSearchTimer()
   if (createForm.granteeType === 'system_account' && createForm.granteeId === createForm.ownerSystemAccountId) {
     createForm.granteeId = ''
   }
-  void loadCreateOwnerResources()
+  void loadCreateResourceOptions()
+  void loadCreateGranteeOptions()
 }
 
-async function loadCreateOwnerResources() {
-  const requestId = createOwnerResourceRequestId + 1
-  createOwnerResourceRequestId = requestId
-  const ownerSystemAccountId = createForm.ownerSystemAccountId
-  const resourceType = createForm.resourceType
-  createAccounts.value = []
-  createGroups.value = []
-  const accountRequest = isManagementView.value
-    ? ownerSystemAccountId
-      ? api.accounts.options({ systemAccountId: ownerSystemAccountId, limit: 200 })
-      : undefined
-    : api.myAccounts.options({ limit: 200 })
-  const groupRequest = isManagementView.value
-    ? ownerSystemAccountId
-      ? api.groups.options({ systemAccountId: ownerSystemAccountId })
-      : undefined
-    : api.myGroups.options()
-  if (!accountRequest || !groupRequest) return
-  const [accountResult, groupResult] = await Promise.allSettled([
-    accountRequest,
-    groupRequest
-  ])
-  if (
-    requestId !== createOwnerResourceRequestId
-    || createForm.ownerSystemAccountId !== ownerSystemAccountId
-    || createForm.resourceType !== resourceType
-  ) {
-    return
+function handleCreateOwnerDropdown(open: boolean) {
+  if (open) {
+    void loadCreateOwnerOptions()
   }
-  if (accountResult.status === 'fulfilled') {
-    createAccounts.value = accountResult.value
-  } else {
-    console.error(accountResult.reason)
-    message.error('加载授权人的 AI 账户失败')
+}
+
+function handleCreateOwnerSearch(value: string) {
+  scheduleCreateOwnerSearch(value)
+}
+
+function handleCreateResourceDropdown(open: boolean) {
+  if (open) {
+    void loadCreateResourceOptions()
   }
-  if (groupResult.status === 'fulfilled') {
-    createGroups.value = groupResult.value
-  } else {
-    console.error(groupResult.reason)
-    message.error('加载授权人的分组失败')
+}
+
+function handleCreateResourceSearch(value: string) {
+  scheduleCreateResourceSearch(value)
+}
+
+function handleCreateGranteeDropdown(open: boolean) {
+  if (open) {
+    void loadCreateGranteeOptions()
+  }
+}
+
+function handleCreateGranteeSearch(value: string) {
+  scheduleCreateGranteeSearch(value)
+}
+
+function handleFilterResourceSearch(value: string) {
+  scheduleFilterResourceSearch(value)
+}
+
+function handleFilterResourceDropdown(open: boolean) {
+  if (open) {
+    void loadFilterResourceOptions()
+  }
+}
+
+function handleFilterTeamSearch(value: string) {
+  scheduleFilterTeamSearch(value)
+}
+
+function handleFilterTeamDropdown(open: boolean) {
+  if (open) {
+    void loadFilterTeamOptions()
+  }
+}
+
+function handleFilterUserSearch(value: string) {
+  scheduleFilterUserSearch(value)
+}
+
+function handleFilterUserDropdown(open: boolean) {
+  if (open) {
+    void loadFilterUserOptions()
   }
 }
 
 function handleResourceTypeChange() {
   filters.resourceId = undefined
+  filterResourceSearchKeyword.value = ''
+  clearFilterResourceSearchTimer()
+  void loadFilterResourceOptions()
   refreshData()
 }
 
@@ -409,7 +470,371 @@ function resetFilters() {
   Object.assign(filters, defaultAuthorizationsPageState().filters)
   resetPagination()
   pageStateCache.clear()
+  resetFilterOptionSearchState()
+  void loadFilterResourceOptions()
+  void loadFilterTeamOptions()
+  void loadFilterUserOptions()
   void loadData()
+}
+
+async function loadCreateOwnerOptions(keyword?: string): Promise<void> {
+  if (!isManagementView.value) {
+    createOwnerUsers.value = []
+    return
+  }
+  const requestId = ++createOwnerUserRequestId
+  createOwnerUsersLoading.value = true
+  try {
+    const search = normalizeSearchKeyword(keyword)
+    let nextOptions = await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
+    nextOptions = await ensureSelectedSystemAccountPrincipal(nextOptions, createForm.ownerSystemAccountId)
+    if (requestId !== createOwnerUserRequestId) return
+    createOwnerUsers.value = nextOptions
+  } catch (error) {
+    if (requestId !== createOwnerUserRequestId) return
+    console.error(error)
+    message.error('加载授权人列表失败')
+  } finally {
+    if (requestId === createOwnerUserRequestId) {
+      createOwnerUsersLoading.value = false
+    }
+  }
+}
+
+async function loadCreateResourceOptions(keyword?: string): Promise<void> {
+  const ownerSystemAccountId = createForm.ownerSystemAccountId
+  const requestId = ++createOwnerResourceRequestId
+  createResourceOptionsLoading.value = true
+  try {
+    if (isManagementView.value && !ownerSystemAccountId) {
+      createAccounts.value = []
+      createGroups.value = []
+      return
+    }
+    const search = normalizeSearchKeyword(keyword)
+    if (createForm.resourceType === 'account') {
+      let nextAccounts = isManagementView.value
+        ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
+        : await api.myAccounts.options({ keyword: search, limit: remoteOptionLimit })
+      nextAccounts = await ensureSelectedAccountOption(nextAccounts, createForm.resourceId, ownerSystemAccountId)
+      if (requestId !== createOwnerResourceRequestId) return
+      createAccounts.value = nextAccounts
+      createGroups.value = []
+    } else {
+      let nextGroups = isManagementView.value
+        ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
+        : await api.myGroups.options({ keyword: search, limit: remoteOptionLimit })
+      nextGroups = await ensureSelectedGroupOption(nextGroups, createForm.resourceId, ownerSystemAccountId)
+      if (requestId !== createOwnerResourceRequestId) return
+      createGroups.value = nextGroups
+      createAccounts.value = []
+    }
+  } catch (error) {
+    if (requestId !== createOwnerResourceRequestId) return
+    console.error(error)
+    message.error('加载授权资源失败')
+  } finally {
+    if (requestId === createOwnerResourceRequestId) {
+      createResourceOptionsLoading.value = false
+    }
+  }
+}
+
+async function loadCreateGranteeOptions(keyword?: string): Promise<void> {
+  const requestId = ++createGranteeRequestId
+  createGranteeOptionsLoading.value = true
+  try {
+    const search = normalizeSearchKeyword(keyword)
+    if (createForm.granteeType === 'system_account') {
+      let nextUsers = isManagementView.value
+        ? await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
+        : await api.myAuthorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
+      nextUsers = nextUsers.filter((user) => !createExcludedGranteeIds.value.includes(user.id))
+      nextUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, createForm.granteeId)
+      if (requestId !== createGranteeRequestId) return
+      createUsers.value = nextUsers
+      createTeams.value = []
+    } else {
+      let nextTeams = isManagementView.value
+        ? await api.authorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
+        : await api.myAuthorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
+      nextTeams = await ensureSelectedTeamOption(nextTeams, createForm.granteeId)
+      if (requestId !== createGranteeRequestId) return
+      createTeams.value = nextTeams
+      createUsers.value = []
+    }
+  } catch (error) {
+    if (requestId !== createGranteeRequestId) return
+    console.error(error)
+    message.error('加载授权对象失败')
+  } finally {
+    if (requestId === createGranteeRequestId) {
+      createGranteeOptionsLoading.value = false
+    }
+  }
+}
+
+async function loadFilterResourceOptions(keyword?: string): Promise<void> {
+  if (!isManagementView.value) {
+    accounts.value = []
+    groups.value = []
+    return
+  }
+  const requestId = ++filterResourceRequestId
+  if (filters.resourceType === 'all') {
+    accounts.value = []
+    groups.value = []
+    return
+  }
+  filterResourceOptionsLoading.value = true
+  const requestKeyword = normalizeSearchKeyword(keyword)
+  const systemAccountId = scopedSystemAccountId()
+  try {
+    if (filters.resourceType === 'account') {
+      const nextAccounts = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
+      const mergedAccounts = await ensureSelectedAccountOption(nextAccounts, filters.resourceId, systemAccountId)
+      if (requestId !== filterResourceRequestId) return
+      accounts.value = mergedAccounts
+      groups.value = []
+      return
+    }
+    const nextGroups = await api.groups.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
+    const mergedGroups = await ensureSelectedGroupOption(nextGroups, filters.resourceId, systemAccountId)
+    if (requestId !== filterResourceRequestId) return
+    groups.value = mergedGroups
+    accounts.value = []
+  } catch (error) {
+    if (requestId !== filterResourceRequestId) return
+    console.error(error)
+    message.error(filters.resourceType === 'account' ? '加载可授权账户失败' : '加载可授权分组失败')
+  } finally {
+    if (requestId === filterResourceRequestId) {
+      filterResourceOptionsLoading.value = false
+    }
+  }
+}
+
+async function loadFilterTeamOptions(keyword?: string): Promise<void> {
+  if (!isManagementView.value) {
+    teams.value = []
+    return
+  }
+  const requestId = ++filterTeamRequestId
+  filterTeamOptionsLoading.value = true
+  try {
+    const nextTeams = await api.authorizationOptions.granteeTeams({ keyword: normalizeSearchKeyword(keyword), limit: remoteOptionLimit })
+    if (requestId !== filterTeamRequestId) return
+    teams.value = await ensureSelectedTeamOption(nextTeams, filters.teamId)
+  } catch (error) {
+    if (requestId !== filterTeamRequestId) return
+    console.error(error)
+    message.error('加载团队列表失败')
+  } finally {
+    if (requestId === filterTeamRequestId) {
+      filterTeamOptionsLoading.value = false
+    }
+  }
+}
+
+async function loadFilterUserOptions(keyword?: string): Promise<void> {
+  if (!isManagementView.value) {
+    users.value = []
+    return
+  }
+  const requestId = ++filterUserRequestId
+  filterUserOptionsLoading.value = true
+  try {
+    const nextUsers = await api.authorizationOptions.granteeAccounts({ keyword: normalizeSearchKeyword(keyword), limit: remoteOptionLimit })
+    if (requestId !== filterUserRequestId) return
+    users.value = await ensureSelectedSystemAccountPrincipal(nextUsers, filters.granteeSystemAccountId)
+  } catch (error) {
+    if (requestId !== filterUserRequestId) return
+    console.error(error)
+    message.error('加载系统账户列表失败')
+  } finally {
+    if (requestId === filterUserRequestId) {
+      filterUserOptionsLoading.value = false
+    }
+  }
+}
+
+function scheduleCreateOwnerSearch(value: string) {
+  createOwnerSearchKeyword.value = value
+  clearCreateOwnerSearchTimer()
+  createOwnerUserSearchTimer = window.setTimeout(() => {
+    createOwnerUserSearchTimer = undefined
+    void loadCreateOwnerOptions(createOwnerSearchKeyword.value)
+  }, remoteSearchDelayMs)
+}
+
+function scheduleCreateResourceSearch(value: string) {
+  createResourceSearchKeyword.value = value
+  clearCreateResourceSearchTimer()
+  createResourceSearchTimer = window.setTimeout(() => {
+    createResourceSearchTimer = undefined
+    void loadCreateResourceOptions(createResourceSearchKeyword.value)
+  }, remoteSearchDelayMs)
+}
+
+function scheduleCreateGranteeSearch(value: string) {
+  createGranteeSearchKeyword.value = value
+  clearCreateGranteeSearchTimer()
+  createGranteeSearchTimer = window.setTimeout(() => {
+    createGranteeSearchTimer = undefined
+    void loadCreateGranteeOptions(createGranteeSearchKeyword.value)
+  }, remoteSearchDelayMs)
+}
+
+function scheduleFilterResourceSearch(value: string) {
+  filterResourceSearchKeyword.value = value
+  clearFilterResourceSearchTimer()
+  filterResourceSearchTimer = window.setTimeout(() => {
+    filterResourceSearchTimer = undefined
+    void loadFilterResourceOptions(filterResourceSearchKeyword.value)
+  }, remoteSearchDelayMs)
+}
+
+function scheduleFilterTeamSearch(value: string) {
+  filterTeamSearchKeyword.value = value
+  clearFilterTeamSearchTimer()
+  filterTeamSearchTimer = window.setTimeout(() => {
+    filterTeamSearchTimer = undefined
+    void loadFilterTeamOptions(filterTeamSearchKeyword.value)
+  }, remoteSearchDelayMs)
+}
+
+function scheduleFilterUserSearch(value: string) {
+  filterUserSearchKeyword.value = value
+  clearFilterUserSearchTimer()
+  filterUserSearchTimer = window.setTimeout(() => {
+    filterUserSearchTimer = undefined
+    void loadFilterUserOptions(filterUserSearchKeyword.value)
+  }, remoteSearchDelayMs)
+}
+
+function clearCreateOwnerSearchTimer() {
+  if (createOwnerUserSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(createOwnerUserSearchTimer)
+    createOwnerUserSearchTimer = undefined
+  }
+}
+
+function clearCreateResourceSearchTimer() {
+  if (createResourceSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(createResourceSearchTimer)
+    createResourceSearchTimer = undefined
+  }
+}
+
+function clearCreateGranteeSearchTimer() {
+  if (createGranteeSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(createGranteeSearchTimer)
+    createGranteeSearchTimer = undefined
+  }
+}
+
+function clearFilterResourceSearchTimer() {
+  if (filterResourceSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(filterResourceSearchTimer)
+    filterResourceSearchTimer = undefined
+  }
+}
+
+function clearFilterTeamSearchTimer() {
+  if (filterTeamSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(filterTeamSearchTimer)
+    filterTeamSearchTimer = undefined
+  }
+}
+
+function clearFilterUserSearchTimer() {
+  if (filterUserSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(filterUserSearchTimer)
+    filterUserSearchTimer = undefined
+  }
+}
+
+function resetCreateOptionSearchState() {
+  createOwnerSearchKeyword.value = ''
+  createResourceSearchKeyword.value = ''
+  createGranteeSearchKeyword.value = ''
+  clearCreateOwnerSearchTimer()
+  clearCreateResourceSearchTimer()
+  clearCreateGranteeSearchTimer()
+}
+
+function resetFilterOptionSearchState() {
+  filterResourceSearchKeyword.value = ''
+  filterTeamSearchKeyword.value = ''
+  filterUserSearchKeyword.value = ''
+  clearFilterResourceSearchTimer()
+  clearFilterTeamSearchTimer()
+  clearFilterUserSearchTimer()
+}
+
+function normalizeSearchKeyword(value?: string): string | undefined {
+  const keyword = value?.trim()
+  return keyword ? keyword : undefined
+}
+
+async function ensureSelectedAccountOption(options: AccountOptionSummary[], selectedId?: string, systemAccountId?: string): Promise<AccountOptionSummary[]> {
+  const id = selectedId?.trim()
+  if (!id || options.some((item) => item.id === id)) return options
+  try {
+    const selected = isManagementView.value
+      ? await api.accounts.options({ systemAccountId, keyword: id, limit: 1 })
+      : await api.myAccounts.options({ keyword: id, limit: 1 })
+    return mergeOptionsById(selected, options)
+  } catch {
+    return options
+  }
+}
+
+async function ensureSelectedGroupOption(options: GroupOptionSummary[], selectedId?: string, systemAccountId?: string): Promise<GroupOptionSummary[]> {
+  const id = selectedId?.trim()
+  if (!id || options.some((item) => item.id === id)) return options
+  try {
+    const selected = isManagementView.value
+      ? await api.groups.options({ systemAccountId, keyword: id, limit: 1 })
+      : await api.myGroups.options({ keyword: id, limit: 1 })
+    return mergeOptionsById(selected, options)
+  } catch {
+    return options
+  }
+}
+
+async function ensureSelectedSystemAccountPrincipal(options: SystemAccountPrincipalSummary[], selectedId?: string): Promise<SystemAccountPrincipalSummary[]> {
+  const id = selectedId?.trim()
+  if (!id || options.some((item) => item.id === id)) return options
+  try {
+    const selected = isManagementView.value
+      ? await api.authorizationOptions.granteeAccounts({ keyword: id, limit: 1 })
+      : await api.myAuthorizationOptions.granteeAccounts({ keyword: id, limit: 1 })
+    return mergeOptionsById(selected, options)
+  } catch {
+    return options
+  }
+}
+
+async function ensureSelectedTeamOption(options: SystemTeamPrincipalSummary[], selectedId?: string): Promise<SystemTeamPrincipalSummary[]> {
+  const id = selectedId?.trim()
+  if (!id || options.some((item) => item.id === id)) return options
+  try {
+    const selected = isManagementView.value
+      ? await api.authorizationOptions.granteeTeams({ keyword: id, limit: 1 })
+      : await api.myAuthorizationOptions.granteeTeams({ keyword: id, limit: 1 })
+    return mergeOptionsById(selected, options)
+  } catch {
+    return options
+  }
+}
+
+function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
+  const merged = new Map<string, T>()
+  for (const item of [...leading, ...trailing]) {
+    merged.set(item.id, item)
+  }
+  return [...merged.values()]
 }
 
 const createAuthorization = submitAction('authorizations.create', async () => {
@@ -425,7 +850,7 @@ const createAuthorization = submitAction('authorizations.create', async () => {
     message.warning(createForm.granteeType === 'system_account' ? '请选择被授权用户' : '请选择团队')
     return
   }
-  if (createForm.granteeType === 'system_account' && !users.value.some((user) => user.id === createForm.granteeId && user.status === 'active')) {
+  if (createForm.granteeType === 'system_account' && !createUsers.value.some((user) => user.id === createForm.granteeId && user.status === 'active')) {
     message.warning('请选择启用中的系统账户')
     return
   }
@@ -433,7 +858,7 @@ const createAuthorization = submitAction('authorizations.create', async () => {
     message.warning('不能授权给资源所有者自己')
     return
   }
-  if (createForm.granteeType === 'team' && !teams.value.some((team) => team.id === createForm.granteeId && team.status === 'active')) {
+  if (createForm.granteeType === 'team' && !createTeams.value.some((team) => team.id === createForm.granteeId && team.status === 'active')) {
     message.warning('请选择启用中的团队')
     return
   }
@@ -595,6 +1020,11 @@ async function confirmExpireChange() {
 onMounted(async () => {
   applyRouteFilters()
   await Promise.all([loadMetaData(), loadData()])
+})
+
+onBeforeUnmount(() => {
+  resetCreateOptionSearchState()
+  resetFilterOptionSearchState()
 })
 
 function applyRouteFilters() {

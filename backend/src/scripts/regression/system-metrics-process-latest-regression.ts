@@ -22,6 +22,22 @@ const [databaseModule, usageStatsRepository] = await Promise.all([
 ])
 
 try {
+  const emptyOverview = usageStatsRepository.getSystemMetricsOverview({
+    startDate: '2026-01-01',
+    endDate: '2026-01-01',
+    days: 1,
+    maxDays: 31
+  })
+  assert.deepEqual(
+    emptyOverview.processEventLoopLatestStatus,
+    [
+      { processRole: 'server', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'db-service', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null }
+    ],
+    '无最新采样时应显式返回每个进程角色的不可用状态'
+  )
+
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'server',
     processPid: 1001,
@@ -55,6 +71,13 @@ try {
   assert.equal(latestByRole.get('db-service')?.eventLoopLagMs, 31, 'db-service 最新样本不应被 worker 连续样本挤掉')
   assert.equal(latestByRole.get('worker')?.eventLoopLagMs, 144, 'worker 应返回自身最新样本')
   assert.deepEqual([...latestByRole.keys()], ['server', 'worker', 'db-service'], '最新进程样本应按固定角色顺序返回')
+  const latestStatusByRole = new Map(overview.processEventLoopLatestStatus.map((row) => [row.processRole, row]))
+  assert.deepEqual([...latestStatusByRole.keys()], ['server', 'worker', 'db-service'], '最新进程样本可用性应固定覆盖所有角色')
+  assert.equal(latestStatusByRole.get('server')?.sampleAvailable, true, 'server 有最新采样时应显式标记可用')
+  assert.equal(latestStatusByRole.get('server')?.eventLoopLagMs, 11, 'server 可用性行应带最新延迟值')
+  assert.equal(latestStatusByRole.get('worker')?.sampleAvailable, true, 'worker 有最新采样时应显式标记可用')
+  assert.equal(latestStatusByRole.get('worker')?.processPid, 2124, 'worker 可用性行应带最新 PID')
+  assert.equal(latestStatusByRole.get('db-service')?.sampleAvailable, true, 'db-service 有最新采样时应显式标记可用')
   assert.deepEqual(overview.backgroundJobs, [], 'repository 层系统指标应提供空后台任务数组，路由层再补运行时快照')
 
   console.log('系统指标进程最新样本回归通过：每个进程角色独立取最新样本')
