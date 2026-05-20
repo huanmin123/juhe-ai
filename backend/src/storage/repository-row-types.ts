@@ -156,6 +156,10 @@ export type AccountListRow = AccountRow & {
   access_type?: 'owner' | 'authorized'
   authorization_id?: string | null
   authorization_status?: AuthorizationStatus | null
+  authorization_expires_at?: string | null
+  authorization_limits_json?: string | null
+  authorization_effective_source_type?: ResourceAuthorizationSourceType | null
+  authorization_effective_source_team_id?: string | null
   system_account_sort_name?: string | null
   binding_system_account_id?: string | null
   bound_group_id?: string | null

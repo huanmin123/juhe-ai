@@ -51,11 +51,13 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountSummary) {
+  if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return 'red'
   if (isOwnerDisabledAuthorizedAccount(account)) return 'default'
   return statusColor(account.status)
 }
 
 export function accountStatusText(account: AccountSummary) {
+  if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return '授权额度已用完'
   if (isOwnerDisabledAuthorizedAccount(account)) return '停用'
   return statusText(account.status)
 }
@@ -69,6 +71,12 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
   if (account.accountExpiresAt) {
     lines.push(`账户到期时间：${formatDateTime(account.accountExpiresAt)}`)
+  }
+  if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) {
+    lines.push('授权额度已用完，当前调用会被拦截')
+  }
+  if (isAuthorizedAccount(account) && account.groupBindStatus === 'authorization_unavailable') {
+    lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
   }
   const cooldownText = accountCooldownText(account)
   if (cooldownText) {

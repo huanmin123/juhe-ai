@@ -331,6 +331,9 @@ export interface AccountSummary {
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
+  authorizationExpiresAt?: string
+  authorizationLimits?: RequestQuotaLimits
+  authorizationQuotaExceeded?: boolean
   authorizationSources?: ResourceAuthorizationSourceSummary[]
   permissions?: ResourcePermissions
   authorizationUsageAvailable?: boolean
@@ -352,6 +355,7 @@ export type AccountOptionSummary = Pick<
   | 'accessType'
   | 'accountAuthorizationId'
   | 'authorizationStatus'
+  | 'accountExpiresAt'
   | 'permissions'
 >
 
@@ -508,6 +512,7 @@ export interface ResourceAuthorizationSummary {
   remark?: string
   expiresAt?: string
   limits?: RequestQuotaLimits
+  resourceAccountExpiresAt?: string
   modelPolicy?: Record<string, unknown>
   effectiveSourceType?: ResourceAuthorizationSourceType
   effectiveSourceTeamId?: string

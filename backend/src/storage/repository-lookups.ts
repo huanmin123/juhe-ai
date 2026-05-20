@@ -17,6 +17,7 @@ export interface BusinessResourceLookup {
   id: string
   name: string
   systemAccountId: string
+  accountExpiresAt?: string
 }
 
 export interface SystemTeamLookup {
@@ -161,12 +162,12 @@ export function loadSystemAccountNameMapByIds(systemAccountIds: Array<string | u
 
 export function loadAccountLookupMap(accountIds: Array<string | undefined>): Map<string, BusinessResourceLookup> {
   return loadCachedRowsByIds(accountIds, accountLookupCache, (ids) => {
-    const rows = loadRowsByIds<{ id: string; name: string; system_account_id: string }>(ids, (chunk) => `
-      SELECT id, name, system_account_id
+    const rows = loadRowsByIds<{ id: string; name: string; system_account_id: string; account_expires_at: string | null }>(ids, (chunk) => `
+      SELECT id, name, system_account_id, account_expires_at
       FROM accounts
       WHERE id IN (${sqlPlaceholders(chunk.length)})
     `)
-    return rows.map((row) => ({ id: row.id, name: row.name, systemAccountId: row.system_account_id }))
+    return rows.map((row) => ({ id: row.id, name: row.name, systemAccountId: row.system_account_id, accountExpiresAt: row.account_expires_at ?? undefined }))
   })
 }
 

@@ -80,7 +80,7 @@ function queryAccountRowsForAccess(
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
           ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
-          SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+          SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS authorization_limits_json, NULL AS authorization_effective_source_type, NULL AS authorization_effective_source_team_id
           FROM accounts
         ) account_rows
         ${accountQualityJoinClause(includeQualityInQuery)}
@@ -98,7 +98,7 @@ function queryAccountRowsForAccess(
           COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
           ${accountQualitySelectColumns(includeQualityInQuery)}
         FROM (
-          SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+          SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS authorization_limits_json, NULL AS authorization_effective_source_type, NULL AS authorization_effective_source_team_id
           FROM accounts
         ) account_rows
         ${accountQualityJoinClause(includeQualityInQuery)}
@@ -115,11 +115,11 @@ function queryAccountRowsForAccess(
         COALESCE(system_accounts.display_name, system_accounts.username, account_rows.system_account_id) AS system_account_sort_name,
         ${accountQualitySelectColumns(includeQualityInQuery)}
       FROM (
-        SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+        SELECT ${accountSelectColumns}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status, NULL AS authorization_expires_at, NULL AS authorization_limits_json, NULL AS authorization_effective_source_type, NULL AS authorization_effective_source_team_id
         FROM accounts
         WHERE accounts.system_account_id = ?
         UNION ALL
-        SELECT ${accountSelectColumns}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
+        SELECT ${accountSelectColumns}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status, ra.expires_at AS authorization_expires_at, ra.limits_json AS authorization_limits_json, ra.effective_source_type AS authorization_effective_source_type, ra.effective_source_team_id AS authorization_effective_source_team_id
         FROM resource_authorizations ra
         INNER JOIN accounts ON accounts.id = ra.resource_id
         WHERE ra.resource_type = 'account'
@@ -236,7 +236,11 @@ function accountListOuterSelectColumns(): string {
     'updated_at',
     'access_type',
     'authorization_id',
-    'authorization_status'
+    'authorization_status',
+    'authorization_expires_at',
+    'authorization_limits_json',
+    'authorization_effective_source_type',
+    'authorization_effective_source_team_id'
   ].map((column) => `account_rows.${column}`).join(', ')
 }
 

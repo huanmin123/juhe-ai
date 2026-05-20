@@ -5,8 +5,11 @@
       <div class="account-mobile-card-title">
         <div class="account-mobile-name-row">
           <span class="account-mobile-name">{{ account.name }}</span>
-          <a-tooltip v-if="isAuthorizedAccount(account)" :title="authorizedTooltip">
-            <InfoCircleOutlined class="authorized-account-icon" :class="{ 'owner-disabled': isOwnerDisabledAuthorizedAccount(account) }" />
+          <a-tooltip v-if="isAuthorizedAccount(account)">
+            <template #title>
+              <span class="authorized-tooltip-text">{{ authorizedTooltip }}</span>
+            </template>
+            <InfoCircleOutlined class="authorized-account-icon" :class="authorizedIconClass" />
           </a-tooltip>
         </div>
         <div class="account-mobile-tags">
@@ -87,9 +90,9 @@ import {
   accountTypeText,
   formatDateTime,
   isAccountPackageExpired,
-  isAuthorizedAccount,
-  isOwnerDisabledAuthorizedAccount
+  isAuthorizedAccount
 } from './accountFormatters'
+import { authorizedAccountSourceToneClass } from './accountRules'
 
 const props = defineProps<{
   account: AccountSummary
@@ -117,6 +120,7 @@ const proxyText = computed(() => {
   if (!props.account.proxyProfileId) return ''
   return props.proxy?.name ?? '代理已配置'
 })
+const authorizedIconClass = computed(() => authorizedAccountSourceToneClass(props.account))
 const proxyTooltip = computed(() => {
   if (props.account.proxyProfileErrorMessage) return props.account.proxyProfileErrorMessage
   if (props.account.proxyProfileUnavailable) return '代理不可用，请到代理管理确认配置'
@@ -285,8 +289,16 @@ function handleActionClick(key: string) {
   font-size: 14px;
 }
 
-.authorized-account-icon.owner-disabled {
+.authorized-account-icon.source-warning {
   color: #fa8c16;
+}
+
+.authorized-account-icon.source-danger {
+  color: #cf1322;
+}
+
+.authorized-tooltip-text {
+  white-space: pre-line;
 }
 
 .expired-cell {

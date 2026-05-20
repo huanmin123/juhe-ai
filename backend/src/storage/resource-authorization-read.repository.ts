@@ -15,7 +15,7 @@ import {
   withResourceAuthorizationPermissions
 } from './resource-authorization-list-helpers.js'
 import { resourceAuthorizationSelectColumns, usageScope } from './resource-authorization-helpers.js'
-import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountPrincipalMapByIds, loadSystemTeamNameMap } from './repository-lookups.js'
+import { loadAccountLookupMap, loadGroupNameMap, loadSystemAccountPrincipalMapByIds, loadSystemTeamNameMap } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
 import { compatiblePagedTotal, takePageRows } from './query-utils.js'
@@ -238,7 +238,7 @@ export function loadRuntimeAuthorizationForUserGrant(row: ResourceAuthorizationG
 }
 
 function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow[], options: ResourceAuthorizationListOptions = {}): ResourceAuthorizationSummary[] {
-  const accountNames = loadAccountNameMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
+  const accounts = loadAccountLookupMap(rows.filter((row) => row.resource_type === 'account').map((row) => row.resource_id))
   const groupNames = loadGroupNameMap(rows.filter((row) => row.resource_type === 'group').map((row) => row.resource_id))
   const systemAccounts = loadSystemAccountPrincipalMapByIds(rows.flatMap((row) => [row.resource_owner_system_account_id, row.grantee_system_account_id ?? '']))
   const teamNames = loadSystemTeamNameMap(rows.map((row) => row.grantee_team_id ?? ''))
@@ -254,11 +254,12 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
     const grantee = row.grantee_system_account_id ? systemAccounts.get(row.grantee_system_account_id) : undefined
     const teamName = row.grantee_team_id ? teamNames.get(row.grantee_team_id) : undefined
     const source = resourceAuthorizationGrantSourceSummary(row, teamName)
+    const account = row.resource_type === 'account' ? accounts.get(row.resource_id) : undefined
     return {
       id: row.id,
       resourceType: row.resource_type,
       resourceId: row.resource_id,
-      resourceName: row.resource_type === 'account' ? accountNames.get(row.resource_id) : groupNames.get(row.resource_id),
+      resourceName: row.resource_type === 'account' ? account?.name : groupNames.get(row.resource_id),
       resourceOwnerSystemAccountId: row.resource_owner_system_account_id,
       resourceOwnerSystemAccountName: owner?.displayName ?? owner?.username,
       granteeType: row.grantee_type,
@@ -272,6 +273,7 @@ function resourceAuthorizationGrantSummaries(rows: ResourceAuthorizationGrantRow
       remark: row.remark ?? undefined,
       expiresAt: row.expires_at ?? undefined,
       limits: parseRequestQuotaLimitsJson(row.limits_json),
+      resourceAccountExpiresAt: account?.accountExpiresAt,
       modelPolicy: parseOptionalJsonObject(row.model_policy_json ?? undefined),
       effectiveSourceType: row.grantee_type === 'team' ? 'team' : 'manual',
       effectiveSourceTeamId: row.grantee_team_id ?? undefined,

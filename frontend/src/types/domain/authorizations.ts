@@ -88,6 +88,7 @@ export interface ResourceAuthorizationSummary {
   remark?: string
   expiresAt?: string
   limits?: RequestQuotaLimits
+  resourceAccountExpiresAt?: string
   modelPolicy?: Record<string, unknown>
   effectiveSourceType?: AuthorizationSourceType
   effectiveSourceTeamId?: string

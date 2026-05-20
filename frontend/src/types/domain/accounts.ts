@@ -1,4 +1,6 @@
 import type { AccountGroupBindStatus, AccountStatus, AccountTrafficMigrationSourceStatus, AccountType, AuthorizationStatus, ProviderCode, ResourceAccessType } from './base'
+import type { RequestQuotaLimits } from './access'
+import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
 
 export interface AccountCredentials {
@@ -104,6 +106,10 @@ export interface AccountSummary {
   ownerSystemAccountId?: string
   ownerSystemAccountName?: string
   authorizationStatus?: AuthorizationStatus
+  authorizationExpiresAt?: string
+  authorizationLimits?: RequestQuotaLimits
+  authorizationQuotaExceeded?: boolean
+  authorizationSources?: AuthorizationSourceSummary[]
   permissions?: ResourcePermissions
   authorizationUsageAvailable?: boolean
   authorizationCount?: number
@@ -135,6 +141,7 @@ export type AccountOptionSummary = Pick<
   | 'accessType'
   | 'accountAuthorizationId'
   | 'authorizationStatus'
+  | 'accountExpiresAt'
   | 'permissions'
 >
 

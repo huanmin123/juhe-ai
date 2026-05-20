@@ -1,15 +1,92 @@
 import type { AccountSummary, ResourcePermissions } from '@/types/domain'
+import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
+import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import type { AccountMenuItem } from './accountActionTypes'
-import { isAuthorizedAccount, isOwnerDisabledAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
+import { formatDateTime, isAccountPackageExpired, isAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
 
 export type AccountGroupIdResolver = (accountId: string) => string | undefined
+export type AuthorizedAccountSourceTone = 'normal' | 'warning' | 'danger'
 
 export function authorizedAccountTooltip(account: AccountSummary): string {
   const ownerName = account.ownerSystemAccountName || '其他用户'
-  if (isOwnerDisabledAuthorizedAccount(account)) {
-    return `授权自 ${ownerName}。账户所有者已停用该账户，你暂时无法启用或调用；请联系对方启用后再使用。`
+  const expiresText = account.authorizationExpiresAt ? formatDateTime(account.authorizationExpiresAt) : '长期有效'
+  const limitsText = quotaLimitSummaryText(account.authorizationLimits)
+  const hasBlocker = hasAuthorizedAccountSourceBlocker(account)
+  const lines = [
+    hasBlocker ? `授权自 ${ownerName}。` : `授权自 ${ownerName}，仅可使用。`,
+    `授权来源：${authorizedAccountSourceText(account)}`,
+    `授权到期：${expiresText}`,
+    `授权限额：${limitsText}`
+  ]
+  if (account.authorizationQuotaExceeded) {
+    lines.push('授权额度已用完，当前调用会被拦截。')
   }
-  return `授权自 ${ownerName}，仅可使用`
+  if (isAccountPackageExpired(account) || account.lastErrorCode === 'account_expired' || account.lastErrorMessage?.includes('账户套餐已过期')) {
+    lines.push('账户已到期，当前不可用。')
+  } else if (isAuthorizedAccount(account) && account.status === 'disabled') {
+    lines.push(account.localStatus === 'disabled' ? '当前分组已停用该账户，当前不可用。' : '账户所有者已停用该账户，当前不可用。')
+  } else if (isAuthorizedAccount(account) && account.status === 'error') {
+    lines.push('账户处于异常状态，当前不可用。')
+  } else if (isTemporaryAccountStatus(account)) {
+    lines.push('账户暂时不可调用，恢复前不会参与调度。')
+  }
+  if (account.groupBindStatus === 'authorization_unavailable') {
+    lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人。')
+  }
+  if (authorizedAccountSourceTone(account) === 'warning' && !hasBlocker) {
+    if (isAuthorizationExpiringSoon(account)) {
+      lines.push('授权即将到期，请提前续期。')
+    } else {
+      lines.push('该授权配置了额度限制，达到限额后会停止调度。')
+    }
+  }
+  return lines.join('\n')
+}
+
+export function authorizedAccountSourceTone(account: AccountSummary): AuthorizedAccountSourceTone {
+  if (hasAuthorizedAccountSourceBlocker(account)) return 'danger'
+  if (isAuthorizationExpiringSoon(account) || hasQuotaLimits(account.authorizationLimits)) return 'warning'
+  return 'normal'
+}
+
+export function authorizedAccountSourceToneClass(account: AccountSummary): string {
+  return `source-${authorizedAccountSourceTone(account)}`
+}
+
+function authorizedAccountSourceText(account: AccountSummary): string {
+  const activeSources = account.authorizationSources?.filter((source) => source.status === 'active') ?? []
+  if (!activeSources.length && account.authorizationSources?.some((source) => source.sourceType === 'team')) {
+    return '团队授权'
+  }
+  const manual = activeSources.some((source) => source.sourceType === 'manual')
+  const teamSources = activeSources.filter((source) => source.sourceType === 'team')
+  const teamNames = teamSources.map((source) => source.sourceTeamName).filter((name): name is string => Boolean(name))
+  if (manual && teamSources.length) {
+    return teamNames.length ? `个人授权 + 团队授权（${teamNames.join('、')}）` : '个人授权 + 团队授权'
+  }
+  if (teamSources.length) {
+    return teamNames.length ? `团队授权（${teamNames.join('、')}）` : '团队授权'
+  }
+  return '个人授权'
+}
+
+function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
+  return Boolean(
+    account.authorizationQuotaExceeded
+    || account.groupBindStatus === 'authorization_unavailable'
+    || isAccountPackageExpired(account)
+    || account.lastErrorCode === 'account_expired'
+    || account.status === 'disabled'
+    || account.status === 'error'
+  )
+}
+
+function isAuthorizationExpiringSoon(account: AccountSummary): boolean {
+  if (!account.authorizationExpiresAt) return false
+  const timestamp = Date.parse(account.authorizationExpiresAt)
+  if (!Number.isFinite(timestamp)) return false
+  const remainingMs = timestamp - Date.now()
+  return remainingMs > 0 && remainingMs <= 3 * 24 * 60 * 60 * 1000
 }
 
 export function hasAccountEditPermission(account: AccountSummary): boolean {

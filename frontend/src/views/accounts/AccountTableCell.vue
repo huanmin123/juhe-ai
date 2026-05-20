@@ -2,8 +2,11 @@
   <div v-if="columnKey === 'name'" class="resource-name-cell">
     <span class="resource-name-line">
       <span>{{ account.name }}</span>
-      <a-tooltip v-if="isAuthorizedAccount(account)" :title="authorizedTooltip(account)">
-        <InfoCircleOutlined class="authorized-account-icon" :class="{ 'owner-disabled': isOwnerDisabledAuthorizedAccount(account) }" />
+      <a-tooltip v-if="isAuthorizedAccount(account)">
+        <template #title>
+          <span class="authorized-tooltip-text">{{ authorizedTooltip(account) }}</span>
+        </template>
+        <InfoCircleOutlined class="authorized-account-icon" :class="authorizedIconClass(account)" />
       </a-tooltip>
     </span>
   </div>
@@ -66,9 +69,9 @@ import {
   accountTypeText,
   formatDateTime,
   isAccountPackageExpired,
-  isAuthorizedAccount,
-  isOwnerDisabledAuthorizedAccount
+  isAuthorizedAccount
 } from './accountFormatters'
+import { authorizedAccountSourceToneClass } from './accountRules'
 
 defineEmits<{
   (event: 'bind-group', account: AccountSummary): void
@@ -92,6 +95,7 @@ const props = defineProps<{
 
 const currentGroupName = computed(() => props.groupName(props.account.id))
 const currentProxy = computed(() => props.proxy(props.account.proxyProfileId))
+const authorizedIconClass = authorizedAccountSourceToneClass
 
 const proxyText = computed(() => {
   if (!props.account.proxyProfileId) return ''
@@ -156,7 +160,15 @@ const concurrencyTooltip = computed(() => concurrencyAvailable.value
   font-size: 14px;
 }
 
-.authorized-account-icon.owner-disabled {
+.authorized-account-icon.source-warning {
   color: #d48806;
+}
+
+.authorized-account-icon.source-danger {
+  color: #cf1322;
+}
+
+.authorized-tooltip-text {
+  white-space: pre-line;
 }
 </style>

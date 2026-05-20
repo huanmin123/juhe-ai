@@ -64,7 +64,7 @@
         <a-textarea v-model:value="form.remark" :rows="3" placeholder="可选，填写授权用途或范围说明" />
       </a-form-item>
       <a-form-item label="到期时间">
-        <a-date-picker v-model:value="form.expiresAt" show-time allow-clear style="width: 100%" />
+        <a-date-picker v-model:value="form.expiresAt" show-time allow-clear :disabled-date="disabledDate" style="width: 100%" />
         <div class="form-help">可选，支持选择明天 0 点或中午 12 点，到期后授权自动变为“授权到期”。</div>
       </a-form-item>
       <RequestQuotaFields :model="form.quotaLimits" />
@@ -80,6 +80,7 @@
 
 <script setup lang="ts">
 import { computed } from 'vue'
+import type { Dayjs } from 'dayjs'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import RequestQuotaFields from '../shared/RequestQuotaFields.vue'
@@ -100,6 +101,7 @@ const props = defineProps<{
   resourceSelectDisabled: boolean
   resourceTypeOptions: Array<{ label: string; value: 'account' | 'group' }>
   saving?: boolean
+  disabledDate?: (date: Dayjs) => boolean
   teams: SystemTeamPrincipalSummary[]
   granteeLoading?: boolean
   users: SystemAccountPrincipalSummary[]

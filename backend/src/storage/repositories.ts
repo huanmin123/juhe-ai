@@ -24,6 +24,7 @@ import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
 import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
 import {
   accountSystemAccountId,
   activeAccountAuthorization,
@@ -63,7 +64,7 @@ import {
   loadSystemAccountNameMapByIds,
   loadSystemAccountPrincipalMapByIds
 } from './repository-lookups.js'
-import { normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
+import { hasEnabledRequestQuotaLimit, normalizeRequestQuotaLimits, parseRequestQuotaLimitsJson, requestQuotaLimitsJson } from './request-quota-limits.js'
 import type { AccountFailureRow, AccountListRow, AccountRow, GroupListRow, ResourceAuthorizationGrantRow, ResourceAuthorizationRow, ResourceAuthorizationSourceRow, SystemTeamMemberRow, SystemTeamRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 import { systemAccountPrincipalSummaryFromRow } from './system-account-mappers.js'
@@ -711,6 +712,7 @@ function accountOptionSummariesFromRows(rows: AccountListRow[], access: AccessSc
       accessType: row.access_type ?? 'owner',
       accountAuthorizationId: row.authorization_id ?? undefined,
       authorizationStatus: row.authorization_status ?? undefined,
+      accountExpiresAt: row.account_expires_at ?? undefined,
       permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
   })
@@ -735,6 +737,7 @@ function accountSummariesFromRows(
     .map((row) => usageScope(row.authorization_id ?? '', row.system_account_id, row.authorization_id ?? ''))
   const usageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationScopes)
   const todayUsageByAuthorization = loadAccountAuthorizationUsageSummaries(authorizationScopes, todayDateKey(timezone))
+  const quotaExceededByAuthorization = loadAuthorizationQuotaExceededByAuthorizationId(rows)
   const sourcesByAuthorization = loadResourceAuthorizationSourcesByAuthorizationIds(rows.map((row) => row.authorization_id ?? ''))
   const oauthUsageByAccount = loadOpenAICodexUsageSnapshotsByAccountIds(rows.map((row) => row.id))
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
@@ -793,7 +796,7 @@ function accountSummariesFromRows(
       passthroughEnabled: isAuthorizedView ? false : row.passthrough_enabled === 1,
       errorPolicyId: isAuthorizedView ? undefined : row.error_policy_id ?? undefined,
       schedulable: effectiveAuthorizedSchedulable,
-      accountExpiresAt: isAuthorizedView ? undefined : row.account_expires_at ?? undefined,
+      accountExpiresAt: row.account_expires_at ?? undefined,
       cooldownUntil: isAuthorizedView ? row.bound_group_local_cooldown_until ?? undefined : row.cooldown_until ?? undefined,
       lastErrorCode: isAuthorizedView ? (effectiveAuthorizedStatus === row.status ? row.last_error_code ?? undefined : undefined) : row.last_error_code ?? undefined,
       lastErrorMessage: isAuthorizedView ? row.bound_group_local_last_error_message ?? undefined : row.last_error_message ?? undefined,
@@ -813,6 +816,9 @@ function accountSummariesFromRows(
       groupBindStatus: groupBinding?.groupBindStatus,
       bindingSystemAccountId: isAuthorizedView && groupBinding ? groupBindingSystemAccountId : undefined,
       authorizationStatus: row.authorization_status ?? undefined,
+      authorizationExpiresAt: row.authorization_expires_at ?? undefined,
+      authorizationLimits: parseRequestQuotaLimitsJson(row.authorization_limits_json),
+      authorizationQuotaExceeded: row.authorization_id ? quotaExceededByAuthorization.get(row.authorization_id) : undefined,
       authorizationSources: row.authorization_id ? sanitizeAuthorizationSourcesForViewer(sourcesByAuthorization.get(row.authorization_id) ?? [], isAuthorizedView) : undefined,
       permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions(),
       authorizationUsageAvailable: !isAuthorizedView && authorizationStats.authorizationCount > 0 && canManageResourceOwner(row.system_account_id, access),
@@ -820,6 +826,92 @@ function accountSummariesFromRows(
       authorizationTeamCount: isAuthorizedView ? 0 : authorizationStats.authorizationTeamCount
     }
   })
+}
+
+function loadAuthorizationQuotaExceededByAuthorizationId(rows: AccountListRow[]): Map<string, boolean> {
+  const now = new Date()
+  const output = new Map<string, boolean>()
+  const checks: Array<{
+    authorizationId: string
+    limits: ReturnType<typeof parseRequestQuotaLimitsJson>
+    input: RequestQuotaCostInput
+  }> = []
+  const teamGrantLimitJsonByAuthorizationId = loadTeamAuthorizationGrantLimitJsonByAuthorizationId(rows)
+  for (const row of rows) {
+    if (!row.authorization_id) continue
+    output.set(row.authorization_id, false)
+    const limits = parseRequestQuotaLimitsJson(row.authorization_limits_json)
+    if (hasEnabledRequestQuotaLimit(limits)) {
+      checks.push({
+        authorizationId: row.authorization_id,
+        limits,
+        input: {
+          systemAccountId: row.system_account_id,
+          scopeType: 'account_authorization',
+          scopeId: row.authorization_id,
+          now,
+          hourlyWindowHours: limits.hourly?.hours
+        }
+      })
+    }
+    const teamId = row.authorization_effective_source_team_id
+    if (!teamId) continue
+    const teamLimits = parseRequestQuotaLimitsJson(teamGrantLimitJsonByAuthorizationId.get(row.authorization_id))
+    if (!hasEnabledRequestQuotaLimit(teamLimits)) continue
+    checks.push({
+      authorizationId: row.authorization_id,
+      limits: teamLimits,
+      input: {
+        systemAccountId: row.system_account_id,
+        scopeType: 'account_authorization_team',
+        scopeId: `${row.id}:${teamId}`,
+        now,
+        hourlyWindowHours: teamLimits.hourly?.hours
+      }
+    })
+  }
+  if (!checks.length) return output
+  const costsByKey = loadRequestQuotaCostsBatch(getRecordDatabase(), checks.map((check) => check.input))
+  for (const check of checks) {
+    const costs = costsByKey.get(requestQuotaCostKey(check.input))
+    if (costs && isRequestQuotaExceeded(check.limits, costs)) {
+      output.set(check.authorizationId, true)
+    }
+  }
+  return output
+}
+
+function loadTeamAuthorizationGrantLimitJsonByAuthorizationId(rows: AccountListRow[]): Map<string, string | null> {
+  const ids = [...new Set(rows
+    .filter((row) => row.authorization_id && row.authorization_effective_source_team_id)
+    .map((row) => row.authorization_id as string))]
+  if (!ids.length) return new Map()
+  const output = new Map<string, string | null>()
+  const database = getDatabase()
+  const now = nowIso()
+  for (const chunk of chunkValues(ids, 900)) {
+    const teamRows = database.prepare(`
+      SELECT ra.id AS authorization_id, grant_rows.limits_json
+      FROM resource_authorizations ra
+      INNER JOIN resource_authorization_grants grant_rows
+        ON grant_rows.resource_type = ra.resource_type
+        AND grant_rows.resource_id = ra.resource_id
+        AND grant_rows.grantee_type = 'team'
+        AND grant_rows.grantee_team_id = ra.effective_source_team_id
+        AND grant_rows.status = 'active'
+        AND (grant_rows.expires_at IS NULL OR grant_rows.expires_at > ?)
+      WHERE ra.status = 'active'
+        AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+        AND ra.effective_source_team_id IS NOT NULL
+        AND ra.id IN (${sqlPlaceholders(chunk.length)})
+    `).all(now, now, ...chunk) as unknown as Array<{ authorization_id?: string; limits_json?: string | null }>
+    for (const row of teamRows) {
+      if (row.authorization_id) {
+        output.set(row.authorization_id, row.limits_json ?? null)
+      }
+    }
+  }
+  return output
 }
 
 export function getAccountUsageStatsOverview(access?: AccessScope, range?: AccountUsageStatsRange): AccountUsageStatsOverview {
@@ -2366,6 +2458,8 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
   if (!granteeId) throw new Error('请选择被授权对象')
   const database = getDatabase()
   const now = nowIso()
+  const expiresAt = optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at)
+  validateResourceAuthorizationExpiresAt(resourceType, resourceId, expiresAt, Date.parse(now))
   const actor = currentSystemAccountId(access)
   let createdGrantId: string | undefined
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2375,18 +2469,18 @@ export function createResourceAuthorization(input: Record<string, unknown>, acce
       if (!team) throw new Error('团队不存在或已停用')
       const members = activeTeamMemberRows(granteeId, database).filter((member) => member.system_account_id !== ownerSystemAccountId)
       if (!members.length) throw new Error('团队暂无可授权成员，请先添加非归属人成员后再授权')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
       createdGrantId = grant.id
       for (const member of members) {
-        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+        upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: member.system_account_id, sourceType: 'team', sourceTeamId: granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
       }
     } else {
       const grantee = findSystemAccountById(granteeId)
       if (!grantee || grantee.status !== 'active') throw new Error('被授权用户不存在或已停用')
       if (granteeId === ownerSystemAccountId) throw new Error('不能授权给资源所有者自己')
-      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      const grant = upsertResourceAuthorizationGrant({ resourceType, resourceId, ownerSystemAccountId, granteeType, granteeId, remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
       createdGrantId = grant.id
-      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', remark: optionalString(input.remark), expiresAt: optionalNullableServerDateTimeIso(input.expiresAt ?? input.expires_at), limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
+      upsertResourceAuthorizationForUser({ resourceType, resourceId, ownerSystemAccountId, granteeSystemAccountId: granteeId, sourceType: 'manual', remark: optionalString(input.remark), expiresAt, limits: input.limits, modelPolicy: input.modelPolicy ?? input.model_policy, actor, now, database })
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -2440,6 +2534,7 @@ export function updateResourceAuthorization(authorizationId: string, input: Reco
   const requestedStatus = rawStatus === 'active' || rawStatus === 'paused' || rawStatus === 'expired' || rawStatus === 'revoked'
     ? rawStatus
     : undefined
+  validateResourceAuthorizationExpiresAt(grant.resource_type, grant.resource_id, nextExpiresAt, Date.parse(now), { allowExpired: requestedStatus === 'expired' })
   if (grant.status === 'revoked' && requestedStatus === 'active') {
     throw new Error('已回收授权不能直接恢复，请重新新增授权')
   }
@@ -2567,6 +2662,28 @@ function normalizeSystemAccountIds(value: unknown): string[] {
 
 function resourceOwnerSystemAccountId(resourceType: ResourceAuthorizationResourceType, resourceId: string): string | undefined {
   return resourceType === 'account' ? accountSystemAccountId(resourceId) : groupOwnerAndProvider(resourceId)?.systemAccountId
+}
+
+function validateResourceAuthorizationExpiresAt(
+  resourceType: ResourceAuthorizationResourceType,
+  resourceId: string,
+  expiresAt: string | null,
+  now = Date.now(),
+  options: { allowExpired?: boolean } = {}
+): void {
+  if (!expiresAt) return
+  const expiresAtMs = Date.parse(expiresAt)
+  if (!Number.isFinite(expiresAtMs)) throw new Error('授权到期时间格式不正确')
+  if (!options.allowExpired && expiresAtMs <= now) throw new Error('授权到期时间不能早于当前时间')
+  if (resourceType !== 'account') return
+  const account = getDatabase()
+    .prepare('SELECT account_expires_at FROM accounts WHERE id = ?')
+    .get(resourceId) as unknown as { account_expires_at?: string | null } | undefined
+  if (!account?.account_expires_at) return
+  const accountExpiresAtMs = Date.parse(account.account_expires_at)
+  if (Number.isFinite(accountExpiresAtMs) && expiresAtMs > accountExpiresAtMs) {
+    throw new Error('授权到期时间不能晚于账户到期时间')
+  }
 }
 
 function loadResourceAuthorizationUsageDetail(

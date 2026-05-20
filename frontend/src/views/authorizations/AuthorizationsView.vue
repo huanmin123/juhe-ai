@@ -59,6 +59,7 @@
       :resource-select-disabled="createResourceSelectDisabled"
       :resource-type-options="createResourceTypeOptions"
       :saving="authorizationCreating"
+      :disabled-date="disabledAuthorizationExpireDate"
       :teams="createTeams"
       :grantee-loading="createGranteeOptionsLoading"
       :users="createUsers"
@@ -75,6 +76,7 @@
     <AuthorizationExpireModal
       v-model:open="expireModalOpen"
       :form="expireForm"
+      :disabled-date="disabledAuthorizationExpireDate"
       @ok="confirmExpireChange"
     />
 
@@ -83,6 +85,7 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
+import dayjs from 'dayjs'
 import type { Dayjs } from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -103,6 +106,7 @@ import type { AuthorizationCreateFormModel, AuthorizationExpireFormModel } from 
 import { createQuotaLimitForm, quotaLimitsPayload } from '../shared/requestQuotaForm'
 import {
   extractApiErrorMessage,
+  formatDateTime,
   formatServerDateTimeInput,
   parseDatePickerValue
 } from './authorizationFormatters'
@@ -295,6 +299,9 @@ const createExcludedGranteeIds = computed(() => createForm.ownerSystemAccountId 
 const hasCreateGranteeOptions = computed(() => createForm.granteeType === 'system_account'
   ? createUsers.value.some((user) => user.status === 'active' && !createExcludedGranteeIds.value.includes(user.id))
   : createTeams.value.some((team) => team.status === 'active'))
+const selectedCreateAccount = computed(() => createForm.resourceType === 'account'
+  ? createOwnedAccounts.value.find((account) => account.id === createForm.resourceId)
+  : undefined)
 const activeFilterCount = computed(() => {
   let count = 0
   if (!isManagementView.value && filters.sourceType !== 'all') count += 1
@@ -319,6 +326,26 @@ const authorizationScopeParams = computed(() => {
 })
 const createOwnedAccounts = computed(() => createAccounts.value.filter((account) => account.permissions?.canAuthorize !== false))
 const createOwnedGroups = computed(() => createGroups.value.filter((group) => group.permissions?.canAuthorize !== false))
+
+function disabledAuthorizationExpireDate(date: Dayjs): boolean {
+  return date.isBefore(dayjs().startOf('day'))
+}
+
+function validateAuthorizationExpiresAt(expiresAt: Dayjs | undefined, accountExpiresAt?: string): boolean {
+  if (!expiresAt) return true
+  if (expiresAt.isBefore(dayjs())) {
+    message.warning('授权到期时间不能早于当前时间')
+    return false
+  }
+  if (!accountExpiresAt) return true
+  const maxExpiresAt = dayjs(accountExpiresAt)
+  if (!maxExpiresAt.isValid()) return true
+  if (expiresAt.isAfter(maxExpiresAt)) {
+    message.warning(`授权到期时间不能晚于账户到期时间：${formatDateTime(accountExpiresAt)}`)
+    return false
+  }
+  return true
+}
 
 watch(() => createForm.granteeType, () => {
   createForm.granteeId = ''
@@ -863,10 +890,13 @@ const createAuthorization = submitAction('authorizations.create', async () => {
     return
   }
   const selectedResource = createForm.resourceType === 'account'
-    ? createOwnedAccounts.value.find((account) => account.id === createForm.resourceId)
+    ? selectedCreateAccount.value
     : createOwnedGroups.value.find((group) => group.id === createForm.resourceId)
   if (!selectedResource) {
     message.warning('只能授权自己拥有的资源')
+    return
+  }
+  if (!validateAuthorizationExpiresAt(createForm.expiresAt, selectedCreateAccount.value?.accountExpiresAt)) {
     return
   }
   try {
@@ -995,6 +1025,9 @@ async function confirmExpireChange() {
   const authorization = expireAuthorization.value
   if (!authorization) {
     expireModalOpen.value = false
+    return
+  }
+  if (!validateAuthorizationExpiresAt(expireForm.expiresAt, authorization.resourceAccountExpiresAt)) {
     return
   }
   try {
