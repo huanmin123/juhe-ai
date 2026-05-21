@@ -156,7 +156,7 @@
         </template>
       </template>
       <template #card="{ record }">
-        <button class="operation-log-mobile-card" type="button" @click="openDetail(record)">
+        <article class="operation-log-mobile-card">
           <div class="mobile-card-head">
             <span>{{ moduleText(record.module) }}</span>
             <a-tag :color="actionColor(record.action)">{{ actionText(record.action) }}</a-tag>
@@ -166,7 +166,10 @@
             <span>{{ formatDateTime(record.createdAt) }}</span>
           </div>
           <div class="mobile-card-summary">{{ record.summary }}</div>
-        </button>
+          <div class="mobile-card-actions">
+            <RowActions variant="button" :actions="detailActions" @action-click="openDetail(record)" />
+          </div>
+        </article>
       </template>
     </ResponsiveDataList>
 
@@ -262,8 +265,9 @@
 import { message } from '@/lib/antd'
 import dayjs, { type Dayjs } from 'dayjs'
 import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
-import { api, type OperationLogListParams } from '@/api/client'
+import type { OperationLogListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
@@ -271,8 +275,10 @@ import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { useScopedOperationLogsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateTime } from '@/shared/formatters'
+import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import type { OperationLogChange, OperationLogDetail, OperationLogSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -302,22 +308,30 @@ const defaultOperationLogsPageState = (): OperationLogsPageState => ({
   traceIdFilter: ''
 })
 
-const pageStateCache = usePageStateCache<OperationLogsPageState>(undefined, defaultOperationLogsPageState, { version: 1 })
+const pageStateCache = usePageStateCache<OperationLogsPageState>(undefined, defaultOperationLogsPageState, { version: 2 })
 const initialPageState = pageStateCache.read()
 const { isManagementView } = useScopedMenuView()
+const operationLogsApi = useScopedOperationLogsApi(isManagementView)
+const route = useRoute()
+const router = useRouter()
+const initialTraceId = routeTraceId()
+const effectiveInitialPageState: OperationLogsPageState = initialTraceId
+  ? { ...defaultOperationLogsPageState(), traceIdFilter: initialTraceId }
+  : initialPageState
 
 const detailLoading = ref(false)
 const detail = ref<OperationLogDetail>()
 const detailOpen = ref(false)
 let detailRequestId = 0
-const keywordFilter = ref(initialPageState.keywordFilter)
-const moduleFilter = ref(initialPageState.moduleFilter)
-const actionFilter = ref(initialPageState.actionFilter)
-const createdAtRange = ref<CreatedAtRangeValue>(parseCreatedAtRange(initialPageState.createdAtRange))
-const traceIdFilter = ref(initialPageState.traceIdFilter)
-const actorSystemAccountFilter = ref(initialPageState.actorSystemAccountFilter)
-const affectedSystemAccountFilter = ref(initialPageState.affectedSystemAccountFilter)
-const operationScopeSystemAccountFilter = ref(initialPageState.operationScopeSystemAccountFilter)
+let skipNextRouteTraceRestore = false
+const keywordFilter = ref(effectiveInitialPageState.keywordFilter)
+const moduleFilter = ref(effectiveInitialPageState.moduleFilter)
+const actionFilter = ref(effectiveInitialPageState.actionFilter)
+const createdAtRange = ref<CreatedAtRangeValue>(parseCreatedAtRange(effectiveInitialPageState.createdAtRange))
+const traceIdFilter = ref(effectiveInitialPageState.traceIdFilter)
+const actorSystemAccountFilter = ref(effectiveInitialPageState.actorSystemAccountFilter)
+const affectedSystemAccountFilter = ref(effectiveInitialPageState.affectedSystemAccountFilter)
+const operationScopeSystemAccountFilter = ref(effectiveInitialPageState.operationScopeSystemAccountFilter)
 const {
   handleDropdown: handleActorSystemAccountOptionsDropdown,
   handleSearch: handleActorSystemAccountOptionsSearch,
@@ -365,7 +379,7 @@ const {
   resetPagination
 } = useResponsivePagedList<OperationLogSummary, { forceOptions?: boolean }>({
   pageSize,
-  initialPagination: initialPageState.pagination,
+  initialPagination: effectiveInitialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 条操作日志，还有更多`
     : `共 ${total} 条操作日志`,
@@ -483,8 +497,37 @@ const viewerColumns = [
 ]
 
 function applyFilters(): void {
+  clearRouteTraceIdForManualState()
   resetPagination()
   void loadData()
+}
+
+function applyPageState(state: OperationLogsPageState): void {
+  keywordFilter.value = state.keywordFilter
+  moduleFilter.value = state.moduleFilter
+  actionFilter.value = state.actionFilter
+  createdAtRange.value = parseCreatedAtRange(state.createdAtRange)
+  traceIdFilter.value = state.traceIdFilter
+  actorSystemAccountFilter.value = state.actorSystemAccountFilter
+  affectedSystemAccountFilter.value = state.affectedSystemAccountFilter
+  operationScopeSystemAccountFilter.value = state.operationScopeSystemAccountFilter
+  pagination.current = state.pagination.current
+  pagination.pageSize = state.pagination.pageSize
+  resetActorSystemAccountOptionsSearch()
+  resetAffectedSystemAccountOptionsSearch()
+  resetOperationScopeSystemAccountOptionsSearch()
+}
+
+function applyRouteTraceId(traceId: string): void {
+  pageStateCache.flushPendingWrite()
+  applyPageState({ ...defaultOperationLogsPageState(), traceIdFilter: traceId })
+  resetPagination()
+  void loadData()
+}
+
+function restorePageStateAfterRouteTraceCleared(): void {
+  applyPageState(pageStateCache.read())
+  void loadData({ forceOptions: true })
 }
 
 function refreshRecords(): void {
@@ -493,6 +536,7 @@ function refreshRecords(): void {
 }
 
 function resetFilters(): void {
+  clearRouteTraceIdForManualState()
   const defaults = defaultOperationLogsPageState()
   keywordFilter.value = defaults.keywordFilter
   moduleFilter.value = defaults.moduleFilter
@@ -545,7 +589,7 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     affectedSystemAccountId: adminAccountFilter(affectedSystemAccountFilter.value),
     operationScopeSystemAccountId: adminAccountFilter(operationScopeSystemAccountFilter.value)
   }
-  return isManagementView.value ? api.operationLogs.list(params) : api.myOperationLogs.list(params)
+  return operationLogsApi.list(params)
 }
 
 async function openDetail(record: OperationLogSummary): Promise<void> {
@@ -554,7 +598,7 @@ async function openDetail(record: OperationLogSummary): Promise<void> {
   detailOpen.value = true
   detailLoading.value = true
   try {
-    const nextDetail = isManagementView.value ? await api.operationLogs.detail(record.id) : await api.myOperationLogs.detail(record.id)
+    const nextDetail = await operationLogsApi.detail(record.id)
     if (requestId === detailRequestId) {
       detail.value = nextDetail
     }
@@ -577,6 +621,19 @@ function closeTransientDetails(): void {
 
 function adminAccountFilter(value: string): string | undefined {
   return isManagementView.value && value !== allSystemAccountsValue ? value : undefined
+}
+
+function routeTraceId(): string | undefined {
+  return trimmedRouteQueryValue(route.query.traceId)
+}
+
+function clearRouteTraceIdForManualState(): void {
+  if (!routeTraceId()) return
+  skipNextRouteTraceRestore = true
+  void removeRouteTraceIdQuery(router, route).catch((error) => {
+    skipNextRouteTraceRestore = false
+    console.error(error)
+  })
 }
 
 function systemAccountSelectOptions(accounts: Array<{ id: string; displayName: string; username: string }>) {
@@ -754,7 +811,30 @@ const visibilityReasonTextMap: Record<string, string> = {
   team_member: '团队成员'
 }
 
-watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(snapshotPageState, () => {
+  if (routeTraceId()) {
+    pageStateCache.cancelPendingWrite()
+    return
+  }
+  pageStateCache.scheduleWrite(snapshotPageState)
+}, { deep: true })
+watch(
+  () => route.query.traceId,
+  () => {
+    const traceId = routeTraceId()
+    if (!traceId) {
+      if (skipNextRouteTraceRestore) {
+        skipNextRouteTraceRestore = false
+        pageStateCache.scheduleWrite(snapshotPageState)
+        return
+      }
+      restorePageStateAfterRouteTraceCleared()
+      return
+    }
+    if (traceId === traceIdFilter.value.trim()) return
+    applyRouteTraceId(traceId)
+  }
+)
 
 onMounted(loadData)
 onDeactivated(closeTransientDetails)
@@ -881,5 +961,10 @@ onDeactivated(closeTransientDetails)
   color: #0f172a;
   font-size: 13px;
   line-height: 1.4;
+}
+
+.mobile-card-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 </style>

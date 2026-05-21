@@ -57,8 +57,15 @@ import type {
   SystemTeamSummary,
   SystemSettings,
   SystemAccountPrincipalSummary,
+  SystemAccountListResult,
   SystemAccountSummary,
   SystemMetricsOverview,
+  ApiKeyRecordCleanupQueueTarget,
+  ModelCheckOptions,
+  ModelCheckRunDetail,
+  ModelCheckRunListParams,
+  ModelCheckRunListResult,
+  ModelCheckRunPayload,
   MonitoredDatabaseRole,
   TableStorageOverview,
   TableStorageSnapshotSummary,
@@ -110,6 +117,13 @@ interface SystemAccountOptionsParams {
   limit?: number
 }
 
+interface SystemAccountListParams {
+  page?: number
+  pageSize?: number
+  limit?: number
+  keyword?: string
+}
+
 interface RequestControlOptions {
   signal?: AbortSignal
 }
@@ -144,7 +158,7 @@ interface AiPerformanceAccountOptionsParams extends ListParams {
 }
 
 export type SortDirection = 'asc' | 'desc'
-export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
+export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
 
 export interface AccountListSortParam {
   field: AccountListSortField
@@ -255,11 +269,17 @@ interface TableMonitorOverviewParams {
   limit?: number
 }
 
+interface TableMonitorCleanupTargetsParams {
+  limit?: number
+}
+
 interface UsageRecordsCleanupPayload {
   cutoffAt: string
   batchSize?: number
   maxBatches?: number
 }
+
+export type ModelCheckListParams = ModelCheckRunListParams
 
 export interface AuthorizationListParams extends ListParams {
   resourceType?: AuthorizationResourceType
@@ -345,6 +365,7 @@ export const api = {
   },
   systemAccounts: {
     list: () => unwrap<SystemAccountSummary[]>(http.get('/system-accounts')),
+    listPage: (params?: SystemAccountListParams) => unwrap<SystemAccountListResult>(http.get('/system-accounts', { params: systemAccountListParams(params) })),
     options: (params?: SystemAccountOptionsParams) => unwrap<SystemAccountPrincipalSummary[]>(http.get('/system-accounts/options', { params: systemAccountOptionsParams(params) })),
     create: (payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.post('/system-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<SystemAccountSummary>(http.patch(`/system-accounts/${id}`, payload))
@@ -401,7 +422,7 @@ export const api = {
   },
   groups: {
     list: (params?: ListParams) => unwrap<GroupSummary[]>(http.get('/groups', { params })),
-    listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/groups', { params })),
+    listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/groups', { params: groupListParams(params) })),
     options: (params?: GroupOptionParams) => unwrap<GroupOptionSummary[]>(http.get('/groups/options', { params: groupOptionParams(params) })),
     accountOptions: (params?: GroupOptionParams) => unwrap<AccountGroupOptionSummary[]>(http.get('/groups/account-options', { params: groupOptionParams(params) })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<GroupSummary>(http.post('/groups', payload, { params })),
@@ -410,7 +431,7 @@ export const api = {
   },
   myGroups: {
     list: () => unwrap<GroupSummary[]>(http.get('/my-groups')),
-    listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/my-groups', { params })),
+    listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/my-groups', { params: groupListParams(params, false) })),
     options: (params?: Pick<GroupOptionParams, 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<GroupOptionSummary[]>(http.get('/my-groups/options', { params: groupOptionParams(params, false) })),
     accountOptions: (params?: Pick<GroupOptionParams, 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options', { params: groupOptionParams(params, false) })),
     create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/my-groups', payload)),
@@ -418,14 +439,14 @@ export const api = {
     delete: (id: string) => http.delete(`/my-groups/${id}`)
   },
   systemTeams: {
-    list: (params?: TeamListParams) => unwrap<SystemTeamListResult>(http.get('/system-teams', { params })),
+    list: (params?: TeamListParams) => unwrap<SystemTeamListResult>(http.get('/system-teams', { params: teamListParams(params) })),
     create: (payload: { name: string; description?: string; status?: 'active' | 'disabled' }) => unwrap<SystemTeamSummary>(http.post('/system-teams', payload)),
     update: (id: string, payload: { name?: string; description?: string; status?: 'active' | 'disabled' }) => unwrap<SystemTeamSummary>(http.patch(`/system-teams/${id}`, payload)),
     addMembers: (id: string, payload: { systemAccountIds: string[] }) => unwrap<SystemTeamSummary>(http.post(`/system-teams/${id}/members`, payload)),
     removeMember: (id: string, memberId: string) => unwrap<SystemTeamSummary>(http.delete(`/system-teams/${id}/members/${memberId}`))
   },
   myTeams: {
-    list: (params?: Omit<TeamListParams, 'systemAccountId'>) => unwrap<SystemTeamListResult>(http.get('/my-teams', { params }))
+    list: (params?: Omit<TeamListParams, 'systemAccountId'>) => unwrap<SystemTeamListResult>(http.get('/my-teams', { params: teamListParams(params, false) }))
   },
   authorizations: {
     list: (params?: AuthorizationListParams) => unwrap<ResourceAuthorizationSummary[]>(http.get('/authorizations', { params })),
@@ -539,7 +560,20 @@ export const api = {
   tableMonitor: {
     overview: (params?: TableMonitorOverviewParams) => unwrap<TableStorageOverview>(http.get('/table-monitor/overview', { params })),
     history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params })),
+    apiKeyCleanupTargets: (params?: TableMonitorCleanupTargetsParams) => unwrap<ApiKeyRecordCleanupQueueTarget[]>(http.get('/table-monitor/record-maintenance/api-key-cleanup-targets', { params })),
     cleanupUsageRecords: (payload: UsageRecordsCleanupPayload) => unwrap<UsageRecordsCleanupResult>(http.post('/table-monitor/usage-records/cleanup', payload, noTimeout))
+  },
+  modelChecks: {
+    options: () => unwrap<ModelCheckOptions>(http.get('/model-checks/options')),
+    run: (payload: ModelCheckRunPayload) => unwrap<ModelCheckRunDetail>(http.post('/model-checks/run', payload, noTimeout)),
+    list: (params?: ModelCheckRunListParams) => unwrap<ModelCheckRunListResult>(http.get('/model-checks/runs', { params: modelCheckRunListParams(params) })),
+    detail: (id: string) => unwrap<ModelCheckRunDetail>(http.get(`/model-checks/runs/${id}`))
+  },
+  myModelChecks: {
+    options: () => unwrap<ModelCheckOptions>(http.get('/my-model-checks/options')),
+    run: (payload: ModelCheckRunPayload) => unwrap<ModelCheckRunDetail>(http.post('/my-model-checks/run', payload, noTimeout)),
+    list: (params?: ModelCheckRunListParams) => unwrap<ModelCheckRunListResult>(http.get('/my-model-checks/runs', { params: modelCheckRunListParams(params) })),
+    detail: (id: string) => unwrap<ModelCheckRunDetail>(http.get(`/my-model-checks/runs/${id}`))
   },
   myStats: {
     usageOverview: (params?: UsageOverviewParams) => unwrap<UsageStatsOverview>(http.get('/my-stats/usage-overview', { params: stripSystemAccountParam(params) })),
@@ -606,6 +640,16 @@ function accountOptionsParams(params?: AccountListParams, includeSystemAccount =
   return Object.keys(output).length ? output : undefined
 }
 
+function groupListParams(params?: GroupListParams, includeSystemAccount = true): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (includeSystemAccount && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.page) output.page = params.page
+  if (params.pageSize) output.pageSize = params.pageSize
+  if (params.limit) output.limit = params.limit
+  return Object.keys(output).length ? output : undefined
+}
+
 function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>, includeSystemAccount = true): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
@@ -615,6 +659,17 @@ function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 
   if (params.limit) output.limit = params.limit
   if (typeof params.manageableOnly === 'boolean') output.manageableOnly = params.manageableOnly
   if (typeof params.preferDefault === 'boolean') output.preferDefault = params.preferDefault
+  return Object.keys(output).length ? output : undefined
+}
+
+function teamListParams(params?: TeamListParams | Omit<TeamListParams, 'systemAccountId'>, includeSystemAccount = true): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (includeSystemAccount && 'systemAccountId' in params && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if (params.page) output.page = params.page
+  if (params.pageSize) output.pageSize = params.pageSize
+  if (params.limit) output.limit = params.limit
+  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   return Object.keys(output).length ? output : undefined
 }
 
@@ -631,6 +686,16 @@ function systemAccountOptionsParams(params?: SystemAccountOptionsParams): Record
   const output: Record<string, unknown> = {}
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.limit) output.limit = params.limit
+  return Object.keys(output).length ? output : undefined
+}
+
+function systemAccountListParams(params?: SystemAccountListParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (params.page) output.page = params.page
+  if (params.pageSize) output.pageSize = params.pageSize
+  if (params.limit) output.limit = params.limit
+  if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   return Object.keys(output).length ? output : undefined
 }
 
@@ -667,5 +732,18 @@ function aiPerformanceAccountOptionsParams(params?: AiPerformanceAccountOptionsP
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')
   if (params.limit) output.limit = params.limit
+  return Object.keys(output).length ? output : undefined
+}
+
+function modelCheckRunListParams(params?: ModelCheckRunListParams): Record<string, unknown> | undefined {
+  if (!params) return undefined
+  const output: Record<string, unknown> = {}
+  if (params.page) output.page = params.page
+  if (params.pageSize) output.pageSize = params.pageSize
+  if (params.targetType) output.targetType = params.targetType
+  if (params.targetId?.trim()) output.targetId = params.targetId.trim()
+  if (params.model) output.model = params.model
+  if (params.level) output.level = params.level
+  if (params.status) output.status = params.status
   return Object.keys(output).length ? output : undefined
 }

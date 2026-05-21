@@ -2,7 +2,7 @@ import type { Request, Response } from 'express'
 
 import { logger } from '../../shared/logger.js'
 import { bindRequestContextFields } from '../../shared/request-context.js'
-import type { GatewayApiKeyRow, GroupUsageAccessMetadata } from '../../storage/repositories.js'
+import { findActiveGatewayApiKeyById, type GatewayApiKeyRow, type GroupUsageAccessMetadata } from '../../storage/repositories.js'
 import {
   listCachedOpenAIAccountsForGroupAsync,
   readCachedGatewaySettingsAsync,
@@ -28,6 +28,7 @@ import {
 } from './openai-gateway-client-strategy.js'
 import { finalizeGatewayAuthFailureAudit, sendOpenAIModelsGatewayResponse } from './openai-gateway-fixed-responses.js'
 import { sendGatewayFailureResponse, sendQuotaExceededResponse } from './openai-gateway-failure-response.js'
+import { filterGatewayAccountsByRequestedModel, gatewayModelFilterFailureMessage } from './openai-gateway-model-filter.js'
 import { gatewayErrorPayload } from './openai-gateway-responses.js'
 import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
 import { isOpenAIModelsRequest, type UpstreamAccount } from './openai-gateway-route-helpers.js'
@@ -35,7 +36,7 @@ import {
   orderOpenAIAccountsBySessionAffinity,
   resolveOpenAIGatewaySessionAffinityKey
 } from './openai-gateway-session-affinity.service.js'
-import { type UsageRequestSnapshot } from './openai-gateway-usage.js'
+import { requestModel, type UsageRequestSnapshot } from './openai-gateway-usage.js'
 import {
   groupUsageMetadata,
   type GatewayFailureUsageContext
@@ -51,6 +52,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   identity?: OpenAIGatewayRequestIdentity
   candidateAccounts?: UpstreamAccount[]
   disableSessionAffinity?: boolean
+  settingsOverride?: Partial<GatewaySettings>
 }
 
 interface PrepareOpenAIGatewayDispatchContextInput {
@@ -102,8 +104,13 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
-  const activeGatewaySettings = gatewaySettings ?? await readCachedGatewaySettingsAsync()
+  const activeGatewaySettings = mergeGatewaySettings(
+    gatewaySettings ?? await readCachedGatewaySettingsAsync(),
+    options.settingsOverride
+  )
   const { systemAccountId, apiKeyId, groupId } = identity
+  apiKeyRecord = apiKeyRecord ?? (apiKeyId ? findActiveGatewayApiKeyById(apiKeyId) : undefined)
+  const apiKeyUnavailable = Boolean(apiKeyId && !apiKeyRecord)
   auditCapture.bindContext({
     systemAccountId,
     apiKeyId,
@@ -152,6 +159,27 @@ export async function prepareOpenAIGatewayDispatchContext(
         errorPhase: 'authorization',
         errorCode: 'forbidden',
         errorMessage: 'API Key 绑定的分组授权不可用'
+      }
+    })
+    return undefined
+  }
+
+  if (apiKeyUnavailable) {
+    const statusCode = 401
+    const responsePayload = gatewayErrorPayload('API Key 不可用或已过期', 'invalid_api_key')
+    sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: baseUsageContext,
+      startedAt,
+      statusCode,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'authorization',
+        errorCode: 'invalid_api_key',
+        errorMessage: responsePayload.error.message
       }
     })
     return undefined
@@ -240,8 +268,43 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupId
   })
   const sessionAffinityKey = options.disableSessionAffinity ? undefined : rawSessionAffinityKey
+  const rawCandidateAccounts = options.candidateAccounts ?? runtimeAccounts ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId)
+  const modelFilter = filterGatewayAccountsByRequestedModel(rawCandidateAccounts, requestModel(req))
+  if (modelFilter.skippedCount > 0) {
+    auditCapture.addGatewayMetadata({
+      label: 'account_model_filter',
+      metadata: {
+        requestedModel: modelFilter.requestedModel,
+        skippedCount: modelFilter.skippedCount,
+        limitedAccountCount: modelFilter.limitedAccountCount,
+        remainingCount: modelFilter.accounts.length,
+        reason: modelFilter.reason
+      }
+    })
+  }
+  if (rawCandidateAccounts.length > 0 && modelFilter.accounts.length === 0) {
+    const statusCode = 400
+    const message = gatewayModelFilterFailureMessage(modelFilter)
+    const responsePayload = gatewayErrorPayload(message, 'invalid_request_error')
+    sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext,
+      startedAt,
+      statusCode,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'request_validation',
+        errorCode: modelFilter.reason ?? 'unsupported_model',
+        errorMessage: message
+      }
+    })
+    return undefined
+  }
   const orderedCandidateAccounts = orderOpenAIAccountsBySessionAffinity(
-    options.candidateAccounts ?? runtimeAccounts ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId),
+    modelFilter.accounts,
     sessionAffinityKey
   )
   const localSuppressionFilter = filterLocallySuppressedGatewayAccounts(orderedCandidateAccounts)
@@ -323,6 +386,20 @@ export async function prepareOpenAIGatewayDispatchContext(
     accounts,
     sessionAffinityKey,
     clientStrategy
+  }
+}
+
+function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewaySettings>): GatewaySettings {
+  if (!override) return base
+  return {
+    defaultTemporaryUnschedulableMinutes: override.defaultTemporaryUnschedulableMinutes ?? base.defaultTemporaryUnschedulableMinutes,
+    temporaryUnschedulableRetryIntervalSeconds: override.temporaryUnschedulableRetryIntervalSeconds ?? base.temporaryUnschedulableRetryIntervalSeconds,
+    temporaryUnschedulableRetryAttempts: override.temporaryUnschedulableRetryAttempts ?? base.temporaryUnschedulableRetryAttempts,
+    streamCircuitBreakerEnabled: override.streamCircuitBreakerEnabled ?? base.streamCircuitBreakerEnabled,
+    streamRequestTimeoutSeconds: override.streamRequestTimeoutSeconds ?? base.streamRequestTimeoutSeconds,
+    streamIdleTimeoutSeconds: override.streamIdleTimeoutSeconds ?? base.streamIdleTimeoutSeconds,
+    streamFailureThresholdCount: override.streamFailureThresholdCount ?? base.streamFailureThresholdCount,
+    streamFailureThresholdWindowMinutes: override.streamFailureThresholdWindowMinutes ?? base.streamFailureThresholdWindowMinutes
   }
 }
 

@@ -7,8 +7,10 @@ import { trafficMigrationTargetOptions as buildTrafficMigrationTargetOptions } f
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
+  authorizedAccountUnavailableText,
   canUseAccountActions,
   canUseAsTrafficMigrationTarget,
+  canUseBoundAuthorizedAccount,
   type AccountGroupIdResolver
 } from './accountRules'
 
@@ -61,6 +63,10 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
       message.warning('请先把授权账户绑定到你的分组')
       return
     }
+    if (isAuthorizedAccount(account) && !canUseBoundAuthorizedAccount(account)) {
+      message.warning(authorizedAccountUnavailableText(account) ?? '授权账户当前不可用，不能迁移流量')
+      return
+    }
     trafficMigrationSourceAccount.value = account
     trafficMigrationForm.sourceStatus = 'temporary_unavailable'
     const target = options.accounts.value.find((candidate) => (
@@ -78,6 +84,11 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
     if (!source) return
     if (!trafficMigrationForm.targetAccountId) {
       message.warning('请选择目标账户')
+      return
+    }
+    const target = options.accounts.value.find((account) => account.id === trafficMigrationForm.targetAccountId)
+    if (!target || !canUseAsTrafficMigrationTarget(source, target, options.groupIdForAccount)) {
+      message.warning('请选择同分组内正常可用的目标账户')
       return
     }
     trafficMigrationSaving.value = true

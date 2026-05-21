@@ -5,6 +5,7 @@ import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { inspectProcessedUsageRecordsCleanupBefore } from '../../storage/data-retention.repository.js'
 import { nowIso } from '../../storage/database.js'
+import { getDeletedApiKeyRecordCleanupQueueSummary, listDeletedApiKeyRecordCleanupQueueTargets } from '../../storage/repositories.js'
 import { getTableStorageOverview, listTableStorageHistory, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
 import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
@@ -20,6 +21,10 @@ const overviewQuerySchema = z.object({
   startAt: z.string().trim().optional(),
   endAt: z.string().trim().optional(),
   limit: z.coerce.number().int().min(1).max(1000).optional()
+})
+
+const apiKeyCleanupTargetsQuerySchema = z.object({
+  limit: z.coerce.number().int().min(1).max(200).optional()
 })
 
 const historyQuerySchema = z.object({
@@ -56,11 +61,26 @@ tableMonitorRouter.get('/overview', (req, res) => {
     res.status(400).json(badRequest(firstIssueMessage(parsed.error, '表监控参数无效')))
     return
   }
-  res.json(ok(getTableStorageOverview({
+  const overview = getTableStorageOverview({
     startAt: parsed.data.startAt,
     endAt: parsed.data.endAt,
     limit: parsed.data.limit
-  })))
+  })
+  res.json(ok({
+    ...overview,
+    recordMaintenance: {
+      apiKeyRecordCleanup: getDeletedApiKeyRecordCleanupQueueSummary()
+    }
+  }))
+})
+
+tableMonitorRouter.get('/record-maintenance/api-key-cleanup-targets', (req, res) => {
+  const parsed = apiKeyCleanupTargetsQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, 'API Key 删除清理队列参数无效')))
+    return
+  }
+  res.json(ok(listDeletedApiKeyRecordCleanupQueueTargets(parsed.data.limit ?? 50)))
 })
 
 tableMonitorRouter.post('/usage-records/cleanup', mutationGuard({

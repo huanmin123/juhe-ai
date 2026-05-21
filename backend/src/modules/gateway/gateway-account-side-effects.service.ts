@@ -3,6 +3,7 @@ import { requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceOperation } from '../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from './gateway-runtime-cache.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
+import { exponentialRetryPolicy, retryDelayMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
 
 type AccountErrorHandlingOperation = Extract<DbServiceOperation, { type: 'apply_account_error_handling' }>
 type StreamFailureOperation = Extract<DbServiceOperation, { type: 'record_account_stream_failure' }>
@@ -36,8 +37,7 @@ export interface GatewayAccountSideEffectState {
 const maxQueuedSideEffects = 1024
 const sideEffectRetentionMs = 10 * 60_000
 const localSuppressionMaxMs = 10 * 60_000
-const retryBaseDelayMs = 500
-const retryMaxDelayMs = 30_000
+const sideEffectRetryPolicy = exponentialRetryPolicy('gateway_account_side_effect_write', 500, 30_000)
 
 const sideEffectQueue: QueuedAccountSideEffect[] = []
 const localAccountSuppressions = new Map<string, LocalAccountSuppression>()
@@ -191,7 +191,7 @@ async function drainSideEffectQueue(): Promise<void> {
           continue
         }
         item.attempts += 1
-        item.nextAttemptAtMs = Date.now() + retryDelayMs(item.attempts)
+        item.nextAttemptAtMs = Date.now() + retryDelayMs(sideEffectRetryPolicy, item.attempts)
         sideEffectQueue.unshift(item)
         sortSideEffectQueue()
         logger.warn(errorLogFields(error, {
@@ -288,10 +288,6 @@ function localSuppressionMsFromMinutes(minutes: unknown): number {
   return Math.min(boundedMinutes * 60_000, localSuppressionMaxMs)
 }
 
-function retryDelayMs(attempts: number): number {
-  return Math.min(retryBaseDelayMs * 2 ** Math.max(0, attempts - 1), retryMaxDelayMs)
-}
-
 function operationAccountId(operation: AccountSideEffectOperation): string {
   return operation.type === 'apply_account_error_handling'
     ? operation.account.id
@@ -299,7 +295,5 @@ function operationAccountId(operation: AccountSideEffectOperation): string {
 }
 
 function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms)
-  })
+  return waitForRetryDelayMs(ms)
 }

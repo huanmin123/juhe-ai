@@ -6,6 +6,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId
 import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
+import { compatiblePagedTotal, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
@@ -21,10 +22,27 @@ interface SystemSessionRow {
 
 const sessionTouchMinIntervalMs = 60 * 1000
 const defaultSystemAccountOptionLimit = 500
+const defaultSystemAccountPageSize = 20
+const maxSystemAccountPageSize = 100
 
 export interface SystemAccountOptionListOptions {
   keyword?: string
   limit?: number
+}
+
+export interface SystemAccountListOptions {
+  page?: number
+  pageSize?: number
+  limit?: number
+  keyword?: string
+}
+
+export interface SystemAccountListResult {
+  items: SystemAccountSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
 }
 
 export interface SessionWithAccount {
@@ -45,8 +63,31 @@ export function listSystemAccounts(): SystemAccountSummary[] {
   return rows.map(systemAccountSummaryFromRow)
 }
 
+export function listSystemAccountsPage(options: SystemAccountListOptions = {}): SystemAccountListResult {
+  const normalized = normalizeSystemAccountListOptions(options)
+  const keywordFilter = buildSystemAccountKeywordFilter(normalized.keyword)
+  const rows = getDatabase()
+    .prepare(`
+      SELECT id, username, display_name, description, role, status, must_change_password, last_login_at, created_at, updated_at
+      FROM system_accounts
+      ${keywordFilter.clause}
+      ORDER BY updated_at DESC, id DESC
+      LIMIT ? OFFSET ?
+    `)
+    .all(...keywordFilter.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as SystemAccountRow[]
+  const pageRows = takePageRows(rows, normalized.pageSize)
+  const items = pageRows.rows.map(systemAccountSummaryFromRow)
+  return {
+    items,
+    total: compatiblePagedTotal(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
+    hasMore: pageRows.hasMore,
+    page: normalized.page,
+    pageSize: normalized.pageSize
+  }
+}
+
 export function listSystemAccountOptions(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
-  const keywordFilter = buildSystemAccountOptionKeywordFilter(options.keyword)
+  const keywordFilter = buildSystemAccountKeywordFilter(options.keyword)
   const limitClause = systemAccountOptionLimitClause(options.limit)
   const rows = getDatabase()
     .prepare(`
@@ -60,7 +101,7 @@ export function listSystemAccountOptions(options: SystemAccountOptionListOptions
   return rows.map(systemAccountPrincipalSummaryFromRow)
 }
 
-function buildSystemAccountOptionKeywordFilter(keyword?: string): { clause: string; params: string[] } {
+function buildSystemAccountKeywordFilter(keyword?: string): { clause: string; params: string[] } {
   const text = optionalString(keyword)
   if (!text) return { clause: '', params: [] }
   const prefix = `${escapeLikePrefix(text)}%`
@@ -74,6 +115,19 @@ function buildSystemAccountOptionKeywordFilter(keyword?: string): { clause: stri
       OR display_name LIKE ? ESCAPE '\\'
     )`,
     params: [text, prefix, text, prefix, text, prefix]
+  }
+}
+
+function normalizeSystemAccountListOptions(options: SystemAccountListOptions): Required<Pick<SystemAccountListOptions, 'page' | 'pageSize'>> & Pick<SystemAccountListOptions, 'keyword'> {
+  const page = typeof options.page === 'number' && Number.isInteger(options.page) ? Math.max(1, options.page) : 1
+  const rawPageSize = options.pageSize ?? options.limit
+  const pageSize = typeof rawPageSize === 'number' && Number.isInteger(rawPageSize)
+    ? Math.min(maxSystemAccountPageSize, Math.max(1, rawPageSize))
+    : defaultSystemAccountPageSize
+  return {
+    page,
+    pageSize,
+    keyword: optionalString(options.keyword)
   }
 }
 

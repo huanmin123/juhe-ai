@@ -58,6 +58,16 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/my-model-checks',
+    component: () => import('@/views/model-checks/ModelChecksView.vue'),
+    meta: {
+      title: '模型检测',
+      description: '对自己的 API Key、分组或账户发起模型能力检测，并查看历史检测结果。',
+      viewScope: 'self',
+      heavy: true
+    }
+  },
+  {
     path: '/my-authorizations',
     component: () => import('@/views/authorizations/AuthorizationsView.vue'),
     meta: {
@@ -269,6 +279,19 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
+    path: '/model-checks',
+    component: () => import('@/views/model-checks/ModelChecksView.vue'),
+    meta: {
+      title: '模型检测',
+      description: '对 API Key、分组或账户发起模型能力检测，并查看历史检测结果。',
+      menuGroup: 'ai-management',
+      menuGroupTitle: 'AI 管理',
+      viewScope: 'admin',
+      roles: ['admin'],
+      heavy: true
+    }
+  },
+  {
     path: '/usage-stats',
     component: () => import('@/views/usage-stats/UsageStatsView.vue'),
     meta: {
@@ -364,6 +387,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '表监控',
       description: '查看业务库和记录库的表大小、行数、文件空闲空间和近期增长。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
       viewScope: 'admin',
       roles: ['admin'],
       heavy: true
@@ -375,6 +400,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '公告管理',
       description: '维护面向所有登录用户展示的平台公告，支持重要性标记、发布和下线。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -385,6 +412,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '系统账户管理',
       description: '管理后台登录账号、角色、状态和初始密码。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
       viewScope: 'admin',
       roles: ['admin']
     }
@@ -395,6 +424,8 @@ export const menuRoutes: RouteRecordRaw[] = [
     meta: {
       title: '系统设置',
       description: '配置本地网关与账户调度的默认策略，不覆盖账号里的显式配置。',
+      menuGroup: 'system-operations',
+      menuGroupTitle: '系统运维',
       viewScope: 'admin',
       roles: ['admin']
     }

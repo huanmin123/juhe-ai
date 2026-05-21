@@ -112,6 +112,16 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       FOREIGN KEY (error_policy_id) REFERENCES error_policies(id)
     );
 
+    CREATE TABLE IF NOT EXISTS account_supported_models (
+      account_id TEXT NOT NULL,
+      provider_code TEXT NOT NULL,
+      model TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, model),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+      FOREIGN KEY (provider_code) REFERENCES providers(code)
+    );
+
     CREATE TABLE IF NOT EXISTS system_teams (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -299,8 +309,10 @@ export function applyBusinessSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_status ON accounts(provider_code, status);
     CREATE INDEX IF NOT EXISTS idx_groups_provider ON groups(provider_code);
+    CREATE INDEX IF NOT EXISTS idx_system_sessions_expires_at ON system_sessions(expires_at);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_username_unique_lower ON system_accounts(lower(username));
     CREATE UNIQUE INDEX IF NOT EXISTS idx_system_accounts_display_name_unique_lower ON system_accounts(lower(display_name));
+    CREATE INDEX IF NOT EXISTS idx_system_accounts_updated_lookup ON system_accounts(updated_at, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_username_lookup ON system_accounts(username COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_system_accounts_display_name_lookup ON system_accounts(display_name COLLATE NOCASE, id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_accounts_credential_fingerprint ON accounts(credential_fingerprint) WHERE credential_fingerprint IS NOT NULL;
@@ -309,8 +321,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_name_lookup ON accounts(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_provider_lookup ON accounts(provider_code COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_provider_lookup ON accounts(system_account_id, provider_code COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_notes_lookup ON accounts(notes COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_accounts_system_account_notes_lookup ON accounts(system_account_id, notes COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_type_lookup ON accounts(type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_type_lookup ON accounts(system_account_id, type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account ON accounts(system_account_id);
@@ -318,6 +328,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_accounts_system_account_concurrency ON accounts(system_account_id, concurrency_limit);
     CREATE INDEX IF NOT EXISTS idx_accounts_super_priority ON accounts(super_priority_enabled, status, priority);
     CREATE INDEX IF NOT EXISTS idx_accounts_dispatch_priority ON accounts(fallback_enabled, super_priority_enabled, status, priority);
+    CREATE INDEX IF NOT EXISTS idx_account_supported_models_provider_model ON account_supported_models(provider_code, model, account_id);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account ON groups(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_groups_updated ON groups(updated_at DESC, id DESC);
     CREATE INDEX IF NOT EXISTS idx_groups_system_account_updated ON groups(system_account_id, updated_at DESC, id DESC);
@@ -353,8 +364,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_key_prefix_lookup ON api_keys(system_account_id, key_prefix, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_description_lookup ON api_keys(description COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_description_lookup ON api_keys(system_account_id, description COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_owner ON resource_authorization_grants(resource_owner_system_account_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_resource ON resource_authorization_grants(resource_type, resource_id, status);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_grantee_user ON resource_authorization_grants(grantee_system_account_id, status);
@@ -371,6 +380,11 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_announcements_public ON announcements(status, published_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
+
+    DROP INDEX IF EXISTS idx_accounts_notes_lookup;
+    DROP INDEX IF EXISTS idx_accounts_system_account_notes_lookup;
+    DROP INDEX IF EXISTS idx_api_keys_description_lookup;
+    DROP INDEX IF EXISTS idx_api_keys_system_account_description_lookup;
   `)
 
 }

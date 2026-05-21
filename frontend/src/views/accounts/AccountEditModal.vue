@@ -49,6 +49,8 @@
         v-if="hasAccountType"
         :form="form"
         :is-management-view="isManagementView"
+        :model-options="modelOptions"
+        :models-loading="modelsLoading"
         :proxy-options="proxyOptions"
       />
 
@@ -99,6 +101,8 @@ defineProps<{
   isManagementView: boolean
   isOAuthForm: boolean
   isOpenAIOAuthForm: boolean
+  modelOptions: SelectOption[]
+  modelsLoading: boolean
   okButtonProps: Record<string, unknown>
   providers: ProviderDefinition[]
   proxyOptions: SelectOption[]

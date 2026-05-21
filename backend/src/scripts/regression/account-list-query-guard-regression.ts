@@ -17,9 +17,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, businessSchema] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/schema/business-schema.js')
 ])
 
 try {
@@ -37,7 +38,7 @@ try {
   const matchedByName = createGuardAccount('账户检索目标', 'sk-account-list-query-guard-name', '普通备注', matchedGroup.id)
   const matchedByNamePrefix = createGuardAccount('账户检索目标扩展', 'sk-account-list-query-guard-name-prefix', '普通备注扩展', matchedGroup.id)
   const middleNameOnly = createGuardAccount('普通账户检索目标', 'sk-account-list-query-guard-name-middle', '普通备注中间', matchedGroup.id)
-  const matchedByNotes = createGuardAccount('备注前缀账户', 'sk-account-list-query-guard-notes', '备注前缀命中', matchedGroup.id)
+  const matchedByNotes = createGuardAccount('备注字段账户', 'sk-account-list-query-guard-notes', '备注前缀命中', matchedGroup.id)
   const middleNotesOnly = createGuardAccount('普通备注账户', 'sk-account-list-query-guard-notes-middle', '普通备注前缀命中', matchedGroup.id)
   const matchedByGroup = createGuardAccount('绑定分组命中账户', 'sk-account-list-query-guard-group', '普通备注绑定分组', matchedGroup.id)
   const middleGroupOnly = createGuardAccount('绑定分组中间账户', 'sk-account-list-query-guard-group-middle', '普通备注绑定分组中间', middleGroup.id)
@@ -68,7 +69,7 @@ try {
 
     const notesResult = repositories.listAccountsPage(access, { keyword: '备注前缀', page: 1, pageSize: 20 })
     const notesIds = notesResult.items.map((item) => item.id)
-    assert(notesIds.includes(matchedByNotes.id), 'AI 账户搜索应命中备注前缀值')
+    assert(!notesIds.includes(matchedByNotes.id), 'AI 账户搜索不应通过备注字段命中，避免通用关键词扫描长文本')
     assert(!notesIds.includes(middleNotesOnly.id), 'AI 账户搜索不应命中备注中间包含值')
 
     const groupResult = repositories.listAccountsPage(access, { keyword: '账户绑定前缀', page: 1, pageSize: 20 })
@@ -84,6 +85,20 @@ try {
     const wildcardIds = wildcardResult.items.map((item) => item.id)
     assert(wildcardIds.includes(wildcardLiteral.id), 'AI 账户搜索应把 % 当作字面量前缀处理')
     assert(!wildcardIds.includes(wildcardNeighbor.id), 'AI 账户搜索不应把用户输入的 % 当作 LIKE 通配符')
+
+    const invalidNotesSortCapturedStart = capturedCalls.length
+    const invalidNotesSortResult = repositories.listAccountsPage(access, {
+      keyword: '账户检索目标',
+      sorts: [{ field: 'notes', order: 'asc' } as never],
+      page: 1,
+      pageSize: 20
+    })
+    assert(invalidNotesSortResult.items.some((item) => item.id === matchedByName.id), 'AI 账户列表应忽略已废弃的备注排序并继续返回结果')
+    const invalidNotesSortCalls = capturedCalls.slice(invalidNotesSortCapturedStart)
+    assert(invalidNotesSortCalls.length >= 1, '回归应捕获已废弃备注排序的列表 SQL')
+    for (const call of invalidNotesSortCalls) {
+      assert(!/\bORDER\s+BY[\s\S]*\baccount_rows\.notes\s+COLLATE\s+NOCASE\b/i.test(call.sql), 'AI 账户列表不应允许按备注长文本排序')
+    }
   } finally {
     database.prepare = originalPrepare
   }
@@ -91,6 +106,7 @@ try {
   assert(capturedCalls.length >= 5, '回归应捕获 AI 账户列表 SQL')
   for (const call of capturedCalls) {
     assert(!/\bCOALESCE\s*\(\s*account_rows\.notes\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描备注字段')
+    assert(!/\baccount_rows\.notes\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表搜索不应把备注字段放进通用关键词 WHERE')
     assert(!/\bCOALESCE\s*\(\s*bound_groups\.name\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描分组名称')
     assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'AI 账户列表前缀搜索应显式转义 LIKE 通配符')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), 'AI 账户列表搜索不应传入前导通配符参数')
@@ -100,14 +116,19 @@ try {
     'idx_accounts_system_account_name_lookup',
     'idx_accounts_provider_lookup',
     'idx_accounts_system_account_provider_lookup',
-    'idx_accounts_notes_lookup',
-    'idx_accounts_system_account_notes_lookup',
     'idx_accounts_type_lookup',
     'idx_accounts_system_account_type_lookup',
     'idx_groups_name_lookup',
     'idx_groups_system_account_name_lookup'
   ]) {
     assertBusinessIndexExists(indexName)
+  }
+  assertObsoleteAccountNotesIndexesDroppedBySchema()
+  for (const indexName of [
+    'idx_accounts_notes_lookup',
+    'idx_accounts_system_account_notes_lookup'
+  ]) {
+    assertBusinessIndexMissing(indexName)
   }
 
   console.log('AI 账户列表查询防护回归通过：搜索仅支持精确/前缀匹配，不再使用前导通配符或包含匹配')
@@ -147,4 +168,20 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
+}
+
+function assertObsoleteAccountNotesIndexesDroppedBySchema(): void {
+  const database = databaseModule.getDatabase()
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_accounts_notes_lookup ON accounts(notes COLLATE NOCASE, id);
+    CREATE INDEX IF NOT EXISTS idx_accounts_system_account_notes_lookup ON accounts(system_account_id, notes COLLATE NOCASE, id);
+  `)
+  businessSchema.applyBusinessSchema(database)
+}
+
+function assertBusinessIndexMissing(indexName: string): void {
+  const row = databaseModule.getDatabase()
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+    .get(indexName) as unknown as { name?: string } | undefined
+  assert.equal(row?.name, undefined, `业务库不应保留已废弃的长文本搜索索引 ${indexName}`)
 }

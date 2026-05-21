@@ -20,7 +20,7 @@
     <a-tooltip v-if="currentGroupName" :title="currentGroupName">
       <span class="account-group-text">{{ currentGroupName }}</span>
     </a-tooltip>
-    <span v-else class="muted-cell">未归属</span>
+    <span v-else class="muted-cell">未加入</span>
   </template>
   <AccountStatusTag v-else-if="columnKey === 'status'" :account="account" />
   <template v-else-if="columnKey === 'proxy'">
@@ -37,8 +37,8 @@
   <template v-else-if="columnKey === 'lastUsedAt'">
     {{ formatDateTime(accountLastUsedAt(account)) }}
   </template>
-  <span v-else-if="columnKey === 'accountExpiresAt'" :class="isAccountPackageExpired(account) ? 'expired-cell' : 'muted-cell'">
-    {{ formatDateTime(account.accountExpiresAt) }}
+  <span v-else-if="columnKey === 'accountExpiresAt'" :class="isAccountDisplayExpired(account) ? 'expired-cell' : 'muted-cell'">
+    {{ formatDateTime(accountDisplayExpiresAt(account)) }}
   </span>
   <AccountRowActions
     v-else-if="columnKey === 'actions'"
@@ -66,9 +66,10 @@ import AccountUsageCell from './AccountUsageCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
   accountLastUsedAt,
+  accountDisplayExpiresAt,
   accountTypeText,
   formatDateTime,
-  isAccountPackageExpired,
+  isAccountDisplayExpired,
   isAuthorizedAccount
 } from './accountFormatters'
 import { authorizedAccountSourceToneClass } from './accountRules'

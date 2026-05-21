@@ -176,6 +176,7 @@ function assertLocalGatewayDatabaseAccess(operation: string): void {
 function cloneOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAccountSecret {
   return {
     ...account,
+    supportedModels: [...(account.supportedModels ?? [])],
     credentials: { ...account.credentials }
   }
 }

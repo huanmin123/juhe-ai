@@ -49,37 +49,17 @@ export interface UpstreamErrorFeatureDecision {
 
 export const openAIUpstreamErrorFeatureRules = [
   {
-    id: 'openai_tool_output_missing_request_passthrough',
+    id: 'openai_invalid_request_error_request_passthrough',
     enabled: true,
-    name: 'OpenAI 工具输出缺失按请求级错误返回',
-    description: '上游 HTTP 400 返回 No tool output found for function call 时，判定为客户端请求上下文缺少工具结果，原样返回客户端。',
+    name: 'OpenAI invalid_request_error 按请求级错误返回',
+    description: '上游非 2xx 返回 error.type = invalid_request_error 时，判定为客户端请求参数、模型级别或上下文错误，原样返回客户端。',
     source: 'audit_log',
-    rationale: '该错误由请求消息链中 assistant tool_call 缺少对应 tool 输出导致，和具体上游账号无关；继续扫账号只会误冷却可用账号。',
+    rationale: 'OpenAI invalid_request_error 表示本次请求的参数、模型约束或上下文状态被上游明确拒绝，和具体上游账号健康无关；继续扫账号只会误冷却可用账号。',
     provider: 'openai',
     endpoint: 'all',
     streamOnly: false,
     match: {
-      statusCodes: [400],
-      errorTypes: ['invalid_request_error'],
-      messageKeywords: ['No tool output found for function call']
-    },
-    action: 'passthrough_request_error',
-    accountPolicy: 'none'
-  },
-  {
-    id: 'openai_instructions_required_request_passthrough',
-    enabled: true,
-    name: 'OpenAI instructions 缺失按请求级错误返回',
-    description: '上游 HTTP 400 返回 Instructions are required 时，判定为请求或上游协议形态错误，原样返回客户端。',
-    source: 'audit_log',
-    rationale: '生产审计显示该错误会把可用账号误判为临时不可调用；特征命中只说明本次请求被上游明确拒绝，不代表账号健康问题。',
-    provider: 'openai',
-    endpoint: '/v1/chat/completions',
-    streamOnly: false,
-    match: {
-      statusCodes: [400],
-      errorTypes: ['invalid_request_error'],
-      messageKeywords: ['Instructions are required']
+      errorTypes: ['invalid_request_error']
     },
     action: 'passthrough_request_error',
     accountPolicy: 'none'

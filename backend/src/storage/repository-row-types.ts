@@ -30,6 +30,7 @@ export interface AccountRow {
   priority: number
   super_priority_enabled: number
   fallback_enabled: number
+  supported_models?: string[]
   schedulable: number
   account_expires_at: string | null
   last_used_at: string | null

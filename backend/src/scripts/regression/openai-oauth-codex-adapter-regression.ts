@@ -193,12 +193,16 @@ async function testSessionIsolation(): Promise<void> {
   })
   const partsA = await buildOpenAIOAuthCodexRequestParts(reqA, reqA.headers, account, identity)
   const partsB = await buildOpenAIOAuthCodexRequestParts(reqB, reqB.headers, account, { ...identity, apiKeyId: 'key_b' })
+  const switchedAccount = { ...account, id: 'acct_switched_oauth' }
+  const partsSwitchedAccount = await buildOpenAIOAuthCodexRequestParts(reqA, reqA.headers, switchedAccount, identity)
   const bodyA = parseBody(partsA.body)
   const bodyB = parseBody(partsB.body)
+  const switchedAccountBody = parseBody(partsSwitchedAccount.body)
 
   assert.notEqual(bodyA.prompt_cache_key, 'same-cache')
   assert.notEqual(bodyB.prompt_cache_key, 'same-cache')
   assert.notEqual(bodyA.prompt_cache_key, bodyB.prompt_cache_key)
+  assert.equal(bodyA.prompt_cache_key, switchedAccountBody.prompt_cache_key)
   assert.notEqual(partsA.headers.get('session_id'), partsB.headers.get('session_id'))
   assert.equal(
     bodyA.prompt_cache_key,

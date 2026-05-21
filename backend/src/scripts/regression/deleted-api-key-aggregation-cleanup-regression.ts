@@ -94,10 +94,16 @@ try {
     systemAccountId: 'sys_admin'
   })
   assert.equal(fallbackResult.queued, false, '队列满时 API Key 关联清理应显式知道未投递 worker')
-  assert.equal(fallbackResult.fallbackExecuted, true, '队列满时 API Key 关联清理应在当前进程同步兜底')
-  assert.equal(usageRecordExists('usage_deleted_key_after_queue_full'), false, '同步兜底应删除关联使用记录')
-  assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 0, '同步兜底应清空统计聚合残留')
-  assert.equal(usageStatsTotal('sys_admin', 'api_key', 'key_deleted_after_queue_full'), 0, '同步兜底应清空 API Key 维度统计残留')
+  assert.equal(usageRecordExists('usage_deleted_key_after_queue_full'), true, '队列满时应保留关联使用记录等待后台维护任务')
+  assert.equal(cleanupTargetExists('key_deleted_after_queue_full'), true, '队列满时应持久登记清理目标，等待后台重试')
+  assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 1, '队列满时不应在请求链路同步扣减统计聚合')
+  assert.equal(usageStatsTotal('sys_admin', 'api_key', 'key_deleted_after_queue_full'), 1, '队列满时 API Key 维度统计应等待后台清理扣减')
+  apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
+    apiKeyId: 'key_deleted_after_queue_full',
+    systemAccountId: 'sys_admin'
+  })
+  assert.equal(usageRecordExists('usage_deleted_key_after_queue_full'), false, '后台重试清理应删除关联使用记录')
+  assert.equal(cleanupTargetExists('key_deleted_after_queue_full'), false, '后台重试清理完成后应移除清理目标')
 
   const pendingApiKeyId = 'key_deleted_cleanup_pending_cursor'
   const pendingUsageRecordId = 'usage_deleted_key_pending_cursor'

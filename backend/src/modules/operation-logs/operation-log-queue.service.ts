@@ -1,11 +1,12 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { newId, nowIso } from '../../storage/database.js'
 import { createOperationLogsBatch, type OperationLogInput } from '../../storage/repositories.js'
 import { sendOperationLogsToWorker } from '../background/background-ipc.js'
 
 const operationLogFlushIntervalMs = 100
-const operationLogRetryDelayMs = 1000
+const operationLogRetryPolicy = fixedRetryPolicy('operation_log_queue_flush', 1000)
 const operationLogBatchSize = 200
 const operationLogMaxPending = 10000
 
@@ -109,7 +110,7 @@ export function flushOperationLogQueue(options: OperationLogFlushOptions = {}): 
   }
 
   if (pendingOperationLogs.length > 0 && (!failed || shouldRetry)) {
-    scheduleOperationLogFlush(shouldRetry ? operationLogRetryDelayMs : 0)
+    scheduleOperationLogFlush(shouldRetry ? retryDelayMs(operationLogRetryPolicy) : 0)
   }
 }
 

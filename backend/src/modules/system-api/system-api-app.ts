@@ -11,6 +11,7 @@ import { authRouter } from '../auth/auth.routes.js'
 import { errorPoliciesRouter } from '../error-policies/error-policies.routes.js'
 import { featureRulesRouter } from '../feature-rules/feature-rules.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
+import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/operation-logs.routes.js'
 import { openAIOAuthRouter } from '../openai-oauth/openai-oauth.routes.js'
 import { providersRouter } from '../providers/providers.routes.js'
@@ -61,6 +62,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-authorizations`, forceSelfAccessScope, authorizationsRouter)
   app.use(`${systemApiPrefix}/my-openai-oauth`, forceSelfAccessScope, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/my-usage-records`, forceSelfAccessScope, usageRecordsRouter)
+  app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
   app.use(`${systemApiPrefix}/providers`, requireAdmin, providersRouter)
@@ -74,6 +76,7 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/openai-oauth`, requireAdmin, openAIOAuthRouter)
   app.use(`${systemApiPrefix}/proxies`, proxiesRouter)
   app.use(`${systemApiPrefix}/usage-records`, requireAdmin, usageRecordsRouter)
+  app.use(`${systemApiPrefix}/model-checks`, requireAdmin, modelChecksRouter)
   app.use(`${systemApiPrefix}/operation-logs`, requireAdmin, operationLogsRouter)
   app.use(`${systemApiPrefix}/audit-logs`, requireAdmin, auditLogsRouter)
   app.use(`${systemApiPrefix}/runtime-logs`, requireAdmin, runtimeLogsRouter)

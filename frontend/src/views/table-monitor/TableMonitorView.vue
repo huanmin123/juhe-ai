@@ -1,17 +1,17 @@
 <template>
   <div class="table-monitor-page">
     <a-card class="page-card table-monitor-toolbar-card">
-      <div class="page-toolbar table-monitor-toolbar">
-        <div class="table-monitor-filters">
-          <a-input-search
-            v-model:value="keyword"
-            allow-clear
-            class="table-search"
-            placeholder="搜索表名"
-            :disabled="loading"
-            @change="handleFilterChange"
-            @search="handleFilterChange"
-          />
+      <ResponsiveListToolbar
+        v-model:keyword="keyword"
+        search-placeholder="搜索表名前缀"
+        filter-title="表监控筛选"
+        :active-filter-count="activeFilterCount"
+        :refresh-loading="loading"
+        @search="handleFilterChange"
+        @reset="resetFilters"
+        @refresh="loadData"
+      >
+        <template #inline-filters>
           <a-range-picker
             v-model:value="historyRange"
             allow-clear
@@ -20,23 +20,30 @@
             :placeholder="['开始日期', '结束日期']"
             @change="loadData"
           />
-        </div>
-        <div class="page-toolbar-actions">
+        </template>
+        <template #filters>
+          <a-form layout="vertical">
+            <a-form-item label="历史日期范围">
+              <a-range-picker
+                v-model:value="historyRange"
+                allow-clear
+                class="drawer-range-picker"
+                :disabled="loading"
+                :placeholder="['开始日期', '结束日期']"
+                @change="loadData"
+              />
+            </a-form-item>
+          </a-form>
+        </template>
+        <template #actions>
           <a-button danger :disabled="loading || cleanupSubmitting" @click="openCleanupModal">
             <template #icon>
               <DeleteOutlined />
             </template>
             清理使用记录
           </a-button>
-          <a-button :disabled="loading" @click="resetFilters">重置</a-button>
-          <a-button :loading="loading" @click="loadData">
-            <template #icon>
-              <ReloadOutlined />
-            </template>
-            刷新
-          </a-button>
-        </div>
-      </div>
+        </template>
+      </ResponsiveListToolbar>
     </a-card>
 
     <a-modal
@@ -78,6 +85,78 @@
       />
     </a-modal>
 
+    <a-drawer v-model:open="apiKeyCleanupDrawerOpen" width="min(960px, 96vw)" title="API Key 删除清理队列" :body-style="{ padding: '18px' }">
+      <div class="cleanup-target-drawer">
+        <a-alert
+          show-icon
+          type="info"
+          message="仅展示待清理目标队列"
+          description="失败和阻塞目标会优先展示；清理仍由后台 worker 分批执行，这里不扫描使用记录或审计明细。"
+        />
+        <div class="cleanup-target-toolbar">
+          <span>最多展示 100 个待处理目标</span>
+          <a-button size="small" :loading="apiKeyCleanupTargetsLoading" @click="loadApiKeyCleanupTargets">
+            <template #icon>
+              <ReloadOutlined />
+            </template>
+            刷新
+          </a-button>
+        </div>
+        <ResponsiveDataList
+          size="small"
+          table-class="cleanup-target-table"
+          :columns="apiKeyCleanupTargetColumns"
+          :data-source="apiKeyCleanupTargets"
+          row-key="apiKeyId"
+          :loading="apiKeyCleanupTargetsLoading"
+          :pagination="false"
+          :scroll-x="1100"
+          :mobile-breakpoint="820"
+          :lock-body-scroll="false"
+        >
+          <template #emptyText>
+            <a-empty description="当前没有待清理目标。" />
+          </template>
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'state'">
+              <a-tag :color="apiKeyCleanupTargetStateColor(record)">{{ apiKeyCleanupTargetStateText(record) }}</a-tag>
+            </template>
+            <template v-else-if="column.key === 'apiKeyId'">
+              <span class="mono-cell">{{ record.apiKeyId }}</span>
+            </template>
+            <template v-else-if="column.key === 'systemAccountId'">
+              <span class="mono-cell">{{ record.systemAccountId }}</span>
+            </template>
+            <template v-else-if="column.key === 'attemptCount'">
+              {{ formatInteger(record.attemptCount) }}
+            </template>
+            <template v-else-if="column.key === 'createdAt'">
+              {{ formatDateTime(record.createdAt) }}
+            </template>
+            <template v-else-if="column.key === 'lastAttemptAt'">
+              {{ formatDateTime(record.lastAttemptAt) }}
+            </template>
+            <template v-else-if="column.key === 'reason'">
+              <span class="cleanup-target-reason">{{ apiKeyCleanupTargetReason(record) }}</span>
+            </template>
+          </template>
+          <template #card="{ record }">
+            <article class="cleanup-target-mobile-card">
+              <div class="cleanup-target-mobile-head">
+                <a-tag :color="apiKeyCleanupTargetStateColor(record)">{{ apiKeyCleanupTargetStateText(record) }}</a-tag>
+                <span>尝试 {{ formatInteger(record.attemptCount) }} 次</span>
+              </div>
+              <span class="mono-cell">API Key：{{ record.apiKeyId }}</span>
+              <span class="mono-cell">系统账户：{{ record.systemAccountId }}</span>
+              <span>最早登记：{{ formatDateTime(record.createdAt) }}</span>
+              <span>最近尝试：{{ formatDateTime(record.lastAttemptAt) }}</span>
+              <span>原因：{{ apiKeyCleanupTargetReason(record) }}</span>
+            </article>
+          </template>
+        </ResponsiveDataList>
+      </div>
+    </a-drawer>
+
     <a-row :gutter="[16, 16]" class="database-summary-grid">
       <a-col v-for="item in databaseSummaryRows" :key="item.role" :xs="24" :lg="12">
         <a-card class="database-summary-card">
@@ -95,6 +174,36 @@
         </a-card>
       </a-col>
     </a-row>
+
+    <a-card class="page-card maintenance-summary-card">
+      <div class="maintenance-summary-head">
+        <div>
+          <span class="maintenance-summary-title">API Key 删除清理</span>
+          <span class="maintenance-summary-description">删除后关联记录和统计由 worker 分批处理</span>
+        </div>
+        <div class="maintenance-summary-actions">
+          <a-tag :color="apiKeyCleanupStateColor">{{ apiKeyCleanupStateText }}</a-tag>
+          <a-button size="small" :disabled="!apiKeyCleanupSummary || apiKeyCleanupSummary.pendingTargets <= 0" @click="openApiKeyCleanupTargets">
+            <template #icon>
+              <UnorderedListOutlined />
+            </template>
+            查看队列
+          </a-button>
+        </div>
+      </div>
+      <div class="maintenance-summary-body">
+        <div class="maintenance-summary-count">
+          <span>待清理目标</span>
+          <strong>{{ formatInteger(apiKeyCleanupSummary?.pendingTargets ?? 0) }}</strong>
+        </div>
+        <div class="maintenance-summary-meta">
+          <span>阻塞 {{ formatInteger(apiKeyCleanupSummary?.blockedTargets ?? 0) }}</span>
+          <span>失败 {{ formatInteger(apiKeyCleanupSummary?.failedTargets ?? 0) }}</span>
+          <span>最早登记 {{ formatDateTime(apiKeyCleanupSummary?.oldestCreatedAt) }}</span>
+          <span>最近尝试 {{ formatDateTime(apiKeyCleanupSummary?.lastAttemptAt) }}</span>
+        </div>
+      </div>
+    </a-card>
 
     <a-row :gutter="[16, 16]" class="history-grid">
       <a-col v-for="item in historyCards" :key="item.role" :xs="24" :xl="12">
@@ -119,24 +228,30 @@
 
     <a-card class="page-card">
       <DeferredRender :active="pageActive" :delay-frames="1" :min-height="360" reset-on-deactivate>
-        <a-table
+        <ResponsiveDataList
           :columns="columns"
-          :custom-row="customTableRow"
           :data-source="filteredTables"
           :loading="loading"
           :pagination="tablePagination"
-          :row-class-name="rowClassName"
           :row-key="tableKey"
-          :scroll="{ x: 1180 }"
+          :scroll-x="1180"
           class="table-monitor-table"
+          table-class="table-monitor-table"
           size="middle"
+          mobile-pagination
         >
+          <template #emptyText>
+            <a-empty class="page-empty-card" description="当前条件下没有表监控数据。" />
+          </template>
           <template #bodyCell="{ column, record }">
             <template v-if="column.key === 'databaseRole'">
               <a-tag :color="databaseRoleColor(record.databaseRole)">{{ databaseRoleLabel(record.databaseRole) }}</a-tag>
             </template>
             <template v-else-if="column.key === 'tableName'">
-              <span class="mono-cell">{{ record.tableName }}</span>
+              <button class="table-name-button" type="button" @click="selectTable(record)">
+                <span class="mono-cell">{{ record.tableName }}</span>
+                <a-tag v-if="isSelectedTable(record)" color="blue">趋势</a-tag>
+              </button>
             </template>
             <template v-else-if="column.key === 'rowCount'">
               {{ formatInteger(record.rowCount) }}
@@ -162,7 +277,38 @@
               {{ formatDateTime(record.sampledAt) }}
             </template>
           </template>
-        </a-table>
+          <template #card="{ record }">
+            <button class="table-monitor-mobile-card" type="button" @click="selectTable(record)">
+              <div class="mobile-card-head">
+                <span class="mono-cell">{{ record.tableName }}</span>
+                <a-tag :color="databaseRoleColor(record.databaseRole)">{{ databaseRoleLabel(record.databaseRole) }}</a-tag>
+              </div>
+              <div class="mobile-list-meta-grid">
+                <div class="mobile-list-meta-item">
+                  <span>行数</span>
+                  <strong>{{ formatInteger(record.rowCount) }}</strong>
+                </div>
+                <div class="mobile-list-meta-item">
+                  <span>总大小</span>
+                  <strong>{{ formatBytes(record.totalBytes) }}</strong>
+                </div>
+                <div class="mobile-list-meta-item">
+                  <span>1 小时增长</span>
+                  <strong>{{ formatGrowthBytes(record.growthBytes1h) }} {{ formatGrowthRows(record.growthRows1h) }}</strong>
+                </div>
+                <div class="mobile-list-meta-item">
+                  <span>24 小时增长</span>
+                  <strong>{{ formatGrowthBytes(record.growthBytes24h) }} {{ formatGrowthRows(record.growthRows24h) }}</strong>
+                </div>
+                <div class="mobile-list-meta-item mobile-list-meta-wide">
+                  <span>采样时间</span>
+                  <strong>{{ formatDateTime(record.sampledAt) }}</strong>
+                </div>
+              </div>
+              <a-tag v-if="isSelectedTable(record)" color="blue">当前趋势表</a-tag>
+            </button>
+          </template>
+        </ResponsiveDataList>
         <template #placeholder>
           <div class="table-monitor-table-placeholder">
             <a-spin v-if="loading" size="small" />
@@ -178,15 +324,17 @@ import { computed, nextTick, ref, shallowRef } from 'vue'
 import type { ShallowRef } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
-import { DeleteOutlined, ReloadOutlined } from '@ant-design/icons-vue'
+import { DeleteOutlined, ReloadOutlined, UnorderedListOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
 import DeferredRender from '@/components/DeferredRender.vue'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import { disposeChart, ensureChartFromElement, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatServerDateTimeInput } from '@/shared/formatters'
-import type { DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverview, TableStorageSnapshotSummary, UsageRecordsCleanupResult } from '@/types/domain'
+import type { ApiKeyRecordCleanupQueueTarget, DatabaseStorageSnapshotSummary, MonitoredDatabaseRole, TableStorageOverview, TableStorageSnapshotSummary, UsageRecordsCleanupResult } from '@/types/domain'
 
 const columns = [
   { title: '库', key: 'databaseRole', width: 92, fixed: 'left' },
@@ -200,6 +348,16 @@ const columns = [
   { title: '采样时间', key: 'sampledAt', width: 190 }
 ]
 
+const apiKeyCleanupTargetColumns = [
+  { title: '状态', key: 'state', width: 96, fixed: 'left' },
+  { title: 'API Key ID', key: 'apiKeyId', width: 220 },
+  { title: '系统账户 ID', key: 'systemAccountId', width: 220 },
+  { title: '尝试', key: 'attemptCount', align: 'right', width: 90 },
+  { title: '最早登记', key: 'createdAt', width: 180 },
+  { title: '最近尝试', key: 'lastAttemptAt', width: 180 },
+  { title: '原因', key: 'reason', width: 320 }
+]
+
 const loading = ref(false)
 const keyword = ref('')
 const historyRange = ref<[Dayjs, Dayjs] | undefined>(defaultHistoryRange())
@@ -208,6 +366,9 @@ const cleanupModalOpen = ref(false)
 const cleanupSubmitting = ref(false)
 const cleanupCutoffAt = ref<Dayjs | undefined>(defaultCleanupCutoffAt())
 const cleanupResult = ref<UsageRecordsCleanupResult>()
+const apiKeyCleanupDrawerOpen = ref(false)
+const apiKeyCleanupTargetsLoading = ref(false)
+const apiKeyCleanupTargets = ref<ApiKeyRecordCleanupQueueTarget[]>([])
 const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'records']
 const historyChartPointLimit = 720
 const selectedTableKeys = ref<Record<MonitoredDatabaseRole, string | undefined>>({
@@ -247,11 +408,65 @@ const databaseSummaryRows = computed(() => {
     database: databasesByRole.get(role)
   }))
 })
+const apiKeyCleanupSummary = computed(() => overview.value?.recordMaintenance?.apiKeyRecordCleanup)
+const apiKeyCleanupStateText = computed(() => {
+  const summary = apiKeyCleanupSummary.value
+  if (!summary || summary.pendingTargets <= 0) return '无待清理'
+  if (summary.failedTargets > 0) return '有失败'
+  if (summary.blockedTargets > 0) return '等待重试'
+  return '清理中'
+})
+const apiKeyCleanupStateColor = computed(() => {
+  const summary = apiKeyCleanupSummary.value
+  if (!summary || summary.pendingTargets <= 0) return 'green'
+  if (summary.failedTargets > 0) return 'red'
+  if (summary.blockedTargets > 0) return 'orange'
+  return 'blue'
+})
+
+async function openApiKeyCleanupTargets() {
+  apiKeyCleanupDrawerOpen.value = true
+  await loadApiKeyCleanupTargets()
+}
+
+async function loadApiKeyCleanupTargets() {
+  apiKeyCleanupTargetsLoading.value = true
+  try {
+    apiKeyCleanupTargets.value = await api.tableMonitor.apiKeyCleanupTargets({ limit: 100 })
+  } catch (error) {
+    console.error(error)
+    message.error('API Key 删除清理队列加载失败')
+  } finally {
+    apiKeyCleanupTargetsLoading.value = false
+  }
+}
+
+function apiKeyCleanupTargetStateText(record: ApiKeyRecordCleanupQueueTarget) {
+  if (record.lastErrorMessage) return '失败'
+  if (record.lastBlockedReason) return '阻塞'
+  return '等待'
+}
+
+function apiKeyCleanupTargetStateColor(record: ApiKeyRecordCleanupQueueTarget) {
+  if (record.lastErrorMessage) return 'red'
+  if (record.lastBlockedReason) return 'orange'
+  return 'blue'
+}
+
+function apiKeyCleanupTargetReason(record: ApiKeyRecordCleanupQueueTarget) {
+  return record.lastErrorMessage || record.lastBlockedReason || '等待 worker 执行清理'
+}
 
 const filteredTables = computed(() => {
   const text = keyword.value.trim().toLowerCase()
   return (overview.value?.tables ?? [])
-    .filter((row) => !text || row.tableName.toLowerCase().includes(text))
+    .filter((row) => matchesTableNameKeyword(row.tableName, text))
+})
+const activeFilterCount = computed(() => {
+  let count = 0
+  if (keyword.value.trim()) count += 1
+  if (historyRange.value && !isDefaultHistoryRange(historyRange.value)) count += 1
+  return count
 })
 
 const selectedTable = computed(() => {
@@ -374,8 +589,10 @@ async function submitUsageRecordsCleanup() {
 }
 
 function handleFilterChange() {
-  ensureSelectedTable(true)
-  void loadAllHistory()
+  const changedRoles = ensureSelectedTable()
+  if (changedRoles.length > 0) {
+    void loadHistoryForRoles(changedRoles)
+  }
 }
 
 function resetFilters() {
@@ -390,6 +607,10 @@ function resetFilters() {
 
 async function loadAllHistory() {
   await Promise.all(databaseSummaryRoles.map((role) => loadHistoryForRole(role)))
+}
+
+async function loadHistoryForRoles(roles: MonitoredDatabaseRole[]) {
+  await Promise.all(roles.map((role) => loadHistoryForRole(role)))
 }
 
 async function loadHistoryForRole(role: MonitoredDatabaseRole) {
@@ -416,13 +637,21 @@ async function loadHistoryForRole(role: MonitoredDatabaseRole) {
   }
 }
 
-function ensureSelectedTable(reset = false) {
+function ensureSelectedTable(reset = false): MonitoredDatabaseRole[] {
+  const changedRoles: MonitoredDatabaseRole[] = []
   for (const role of databaseSummaryRoles) {
-    if (reset || !selectedTableForRole(role)) {
-      const firstTable = firstTableForRole(role)
-      selectedTableKeys.value[role] = firstTable ? tableKey(firstTable) : undefined
+    const previousKey = selectedTableKeys.value[role]
+    const previousVisible = !reset && previousKey
+      ? filteredTables.value.some((row) => row.databaseRole === role && tableKey(row) === previousKey)
+      : false
+    const firstTable = firstTableForRole(role)
+    const nextKey = previousVisible ? previousKey : firstTable ? tableKey(firstTable) : undefined
+    if (previousKey !== nextKey) {
+      changedRoles.push(role)
     }
+    selectedTableKeys.value[role] = nextKey
   }
+  return changedRoles
 }
 
 function selectedTableForRole(role: MonitoredDatabaseRole): TableStorageSnapshotSummary | undefined {
@@ -434,6 +663,12 @@ function firstTableForRole(role: MonitoredDatabaseRole): TableStorageSnapshotSum
   return filteredTables.value.find((row) => row.databaseRole === role)
 }
 
+function matchesTableNameKeyword(tableName: string, keyword: string): boolean {
+  if (!keyword) return true
+  const normalizedTableName = tableName.toLowerCase()
+  return normalizedTableName === keyword || normalizedTableName.startsWith(keyword)
+}
+
 function historyRangeParams() {
   return {
     startAt: formatServerDateTimeInput(historyRange.value?.[0]?.startOf('day')) ?? undefined,
@@ -443,6 +678,11 @@ function historyRangeParams() {
 
 function defaultHistoryRange(): [Dayjs, Dayjs] {
   return [dayjs().subtract(1, 'month').startOf('day'), dayjs().endOf('day')]
+}
+
+function isDefaultHistoryRange(value: [Dayjs, Dayjs]) {
+  const defaults = defaultHistoryRange()
+  return value[0].isSame(defaults[0], 'day') && value[1].isSame(defaults[1], 'day')
 }
 
 function defaultCleanupCutoffAt() {
@@ -481,17 +721,13 @@ function range(start: number, end: number) {
   return output
 }
 
-function customTableRow(record: TableStorageSnapshotSummary) {
-  return {
-    onClick: () => {
-      selectedTableKeys.value[record.databaseRole] = tableKey(record)
-      void loadHistoryForRole(record.databaseRole)
-    }
-  }
+function selectTable(record: TableStorageSnapshotSummary) {
+  selectedTableKeys.value[record.databaseRole] = tableKey(record)
+  void loadHistoryForRole(record.databaseRole)
 }
 
-function rowClassName(record: TableStorageSnapshotSummary) {
-  return tableKey(record) === selectedTableKeys.value[record.databaseRole] ? 'selected-monitor-row' : ''
+function isSelectedTable(record: TableStorageSnapshotSummary) {
+  return tableKey(record) === selectedTableKeys.value[record.databaseRole]
 }
 
 function renderHistoryChart(role: MonitoredDatabaseRole) {
@@ -639,24 +875,12 @@ function resizeHistoryChart() {
   padding: 16px 18px;
 }
 
-.table-monitor-toolbar {
-  margin: 0;
-}
-
-.table-monitor-filters {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 12px;
-  min-width: 0;
-}
-
-.table-search {
-  width: 240px;
-}
-
 .table-history-range {
   width: 380px;
+}
+
+.drawer-range-picker {
+  width: 100%;
 }
 
 .cleanup-form {
@@ -719,8 +943,122 @@ function resizeHistoryChart() {
   font-size: 13px;
 }
 
-.table-monitor-table :deep(.ant-table-row) {
-  cursor: pointer;
+.maintenance-summary-card {
+  border: 1px solid #e8edf5;
+  border-radius: 14px;
+}
+
+.maintenance-summary-card :deep(.ant-card-body) {
+  padding: 18px 20px;
+}
+
+.maintenance-summary-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.maintenance-summary-head > div {
+  min-width: 0;
+}
+
+.maintenance-summary-actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.maintenance-summary-title {
+  display: block;
+  color: #0f172a;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.maintenance-summary-description {
+  display: block;
+  margin-top: 4px;
+  color: #64748b;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.maintenance-summary-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 14px 20px;
+  margin-top: 18px;
+}
+
+.maintenance-summary-count {
+  display: grid;
+  gap: 4px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.maintenance-summary-count strong {
+  color: #0f172a;
+  font-size: 28px;
+  font-weight: 800;
+  line-height: 1.1;
+}
+
+.maintenance-summary-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px 14px;
+  min-width: 0;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.cleanup-target-drawer {
+  display: grid;
+  gap: 14px;
+}
+
+.cleanup-target-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.cleanup-target-reason {
+  display: block;
+  min-width: 0;
+  max-width: 320px;
+  overflow-wrap: anywhere;
+  color: #334155;
+}
+
+.cleanup-target-mobile-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  color: #334155;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+}
+
+.cleanup-target-mobile-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: #64748b;
+  font-size: 13px;
 }
 
 .table-monitor-table-placeholder {
@@ -730,8 +1068,40 @@ function resizeHistoryChart() {
   justify-content: center;
 }
 
-.table-monitor-table :deep(.selected-monitor-row > td) {
-  background: #eef6ff !important;
+.table-name-button {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  color: #0f172a;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.table-name-button:hover {
+  color: #1677ff;
+}
+
+.table-monitor-mobile-card {
+  display: grid;
+  width: 100%;
+  gap: 10px;
+  padding: 12px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  box-shadow: 0 1px 2px rgb(15 23 42 / 4%);
+}
+
+.mobile-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .growth-rows {
@@ -755,14 +1125,34 @@ function resizeHistoryChart() {
 }
 
 @media (max-width: 768px) {
-  .table-monitor-filters,
-  .table-search,
   .table-history-range {
     width: 100%;
   }
 
   .history-chart {
     height: 280px;
+  }
+
+  .maintenance-summary-head {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .maintenance-summary-actions {
+    justify-content: flex-start;
+  }
+
+  .maintenance-summary-body {
+    align-items: flex-start;
+  }
+
+  .cleanup-target-toolbar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .maintenance-summary-meta {
+    justify-content: flex-start;
   }
 }
 </style>

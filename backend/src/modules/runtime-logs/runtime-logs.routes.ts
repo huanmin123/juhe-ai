@@ -1,6 +1,7 @@
 import { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
+import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import type { RuntimeLogLevel, RuntimeLogListOptions } from '../../storage/runtime-logs.repository.js'
 import { requestDbService, requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
 import { getRuntimeLogGrepRuntime, grepRuntimeLogFiles } from './runtime-log-grep.service.js'
@@ -135,9 +136,9 @@ const runtimeLogLevels = new Set<RuntimeLogLevel | 'all'>([
 ])
 
 function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogListOptions {
-  const rawPage = numberQueryValue(query.page)
-  const rawPageSize = numberQueryValue(query.pageSize)
-  const rawLimit = numberQueryValue(query.limit)
+  const rawPage = finiteNumberQueryValue(query.page)
+  const rawPageSize = finiteNumberQueryValue(query.pageSize)
+  const rawLimit = finiteNumberQueryValue(query.limit)
   const rawLevel = optionalQueryText(query.level)?.toLowerCase()
   const timeRange = dateTimeRangeQueryValue(query.startAt, query.endAt)
   return {
@@ -158,7 +159,7 @@ function parseRuntimeLogListOptions(query: Record<string, unknown>): RuntimeLogL
 function parseRuntimeLogGrepOptions(query: Record<string, unknown>): { keywords: string[]; limit?: number; startAt?: string; endAt?: string } {
   return {
     keywords: stringArrayQueryValues(query.keyword).concat(stringArrayQueryValues(query.keywords)),
-    limit: numberQueryValue(query.limit),
+    limit: finiteNumberQueryValue(query.limit),
     startAt: optionalQueryText(query.startAt),
     endAt: optionalQueryText(query.endAt)
   }
@@ -185,17 +186,6 @@ function dateTimeQueryValue(value: unknown): string | undefined {
   if (!text) return undefined
   const time = Date.parse(text)
   return Number.isNaN(time) ? undefined : new Date(time).toISOString()
-}
-
-function numberQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  const number = typeof text === 'string' ? Number(text) : undefined
-  return typeof number === 'number' && Number.isFinite(number) ? number : undefined
-}
-
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
 }
 
 function numberField(record: Record<string, unknown>, key: string): number {

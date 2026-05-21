@@ -29,7 +29,7 @@ import { EditorState } from '@codemirror/state'
 import { EditorView, highlightActiveLine, highlightSpecialChars, lineNumbers } from '@codemirror/view'
 import { computed, nextTick, onActivated, onBeforeUnmount, onDeactivated, onMounted, ref, watch } from 'vue'
 
-import { message } from '@/lib/antd'
+import { copyTextToClipboard } from '@/shared/clipboard'
 
 const jsonAutoFormatMaxChars = 256 * 1024
 
@@ -214,18 +214,7 @@ function createEditorState(doc: string, shouldUseJson: boolean): EditorState {
 }
 
 async function copyDisplayText(): Promise<void> {
-  if (!displayText.value) return
-  if (!navigator.clipboard?.writeText) {
-    message.error('当前浏览器不支持自动复制，请手动选择内容复制')
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(displayText.value)
-    message.success('内容已复制')
-  } catch (error) {
-    console.error(error)
-    message.error('复制失败，请手动选择内容复制')
-  }
+  await copyTextToClipboard(displayText.value, '内容已复制')
 }
 
 defineExpose({ copyDisplayText })

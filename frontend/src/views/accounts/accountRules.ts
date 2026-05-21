@@ -2,7 +2,14 @@ import type { AccountSummary, ResourcePermissions } from '@/types/domain'
 import { quotaLimitSummaryText } from '../shared/requestQuotaFormatters'
 import { hasQuotaLimits } from '../shared/requestQuotaForm'
 import type { AccountMenuItem } from './accountActionTypes'
-import { formatDateTime, isAccountPackageExpired, isAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
+import {
+  formatDateTime,
+  isAccountPackageExpiredStatus,
+  isAuthorizationBindingUnavailable,
+  isAuthorizationExpired,
+  isAuthorizedAccount,
+  isTemporaryAccountStatus
+} from './accountFormatters'
 
 export type AccountGroupIdResolver = (accountId: string) => string | undefined
 export type AuthorizedAccountSourceTone = 'normal' | 'warning' | 'danger'
@@ -18,19 +25,22 @@ export function authorizedAccountTooltip(account: AccountSummary): string {
     `授权到期：${expiresText}`,
     `授权限额：${limitsText}`
   ]
-  if (account.authorizationQuotaExceeded) {
+  if (isAuthorizationExpired(account)) {
+    lines.push('授权已到期，当前不可用。')
+  }
+  if (account.authorizationQuotaExceeded && !isAuthorizationExpired(account)) {
     lines.push('授权额度已用完，当前调用会被拦截。')
   }
-  if (isAccountPackageExpired(account) || account.lastErrorCode === 'account_expired' || account.lastErrorMessage?.includes('账户套餐已过期')) {
+  if (isAccountPackageExpiredStatus(account)) {
     lines.push('账户已到期，当前不可用。')
   } else if (isAuthorizedAccount(account) && account.status === 'disabled') {
     lines.push(account.localStatus === 'disabled' ? '当前分组已停用该账户，当前不可用。' : '账户所有者已停用该账户，当前不可用。')
   } else if (isAuthorizedAccount(account) && account.status === 'error') {
     lines.push('账户处于异常状态，当前不可用。')
-  } else if (isTemporaryAccountStatus(account)) {
+  } else if (isTemporaryAccountStatus(account) || (isAuthorizedAccount(account) && !account.schedulable)) {
     lines.push('账户暂时不可调用，恢复前不会参与调度。')
   }
-  if (account.groupBindStatus === 'authorization_unavailable') {
+  if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人。')
   }
   if (authorizedAccountSourceTone(account) === 'warning' && !hasBlocker) {
@@ -73,11 +83,13 @@ function authorizedAccountSourceText(account: AccountSummary): string {
 function hasAuthorizedAccountSourceBlocker(account: AccountSummary): boolean {
   return Boolean(
     account.authorizationQuotaExceeded
-    || account.groupBindStatus === 'authorization_unavailable'
-    || isAccountPackageExpired(account)
-    || account.lastErrorCode === 'account_expired'
+    || isAuthorizationExpired(account)
+    || isAuthorizationBindingUnavailable(account)
+    || isAccountPackageExpiredStatus(account)
     || account.status === 'disabled'
     || account.status === 'error'
+    || isTemporaryAccountStatus(account)
+    || !account.schedulable
   )
 }
 
@@ -113,7 +125,29 @@ export function canRestoreException(account: AccountSummary): boolean {
   return account.status === 'error' && hasAccountEditPermission(account)
 }
 
+export function authorizedAccountUnavailableText(account: AccountSummary): string | undefined {
+  if (!isAuthorizedAccount(account)) return undefined
+  if (account.permissions?.canUse === false) return '当前授权账户无可用权限'
+  if (isAuthorizationExpired(account)) return '授权已到期，当前账户不能调用'
+  if (isAuthorizationBindingUnavailable(account)) return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
+  if (isAccountPackageExpiredStatus(account)) return '账户已到期，当前不可用'
+  if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
+  if (account.status === 'disabled') return account.localStatus === 'disabled' ? '当前分组已停用该账户，当前不可用' : '账户所有者已停用该账户，当前不可用'
+  if (account.status === 'error') return '账户处于异常状态，当前不可用'
+  if (isTemporaryAccountStatus(account) || !account.schedulable) return '账户暂时不可调用，恢复前不会参与调度'
+  return undefined
+}
+
+export function canUseAuthorizedAccount(account: AccountSummary): boolean {
+  return isAuthorizedAccount(account) && !authorizedAccountUnavailableText(account)
+}
+
+export function canUseBoundAuthorizedAccount(account: AccountSummary): boolean {
+  return canUseAuthorizedAccount(account) && Boolean(account.boundGroupId)
+}
+
 export function canTestAccount(account: AccountSummary): boolean {
+  if (isAuthorizedAccount(account)) return canUseBoundAuthorizedAccount(account)
   return account.status !== 'disabled' && account.permissions?.canUse !== false
 }
 
@@ -126,8 +160,10 @@ export function canUseAsTrafficMigrationTarget(source: AccountSummary, target: A
   if (target.providerCode !== source.providerCode) return false
   if (groupIdForAccount(target.id) !== groupIdForAccount(source.id)) return false
   if (isAuthorizedAccount(source)) {
+    if (isAuthorizedAccount(target)) return canUseBoundAuthorizedAccount(target)
     return target.permissions?.canUse !== false && target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
   }
+  if (isAuthorizedAccount(target)) return false
   if (!canEditAccount(target)) return false
   if (target.ownerSystemAccountId !== source.ownerSystemAccountId) return false
   return target.status === 'active' && target.schedulable && !isTemporaryAccountStatus(target)
@@ -148,7 +184,7 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
     pushDispatchFlagItems(items, account)
-    if (account.status === 'active') {
+    if (canUseBoundAuthorizedAccount(account)) {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
     }
     return items.map(normalizeAccountMenuItem)
@@ -178,20 +214,27 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       label: account.status === 'disabled' ? '启用账户' : '停用账户',
       danger: account.status !== 'disabled',
       icon: account.status === 'disabled' ? 'enable' : 'pause',
-      tone: account.status === 'disabled' ? 'success' : 'warning'
+      tone: account.status === 'disabled' ? 'success' : 'warning',
+      confirmTitle: account.status === 'disabled'
+        ? `确认启用账户「${account.name}」？`
+        : `确认停用账户「${account.name}」？停用后该账户将不再参与调度。`,
+      confirmOkText: account.status === 'disabled' ? '启用' : '停用'
     })
   }
   return items.map(normalizeAccountMenuItem)
 }
 
 function pushDispatchFlagItems(items: AccountMenuItem[], account: AccountSummary): void {
-  if (account.status === 'active' || account.superPriorityEnabled) {
+  const canEnableDispatchFlag = isAuthorizedAccount(account)
+    ? canUseBoundAuthorizedAccount(account)
+    : account.status === 'active'
+  if (canEnableDispatchFlag || account.superPriorityEnabled) {
     items.push({
       key: account.superPriorityEnabled ? 'super-priority-off' : 'super-priority-on',
       label: account.superPriorityEnabled ? '取消超级优先' : '超级优先'
     })
   }
-  if (account.status === 'active' || account.fallbackEnabled) {
+  if (canEnableDispatchFlag || account.fallbackEnabled) {
     items.push({
       key: account.fallbackEnabled ? 'fallback-off' : 'fallback-on',
       label: account.fallbackEnabled ? '取消降级备用' : '降级备用'

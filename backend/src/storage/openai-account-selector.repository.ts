@@ -1,4 +1,5 @@
 import type { AccountStatus, AccountType, ResourceAuthorizationSourceType } from '../domain/types.js'
+import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
@@ -30,6 +31,7 @@ export interface OpenAIAccountSecret {
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
+  supportedModels?: string[]
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
@@ -85,6 +87,7 @@ type OpenAIAccountSecretOptions = {
   enforceSchedulableAuthorization?: boolean
   accountAuthorizationsByResourceId?: Map<string, ResourceAuthorizationRow>
   proxyProfilesById?: Map<string, ProxyProfileUrlResolution>
+  supportedModelsByAccountId?: Map<string, string[]>
   accountAccess?: OpenAIAccountAccess
 }
 
@@ -154,6 +157,7 @@ export function findOpenAIAccountForGroup(
     return undefined
   }
   return openAIAccountSecretFromRow(row, groupAccess, systemAccountId, groupAccount, {
+    supportedModelsByAccountId: new Map([[row.id, loadSupportedModelsForAccount(row.id)]]),
     enforceSchedulableAuthorization: !forceAvailability && !options.includeUnavailable
   })
 }
@@ -227,6 +231,7 @@ export function listOpenAIAccountsForGroup(
     }))
     .filter((item): item is { row: OpenAIGroupAccountSelectionRow; accountAccess: OpenAIAccountAccess } => Boolean(item.accountAccess))
   const qualityByAccountId = loadFreshAccountQualityRows(eligibleRows.map((item) => item.row.account_id), qualityFreshAfter)
+  const supportedModelsByAccountId = loadSupportedModelsByAccountIds(eligibleRows.map((item) => item.row.id))
   const proxyProfilesById = loadProxyProfilesForSelection(eligibleRows.map((item) => item.row))
 
   const accounts: OpenAIAccountSecret[] = []
@@ -237,7 +242,7 @@ export function listOpenAIAccountsForGroup(
       row.quality_state = quality.quality_state
       row.quality_ewma_first_token_ms = quality.quality_ewma_first_token_ms
     }
-    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByResourceId, proxyProfilesById, accountAccess })
+    const account = openAIAccountSecretFromRow(row, groupAccess, systemAccountId, row, { accountAuthorizationsByResourceId, proxyProfilesById, supportedModelsByAccountId, accountAccess })
     if (account) {
       accounts.push(account)
     }
@@ -315,6 +320,7 @@ function openAIAccountSecretFromRow(
     priority: isLocalAccountAuthorized ? 0 : Number(row.priority ?? 0),
     superPriorityEnabled: row.status === 'active' && (isLocalAccountAuthorized ? localSuperPriorityEnabled : row.super_priority_enabled === 1),
     fallbackEnabled: row.status === 'active' && (isLocalAccountAuthorized ? localFallbackEnabled : row.fallback_enabled === 1),
+    supportedModels: [...(options.supportedModelsByAccountId?.get(row.id) ?? [])],
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
     qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,

@@ -1,4 +1,4 @@
-export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt' | 'notes'
+export type AccountListSortField = 'priority' | 'superPriority' | 'fallback' | 'qualityScore' | 'name' | 'type' | 'providerCode' | 'systemAccount' | 'concurrency' | 'status' | 'accountExpiresAt' | 'lastUsedAt'
 export type AccountListSortDirection = 'asc' | 'desc'
 
 export interface AccountListSort {
@@ -44,9 +44,8 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
   systemAccount: 'system_account_sort_name COLLATE NOCASE',
   concurrency: 'account_rows.concurrency_limit',
   status: 'account_rows.status COLLATE NOCASE',
-  accountExpiresAt: 'account_rows.account_expires_at',
-  lastUsedAt: 'account_rows.last_used_at',
-  notes: 'account_rows.notes COLLATE NOCASE'
+  accountExpiresAt: 'COALESCE(account_rows.authorization_expires_at, account_rows.account_expires_at)',
+  lastUsedAt: 'account_rows.last_used_at'
 }
 
 const defaultAccountListSorts: AccountListSort[] = [{ field: 'priority', order: 'asc' }]

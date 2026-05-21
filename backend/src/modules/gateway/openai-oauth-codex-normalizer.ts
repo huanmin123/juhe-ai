@@ -265,19 +265,19 @@ function applyOpenAIOAuthCodexSessionToBody(
 
 export function isolateOpenAIOAuthCodexSessionId(
   raw: string,
-  account: OpenAIOAuthCodexAccount,
+  _account: OpenAIOAuthCodexAccount,
   identity: OpenAIOAuthCodexIdentity
 ): string {
   const normalized = raw.trim()
   if (!normalized) {
     return ''
   }
+  // Keep the local cache/session namespace stable when dispatch switches upstream accounts.
   return createHash('sha256')
     .update(JSON.stringify({
       systemAccountId: identity.systemAccountId,
       apiKeyId: identity.apiKeyId ?? 'internal',
       groupId: identity.groupId,
-      accountId: account.id ?? 'unknown',
       raw: normalized
     }))
     .digest('hex')

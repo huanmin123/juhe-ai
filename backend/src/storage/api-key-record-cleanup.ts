@@ -29,9 +29,43 @@ export interface PendingDeletedApiKeyRecordCleanupSummary {
   deletedRows: number
 }
 
+export interface DeletedApiKeyRecordCleanupQueueSummary {
+  pendingTargets: number
+  blockedTargets: number
+  failedTargets: number
+  oldestCreatedAt?: string
+  lastAttemptAt?: string
+}
+
+export interface DeletedApiKeyRecordCleanupQueueTarget extends DeletedApiKeyRecordCleanupTarget {
+  createdAt: string
+  updatedAt: string
+  attemptCount: number
+  lastAttemptAt?: string
+  lastBlockedReason?: string
+  lastErrorMessage?: string
+}
+
 type PendingDeletedApiKeyRecordCleanupTargetRow = {
   api_key_id?: string | null
   system_account_id?: string | null
+}
+
+type DeletedApiKeyRecordCleanupQueueTargetRow = PendingDeletedApiKeyRecordCleanupTargetRow & {
+  created_at?: string | null
+  updated_at?: string | null
+  attempt_count?: number | null
+  last_attempt_at?: string | null
+  last_blocked_reason?: string | null
+  last_error_message?: string | null
+}
+
+type DeletedApiKeyRecordCleanupQueueSummaryRow = {
+  pending_targets?: number | null
+  blocked_targets?: number | null
+  failed_targets?: number | null
+  oldest_created_at?: string | null
+  last_attempt_at?: string | null
 }
 
 const apiKeyScopeStatsTables = [
@@ -98,6 +132,66 @@ export function listDeletedApiKeyRecordCleanupTargets(limit = 50): DeletedApiKey
       systemAccountId: String(row.system_account_id ?? '')
     }))
     .filter((row) => row.apiKeyId && row.systemAccountId)
+}
+
+export function getDeletedApiKeyRecordCleanupQueueSummary(): DeletedApiKeyRecordCleanupQueueSummary {
+  const row = getRecordDatabase()
+    .prepare(`
+      SELECT
+        COUNT(*) AS pending_targets,
+        SUM(CASE WHEN last_blocked_reason IS NOT NULL THEN 1 ELSE 0 END) AS blocked_targets,
+        SUM(CASE WHEN last_error_message IS NOT NULL THEN 1 ELSE 0 END) AS failed_targets,
+        MIN(created_at) AS oldest_created_at,
+        MAX(last_attempt_at) AS last_attempt_at
+      FROM api_key_record_cleanup_targets
+    `)
+    .get() as DeletedApiKeyRecordCleanupQueueSummaryRow | undefined
+  return {
+    pendingTargets: Number(row?.pending_targets ?? 0),
+    blockedTargets: Number(row?.blocked_targets ?? 0),
+    failedTargets: Number(row?.failed_targets ?? 0),
+    oldestCreatedAt: optionalText(row?.oldest_created_at),
+    lastAttemptAt: optionalText(row?.last_attempt_at)
+  }
+}
+
+export function listDeletedApiKeyRecordCleanupQueueTargets(limit = 50): DeletedApiKeyRecordCleanupQueueTarget[] {
+  const rows = getRecordDatabase()
+    .prepare(`
+      SELECT
+        api_key_id,
+        system_account_id,
+        created_at,
+        updated_at,
+        attempt_count,
+        last_attempt_at,
+        last_blocked_reason,
+        last_error_message
+      FROM api_key_record_cleanup_targets
+      ORDER BY
+        CASE
+          WHEN last_error_message IS NOT NULL THEN 0
+          WHEN last_blocked_reason IS NOT NULL THEN 1
+          ELSE 2
+        END ASC,
+        COALESCE(last_attempt_at, created_at) ASC,
+        created_at ASC,
+        api_key_id ASC
+      LIMIT ?
+    `)
+    .all(Math.max(1, Math.trunc(limit))) as DeletedApiKeyRecordCleanupQueueTargetRow[]
+  return rows
+    .map((row) => ({
+      apiKeyId: String(row.api_key_id ?? ''),
+      systemAccountId: String(row.system_account_id ?? ''),
+      createdAt: String(row.created_at ?? ''),
+      updatedAt: String(row.updated_at ?? ''),
+      attemptCount: Number(row.attempt_count ?? 0),
+      lastAttemptAt: optionalText(row.last_attempt_at),
+      lastBlockedReason: optionalText(row.last_blocked_reason),
+      lastErrorMessage: optionalText(row.last_error_message)
+    }))
+    .filter((row) => row.apiKeyId && row.systemAccountId && row.createdAt && row.updatedAt)
 }
 
 export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecordCleanupTarget): DeletedApiKeyRecordCleanupResult {
@@ -314,4 +408,8 @@ function changed(result: { changes?: number | bigint }): number {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : '已删除 API Key 记录库清理失败'
+}
+
+function optionalText(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value : undefined
 }

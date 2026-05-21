@@ -14,8 +14,9 @@ import {
   type AccountTestForm
 } from './accountTestFlow'
 import { buildTestModelOptions } from './accountDerivedState'
+import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
-import { canTestAccount } from './accountRules'
+import { authorizedAccountUnavailableText, canTestAccount } from './accountRules'
 
 interface UseAccountTestModalOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
@@ -52,7 +53,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   async function openTestModal(account: AccountSummary) {
     if (!canTestAccount(account)) {
-      message.warning(account.status === 'disabled' ? '停用账户不能测试，请先手动启用账户' : '当前账户不能测试')
+      if (isAuthorizedAccount(account) && !account.boundGroupId) {
+        message.warning('请先把授权账户绑定到你的分组')
+      } else if (isAuthorizedAccount(account)) {
+        message.warning(authorizedAccountUnavailableText(account) ?? '当前授权账户不能测试')
+      } else {
+        message.warning(account.status === 'disabled' ? '停用账户不能测试，请先手动启用账户' : '当前账户不能测试')
+      }
       return
     }
     testingAccount.value = account

@@ -6,6 +6,19 @@
         <p>并发、优先级和代理会影响后续请求转发与账户选择。</p>
       </div>
     </div>
+    <a-form-item label="支持模型">
+      <a-select
+        v-model:value="form.supportedModels"
+        allow-clear
+        mode="multiple"
+        :loading="modelsLoading"
+        option-filter-prop="label"
+        placeholder="不限制模型"
+        :options="modelOptions"
+        show-search
+      />
+      <div class="form-help">不选择表示该账户不做模型限制。</div>
+    </a-form-item>
     <div class="strategy-grid">
       <a-form-item label="并发上限">
         <a-input-number v-model:value="form.concurrencyLimit" :min="1" style="width: 100%" />
@@ -28,6 +41,8 @@ import type { AccountFormModel } from './accountFormTypes'
 defineProps<{
   form: AccountFormModel
   isManagementView: boolean
+  modelOptions: Array<{ label: string; value: string }>
+  modelsLoading: boolean
   proxyOptions: Array<{ label: string; value: string }>
 }>()
 </script>

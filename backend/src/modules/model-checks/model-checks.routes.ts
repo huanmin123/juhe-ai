@@ -1,0 +1,93 @@
+import { Router } from 'express'
+import { z } from 'zod'
+
+import { badRequest, ok, sendNotFound } from '../../shared/http.js'
+import { getRequestAccessScope } from '../auth/request-context.js'
+import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
+import {
+  getModelCheckOptions,
+  getModelCheckRun,
+  listModelCheckRunPage,
+  ModelCheckRequestError,
+  runModelCheck
+} from './model-checks.service.js'
+
+export const modelChecksRouter = Router()
+
+const modelCheckRunSchema = z.object({
+  targetType: z.enum(['api_key', 'group', 'account'], { invalid_type_error: '检测目标类型无效' }),
+  targetId: z.string().trim().min(1, '检测目标不能为空'),
+  model: z.enum(['gpt-5.5', 'gpt-5.4'], { invalid_type_error: '当前模型检测仅支持 gpt-5.5 和 gpt-5.4' }),
+  profile: z.enum(['full']).optional(),
+  officialBaseline: z.boolean().optional()
+})
+
+modelChecksRouter.get('/options', (req, res, next) => {
+  try {
+    res.json(ok(getModelCheckOptions(getRequestAccessScope(req.query.systemAccountId))))
+  } catch (error) {
+    next(error)
+  }
+})
+
+modelChecksRouter.post('/run', async (req, res, next) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const parsed = modelCheckRunSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '模型检测参数无效'))
+    return
+  }
+  const abortController = new AbortController()
+  req.once('aborted', () => abortController.abort())
+  res.once('close', () => {
+    if (!res.writableEnded) {
+      abortController.abort()
+    }
+  })
+  try {
+    const result = await runModelCheck(parsed.data, getRequestAccessScope(scopeQuery.data.systemAccountId), abortController.signal)
+    if (abortController.signal.aborted || res.writableEnded) {
+      return
+    }
+    res.json(ok(result))
+  } catch (error) {
+    if (abortController.signal.aborted || res.writableEnded) {
+      return
+    }
+    if (error instanceof ModelCheckRequestError) {
+      res.status(error.statusCode).json({ message: error.message })
+      return
+    }
+    next(error)
+  }
+})
+
+modelChecksRouter.get('/runs', (req, res, next) => {
+  try {
+    res.json(ok(listModelCheckRunPage(getRequestAccessScope(req.query.systemAccountId), req.query)))
+  } catch (error) {
+    next(error)
+  }
+})
+
+modelChecksRouter.get('/runs/:id', (req, res, next) => {
+  try {
+    const scopeQuery = parseRequestScopeQuery(req.query)
+    if (!scopeQuery.success) {
+      res.status(400).json(badRequest(scopeQuery.message))
+      return
+    }
+    const result = getModelCheckRun(req.params.id, getRequestAccessScope(scopeQuery.data.systemAccountId))
+    if (!result) {
+      sendNotFound(res, '模型检测记录不存在')
+      return
+    }
+    res.json(ok(result))
+  } catch (error) {
+    next(error)
+  }
+})

@@ -53,6 +53,7 @@ import {
   BarChartOutlined,
   BranchesOutlined,
   DatabaseOutlined,
+  ExperimentOutlined,
   FundOutlined,
   HistoryOutlined,
   SearchOutlined,
@@ -173,6 +174,8 @@ const menuIconMap = {
   '/authorization-user-usage': HistoryOutlined,
   '/my-api-keys': ApiKeyMenuIcon,
   '/api-keys': ApiKeyMenuIcon,
+  '/my-model-checks': ExperimentOutlined,
+  '/model-checks': ExperimentOutlined,
   '/proxies': NodeIndexOutlined,
   '/my-stats': BarChartOutlined,
   '/stats': BarChartOutlined,
@@ -197,7 +200,8 @@ const menuGroupIconMap = {
   'ai-management': DatabaseOutlined,
   authorization: SafetyCertificateOutlined,
   'log-management': ProfileOutlined,
-  'my-authorization': SafetyCertificateOutlined
+  'my-authorization': SafetyCertificateOutlined,
+  'system-operations': SettingOutlined
 }
 
 function canAccessRoute(item: typeof menuRoutes[number]): boolean {

@@ -74,6 +74,15 @@ interface AccountTestResult {
   success: boolean
   message: string
   statusCode?: number
+  outputText?: string
+  requestUrl?: string
+  requestBody?: unknown
+  responseHeaders?: unknown
+  responseBody?: unknown
+  responseText?: string
+  modelsUrl?: string
+  proxyUrl?: string
+  tokenRefreshed?: boolean
 }
 
 interface AccountTrafficMigrationResult {
@@ -85,7 +94,9 @@ interface AccountTrafficMigrationResult {
 
 interface SeedState {
   adminCookie: string
+  granteeCookie: string
   ownerAccountId: string
+  ownerErrorAccountId: string
   ownerId: string
   granteeGroupId: string
   granteeTargetAccountId: string
@@ -149,6 +160,43 @@ try {
   assert.equal(tested.success, true, `管理员应能代被授权用户测试授权账户：${tested.message}`)
   assert.equal(tested.statusCode, 200, '授权账户测试应通过被授权用户自己的分组绑定进入网关链路')
 
+  const granteeLimitedTest = await postEnvelope<AccountTestResult>(
+    baseUrl,
+    `/__aisys__/api/my-accounts/${seed.ownerAccountId}/test`,
+    seed.granteeCookie,
+    { model: 'gpt-5.5', prompt: 'hi' }
+  )
+  assert.equal(granteeLimitedTest.success, true, `被授权用户应能测试已绑定且可用的授权账户：${granteeLimitedTest.message}`)
+  assert.equal(granteeLimitedTest.statusCode, 200, '被授权用户测试应保留状态码')
+  assert.equal(granteeLimitedTest.outputText, 'OK', '被授权用户测试成功时可看到模型输出')
+  assert.equal(granteeLimitedTest.requestUrl, undefined, '被授权用户测试结果不应暴露请求 URL 诊断')
+  assert.equal(granteeLimitedTest.requestBody, undefined, '被授权用户测试结果不应暴露请求体诊断')
+  assert.equal(granteeLimitedTest.responseHeaders, undefined, '被授权用户测试结果不应暴露上游响应头')
+  assert.equal(granteeLimitedTest.responseBody, undefined, '被授权用户测试结果不应暴露上游响应体')
+  assert.equal(granteeLimitedTest.responseText, undefined, '被授权用户测试成功时不应暴露原始响应文本')
+  assert.equal(granteeLimitedTest.modelsUrl, undefined, '被授权用户测试结果不应暴露模型 URL 诊断')
+  assert.equal(granteeLimitedTest.proxyUrl, undefined, '被授权用户测试结果不应暴露代理诊断')
+  assert.equal(granteeLimitedTest.tokenRefreshed, undefined, '被授权用户测试结果不应暴露所有者 token 刷新诊断')
+
+  const granteeLimitedErrorTest = await postEnvelope<AccountTestResult>(
+    baseUrl,
+    `/__aisys__/api/my-accounts/${seed.ownerErrorAccountId}/test`,
+    seed.granteeCookie,
+    { model: 'gpt-5.5-diagnostic-error', prompt: 'hi' }
+  )
+  assert.equal(granteeLimitedErrorTest.success, false, '被授权用户测试上游错误时应返回测试失败')
+  assert.equal(typeof granteeLimitedErrorTest.statusCode, 'number', '被授权用户测试上游错误时可保留 HTTP 状态码')
+  assert.equal(granteeLimitedErrorTest.message, `账户测试未通过，上游返回 HTTP ${granteeLimitedErrorTest.statusCode}；请联系授权人或管理员查看完整诊断`)
+  assert.equal(granteeLimitedErrorTest.responseText, granteeLimitedErrorTest.message, '被授权用户测试错误时只返回脱敏失败说明')
+  assert.equal(granteeLimitedErrorTest.requestUrl, undefined, '被授权用户测试错误不应暴露请求 URL')
+  assert.equal(granteeLimitedErrorTest.requestBody, undefined, '被授权用户测试错误不应暴露请求体')
+  assert.equal(granteeLimitedErrorTest.responseHeaders, undefined, '被授权用户测试错误不应暴露上游响应头')
+  assert.equal(granteeLimitedErrorTest.responseBody, undefined, '被授权用户测试错误不应暴露上游响应体')
+  assert.equal(granteeLimitedErrorTest.modelsUrl, undefined, '被授权用户测试错误不应暴露模型 URL')
+  assert.equal(granteeLimitedErrorTest.proxyUrl, undefined, '被授权用户测试错误不应暴露代理诊断')
+  assert.equal(granteeLimitedErrorTest.tokenRefreshed, undefined, '被授权用户测试错误不应暴露 token 刷新诊断')
+  assert(!JSON.stringify(granteeLimitedErrorTest).includes('owner-only'), '被授权用户测试错误不应泄露上游私有诊断内容')
+
   const migration = await postEnvelope<AccountTrafficMigrationResult>(
     baseUrl,
     `/__aisys__/api/accounts/${seed.ownerAccountId}/traffic-migration?systemAccountId=${authorizedAccount.bindingSystemAccountId}`,
@@ -187,28 +235,39 @@ function createMockOpenAIServer(): http.Server {
       res.end(JSON.stringify({ error: { message: 'not found' } }))
       return
     }
-    req.resume()
-    const completedEvent = {
-      type: 'response.completed',
-      response: {
-        id: 'resp_authorized_admin_dispatch',
-        object: 'response',
-        status: 'completed',
-        output: [
-          {
-            type: 'message',
-            content: [{ type: 'output_text', text: 'OK' }]
+    let requestBody = ''
+    req.setEncoding('utf8')
+    req.on('data', (chunk) => {
+      requestBody += chunk
+    })
+    req.on('end', () => {
+      if (requestBody.includes('gpt-5.5-diagnostic-error')) {
+        res.writeHead(502, { 'content-type': 'application/json', 'x-upstream-diagnostic': 'owner-only-header' })
+        res.end(JSON.stringify({ error: { message: 'owner-only upstream diagnostic body' } }))
+        return
+      }
+      const completedEvent = {
+        type: 'response.completed',
+        response: {
+          id: 'resp_authorized_admin_dispatch',
+          object: 'response',
+          status: 'completed',
+          output: [
+            {
+              type: 'message',
+              content: [{ type: 'output_text', text: 'OK' }]
+            }
+          ],
+          usage: {
+            input_tokens: 1,
+            output_tokens: 1,
+            total_tokens: 2
           }
-        ],
-        usage: {
-          input_tokens: 1,
-          output_tokens: 1,
-          total_tokens: 2
         }
       }
-    }
-    res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8' })
-    res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
+      res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'x-upstream-diagnostic': 'owner-only' })
+      res.end(`event: response.completed\ndata: ${JSON.stringify(completedEvent)}\n\n`)
+    })
   })
 }
 
@@ -239,6 +298,12 @@ function seedData(mockBaseUrl: string): SeedState {
     type: 'api_key',
     credentials: { api_key: 'sk-admin-authorized-dispatch', base_url: mockBaseUrl }
   }, ownerAccess)
+  const ownerErrorAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '管理员代操作授权错误脱敏账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-admin-authorized-dispatch-error', base_url: mockBaseUrl }
+  }, ownerAccess)
   const granteeTargetAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '管理员代操作迁移目标账户',
@@ -252,15 +317,25 @@ function seedData(mockBaseUrl: string): SeedState {
     granteeId: grantee.id,
     remark: '管理员代操作调度回归'
   }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: ownerErrorAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '管理员代操作调度错误脱敏回归'
+  }, ownerAccess)
   const granteeGroup = repositories.createGroup({
     name: '管理员代操作被授权分组',
     providerCode: 'openai'
   }, granteeAccess)
   assert(repositories.setAccountGroup(ownerAccount.id, granteeGroup.id, granteeAccess), '授权账户绑定到被授权用户分组失败')
+  assert(repositories.setAccountGroup(ownerErrorAccount.id, granteeGroup.id, granteeAccess), '错误脱敏授权账户绑定到被授权用户分组失败')
   assert(repositories.setAccountGroup(granteeTargetAccount.id, granteeGroup.id, granteeAccess), '迁移目标账户绑定到被授权用户分组失败')
   return {
     adminCookie: sessionCookie(admin.id),
+    granteeCookie: sessionCookie(grantee.id),
     ownerAccountId: ownerAccount.id,
+    ownerErrorAccountId: ownerErrorAccount.id,
     ownerId: owner.id,
     granteeGroupId: granteeGroup.id,
     granteeTargetAccountId: granteeTargetAccount.id,

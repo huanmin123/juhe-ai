@@ -30,7 +30,7 @@
       :loading-more="mobileLoadingMore"
       :mobile-has-more="mobileHasMore"
       :pagination="tablePagination"
-      :scroll-x="isManagementView ? 2280 : 2100"
+      :scroll-x="isManagementView ? 2360 : 2180"
       mobile-pagination
       pull-refresh-enabled
       :refreshing="loading"
@@ -45,11 +45,28 @@
         <template v-if="column.key === 'traceId'">
           <div class="trace-id-cell">
             <span class="trace-id-text">{{ record.traceId }}</span>
-            <a-tooltip title="复制 traceId">
-              <a-button size="small" type="text" @click.stop="copyTraceId(record.traceId)">
-                <template #icon><copy-outlined /></template>
-              </a-button>
-            </a-tooltip>
+            <span class="trace-id-actions">
+              <a-tooltip title="复制 traceId">
+                <a-button size="small" type="text" @click.stop="copyTraceId(record.traceId)">
+                  <template #icon><copy-outlined /></template>
+                </a-button>
+              </a-tooltip>
+              <a-tooltip v-if="isManagementView" title="查看运行日志">
+                <a-button size="small" type="text" @click.stop="openTraceTarget(record.traceId, 'runtime')">
+                  <template #icon><search-outlined /></template>
+                </a-button>
+              </a-tooltip>
+              <a-tooltip v-if="isManagementView" title="查看审计日志">
+                <a-button size="small" type="text" @click.stop="openTraceTarget(record.traceId, 'audit')">
+                  <template #icon><file-search-outlined /></template>
+                </a-button>
+              </a-tooltip>
+              <a-tooltip title="查看操作日志">
+                <a-button size="small" type="text" @click.stop="openTraceTarget(record.traceId, 'operation')">
+                  <template #icon><profile-outlined /></template>
+                </a-button>
+              </a-tooltip>
+            </span>
           </div>
         </template>
         <template v-else-if="column.key === 'apiKey'">
@@ -109,25 +126,34 @@
         </template>
       </template>
       <template #card="{ record }">
-        <UsageRecordMobileCard :is-management-view="isManagementView" :record="record" @copy-trace-id="copyTraceId" />
+        <UsageRecordMobileCard
+          :is-management-view="isManagementView"
+          :record="record"
+          @copy-trace-id="copyTraceId"
+          @open-audit-logs="openTraceTarget(record.traceId, 'audit')"
+          @open-operation-logs="openTraceTarget(record.traceId, 'operation')"
+          @open-runtime-logs="openTraceTarget(record.traceId, 'runtime')"
+        />
       </template>
     </ResponsiveDataList>
   </a-card>
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, FileSearchOutlined, ProfileOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
 import { computed, onMounted, ref, watch } from 'vue'
+import { useRouter } from 'vue-router'
 
-import { api } from '@/api/client'
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { useScopedUsageRecordsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
 import type { UsageRecordSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
@@ -149,6 +175,7 @@ import {
 
 type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
 type TableSortOrder = 'ascend' | 'descend' | null
+type TraceTarget = 'audit' | 'operation' | 'runtime'
 type UsageRecordsPageState = {
   accountNameFilter: string
   dateRangeFilter?: [string, string]
@@ -178,6 +205,8 @@ const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFi
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const usageRecordsApi = useScopedUsageRecordsApi(isManagementView)
+const router = useRouter()
 const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>(initialPageState.sortState)
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
@@ -263,7 +292,7 @@ const columns = computed(() => {
     { title: 'API Key', dataIndex: 'apiKeyName', key: 'apiKey', width: 170 },
     { title: '分组', dataIndex: 'groupName', key: 'group', width: 150 },
     { title: 'IP', dataIndex: 'clientIp', key: 'clientIp', width: 130 },
-    { title: 'traceId', dataIndex: 'traceId', key: 'traceId', width: 230 }
+    { title: 'traceId', dataIndex: 'traceId', key: 'traceId', width: 300 }
   )
   return baseColumns
 })
@@ -343,9 +372,7 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     sortBy: sortState.value.field,
     sortOrder
   }
-  return isManagementView.value
-    ? api.usageRecords.list(params)
-    : api.myUsageRecords.list(params)
+  return usageRecordsApi.list(params)
 }
 
 function normalizedStatusCode(value: string): number | undefined {
@@ -361,18 +388,22 @@ function dateRangeParam(value?: [Dayjs, Dayjs]): [string, string] | undefined {
 }
 
 async function copyTraceId(traceId?: string): Promise<void> {
-  if (!traceId) return
-  if (!navigator.clipboard?.writeText) {
-    message.error('当前浏览器不支持自动复制，请手动选择 traceId 复制')
-    return
-  }
-  try {
-    await navigator.clipboard.writeText(traceId)
-    message.success('traceId 已复制')
-  } catch (error) {
-    console.error(error)
-    message.error('复制失败，请手动选择 traceId 复制')
-  }
+  await copyTextToClipboard(traceId ?? '', 'traceId 已复制')
+}
+
+function openTraceTarget(traceId: string | undefined, target: TraceTarget): void {
+  const text = traceId?.trim()
+  if (!text) return
+  void router.push({
+    path: traceTargetPath(target),
+    query: { traceId: text }
+  })
+}
+
+function traceTargetPath(target: TraceTarget): string {
+  if (target === 'runtime') return '/runtime-logs'
+  if (target === 'audit') return '/audit-logs'
+  return isManagementView.value ? '/operation-logs' : '/my-operation-logs'
 }
 
 function snapshotPageState(): UsageRecordsPageState {
@@ -420,12 +451,19 @@ onMounted(loadData)
 .trace-id-cell {
   display: inline-flex;
   align-items: center;
-  max-width: 220px;
+  max-width: 290px;
   gap: 4px;
   vertical-align: bottom;
 }
 
+.trace-id-actions {
+  display: inline-flex;
+  flex: none;
+  gap: 2px;
+}
+
 .trace-id-text {
+  min-width: 0;
   overflow: hidden;
   color: #334155;
   font-family: Consolas, 'Courier New', monospace;

@@ -26,8 +26,8 @@
         <strong>{{ account.systemAccountName || account.systemAccountId || '-' }}</strong>
       </div>
       <div class="account-mobile-meta-item">
-        <span>归属分组</span>
-        <strong>{{ groupName || '未归属' }}</strong>
+        <span>加入分组</span>
+        <strong>{{ groupName || '未加入' }}</strong>
       </div>
       <div class="account-mobile-meta-item">
         <span>代理</span>
@@ -54,9 +54,9 @@
         <span>最近使用</span>
         <strong>{{ formatDateTime(accountLastUsedAt(account)) }}</strong>
       </div>
-      <div v-if="account.accountExpiresAt" class="account-mobile-meta-item account-mobile-meta-wide">
+      <div v-if="accountDisplayExpiresAt(account)" class="account-mobile-meta-item account-mobile-meta-wide">
         <span>到期时间</span>
-        <strong :class="isAccountPackageExpired(account) ? 'expired-cell' : ''">{{ formatDateTime(account.accountExpiresAt) }}</strong>
+        <strong :class="isAccountDisplayExpired(account) ? 'expired-cell' : ''">{{ formatDateTime(accountDisplayExpiresAt(account)) }}</strong>
       </div>
       <div class="account-mobile-meta-item account-mobile-meta-wide">
         <span>说明</span>
@@ -87,12 +87,13 @@ import AccountUsageCell from './AccountUsageCell.vue'
 import type { AccountMenuItem } from './accountActionTypes'
 import {
   accountLastUsedAt,
+  accountDisplayExpiresAt,
   accountTypeText,
   formatDateTime,
-  isAccountPackageExpired,
+  isAccountDisplayExpired,
   isAuthorizedAccount
 } from './accountFormatters'
-import { authorizedAccountSourceToneClass } from './accountRules'
+import { authorizedAccountSourceToneClass, canTestAccount } from './accountRules'
 
 const props = defineProps<{
   account: AccountSummary
@@ -157,7 +158,7 @@ const actions = computed<RowActionItem[]>(() => {
 })
 const authorizedActions = computed<RowActionItem[]>(() => {
   const list: RowActionItem[] = []
-  if (props.account.status !== 'disabled') {
+  if (canTestAccount(props.account)) {
     list.push({ key: 'test', label: '测试', icon: 'test', tone: 'info' })
   }
   if (props.account.status === 'error') {

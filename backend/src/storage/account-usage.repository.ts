@@ -407,8 +407,6 @@ function loadAccountUsageKeywordAccountIds(input: {
     OR accounts.id LIKE ? ESCAPE '\\'
     OR accounts.name COLLATE NOCASE = ?
     OR accounts.name LIKE ? ESCAPE '\\'
-    OR accounts.notes COLLATE NOCASE = ?
-    OR accounts.notes LIKE ? ESCAPE '\\'
     OR accounts.provider_code COLLATE NOCASE = ?
     OR accounts.provider_code LIKE ? ESCAPE '\\'
     OR accounts.type COLLATE NOCASE = ?
@@ -424,8 +422,6 @@ function loadAccountUsageKeywordAccountIds(input: {
     )
   )`)
   params.push(
-    keyword,
-    prefixKeyword,
     keyword,
     prefixKeyword,
     keyword,

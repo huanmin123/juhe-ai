@@ -41,6 +41,7 @@ import {
   fetchFirstAvailableUpstream,
   UpstreamAttemptError
 } from './openai-gateway-upstream-dispatch.js'
+import type { GatewaySettings } from './account-error-policy.service.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -51,6 +52,7 @@ export interface OpenAIGatewayHandleOptions {
   candidateAccounts?: UpstreamAccount[]
   disableSessionAffinity?: boolean
   exposeUpstreamDiagnostics?: boolean
+  settingsOverride?: Partial<GatewaySettings>
 }
 
 export function handleGatewayDbServiceUnavailable(error: unknown, req: Request, res: Response, next: NextFunction): void {

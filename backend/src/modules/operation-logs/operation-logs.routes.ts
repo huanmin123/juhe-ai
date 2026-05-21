@@ -1,6 +1,7 @@
 import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
+import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
   getOperationLogDetail,
   getOperationLogDetailForViewer,
@@ -53,9 +54,9 @@ operationLogsRouter.get('/:id', requireAdmin, (req, res) => {
 function parseOperationLogListOptions(query: Record<string, unknown>, includeAdminFilters: boolean): OperationLogListOptions {
   const createdAtRange = dateTimeRangeQueryValue(query.startAt, query.endAt)
   return {
-    page: numberQueryValue(query.page),
-    pageSize: numberQueryValue(query.pageSize),
-    limit: numberQueryValue(query.limit),
+    page: finiteNumberQueryValue(query.page),
+    pageSize: finiteNumberQueryValue(query.pageSize),
+    limit: finiteNumberQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword),
     module: optionalQueryText(query.module),
     action: optionalQueryText(query.action),
@@ -84,15 +85,4 @@ function dateTimeQueryValue(value: unknown): string | undefined {
   if (!text) return undefined
   const time = Date.parse(text)
   return Number.isNaN(time) ? undefined : new Date(time).toISOString()
-}
-
-function numberQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  const number = typeof text === 'string' ? Number(text) : typeof text === 'number' ? text : undefined
-  return typeof number === 'number' && Number.isFinite(number) ? number : undefined
-}
-
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
 }

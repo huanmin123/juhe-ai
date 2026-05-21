@@ -19,10 +19,10 @@ export function buildAccountTableColumns(isManagementView: boolean, sortOrder: A
     sortableColumn({ title: '优先级', dataIndex: 'priority', key: 'priority', width: 90 }, 'priority', sortOrder),
     { title: '用量(日)', key: 'usage', width: 180 },
     { title: '代理', key: 'proxy', width: 180 },
-    { title: '归属分组', key: 'group', width: 240, className: 'account-group-column' },
+    { title: '加入分组', key: 'group', width: 240, className: 'account-group-column' },
     sortableColumn({ title: '最近使用时间', key: 'lastUsedAt', width: 180 }, 'lastUsedAt', sortOrder),
     sortableColumn({ title: '账户到期时间', key: 'accountExpiresAt', width: 180 }, 'accountExpiresAt', sortOrder),
-    sortableColumn({ title: '说明', dataIndex: 'notes', key: 'notes', width: 200 }, 'notes', sortOrder),
+    { title: '说明', dataIndex: 'notes', key: 'notes', width: 200 },
     { title: '操作', key: 'actions', width: 120, fixed: 'right' }
   )
   return baseColumns
@@ -82,8 +82,7 @@ const accountSortFields: AccountListSortField[] = [
   'concurrency',
   'status',
   'lastUsedAt',
-  'accountExpiresAt',
-  'notes'
+  'accountExpiresAt'
 ]
 
 export const accountSelectionColumnWidth = 32

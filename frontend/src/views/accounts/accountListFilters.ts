@@ -17,13 +17,15 @@ export function filterAccounts(input: {
   return input.accounts.filter((account) => {
     const keywordMatched = !keyword || [
       account.name,
-      account.notes ?? '',
       account.providerCode,
       input.groupNameForAccount(account.id) ?? '',
       account.type,
       accountBaseUrl(account),
       account.id
-    ].some((value) => normalizeKeyword(value).includes(keyword))
+    ].some((value) => {
+      const normalizedValue = normalizeKeyword(value)
+      return normalizedValue === keyword || normalizedValue.startsWith(keyword)
+    })
     const typeMatched = input.filters.type === 'all' || account.type === input.filters.type
     const statusMatched = input.filters.status === 'all' || account.status === input.filters.status
     const schedulableMatched = matchesSchedulableFilter(account, input.filters.schedulable)

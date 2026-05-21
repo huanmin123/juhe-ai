@@ -195,6 +195,7 @@ function buildAccount(input: {
     name: input.name,
     type: input.type,
     status: 'active',
+    supportedModels: [],
     apiKey: 'sk-concurrency-preparation',
     baseUrl: input.baseUrl,
     credentials: {

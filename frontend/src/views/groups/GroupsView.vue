@@ -39,7 +39,7 @@
 
     <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1480 : 1300" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileGroups" @mobile-refresh="refreshMobileGroups">
       <template #emptyText>
-        <a-empty class="page-empty-card" description="先创建一个分组，再到账户页选择账户的归属分组。" />
+        <a-empty class="page-empty-card" description="先创建一个分组，再到账户页把账户加入对应分组。" />
       </template>
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'name'">
@@ -166,6 +166,7 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
+import { useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
@@ -204,6 +205,7 @@ const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const form = reactive({ name: '', providerCode: 'openai', description: '', enabled: true })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const groupsApi = useScopedGroupsApi(isManagementView)
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -236,7 +238,7 @@ const {
   fetchPage: async (options, pageState) => {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
     const [groupPage] = await Promise.all([
-      isManagementView.value ? api.groups.listPage(groupListParams(systemAccountId, pageState)) : api.myGroups.listPage(groupListParams(undefined, pageState)),
+      groupsApi.listPage(groupListParams(systemAccountId, pageState)),
       loadGroupOptions(options.forceOptions === true)
     ])
     return groupPage
@@ -456,18 +458,10 @@ const saveGroup = submitAction('groups.save', async () => {
   }
   try {
     if (editingId.value) {
-      if (isManagementView.value) {
-        await api.groups.update(editingId.value, { ...form }, groupScopeParams.value)
-      } else {
-        await api.myGroups.update(editingId.value, { ...form })
-      }
+      await groupsApi.update(editingId.value, { ...form }, groupScopeParams.value)
       message.success('分组已更新')
     } else {
-      if (isManagementView.value) {
-        await api.groups.create({ ...form }, groupScopeParams.value)
-      } else {
-        await api.myGroups.create({ ...form })
-      }
+      await groupsApi.create({ ...form }, groupScopeParams.value)
       message.success('分组已创建')
     }
     modalOpen.value = false
@@ -489,11 +483,7 @@ async function removeGroup(id: string) {
     return
   }
   try {
-    if (isManagementView.value) {
-      await api.groups.delete(id, groupScopeParams.value)
-    } else {
-      await api.myGroups.delete(id)
-    }
+    await groupsApi.delete(id, groupScopeParams.value)
     message.success('分组已删除')
     await loadData()
   } catch (error) {

@@ -309,14 +309,19 @@ async function runCooldownAccountRetest(): Promise<void> {
     return
   }
   const candidates = listAccountsDueForCooldownRetest(batchSize)
+  const startedAtMs = Date.now()
+  let testedCount = 0
+  let failedCount = 0
   for (const account of candidates) {
     try {
       const result = await testOpenAIAccount(account, {
         model: settingsString('cooldownAccountRetestModel', 'gpt-5.5'),
-        includeUnavailable: true,
+        diagnostics: 'limited',
         requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId)
       })
+      testedCount += 1
       if (!result.success) {
+        failedCount += 1
         logger.warn({
           event: 'background_cooldown_account_retest_failed',
           accountId: account.id,
@@ -327,11 +332,22 @@ async function runCooldownAccountRetest(): Promise<void> {
         }, '冷却账户复测未通过')
       }
     } catch (error) {
+      testedCount += 1
+      failedCount += 1
       logger.warn(errorLogFields(error, {
         event: 'background_cooldown_account_retest_failed',
         accountId: account.id
       }), '冷却账户复测失败')
     }
+  }
+  if (testedCount > 0) {
+    logger.info({
+      event: 'background_cooldown_account_retest_completed',
+      candidateCount: candidates.length,
+      testedCount,
+      failedCount,
+      elapsedMs: Date.now() - startedAtMs
+    }, '冷却账户复测完成')
   }
 }
 

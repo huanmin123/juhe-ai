@@ -4,10 +4,11 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
 import { createUsageRecordsBatch, type UsageRecordInput } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../background/background-ipc.js'
 
 const usageRecordFlushIntervalMs = 100
-const usageRecordRetryDelayMs = 1000
+const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
 const usageRecordBatchSize = 200
 const usageRecordMaxPending = 10000
 
@@ -108,7 +109,7 @@ export function flushUsageRecordQueue(options: UsageRecordFlushOptions = {}): vo
   }
 
   if (pendingUsageRecords.length > 0 && (!failed || shouldRetry)) {
-    scheduleUsageRecordFlush(shouldRetry ? usageRecordRetryDelayMs : 0)
+    scheduleUsageRecordFlush(shouldRetry ? retryDelayMs(usageRecordRetryPolicy) : 0)
   }
 }
 

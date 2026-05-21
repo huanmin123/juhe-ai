@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
+import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroups, listGroupsPage, listProviders, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -44,17 +45,6 @@ function hasGroupPageQuery(query: Record<string, unknown>): boolean {
   return query.page !== undefined || query.pageSize !== undefined || query.limit !== undefined
 }
 
-function integerQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  if (typeof text === 'string') {
-    const trimmed = text.trim()
-    if (!trimmed) return undefined
-    const number = Number(trimmed)
-    return Number.isInteger(number) ? number : undefined
-  }
-  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
-}
-
 groupsRouter.get('/options', (req, res, next) => {
   try {
     res.json(ok(listGroupOptions(getRequestAccessScope(req.query.systemAccountId), parseGroupOptionListOptions(req.query))))
@@ -79,11 +69,6 @@ function parseGroupOptionListOptions(query: Record<string, unknown>) {
     manageableOnly: booleanQueryValue(query.manageableOnly),
     preferDefault: booleanQueryValue(query.preferDefault)
   }
-}
-
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
 }
 
 function booleanQueryValue(value: unknown): boolean | undefined {

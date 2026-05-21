@@ -44,11 +44,13 @@ try {
   const teamMiddle = repositories.createSystemTeam({ name: '普通分页搜索团队' }, adminAccess)
   const teamWildcard = repositories.createSystemTeam({ name: 'team%literal 团队' }, adminAccess)
   const teamWildcardNeighbor = repositories.createSystemTeam({ name: 'teamXliteral 团队' }, adminAccess)
+  const teamDescriptionOnly = repositories.createSystemTeam({ name: '说明字段团队', description: '分页搜索团队说明前缀' }, adminAccess)
   repositories.addSystemTeamMembers(teamMatched.id, { systemAccountIds: [userA.id] }, adminAccess)
   repositories.addSystemTeamMembers(teamPrefix.id, { systemAccountIds: [userA.id] }, adminAccess)
   repositories.addSystemTeamMembers(teamMiddle.id, { systemAccountIds: [userB.id] }, adminAccess)
   repositories.addSystemTeamMembers(teamWildcard.id, { systemAccountIds: [userA.id] }, adminAccess)
   repositories.addSystemTeamMembers(teamWildcardNeighbor.id, { systemAccountIds: [userA.id] }, adminAccess)
+  repositories.addSystemTeamMembers(teamDescriptionOnly.id, { systemAccountIds: [userA.id] }, adminAccess)
 
   repositories.createProxy({
     name: '分页搜索代理',
@@ -96,6 +98,22 @@ try {
     port: 18_085,
     enabled: true
   })
+  repositories.createProxy({
+    name: '说明字段代理',
+    description: '分页搜索代理说明前缀',
+    type: 'http',
+    host: 'description-only-host',
+    port: 18_086,
+    enabled: true
+  })
+  repositories.createProxy({
+    name: '用户名字段代理',
+    type: 'http',
+    host: 'username-only-host',
+    port: 18_087,
+    username: '分页搜索代理用户',
+    enabled: true
+  })
 
   const database = databaseModule.getDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
@@ -125,10 +143,12 @@ try {
     assert(teamSearchIds.includes(teamMatched.id), '系统团队搜索应命中名称精确值')
     assert(teamSearchIds.includes(teamPrefix.id), '系统团队搜索应命中名称前缀值')
     assert(!teamSearchIds.includes(teamMiddle.id), '系统团队搜索不应命中名称中间包含值')
+    assert(!teamSearchIds.includes(teamDescriptionOnly.id), '系统团队搜索不应命中说明字段，避免通用关键词扫描长文本')
 
     const userTeamSearchIds = repositories.listSystemTeamsPage(userAAccess, { keyword: '分页搜索团队', page: 1, pageSize: 20 }).items.map((team) => team.id)
     assert(userTeamSearchIds.includes(teamMatched.id), '我的团队搜索应返回当前用户加入的匹配团队')
     assert(!userTeamSearchIds.includes(teamMiddle.id), '我的团队搜索不应返回当前用户未加入的团队')
+    assert(!userTeamSearchIds.includes(teamDescriptionOnly.id), '我的团队搜索不应通过说明字段命中团队')
 
     const teamWildcardIds = repositories.listSystemTeamsPage(adminAccess, { keyword: 'team%', page: 1, pageSize: 20 }).items.map((team) => team.id)
     assert(teamWildcardIds.includes(teamWildcard.id), '系统团队搜索应把 % 当作字面量前缀处理')
@@ -144,6 +164,8 @@ try {
     assert(proxySearchNames.includes('分页搜索代理扩展'), '代理搜索应命中名称前缀值')
     assert(proxySearchNames.includes('分页搜索代理停用'), '代理管理列表应返回匹配的停用代理')
     assert(!proxySearchNames.includes('普通分页搜索代理'), '代理搜索不应命中名称中间包含值')
+    assert(!proxySearchNames.includes('说明字段代理'), '代理搜索不应通过说明字段命中，避免扫描长文本')
+    assert(!proxySearchNames.includes('用户名字段代理'), '代理搜索不应通过用户名字段命中，避免弱索引字段进通用搜索')
 
     const proxyWildcardNames = repositories.listProxiesPage({ keyword: 'proxy%', page: 1, pageSize: 20 }).items.map((proxy) => proxy.name)
     assert(proxyWildcardNames.includes('proxy%literal 代理'), '代理搜索应把 % 当作字面量前缀处理')
@@ -162,6 +184,8 @@ try {
     if (/\bLIKE\s+\?/i.test(call.sql)) {
       assert(/\bESCAPE\s+'\\'/i.test(call.sql), '团队 / 代理前缀搜索应显式转义 LIKE 通配符')
     }
+    assert(!/\bdescription\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '团队 / 代理关键词搜索不应把 description 放进 WHERE')
+    assert(!/\busername\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '代理关键词搜索不应把 username 放进 WHERE')
   }
   assertBusinessIndexExists('idx_system_teams_name_lookup')
   assertBusinessIndexExists('idx_proxy_profiles_name_lookup')

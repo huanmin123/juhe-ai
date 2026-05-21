@@ -14,6 +14,7 @@ import {
 } from '../../storage/repositories.js'
 import { getRequestAuthContext, withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
+import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
 import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
 
 const defaultTestModel = 'gpt-5.5'
@@ -26,11 +27,12 @@ const maxAccountTestResponseBytes = 1024 * 1024
 
 export async function testOpenAIAccount(
   account: AccountSummary,
-  input: { model?: string; prompt?: string; includeUnavailable?: boolean; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape } = {}
+  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; gatewaySettingsOverride?: Partial<GatewaySettings> } = {}
 ): Promise<AccountTestResult> {
   const model = stringValue(input.model) || defaultTestModel
   const prompt = stringValue(input.prompt) || defaultTestPrompt
   const startedAt = Date.now()
+  const limitedDiagnostics = input.diagnostics === 'limited'
   if (account.status === 'disabled') {
     return {
       accountId: account.id,
@@ -81,8 +83,12 @@ export async function testOpenAIAccount(
       },
       candidateAccounts: [resolved.account],
       disableSessionAffinity: true,
-      exposeUpstreamDiagnostics: true
+      exposeUpstreamDiagnostics: !limitedDiagnostics,
+      settingsOverride: input.gatewaySettingsOverride
     })))
+    if (input.signal?.aborted) {
+      throw new Error(accountTestAbortMessage(input.signal))
+    }
 
     const finalAccount = findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
     const responseText = response.bodyText()
@@ -92,7 +98,7 @@ export async function testOpenAIAccount(
     const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
     const responseTruncated = response.bodyTruncated()
     const proxyFailureMessage = !success && finalAccount.proxyProfileUnavailable ? finalAccount.proxyProfileErrorMessage : undefined
-    return {
+    return accountTestResultWithDiagnosticsMode({
       accountId: account.id,
       accountName: account.name,
       providerCode: account.providerCode,
@@ -117,10 +123,10 @@ export async function testOpenAIAccount(
       firstTokenMs: response.firstTokenMs(),
       accountStatusChanged: finalAccount.status !== account.status,
       accountStatus: finalAccount.status
-    }
+    }, limitedDiagnostics)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'OpenAI Responses 测试失败'
-    return {
+    return accountTestResultWithDiagnosticsMode({
       accountId: account.id,
       accountName: account.name,
       providerCode: account.providerCode,
@@ -136,8 +142,47 @@ export async function testOpenAIAccount(
       durationMs: Date.now() - startedAt,
       accountStatusChanged: false,
       accountStatus: account.status
-    }
+    }, limitedDiagnostics)
   }
+}
+
+function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited: boolean): AccountTestResult {
+  if (!limited) return result
+  const message = limitedAccountTestMessage(result)
+  return {
+    accountId: result.accountId,
+    accountName: result.accountName,
+    providerCode: result.providerCode,
+    type: result.type,
+    success: result.success,
+    statusCode: result.statusCode,
+    message,
+    model: result.model,
+    responseText: result.success ? undefined : message,
+    responseTruncated: result.success ? result.responseTruncated : undefined,
+    outputText: result.success ? result.outputText : undefined,
+    durationMs: result.durationMs,
+    firstTokenMs: result.firstTokenMs,
+    accountStatusChanged: result.accountStatusChanged,
+    accountStatus: result.accountStatus
+  }
+}
+
+function limitedAccountTestMessage(result: AccountTestResult): string {
+  if (result.success) return result.message
+  if (result.message === '账户测试超时' || result.message === '账户测试已取消') return result.message
+  if (typeof result.statusCode === 'number') {
+    return `账户测试未通过，上游返回 HTTP ${result.statusCode}；请联系授权人或管理员查看完整诊断`
+  }
+  return '账户测试未通过；请联系授权人或管理员查看完整诊断'
+}
+
+function accountTestAbortMessage(signal: AbortSignal): string {
+  const reason = signal.reason
+  if (reason && typeof reason === 'object' && 'name' in reason && reason.name === 'TimeoutError') {
+    return '账户测试超时'
+  }
+  return '账户测试已取消'
 }
 
 function accountTestProxyMarker(account: AccountSummary, resolved: OpenAIAccountSecret): string | undefined {

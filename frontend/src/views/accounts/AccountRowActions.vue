@@ -10,6 +10,7 @@ import type { RowActionItem } from '@/components/rowActions'
 import type { AccountSummary } from '@/types/domain'
 import type { AccountMenuItem } from './accountActionTypes'
 import { isAuthorizedAccount } from './accountFormatters'
+import { canTestAccount } from './accountRules'
 
 const props = defineProps<{
   account: AccountSummary
@@ -30,7 +31,7 @@ const emit = defineEmits<{
 const actions = computed<RowActionItem[]>(() => {
   if (isAuthorizedAccount(props.account)) {
     const authorizedList: RowActionItem[] = []
-    if (props.account.status !== 'disabled') {
+    if (canTestAccount(props.account)) {
       authorizedList.push({ key: 'test', label: '测试', icon: 'test', tone: 'info' })
     }
     if (props.account.status === 'error') {

@@ -100,6 +100,8 @@
       :is-management-view="isManagementView"
       :is-o-auth-form="isOAuthForm"
       :is-open-a-i-o-auth-form="isOpenAIOAuthForm"
+      :model-options="providerModelOptions"
+      :models-loading="providerModelsLoading"
       :ok-button-props="modalOkButtonProps"
       :providers="availableProviders"
       :proxy-options="proxyOptions"
@@ -166,6 +168,7 @@ import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { copyTextToClipboard } from '@/shared/clipboard'
 import type { AccountSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -317,6 +320,8 @@ const {
   openCreate,
   openEdit,
   providerName,
+  providerModelOptions,
+  providerModelsLoading,
   saveAccount,
   selectAccountType,
   selectedAccountTypeTitle,
@@ -477,9 +482,7 @@ function handleOpenBindGroup(account: AccountSummary): void {
 }
 
 async function copyText(value: string) {
-  if (!value) return
-  await navigator.clipboard.writeText(value)
-  message.success('已复制')
+  await copyTextToClipboard(value)
 }
 
 function resetFilters() {

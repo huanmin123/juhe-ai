@@ -1,12 +1,12 @@
 <template>
   <a-card class="page-card system-account-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="false" :refresh-loading="loading" @refresh="loadData">
+    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索用户名称 / 用户名 / ID 前缀" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchAccounts" @reset="resetSearch" @refresh="refreshAccounts">
       <template #actions>
         <a-button type="primary" @click="openCreate">新增系统账户</a-button>
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :scroll-x="1080" pull-refresh-enabled :refreshing="loading" @mobile-refresh="loadData">
+    <ResponsiveDataList table-class="page-table" :columns="columns" :data-source="accounts" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="1080" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileAccounts" @mobile-refresh="refreshMobileAccounts">
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'role'">
           <a-tag :color="record.role === 'admin' ? 'geekblue' : 'default'">{{ record.role === 'admin' ? '管理员' : '用户' }}</a-tag>
@@ -104,11 +104,13 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { formatNumber } from '@/shared/formatters'
 import type { SystemAccountRole, SystemAccountStatus, SystemAccountSummary } from '@/types/domain'
 
-const loading = ref(false)
+const pageSize = 20
 const { submitAction, submittingRef } = useSubmitAction('system-accounts')
 const systemAccountSaving = submittingRef('system_accounts.save')
 const resetPasswordSaving = submittingRef('system_accounts.reset_password')
@@ -117,7 +119,7 @@ const passwordModalOpen = ref(false)
 const editingId = ref<string>()
 const resettingId = ref<string>()
 const resetPassword = ref('')
-const accounts = ref<SystemAccountSummary[]>([])
+const keyword = ref('')
 
 const form = reactive({
   username: '',
@@ -154,6 +156,33 @@ const systemAccountActions: RowActionItem[] = [
   { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
   { key: 'reset-password', label: '重置密码', icon: 'password', tone: 'warning' }
 ]
+
+const {
+  items: accounts,
+  loading,
+  mobileHasMore,
+  mobileLoadingMore,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileAccounts,
+  refreshMobile: refreshMobileAccounts,
+  resetPagination
+} = useResponsivePagedList<SystemAccountSummary>({
+  pageSize,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${formatNumber(range?.[1] ?? total - 1)} 个系统账户，还有更多`
+    : `共 ${formatNumber(total)} 个系统账户`,
+  fetchPage: async (_options, pageState) => api.systemAccounts.listPage({
+    keyword: keyword.value.trim() || undefined,
+    page: pageState.current,
+    pageSize: pageState.pageSize
+  }),
+  onError: (error) => {
+    console.error(error)
+    message.error('加载系统账户失败')
+  }
+})
 
 function openCreate() {
   editingId.value = undefined
@@ -198,14 +227,6 @@ const handleSave = submitAction('system_accounts.save', async () => {
     message.warning('请填写用户名和显示名称')
     return
   }
-  if (!editingId.value && hasDuplicateUsername(username)) {
-    message.warning('用户账户已存在')
-    return
-  }
-  if (hasDuplicateDisplayName(displayName, editingId.value)) {
-    message.warning('用户名称已存在')
-    return
-  }
   if (!editingId.value && form.password.length < 4) {
     message.warning('初始密码至少 4 位')
     return
@@ -227,6 +248,7 @@ const handleSave = submitAction('system_accounts.save', async () => {
       message.success('系统账户已创建')
     }
     modalOpen.value = false
+    resetPagination()
     await loadData()
   } catch (error) {
     console.error(error)
@@ -252,30 +274,23 @@ const handleResetPassword = submitAction('system_accounts.reset_password', async
   }
 })
 
-async function loadData() {
-  loading.value = true
-  try {
-    accounts.value = await api.systemAccounts.list()
-  } catch (error) {
-    console.error(error)
-    message.error('加载系统账户失败')
-  } finally {
-    loading.value = false
-  }
-}
-
 function formatDateTime(value?: string): string {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-'
 }
 
-function hasDuplicateUsername(username: string): boolean {
-  const normalized = username.toLocaleLowerCase()
-  return accounts.value.some((account) => account.username.toLocaleLowerCase() === normalized)
+function searchAccounts() {
+  resetPagination()
+  void loadData()
 }
 
-function hasDuplicateDisplayName(displayName: string, excludeId?: string): boolean {
-  const normalized = displayName.toLocaleLowerCase()
-  return accounts.value.some((account) => account.id !== excludeId && account.displayName.toLocaleLowerCase() === normalized)
+function resetSearch() {
+  keyword.value = ''
+  resetPagination()
+  void loadData()
+}
+
+function refreshAccounts() {
+  void loadData()
 }
 
 onMounted(loadData)

@@ -27,4 +27,12 @@ export interface SystemAccountSummary {
   updatedAt: string
 }
 
+export interface SystemAccountListResult {
+  items: SystemAccountSummary[]
+  total: number
+  hasMore: boolean
+  page: number
+  pageSize: number
+}
+
 export type SystemAccountPrincipalSummary = Pick<SystemAccountSummary, 'id' | 'username' | 'displayName' | 'status'>

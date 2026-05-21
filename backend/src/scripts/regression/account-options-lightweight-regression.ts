@@ -2,6 +2,7 @@ import { strict as assert } from 'node:assert'
 import { mkdirSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import type { SQLInputValue } from 'node:sqlite'
 
 import express from 'express'
 
@@ -63,9 +64,16 @@ interface AccountOptionSummary {
 interface SeedState {
   adminCookie: string
   firstUserAccountId: string
+  groupMatchedAccountId: string
+  matchedAccountId: string
+  matchedPrefixAccountId: string
   maxLimitAccountId: string
+  middleAccountId: string
+  notesAccountId: string
   userCookie: string
   userId: string
+  wildcardAccountId: string
+  wildcardNeighborAccountId: string
 }
 
 let server: ReturnType<typeof app.listen> | undefined
@@ -114,7 +122,66 @@ try {
   assert.equal(repositorySortedOptions[0]?.ownerSystemAccountId, seed.userId, 'repository 层账户选项不应因重型排序请求混入其他账户')
   assertLightweightAccountOption(repositorySortedOptions[0])
 
-  console.log('账户选项轻量回归通过：options 接口不读取记录库统计，也不返回完整账户摘要字段')
+  const database = databaseModule.getDatabase()
+  const originalPrepare = database.prepare.bind(database) as typeof database.prepare
+  const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
+  database.prepare = ((sql: string) => {
+    const statement = originalPrepare(sql)
+    if (/^\s*SELECT\b/i.test(sql) && /\baccount_option_rows\b/i.test(sql)) {
+      const originalAll = statement.all.bind(statement) as typeof statement.all
+      statement.all = ((...params: SQLInputValue[]) => {
+        capturedCalls.push({ sql, params })
+        return originalAll(...params)
+      }) as typeof statement.all
+    }
+    return statement
+  }) as typeof database.prepare
+  try {
+    const keyword = encodeURIComponent('账户选项检索目标')
+    const keywordOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${keyword}&limit=20`, seed.adminCookie)
+    const keywordIds = keywordOptions.map((account) => account.id)
+    assert(keywordIds.includes(seed.matchedAccountId), '账户选项关键词应命中账户名称精确值')
+    assert(keywordIds.includes(seed.matchedPrefixAccountId), '账户选项关键词应命中账户名称前缀值')
+    assert(!keywordIds.includes(seed.middleAccountId), '账户选项关键词不应命中账户名称中间包含值')
+    assert.equal(keywordOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '账户选项关键词查询不应混入其他用户账户')
+
+    const groupKeywordOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent('账户选项绑定分组')}&limit=20`, seed.adminCookie)
+    assert(groupKeywordOptions.some((account) => account.id === seed.groupMatchedAccountId), '账户选项关键词应保留绑定分组名称精确/前缀搜索能力')
+
+    const notesOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent('账户选项备注前缀')}&limit=20`, seed.adminCookie)
+    assert(!notesOptions.some((account) => account.id === seed.notesAccountId), '账户选项关键词不应通过 notes 长文本命中')
+
+    const wildcardOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent('percent%')}&limit=20`, seed.adminCookie)
+    const wildcardIds = wildcardOptions.map((account) => account.id)
+    assert(wildcardIds.includes(seed.wildcardAccountId), '账户选项关键词应把 % 当作字面量前缀处理')
+    assert(!wildcardIds.includes(seed.wildcardNeighborAccountId), '账户选项关键词不应把用户输入的 % 当作 LIKE 通配符')
+
+    const limitedKeywordOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${keyword}&limit=1`, seed.adminCookie)
+    assert.equal(limitedKeywordOptions.length, 1, '账户选项关键词查询应遵守 limit')
+  } finally {
+    database.prepare = originalPrepare
+  }
+
+  assert(capturedCalls.length >= 5, '回归应捕获账户 options SQL')
+  for (const call of capturedCalls) {
+    assert(/\bLIMIT\s+\?\s+OFFSET\s+\?/i.test(call.sql), '账户 options SQL 必须下推 LIMIT/OFFSET')
+    assert(!/\bcredentials_encrypted\b/i.test(call.sql), '账户 options SQL 不应读取 credentials_encrypted')
+    assert(!/\baccounts\.notes\b/i.test(call.sql), '账户 options SQL 不应读取或搜索 notes 长文本')
+    assert(!/\baccount_rows\b/i.test(call.sql), '账户 options SQL 不应复用完整账户列表 account_rows 大查询')
+    assert(!/\baccount_quality_scores\b/i.test(call.sql), '账户 options SQL 不应接入质量分记录库')
+    assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账户 options 关键词不应通过 COALESCE 扫描字段')
+    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账户 options 关键词不应传入前导通配符参数')
+    if (/\bLIKE\s+\?/i.test(call.sql)) {
+      assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账户 options 前缀搜索应显式转义 LIKE 通配符')
+    }
+  }
+  assertBusinessIndexExists('idx_accounts_system_account_name_lookup')
+  assertBusinessIndexExists('idx_accounts_system_account_provider_lookup')
+  assertBusinessIndexExists('idx_accounts_system_account_type_lookup')
+  assertBusinessIndexExists('idx_group_accounts_account_scope_enabled')
+  assertBusinessIndexExists('idx_groups_system_account_name_lookup')
+
+  console.log('账户选项轻量回归通过：options 接口不读取记录库统计，不返回完整账户摘要字段，关键词仅支持精确/前缀匹配并走轻量 SQL')
 } finally {
   await closeServer(server)
   try {
@@ -154,12 +221,51 @@ function seedData(): SeedState {
     userAccountIds.push(accountId)
     insertAccount.run(accountId, user.id, `账户选项种子 ${String(index).padStart(3, '0')}`, now, now)
   }
+  const keywordCreatedAt = new Date(Date.parse(now) + 1000).toISOString()
+  const matchedAccountId = 'zzz_account_options_keyword_exact'
+  const matchedPrefixAccountId = 'zzz_account_options_keyword_prefix'
+  const middleAccountId = 'zzz_account_options_keyword_middle'
+  const notesAccountId = 'zzz_account_options_notes_only'
+  const wildcardAccountId = 'zzz_account_options_wildcard_literal'
+  const wildcardNeighborAccountId = 'zzz_account_options_wildcard_neighbor'
+  const groupMatchedAccountId = 'zzz_account_options_group_match'
+  insertAccount.run(matchedAccountId, user.id, '账户选项检索目标', keywordCreatedAt, keywordCreatedAt)
+  insertAccount.run(matchedPrefixAccountId, user.id, '账户选项检索目标扩展', keywordCreatedAt, keywordCreatedAt)
+  insertAccount.run(middleAccountId, user.id, '普通账户选项检索目标', keywordCreatedAt, keywordCreatedAt)
+  insertAccount.run(notesAccountId, user.id, '备注字段账户选项', keywordCreatedAt, keywordCreatedAt)
+  insertAccount.run(wildcardAccountId, user.id, 'percent%literal 账户选项', keywordCreatedAt, keywordCreatedAt)
+  insertAccount.run(wildcardNeighborAccountId, user.id, 'percentXliteral 账户选项', keywordCreatedAt, keywordCreatedAt)
+  insertAccount.run(groupMatchedAccountId, user.id, '分组搜索账户选项', keywordCreatedAt, keywordCreatedAt)
+  const database = databaseModule.getDatabase()
+  database
+    .prepare('UPDATE accounts SET notes = ? WHERE id = ?')
+    .run('账户选项备注前缀', notesAccountId)
+  const groupId = 'grp_account_options_keyword_match'
+  database
+    .prepare(`
+      INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at)
+      VALUES (?, ?, ?, 'openai', NULL, 1, 0, ?, ?)
+    `)
+    .run(groupId, user.id, '账户选项绑定分组', keywordCreatedAt, keywordCreatedAt)
+  database
+    .prepare(`
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, weight, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 1, 1, ?, ?)
+    `)
+    .run(user.id, groupId, groupMatchedAccountId, keywordCreatedAt, keywordCreatedAt)
   return {
     adminCookie: sessionCookie(admin.id),
     firstUserAccountId: userAccountIds[0],
+    groupMatchedAccountId,
+    matchedAccountId,
+    matchedPrefixAccountId,
     maxLimitAccountId: userAccountIds[499],
+    middleAccountId,
+    notesAccountId,
     userCookie: sessionCookie(user.id),
-    userId: user.id
+    userId: user.id,
+    wildcardAccountId,
+    wildcardNeighborAccountId
   }
 }
 
@@ -172,6 +278,13 @@ function assertLightweightAccountOption(account: AccountOptionSummary | undefine
 
 function sessionCookie(systemAccountId: string): string {
   return `juhe_ai_session=${repositories.createSession(systemAccountId, 1).token}`
+}
+
+function assertBusinessIndexExists(indexName: string): void {
+  const row = databaseModule.getDatabase()
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+    .get(indexName) as unknown as { name?: string } | undefined
+  assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
 }
 
 async function getEnvelope<T>(baseUrl: string, path: string, cookie: string): Promise<T> {

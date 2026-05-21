@@ -73,6 +73,7 @@ export interface AccountSummary {
   priority: number
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
+  supportedModels?: string[]
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number

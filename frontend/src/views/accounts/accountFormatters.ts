@@ -51,12 +51,17 @@ export function accountErrorCodeText(code?: string): string {
 }
 
 export function accountStatusColor(account: AccountSummary) {
+  if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account)) return 'red'
+  if (isAccountPackageExpiredStatus(account)) return 'red'
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return 'red'
   if (isOwnerDisabledAuthorizedAccount(account)) return 'default'
   return statusColor(account.status)
 }
 
 export function accountStatusText(account: AccountSummary) {
+  if (isAuthorizationExpired(account)) return '授权到期'
+  if (isAuthorizationBindingUnavailable(account)) return '授权已失效'
+  if (isAccountPackageExpiredStatus(account)) return '账户到期'
   if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) return '授权额度已用完'
   if (isOwnerDisabledAuthorizedAccount(account)) return '停用'
   return statusText(account.status)
@@ -69,13 +74,23 @@ export function accountCooldownText(account: AccountSummary) {
 
 export function accountStatusTooltipLines(account: AccountSummary): string[] {
   const lines: string[] = []
+  if (isAuthorizedAccount(account) && account.authorizationExpiresAt) {
+    lines.push(`授权到期时间：${formatDateTime(account.authorizationExpiresAt)}`)
+  }
   if (account.accountExpiresAt) {
     lines.push(`账户到期时间：${formatDateTime(account.accountExpiresAt)}`)
   }
-  if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded) {
+  const accountExpired = isAccountPackageExpiredStatus(account)
+  if (isAuthorizationExpired(account)) {
+    lines.push('授权已到期，当前不可用')
+  }
+  if (accountExpired) {
+    lines.push('账户已到期，当前不可用')
+  }
+  if (isAuthorizedAccount(account) && account.authorizationQuotaExceeded && !isAuthorizationExpired(account)) {
     lines.push('授权额度已用完，当前调用会被拦截')
   }
-  if (isAuthorizedAccount(account) && account.groupBindStatus === 'authorization_unavailable') {
+  if (isAuthorizationBindingUnavailable(account)) {
     lines.push('当前分组绑定的授权已失效，请重新绑定分组或联系授权人')
   }
   const cooldownText = accountCooldownText(account)
@@ -84,7 +99,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
     lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
     lines.push('等待后台复测；也可手动测试或在更多菜单恢复正常')
-  } else if (account.status === 'disabled') {
+  } else if (account.status === 'disabled' && !accountExpired) {
     lines.push('停用账户不会被测试或后台任务自动恢复')
   } else if (account.status === 'error') {
     lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
@@ -112,6 +127,40 @@ export function isAccountPackageExpired(account: AccountSummary) {
   return Number.isFinite(time) && time <= Date.now()
 }
 
+export function isAccountPackageExpiredStatus(account: AccountSummary): boolean {
+  return isAccountPackageExpired(account)
+    || account.lastErrorCode === 'account_expired'
+    || account.lastErrorMessage?.includes('账户套餐已过期') === true
+}
+
+export function isAuthorizationExpired(account: AccountSummary): boolean {
+  if (!isAuthorizedAccount(account)) return false
+  if (account.authorizationStatus === 'expired') return true
+  if (!account.authorizationExpiresAt) return false
+  const time = new Date(account.authorizationExpiresAt).getTime()
+  return Number.isFinite(time) && time <= Date.now()
+}
+
+export function isAuthorizationBindingUnavailable(account: AccountSummary): boolean {
+  return isAuthorizedAccount(account)
+    && account.groupBindStatus === 'authorization_unavailable'
+    && !isAuthorizationExpired(account)
+}
+
+export function accountDisplayExpiresAt(account: AccountSummary): string | undefined {
+  if (isAuthorizedAccount(account) && account.authorizationExpiresAt) {
+    return account.authorizationExpiresAt
+  }
+  return account.accountExpiresAt
+}
+
+export function isAccountDisplayExpired(account: AccountSummary): boolean {
+  const expiresAt = accountDisplayExpiresAt(account)
+  if (!expiresAt) return false
+  const time = new Date(expiresAt).getTime()
+  return Number.isFinite(time) && time <= Date.now()
+}
+
 export function accountTypeText(type: AccountType) {
   if (type === 'oauth') return 'OAuth'
   if (type === 'api_key') return 'API Key'
@@ -125,8 +174,8 @@ export function accountTypeTitle(providerName: string, type: AccountType) {
 }
 
 export function accountTypeDescription(providerCode: string, type: AccountType) {
-  if (providerCode === 'openai' && type === 'oauth') return '适合 Codex / ChatGPT OAuth 授权账户，支持手动授权或 Refresh Token。'
-  if (providerCode === 'openai' && type === 'api_key') return '适合直接粘贴 OpenAI API Key，可配置 Base URL。'
+  if (providerCode === 'openai' && type === 'oauth') return '适合 Codex / ChatGPT OAuth 授权账户；网关只支持 Responses / compact 路径。'
+  if (providerCode === 'openai' && type === 'api_key') return '适合公开 OpenAI-compatible 透传，可配置 Base URL。'
   return '该账户类型会使用供应商定义的创建流程。'
 }
 
@@ -200,7 +249,7 @@ export function compareAccountLastUsedAt(left: AccountSummary, right: AccountSum
 }
 
 export function compareAccountExpiresAt(left: AccountSummary, right: AccountSummary): number {
-  return timestampOf(left.accountExpiresAt) - timestampOf(right.accountExpiresAt)
+  return timestampOf(accountDisplayExpiresAt(left)) - timestampOf(accountDisplayExpiresAt(right))
 }
 
 export function compareAccountConcurrency(left: AccountSummary, right: AccountSummary): number {

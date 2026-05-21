@@ -17,6 +17,7 @@ export interface AccountFormModel {
   accountExpiresAt?: Dayjs | null
   concurrencyLimit: number
   priority: number
+  supportedModels: string[]
   proxyProfileId?: string
   notes: string
 }

@@ -23,6 +23,7 @@ export function defaultAccountForm(
     accountExpiresAt: undefined,
     concurrencyLimit: DEFAULT_ACCOUNT_CONCURRENCY_LIMIT,
     priority: 0,
+    supportedModels: [],
     proxyProfileId: undefined,
     notes: ''
   }

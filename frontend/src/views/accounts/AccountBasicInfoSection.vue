@@ -3,14 +3,14 @@
     <div class="form-section-head">
       <div>
         <h4>基础信息</h4>
-        <p>账户主动选择归属分组；API Key 再绑定分组来统一调度该组账户。</p>
+        <p>账户资源归属创建目标系统账户；这里选择的是初始加入的本地分组。</p>
       </div>
     </div>
     <div class="form-grid">
       <a-form-item label="账户名称" :required="form.type === 'api_key' || editing">
         <a-input v-model:value="form.name" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
       </a-form-item>
-      <a-form-item label="归属分组" required>
+      <a-form-item label="加入分组" required>
         <a-select
           v-model:value="form.groupId"
           show-search
@@ -21,7 +21,7 @@
           @dropdown-visible-change="$emit('group-options-dropdown', $event)"
           @search="$emit('group-options-search', $event)"
         />
-        <div class="form-help">添加账户时会根据供应商默认选择默认分组。</div>
+        <div class="form-help">API Key 通过分组调度账户，创建时会按供应商默认选择默认分组。</div>
       </a-form-item>
       <a-form-item label="账户到期时间">
         <a-date-picker v-model:value="form.accountExpiresAt" show-time allow-clear style="width: 100%" />

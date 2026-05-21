@@ -12,6 +12,7 @@ export type AccountSavePayload = {
   credentials: Record<string, unknown>
   concurrencyLimit: number
   priority: number
+  supportedModels: string[]
   proxyProfileId?: string | null
   accountExpiresAt: string | null
   groupId?: string
@@ -23,6 +24,7 @@ export type AccountOAuthCreateCommonPayload = {
   groupId?: string
   concurrencyLimit: number
   priority: number
+  supportedModels: string[]
   proxyProfileId?: string
   accountExpiresAt: string | null
   credentialsPatch: { error_handling_rules?: unknown }
@@ -39,7 +41,7 @@ export function validateAccountSaveForm(input: {
   if (!form.providerCode) return '请先选择供应商'
   if (!form.type) return '请先选择账户类型'
   if ((editingId || form.type === 'api_key') && !form.name.trim()) return '请填写账户名称'
-  if (!form.groupId) return '请选择归属分组'
+  if (!form.groupId) return '请选择加入分组'
   if (form.type === 'api_key' && !form.apiKey.trim()) return '请填写 API Key'
   if (form.type === 'api_key' && !form.baseUrl.trim()) return '请填写 Base URL'
   if (editingId && form.type === 'oauth' && !form.accessToken.trim() && !form.refreshToken.trim()) return '请至少填写 Access Token 或 Refresh Token'
@@ -65,6 +67,7 @@ export function buildAccountSavePayload(input: {
     credentials: accountCredentials(input),
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
+    supportedModels: [...(input.form.supportedModels ?? [])],
     proxyProfileId: saveProxyProfileId(input.form.proxyProfileId, Boolean(input.editingId)),
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     groupId: input.form.groupId,
@@ -83,6 +86,7 @@ export function buildOAuthCreateCommonPayload(input: {
     groupId: input.form.groupId,
     concurrencyLimit: input.form.concurrencyLimit,
     priority: input.form.priority,
+    supportedModels: [...(input.form.supportedModels ?? [])],
     proxyProfileId: input.form.proxyProfileId,
     accountExpiresAt: formatServerDateTimeInput(input.form.accountExpiresAt),
     credentialsPatch: { error_handling_rules: accountCredentials(input).error_handling_rules },

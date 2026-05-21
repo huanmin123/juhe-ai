@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card system-teams-page-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索团队名称 / 说明 / ID 前缀" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchTeams" @reset="resetSearch" @refresh="refreshTeams">
+    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索团队名称 / ID 前缀" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchTeams" @reset="resetSearch" @refresh="refreshTeams">
       <template #actions>
         <a-button v-if="isManagementView" type="primary" @click="openCreateTeam">新建授权团队</a-button>
       </template>
@@ -121,7 +121,7 @@
               {{ formatDateTime(record.joinedAt || record.createdAt) }}
             </template>
             <template v-else-if="column.key === 'actions'">
-              <RowActions :actions="memberActions" @action-click="handleMemberAction($event, record)" />
+              <RowActions v-if="isManagementView" :actions="memberActions" @action-click="handleMemberAction($event, record)" />
             </template>
           </template>
           <template #card="{ record }">
@@ -151,6 +151,7 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { useScopedSystemTeamsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
@@ -164,6 +165,7 @@ const memberSaving = submittingRef('system_teams.add_members')
 
 const keyword = ref('')
 const { isManagementView } = useScopedMenuView()
+const systemTeamsApi = useScopedSystemTeamsApi(isManagementView)
 const {
   handleDropdown: handleMemberOptionsDropdown,
   handleSearch: handleMemberOptionsSearch,
@@ -214,7 +216,7 @@ const {
       page: pageState.current,
       pageSize: pageState.pageSize
     }
-    return isManagementView.value ? api.systemTeams.list(params) : api.myTeams.list(params)
+    return systemTeamsApi.list(params)
   },
   onError: (error) => {
     console.error(error)
@@ -295,6 +297,7 @@ function resetSearch() {
 }
 
 function openCreateTeam() {
+  if (!ensureManagementAction()) return
   editingTeamId.value = undefined
   Object.assign(teamForm, {
     name: '',
@@ -305,6 +308,7 @@ function openCreateTeam() {
 }
 
 function openEditTeam(team: SystemTeamSummary) {
+  if (!ensureManagementAction()) return
   editingTeamId.value = team.id
   Object.assign(teamForm, {
     name: team.name,
@@ -315,6 +319,7 @@ function openEditTeam(team: SystemTeamSummary) {
 }
 
 const saveTeam = submitAction('system_teams.save', async () => {
+  if (!ensureManagementAction()) return
   const teamName = teamForm.name.trim()
   if (!teamName) {
     message.warning('请填写授权团队名称')
@@ -356,6 +361,7 @@ function openMemberModal(team: SystemTeamSummary) {
 
 function handleTeamAction(key: string, team: SystemTeamSummary) {
   if (key === 'edit') {
+    if (!ensureManagementAction()) return
     openEditTeam(team)
     return
   }
@@ -365,12 +371,14 @@ function handleTeamAction(key: string, team: SystemTeamSummary) {
 }
 
 function handleMemberAction(key: string, member: SystemTeamMemberSummary) {
+  if (!ensureManagementAction()) return
   if (key === 'remove') {
     void removeMember(member.id)
   }
 }
 
 const addMembers = submitAction('system_teams.add_members', async () => {
+  if (!ensureManagementAction()) return
   if (!selectedTeam.value) return
   if (!memberForm.systemAccountIds.length) {
     message.warning('请先选择成员')
@@ -391,6 +399,7 @@ const addMembers = submitAction('system_teams.add_members', async () => {
 })
 
 async function removeMember(memberId: string) {
+  if (!ensureManagementAction()) return
   if (!selectedTeam.value) return
   try {
     await api.systemTeams.removeMember(selectedTeam.value.id, memberId)
@@ -406,6 +415,12 @@ async function removeMember(memberId: string) {
 function hasDuplicateTeamName(name: string, excludeId?: string): boolean {
   const normalized = name.toLocaleLowerCase()
   return teams.value.some((team) => team.id !== excludeId && team.name.toLocaleLowerCase() === normalized)
+}
+
+function ensureManagementAction(): boolean {
+  if (isManagementView.value) return true
+  message.warning('当前是只读视图，不能维护授权团队')
+  return false
 }
 
 onMounted(loadData)

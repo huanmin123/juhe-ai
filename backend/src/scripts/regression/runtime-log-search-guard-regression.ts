@@ -29,11 +29,13 @@ try {
       id: 'rtlog_short_keyword_guard',
       time: now,
       level: 'info',
+      traceId: 'trace-runtime-guard-short',
       event: 'short_keyword_guard_event',
       message: 'e',
       rawJson: JSON.stringify({
         time: now,
         level: 'info',
+        traceId: 'trace-runtime-guard-short',
         event: 'short_keyword_guard_event',
         msg: 'e',
         body: 'x'.repeat(150 * 1024)
@@ -44,11 +46,13 @@ try {
       id: 'rtlog_long_keyword_guard',
       time: now,
       level: 'info',
+      traceId: 'trace-runtime-guard-long',
       event: 'long_keyword_guard_event',
       message: 'guardneedle',
       rawJson: JSON.stringify({
         time: now,
         level: 'info',
+        traceId: 'trace-runtime-guard-long',
         event: 'long_keyword_guard_event',
         msg: 'guardneedle'
       }),
@@ -62,6 +66,13 @@ try {
   const longKeyword = runtimeLogsRepository.listRuntimeLogs({ keyword: 'guardneedle', pageSize: 10 })
   assert.equal(longKeyword.items.length, 1, '足够长的关键词仍应走 FTS 搜索')
   assert.equal(longKeyword.items[0]?.event, 'long_keyword_guard_event')
+
+  const tracePrefix = runtimeLogsRepository.listRuntimeLogs({ traceId: 'trace-runtime-guard', pageSize: 10 })
+  assert.deepEqual(
+    tracePrefix.items.map((item) => item.traceId).sort(),
+    ['trace-runtime-guard-long', 'trace-runtime-guard-short'],
+    '运行日志 traceId 筛选应支持右侧前缀定位，与审计/操作日志契约一致'
+  )
 
   const largeDetail = runtimeLogsRepository.getRuntimeLogDetail('rtlog_short_keyword_guard')
   assert(largeDetail?.rawJson.includes('[truncated]'), '仓储层直接写入大 rawJson 也应兜底截断')

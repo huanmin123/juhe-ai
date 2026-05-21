@@ -14,6 +14,7 @@ import {
   exchangeOpenAIAuthCode,
   extractCodeAndState,
   generateOpenAIAuthURL,
+  type OpenAITokenInfo,
   refreshOpenAIOAuthToken
 } from './openai-oauth.service.js'
 import { refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-token-refresh.service.js'
@@ -21,6 +22,9 @@ import { refreshOpenAIOAuthAccountAccessToken } from './openai-oauth-access-toke
 export const openAIOAuthRouter = Router()
 
 const authUrlSchema = z.object({}).passthrough()
+const oauthCredentialsPatchSchema = z.object({
+  error_handling_rules: z.unknown().optional()
+}).strict()
 
 const createFromCodeSchema = z.object({
   sessionId: z.string().min(1),
@@ -32,11 +36,12 @@ const createFromCodeSchema = z.object({
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
   fallbackEnabled: z.boolean().optional(),
+  supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
   account_expires_at: z.string().nullable().optional(),
-  credentialsPatch: z.record(z.unknown()).optional(),
+  credentialsPatch: oauthCredentialsPatchSchema.optional(),
   notes: z.string().optional()
 })
 
@@ -47,11 +52,12 @@ const createFromRefreshTokenSchema = z.object({
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
   fallbackEnabled: z.boolean().optional(),
+  supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   proxyProfileId: z.string().optional(),
   errorPolicyId: z.string().nullable().optional(),
   accountExpiresAt: z.string().nullable().optional(),
   account_expires_at: z.string().nullable().optional(),
-  credentialsPatch: z.record(z.unknown()).optional(),
+  credentialsPatch: oauthCredentialsPatchSchema.optional(),
   notes: z.string().optional()
 })
 
@@ -115,14 +121,12 @@ openAIOAuthRouter.post('/create-from-code', mutationGuard({
       const account = createAccount({
         name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
         type: 'oauth',
-        credentials: {
-          ...buildOpenAIOAuthCredentials(tokenInfo),
-          ...(parsed.data.credentialsPatch ?? {})
-        },
+        credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch),
         status: 'active',
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
+        supportedModels: parsed.data.supportedModels,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
@@ -184,14 +188,12 @@ openAIOAuthRouter.post('/create-from-refresh-token', mutationGuard({
       const account = createAccount({
         name: parsed.data.name?.trim() || tokenInfo.email || 'OpenAI OAuth Account',
         type: 'oauth',
-        credentials: {
-          ...buildOpenAIOAuthCredentials(tokenInfo, { refreshToken: parsed.data.refreshToken }),
-          ...(parsed.data.credentialsPatch ?? {})
-        },
+        credentials: buildSafeOpenAIOAuthCredentials(tokenInfo, parsed.data.credentialsPatch, { refreshToken: parsed.data.refreshToken }),
         status: 'active',
         concurrencyLimit: parsed.data.concurrencyLimit,
         priority: parsed.data.priority,
         fallbackEnabled: parsed.data.fallbackEnabled,
+        supportedModels: parsed.data.supportedModels,
         proxyProfileId: parsed.data.proxyProfileId,
         errorPolicyId: parsed.data.errorPolicyId,
         accountExpiresAt: parsed.data.accountExpiresAt ?? parsed.data.account_expires_at,
@@ -350,6 +352,23 @@ function isOpenAIGroup(groupId: string, access?: AccessScope): boolean {
   return listGroups(access).some((group) => group.id === groupId && group.providerCode === 'openai')
 }
 
+function safeOAuthCredentialsPatch(patch?: z.infer<typeof oauthCredentialsPatchSchema>): Record<string, unknown> {
+  return patch?.error_handling_rules === undefined
+    ? {}
+    : { error_handling_rules: patch.error_handling_rules }
+}
+
+export function buildSafeOpenAIOAuthCredentials(
+  tokenInfo: OpenAITokenInfo,
+  patch?: z.infer<typeof oauthCredentialsPatchSchema>,
+  fallback?: { refreshToken?: string }
+): Record<string, unknown> {
+  return {
+    ...safeOAuthCredentialsPatch(patch),
+    ...buildOpenAIOAuthCredentials(tokenInfo, fallback)
+  }
+}
+
 function findEditableOpenAIOAuthAccount(accountId: string, access?: AccessScope) {
   const account = findAccountForTest(accountId, access)
   if (!account || account.providerCode !== 'openai' || account.type !== 'oauth' || account.permissions?.canEdit === false || account.permissions?.canViewCredentials === false) {
@@ -413,6 +432,7 @@ function buildOAuthCreateLog(
       safeChange('name', '名称', undefined, account.name),
       safeChange('type', '账户类型', undefined, account.type),
       safeChange('credentials', 'OAuth 凭据', undefined, account.credentials),
+      safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
       safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
       safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
       safeChange('accountExpiresAt', '过期时间', undefined, account.accountExpiresAt)

@@ -66,7 +66,10 @@ const emit = defineEmits<{
 }>()
 
 function filterOption(input: string, option?: { label?: string | number }) {
-  return String(option?.label ?? '').toLowerCase().includes(input.trim().toLowerCase())
+  const keyword = input.trim().toLowerCase()
+  if (!keyword) return true
+  const label = String(option?.label ?? '').toLowerCase()
+  return label === keyword || label.startsWith(keyword)
 }
 
 function handleSourceStatusChange(value: unknown) {

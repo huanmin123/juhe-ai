@@ -132,17 +132,34 @@
             message="后台运行态暂时不可观测"
             :description="systemRuntimeAlertDescription"
           />
-          <a-table
-            class="stats-background-jobs-table"
+          <ResponsiveDataList
+            table-class="stats-background-jobs-table"
             :columns="backgroundJobColumns"
             :data-source="backgroundJobRows"
-            :pagination="false"
+            :mobile-data-source="backgroundJobPagedRows"
+            :pagination="backgroundJobPagination"
             row-key="name"
             size="small"
-            :scroll="{ x: 760, y: 240 }"
+            :scroll-x="760"
+            :table-scroll-y="240"
+            :table-scroll-enabled="false"
+            :lock-body-scroll="false"
+            :adaptive-column-width="false"
+            @change="handleBackgroundJobTableChange"
           >
+            <template #emptyText>
+              <a-empty :description="backgroundJobEmptyDescription" />
+            </template>
             <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'running'">
+              <template v-if="column.key === 'name'">
+                <span class="background-job-name">
+                  <span>{{ record.name }}</span>
+                  <a-tooltip v-if="backgroundJobDurationNote(record)" :title="backgroundJobDurationNote(record)">
+                    <InfoCircleOutlined class="background-job-info-icon" />
+                  </a-tooltip>
+                </span>
+              </template>
+              <template v-else-if="column.key === 'running'">
                 <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
                   {{ record.running ? '运行中' : '空闲' }}
                 </a-tag>
@@ -166,7 +183,53 @@
                 <span v-else>-</span>
               </template>
             </template>
-          </a-table>
+            <template #card="{ record }">
+              <article class="background-job-card">
+                <div class="background-job-card-head">
+                  <strong class="background-job-name">
+                    <span>{{ record.name }}</span>
+                    <a-tooltip v-if="backgroundJobDurationNote(record)" :title="backgroundJobDurationNote(record)">
+                      <InfoCircleOutlined class="background-job-info-icon" />
+                    </a-tooltip>
+                  </strong>
+                  <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
+                    {{ record.running ? '运行中' : '空闲' }}
+                  </a-tag>
+                </div>
+                <div class="mobile-list-meta-grid">
+                  <div class="mobile-list-meta-item">
+                    <span>最近耗时</span>
+                    <strong>{{ formatJobDuration(record.lastDurationMs) }}</strong>
+                  </div>
+                  <div class="mobile-list-meta-item">
+                    <span>最长耗时</span>
+                    <strong>{{ formatJobDuration(record.maxDurationMs) }}</strong>
+                  </div>
+                  <div class="mobile-list-meta-item">
+                    <span>成功 / 失败 / 跳过</span>
+                    <strong>{{ formatJobCounts(record) }}</strong>
+                  </div>
+                  <div class="mobile-list-meta-item">
+                    <span>最近完成</span>
+                    <strong>{{ formatDateTime(record.lastFinishedAt) }}</strong>
+                  </div>
+                  <div v-if="record.lastError" class="mobile-list-meta-item mobile-list-meta-wide">
+                    <span>最近错误</span>
+                    <strong>{{ record.lastError }}</strong>
+                  </div>
+                </div>
+              </article>
+            </template>
+          </ResponsiveDataList>
+          <a-pagination
+            v-if="hasBackgroundJobs && backgroundJobRows.length > backgroundJobPageSize"
+            v-model:current="backgroundJobPage"
+            class="background-jobs-mobile-pagination"
+            :page-size="backgroundJobPageSize"
+            :total="backgroundJobRows.length"
+            :show-size-changer="false"
+            size="small"
+          />
         </StatsChartCard>
       </a-col>
     </a-row>
@@ -176,10 +239,11 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from 'vue'
 import { message } from '@/lib/antd'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import { InfoCircleOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
@@ -249,6 +313,8 @@ const { requestRender: renderCharts } = useEchartsPageLifecycle({
   disposeCharts,
   onMounted: loadData
 })
+const backgroundJobPageSize = 10
+const backgroundJobPage = ref(1)
 
 const hasUsageTrend = computed(() => (usageOverview.value?.hourlyTrend.length ?? 0) > 0)
 const hasModelDistribution = computed(() => (usageOverview.value?.modelDistribution.length ?? 0) > 0)
@@ -274,7 +340,24 @@ const processEventLoopLatestRows = computed(() => {
     .sort((left, right) => (order.get(left.processRole) ?? 99) - (order.get(right.processRole) ?? 99))
 })
 const hasProcessEventLoopData = computed(() => hasProcessEventLoopTrend.value || processEventLoopLatestRows.value.length > 0)
-const backgroundJobRows = computed(() => systemMetrics.value?.backgroundJobs ?? [])
+const backgroundJobRows = computed(() => {
+  return [...(systemMetrics.value?.backgroundJobs ?? [])].sort((left, right) => {
+    const leftDuration = left.maxDurationMs ?? -1
+    const rightDuration = right.maxDurationMs ?? -1
+    if (leftDuration !== rightDuration) return rightDuration - leftDuration
+    return left.name.localeCompare(right.name)
+  })
+})
+const backgroundJobPagedRows = computed(() => {
+  const start = (backgroundJobPage.value - 1) * backgroundJobPageSize
+  return backgroundJobRows.value.slice(start, start + backgroundJobPageSize)
+})
+const backgroundJobPagination = computed(() => ({
+  current: backgroundJobPage.value,
+  pageSize: backgroundJobPageSize,
+  total: backgroundJobRows.value.length,
+  showSizeChanger: false
+}))
 const backgroundJobsAvailable = computed(() => systemMetrics.value?.backgroundJobsAvailable === true)
 const hasBackgroundJobs = computed(() => backgroundJobsAvailable.value && backgroundJobRows.value.length > 0)
 const systemRuntimeAlertVisible = computed(() => Boolean(systemMetrics.value && (
@@ -377,6 +460,13 @@ function handleSystemAccountChange() {
   void loadData()
 }
 
+function handleBackgroundJobTableChange(paginationInfo: unknown) {
+  if (!paginationInfo || typeof paginationInfo !== 'object') return
+  const next = paginationInfo as { current?: unknown }
+  const current = Number(next.current)
+  backgroundJobPage.value = Number.isFinite(current) && current > 0 ? Math.trunc(current) : 1
+}
+
 function resetFilters() {
   const defaults = defaultStatsPageState()
   dateRange.value = parseDateRange(defaults.range)
@@ -471,6 +561,11 @@ function formatJobCounts(row: NonNullable<SystemMetricsOverview['backgroundJobs'
   return `${formatInteger(row.successCount)} / ${formatInteger(row.failureCount)} / ${formatInteger(row.skippedCount)}`
 }
 
+function backgroundJobDurationNote(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {
+  if (row.name !== 'cooldown-account-retest') return undefined
+  return '该任务会在冷却到期后按真实网关链路复测账号，单次请求时长和失败后的同账号短重试都沿用全局临时不可调用重试配置；目的是尽量让已经恢复的账号在本轮回到可用池，避免一次网络波动把恢复推迟到下一轮窗口。'
+}
+
 function snapshotPageState(): StatsPageState {
   const [startDate, endDate] = selectedRange.value
   return {
@@ -505,6 +600,12 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(() => backgroundJobRows.value.length, (total) => {
+  const maxPage = Math.max(1, Math.ceil(total / backgroundJobPageSize))
+  if (backgroundJobPage.value > maxPage) {
+    backgroundJobPage.value = maxPage
+  }
+})
 </script>
 
 <style scoped>
@@ -604,6 +705,26 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
   min-height: 0;
 }
 
+.background-job-name {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+}
+
+.background-job-name span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.background-job-info-icon {
+  flex: none;
+  color: #64748b;
+  cursor: help;
+  font-size: 14px;
+}
+
 .stats-job-error {
   display: inline-block;
   max-width: 100%;
@@ -612,6 +733,33 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
   text-overflow: ellipsis;
   vertical-align: bottom;
   white-space: nowrap;
+}
+
+.background-job-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.background-job-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.background-job-card-head strong {
+  min-width: 0;
+  color: #0f172a;
+  font-weight: 400;
+  overflow-wrap: anywhere;
+}
+
+.background-jobs-mobile-pagination {
+  display: none;
 }
 
 :global(.stats-error-tooltip) {
@@ -660,6 +808,14 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
   max-height: 128px;
   margin-top: 4px;
   overflow: auto;
+}
+
+@media (max-width: 900px) {
+  .background-jobs-mobile-pagination {
+    display: flex;
+    justify-content: flex-end;
+    padding-top: 12px;
+  }
 }
 
 @media (max-width: 768px) {

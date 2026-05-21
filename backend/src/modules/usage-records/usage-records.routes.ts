@@ -1,6 +1,7 @@
 import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
+import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { getUsageRecordDetail, listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary } from '../../storage/repositories.js'
 import { startOfZonedDateKeyIso, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
@@ -44,10 +45,10 @@ function withCostBreakdown(record: UsageRecordSummary) {
 }
 
 function parseListOptions(query: Record<string, unknown>): UsageRecordListOptions {
-  const rawPage = numberQueryValue(query.page)
-  const rawPageSize = numberQueryValue(query.pageSize)
-  const rawLimit = numberQueryValue(query.limit)
-  const rawStatusCode = numberQueryValue(query.statusCode)
+  const rawPage = finiteNumberQueryValue(query.page)
+  const rawPageSize = finiteNumberQueryValue(query.pageSize)
+  const rawLimit = finiteNumberQueryValue(query.limit)
+  const rawStatusCode = finiteNumberQueryValue(query.statusCode)
   const createdAtRange = dateRangeQueryValue(query.startDate, query.endDate)
   const sortBy = typeof query.sortBy === 'string' && usageRecordSortFields.has(query.sortBy as UsageRecordSortField)
     ? query.sortBy as UsageRecordSortField
@@ -71,19 +72,8 @@ function parseListOptions(query: Record<string, unknown>): UsageRecordListOption
   }
 }
 
-function numberQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  const number = typeof text === 'string' ? Number(text) : undefined
-  return typeof number === 'number' && Number.isFinite(number) ? number : undefined
-}
-
 function isHttpStatusCode(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
-}
-
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
 }
 
 function dateRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?: string; endAt?: string } {

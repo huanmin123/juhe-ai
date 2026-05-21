@@ -104,7 +104,7 @@ async function main(): Promise<void> {
     assert.match(invalidJsonText, /请求体不是合法 JSON/, `无效 JSON 响应应说明请求体错误：${invalidJsonText}`)
     assert.equal(totalUpstreamHitCount(), invalidJsonHitsBefore, '无效 JSON 不应转发到任何上游账号')
 
-    currentScenario = 'tool_output_missing_feature'
+    currentScenario = 'invalid_request_feature'
     const featureResponse = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
@@ -119,10 +119,10 @@ async function main(): Promise<void> {
     })
     const featureResponseText = await featureResponse.text()
 
-    assert.equal(featureResponse.status, 400, `工具输出缺失特征应把上游 400 返回客户端，实际 HTTP ${featureResponse.status}: ${featureResponseText}`)
-    assert.equal(featureResponseText, toolOutputMissingRejectedRequestBody, `客户端收到的工具输出缺失错误体应与上游原文一致：${featureResponseText}`)
-    assert.equal(featureResponse.headers.get('content-type'), 'application/json; charset=utf-8', '工具输出缺失错误响应应保留上游 content-type')
-    assert.equal(toolOutputMissingUpstreamHitCount, 1, `工具输出缺失特征应首个账号命中后停止，实际上游命中 ${toolOutputMissingUpstreamHitCount} 次`)
+    assert.equal(featureResponse.status, 422, `invalid_request_error 特征应把上游 422 返回客户端，实际 HTTP ${featureResponse.status}: ${featureResponseText}`)
+    assert.equal(featureResponseText, invalidRequestRejectedRequestBody, `客户端收到的 invalid_request_error 错误体应与上游原文一致：${featureResponseText}`)
+    assert.equal(featureResponse.headers.get('content-type'), 'application/json; charset=utf-8', 'invalid_request_error 错误响应应保留上游 content-type')
+    assert.equal(invalidRequestUpstreamHitCount, 1, `invalid_request_error 特征应首个账号命中后停止，实际上游命中 ${invalidRequestUpstreamHitCount} 次`)
     assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, '请求级失败不应本地屏蔽账号')
 
     currentScenario = 'same_signature_confirmation'
@@ -140,7 +140,7 @@ async function main(): Promise<void> {
     })
     const signatureResponseText = await signatureResponse.text()
 
-    assert.equal(signatureResponse.status, 400, `同签名请求级失败应把上游 400 返回客户端，实际 HTTP ${signatureResponse.status}: ${signatureResponseText}`)
+    assert.equal(signatureResponse.status, 422, `同签名请求级失败应把上游 422 返回客户端，实际 HTTP ${signatureResponse.status}: ${signatureResponseText}`)
     assert.equal(signatureResponseText, sameSignatureRejectedRequestBody, `客户端收到的同签名错误体应与上游原文一致：${signatureResponseText}`)
     assert.equal(signatureResponse.headers.get('content-type'), 'application/json; charset=utf-8', '同签名错误响应应保留上游 content-type')
     assert.equal(sameSignatureUpstreamHitCount, 2, `同一错误应只用两个账号确认后停止，实际上游命中 ${sameSignatureUpstreamHitCount} 次`)
@@ -161,11 +161,11 @@ async function main(): Promise<void> {
     })
     const instructionsRequiredResponseText = await instructionsRequiredResponse.text()
 
-    assert.equal(instructionsRequiredResponse.status, 400, `Instructions are required 特征应把上游 400 原样返回客户端，实际 HTTP ${instructionsRequiredResponse.status}: ${instructionsRequiredResponseText}`)
+    assert.equal(instructionsRequiredResponse.status, 400, `Instructions are required 应由 invalid_request_error 特征把上游 400 原样返回客户端，实际 HTTP ${instructionsRequiredResponse.status}: ${instructionsRequiredResponseText}`)
     assert.equal(instructionsRequiredResponseText, instructionsRequiredRejectedRequestBody, `客户端收到的 Instructions are required 错误体应与上游原文一致：${instructionsRequiredResponseText}`)
     assert.equal(instructionsRequiredResponse.headers.get('content-type'), 'application/json; charset=utf-8', 'Instructions are required 错误响应应保留上游 content-type')
-    assert.equal(instructionsRequiredUpstreamHitCount, 1, `Instructions are required 特征应首个账号命中后停止，实际上游命中 ${instructionsRequiredUpstreamHitCount} 次`)
-    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, 'Instructions are required 特征不应本地屏蔽账号')
+    assert.equal(instructionsRequiredUpstreamHitCount, 1, `Instructions are required invalid_request_error 特征应首个账号命中后停止，实际上游命中 ${instructionsRequiredUpstreamHitCount} 次`)
+    assert.equal(accountSideEffects.getGatewayAccountSideEffectState().localSuppressedAccountCount, 0, 'invalid_request_error 特征不应本地屏蔽账号')
 
     settingsRepository.updateSettings({
       temporaryUnschedulableRetryAttempts: 2,
@@ -230,7 +230,7 @@ async function main(): Promise<void> {
       assert.equal(updated.lastErrorMessage, undefined, `账号 ${account.name} 不应写入最近错误`)
     }
 
-    console.log('请求级上游失败回归通过：无效 JSON 由网关拒绝；工具输出缺失和 Instructions are required 特征直接返回客户端；未知非 2xx 失败先同账号重试或切号；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
+    console.log('请求级上游失败回归通过：无效 JSON 由网关拒绝；OpenAI 非 2xx invalid_request_error 直接返回客户端；未知非 2xx 失败先同账号重试或切号；两个账号返回一致错误时直接返回客户端；账号不冷却、不本地屏蔽、不继续扫池')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     auditLogQueue.flushAllAuditLogQueue()
@@ -246,23 +246,23 @@ async function main(): Promise<void> {
 }
 
 type RegressionScenario =
-  | 'tool_output_missing_feature'
+  | 'invalid_request_feature'
   | 'same_signature_confirmation'
   | 'instructions_required_feature'
   | 'unknown_failure_same_account_retry'
   | 'unknown_failure_switch_account_success'
 
-let currentScenario: RegressionScenario = 'tool_output_missing_feature'
-let toolOutputMissingUpstreamHitCount = 0
+let currentScenario: RegressionScenario = 'invalid_request_feature'
+let invalidRequestUpstreamHitCount = 0
 let sameSignatureUpstreamHitCount = 0
 let instructionsRequiredUpstreamHitCount = 0
 let transient502UpstreamHitCount = 0
 let unknownSwitchFirstAccountHitCount = 0
 let unknownSwitchSecondAccountHitCount = 0
-const toolOutputMissingRejectedRequestMessage = 'No tool output found for function call fc_request_failure_regression.'
-const toolOutputMissingRejectedRequestBody = JSON.stringify({
+const invalidRequestRejectedRequestMessage = 'Invalid value for model level: expected one of low, medium, high.'
+const invalidRequestRejectedRequestBody = JSON.stringify({
   error: {
-    message: toolOutputMissingRejectedRequestMessage,
+    message: invalidRequestRejectedRequestMessage,
     type: 'invalid_request_error',
     code: null
   }
@@ -271,8 +271,8 @@ const sameSignatureRejectedRequestMessage = 'Regression request payload is inval
 const sameSignatureRejectedRequestBody = JSON.stringify({
   error: {
     message: sameSignatureRejectedRequestMessage,
-    type: 'invalid_request_error',
-    code: null
+    type: 'unprocessable_entity',
+    code: 'invalid_payload'
   }
 })
 const instructionsRequiredRejectedRequestBody = JSON.stringify({
@@ -341,21 +341,21 @@ function createRejectedRequestUpstream(): http.Server {
       return
     }
 
-    const body = currentScenario === 'tool_output_missing_feature'
-      ? toolOutputMissingRejectedRequestBody
+    const body = currentScenario === 'invalid_request_feature'
+      ? invalidRequestRejectedRequestBody
       : sameSignatureRejectedRequestBody
-    if (currentScenario === 'tool_output_missing_feature') {
-      toolOutputMissingUpstreamHitCount += 1
+    if (currentScenario === 'invalid_request_feature') {
+      invalidRequestUpstreamHitCount += 1
     } else {
       sameSignatureUpstreamHitCount += 1
     }
-    res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' })
+    res.writeHead(422, { 'content-type': 'application/json; charset=utf-8' })
     res.end(body)
   })
 }
 
 function totalUpstreamHitCount(): number {
-  return toolOutputMissingUpstreamHitCount
+  return invalidRequestUpstreamHitCount
     + sameSignatureUpstreamHitCount
     + instructionsRequiredUpstreamHitCount
     + transient502UpstreamHitCount

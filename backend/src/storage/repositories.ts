@@ -1,10 +1,12 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSummary, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import { listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions } from './account-list-options.js'
+import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels } from './account-supported-models.repository.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import {
   getAccountUsageStatsOverview as buildAccountUsageStatsOverview,
@@ -87,6 +89,22 @@ import {
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 const manualTrafficMigrationReason = '手动迁移流量'
 const defaultResourceAuthorizationUsageDetailPageSize = 200
+type AccountOptionFilterValue = string | number
+
+interface AccountOptionRow {
+  id: string
+  system_account_id: string
+  provider_code: string
+  name: string
+  type: string
+  status: AccountStatus
+  account_expires_at: string | null
+  priority: number
+  created_at: string
+  access_type: 'owner' | 'authorized'
+  authorization_id: string | null
+  authorization_status: AuthorizationStatus | null
+}
 
 export type { AccountListOptions, AccountListSchedulableFilter, AccountListSortDirection, AccountListSortField } from './account-list-options.js'
 
@@ -127,8 +145,12 @@ export {
 export {
   cleanupDeletedApiKeyRelatedRecordData,
   cleanupPendingDeletedApiKeyRecordTargets,
+  getDeletedApiKeyRecordCleanupQueueSummary,
+  listDeletedApiKeyRecordCleanupQueueTargets,
   listDeletedApiKeyRecordCleanupTargets,
   registerDeletedApiKeyRecordCleanupTarget,
+  type DeletedApiKeyRecordCleanupQueueSummary,
+  type DeletedApiKeyRecordCleanupQueueTarget,
   type DeletedApiKeyRecordCleanupResult,
   type DeletedApiKeyRecordCleanupTarget
 } from './api-key-record-cleanup.js'
@@ -151,13 +173,16 @@ export {
   findSystemAccountByUsername,
   listSystemAccountOptions,
   listSystemAccounts,
+  listSystemAccountsPage,
   revokeAllSessionsForAccount,
   revokeSession,
   touchSession,
   updateSystemAccount,
   updateSystemAccountLastLogin,
   verifySystemAccountCredentials,
-  type SessionWithAccount
+  type SessionWithAccount,
+  type SystemAccountListOptions,
+  type SystemAccountListResult
 } from './system-accounts.repository.js'
 export {
   createProxy,
@@ -192,6 +217,7 @@ export {
 } from './settings.repository.js'
 export {
   clearGatewayApiKeyValidationCache,
+  findActiveGatewayApiKeyById,
   validateGatewayApiKey,
   type GatewayApiKeyRow
 } from './gateway-api-key.repository.js'
@@ -308,6 +334,17 @@ export {
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
 } from './openai-account-selector.repository.js'
+export {
+  createModelCheckItems,
+  createModelCheckRun,
+  finishModelCheckRun,
+  getModelCheckRunDetail,
+  listModelCheckRuns,
+  type ModelCheckItemCreateInput,
+  type ModelCheckRunCreateInput,
+  type ModelCheckRunFinishInput,
+  type ModelCheckRunListOptions
+} from './model-checks.repository.js'
 export {
   refreshAccountQualityFromUsage,
   type AccountQualityRealtimeRefreshResult
@@ -434,6 +471,26 @@ function isAccountExpired(accountExpiresAt: string | null | undefined, now = Dat
   return Number.isFinite(timestamp) && timestamp <= now
 }
 
+function accountDispatchUnavailableMessage(account: AccountSummary, options: { requireAuthorizedBinding?: boolean } = {}): string | undefined {
+  if (account.permissions?.canUse === false) return '当前账户无可用权限'
+  if (account.accessType === 'authorized') {
+    if (options.requireAuthorizedBinding && !account.boundGroupId) return '授权账户需要先绑定到你的分组'
+    if (account.groupBindStatus === 'authorization_unavailable') return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
+    if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
+  }
+  if (isAccountExpired(account.accountExpiresAt) || account.lastErrorCode === 'account_expired') return '账户已到期，当前不可用'
+  if (account.status === 'disabled') return account.accessType === 'authorized' && account.localStatus === 'disabled' ? '当前分组已停用该授权账户，当前不可用' : '账户已停用，当前不可用'
+  if (account.status === 'error') return '账户处于异常状态，当前不可用'
+  if (isCoolingAccountStatus(account.status) || !account.schedulable || isLaterIso(account.cooldownUntil, nowIso())) return '账户暂时不可调用，恢复前不会参与调度'
+  return undefined
+}
+
+export function accountTestUnavailableMessage(account: AccountSummary): string | undefined {
+  if (account.status === 'disabled') return '账户已停用，不能执行测试；请先手动启用账户'
+  if (account.accessType !== 'authorized') return undefined
+  return accountDispatchUnavailableMessage(account, { requireAuthorizedBinding: true })
+}
+
 function disableExpiredAccounts(access?: AccessScope): void {
   const scope = buildSystemAccountScopeClause(access)
   const now = nowIso()
@@ -548,6 +605,18 @@ function accountFingerprint(providerCode: string, type: string, baseUrl: string,
   void type
   void baseUrl
   return hashSecret(secret.trim())
+}
+
+function normalizeAccountSupportedModelsForProvider(value: unknown, providerCode: string): string[] | undefined {
+  const models = normalizeAccountSupportedModelsInput(value)
+  if (!models?.length) return models
+
+  const providerModels = new Set(listProviderModelPricing(providerCode).map((item) => item.model))
+  const invalidModels = models.filter((model) => !providerModels.has(model))
+  if (invalidModels.length > 0) {
+    throw new Error(`账户支持模型不在供应商模型目录中：${invalidModels.slice(0, 5).join('、')}`)
+  }
+  return models
 }
 
 function isDuplicateAccountCredentialError(error: unknown): boolean {
@@ -679,7 +748,7 @@ export function listAccountOptions(access?: AccessScope, options?: AccountListOp
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   disableExpiredAccounts(access)
   const listOptions = normalizeAccountOptionListOptions(options)
-  const rows = listAccountRowsPageForAccess(access, listOptions, { includeCredentials: false, includeTotal: false }).rows
+  const rows = queryAccountOptionRowsForAccess(access, listOptions)
   return accountOptionSummariesFromRows(rows, access, viewerSystemAccountId)
 }
 
@@ -693,7 +762,7 @@ export function findAccountSummary(accountId: string, access?: AccessScope): Acc
   return accountSummariesFromRows(hydratedRows, access, viewerSystemAccountId)[0]
 }
 
-function accountOptionSummariesFromRows(rows: AccountListRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountOptionSummary[] {
+function accountOptionSummariesFromRows(rows: AccountOptionRow[], access: AccessScope | undefined, viewerSystemAccountId: string | undefined): AccountOptionSummary[] {
   const hasAuthorizedRows = rows.some((row) => row.access_type === 'authorized')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
   const accountNames = shouldIncludeSystemAccountFields || hasAuthorizedRows ? loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id)) : new Map<string, string>()
@@ -716,6 +785,141 @@ function accountOptionSummariesFromRows(rows: AccountListRow[], access: AccessSc
       permissions: isAuthorizedView && row.system_account_id !== viewerSystemAccountId ? authorizedPermissions() : ownerPermissions()
     }
   })
+}
+
+function queryAccountOptionRowsForAccess(access: AccessScope | undefined, options: ReturnType<typeof normalizeAccountOptionListOptions>): AccountOptionRow[] {
+  const database = getDatabase()
+  const ownerSystemAccountId = manageableSystemAccountId(access)
+  const viewerSystemAccountId = userVisibleSystemAccountId(access)
+  const limit = options.pageSize
+  const offset = (options.page - 1) * options.pageSize
+  const queryRows = (selectSql: string, params: AccountOptionFilterValue[]): AccountOptionRow[] => database
+    .prepare(`
+      SELECT *
+      FROM (
+        ${selectSql}
+      ) account_option_rows
+      ORDER BY CASE WHEN account_option_rows.access_type = 'authorized' THEN 0 ELSE account_option_rows.priority END ASC,
+        account_option_rows.created_at ASC,
+        account_option_rows.id ASC
+      LIMIT ? OFFSET ?
+    `)
+    .all(...params, limit, offset) as unknown as AccountOptionRow[]
+
+  if (!ownerSystemAccountId && canAccessAll(access)) {
+    const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
+    return queryRows(`
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+      FROM accounts
+      WHERE 1 = 1${filters.clause}
+    `, filters.params)
+  }
+  if (!viewerSystemAccountId) {
+    const filters = buildAccountOptionFilters(options, 'accounts.system_account_id')
+    return queryRows(`
+      SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+      FROM accounts
+      WHERE 1 = 1${filters.clause}
+    `, filters.params)
+  }
+
+  const ownerId = ownerSystemAccountId ?? viewerSystemAccountId
+  const ownerFilters = buildAccountOptionFilters(options, 'accounts.system_account_id')
+  const authorizedFilters = buildAccountOptionFilters(options, '?', [viewerSystemAccountId])
+  return queryRows(`
+    SELECT ${accountOptionSelectColumns()}, 'owner' AS access_type, NULL AS authorization_id, NULL AS authorization_status
+    FROM accounts
+    WHERE accounts.system_account_id = ?${ownerFilters.clause}
+    UNION ALL
+    SELECT ${accountOptionSelectColumns()}, 'authorized' AS access_type, ra.id AS authorization_id, ra.status AS authorization_status
+    FROM resource_authorizations ra
+    INNER JOIN accounts ON accounts.id = ra.resource_id
+    WHERE ra.resource_type = 'account'
+      AND ra.grantee_system_account_id = ?
+      AND ra.status = 'active'
+      AND (ra.expires_at IS NULL OR ra.expires_at > ?)
+      AND accounts.system_account_id <> ?${authorizedFilters.clause}
+  `, [ownerId, ...ownerFilters.params, viewerSystemAccountId, nowIso(), ownerId, ...authorizedFilters.params])
+}
+
+function accountOptionSelectColumns(): string {
+  return [
+    'accounts.id',
+    'accounts.system_account_id',
+    'accounts.provider_code',
+    'accounts.name',
+    'accounts.type',
+    'accounts.status',
+    'accounts.account_expires_at',
+    'accounts.priority',
+    'accounts.created_at'
+  ].join(', ')
+}
+
+function buildAccountOptionFilters(
+  options: ReturnType<typeof normalizeAccountOptionListOptions>,
+  groupBindingSystemAccountExpression: string,
+  groupBindingSystemAccountParams: string[] = []
+): { clause: string; params: AccountOptionFilterValue[] } {
+  const clauses: string[] = []
+  const params: AccountOptionFilterValue[] = []
+  const keyword = options.keyword?.trim()
+  if (keyword) {
+    const keywordPrefix = `${escapeLikePrefix(keyword)}%`
+    clauses.push(`(
+      accounts.id = ?
+      OR accounts.id LIKE ? ESCAPE '\\'
+      OR accounts.name COLLATE NOCASE = ?
+      OR accounts.name LIKE ? ESCAPE '\\'
+      OR accounts.provider_code COLLATE NOCASE = ?
+      OR accounts.provider_code LIKE ? ESCAPE '\\'
+      OR accounts.type COLLATE NOCASE = ?
+      OR accounts.type LIKE ? ESCAPE '\\'
+      OR EXISTS (
+        SELECT 1
+        FROM group_accounts option_group_accounts
+        INNER JOIN groups option_groups ON option_groups.id = option_group_accounts.group_id
+        WHERE option_group_accounts.account_id = accounts.id
+          AND option_group_accounts.system_account_id = ${groupBindingSystemAccountExpression}
+          AND option_group_accounts.enabled = 1
+          AND (option_groups.name COLLATE NOCASE = ? OR option_groups.name LIKE ? ESCAPE '\\')
+      )
+    )`)
+    params.push(
+      keyword,
+      keywordPrefix,
+      keyword,
+      keywordPrefix,
+      keyword,
+      keywordPrefix,
+      keyword,
+      keywordPrefix,
+      ...groupBindingSystemAccountParams,
+      keyword,
+      keywordPrefix
+    )
+  }
+  if (options.type && options.type !== 'all') {
+    clauses.push('accounts.type = ?')
+    params.push(options.type)
+  }
+  if (options.status && options.status !== 'all') {
+    clauses.push('accounts.status = ?')
+    params.push(options.status)
+  }
+  if (options.schedulable === 'enabled') {
+    clauses.push("accounts.status = 'active' AND accounts.schedulable = 1 AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)")
+    params.push(nowIso())
+  } else if (options.schedulable === 'disabled') {
+    clauses.push("(accounts.status = 'disabled' OR accounts.schedulable <> 1)")
+  } else if (options.schedulable === 'cooling') {
+    clauses.push("(accounts.status IN ('rate_limited', 'temporary_unavailable') OR (accounts.cooldown_until IS NOT NULL AND accounts.cooldown_until > ?))")
+    params.push(nowIso())
+  }
+  return {
+    clause: clauses.length ? ` AND ${clauses.join(' AND ')}` : '',
+    params
+  }
 }
 
 function accountSummariesFromRows(
@@ -762,7 +966,7 @@ function accountSummariesFromRows(
       ? authorizedAccountEffectiveStatus(row.status, authorizedLocalStatus, row.bound_group_local_cooldown_until)
       : row.status
     const effectiveAuthorizedSchedulable = isAuthorizedView
-      ? row.status === 'active' && effectiveAuthorizedStatus === 'active'
+      ? row.schedulable === 1 && row.status === 'active' && effectiveAuthorizedStatus === 'active'
       : row.schedulable === 1
     return {
       id: row.id,
@@ -785,6 +989,7 @@ function accountSummariesFromRows(
       fallbackEnabled: isAuthorizedView
         ? row.bound_group_local_fallback_enabled === 1
         : row.fallback_enabled === 1,
+      supportedModels: [...(row.supported_models ?? [])],
       qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
       qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
       qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
@@ -1022,6 +1227,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
     .all(nowIso(), nowIso(), Math.max(1, Math.min(Math.trunc(limit), 200))) as unknown as AccountListRow[]
   const accountNames = loadSystemAccountNameMapByIds(rows.map((row) => row.system_account_id))
   const currentConcurrencyByAccount = loadAccountCurrentConcurrencyByIds(rows.map((row) => row.id))
+  const supportedModelsByAccountId = loadSupportedModelsByAccountIds(rows.map((row) => row.id))
   return rows.map((row) => {
     const groupBinding = accountGroupBinding(row.id, row.system_account_id)
     return {
@@ -1041,6 +1247,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       priority: row.priority,
       superPriorityEnabled: row.super_priority_enabled === 1,
       fallbackEnabled: row.fallback_enabled === 1,
+      supportedModels: supportedModelsByAccountId.get(row.id) ?? [],
       proxyProfileId: row.proxy_profile_id ?? undefined,
       passthroughEnabled: row.passthrough_enabled === 1,
       errorPolicyId: row.error_policy_id ?? undefined,
@@ -1082,6 +1289,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     ? accountFingerprint(providerCode, accountType, baseUrl, credentialSource)
     : null
   const accountExpiresAt = optionalNullableServerDateTimeIso(input.accountExpiresAt ?? input.account_expires_at)
+  const supportedModels = normalizeAccountSupportedModelsForProvider(input.supportedModels ?? input.supported_models, providerCode) ?? []
   const initialStatus = normalizeAccountStatus(input.status, 'active')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : initialStatus
@@ -1120,6 +1328,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     priority: Number(input.priority ?? input.priority_level ?? 0),
     superPriorityEnabled: createSuperPriorityEnabled,
     fallbackEnabled: createFallbackEnabled,
+    supportedModels,
     proxyProfileId,
     passthroughEnabled: providerPassthroughEnabled(provider),
     errorPolicyId: optionalString(input.errorPolicyId ?? input.error_policy_id),
@@ -1179,6 +1388,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     database
       .prepare('INSERT INTO group_accounts (system_account_id, group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
       .run(systemAccountId, groupId, account.id, 1, now, now)
+    replaceAccountSupportedModels(account.id, providerCode, supportedModels)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
     rollbackDatabaseTransaction(database, transactionStarted)
@@ -1225,6 +1435,11 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   const expiredByPackage = isAccountExpired(nextAccountExpiresAt)
 
   const provider = listProviders().find((item) => item.code === current.providerCode)
+  const hasSupportedModelsInput = Object.prototype.hasOwnProperty.call(input, 'supportedModels')
+    || Object.prototype.hasOwnProperty.call(input, 'supported_models')
+  const nextSupportedModels = hasSupportedModelsInput
+    ? normalizeAccountSupportedModelsForProvider(input.supportedModels ?? input.supported_models, current.providerCode) ?? []
+    : current.supportedModels ?? []
   const hasNotesInput = Object.prototype.hasOwnProperty.call(input, 'notes')
   const rawErrorPolicyId = Object.prototype.hasOwnProperty.call(input, 'errorPolicyId')
     ? input.errorPolicyId
@@ -1305,6 +1520,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     priority: Number(input.priority ?? input.priority_level ?? current.priority),
     superPriorityEnabled: nextSuperPriorityEnabled,
     fallbackEnabled: nextFallbackEnabled,
+    supportedModels: nextSupportedModels,
     proxyProfileId: Object.prototype.hasOwnProperty.call(input, 'proxyProfileId') || Object.prototype.hasOwnProperty.call(input, 'proxy_profile_id')
       ? globalProxyProfileId(optionalString(input.proxyProfileId ?? input.proxy_profile_id))
       : current.proxyProfileId,
@@ -1326,8 +1542,10 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   }
 
   assertAccountNameAvailable(systemAccountId, next.providerCode, next.name, id)
+  const database = getDatabase()
+  const transactionStarted = beginDatabaseTransaction(database)
   try {
-    const result = getDatabase()
+    const result = database
       .prepare(`
       UPDATE accounts
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
@@ -1358,12 +1576,17 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         id,
         systemAccountId
     )
+    if (Number(result.changes ?? 0) > 0 && hasSupportedModelsInput) {
+      replaceAccountSupportedModels(id, next.providerCode, nextSupportedModels)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
     if (Number(result.changes ?? 0) > 0) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_updated' })
       invalidateAccountLookupCache(id)
       invalidateGatewayRuntimeAfterBusinessWrite('account_updated')
     }
   } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
     if (isDuplicateAccountCredentialError(error)) {
       throwDuplicateAccountCredentialError()
     }
@@ -1640,8 +1863,12 @@ export function updateAuthorizedAccountBindingDispatch(
   if (current?.accessType !== 'authorized' || !current.boundGroupId) {
     throw new Error('授权账户需要先绑定到你的分组')
   }
-  if (current.status !== 'active' && (input.superPriorityEnabled === true || input.fallbackEnabled === true)) {
-    throw new Error('只有正常状态的授权账户可以调整调度标记')
+  const enablingDispatchFlag = input.superPriorityEnabled === true || input.fallbackEnabled === true
+  if (enablingDispatchFlag) {
+    const unavailableMessage = accountDispatchUnavailableMessage(current, { requireAuthorizedBinding: true })
+    if (unavailableMessage) {
+      throw new Error(unavailableMessage)
+    }
   }
   const hasSuperPriorityInput = Object.prototype.hasOwnProperty.call(input, 'superPriorityEnabled')
   const hasFallbackInput = Object.prototype.hasOwnProperty.call(input, 'fallbackEnabled')
@@ -1708,8 +1935,9 @@ function migrateAuthorizedAccountBindingTraffic(input: {
   if (sourceAccount.providerCode !== targetAccount.providerCode) {
     throw new Error('目标账户必须和当前账户属于同一个供应商')
   }
-  if (targetAccount.status !== 'active' || !targetAccount.schedulable || isLaterIso(targetAccount.cooldownUntil, nowIso())) {
-    throw new Error('目标账户当前不可调度，请选择正常可用的账户')
+  const targetUnavailableMessage = accountDispatchUnavailableMessage(targetAccount, { requireAuthorizedBinding: targetAccount.accessType === 'authorized' })
+  if (targetUnavailableMessage) {
+    throw new Error(targetUnavailableMessage)
   }
   const sourceCooldownUntil = input.sourceStatus === 'temporary_unavailable'
     ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
@@ -2198,10 +2426,8 @@ function querySystemTeamRows(access: AccessScope | undefined, pagination: { limi
       OR system_teams.id LIKE ? ESCAPE '\\'
       OR system_teams.name COLLATE NOCASE = ?
       OR system_teams.name LIKE ? ESCAPE '\\'
-      OR system_teams.description COLLATE NOCASE = ?
-      OR system_teams.description LIKE ? ESCAPE '\\'
     )`)
-    params.push(keyword, prefix, keyword, prefix, keyword, prefix)
+    params.push(keyword, prefix, keyword, prefix)
   }
   const whereClause = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''

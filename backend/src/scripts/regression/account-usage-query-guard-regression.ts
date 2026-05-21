@@ -67,6 +67,17 @@ try {
     },
     groupId: group.id
   }, access)
+  const notesOnlyAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '备注字段账号用量账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-account-usage-query-guard-notes',
+      base_url: 'https://api.openai.com/v1'
+    },
+    notes: 'keywordnote 备注前缀',
+    groupId: group.id
+  }, access)
 
   seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', matchedAccount.id, 7)
   seedUsageScopeRangeWindow(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, 'account', otherAccount.id, 3)
@@ -133,6 +144,15 @@ try {
     })
     assert.equal(missResult.total, 0, '账号用量关键词无匹配账号时应直接返回空窗口')
 
+    const notesOnlyResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      keyword: 'keywordnote',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.equal(notesOnlyResult.total, 0, '账号用量关键词不应通过备注字段命中账号，避免通用关键词扫描长文本')
+    assert(!notesOnlyResult.rows.some((row) => row.id === notesOnlyAccount.id), '备注字段命中的账号不应混入账号用量结果')
+
     const selectedResult = repositories.getAccountUsageStatsOverviewPage(access, {
       accountIds: [selectedAccount.id],
       page: 1,
@@ -159,6 +179,7 @@ try {
   assert(businessCalls.length >= 3, '回归应捕获账号用量关键词预解析 SQL')
   for (const call of businessCalls) {
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账号用量关键词预解析不应通过 COALESCE 做包含扫描')
+    assert(!/\baccounts\.notes\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账号用量关键词预解析不应把备注字段放进通用关键词 WHERE')
     assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账号用量关键词预解析前缀搜索应显式转义 LIKE 通配符')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量关键词预解析不应接收前导通配符参数')
   }

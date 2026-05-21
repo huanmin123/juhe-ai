@@ -2,6 +2,7 @@ import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/type
 import { runtimeConfig } from '../config/runtime.js'
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
 import { buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
+import { loadSupportedModelsByAccountIds } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import type { AccountListRow } from './repository-row-types.js'
@@ -248,6 +249,7 @@ export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): Ac
   if (rows.length === 0) return rows
   const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))]
   if (ids.length === 0) return rows
+  const supportedModelsByAccountId = loadSupportedModelsByAccountIds(ids)
   const qualityRows = getRecordDatabase()
     .prepare(`
       SELECT account_id, quality_score, quality_state, ewma_first_token_ms, recent_avg_first_token_ms,
@@ -268,9 +270,11 @@ export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): Ac
   const qualityByAccount = new Map(qualityRows.map((row) => [row.account_id, row]))
   return rows.map((row) => {
     const quality = qualityByAccount.get(row.id)
-    if (!quality) return row
+    const supportedModels = supportedModelsByAccountId.get(row.id) ?? []
+    if (!quality) return { ...row, supported_models: supportedModels }
     return {
       ...row,
+      supported_models: supportedModels,
       quality_score: quality.quality_score,
       quality_state: quality.quality_state,
       quality_ewma_first_token_ms: quality.ewma_first_token_ms,
@@ -337,8 +341,6 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
       OR account_rows.id LIKE ? ESCAPE '\\'
       OR account_rows.name COLLATE NOCASE = ?
       OR account_rows.name LIKE ? ESCAPE '\\'
-      OR account_rows.notes COLLATE NOCASE = ?
-      OR account_rows.notes LIKE ? ESCAPE '\\'
       OR account_rows.provider_code COLLATE NOCASE = ?
       OR account_rows.provider_code LIKE ? ESCAPE '\\'
       OR account_rows.type COLLATE NOCASE = ?
@@ -347,8 +349,6 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
       OR bound_groups.name LIKE ? ESCAPE '\\'
     )`)
     params.push(
-      keyword,
-      keywordPrefix,
       keyword,
       keywordPrefix,
       keyword,

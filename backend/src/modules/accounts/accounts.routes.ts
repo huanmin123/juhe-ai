@@ -3,7 +3,8 @@ import { z } from 'zod'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
@@ -19,6 +20,7 @@ const accountCreateSchema = z.object({
   name: z.string().trim().min(1),
   type: z.string().trim().min(1),
   credentials: z.record(z.unknown()).optional(),
+  supportedModels: z.array(z.string().trim().min(1)).max(500).optional(),
   status: z.enum(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable']).optional(),
   concurrencyLimit: z.number().int().min(1).optional(),
   priority: z.number().int().optional(),
@@ -65,8 +67,7 @@ const accountListSortFields = new Set<AccountListSortField>([
   'concurrency',
   'status',
   'accountExpiresAt',
-  'lastUsedAt',
-  'notes'
+  'lastUsedAt'
 ])
 
 accountsRouter.get('/', async (req, res, next) => {
@@ -165,22 +166,6 @@ function stringValues(value: unknown): string[] {
   return []
 }
 
-function integerQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  if (typeof text === 'string') {
-    const trimmed = text.trim()
-    if (!trimmed) return undefined
-    const number = Number(trimmed)
-    return Number.isInteger(number) ? number : undefined
-  }
-  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
-}
-
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
-}
-
 function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | undefined {
   const text = optionalQueryText(value)
   return text === 'all' || text === 'enabled' || text === 'disabled' || text === 'cooling' ? text : undefined
@@ -261,6 +246,7 @@ accountsRouter.post('/', mutationGuard({
             safeChange('type', '账户类型', undefined, account.type),
             safeChange('status', '状态', undefined, account.status),
             safeChange('credentials', '凭据', undefined, parsed.data.credentials),
+            safeChange('supportedModels', '支持模型', undefined, account.supportedModels),
             safeChange('groupId', '绑定分组', undefined, account.boundGroupId),
             safeChange('proxyProfileId', '代理', undefined, account.proxyProfileId),
             safeChange('errorPolicyId', '错误策略', undefined, account.errorPolicyId),
@@ -535,6 +521,7 @@ accountsRouter.patch('/:id', (req, res) => {
               priority: '优先级',
               superPriorityEnabled: '超级优先',
               fallbackEnabled: '降级备用',
+              supportedModels: '支持模型',
               proxyProfileId: '代理',
               errorPolicyId: '错误策略',
               schedulable: '参与调度',
@@ -598,6 +585,11 @@ accountsRouter.post('/:id/test', async (req, res) => {
     res.status(400).json({ message: '账户已停用，不能执行测试；请先手动启用账户' })
     return
   }
+  const unavailableMessage = accountTestUnavailableMessage(account)
+  if (unavailableMessage) {
+    res.status(400).json({ message: unavailableMessage })
+    return
+  }
 
   const abortController = new AbortController()
   req.once('aborted', () => abortController.abort())
@@ -607,7 +599,8 @@ accountsRouter.post('/:id/test', async (req, res) => {
     }
   })
   try {
-    const result = await testOpenAIAccount(account, { ...(parsed.data ?? {}), signal: abortController.signal })
+    const diagnostics = requestAccess?.role === 'admin' || account.accessType !== 'authorized' ? 'full' : 'limited'
+    const result = await testOpenAIAccount(account, { ...(parsed.data ?? {}), signal: abortController.signal, diagnostics })
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }

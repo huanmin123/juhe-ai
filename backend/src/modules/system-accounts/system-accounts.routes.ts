@@ -2,8 +2,9 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
+import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
-import { createSystemAccount, findSystemAccountById, listSystemAccountOptions, listSystemAccounts, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
+import { createSystemAccount, findSystemAccountById, listSystemAccountOptions, listSystemAccounts, listSystemAccountsPage, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
 import { diffSafeFields, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
 
@@ -28,7 +29,11 @@ const updateSchema = z.object({
   mustChangePassword: z.boolean().optional()
 })
 
-systemAccountsRouter.get('/', requireAdmin, (_req, res) => {
+systemAccountsRouter.get('/', requireAdmin, (req, res) => {
+  if (hasSystemAccountPageQuery(req.query)) {
+    res.json(ok(listSystemAccountsPage(parseSystemAccountListOptions(req.query))))
+    return
+  }
   res.json(ok(listSystemAccounts()))
 })
 
@@ -43,20 +48,16 @@ function parseSystemAccountOptionListOptions(query: Record<string, unknown>) {
   }
 }
 
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
+function parseSystemAccountListOptions(query: Record<string, unknown>) {
+  return {
+    keyword: optionalQueryText(query.keyword),
+    page: integerQueryValue(query.page),
+    pageSize: integerQueryValue(query.pageSize)
+  }
 }
 
-function integerQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  if (typeof text === 'string') {
-    const trimmed = text.trim()
-    if (!trimmed) return undefined
-    const number = Number(trimmed)
-    return Number.isInteger(number) ? number : undefined
-  }
-  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
+function hasSystemAccountPageQuery(query: Record<string, unknown>): boolean {
+  return query.page !== undefined || query.pageSize !== undefined || query.limit !== undefined
 }
 
 systemAccountsRouter.post('/', requireAdmin, mutationGuard({

@@ -6,10 +6,12 @@ import type { AccountSummary } from '@/types/domain'
 import { isAuthorizedAccount, isTemporaryAccountStatus } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import {
+  authorizedAccountUnavailableText,
   canEditAccount,
   canManageOpenAIOAuth,
   canRestoreException,
-  canUseAccountActions
+  canUseAccountActions,
+  canUseBoundAuthorizedAccount
 } from './accountRules'
 
 interface UseAccountMenuActionsOptions {
@@ -135,6 +137,14 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     if (key === 'super-priority-on' || key === 'super-priority-off') {
       const enabled = key === 'super-priority-on'
+      if (enabled && isAuthorizedAccount(account) && !canUseBoundAuthorizedAccount(account)) {
+        if (!account.boundGroupId) {
+          message.warning('请先把授权账户绑定到你的分组')
+          return
+        }
+        message.warning(authorizedAccountUnavailableText(account) ?? '授权账户当前不可用，不能设置调度标记')
+        return
+      }
       if (enabled && account.status !== 'active') {
         message.warning('只有正常状态的账户可以设置超级优先')
         return
@@ -148,6 +158,14 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     if (key === 'fallback-on' || key === 'fallback-off') {
       const enabled = key === 'fallback-on'
+      if (enabled && isAuthorizedAccount(account) && !canUseBoundAuthorizedAccount(account)) {
+        if (!account.boundGroupId) {
+          message.warning('请先把授权账户绑定到你的分组')
+          return
+        }
+        message.warning(authorizedAccountUnavailableText(account) ?? '授权账户当前不可用，不能设置调度标记')
+        return
+      }
       if (enabled && account.status !== 'active') {
         message.warning('只有正常状态的账户可以设置降级备用')
         return
@@ -160,6 +178,10 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     if (key === 'migrate-traffic') {
+      if (isAuthorizedAccount(account) && !canUseBoundAuthorizedAccount(account)) {
+        message.warning(authorizedAccountUnavailableText(account) ?? '授权账户当前不可用，不能迁移流量')
+        return
+      }
       options.openTrafficMigration(account)
     }
   }

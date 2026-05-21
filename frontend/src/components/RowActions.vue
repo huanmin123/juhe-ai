@@ -17,6 +17,7 @@
             :disabled="action.disabled"
             :size="size"
             :type="buttonType(action)"
+            :aria-label="iconOnly ? action.label : undefined"
           >
             <template #icon>
               <component :is="actionIcon(action)" />
@@ -33,6 +34,7 @@
           :disabled="action.disabled"
           :size="size"
           :type="buttonType(action)"
+          :aria-label="iconOnly ? action.label : undefined"
           @click="emitAction(action)"
         >
           <template #icon>
@@ -45,7 +47,7 @@
 
     <a-dropdown v-if="moreActions.length" :trigger="['click']">
       <a-tooltip :title="iconOnly ? moreTitle : undefined">
-        <a-button class="row-action-button row-action-more-button" :size="size" :type="iconOnly ? 'text' : 'default'">
+        <a-button class="row-action-button row-action-more-button" :size="size" :type="iconOnly ? 'text' : 'default'" :aria-label="iconOnly ? moreTitle : undefined" aria-haspopup="menu">
           <template #icon>
             <MoreOutlined />
           </template>
@@ -110,6 +112,7 @@ import {
   TeamOutlined,
   ThunderboltOutlined
 } from '@ant-design/icons-vue'
+import { Modal } from 'ant-design-vue'
 import { computed, type CSSProperties } from 'vue'
 
 import type { RowActionIcon, RowActionItem, RowActionTone } from './rowActions'
@@ -172,7 +175,19 @@ function emitAction(action: RowActionItem) {
 }
 
 function handleMenuClick(event: { key: string | number }) {
-  emit('action-click', String(event.key))
+  const action = findMenuAction(String(event.key), props.moreActions)
+  if (!action || action.disabled) return
+  if (action.confirmTitle) {
+    Modal.confirm({
+      title: action.confirmTitle,
+      okText: action.confirmOkText || '确认',
+      cancelText: '取消',
+      okButtonProps: { danger: isDanger(action) },
+      onOk: () => emitAction(action)
+    })
+    return
+  }
+  emitAction(action)
 }
 
 function actionIcon(action: RowActionItem) {
@@ -228,6 +243,15 @@ function actionClass(action: RowActionItem): string {
 
 function menuItemClass(action: RowActionItem): string {
   return `row-action-menu-tone-${actionTone(action)}`
+}
+
+function findMenuAction(key: string, actions: RowActionItem[]): RowActionItem | undefined {
+  for (const action of actions) {
+    if (action.key === key) return action
+    const child = action.children?.find((item) => item.key === key)
+    if (child) return child
+  }
+  return undefined
 }
 </script>
 

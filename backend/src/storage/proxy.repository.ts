@@ -153,16 +153,12 @@ function buildProxyKeywordFilter(keyword?: string): { clause: string; params: st
       OR id LIKE ? ESCAPE '\\'
       OR name COLLATE NOCASE = ?
       OR name LIKE ? ESCAPE '\\'
-      OR description COLLATE NOCASE = ?
-      OR description LIKE ? ESCAPE '\\'
       OR type COLLATE NOCASE = ?
       OR type LIKE ? ESCAPE '\\'
       OR host = ?
       OR host LIKE ? ESCAPE '\\'
-      OR username COLLATE NOCASE = ?
-      OR username LIKE ? ESCAPE '\\'
     )`,
-    params: [text, prefix, text, prefix, text, prefix, text, prefix, text, prefix, text, prefix]
+    params: [text, prefix, text, prefix, text, prefix, text, prefix]
   }
 }
 

@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card api-keys-page-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="名称 / Key 前缀 / 说明前缀" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
+    <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="名称 / Key 前缀" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
       <template #inline-filters>
         <a-select v-model:value="statusFilter" class="toolbar-select responsive-list-inline-filter" :options="listStatusOptions" @change="applyFilters" />
         <a-select
@@ -106,7 +106,7 @@
           <span>{{ record.description || '-' }}</span>
         </template>
         <template v-else-if="column.key === 'actions'">
-          <RowActions :actions="apiKeyActions" @action-click="handleApiKeyAction($event, record)" />
+          <RowActions :actions="apiKeyActions(record)" @action-click="handleApiKeyAction($event, record)" />
         </template>
       </template>
       <template #card="{ record }">
@@ -145,7 +145,7 @@
             </div>
           </div>
           <div class="mobile-list-card-actions">
-            <RowActions variant="button" :actions="apiKeyActions" @action-click="handleApiKeyAction($event, record)" />
+            <RowActions variant="button" :actions="apiKeyActions(record)" @action-click="handleApiKeyAction($event, record)" />
           </div>
         </article>
       </template>
@@ -171,6 +171,7 @@
           <span class="gateway-step-title">3. 填到客户端</span>
           <pre class="gateway-code">{{ gatewayClientExample }}</pre>
         </div>
+        <a-alert class="gateway-help-note" type="info" show-icon message="Responses 是连续会话入口；/chat/completions 需要兼容上游。统计、会话亲和和缓存不按 OAuth / API Key 类型拆分。" />
       </div>
     </a-modal>
 
@@ -207,7 +208,7 @@
     </a-modal>
 
     <a-modal v-model:open="createdKeyOpen" title="API Key 已创建" width="640px" :footer="null">
-      <a-alert message="复制下方 API Key 和 Base URL，填到客户端即可。" type="info" show-icon />
+      <a-alert message="复制下方 API Key 和 Base URL；统计、会话亲和和缓存按本地 API Key 与分组保持连续。" type="info" show-icon />
       <div class="created-key-base-url">
         <span class="created-key-label">Base URL</span>
         <span class="created-key-value">{{ gatewayBaseUrl }}</span>
@@ -238,9 +239,11 @@ import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { useScopedApiKeysApi, useScopedGroupsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
+import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -253,6 +256,7 @@ const createdKeyOpen = ref(false)
 const helpOpen = ref(false)
 const editingId = ref<string>()
 const createdKey = ref('')
+const statusUpdatingId = ref('')
 const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
 const pageSize = 50
@@ -289,6 +293,8 @@ const form = reactive({
   quotaLimits: createQuotaLimitForm()
 })
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
+const apiKeysApi = useScopedApiKeysApi(isManagementView)
+const groupsApi = useScopedGroupsApi(isManagementView)
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
@@ -325,7 +331,7 @@ const {
   fetchPage: async (options, pageState) => {
     const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
     const [keyList] = await Promise.all([
-      isManagementView.value ? api.apiKeys.list(apiKeyListParams(systemAccountId, pageState)) : api.myApiKeys.list(apiKeyListParams(undefined, pageState)),
+      apiKeysApi.list(apiKeyListParams(systemAccountId, pageState)),
       loadApiKeyOptions(systemAccountId, options.forceOptions === true)
     ])
     return keyList
@@ -355,18 +361,6 @@ const columns = computed(() => {
   )
   return baseColumns
 })
-
-const apiKeyActions: RowActionItem[] = [
-  { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary' },
-  {
-    key: 'delete',
-    label: '删除',
-    icon: 'delete',
-    tone: 'danger',
-    confirmTitle: '确认删除这个 API Key？相关使用记录、审计日志和统计缓存会一起删除。',
-    confirmOkText: '删除'
-  }
-]
 
 const statusOptions = [
   { label: '启用', value: 'active' },
@@ -417,6 +411,40 @@ function formatKeyPreview(value?: string) {
   return `${value.slice(0, 6)}...${value.slice(-4)}`
 }
 
+function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {
+  const updating = statusUpdatingId.value === apiKey.id
+  const statusAction: RowActionItem = apiKey.status === 'active'
+    ? {
+        key: 'disable',
+        label: '停用',
+        icon: 'disable',
+        tone: 'warning',
+        disabled: updating,
+        confirmTitle: '确认停用这个 API Key？停用后后续请求会立即被拒绝。',
+        confirmOkText: '停用'
+      }
+    : {
+        key: 'enable',
+        label: '启用',
+        icon: 'enable',
+        tone: 'success',
+        disabled: updating
+      }
+  return [
+    { key: 'edit', label: '编辑', icon: 'edit', tone: 'primary', disabled: updating },
+    statusAction,
+    {
+      key: 'delete',
+      label: '删除',
+      icon: 'delete',
+      tone: 'danger',
+      disabled: updating,
+      confirmTitle: '确认删除这个 API Key？删除后会立即失效，关联历史记录和统计将由后台分批清理。',
+      confirmOkText: '删除'
+    }
+  ]
+}
+
 async function loadApiKeyOptions(systemAccountId: string | undefined, force = false): Promise<void> {
   const scopeKey = isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self'
   if (!force && apiKeyOptionsLoaded.value && apiKeyOptionsScopeKey.value === scopeKey) {
@@ -441,9 +469,7 @@ async function loadGroupOptions(keyword = groupOptionsKeyword): Promise<void> {
   groupOptionsLoadingKey = requestKey
   groupOptionsLoadingPromise = (async () => {
     try {
-      let nextGroups = isManagementView.value
-        ? await api.groups.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
-        : await api.myGroups.options({ keyword: requestKeyword, limit: 50 })
+      let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
       nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
       if (requestId !== groupOptionsRequestId) return
       groups.value = nextGroups
@@ -497,9 +523,7 @@ async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], syst
   if (!missingIds.length) return nextGroups
   const selectedGroups = await Promise.all(missingIds.map(async (id) => {
     try {
-      return isManagementView.value
-        ? await api.groups.options({ systemAccountId, keyword: id, limit: 1 })
-        : await api.myGroups.options({ keyword: id, limit: 1 })
+      return await groupsApi.options({ systemAccountId, keyword: id, limit: 1 })
     } catch {
       return []
     }
@@ -627,8 +651,28 @@ function handleApiKeyAction(key: string, apiKey: ApiKeySummary) {
     void openEdit(apiKey)
     return
   }
+  if (key === 'enable' || key === 'disable') {
+    void updateApiKeyStatus(apiKey, key === 'enable' ? 'active' : 'disabled')
+    return
+  }
   if (key === 'delete') {
     void removeApiKey(apiKey.id)
+  }
+}
+
+async function updateApiKeyStatus(apiKey: ApiKeySummary, status: 'active' | 'disabled') {
+  statusUpdatingId.value = apiKey.id
+  try {
+    await apiKeysApi.update(apiKey.id, { status }, apiKeyScopeParams.value)
+    message.success(status === 'active' ? 'API Key 已启用' : 'API Key 已停用')
+    await loadData()
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, status === 'active' ? '启用 API Key 失败' : '停用 API Key 失败'))
+  } finally {
+    if (statusUpdatingId.value === apiKey.id) {
+      statusUpdatingId.value = ''
+    }
   }
 }
 
@@ -651,16 +695,10 @@ const saveApiKey = submitAction('api_keys.save', async () => {
   }
   try {
     if (editingId.value) {
-      if (isManagementView.value) {
-        await api.apiKeys.update(editingId.value, payload, apiKeyScopeParams.value)
-      } else {
-        await api.myApiKeys.update(editingId.value, payload)
-      }
+      await apiKeysApi.update(editingId.value, payload, apiKeyScopeParams.value)
       message.success('API Key 已更新')
     } else {
-      const result = isManagementView.value
-        ? await api.apiKeys.create(payload, apiKeyScopeParams.value)
-        : await api.myApiKeys.create(payload)
+      const result = await apiKeysApi.create(payload, apiKeyScopeParams.value)
       createdKey.value = result.key
       createdKeyOpen.value = true
       message.success('API Key 已创建')
@@ -678,9 +716,7 @@ function quotaLimitsPayload(): ApiKeyQuotaLimits {
 }
 
 async function copyText(value: string) {
-  if (!value) return
-  await navigator.clipboard.writeText(value)
-  message.success('已复制')
+  await copyTextToClipboard(value)
 }
 
 async function copyGatewayBaseUrl() {
@@ -706,12 +742,8 @@ function normalizeGatewayBaseUrl(value: string) {
 
 async function removeApiKey(id: string) {
   try {
-    if (isManagementView.value) {
-      await api.apiKeys.delete(id, apiKeyScopeParams.value)
-    } else {
-      await api.myApiKeys.delete(id)
-    }
-    message.success('API Key 已删除')
+    await apiKeysApi.delete(id, apiKeyScopeParams.value)
+    message.success('API Key 已删除，关联记录将后台清理')
     await loadData()
   } catch (error) {
     console.error(error)
@@ -756,6 +788,10 @@ onMounted(loadData)
   border: 1px solid #e2e8f0;
   border-radius: 12px;
   background: #fbfdff;
+}
+
+.gateway-help-note {
+  border-radius: 8px;
 }
 
 .gateway-step-title {

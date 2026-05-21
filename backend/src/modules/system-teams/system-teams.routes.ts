@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok, parseOrBadRequest, sendBadRequest, sendNotFound } from '../../shared/http.js'
+import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
   addSystemTeamMembers,
   createSystemTeam,
@@ -70,22 +71,6 @@ function parseSystemTeamListOptions(query: Record<string, unknown>) {
     limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword)
   }
-}
-
-function integerQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  if (typeof text === 'string') {
-    const trimmed = text.trim()
-    if (!trimmed) return undefined
-    const number = Number(trimmed)
-    return Number.isInteger(number) ? number : undefined
-  }
-  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
-}
-
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
 }
 
 systemTeamsRouter.post('/', requireAdmin, mutationGuard({

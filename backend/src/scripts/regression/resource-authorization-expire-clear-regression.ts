@@ -129,6 +129,28 @@ try {
       total: { enabled: true, limit: 30 }
     }
   }, ownerAccess)
+  const granteeQuotaGroup = repositories.createGroup({
+    name: '授权额度拦截分组',
+    providerCode: 'openai',
+    enabled: true
+  }, granteeAccess)
+  const quotaBinding = repositories.setAccountGroup(account.id, granteeQuotaGroup.id, granteeAccess)
+  assert.equal(quotaBinding?.boundGroupId, granteeQuotaGroup.id, '额度账户应能先绑定到被授权人的分组')
+  const migrationSourceAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权额度迁移源账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-resource-authorization-quota-source', base_url: 'https://api.openai.com/v1' }
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: migrationSourceAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    expiresAt: validAuthorizationExpiresAt
+  }, ownerAccess)
+  const sourceBinding = repositories.setAccountGroup(migrationSourceAccount.id, granteeQuotaGroup.id, granteeAccess)
+  assert.equal(sourceBinding?.boundGroupId, granteeQuotaGroup.id, '迁移源授权账户应能绑定到同一个分组')
   assert.throws(() => repositories.updateResourceAuthorization(accountAuthorization.id, {
     expiresAt: new Date(Date.parse(accountExpiresAt) + 60_000).toISOString()
   }, ownerAccess), /授权到期时间不能晚于账户到期时间/, '修改账户授权不应允许晚于账户到期时间')
@@ -146,6 +168,42 @@ try {
   insertUsageDaily(recordDatabase, owner.id, 'account_authorization', runtimeAccountAuthorizationId, statDate, 12)
   const quotaExceededAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === account.id)
   assert.equal(quotaExceededAccount?.authorizationQuotaExceeded, true, '授权额度用完时被授权账户列表应返回超限标记')
+  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(account.id, {
+    superPriorityEnabled: true
+  }, granteeAccess), /授权额度已用完/, '授权额度用完后不应允许开启本地调度标记')
+  assert.throws(() => repositories.migrateAccountTraffic({
+    sourceAccountId: migrationSourceAccount.id,
+    targetAccountId: account.id,
+    sourceStatus: 'temporary_unavailable'
+  }, granteeAccess), /授权额度已用完/, '授权额度用完账户不应作为迁移目标')
+  const quotaExceededTestAccount = repositories.findAccountForTest(account.id, granteeAccess)
+  assert(quotaExceededTestAccount, '额度用完账户仍应能被解析出来用于测试前置校验')
+  assert.equal(repositories.accountTestUnavailableMessage(quotaExceededTestAccount), '授权额度已用完，当前账户不能调用', '测试接口应在实际调用前拦截授权额度用完账户')
+
+  const ownerPausedAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '授权所有者停调账户',
+    type: 'api_key',
+    credentials: { api_key: 'sk-resource-authorization-owner-paused', base_url: 'https://api.openai.com/v1' },
+    schedulable: false
+  }, ownerAccess)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: ownerPausedAccount.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    expiresAt: validAuthorizationExpiresAt
+  }, ownerAccess)
+  const ownerPausedBinding = repositories.setAccountGroup(ownerPausedAccount.id, granteeQuotaGroup.id, granteeAccess)
+  assert.equal(ownerPausedBinding?.boundGroupId, granteeQuotaGroup.id, '所有者停调账户应能先绑定到被授权人的分组')
+  const ownerPausedAuthorizedAccount = repositories.listAccounts(granteeAccess).find((item) => item.id === ownerPausedAccount.id)
+  assert.equal(ownerPausedAuthorizedAccount?.schedulable, false, '所有者停调后被授权账户视图也应不可调度')
+  assert.throws(() => repositories.updateAuthorizedAccountBindingDispatch(ownerPausedAccount.id, {
+    fallbackEnabled: true
+  }, granteeAccess), /账户暂时不可调用/, '所有者停调后不应允许被授权用户开启本地调度标记')
+  const ownerPausedTestAccount = repositories.findAccountForTest(ownerPausedAccount.id, granteeAccess)
+  assert(ownerPausedTestAccount, '所有者停调账户仍应能被解析出来用于测试前置校验')
+  assert.equal(repositories.accountTestUnavailableMessage(ownerPausedTestAccount), '账户暂时不可调用，恢复前不会参与调度', '测试接口应在实际调用前拦截所有者停调账户')
 
   const teamQuotaAccount = repositories.createAccount({
     providerCode: 'openai',

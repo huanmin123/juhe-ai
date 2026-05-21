@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
+import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
   getAccountUsageStatsOverviewPage,
   type AccountListOptions,
@@ -94,22 +95,6 @@ function defaultAccountUsageDateRange(timezone: string): { startDate: string; en
     startDate: dateKeys[0] ?? today,
     endDate: dateKeys[dateKeys.length - 1] ?? today
   }
-}
-
-function integerQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  if (typeof text === 'string') {
-    const trimmed = text.trim()
-    if (!trimmed) return undefined
-    const number = Number(trimmed)
-    return Number.isInteger(number) ? number : undefined
-  }
-  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
-}
-
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
 }
 
 function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | undefined {

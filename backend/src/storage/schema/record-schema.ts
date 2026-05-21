@@ -106,6 +106,58 @@ export function applyRecordSchema(database: DatabaseSync): void {
       created_at TEXT NOT NULL
     );
 
+    CREATE TABLE IF NOT EXISTS model_check_runs (
+      id TEXT PRIMARY KEY,
+      system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      actor_system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
+      provider_code TEXT NOT NULL DEFAULT 'openai',
+      target_type TEXT NOT NULL,
+      target_id TEXT NOT NULL,
+      target_name TEXT,
+      target_owner_system_account_id TEXT,
+      account_id TEXT,
+      group_id TEXT,
+      api_key_id TEXT,
+      model TEXT NOT NULL,
+      profile TEXT NOT NULL DEFAULT 'full',
+      official_baseline_enabled INTEGER NOT NULL DEFAULT 0,
+      official_baseline_available INTEGER NOT NULL DEFAULT 0,
+      level TEXT NOT NULL DEFAULT 'unavailable',
+      score INTEGER NOT NULL DEFAULT 0,
+      max_score INTEGER NOT NULL DEFAULT 100,
+      status TEXT NOT NULL DEFAULT 'running',
+      message TEXT NOT NULL DEFAULT '',
+      trace_id TEXT,
+      probe_set_version TEXT NOT NULL DEFAULT 'openai-model-check-v1',
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      duration_ms INTEGER,
+      request_summary_json TEXT NOT NULL DEFAULT '{}',
+      result_summary_json TEXT NOT NULL DEFAULT '{}',
+      error_code TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS model_check_items (
+      id TEXT PRIMARY KEY,
+      run_id TEXT NOT NULL,
+      item_key TEXT NOT NULL,
+      item_type TEXT NOT NULL,
+      status TEXT NOT NULL,
+      score INTEGER NOT NULL DEFAULT 0,
+      max_score INTEGER NOT NULL DEFAULT 0,
+      duration_ms INTEGER,
+      trace_id TEXT,
+      evidence_summary_json TEXT NOT NULL DEFAULT '{}',
+      error_code TEXT,
+      error_message TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (run_id) REFERENCES model_check_runs(id) ON DELETE CASCADE
+    );
+
     CREATE TABLE IF NOT EXISTS audit_logs (
       id TEXT PRIMARY KEY,
       trace_id TEXT NOT NULL,
@@ -1153,6 +1205,20 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_usage_records_account_created_sort ON usage_records(account_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_model_created_sort ON usage_records(model, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_model_created_sort ON usage_records(system_account_id, model, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_created ON model_check_runs(created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_created ON model_check_runs(system_account_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_actor_created ON model_check_runs(actor_system_account_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_model_created ON model_check_runs(model, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_level_created ON model_check_runs(level, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_status_created ON model_check_runs(status, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_target_created ON model_check_runs(target_type, target_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_model_created ON model_check_runs(system_account_id, model, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_level_created ON model_check_runs(system_account_id, level, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_status_created ON model_check_runs(system_account_id, status, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_runs_system_account_target_created ON model_check_runs(system_account_id, target_type, target_id, created_at DESC, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_model_check_items_run_order ON model_check_items(run_id, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_model_check_items_run_key ON model_check_items(run_id, item_key, id);
+    CREATE INDEX IF NOT EXISTS idx_model_check_items_run_status ON model_check_items(run_id, status, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_trace_id ON audit_logs(trace_id);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_system_account_created ON audit_logs(system_account_id, created_at, id);
@@ -1167,6 +1233,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_audit_logs_error_group_created ON audit_logs(error_group_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_log_attempts_log_index ON audit_log_attempts(audit_log_id, attempt_index);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_audit_payload_blobs_unique ON audit_payload_blobs(sha256, raw_size_bytes, content_type);
+    CREATE INDEX IF NOT EXISTS idx_audit_payload_blobs_created ON audit_payload_blobs(created_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_log_part ON audit_payload_refs(audit_log_id, part_type, sequence_index);
     CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_log_sequence ON audit_payload_refs(audit_log_id, sequence_index);
     CREATE INDEX IF NOT EXISTS idx_audit_payload_refs_headers_blob ON audit_payload_refs(headers_blob_id);
@@ -1177,6 +1244,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_audit_error_groups_path_updated ON audit_error_groups(path, updated_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_error_groups_model_updated ON audit_error_groups(model, updated_at, id);
     CREATE INDEX IF NOT EXISTS idx_audit_error_groups_status_updated ON audit_error_groups(status_code, updated_at, id);
+    CREATE INDEX IF NOT EXISTS idx_audit_error_groups_api_key_account ON audit_error_groups(api_key_id, system_account_id);
     CREATE INDEX IF NOT EXISTS idx_operation_logs_created ON operation_logs(created_at, id);
     CREATE INDEX IF NOT EXISTS idx_operation_logs_actor_created ON operation_logs(actor_system_account_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_operation_logs_scope_created ON operation_logs(operation_scope_system_account_id, created_at, id);
@@ -1187,6 +1255,7 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_id ON operation_logs(trace_id);
     CREATE INDEX IF NOT EXISTS idx_operation_logs_trace_created ON operation_logs(trace_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_operation_log_targets_target ON operation_log_targets(target_type, target_id, created_at);
+    CREATE INDEX IF NOT EXISTS idx_operation_log_targets_log_created ON operation_log_targets(operation_log_id, created_at, id);
     CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_account_created ON operation_log_viewers(system_account_id, created_at, operation_log_id);
     CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_account_log ON operation_log_viewers(system_account_id, operation_log_id);
     CREATE INDEX IF NOT EXISTS idx_operation_log_viewers_log_account ON operation_log_viewers(operation_log_id, system_account_id);
@@ -1276,4 +1345,61 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest ON table_storage_snapshots(database_role, table_name, sampled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)
+  ensureStatsJobStateNullableLagSeconds(database)
+}
+
+function ensureStatsJobStateNullableLagSeconds(database: DatabaseSync): void {
+  const lagColumn = tableColumns(database, 'stats_job_state').find((column) => column.name === 'lag_seconds')
+  if (!lagColumn?.notnull) {
+    return
+  }
+
+  const legacyTableName = `stats_job_state_legacy_${Date.now().toString(36)}`
+  const transactionStarted = !database.isTransaction
+  try {
+    if (transactionStarted) {
+      database.exec('BEGIN')
+    }
+    database.exec(`
+      ALTER TABLE stats_job_state RENAME TO ${quoteIdentifier(legacyTableName)};
+
+      CREATE TABLE stats_job_state (
+        scope_type TEXT NOT NULL,
+        scope_id TEXT NOT NULL DEFAULT '',
+        job_name TEXT NOT NULL,
+        cursor_created_at TEXT,
+        cursor_id TEXT,
+        last_success_at TEXT,
+        last_error_message TEXT,
+        lag_seconds INTEGER,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (scope_type, scope_id, job_name)
+      );
+
+      INSERT INTO stats_job_state (
+        scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at
+      )
+      SELECT
+        scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at
+      FROM ${quoteIdentifier(legacyTableName)};
+
+      DROP TABLE ${quoteIdentifier(legacyTableName)};
+    `)
+    if (transactionStarted) {
+      database.exec('COMMIT')
+    }
+  } catch (error) {
+    if (transactionStarted) {
+      database.exec('ROLLBACK')
+    }
+    throw error
+  }
+}
+
+function tableColumns(database: DatabaseSync, tableName: string): Array<{ name?: string; notnull?: number }> {
+  return database.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all() as Array<{ name?: string; notnull?: number }>
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`
 }

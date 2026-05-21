@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索代理名称 / 地址 / 用户 / ID 前缀" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchProxies" @reset="resetSearch" @refresh="loadData">
+    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索代理名称 / 地址 / 类型 / ID 前缀" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchProxies" @reset="resetSearch" @refresh="loadData">
       <template #actions>
         <a-button type="primary" @click="openCreate">新建代理</a-button>
       </template>

@@ -256,6 +256,7 @@
 <script setup lang="ts">
 import { ArrowRightOutlined, CopyOutlined } from '@ant-design/icons-vue'
 import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
@@ -267,6 +268,7 @@ import RowActions from '@/components/RowActions.vue'
 import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -329,14 +331,20 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   systemAccountFilter: allSystemAccountsValue,
   traceIdFilter: ''
 })
-const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 2 })
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 3 })
 const initialPageState = pageStateCache.read()
+const route = useRoute()
+const router = useRouter()
+const initialTraceId = routeTraceId()
+const effectiveInitialPageState: AuditLogsPageState = initialTraceId
+  ? { ...defaultAuditLogsPageState(), traceIdFilter: initialTraceId }
+  : initialPageState
 
-const traceIdFilter = ref(initialPageState.traceIdFilter)
-const outcomeFilter = ref<AuditOutcome | 'all'>(initialPageState.outcomeFilter)
-const pathFilter = ref(initialPageState.pathFilter)
-const statusCodeFilter = ref(initialPageState.statusCodeFilter)
-const systemAccountFilter = ref(initialPageState.systemAccountFilter)
+const traceIdFilter = ref(effectiveInitialPageState.traceIdFilter)
+const outcomeFilter = ref<AuditOutcome | 'all'>(effectiveInitialPageState.outcomeFilter)
+const pathFilter = ref(effectiveInitialPageState.pathFilter)
+const statusCodeFilter = ref(effectiveInitialPageState.statusCodeFilter)
+const systemAccountFilter = ref(effectiveInitialPageState.systemAccountFilter)
 const {
   items: records,
   loading,
@@ -351,7 +359,7 @@ const {
   resetPagination
 } = useResponsivePagedList<AuditLogSummary, { forceOptions?: boolean }>({
   pageSize,
-  initialPagination: initialPageState.pagination,
+  initialPagination: effectiveInitialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 条审计日志，还有更多`
     : `共 ${total} 条审计日志`,
@@ -407,6 +415,7 @@ const auditRuntimeAlertDescription = computed(() => {
     : '后台进程状态不可用'
   return `${reasons.join('；') || '运行态状态未知'}。${workerText}。`
 })
+let skipNextRouteTraceRestore = false
 
 const selectedPayloadCurrentText = computed(() => {
   if (!selectedPayload.value) return ''
@@ -432,8 +441,32 @@ const selectedPayloadCanLoadMore = computed(() => Boolean(
 ))
 
 function applyFilters(): void {
+  clearRouteTraceIdForManualState()
   resetPagination()
   void loadData()
+}
+
+function applyPageState(state: AuditLogsPageState): void {
+  traceIdFilter.value = state.traceIdFilter
+  outcomeFilter.value = state.outcomeFilter
+  pathFilter.value = state.pathFilter
+  statusCodeFilter.value = state.statusCodeFilter
+  systemAccountFilter.value = state.systemAccountFilter
+  pagination.current = state.pagination.current
+  pagination.pageSize = state.pagination.pageSize
+  resetSystemAccountOptionsSearch()
+}
+
+function applyRouteTraceId(traceId: string): void {
+  pageStateCache.flushPendingWrite()
+  applyPageState({ ...defaultAuditLogsPageState(), traceIdFilter: traceId })
+  resetPagination()
+  void loadData()
+}
+
+function restorePageStateAfterRouteTraceCleared(): void {
+  applyPageState(pageStateCache.read())
+  void loadData({ forceOptions: true })
 }
 
 function refreshRecords(): void {
@@ -441,6 +474,7 @@ function refreshRecords(): void {
 }
 
 function resetFilters(): void {
+  clearRouteTraceIdForManualState()
   const defaults = defaultAuditLogsPageState()
   traceIdFilter.value = defaults.traceIdFilter
   outcomeFilter.value = defaults.outcomeFilter
@@ -458,11 +492,24 @@ function fetchRecords(pageState: { current: number; pageSize: number }) {
   return api.auditLogs.list({
     page: pageState.current,
     pageSize: pageState.pageSize,
-    traceId: traceIdFilter.value || undefined,
+    traceId: traceIdFilter.value.trim() || undefined,
     outcome: outcomeFilter.value,
     path: pathFilter.value || undefined,
     statusCode: normalizedStatusCode(statusCodeFilter.value),
     systemAccountId
+  })
+}
+
+function routeTraceId(): string | undefined {
+  return trimmedRouteQueryValue(route.query.traceId)
+}
+
+function clearRouteTraceIdForManualState(): void {
+  if (!routeTraceId()) return
+  skipNextRouteTraceRestore = true
+  void removeRouteTraceIdQuery(router, route).catch((error) => {
+    skipNextRouteTraceRestore = false
+    console.error(error)
   })
 }
 
@@ -576,7 +623,30 @@ function snapshotPageState(): AuditLogsPageState {
   }
 }
 
-watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(snapshotPageState, () => {
+  if (routeTraceId()) {
+    pageStateCache.cancelPendingWrite()
+    return
+  }
+  pageStateCache.scheduleWrite(snapshotPageState)
+}, { deep: true })
+watch(
+  () => route.query.traceId,
+  () => {
+    const traceId = routeTraceId()
+    if (!traceId) {
+      if (skipNextRouteTraceRestore) {
+        skipNextRouteTraceRestore = false
+        pageStateCache.scheduleWrite(snapshotPageState)
+        return
+      }
+      restorePageStateAfterRouteTraceCleared()
+      return
+    }
+    if (traceId === traceIdFilter.value.trim()) return
+    applyRouteTraceId(traceId)
+  }
+)
 
 onMounted(loadData)
 onDeactivated(closeTransientDetails)

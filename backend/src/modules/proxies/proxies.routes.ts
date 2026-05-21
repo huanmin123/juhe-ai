@@ -2,6 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
+import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { createProxy, deleteProxy, findProxy, listProxiesPage, listProxyOptions, ProxyInUseError, updateProxy, updateProxyTestState } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { bodyField, mutationGuard, normalizedText, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
@@ -43,22 +44,6 @@ function parseProxyOptionListOptions(query: Record<string, unknown>) {
     keyword: optionalQueryText(query.keyword),
     limit: integerQueryValue(query.limit)
   }
-}
-
-function integerQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  if (typeof text === 'string') {
-    const trimmed = text.trim()
-    if (!trimmed) return undefined
-    const number = Number(trimmed)
-    return Number.isInteger(number) ? number : undefined
-  }
-  return typeof text === 'number' && Number.isInteger(text) ? text : undefined
-}
-
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
 }
 
 proxiesRouter.post('/', requireAdmin, mutationGuard({

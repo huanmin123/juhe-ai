@@ -1,6 +1,7 @@
 import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
+import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import {
   getAuditLogDetail,
   getAuditLogPayload,
@@ -80,8 +81,8 @@ auditLogsRouter.get('/:id', (req, res) => {
 auditLogsRouter.get('/:id/payloads/:payloadId', async (req, res, next) => {
   try {
     const payload = await getAuditLogPayload(req.params.id, req.params.payloadId, {
-      offset: numberQueryValue(req.query.offset),
-      limit: numberQueryValue(req.query.limit)
+      offset: finiteNumberQueryValue(req.query.offset),
+      limit: finiteNumberQueryValue(req.query.limit)
     })
     if (!payload) {
       sendNotFound(res, '审计原文不存在')
@@ -104,10 +105,10 @@ const auditOutcomes = new Set<AuditOutcome | 'all'>([
 ])
 
 function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListOptions {
-  const rawPage = numberQueryValue(query.page)
-  const rawPageSize = numberQueryValue(query.pageSize)
-  const rawLimit = typeof query.limit === 'string' ? Number(query.limit) : undefined
-  const rawStatusCode = typeof query.statusCode === 'string' ? Number(query.statusCode) : undefined
+  const rawPage = finiteNumberQueryValue(query.page)
+  const rawPageSize = finiteNumberQueryValue(query.pageSize)
+  const rawLimit = finiteNumberQueryValue(query.limit)
+  const rawStatusCode = finiteNumberQueryValue(query.statusCode)
   return {
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
@@ -128,10 +129,10 @@ function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListO
 }
 
 function parseAuditErrorGroupListOptions(query: Record<string, unknown>): AuditErrorGroupListOptions {
-  const rawPage = numberQueryValue(query.page)
-  const rawPageSize = numberQueryValue(query.pageSize)
-  const rawLimit = typeof query.limit === 'string' ? Number(query.limit) : undefined
-  const rawStatusCode = typeof query.statusCode === 'string' ? Number(query.statusCode) : undefined
+  const rawPage = finiteNumberQueryValue(query.page)
+  const rawPageSize = finiteNumberQueryValue(query.pageSize)
+  const rawLimit = finiteNumberQueryValue(query.limit)
+  const rawStatusCode = finiteNumberQueryValue(query.statusCode)
   return {
     page: Number.isInteger(rawPage) ? rawPage : undefined,
     pageSize: Number.isInteger(rawPageSize) ? rawPageSize : undefined,
@@ -146,19 +147,8 @@ function parseAuditErrorGroupListOptions(query: Record<string, unknown>): AuditE
   }
 }
 
-function numberQueryValue(value: unknown): number | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  const number = typeof text === 'string' ? Number(text) : undefined
-  return typeof number === 'number' && Number.isFinite(number) ? number : undefined
-}
-
 function isHttpStatusCode(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
-}
-
-function optionalQueryText(value: unknown): string | undefined {
-  const text = Array.isArray(value) ? value[0] : value
-  return typeof text === 'string' && text.trim() ? text.trim() : undefined
 }
 
 function auditLogRuntimeUnavailableReason(

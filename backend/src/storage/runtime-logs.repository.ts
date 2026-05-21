@@ -508,7 +508,7 @@ function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: strin
   const clauses: string[] = []
   const params: RuntimeLogFilterValue[] = []
 
-  pushExactTextFilter(clauses, params, 'rl.trace_id', options.traceId)
+  pushPrefixTextFilter(clauses, params, 'rl.trace_id', options.traceId)
   pushExactTextFilter(clauses, params, 'rl.event', options.event)
 
   const level = options.level?.trim().toLowerCase()
@@ -546,6 +546,13 @@ function pushExactTextFilter(clauses: string[], params: RuntimeLogFilterValue[],
   if (!text) return
   clauses.push(`${column} = ?`)
   params.push(text)
+}
+
+function pushPrefixTextFilter(clauses: string[], params: RuntimeLogFilterValue[], column: string, value?: string): void {
+  const text = value?.trim()
+  if (!text) return
+  clauses.push(`${column} >= ? AND ${column} < ?`)
+  params.push(text, `${text}\uffff`)
 }
 
 function buildRuntimeLogKeywordFilter(value?: string): { clause: string; params: string[] } | undefined {

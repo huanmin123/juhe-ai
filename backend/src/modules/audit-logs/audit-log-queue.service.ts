@@ -4,10 +4,11 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
 import { createAuditLogsBatch, type AuditLogInput } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendAuditLogsToWorker } from '../background/background-ipc.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
 
-const auditLogRetryDelayMs = 5000
+const auditLogRetryPolicy = fixedRetryPolicy('audit_log_queue_flush', 5000)
 
 let pendingAuditLogs: QueuedAuditLog[] = []
 let flushTimer: NodeJS.Timeout | undefined
@@ -181,7 +182,7 @@ export function flushAuditLogQueue(options: AuditLogFlushOptions = {}): void {
   }
 
   if (pendingAuditLogs.length > 0 && (!failed || shouldRetry)) {
-    scheduleAuditLogFlush(shouldRetry ? auditLogRetryDelayMs : 0)
+    scheduleAuditLogFlush(shouldRetry ? retryDelayMs(auditLogRetryPolicy) : 0)
   }
 }
 

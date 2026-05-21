@@ -2,6 +2,7 @@ import type { Request } from 'express'
 
 import { tryAcquireAccountConcurrency, type AccountConcurrencySlot } from '../../shared/account-concurrency.js'
 import { getRequestLogger } from '../../shared/request-context.js'
+import { exponentialRetryPolicy, normalizeRetryCount, retryDelayMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import type { AuditCaptureContext } from './audit-capture.service.js'
 import {
@@ -52,9 +53,8 @@ interface AccountConcurrencyAcquireResult {
   remainingWaitBudgetMs: number
 }
 
-const accountConcurrencyRetryInitialDelayMs = 120
-const accountConcurrencyRetryMaxDelayMs = 480
 const accountConcurrencyRetryBudgetMs = 1200
+const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
 
 export async function fetchFirstAvailableUpstream(
   req: Request,
@@ -65,7 +65,7 @@ export async function fetchFirstAvailableUpstream(
   sessionAffinityKey?: string,
   signal?: AbortSignal
 ): Promise<OpenAIUpstreamDispatchResult> {
-  const retryAttempts = Math.max(0, settings.temporaryUnschedulableRetryAttempts)
+  const retryAttempts = normalizeRetryCount(settings.temporaryUnschedulableRetryAttempts)
   let lastAttempt: UpstreamAttempt | undefined
   let auditAttemptIndex = 0
   let concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
@@ -283,16 +283,14 @@ async function acquireAccountConcurrencyWithShortRetry(
   let slot = tryAcquireAccountConcurrency(accountId, concurrencyLimit)
   let waitedMs = 0
   let retryCount = 0
-  let nextDelayMs = accountConcurrencyRetryInitialDelayMs
   while (!slot.acquired && remainingWaitBudgetMs > 0) {
-    const delayMs = Math.min(nextDelayMs, remainingWaitBudgetMs)
+    const delayMs = Math.min(retryDelayMs(accountConcurrencyRetryPolicy, retryCount + 1), remainingWaitBudgetMs)
     const currentDelayMs = Math.min(delayMs, remainingWaitBudgetMs)
     await waitForAccountConcurrencyRetry(currentDelayMs, signal)
     waitedMs += currentDelayMs
     remainingWaitBudgetMs -= currentDelayMs
     retryCount += 1
     slot = tryAcquireAccountConcurrency(accountId, concurrencyLimit)
-    nextDelayMs = Math.min(nextDelayMs * 2, accountConcurrencyRetryMaxDelayMs)
   }
   return {
     slot,
@@ -304,38 +302,6 @@ async function acquireAccountConcurrencyWithShortRetry(
 
 async function waitForAccountConcurrencyRetry(delayMs: number, signal?: AbortSignal): Promise<void> {
   throwIfRequestAborted(signal)
-  if (delayMs <= 0) {
-    return
-  }
-  await new Promise<void>((resolve, reject) => {
-    let settled = false
-    let timer: NodeJS.Timeout | undefined
-    let abortListener: (() => void) | undefined
-    const finish = (error?: Error) => {
-      if (settled) {
-        return
-      }
-      settled = true
-      if (timer) {
-        clearTimeout(timer)
-      }
-      if (signal && abortListener) {
-        signal.removeEventListener('abort', abortListener)
-      }
-      if (error) {
-        reject(error)
-        return
-      }
-      resolve()
-    }
-    timer = setTimeout(() => finish(), delayMs)
-    if (signal) {
-      abortListener = () => finish()
-      signal.addEventListener('abort', abortListener, { once: true })
-      if (signal.aborted) {
-        finish()
-      }
-    }
-  })
+  await waitForRetryDelayMs(delayMs, { signal })
   throwIfRequestAborted(signal)
 }

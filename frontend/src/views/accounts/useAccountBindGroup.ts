@@ -50,7 +50,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
   async function saveBindGroup() {
     if (!bindingAccount.value) return
     if (!bindGroupForm.groupId) {
-      message.warning('请选择归属分组')
+      message.warning('请选择绑定分组')
       return
     }
     bindGroupSaving.value = true

@@ -196,6 +196,7 @@
 import { message } from '@/lib/antd'
 import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
 import dayjs, { type Dayjs } from 'dayjs'
+import { useRoute, useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
 import type { RuntimeLogFacets, RuntimeLogGrepItem, RuntimeLogGrepResult, RuntimeLogLevel, RuntimeLogSummary } from '@/types/domain'
@@ -217,6 +218,7 @@ import {
   runtimeLogViewModeOptions
 } from './runtimeLogTableColumns'
 import RuntimeLogDataList from './RuntimeLogDataList.vue'
+import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 
 type RuntimeLogViewMode = 'index' | 'grep'
 type RuntimeLogListRecord = RuntimeLogSummary | RuntimeLogGrepItem
@@ -246,27 +248,34 @@ const defaultRuntimeLogsPageState = (): RuntimeLogsPageState => {
     viewMode: 'index'
   }
 }
-const pageStateCache = usePageStateCache<RuntimeLogsPageState>(undefined, defaultRuntimeLogsPageState, { version: 4 })
+const pageStateCache = usePageStateCache<RuntimeLogsPageState>(undefined, defaultRuntimeLogsPageState, { version: 5 })
 const initialPageState = pageStateCache.read()
+const route = useRoute()
+const router = useRouter()
+const initialTraceId = routeTraceId()
+const effectiveInitialPageState: RuntimeLogsPageState = initialTraceId
+  ? { ...defaultRuntimeLogsPageState(), traceIdFilter: initialTraceId }
+  : initialPageState
 
 const grepRecords = ref<RuntimeLogGrepItem[]>([])
 const grepResult = ref<RuntimeLogGrepResult>()
 const facets = ref<RuntimeLogFacets>()
-const grepTimeRange = ref<[Dayjs, Dayjs] | undefined>(parseStoredGrepRangeWithoutRuntime(initialPageState.grepTimeRange))
-const indexTimeRange = ref<RuntimeLogTimeRangeValue>(parseOptionalTimeRange(initialPageState.indexTimeRange))
+const grepTimeRange = ref<[Dayjs, Dayjs] | undefined>(parseStoredGrepRangeWithoutRuntime(effectiveInitialPageState.grepTimeRange))
+const indexTimeRange = ref<RuntimeLogTimeRangeValue>(parseOptionalTimeRange(effectiveInitialPageState.indexTimeRange))
 const selectedLog = ref<RuntimeLogSummary>()
 const selectedGrepItem = ref<RuntimeLogGrepItem>()
 const detailOpen = ref(false)
 const grepDetailOpen = ref(false)
 let detailRequestId = 0
 let grepSearchRequestId = 0
-const viewMode = ref<RuntimeLogViewMode>(initialPageState.viewMode === 'grep' ? 'grep' : 'index')
+const viewMode = ref<RuntimeLogViewMode>(effectiveInitialPageState.viewMode === 'grep' ? 'grep' : 'index')
+let skipNextRouteTraceRestore = false
 
-const traceIdFilter = ref(initialPageState.traceIdFilter)
-const grepKeywordFilter = ref(initialPageState.grepKeywordFilter)
-const levelFilter = ref<RuntimeLogLevel | 'all'>(initialPageState.levelFilter)
-const eventFilter = ref<string | undefined>(initialPageState.eventFilter)
-const keywordFilter = ref(initialPageState.keywordFilter)
+const traceIdFilter = ref(effectiveInitialPageState.traceIdFilter)
+const grepKeywordFilter = ref(effectiveInitialPageState.grepKeywordFilter)
+const levelFilter = ref<RuntimeLogLevel | 'all'>(effectiveInitialPageState.levelFilter)
+const eventFilter = ref<string | undefined>(effectiveInitialPageState.eventFilter)
+const keywordFilter = ref(effectiveInitialPageState.keywordFilter)
 const {
   items: records,
   loading,
@@ -281,7 +290,7 @@ const {
   resetPagination
 } = useResponsivePagedList<RuntimeLogSummary, { refreshFacets?: boolean }>({
   pageSize,
-  initialPagination: initialPageState.pagination,
+  initialPagination: effectiveInitialPageState.pagination,
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 条运行日志，还有更多`
     : `共 ${total} 条运行日志`,
@@ -432,6 +441,7 @@ function handleGrepRangeChange(): void {
 
 function handleModeChange(value: string | number): void {
   const nextMode: RuntimeLogViewMode = value === 'grep' ? 'grep' : 'index'
+  clearRouteTraceIdForManualState()
   viewMode.value = nextMode
   if (nextMode === 'index') {
     if (!records.value.length) {
@@ -448,11 +458,26 @@ function handleModeChange(value: string | number): void {
 }
 
 function applyIndexFilters(): void {
+  clearRouteTraceIdForManualState()
   resetPagination()
   void loadData()
 }
 
+function applyPageState(state: RuntimeLogsPageState): void {
+  viewMode.value = state.viewMode === 'grep' ? 'grep' : 'index'
+  traceIdFilter.value = state.traceIdFilter
+  grepKeywordFilter.value = state.grepKeywordFilter
+  grepTimeRange.value = parseStoredGrepRangeWithoutRuntime(state.grepTimeRange)
+  levelFilter.value = state.levelFilter
+  eventFilter.value = state.eventFilter
+  keywordFilter.value = state.keywordFilter
+  indexTimeRange.value = parseOptionalTimeRange(state.indexTimeRange)
+  pagination.current = state.pagination.current
+  pagination.pageSize = state.pagination.pageSize
+}
+
 function resetFilters(): void {
+  clearRouteTraceIdForManualState()
   const defaults = defaultRuntimeLogsPageState()
   traceIdFilter.value = defaults.traceIdFilter
   levelFilter.value = defaults.levelFilter
@@ -465,13 +490,16 @@ function resetFilters(): void {
 }
 
 function resetGrepSearch(): void {
+  clearRouteTraceIdForManualState()
   grepSearchRequestId += 1
   loading.value = false
   grepKeywordFilter.value = ''
   grepTimeRange.value = defaultGrepRange()
   grepRecords.value = []
   grepResult.value = undefined
-  pageStateCache.scheduleWrite(snapshotPageState)
+  if (!routeTraceId()) {
+    pageStateCache.scheduleWrite(snapshotPageState)
+  }
 }
 
 function filterEventOption(input: string, option?: { label?: string; rawEvent?: string; value?: string }): boolean {
@@ -495,6 +523,7 @@ async function loadRuntimeLogFacets(): Promise<void> {
 }
 
 async function searchGrepLogs(): Promise<void> {
+  clearRouteTraceIdForManualState()
   const requestId = ++grepSearchRequestId
   const keywords = splitGrepKeywords(grepKeywordFilter.value)
   if (!keywords.length) {
@@ -570,11 +599,38 @@ function closeTransientDetails(): void {
 }
 
 function searchTrace(traceId?: string): void {
-  if (!traceId) return
+  const text = traceId?.trim()
+  if (!text) return
+  clearRouteTraceIdForManualState()
   viewMode.value = 'index'
-  traceIdFilter.value = traceId
+  traceIdFilter.value = text
   resetPagination()
   void loadData()
+}
+
+function applyRouteTraceId(traceId: string): void {
+  pageStateCache.flushPendingWrite()
+  applyPageState({ ...defaultRuntimeLogsPageState(), traceIdFilter: traceId })
+  resetPagination()
+  void loadData()
+}
+
+function restorePageStateAfterRouteTraceCleared(): void {
+  applyPageState(pageStateCache.read())
+  loadCurrentRuntimeLogState({ refreshFacets: true })
+}
+
+function routeTraceId(): string | undefined {
+  return trimmedRouteQueryValue(route.query.traceId)
+}
+
+function clearRouteTraceIdForManualState(): void {
+  if (!routeTraceId()) return
+  skipNextRouteTraceRestore = true
+  void removeRouteTraceIdQuery(router, route).catch((error) => {
+    skipNextRouteTraceRestore = false
+    console.error(error)
+  })
 }
 
 function snapshotPageState(): RuntimeLogsPageState {
@@ -606,9 +662,32 @@ function normalizeOptionalTimeRange(value: RuntimeLogTimeRangeValue): [Dayjs, Da
   return start.isAfter(end) ? [end, start] : [start, end]
 }
 
-watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(snapshotPageState, () => {
+  if (routeTraceId()) {
+    pageStateCache.cancelPendingWrite()
+    return
+  }
+  pageStateCache.scheduleWrite(snapshotPageState)
+}, { deep: true })
+watch(
+  () => route.query.traceId,
+  () => {
+    const traceId = routeTraceId()
+    if (!traceId) {
+      if (skipNextRouteTraceRestore) {
+        skipNextRouteTraceRestore = false
+        pageStateCache.scheduleWrite(snapshotPageState)
+        return
+      }
+      restorePageStateAfterRouteTraceCleared()
+      return
+    }
+    if (traceId === traceIdFilter.value.trim()) return
+    applyRouteTraceId(traceId)
+  }
+)
 
-onMounted(() => {
+function loadCurrentRuntimeLogState(options: { refreshFacets?: boolean } = {}): void {
   if (viewMode.value === 'grep') {
     void loadRuntimeLogFacets().then(() => {
       grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
@@ -618,10 +697,12 @@ onMounted(() => {
     })
     return
   }
-  void loadData().then(() => {
+  void loadData({ refreshFacets: options.refreshFacets === true }).then(() => {
     grepTimeRange.value = grepTimeRange.value ? normalizeGrepRange(grepTimeRange.value) : defaultGrepRange()
   })
-})
+}
+
+onMounted(loadCurrentRuntimeLogState)
 
 onDeactivated(closeTransientDetails)
 </script>

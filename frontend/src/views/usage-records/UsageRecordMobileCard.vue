@@ -56,12 +56,16 @@
       </div>
     </div>
     <div class="mobile-list-card-actions">
-      <a-button type="primary" @click="$emit('copyTraceId', record.traceId)">复制 traceId</a-button>
+      <RowActions variant="button" :actions="traceActions" :more-actions="traceMoreActions" @action-click="handleTraceAction" />
     </div>
   </article>
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
+import RowActions from '@/components/RowActions.vue'
+import type { RowActionItem } from '@/components/rowActions'
 import type { UsageRecordSummary } from '@/types/domain'
 import {
   accountDisplayText,
@@ -76,12 +80,46 @@ import {
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
 
-defineProps<{
+const props = defineProps<{
   isManagementView: boolean
   record: UsageRecordSummary
 }>()
 
-defineEmits<{
+const emit = defineEmits<{
   (event: 'copyTraceId', traceId: string): void
+  (event: 'openAuditLogs'): void
+  (event: 'openOperationLogs'): void
+  (event: 'openRuntimeLogs'): void
 }>()
+
+const traceActions = computed<RowActionItem[]>(() => [
+  { key: 'copy-trace-id', label: '复制 traceId', icon: 'copy', tone: 'primary' }
+])
+const traceMoreActions = computed<RowActionItem[]>(() => {
+  const actions: RowActionItem[] = []
+  if (props.isManagementView) {
+    actions.push({ key: 'open-runtime-logs', label: '运行日志', icon: 'detail', tone: 'info' })
+    actions.push({ key: 'open-audit-logs', label: '审计日志', icon: 'detail', tone: 'info' })
+  }
+  actions.push({ key: 'open-operation-logs', label: '操作日志', icon: 'detail', tone: 'info' })
+  return actions
+})
+
+function handleTraceAction(key: string): void {
+  if (key === 'copy-trace-id') {
+    emit('copyTraceId', props.record.traceId)
+    return
+  }
+  if (key === 'open-runtime-logs') {
+    emit('openRuntimeLogs')
+    return
+  }
+  if (key === 'open-audit-logs') {
+    emit('openAuditLogs')
+    return
+  }
+  if (key === 'open-operation-logs') {
+    emit('openOperationLogs')
+  }
+}
 </script>

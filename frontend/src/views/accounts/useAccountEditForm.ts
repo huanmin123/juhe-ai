@@ -9,6 +9,7 @@ import type {
   GroupOptionSummary,
   OpenAIAuthURLResult,
   ProviderDefinition,
+  ProviderModelPricing,
   SystemAccountPrincipalSummary
 } from '@/types/domain'
 import {
@@ -39,6 +40,11 @@ type ReadonlyValue<T> = {
   readonly value: T
 }
 
+interface SelectOption {
+  label: string
+  value: string
+}
+
 interface UseAccountEditFormOptions {
   accountScopeParams: ComputedRef<{ systemAccountId: string } | undefined>
   accounts: ReadonlyValue<AccountSummary[]>
@@ -62,6 +68,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const editingAccountDetail = ref<AccountSummary>()
   const form = reactive<AccountFormModel>(defaultForm())
   const accountErrorPolicyRules = ref<AccountErrorPolicyRuleForm[]>(loadAccountErrorPolicyRules())
+  const providerModelOptions = ref<SelectOption[]>([])
+  const providerModelsLoading = ref(false)
+  const providerModelOptionsCache = new Map<string, SelectOption[]>()
 
   const targetSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return undefined
@@ -102,6 +111,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
 
   function resetForm(providerCode = '', type: AccountType = '') {
     Object.assign(form, defaultForm(providerCode, type))
+    providerModelOptions.value = []
+    providerModelsLoading.value = false
     ensureDefaultGroupSelected(providerCode)
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules()
     authResult.value = undefined
@@ -114,6 +125,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function providerName(providerCode?: string) {
     if (!providerCode) return '未知供应商'
     return providerNameByCode.value.get(providerCode) ?? providerCode
+  }
+
+  function providerModelsToOptions(models: ProviderModelPricing[]): SelectOption[] {
+    return models.map((item) => ({ label: item.model, value: item.model }))
   }
 
   function defaultGroupForProvider(providerCode: string) {
@@ -160,6 +175,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (editingId.value || form.providerCode === providerCode) return
     resetForm(providerCode, '')
     void loadProviderGroupOptions(providerCode)
+    void loadProviderModelOptions(providerCode)
   }
 
   function selectAccountType(type: AccountType) {
@@ -170,11 +186,13 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       groupId: form.groupId,
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
+      supportedModels: form.supportedModels,
       concurrencyLimit: form.concurrencyLimit,
       priority: form.priority,
       accountExpiresAt: form.accountExpiresAt
     })
     void loadProviderGroupOptions(providerCode)
+    void loadProviderModelOptions(providerCode)
     ensureDefaultGroupSelected(providerCode)
     authResult.value = undefined
   }
@@ -195,13 +213,43 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       baseUrl: asString(account.credentials.base_url) || 'https://api.openai.com/v1',
       accessToken: asString(account.credentials.access_token),
       refreshToken: asString(account.credentials.refresh_token),
+      supportedModels: [...(account.supportedModels ?? [])],
       notes: account.notes ?? ''
     })
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
     authResult.value = undefined
     modalOpen.value = true
     void options.loadGroupOptions('', true)
+    void loadProviderModelOptions(account.providerCode)
     void loadEditingAccountDetail(account.id)
+  }
+
+  async function loadProviderModelOptions(providerCode: string): Promise<void> {
+    const code = providerCode.trim()
+    providerModelOptions.value = []
+    if (!code) return
+    const cached = providerModelOptionsCache.get(code)
+    if (cached) {
+      providerModelOptions.value = cached
+      providerModelsLoading.value = false
+      return
+    }
+    providerModelsLoading.value = true
+    try {
+      const models = await api.providers.models(code)
+      const modelOptions = providerModelsToOptions(models)
+      providerModelOptionsCache.set(code, modelOptions)
+      if (form.providerCode === code) {
+        providerModelOptions.value = modelOptions
+      }
+    } catch (error) {
+      console.error(error)
+      message.error(options.extractApiErrorMessage(error, '加载供应商模型失败'))
+    } finally {
+      if (form.providerCode === code) {
+        providerModelsLoading.value = false
+      }
+    }
   }
 
   async function loadProviderGroupOptions(providerCode: string): Promise<void> {
@@ -221,7 +269,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         apiKey: asString(detail.credentials.api_key),
         baseUrl: asString(detail.credentials.base_url) || form.baseUrl || 'https://api.openai.com/v1',
         accessToken: asString(detail.credentials.access_token),
-        refreshToken: asString(detail.credentials.refresh_token)
+        refreshToken: asString(detail.credentials.refresh_token),
+        supportedModels: [...(detail.supportedModels ?? [])]
       })
       accountErrorPolicyRules.value = loadAccountErrorPolicyRules(detail.credentials)
     } catch (error) {
@@ -350,6 +399,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     openCreate,
     openEdit,
     providerName,
+    providerModelOptions,
+    providerModelsLoading,
     saveAccount,
     selectAccountType,
     selectedAccountTypeTitle,
