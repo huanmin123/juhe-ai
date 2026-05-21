@@ -3,13 +3,8 @@
     <a-card class="page-card model-checks-run-card">
       <a-form class="model-checks-form" layout="vertical">
         <a-row :gutter="[16, 12]">
-          <a-col :xs="24" :lg="6">
-            <a-form-item label="目标类型" required>
-              <a-select v-model:value="form.targetType" :options="targetTypeOptions" :disabled="submitting" />
-            </a-form-item>
-          </a-col>
-          <a-col :xs="24" :lg="10">
-            <a-form-item label="检测目标" required>
+          <a-col :xs="24" :lg="12">
+            <a-form-item label="AI 账户" required>
               <a-select
                 v-model:value="form.targetId"
                 show-search
@@ -24,12 +19,12 @@
               />
             </a-form-item>
           </a-col>
-          <a-col :xs="24" :lg="4">
+          <a-col :xs="24" :lg="6">
             <a-form-item label="模型" required>
               <a-select v-model:value="form.model" :options="modelOptions" :loading="optionsLoading" :disabled="submitting" />
             </a-form-item>
           </a-col>
-          <a-col :xs="24" :lg="4">
+          <a-col :xs="24" :lg="6">
             <a-form-item label="检测档位">
               <a-select v-model:value="form.profile" :options="profileOptions" :loading="optionsLoading" :disabled="submitting" />
             </a-form-item>
@@ -75,7 +70,7 @@
           <div>
             <div class="run-detail-title">{{ currentRun.targetName || modelText(currentRun.model) }}</div>
             <div class="run-detail-subtitle">
-              {{ targetTypeText(currentRun.targetType) }}：<span class="mono-cell">{{ currentRun.targetId }}</span>
+              AI 账户：<span class="mono-cell">{{ currentRun.targetId }}</span>
             </div>
           </div>
           <a-space wrap>
@@ -118,11 +113,10 @@
     <a-card class="page-card model-checks-history-card" title="历史检测">
       <div class="history-toolbar">
         <a-space wrap>
-          <a-select v-model:value="filters.targetType" allow-clear class="history-filter" :options="targetTypeOptions" placeholder="全部目标" @change="reloadRuns" />
           <a-select v-model:value="filters.model" allow-clear class="history-filter" :options="modelOptions" placeholder="全部模型" @change="reloadRuns" />
           <a-select v-model:value="filters.status" allow-clear class="history-filter" :options="statusOptions" placeholder="全部状态" @change="reloadRuns" />
           <a-select v-model:value="filters.level" allow-clear class="history-filter" :options="levelOptions" placeholder="全部级别" @change="reloadRuns" />
-          <a-input-search v-model:value="filters.targetId" class="history-target-filter" placeholder="按目标 ID 过滤" allow-clear @search="reloadRuns" />
+          <a-input-search v-model:value="filters.targetId" class="history-target-filter" placeholder="按账户 ID 过滤" allow-clear @search="reloadRuns" />
         </a-space>
         <a-button :loading="runsLoading" @click="reloadRuns">
           <template #icon>
@@ -149,7 +143,7 @@
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'target'">
             <div class="target-cell">
-              <a-tag>{{ targetTypeText(record.targetType) }}</a-tag>
+              <a-tag>AI 账户</a-tag>
               <span class="mono-cell">{{ record.targetId }}</span>
             </div>
           </template>
@@ -178,18 +172,16 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
-import { useScopedAccountsApi, useScopedApiKeysApi, useScopedGroupsApi, useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
+import { useScopedAccountsApi, useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import type {
   AccountOptionSummary,
-  ApiKeySummary,
-  GroupOptionSummary,
   ModelCheckCheckResult,
   ModelCheckLevel,
   ModelCheckModel,
@@ -198,8 +190,7 @@ import type {
   ModelCheckRunDetail,
   ModelCheckRunPayload,
   ModelCheckRunSummary,
-  ModelCheckStatus,
-  ModelCheckTargetType
+  ModelCheckStatus
 } from '@/types/domain'
 
 const fallbackOptions: ModelCheckOptions = {
@@ -215,11 +206,6 @@ const fallbackOptions: ModelCheckOptions = {
   defaultProfile: 'full'
 }
 
-const targetTypeOptions = [
-  { label: 'API Key', value: 'api_key' },
-  { label: '分组', value: 'group' },
-  { label: '账户', value: 'account' }
-]
 const statusOptions = [
   { label: '检测中', value: 'running' },
   { label: '已完成', value: 'completed' },
@@ -245,8 +231,6 @@ const columns = [
 
 const { isManagementView } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
-const apiKeysApi = useScopedApiKeysApi(isManagementView)
-const groupsApi = useScopedGroupsApi(isManagementView)
 const accountsApi = useScopedAccountsApi(isManagementView)
 const optionsLoading = ref(false)
 const targetOptionsLoading = ref(false)
@@ -258,14 +242,13 @@ const targetOptions = ref<Array<{ label: string; value: string }>>([])
 const runs = ref<ModelCheckRunSummary[]>([])
 const currentRun = ref<ModelCheckRunDetail>()
 const form = reactive<ModelCheckRunPayload>({
-  targetType: 'api_key',
+  targetType: 'account',
   targetId: '',
   model: 'gpt-5.5',
   profile: 'full',
   officialBaseline: false
 })
 const filters = reactive<{
-  targetType?: ModelCheckTargetType
   targetId?: string
   model?: ModelCheckModel
   level?: ModelCheckLevel
@@ -284,11 +267,7 @@ const profileOptions = computed(() => options.value.supportedProfiles.map((item)
   label: item.description ? `${item.label}（${item.description}）` : item.label,
   value: item.value
 })))
-const targetPlaceholder = computed(() => {
-  if (form.targetType === 'api_key') return '搜索并选择 API Key'
-  if (form.targetType === 'group') return '搜索并选择分组'
-  return '搜索并选择账户'
-})
+const targetPlaceholder = '搜索并选择我的 AI 账户'
 const officialBaselineAvailable = computed(() => options.value.officialBaseline.available)
 const officialBaselineMessage = computed(() => {
   if (options.value.officialBaseline.message) return options.value.officialBaseline.message
@@ -320,31 +299,13 @@ async function loadTargetOptions(keyword = '') {
   const requestId = ++targetOptionsRequestId
   targetOptionsLoading.value = true
   try {
-    let nextOptions: Array<{ label: string; value: string }> = []
-    if (form.targetType === 'api_key') {
-      const result = await apiKeysApi.list({
-        page: 1,
-        pageSize: 50,
-        keyword: keyword.trim() || undefined,
-        status: 'active'
-      })
-      nextOptions = result.items.map(apiKeyTargetOption)
-    } else if (form.targetType === 'group') {
-      const groups = await groupsApi.options({
-        keyword: keyword.trim() || undefined,
-        providerCode: 'openai',
-        limit: 50
-      })
-      nextOptions = groups.filter((group) => group.enabled).map(groupTargetOption)
-    } else {
-      const accounts = await accountsApi.options({
-        keyword: keyword.trim() || undefined,
-        status: 'active',
-        schedulable: 'enabled',
-        limit: 50
-      })
-      nextOptions = accounts.filter((account) => account.providerCode === 'openai').map(accountTargetOption)
-    }
+    const accounts = await accountsApi.options({
+      keyword: keyword.trim() || undefined,
+      status: 'active',
+      schedulable: 'enabled',
+      limit: 50
+    })
+    const nextOptions = accounts.filter((account) => account.providerCode === 'openai').map(accountTargetOption)
     if (requestId === targetOptionsRequestId) {
       targetOptions.value = keepSelectedTargetOption(nextOptions)
     }
@@ -361,7 +322,7 @@ async function loadTargetOptions(keyword = '') {
 async function submitRun() {
   const targetId = form.targetId.trim()
   if (!targetId) {
-    message.warning('请输入目标 ID')
+    message.warning('请选择 AI 账户')
     return
   }
   submitting.value = true
@@ -395,7 +356,7 @@ async function loadRuns() {
     const result = await modelChecksApi.list({
       page: pagination.current,
       pageSize: pagination.pageSize,
-      targetType: filters.targetType,
+      targetType: 'account',
       targetId: filters.targetId?.trim() || undefined,
       model: filters.model,
       level: filters.level,
@@ -449,17 +410,6 @@ function handleOfficialBaselineChange(checked: boolean) {
   message.warning(options.value.officialBaseline.unavailableReason || options.value.officialBaseline.message || '未配置可用的官网基线账户，无法开启官网对照检测')
 }
 
-function apiKeyTargetOption(apiKey: ApiKeySummary) {
-  const parts = [apiKey.name, apiKey.keyPrefix, apiKey.groupName || apiKey.groupId].filter(Boolean)
-  return { label: parts.join(' · '), value: apiKey.id }
-}
-
-function groupTargetOption(group: GroupOptionSummary) {
-  const owner = group.systemAccountName || group.ownerSystemAccountName
-  const parts = [group.name, owner].filter(Boolean)
-  return { label: parts.join(' · '), value: group.id }
-}
-
 function accountTargetOption(account: AccountOptionSummary) {
   const owner = account.systemAccountName || account.ownerSystemAccountName
   const parts = [account.name, accountTypeText(account.type), owner].filter(Boolean)
@@ -471,12 +421,6 @@ function keepSelectedTargetOption(nextOptions: Array<{ label: string; value: str
     return nextOptions
   }
   return [{ label: form.targetId, value: form.targetId }, ...nextOptions]
-}
-
-function targetTypeText(value: ModelCheckTargetType) {
-  if (value === 'api_key') return 'API Key'
-  if (value === 'group') return '分组'
-  return '账户'
 }
 
 function accountTypeText(value: string) {
@@ -579,12 +523,6 @@ function formatJson(value: unknown) {
 
 onMounted(async () => {
   await Promise.all([loadOptions(), loadRuns(), loadTargetOptions()])
-})
-
-watch(() => form.targetType, () => {
-  form.targetId = ''
-  targetOptions.value = []
-  void loadTargetOptions()
 })
 </script>
 

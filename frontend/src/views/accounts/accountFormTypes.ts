@@ -27,7 +27,7 @@ export type AccountOAuthAuthorizeForm = Pick<AccountFormModel, 'oauthMode' | 'ca
 export interface AccountFilters {
   keyword: string
   type: 'all' | AccountType
-  status: 'all' | AccountStatus
+  status: AccountStatus[]
   schedulable: SchedulableFilter
   systemAccountId: string
 }

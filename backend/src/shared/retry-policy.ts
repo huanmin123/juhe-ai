@@ -1,4 +1,4 @@
-export type RetryDelayStrategy = 'fixed' | 'exponential'
+export type RetryDelayStrategy = 'fixed' | 'exponential' | 'sequence'
 
 export interface RetryPolicy {
   name: string
@@ -6,6 +6,7 @@ export interface RetryPolicy {
   delayMs: number
   maxDelayMs?: number
   factor?: number
+  delaysMs?: number[]
   maxRetries?: number
 }
 
@@ -35,10 +36,25 @@ export function exponentialRetryPolicy(
   }
 }
 
+export function sequenceRetryPolicy(name: string, delaysMs: number[], maxRetries = delaysMs.length): RetryPolicy {
+  const normalizedDelays = delaysMs.map(normalizeDelayMs).filter((delayMs) => delayMs >= 0)
+  return {
+    name,
+    strategy: 'sequence',
+    delayMs: normalizedDelays[0] ?? 0,
+    delaysMs: normalizedDelays,
+    maxRetries: normalizeRetryCount(maxRetries)
+  }
+}
+
 export function retryDelayMs(policy: RetryPolicy, retryNumber = 1): number {
   const normalizedRetryNumber = Math.max(1, Math.trunc(retryNumber))
   if (policy.strategy === 'fixed') {
     return policy.delayMs
+  }
+  if (policy.strategy === 'sequence') {
+    const delays = policy.delaysMs ?? []
+    return delays[Math.min(normalizedRetryNumber - 1, Math.max(0, delays.length - 1))] ?? policy.delayMs
   }
   const maxDelayMs = policy.maxDelayMs ?? policy.delayMs
   const factor = policy.factor ?? 2
@@ -47,6 +63,18 @@ export function retryDelayMs(policy: RetryPolicy, retryNumber = 1): number {
 
 export function retryDueAtMs(policy: RetryPolicy, retryNumber = 1, nowMs = Date.now()): number {
   return nowMs + retryDelayMs(policy, retryNumber)
+}
+
+export function retryAttemptCount(policy: RetryPolicy): number {
+  return retryCount(policy) + 1
+}
+
+export function retryCount(policy: RetryPolicy): number {
+  return normalizeRetryCount(policy.maxRetries)
+}
+
+export function shouldRetryPolicyAttempt(attemptIndex: number, policy: RetryPolicy): boolean {
+  return shouldRetryAttempt(attemptIndex, retryCount(policy))
 }
 
 export function shouldRetryAttempt(attemptIndex: number, maxRetries: number): boolean {

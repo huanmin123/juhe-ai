@@ -84,6 +84,15 @@ export function normalizeAccountOptionListOptions(options?: AccountListOptions):
   return normalizeAccountListOptions({ ...options, sorts: [] }, { maxPageSize: maxAccountOptionPageSize })
 }
 
+export function accountStatusFilterValues(status?: string): string[] {
+  if (!status) return []
+  const values = status
+    .split(',')
+    .map((item) => normalizeTextFilter(item))
+    .filter((item): item is string => Boolean(item) && item !== 'all')
+  return [...new Set(values)]
+}
+
 export function buildAccountListOrderClause(options: Pick<NormalizedAccountListOptions, 'sorts'>): string {
   const orderParts = options.sorts.map((sort) => {
     const direction = sort.order === 'desc' ? 'DESC' : 'ASC'

@@ -3,7 +3,7 @@ import { requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceOperation } from '../db-service/db-service-types.js'
 import { clearGatewayRuntimeCache } from './gateway-runtime-cache.service.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
-import { exponentialRetryPolicy, retryDelayMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
+import { exponentialRetryPolicy, retryDueAtMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
 
 type AccountErrorHandlingOperation = Extract<DbServiceOperation, { type: 'apply_account_error_handling' }>
 type StreamFailureOperation = Extract<DbServiceOperation, { type: 'record_account_stream_failure' }>
@@ -191,7 +191,7 @@ async function drainSideEffectQueue(): Promise<void> {
           continue
         }
         item.attempts += 1
-        item.nextAttemptAtMs = Date.now() + retryDelayMs(sideEffectRetryPolicy, item.attempts)
+        item.nextAttemptAtMs = retryDueAtMs(sideEffectRetryPolicy, item.attempts)
         sideEffectQueue.unshift(item)
         sortSideEffectQueue()
         logger.warn(errorLogFields(error, {

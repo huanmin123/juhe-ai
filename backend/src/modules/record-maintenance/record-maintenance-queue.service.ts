@@ -1,5 +1,6 @@
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { cleanupProcessedUsageRecordsBeforeWithResult } from '../../storage/data-retention.repository.js'
 import { newId, nowIso } from '../../storage/database.js'
 import {
@@ -37,7 +38,7 @@ export type RecordMaintenanceJob =
   }
 
 const recordMaintenanceFlushIntervalMs = 100
-const recordMaintenanceRetryDelayMs = 1000
+const recordMaintenanceRetryPolicy = fixedRetryPolicy('record_maintenance_queue_flush', 1000)
 const recordMaintenanceBatchSize = 50
 const recordMaintenanceMaxPending = 5000
 const minimumUsageRecordCleanupAgeMs = 24 * 60 * 60 * 1000
@@ -170,7 +171,7 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
   } finally {
     flushing = false
     if (pendingJobs.length > 0 && (!failed || shouldRetry)) {
-      scheduleRecordMaintenanceFlush(shouldRetry ? recordMaintenanceRetryDelayMs : 0)
+      scheduleRecordMaintenanceFlush(shouldRetry ? retryDelayMs(recordMaintenanceRetryPolicy) : 0)
     }
   }
 }

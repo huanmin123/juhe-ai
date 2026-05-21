@@ -5,7 +5,7 @@ import { listProviderModelPricing } from '../modules/model-pricing/model-pricing
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
-import { normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions } from './account-list-options.js'
+import { accountStatusFilterValues, normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions } from './account-list-options.js'
 import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels } from './account-supported-models.repository.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import {
@@ -903,9 +903,13 @@ function buildAccountOptionFilters(
     clauses.push('accounts.type = ?')
     params.push(options.type)
   }
-  if (options.status && options.status !== 'all') {
+  const statuses = accountStatusFilterValues(options.status)
+  if (statuses.length === 1) {
     clauses.push('accounts.status = ?')
-    params.push(options.status)
+    params.push(statuses[0])
+  } else if (statuses.length > 1) {
+    clauses.push(`accounts.status IN (${statuses.map(() => '?').join(', ')})`)
+    params.push(...statuses)
   }
   if (options.schedulable === 'enabled') {
     clauses.push("accounts.status = 'active' AND accounts.schedulable = 1 AND (accounts.cooldown_until IS NULL OR accounts.cooldown_until <= ?)")

@@ -13,7 +13,16 @@
   >
     <template #inline-filters>
       <a-select :value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" @update:value="emit('update:type', $event)" />
-      <a-select :value="filters.status" class="toolbar-select responsive-list-inline-filter" :options="statusOptions" @update:value="emit('update:status', $event)" />
+      <a-select
+        :value="filters.status"
+        allow-clear
+        class="toolbar-select account-status-filter responsive-list-inline-filter"
+        :max-tag-count="1"
+        mode="multiple"
+        :options="statusOptions"
+        placeholder="全部状态"
+        @change="handleStatusChange"
+      />
       <a-select :value="filters.schedulable" class="toolbar-select responsive-list-inline-filter" :options="schedulableOptions" @update:value="emit('update:schedulable', $event)" />
       <SystemPrincipalSelect
         v-if="isManagementView"
@@ -40,7 +49,15 @@
       </label>
       <label class="mobile-filter-field">
         <span>账户状态</span>
-        <a-select :value="filters.status" :options="statusOptions" @update:value="emit('update:status', $event)" />
+        <a-select
+          :value="filters.status"
+          allow-clear
+          :max-tag-count="1"
+          mode="multiple"
+          :options="statusOptions"
+          placeholder="全部状态"
+          @change="handleStatusChange"
+        />
       </label>
       <label class="mobile-filter-field">
         <span>启停状态</span>
@@ -84,7 +101,7 @@ defineProps<{
   isManagementView: boolean
   refreshLoading: boolean
   schedulableOptions: ReadonlyArray<FilterOption<SchedulableFilter>>
-  statusOptions: Array<FilterOption<'all' | AccountStatus>>
+  statusOptions: Array<FilterOption<AccountStatus>>
   systemAccounts: SystemAccountPrincipalSummary[]
   systemAccountsLoading?: boolean
   typeOptions: Array<FilterOption<'all' | AccountType>>
@@ -100,19 +117,34 @@ const emit = defineEmits<{
   (event: 'system-account-search', value: string): void
   (event: 'update:keyword', value: string): void
   (event: 'update:schedulable', value: SchedulableFilter): void
-  (event: 'update:status', value: 'all' | AccountStatus): void
+  (event: 'update:status', value: AccountStatus[]): void
   (event: 'update:systemAccountId', value: string): void
   (event: 'update:type', value: 'all' | AccountType): void
 }>()
 
+const accountStatusValues = new Set<AccountStatus>(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'])
+
 function handleSystemAccountUpdate(value: SelectValue) {
   emit('update:systemAccountId', typeof value === 'string' ? value : '')
+}
+
+function handleStatusChange(value: SelectValue) {
+  emit('update:status', Array.isArray(value) ? value.filter(isAccountStatus) : [])
+  emit('search')
+}
+
+function isAccountStatus(value: string): value is AccountStatus {
+  return accountStatusValues.has(value as AccountStatus)
 }
 </script>
 
 <style scoped>
 .toolbar-select {
   min-width: 150px;
+}
+
+.account-status-filter {
+  min-width: 172px;
 }
 
 .mobile-filter-field {

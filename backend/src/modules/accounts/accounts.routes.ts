@@ -128,7 +128,7 @@ function parseAccountOptionsQuery(query: Record<string, unknown>): AccountListOp
     limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword),
     type: optionalQueryText(query.type),
-    status: optionalQueryText(query.status),
+    status: statusQueryValue(query.status),
     schedulable: schedulableQueryValue(query.schedulable)
   }
 }
@@ -148,7 +148,7 @@ function parseAccountListOptions(query: Record<string, unknown>): AccountListOpt
     limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword),
     type: optionalQueryText(query.type),
-    status: optionalQueryText(query.status),
+    status: statusQueryValue(query.status),
     schedulable: schedulableQueryValue(query.schedulable)
   }
 }
@@ -164,6 +164,14 @@ function stringValues(value: unknown): string[] {
   if (typeof value === 'string') return [value]
   if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string')
   return []
+}
+
+function statusQueryValue(value: unknown): string | undefined {
+  const statuses = stringValues(value)
+    .flatMap((item) => item.split(','))
+    .map((item) => item.trim())
+    .filter((item) => item && item !== 'all')
+  return statuses.length ? [...new Set(statuses)].join(',') : undefined
 }
 
 function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | undefined {

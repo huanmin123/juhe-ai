@@ -1,6 +1,7 @@
 import type { AccountSummary } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { fixedRetryPolicy, retryAttemptCount, retryDueAtMs, shouldRetryPolicyAttempt } from '../../shared/retry-policy.js'
 import {
   clearAccountFailureState,
   findAccountForTest,
@@ -44,6 +45,7 @@ export interface RefreshedOpenAIOAuthAccount {
 
 const oauthTokenRefreshFailureThreshold = 3
 const oauthTokenRefreshFailedErrorCode = 'oauth_token_refresh_failed'
+const openAIOAuthRefreshRaceRetryPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_race', 0, 1)
 const refreshFailureStateByAccountId = new Map<string, { count: number; backoffUntil: number }>()
 const refreshQueueByAccountId = new Map<string, Promise<void>>()
 let openAIOAuthTokenRefresher: OpenAIOAuthTokenRefresher = refreshOpenAIOAuthToken
@@ -86,7 +88,7 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
   let current = await findLatestRefreshableOpenAIOAuthAccount(account, options, persistMode)
   let retryWithLatestRefreshToken = false
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  for (let attempt = 0; attempt < retryAttemptCount(openAIOAuthRefreshRaceRetryPolicy); attempt += 1) {
     if (!current) {
       throw new Error('OpenAI OAuth 账户不存在或无法刷新')
     }
@@ -144,7 +146,11 @@ async function refreshOpenAIOAuthAccountAccessTokenLocked(
         clearGatewayRuntimeCache()
         return finalizeSuccessfulTokenRefresh(recovered.account, options)
       }
-      if (isRecoverableOpenAIOAuthRefreshRaceError(error) && recovered.result === 'retry' && attempt === 0) {
+      if (
+        isRecoverableOpenAIOAuthRefreshRaceError(error)
+        && recovered.result === 'retry'
+        && shouldRetryPolicyAttempt(attempt, openAIOAuthRefreshRaceRetryPolicy)
+      ) {
         logger.info({
           event: 'openai_oauth_access_token_refresh_retry_with_latest_refresh_token',
           accountId: recovered.account.id
@@ -182,6 +188,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
   const now = Date.now()
   const leadMs = leadSeconds * 1000
   const retryBackoffMs = retryBackoffSeconds * 1000
+  const retryBackoffPolicy = fixedRetryPolicy('openai_oauth_access_token_refresh_backoff', retryBackoffMs)
   cleanupRefreshFailureBackoff(now)
 
   const eligibleAccounts = listAccounts()
@@ -220,7 +227,7 @@ export async function refreshDueOpenAIOAuthAccessTokens(
       result.failed += 1
       const expiredOrMissing = isAccessTokenExpiredOrMissing(account.credentials, Date.now())
       const message = errorMessage(error)
-      const failureState = recordRefreshFailure(account.id, Date.now() + retryBackoffMs)
+      const failureState = recordRefreshFailure(account.id, retryDueAtMs(retryBackoffPolicy))
       logger.warn(errorLogFields(error, {
         event: 'openai_oauth_access_token_refresh_account_failed',
         accountId: account.id,

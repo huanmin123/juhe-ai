@@ -27,7 +27,7 @@ export function filterAccounts(input: {
       return normalizedValue === keyword || normalizedValue.startsWith(keyword)
     })
     const typeMatched = input.filters.type === 'all' || account.type === input.filters.type
-    const statusMatched = input.filters.status === 'all' || account.status === input.filters.status
+    const statusMatched = input.filters.status.length === 0 || input.filters.status.includes(account.status)
     const schedulableMatched = matchesSchedulableFilter(account, input.filters.schedulable)
     const systemAccountMatched = matchesSystemAccountFilter(account, input.filters.systemAccountId, input.isManagementView)
     return keywordMatched && typeMatched && statusMatched && schedulableMatched && systemAccountMatched
@@ -37,7 +37,7 @@ export function filterAccounts(input: {
 export function countActiveAccountFilters(filters: AccountFilters, isManagementView: boolean, allSystemAccountsValue: string): number {
   return [
     filters.type !== 'all',
-    filters.status !== 'all',
+    filters.status.length > 0,
     filters.schedulable !== 'all',
     isManagementView && filters.systemAccountId !== allSystemAccountsValue
   ].filter(Boolean).length

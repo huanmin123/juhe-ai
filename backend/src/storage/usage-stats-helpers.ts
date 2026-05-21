@@ -5,6 +5,7 @@ const hourMs = 60 * 60 * 1000
 const dayMs = 24 * hourMs
 export const ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS = 31
 export const DEFAULT_USAGE_STATS_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
+let cachedUsageStatsTimezone: string | undefined
 
 interface DateParts {
   year: number
@@ -208,14 +209,26 @@ export function monthKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): s
 }
 
 export function usageStatsTimezone(): string {
+  if (cachedUsageStatsTimezone) {
+    return cachedUsageStatsTimezone
+  }
   const row = getDatabase().prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
-  if (!row?.value_json) return DEFAULT_USAGE_STATS_TIMEZONE
+  if (!row?.value_json) {
+    cachedUsageStatsTimezone = DEFAULT_USAGE_STATS_TIMEZONE
+    return cachedUsageStatsTimezone
+  }
   try {
     const value = JSON.parse(row.value_json) as unknown
-    return normalizeUsageStatsTimezone(value)
+    cachedUsageStatsTimezone = normalizeUsageStatsTimezone(value)
+    return cachedUsageStatsTimezone
   } catch {
-    return DEFAULT_USAGE_STATS_TIMEZONE
+    cachedUsageStatsTimezone = DEFAULT_USAGE_STATS_TIMEZONE
+    return cachedUsageStatsTimezone
   }
+}
+
+export function clearUsageStatsTimezoneCache(): void {
+  cachedUsageStatsTimezone = undefined
 }
 
 export function normalizeUsageStatsTimezone(value: unknown): string {

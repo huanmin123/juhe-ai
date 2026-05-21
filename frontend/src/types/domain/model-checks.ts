@@ -1,4 +1,4 @@
-export type ModelCheckTargetType = 'api_key' | 'group' | 'account'
+export type ModelCheckTargetType = 'account'
 export type ModelCheckModel = 'gpt-5.5' | 'gpt-5.4'
 export type ModelCheckProfile = 'full'
 export type ModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'

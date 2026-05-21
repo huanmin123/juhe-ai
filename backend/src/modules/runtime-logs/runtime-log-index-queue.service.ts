@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 
 import { runtimeConfig } from '../../config/runtime.js'
+import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { nowIso } from '../../storage/database.js'
 import {
   createRuntimeLogsBatch,
@@ -11,7 +12,7 @@ import {
 import { sendRuntimeLogLineToWorker } from '../background/background-ipc.js'
 
 const runtimeLogFlushIntervalMs = 200
-const runtimeLogRetryDelayMs = 1000
+const runtimeLogRetryPolicy = fixedRetryPolicy('runtime_log_index_queue_flush', 1000)
 const runtimeLogBatchSize = 500
 const runtimeLogMaxPending = 20000
 const runtimeLogMaxRawJsonChars = 128 * 1024
@@ -114,7 +115,7 @@ export function flushRuntimeLogIndexQueue(options: RuntimeLogFlushOptions = {}):
   }
 
   if (pendingRuntimeLogs.length > 0 && (!failed || shouldRetry)) {
-    scheduleRuntimeLogFlush(shouldRetry ? runtimeLogRetryDelayMs : 0)
+    scheduleRuntimeLogFlush(shouldRetry ? retryDelayMs(runtimeLogRetryPolicy) : 0)
   }
   return !failed
 }

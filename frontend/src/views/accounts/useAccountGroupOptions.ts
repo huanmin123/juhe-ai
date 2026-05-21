@@ -2,6 +2,7 @@ import { onBeforeUnmount, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { GroupOptionSummary } from '@/types/domain'
 
 interface AccountGroupOptionsScope {
@@ -14,6 +15,7 @@ interface UseAccountGroupOptionsConfig {
   errorMessage?: string
   isManagementView: () => boolean
   limit?: number
+  cacheTtlMs?: number
   scope: () => AccountGroupOptionsScope
   searchDelayMs?: number
 }
@@ -23,6 +25,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   const keyword = ref('')
   const loading = ref(false)
   const limit = config.limit ?? 50
+  const optionCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: config.cacheTtlMs ?? 10_000 })
   const searchDelayMs = config.searchDelayMs ?? 250
   let requestId = 0
   let loadingKey: string | undefined
@@ -51,6 +54,13 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     if (!force && loadingKey === requestKey && loadingPromise) {
       return loadingPromise
     }
+    if (!force) {
+      const cachedGroups = optionCache.get(requestKey)
+      if (cachedGroups) {
+        groups.value = cachedGroups
+        return
+      }
+    }
 
     const currentRequestId = ++requestId
     loading.value = true
@@ -61,6 +71,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
           ? await api.groups.options(groupOptionParams(scope, requestKeyword, limit))
           : await api.myGroups.options(groupOptionParams(scope, requestKeyword, limit))
         nextGroups = await ensureSelectedGroupOptions(nextGroups, scope)
+        optionCache.set(requestKey, nextGroups)
         if (currentRequestId !== requestId) return
         groups.value = nextGroups
       } catch (error) {

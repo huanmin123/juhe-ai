@@ -2,7 +2,7 @@ import type { Request } from 'express'
 
 import { tryAcquireAccountConcurrency, type AccountConcurrencySlot } from '../../shared/account-concurrency.js'
 import { getRequestLogger } from '../../shared/request-context.js'
-import { exponentialRetryPolicy, normalizeRetryCount, retryDelayMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
+import { exponentialRetryPolicy, fixedRetryPolicy, retryAttemptCount, retryDelayMs, waitForRetryDelayMs } from '../../shared/retry-policy.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
 import type { AuditCaptureContext } from './audit-capture.service.js'
 import {
@@ -12,6 +12,7 @@ import {
   skipAccountForFailedProxyDispatch
 } from './openai-gateway-account-preparation.js'
 import {
+  temporaryUnschedulableRetryPolicy,
   throwIfRequestAborted
 } from './openai-gateway-dispatch-helpers.js'
 import {
@@ -55,6 +56,7 @@ interface AccountConcurrencyAcquireResult {
 
 const accountConcurrencyRetryBudgetMs = 1200
 const accountConcurrencyRetryPolicy = exponentialRetryPolicy('gateway_account_concurrency_short_wait', 120, 480)
+const accountPreparationRetryPolicy = fixedRetryPolicy('gateway_account_preparation_no_retry', 0, 0)
 
 export async function fetchFirstAvailableUpstream(
   req: Request,
@@ -65,7 +67,8 @@ export async function fetchFirstAvailableUpstream(
   sessionAffinityKey?: string,
   signal?: AbortSignal
 ): Promise<OpenAIUpstreamDispatchResult> {
-  const retryAttempts = normalizeRetryCount(settings.temporaryUnschedulableRetryAttempts)
+  const retryPolicy = temporaryUnschedulableRetryPolicy(settings)
+  const maxAttemptCount = retryAttemptCount(retryPolicy)
   let lastAttempt: UpstreamAttempt | undefined
   let auditAttemptIndex = 0
   let concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
@@ -148,11 +151,10 @@ export async function fetchFirstAvailableUpstream(
           auditAttemptId: '',
           account: originalAccount,
           upstreamUrl: 'account:preparation',
-          settings,
           attemptStartedAt: preparationStartedAt,
           attemptIndex: 0,
           auditAttemptIndex,
-          retryAttempts: 0,
+          retryPolicy: accountPreparationRetryPolicy,
           sessionAffinityKey,
           signal,
           lastAttempt,
@@ -163,7 +165,7 @@ export async function fetchFirstAvailableUpstream(
         continue
       }
       for (const upstreamUrl of upstreamUrls) {
-        for (let attemptIndex = 0; attemptIndex <= retryAttempts; attemptIndex += 1) {
+        for (let attemptIndex = 0; attemptIndex < maxAttemptCount; attemptIndex += 1) {
           const attemptStartedAt = Date.now()
           auditAttemptIndex += 1
           const auditAttemptId = auditCapture.startAttempt({
@@ -211,7 +213,7 @@ export async function fetchFirstAvailableUpstream(
               attemptStartedAt,
               attemptIndex,
               auditAttemptIndex,
-              retryAttempts,
+              retryPolicy,
               sessionAffinityKey,
               signal,
               lastAttempt,
@@ -234,11 +236,10 @@ export async function fetchFirstAvailableUpstream(
               auditAttemptId,
               account,
               upstreamUrl,
-              settings,
               attemptStartedAt,
               attemptIndex,
               auditAttemptIndex,
-              retryAttempts,
+              retryPolicy,
               sessionAffinityKey,
               signal,
               lastAttempt,

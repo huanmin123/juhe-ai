@@ -30,7 +30,8 @@ const [
   { requestContextMiddleware },
   databaseModule,
   repositories,
-  usageStatsRepository
+  usageStatsRepository,
+  usageStatsHelpers
 ] = await Promise.all([
   import('../../modules/accounts/accounts.routes.js'),
   import('../../modules/api-keys/api-keys.routes.js'),
@@ -44,7 +45,8 @@ const [
   import('../../shared/request-context.js'),
   import('../../storage/database.js'),
   import('../../storage/repositories.js'),
-  import('../../storage/usage-stats.repository.js')
+  import('../../storage/usage-stats.repository.js'),
+  import('../../storage/usage-stats-helpers.js')
 ])
 
 const app = express()
@@ -656,6 +658,7 @@ function setUsageStatsTimezoneSetting(timezone: string): void {
       ON CONFLICT(system_account_id, key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
     `)
     .run(JSON.stringify(timezone), new Date().toISOString())
+  usageStatsHelpers.clearUsageStatsTimezoneCache()
 }
 
 function usageRecord(

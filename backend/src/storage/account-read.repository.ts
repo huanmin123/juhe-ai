@@ -1,7 +1,7 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
-import { buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
+import { accountStatusFilterValues, buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
 import { loadSupportedModelsByAccountIds } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
@@ -365,9 +365,13 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
     clauses.push('account_rows.type = ?')
     params.push(options.type)
   }
-  if (options.status && options.status !== 'all') {
+  const statuses = accountStatusFilterValues(options.status)
+  if (statuses.length === 1) {
     clauses.push('account_rows.status = ?')
-    params.push(options.status)
+    params.push(statuses[0])
+  } else if (statuses.length > 1) {
+    clauses.push(`account_rows.status IN (${statuses.map(() => '?').join(', ')})`)
+    params.push(...statuses)
   }
   if (options.schedulable === 'enabled') {
     clauses.push("account_rows.status = 'active' AND account_rows.schedulable = 1 AND (account_rows.cooldown_until IS NULL OR account_rows.cooldown_until <= ?)")

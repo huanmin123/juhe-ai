@@ -9,7 +9,6 @@ import { nowIso } from '../../storage/database.js'
 import {
   expireDueResourceAuthorizations,
   getSettings,
-  findRecentOpenAIRequestShapeForAccount,
   listAccountsDueForCooldownRetest,
   refreshAccountQualityFromUsage
 } from '../../storage/repositories.js'
@@ -24,7 +23,6 @@ import {
   refreshUsageRankSnapshotsInStages
 } from '../../storage/usage-stats.repository.js'
 import { collectTableStorageSnapshot } from '../../storage/table-monitor.repository.js'
-import { testOpenAIAccount } from '../accounts/account-test.service.js'
 import { refreshDueOpenAIOAuthAccessTokens } from '../openai-oauth/openai-oauth-access-token-refresh.service.js'
 import { proxyLatencyRefreshBatchSize, proxyLatencyRefreshIntervalSeconds, refreshProxyLatencyBatch } from '../proxies/proxy-test.service.js'
 import { flushUsageRecordQueue, pendingUsageRecordCount } from '../gateway/usage-record-queue.service.js'
@@ -35,6 +33,7 @@ import { backfillOperationLogSearchIndex } from '../../storage/operation-logs.re
 import { cleanupPendingDeletedApiKeyRecordTargets } from '../../storage/api-key-record-cleanup.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { requestServerProcessEventLoopSamples } from './background-ipc.js'
+import { enqueueCooldownAccountRetest, getCooldownAccountRetestQueueSnapshot } from './cooldown-account-retest.service.js'
 import { WorkerScheduler } from './worker-scheduler.js'
 
 let started = false
@@ -308,46 +307,30 @@ async function runCooldownAccountRetest(): Promise<void> {
   if (!settingsBoolean('cooldownAccountRetestEnabled', true) || batchSize <= 0) {
     return
   }
+  const model = settingsString('cooldownAccountRetestModel', 'gpt-5.5')
   const candidates = listAccountsDueForCooldownRetest(batchSize)
   const startedAtMs = Date.now()
-  let testedCount = 0
-  let failedCount = 0
+  let enqueuedCount = 0
+  let skippedQueuedCount = 0
   for (const account of candidates) {
-    try {
-      const result = await testOpenAIAccount(account, {
-        model: settingsString('cooldownAccountRetestModel', 'gpt-5.5'),
-        diagnostics: 'limited',
-        requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId)
-      })
-      testedCount += 1
-      if (!result.success) {
-        failedCount += 1
-        logger.warn({
-          event: 'background_cooldown_account_retest_failed',
-          accountId: account.id,
-          accountName: account.name,
-          accountStatus: account.status,
-          statusCode: result.statusCode,
-          message: result.message
-        }, '冷却账户复测未通过')
-      }
-    } catch (error) {
-      testedCount += 1
-      failedCount += 1
-      logger.warn(errorLogFields(error, {
-        event: 'background_cooldown_account_retest_failed',
-        accountId: account.id
-      }), '冷却账户复测失败')
+    if (enqueueCooldownAccountRetest(account, model)) {
+      enqueuedCount += 1
+    } else {
+      skippedQueuedCount += 1
     }
   }
-  if (testedCount > 0) {
+  if (candidates.length > 0) {
+    const queue = getCooldownAccountRetestQueueSnapshot()
     logger.info({
       event: 'background_cooldown_account_retest_completed',
       candidateCount: candidates.length,
-      testedCount,
-      failedCount,
+      enqueuedCount,
+      skippedQueuedCount,
+      retryQueuePendingCount: queue.pendingCount,
+      retryQueueRunningCount: queue.runningCount,
+      retryQueueNextRunAt: queue.nextRunAt,
       elapsedMs: Date.now() - startedAtMs
-    }, '冷却账户复测完成')
+    }, '冷却账户复测候选已加入异步队列')
   }
 }
 

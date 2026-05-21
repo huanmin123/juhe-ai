@@ -27,8 +27,7 @@ export const schedulableOptions: Array<{ label: string; value: SchedulableFilter
   { label: '临时不可调用', value: 'cooling' }
 ]
 
-export const statusOptions: Array<{ label: string; value: 'all' | AccountStatus }> = [
-  { label: '全部状态', value: 'all' },
+export const statusOptions: Array<{ label: string; value: AccountStatus }> = [
   { label: '正常', value: 'active' },
   { label: '停用', value: 'disabled' },
   { label: '异常', value: 'error' },

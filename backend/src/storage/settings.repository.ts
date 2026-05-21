@@ -1,6 +1,7 @@
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
+import { createAppCache } from '../shared/cache.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
+import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
 
 interface GlobalSettingRow {
   key: string
@@ -9,6 +10,7 @@ interface GlobalSettingRow {
 }
 
 const SYSTEM_SETTINGS_ACCOUNT_ID = 'sys_admin'
+const settingsCacheTtlMs = 60_000
 export const systemSettingKeys = [
   'defaultTemporaryUnschedulableMinutes',
   'temporaryUnschedulableRetryIntervalSeconds',
@@ -53,13 +55,29 @@ export const systemSettingKeys = [
 
 const SYSTEM_SETTING_KEYS = new Set<string>(systemSettingKeys)
 const GLOBAL_SETTING_KEYS = new Set(['appName', 'appIcon'])
+const systemSettingsCache = createAppCache<string, Record<string, unknown>>({
+  name: 'settings:system',
+  max: 1,
+  ttlMs: settingsCacheTtlMs
+})
+const globalSettingsCache = createAppCache<string, Record<string, unknown>>({
+  name: 'settings:global',
+  max: 1,
+  ttlMs: settingsCacheTtlMs
+})
 
 export function listGlobalSettings(): Record<string, unknown> {
+  const cached = globalSettingsCache.get('current')
+  if (cached) {
+    return { ...cached }
+  }
   const rows = getDatabase().prepare("SELECT key, value_json, updated_at FROM global_settings WHERE key IN ('appName', 'appIcon') ORDER BY key ASC").all() as unknown as Array<GlobalSettingRow>
-  return Object.fromEntries(rows.map((row) => {
+  const settings = Object.fromEntries(rows.map((row) => {
     const value = JSON.parse(row.value_json) as unknown
     return [row.key, value]
   }))
+  globalSettingsCache.set('current', settings)
+  return { ...settings }
 }
 
 export function listPublicGlobalSettings(): Record<string, unknown> {
@@ -72,6 +90,7 @@ export function updateGlobalSettings(input: Record<string, unknown>): Record<str
   for (const [key, value] of Object.entries(pickGlobalSettings(input))) {
     statement.run(key, JSON.stringify(value), now)
   }
+  clearGlobalSettingsCache()
   return listGlobalSettings()
 }
 
@@ -81,9 +100,15 @@ function pickGlobalSettings(input: Record<string, unknown>): Record<string, unkn
 }
 
 export function getSettings(): Record<string, unknown> {
+  const cached = systemSettingsCache.get('current')
+  if (cached) {
+    return { ...cached }
+  }
   const systemAccountId = SYSTEM_SETTINGS_ACCOUNT_ID
   const rows = getDatabase().prepare('SELECT key, value_json FROM system_settings WHERE system_account_id = ? ORDER BY key ASC').all(systemAccountId) as Array<{ key: string; value_json: string }>
-  return Object.fromEntries(rows.filter((row) => isSystemSettingKey(row.key)).map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
+  const settings = Object.fromEntries(rows.filter((row) => isSystemSettingKey(row.key)).map((row) => [row.key, JSON.parse(row.value_json) as unknown]))
+  systemSettingsCache.set('current', settings)
+  return { ...settings }
 }
 
 export function updateSettings(input: Record<string, unknown>): Record<string, unknown> {
@@ -101,12 +126,27 @@ export function updateSettings(input: Record<string, unknown>): Record<string, u
     }
     statement.run(systemAccountId, key, JSON.stringify(value), now)
   }
+  clearSystemSettingsCache()
   notifyGatewayRuntimeCacheInvalidation('settings_updated')
   return getSettings()
 }
 
+export function clearSettingsRepositoryCache(): void {
+  clearSystemSettingsCache()
+  clearGlobalSettingsCache()
+}
+
 function isSystemSettingKey(key: string): boolean {
   return SYSTEM_SETTING_KEYS.has(key)
+}
+
+function clearSystemSettingsCache(): void {
+  systemSettingsCache.clear()
+  clearUsageStatsTimezoneCache()
+}
+
+function clearGlobalSettingsCache(): void {
+  globalSettingsCache.clear()
 }
 
 function assertUsageStatsTimezoneUpdateAllowed(input: Record<string, unknown>): void {

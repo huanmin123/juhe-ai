@@ -218,6 +218,7 @@ import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAcco
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, AccountUsageStatsOverview, AccountUsageStatsRow, AccountUsageSummary, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import { accountTypeText, statusColor, statusText } from '@/views/accounts/accountFormatters'
@@ -304,6 +305,7 @@ let accountOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let accountOptionsRequestSeq = 0
 let accountOptionsLoadingKey: string | undefined
 let accountOptionsLoadingPromise: Promise<void> | undefined
+const accountOptionsCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
 const accountUsagePagination = reactive({
   current: 1,
   pageSize: accountUsagePageSize,
@@ -596,6 +598,13 @@ async function loadAccountOptions(keyword = accountOptionsKeyword.value, force =
   if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
     return accountOptionsLoadingPromise
   }
+  if (!force) {
+    const cachedOptions = accountOptionsCache.get(requestKey)
+    if (cachedOptions) {
+      accountOptionRows.value = cachedOptions
+      return
+    }
+  }
   const requestSeq = ++accountOptionsRequestSeq
   accountOptionsLoading.value = true
   accountOptionsLoadingKey = requestKey
@@ -605,6 +614,7 @@ async function loadAccountOptions(keyword = accountOptionsKeyword.value, force =
         ? await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
         : await api.myAccounts.options({ keyword: requestKeyword, limit: 50 })
       nextOptions = await ensureSelectedAccountOptions(nextOptions, systemAccountId)
+      accountOptionsCache.set(requestKey, nextOptions)
       if (requestSeq !== accountOptionsRequestSeq) return
       accountOptionRows.value = nextOptions
     } catch (error) {

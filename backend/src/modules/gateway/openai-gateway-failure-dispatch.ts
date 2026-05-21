@@ -2,7 +2,7 @@ import type { Request } from 'express'
 
 import { errorLogFields } from '../../shared/logger.js'
 import { getRequestLogger } from '../../shared/request-context.js'
-import { retryDelayMs, shouldRetryAttempt } from '../../shared/retry-policy.js'
+import { retryDelayMs, shouldRetryPolicyAttempt, type RetryPolicy } from '../../shared/retry-policy.js'
 import {
   decideAccountErrorPolicy,
   parseErrorPayload,
@@ -43,7 +43,6 @@ import {
 import {
   rememberFailedProxyForDispatch,
   shouldRecordAbortedUpstreamAttempt,
-  temporaryUnschedulableRetryPolicy,
   waitBeforeTemporaryUnschedulableRetry
 } from './openai-gateway-dispatch-helpers.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
@@ -86,7 +85,7 @@ interface HandleFailedUpstreamResponseInput {
   attemptStartedAt: number
   attemptIndex: number
   auditAttemptIndex: number
-  retryAttempts: number
+  retryPolicy: RetryPolicy
   sessionAffinityKey?: string
   signal?: AbortSignal
   lastAttempt?: UpstreamAttempt
@@ -100,11 +99,10 @@ interface HandleUpstreamRequestErrorInput {
   auditAttemptId: string
   account: UpstreamAccount
   upstreamUrl: string
-  settings: GatewaySettings
   attemptStartedAt: number
   attemptIndex: number
   auditAttemptIndex: number
-  retryAttempts: number
+  retryPolicy: RetryPolicy
   sessionAffinityKey?: string
   signal?: AbortSignal
   lastAttempt?: UpstreamAttempt
@@ -127,7 +125,7 @@ export async function handleFailedUpstreamResponse(
     attemptStartedAt,
     attemptIndex,
     auditAttemptIndex,
-    retryAttempts,
+    retryPolicy,
     sessionAffinityKey,
     signal,
     deferredAccountFailures
@@ -250,8 +248,7 @@ export async function handleFailedUpstreamResponse(
     return { action: 'skip_account', lastAttempt }
   }
 
-  if (shouldRetryAttempt(attemptIndex, retryAttempts)) {
-    const retryPolicy = temporaryUnschedulableRetryPolicy(settings)
+  if (shouldRetryPolicyAttempt(attemptIndex, retryPolicy)) {
     getRequestLogger().warn({
       event: 'gateway_upstream_same_account_retry_scheduled',
       accountId: account.id,
@@ -264,7 +261,7 @@ export async function handleFailedUpstreamResponse(
       retryDelayMs: retryDelayMs(retryPolicy, attemptIndex + 1),
       retryIntervalSeconds: settings.temporaryUnschedulableRetryIntervalSeconds
     }, '上游未知失败未命中策略，先按短重试策略同账号重试')
-    await waitBeforeTemporaryUnschedulableRetry(settings)
+    await waitBeforeTemporaryUnschedulableRetry(retryPolicy, attemptIndex + 1)
     return { action: 'retry', lastAttempt }
   }
 
@@ -293,11 +290,10 @@ export async function handleUpstreamRequestError(
     auditAttemptId,
     account,
     upstreamUrl,
-    settings,
     attemptStartedAt,
     attemptIndex,
     auditAttemptIndex,
-    retryAttempts,
+    retryPolicy,
     sessionAffinityKey,
     signal,
     failedProxyDispatchKeys,
@@ -359,8 +355,8 @@ export async function handleUpstreamRequestError(
     startedAt: attemptStartedAt,
     errorMessage: message
   })
-  if (shouldRetryAttempt(attemptIndex, retryAttempts)) {
-    await waitBeforeTemporaryUnschedulableRetry(settings)
+  if (shouldRetryPolicyAttempt(attemptIndex, retryPolicy)) {
+    await waitBeforeTemporaryUnschedulableRetry(retryPolicy, attemptIndex + 1)
     return { action: 'retry', lastAttempt }
   }
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)

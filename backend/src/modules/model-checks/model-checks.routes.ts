@@ -15,7 +15,9 @@ import {
 export const modelChecksRouter = Router()
 
 const modelCheckRunSchema = z.object({
-  targetType: z.enum(['api_key', 'group', 'account'], { invalid_type_error: '检测目标类型无效' }),
+  targetType: z.literal('account', {
+    errorMap: () => ({ message: '模型检测目标只能选择 AI 账户' })
+  }),
   targetId: z.string().trim().min(1, '检测目标不能为空'),
   model: z.enum(['gpt-5.5', 'gpt-5.4'], { invalid_type_error: '当前模型检测仅支持 gpt-5.5 和 gpt-5.4' }),
   profile: z.enum(['full']).optional(),

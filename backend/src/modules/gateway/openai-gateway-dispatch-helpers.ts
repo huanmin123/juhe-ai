@@ -1,7 +1,7 @@
 import type { GatewaySettings } from './account-error-policy.service.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 import { UpstreamRequestAbortedError } from './openai-gateway-upstream.js'
-import { fixedRetryPolicy, waitForRetryDelay } from '../../shared/retry-policy.js'
+import { fixedRetryPolicy, waitForRetryDelay, type RetryPolicy } from '../../shared/retry-policy.js'
 
 export function failedProxyDispatchReason(failedProxyDispatchKeys: Map<string, string>, account: UpstreamAccount): string | undefined {
   const key = accountProxyDispatchKey(account)
@@ -21,11 +21,11 @@ function accountProxyDispatchKey(account: UpstreamAccount): string | undefined {
   return undefined
 }
 
-export async function waitBeforeTemporaryUnschedulableRetry(settings: GatewaySettings): Promise<void> {
-  await waitForRetryDelay(temporaryUnschedulableRetryPolicy(settings))
+export async function waitBeforeTemporaryUnschedulableRetry(policy: RetryPolicy, retryNumber = 1): Promise<void> {
+  await waitForRetryDelay(policy, retryNumber)
 }
 
-export function temporaryUnschedulableRetryPolicy(settings: GatewaySettings) {
+export function temporaryUnschedulableRetryPolicy(settings: GatewaySettings): RetryPolicy {
   return fixedRetryPolicy(
     'gateway_temporary_unschedulable_same_account_retry',
     Math.max(0, settings.temporaryUnschedulableRetryIntervalSeconds) * 1000,

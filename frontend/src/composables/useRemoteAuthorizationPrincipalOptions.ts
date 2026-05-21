@@ -2,6 +2,7 @@ import { onBeforeUnmount, ref, shallowRef } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -14,6 +15,7 @@ interface RemoteAuthorizationPrincipalOptionsConfig {
   isManagementView: () => boolean
   kind: AuthorizationPrincipalKind
   limit?: number
+  cacheTtlMs?: number
   searchDelayMs?: number
   selectedIds?: () => Array<string | undefined>
 }
@@ -23,6 +25,7 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
   const loading = ref(false)
   const keyword = ref('')
   const limit = config.limit ?? 50
+  const optionCache = createShortLivedQueryCache<T[]>({ ttlMs: config.cacheTtlMs ?? 10_000 })
   const searchDelayMs = config.searchDelayMs ?? 250
   let requestId = 0
   let loadingKey: string | undefined
@@ -41,6 +44,11 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     if (loadingKey === requestKey && loadingPromise) {
       return loadingPromise
     }
+    const cachedOptions = optionCache.get(requestKey)
+    if (cachedOptions) {
+      options.value = cachedOptions
+      return
+    }
     const currentRequestId = ++requestId
     loading.value = true
     loadingKey = requestKey
@@ -48,6 +56,7 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
       try {
         let nextOptions = await fetchOptions<T>(config.kind, config.isManagementView(), normalizeOptionKeyword(nextKeyword), limit)
         nextOptions = await ensureSelectedOptions(nextOptions, selectedIds)
+        optionCache.set(requestKey, nextOptions)
         if (currentRequestId !== requestId) return
         options.value = nextOptions
       } catch (error) {

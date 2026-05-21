@@ -425,7 +425,7 @@ export interface AccountTestResult {
   errorPolicyReason?: string
 }
 
-export type ModelCheckTargetType = 'api_key' | 'group' | 'account'
+export type ModelCheckTargetType = 'account'
 export type ModelCheckProfile = 'full'
 export type ModelCheckLevel = 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
 export type ModelCheckRunStatus = 'running' | 'completed' | 'failed' | 'canceled'

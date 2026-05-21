@@ -245,6 +245,7 @@ import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 import RequestQuotaFields from '@/views/shared/RequestQuotaFields.vue'
@@ -311,6 +312,7 @@ let groupOptionsLoadingKey: string | undefined
 let groupOptionsLoadingPromise: Promise<void> | undefined
 let groupOptionsKeyword = ''
 let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+const groupOptionsCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
 const {
   items: apiKeys,
   loading,
@@ -451,18 +453,25 @@ async function loadApiKeyOptions(systemAccountId: string | undefined, force = fa
     return
   }
 
-  await Promise.all([loadGroupOptions(), loadSystemAccountOptions()])
+  await Promise.all([loadGroupOptions(groupOptionsKeyword, force), loadSystemAccountOptions()])
   apiKeyOptionsLoaded.value = true
   apiKeyOptionsScopeKey.value = scopeKey
 }
 
-async function loadGroupOptions(keyword = groupOptionsKeyword): Promise<void> {
+async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): Promise<void> {
   groupOptionsKeyword = keyword
   const systemAccountId = isManagementView.value ? apiKeyScopeParams.value?.systemAccountId : undefined
   const requestKeyword = normalizeOptionKeyword(keyword)
   const requestKey = JSON.stringify([isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self', requestKeyword ?? '', groupFilter.value ?? '', form.groupId ?? ''])
   if (groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
     return groupOptionsLoadingPromise
+  }
+  if (!force) {
+    const cachedGroups = groupOptionsCache.get(requestKey)
+    if (cachedGroups) {
+      groups.value = cachedGroups
+      return
+    }
   }
   const requestId = ++groupOptionsRequestId
   groupOptionsLoading.value = true
@@ -471,6 +480,7 @@ async function loadGroupOptions(keyword = groupOptionsKeyword): Promise<void> {
     try {
       let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
       nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
+      groupOptionsCache.set(requestKey, nextGroups)
       if (requestId !== groupOptionsRequestId) return
       groups.value = nextGroups
     } catch (error) {

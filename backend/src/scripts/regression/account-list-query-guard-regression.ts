@@ -44,6 +44,8 @@ try {
   const middleGroupOnly = createGuardAccount('绑定分组中间账户', 'sk-account-list-query-guard-group-middle', '普通备注绑定分组中间', middleGroup.id)
   const wildcardLiteral = createGuardAccount('percent%literal 账户', 'sk-account-list-query-guard-percent-literal', '通配符字面量', matchedGroup.id)
   const wildcardNeighbor = createGuardAccount('percentXliteral 账户', 'sk-account-list-query-guard-percent-neighbor', '通配符邻近值', matchedGroup.id)
+  const disabledStatusAccount = createGuardAccount('多状态筛选停用账户', 'sk-account-list-query-guard-disabled-status', '停用状态筛选', matchedGroup.id, 'disabled')
+  const errorStatusAccount = createGuardAccount('多状态筛选异常账户', 'sk-account-list-query-guard-error-status', '异常状态筛选', matchedGroup.id, 'error')
 
   const database = databaseModule.getDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
@@ -85,6 +87,20 @@ try {
     const wildcardIds = wildcardResult.items.map((item) => item.id)
     assert(wildcardIds.includes(wildcardLiteral.id), 'AI 账户搜索应把 % 当作字面量前缀处理')
     assert(!wildcardIds.includes(wildcardNeighbor.id), 'AI 账户搜索不应把用户输入的 % 当作 LIKE 通配符')
+
+    const multiStatusCapturedStart = capturedCalls.length
+    const multiStatusResult = repositories.listAccountsPage(access, { status: 'disabled,error', page: 1, pageSize: 20 })
+    const multiStatusIds = multiStatusResult.items.map((item) => item.id)
+    assert(multiStatusIds.includes(disabledStatusAccount.id), 'AI 账户列表多状态筛选应命中停用账户')
+    assert(multiStatusIds.includes(errorStatusAccount.id), 'AI 账户列表多状态筛选应命中异常账户')
+    assert(!multiStatusIds.includes(matchedByName.id), 'AI 账户列表多状态筛选不应混入未勾选状态')
+    capturedCalls.splice(multiStatusCapturedStart)
+
+    const multiStatusOptions = repositories.listAccountOptions(access, { status: 'disabled,error', limit: 20 })
+    const multiStatusOptionIds = multiStatusOptions.map((item) => item.id)
+    assert(multiStatusOptionIds.includes(disabledStatusAccount.id), 'AI 账户 options 多状态筛选应命中停用账户')
+    assert(multiStatusOptionIds.includes(errorStatusAccount.id), 'AI 账户 options 多状态筛选应命中异常账户')
+    assert(!multiStatusOptionIds.includes(matchedByName.id), 'AI 账户 options 多状态筛选不应混入未勾选状态')
 
     const invalidNotesSortCapturedStart = capturedCalls.length
     const invalidNotesSortResult = repositories.listAccountsPage(access, {
@@ -141,7 +157,13 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function createGuardAccount(name: string, apiKey: string, notes: string, groupId: string): { id: string } {
+function createGuardAccount(
+  name: string,
+  apiKey: string,
+  notes: string,
+  groupId: string,
+  status: 'active' | 'disabled' | 'error' | 'rate_limited' | 'temporary_unavailable' = 'active'
+): { id: string } {
   return repositories.createAccount({
     providerCode: 'openai',
     name,
@@ -151,7 +173,8 @@ function createGuardAccount(name: string, apiKey: string, notes: string, groupId
       base_url: 'https://api.openai.com/v1'
     },
     notes,
-    groupId
+    groupId,
+    status
   }, { systemAccountId: 'sys_admin', role: 'admin' as const })
 }
 

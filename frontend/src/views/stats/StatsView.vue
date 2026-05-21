@@ -563,7 +563,7 @@ function formatJobCounts(row: NonNullable<SystemMetricsOverview['backgroundJobs'
 
 function backgroundJobDurationNote(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {
   if (row.name !== 'cooldown-account-retest') return undefined
-  return '该任务会在冷却到期后按真实网关链路复测账号，单次请求时长和失败后的同账号短重试都沿用全局临时不可调用重试配置；目的是尽量让已经恢复的账号在本轮回到可用池，避免一次网络波动把恢复推迟到下一轮窗口。'
+  return '该任务会在冷却到期后按真实网关链路复测账号；失败后的复活重试会进入异步队列，按 3 秒、10 秒、30 秒唤醒执行，不会让本轮后台任务一直等待。'
 }
 
 function snapshotPageState(): StatsPageState {

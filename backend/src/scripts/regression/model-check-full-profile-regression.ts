@@ -46,33 +46,6 @@ try {
   const secondAccount = fixture.accounts[1]
   assert(account, 'mock fixture should create a target account')
   assert(secondAccount, 'mock fixture should create a second group account')
-  assert(fixture.apiKey, 'mock fixture should create an API Key')
-
-  await assertRunShape(await runModelCheck({
-    targetType: 'api_key',
-    targetId: fixture.apiKey.id,
-    model: 'gpt-5.5',
-    profile: 'full',
-    officialBaseline: false
-  }, { systemAccountId: 'sys_admin', role: 'admin' }), {
-    targetType: 'api_key',
-    targetId: fixture.apiKey.id,
-    expectedAccountId: undefined,
-    highConfidence: true
-  })
-
-  await assertRunShape(await runModelCheck({
-    targetType: 'group',
-    targetId: fixture.group.id,
-    model: 'gpt-5.5',
-    profile: 'full',
-    officialBaseline: false
-  }, { systemAccountId: 'sys_admin', role: 'admin' }), {
-    targetType: 'group',
-    targetId: fixture.group.id,
-    expectedAccountId: undefined,
-    highConfidence: true
-  })
 
   const accountRun = await runModelCheck({
     targetType: 'account',
@@ -100,14 +73,14 @@ try {
   assert(!usageRows.some((row) => row.accountId && row.accountId !== account.id), '账户目标检测不应静默切到同分组其他账号')
   assert(!usageRows.some((row) => row.accountId === secondAccount.id), '账户目标检测不应命中第二个分组账号')
 
-  console.log('模型检测完整 profile 回归通过：API Key、分组、账户目标均闭环，交叉模型与长上下文探针通过')
+  console.log('模型检测完整 profile 回归通过：AI 账户目标闭环，交叉模型与长上下文探针通过')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
 }
 
 async function assertRunShape(run: ModelCheckRunDetail, options: {
-  targetType: 'api_key' | 'group' | 'account'
+  targetType: 'account'
   targetId: string
   expectedAccountId?: string
   highConfidence: boolean

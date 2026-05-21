@@ -535,7 +535,7 @@ function isSupportedModel(value: unknown): value is 'gpt-5.5' | 'gpt-5.4' {
 }
 
 function isTargetType(value: unknown): value is ModelCheckTargetType {
-  return value === 'api_key' || value === 'group' || value === 'account'
+  return value === 'account'
 }
 
 function isLevel(value: unknown): value is ModelCheckLevel {

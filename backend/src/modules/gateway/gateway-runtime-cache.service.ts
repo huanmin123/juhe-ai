@@ -8,6 +8,7 @@ import {
   type GroupUsageAccessMetadata,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
+import { clearSettingsRepositoryCache } from '../../storage/settings.repository.js'
 import { clearDbServiceGatewayRuntimeCache, requestDbService } from '../db-service/db-service-ipc.js'
 import type { DbServiceGatewayRuntime } from '../db-service/db-service-types.js'
 import { readGatewaySettings, type GatewaySettings } from './account-error-policy.service.js'
@@ -161,6 +162,7 @@ export function clearGatewayRuntimeCacheLocal(): void {
   gatewaySettingsCache.clear()
   groupUsageAccessCache.clear()
   openAIAccountsCache.clear()
+  clearSettingsRepositoryCache()
 }
 
 function gatewayCacheKey(groupId: string, systemAccountId: string): string {

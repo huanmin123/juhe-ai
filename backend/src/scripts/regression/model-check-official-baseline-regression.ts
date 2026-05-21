@@ -29,8 +29,8 @@ assert.equal(options.officialBaseline.available, false, '空环境不应报告�
 
 await assert.rejects(
   () => runModelCheck({
-    targetType: 'api_key',
-    targetId: 'key_missing',
+    targetType: 'account',
+    targetId: 'acc_missing',
     model: 'gpt-5.5',
     profile: 'full',
     officialBaseline: true

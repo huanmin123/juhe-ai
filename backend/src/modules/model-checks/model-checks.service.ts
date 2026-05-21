@@ -20,9 +20,6 @@ import {
   createModelCheckItems,
   createModelCheckRun,
   findAccountForTest,
-  findActiveGatewayApiKeyById,
-  findApiKeySummary,
-  findGroupSummary,
   findOpenAIAccountForGroup,
   finishModelCheckRun,
   getModelCheckRunDetail,
@@ -231,7 +228,7 @@ export function listModelCheckRunPage(access?: AccessScope, query: Record<string
   return listModelCheckRuns(access, {
     page: integerValue(query.page),
     pageSize: integerValue(query.pageSize),
-    targetType: modelCheckTargetTypeValue(query.targetType),
+    targetType: 'account',
     targetId: textValue(query.targetId),
     model: normalizeModel(query.model),
     level: modelCheckLevelValue(query.level),
@@ -246,73 +243,10 @@ export function getModelCheckRun(id: string, access?: AccessScope): ModelCheckRu
 }
 
 function resolveModelCheckTarget(input: ModelCheckRunRequest & { targetId: string }, access?: AccessScope): ModelCheckTarget {
-  if (input.targetType === 'api_key') {
-    return resolveApiKeyTarget(input.targetId, access)
-  }
-  if (input.targetType === 'group') {
-    return resolveGroupTarget(input.targetId, access)
-  }
   if (input.targetType === 'account') {
     return resolveAccountTarget(input.targetId, access)
   }
-  throw new ModelCheckRequestError(400, '检测目标类型无效')
-}
-
-function resolveApiKeyTarget(apiKeyId: string, access?: AccessScope): ModelCheckTarget {
-  const summary = findApiKeySummary(apiKeyId, access)
-  if (!summary) {
-    throw new ModelCheckRequestError(404, 'API Key 不存在或无权检测')
-  }
-  if (summary.status !== 'active') {
-    throw new ModelCheckRequestError(400, 'API Key 已停用，无法执行模型检测')
-  }
-  const row = findActiveGatewayApiKeyById(apiKeyId)
-  if (!row || row.system_account_id !== effectiveTargetSystemAccountId(access, summary.systemAccountId)) {
-    throw new ModelCheckRequestError(400, 'API Key 当前不可用，无法执行模型检测')
-  }
-  return {
-    targetType: 'api_key',
-    targetId: summary.id,
-    targetName: summary.name,
-    targetOwnerSystemAccountId: row.system_account_id,
-    identity: {
-      systemAccountId: row.system_account_id,
-      groupId: row.group_id,
-      apiKeyId: row.id
-    },
-    apiKeyId: row.id,
-    groupId: row.group_id
-  }
-}
-
-function resolveGroupTarget(groupId: string, access?: AccessScope): ModelCheckTarget {
-  const group = findGroupSummary(groupId, access)
-  if (!group) {
-    throw new ModelCheckRequestError(404, '分组不存在或无权检测')
-  }
-  if (group.providerCode !== 'openai') {
-    throw new ModelCheckRequestError(400, '当前仅支持检测 OpenAI 分组')
-  }
-  if (!group.enabled) {
-    throw new ModelCheckRequestError(400, '分组已停用，无法执行模型检测')
-  }
-  const systemAccountId = effectiveTargetSystemAccountId(access, group.systemAccountId ?? group.ownerSystemAccountId)
-  const accounts = listOpenAIAccountsForGroup(group.id, systemAccountId)
-  if (!accounts.length) {
-    throw new ModelCheckRequestError(400, '分组内没有可用的 OpenAI 账户，无法执行模型检测')
-  }
-  return {
-    targetType: 'group',
-    targetId: group.id,
-    targetName: group.name,
-    targetOwnerSystemAccountId: group.systemAccountId ?? group.ownerSystemAccountId ?? systemAccountId,
-    identity: {
-      systemAccountId,
-      groupId: group.id
-    },
-    candidateAccounts: accounts,
-    groupId: group.id
-  }
+  throw new ModelCheckRequestError(400, '模型检测目标只能选择 AI 账户')
 }
 
 function resolveAccountTarget(accountId: string, access?: AccessScope): ModelCheckTarget {
@@ -1218,7 +1152,7 @@ function normalizeModel(value: unknown): 'gpt-5.5' | 'gpt-5.4' | undefined {
 }
 
 function modelCheckTargetTypeValue(value: unknown): ModelCheckTargetType | undefined {
-  return value === 'api_key' || value === 'group' || value === 'account' ? value : undefined
+  return value === 'account' ? value : undefined
 }
 
 function modelCheckLevelValue(value: unknown): 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable' | undefined {

@@ -2,6 +2,7 @@ import { onBeforeUnmount, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { SystemAccountPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 
@@ -9,6 +10,7 @@ interface RemoteSystemAccountOptionsConfig {
   enabled?: () => boolean
   errorMessage?: string
   limit?: number
+  cacheTtlMs?: number
   searchDelayMs?: number
   selectedIds?: () => Array<string | undefined>
 }
@@ -18,6 +20,7 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
   const loading = ref(false)
   const keyword = ref('')
   const limit = config.limit ?? 50
+  const optionCache = createShortLivedQueryCache<SystemAccountPrincipalSummary[]>({ ttlMs: config.cacheTtlMs ?? 10_000 })
   const searchDelayMs = config.searchDelayMs ?? 250
   let requestId = 0
   let loadingKey: string | undefined
@@ -36,6 +39,11 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
     if (loadingKey === requestKey && loadingPromise) {
       return loadingPromise
     }
+    const cachedOptions = optionCache.get(requestKey)
+    if (cachedOptions) {
+      systemAccounts.value = cachedOptions
+      return
+    }
     const currentRequestId = ++requestId
     loading.value = true
     loadingKey = requestKey
@@ -46,6 +54,7 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
           limit
         })
         options = await ensureSelectedSystemAccountOptions(options, selectedIds)
+        optionCache.set(requestKey, options)
         if (currentRequestId !== requestId) return
         systemAccounts.value = options
       } catch (error) {

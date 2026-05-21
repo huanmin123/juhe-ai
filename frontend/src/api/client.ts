@@ -171,7 +171,7 @@ export interface AccountListParams extends ListParams {
   pageSize?: number
   keyword?: string
   type?: string
-  status?: string
+  status?: string | string[]
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
   limit?: number
 }
@@ -618,7 +618,8 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
   if (params.limit) output.limit = params.limit
   if (params.keyword) output.keyword = params.keyword
   if (params.type && params.type !== 'all') output.type = params.type
-  if (params.status && params.status !== 'all') output.status = params.status
+  const status = joinedListParam(params.status)
+  if (status) output.status = status
   if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
   if (params.sorts?.length) {
     output.sorts = params.sorts.map((sort) => `${sort.field}:${sort.order}`).join(',')
@@ -635,9 +636,19 @@ function accountOptionsParams(params?: AccountListParams, includeSystemAccount =
   if (params.limit) output.limit = params.limit
   if (params.keyword) output.keyword = params.keyword
   if (params.type && params.type !== 'all') output.type = params.type
-  if (params.status && params.status !== 'all') output.status = params.status
+  const status = joinedListParam(params.status)
+  if (status) output.status = status
   if (params.schedulable && params.schedulable !== 'all') output.schedulable = params.schedulable
   return Object.keys(output).length ? output : undefined
+}
+
+function joinedListParam(value?: string | string[]): string | undefined {
+  const values = Array.isArray(value) ? value : value ? [value] : []
+  const normalizedValues = values
+    .flatMap((item) => item.split(','))
+    .map((item) => item.trim())
+    .filter((item) => item && item !== 'all')
+  return normalizedValues.length ? [...new Set(normalizedValues)].join(',') : undefined
 }
 
 function groupListParams(params?: GroupListParams, includeSystemAccount = true): Record<string, unknown> | undefined {
