@@ -29,6 +29,13 @@ export interface BackgroundWorkerRuntimeLogQueueRuntime extends BackgroundWorker
   retentionDays: number
 }
 
+export interface BackgroundWorkerRetryQueueRuntime {
+  name: string
+  pendingCount: number
+  runningCount: number
+  nextRunAt?: string
+}
+
 export interface BackgroundWorkerIpcQueueRuntime extends BackgroundWorkerQueueRuntime {
   rejectedCount?: number
 }
@@ -56,6 +63,7 @@ export interface BackgroundWorkerRuntimeSnapshot {
   recordMaintenanceQueue: BackgroundWorkerQueueRuntime
   auditLogQueue: BackgroundWorkerQueueRuntime
   runtimeLogIndexQueue: BackgroundWorkerRuntimeLogQueueRuntime
+  cooldownAccountRetestQueue?: BackgroundWorkerRetryQueueRuntime
 }
 
 type BackgroundWorkerMessage =
@@ -78,7 +86,7 @@ interface PendingRequest {
 }
 
 interface PendingProcessEventLoopRequest {
-  resolve: (samples: ProcessEventLoopSample[]) => void
+  resolve: (samples: ProcessEventLoopSample[] | undefined) => void
   timeout: NodeJS.Timeout
 }
 
@@ -327,14 +335,14 @@ export async function requestBackgroundWorkerSnapshot(timeoutMs = 5000): Promise
   })
 }
 
-export async function requestServerProcessEventLoopSamples(timeoutMs = 1000): Promise<ProcessEventLoopSample[]> {
+export async function requestServerProcessEventLoopSamples(timeoutMs = 1000): Promise<ProcessEventLoopSample[] | undefined> {
   if (runtimeConfig.processRole !== 'worker' || typeof process.send !== 'function') {
-    return []
+    return undefined
   }
 
   const sendToParent = process.send.bind(process)
   const requestId = randomUUID()
-  return await new Promise<ProcessEventLoopSample[]>((resolve) => {
+  return await new Promise<ProcessEventLoopSample[] | undefined>((resolve) => {
     const timeout = setTimeout(() => {
       const pending = pendingProcessEventLoopRequests.get(requestId)
       if (!pending) {
@@ -342,7 +350,7 @@ export async function requestServerProcessEventLoopSamples(timeoutMs = 1000): Pr
       }
       timedOutProcessEventLoopRequestCount += 1
       pendingProcessEventLoopRequests.delete(requestId)
-      pending.resolve([])
+      pending.resolve(undefined)
     }, timeoutMs)
     pendingProcessEventLoopRequests.set(requestId, { resolve, timeout })
     try {
@@ -352,13 +360,13 @@ export async function requestServerProcessEventLoopSamples(timeoutMs = 1000): Pr
       } satisfies BackgroundWorkerMessage, (error) => {
         if (error) {
           failedProcessEventLoopRequestCount += 1
-          finishProcessEventLoopRequest(requestId, [])
+          finishProcessEventLoopRequest(requestId, undefined)
           markParentIpcBroken(error)
         }
       })
     } catch (error) {
       failedProcessEventLoopRequestCount += 1
-      finishProcessEventLoopRequest(requestId, [])
+      finishProcessEventLoopRequest(requestId, undefined)
       markParentIpcBroken(error)
     }
   })
@@ -403,7 +411,7 @@ function handleWorkerMessage(message: unknown): void {
       break
     case 'background_worker_process_event_loop_response':
       if (typeof record.requestId !== 'string' || !Array.isArray(record.samples)) break
-      finishProcessEventLoopRequest(record.requestId, record.samples as ProcessEventLoopSample[])
+      finishProcessEventLoopRequest(record.requestId, nonEmptyProcessEventLoopSamples(record.samples))
       break
     case 'background_worker_process_event_loop_request':
       if (runtimeConfig.processRole === 'server' && typeof record.requestId === 'string') {
@@ -429,7 +437,7 @@ function handleParentMessage(message: unknown): void {
   if (record.type !== 'background_worker_process_event_loop_response' || typeof record.requestId !== 'string' || !Array.isArray(record.samples)) {
     return
   }
-  finishProcessEventLoopRequest(record.requestId, record.samples as ProcessEventLoopSample[])
+  finishProcessEventLoopRequest(record.requestId, nonEmptyProcessEventLoopSamples(record.samples))
 }
 
 function queueWorkerMessage(message: BackgroundWorkerMessage): boolean {
@@ -817,12 +825,12 @@ function failPendingRequests(): void {
 function failPendingProcessEventLoopRequests(): void {
   for (const [requestId, pending] of pendingProcessEventLoopRequests) {
     clearTimeout(pending.timeout)
-    pending.resolve([])
+    pending.resolve(undefined)
     pendingProcessEventLoopRequests.delete(requestId)
   }
 }
 
-function finishProcessEventLoopRequest(requestId: string, samples: ProcessEventLoopSample[]): void {
+function finishProcessEventLoopRequest(requestId: string, samples: ProcessEventLoopSample[] | undefined): void {
   const pending = pendingProcessEventLoopRequests.get(requestId)
   if (!pending) {
     return
@@ -831,6 +839,10 @@ function finishProcessEventLoopRequest(requestId: string, samples: ProcessEventL
   clearTimeout(pending.timeout)
   pendingProcessEventLoopRequests.delete(requestId)
   pending.resolve(samples)
+}
+
+function nonEmptyProcessEventLoopSamples(samples: unknown[]): ProcessEventLoopSample[] | undefined {
+  return samples.length > 0 ? samples as ProcessEventLoopSample[] : undefined
 }
 
 function markWorkerIpcBroken(error: unknown, child = workerProcess): void {

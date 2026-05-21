@@ -103,8 +103,8 @@
     <a-row v-if="showAdminDetailCharts" :gutter="[16, 16]" class="stats-section">
       <a-col :xs="24" :xl="14">
         <StatsChartCard
-          :title="`进程事件循环延迟（${currentWindowLabel}）`"
-          description="主进程、后台 worker 和 DB service 独立采样；单位为毫秒。"
+          title="进程事件循环延迟（最近 24 小时）"
+          description="主进程、后台 worker 和 DB service 独立采样，按分钟展示；单位为毫秒。"
           :loading="systemInitialLoading"
           :has-data="hasProcessEventLoopData"
           :empty-description="processEventLoopEmptyDescription"
@@ -117,6 +117,7 @@
             </div>
           </div>
           <div v-if="hasProcessEventLoopTrend" ref="processEventLoopChartRef" class="chart-panel chart-panel-large" />
+          <a-empty v-else class="process-event-loop-trend-empty" :description="processEventLoopTrendEmptyDescription" />
         </StatsChartCard>
       </a-col>
       <a-col :xs="24" :xl="10">
@@ -152,11 +153,16 @@
             </template>
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'name'">
-                <span class="background-job-name">
-                  <span>{{ record.name }}</span>
-                  <a-tooltip v-if="backgroundJobDurationNote(record)" :title="backgroundJobDurationNote(record)">
-                    <InfoCircleOutlined class="background-job-info-icon" />
-                  </a-tooltip>
+                <span class="background-job-name-cell">
+                  <span class="background-job-name">
+                    <span>{{ record.name }}</span>
+                    <a-tooltip v-if="backgroundJobDurationNote(record)" :title="backgroundJobDurationNote(record)">
+                      <InfoCircleOutlined class="background-job-info-icon" />
+                    </a-tooltip>
+                  </span>
+                  <span v-if="backgroundJobRetryQueueSummary(record)" class="background-job-queue-summary">
+                    {{ backgroundJobRetryQueueSummary(record) }}
+                  </span>
                 </span>
               </template>
               <template v-else-if="column.key === 'running'">
@@ -186,11 +192,13 @@
             <template #card="{ record }">
               <article class="background-job-card">
                 <div class="background-job-card-head">
-                  <strong class="background-job-name">
-                    <span>{{ record.name }}</span>
-                    <a-tooltip v-if="backgroundJobDurationNote(record)" :title="backgroundJobDurationNote(record)">
-                      <InfoCircleOutlined class="background-job-info-icon" />
-                    </a-tooltip>
+                  <strong class="background-job-name-cell">
+                    <span class="background-job-name">
+                      <span>{{ record.name }}</span>
+                      <a-tooltip v-if="backgroundJobDurationNote(record)" :title="backgroundJobDurationNote(record)">
+                        <InfoCircleOutlined class="background-job-info-icon" />
+                      </a-tooltip>
+                    </span>
                   </strong>
                   <a-tag :color="record.running ? 'processing' : record.failureCount > 0 ? 'warning' : 'success'">
                     {{ record.running ? '运行中' : '空闲' }}
@@ -216,6 +224,10 @@
                   <div v-if="record.lastError" class="mobile-list-meta-item mobile-list-meta-wide">
                     <span>最近错误</span>
                     <strong>{{ record.lastError }}</strong>
+                  </div>
+                  <div v-if="backgroundJobRetryQueueSummary(record)" class="mobile-list-meta-item mobile-list-meta-wide">
+                    <span>复活队列</span>
+                    <strong>{{ backgroundJobRetryQueueSummary(record) }}</strong>
                   </div>
                 </div>
               </article>
@@ -390,6 +402,7 @@ const modelDistributionEmptyDescription = computed(() => `${currentWindowLabel.v
 const errorEmptyDescription = computed(() => hasWindowUsage.value ? `${currentWindowLabel.value}暂无失败请求` : `${currentWindowLabel.value}暂无失败请求`)
 const systemTrendEmptyDescription = computed(() => '等待后台监控采样')
 const processEventLoopEmptyDescription = computed(() => '等待进程事件循环采样')
+const processEventLoopTrendEmptyDescription = computed(() => '最近 24 小时暂无事件循环分钟趋势，等待后台采样')
 const backgroundJobEmptyDescription = computed(() => backgroundJobsAvailable.value ? '暂无后台任务' : '暂时无法获取后台 worker 任务状态')
 const usageTrendDescription = computed(() => '请求和失败按次数统计；Token 为输入 + 输出；平均总耗时取网关均值。')
 const backgroundJobColumns = [
@@ -561,6 +574,25 @@ function formatJobCounts(row: NonNullable<SystemMetricsOverview['backgroundJobs'
   return `${formatInteger(row.successCount)} / ${formatInteger(row.failureCount)} / ${formatInteger(row.skippedCount)}`
 }
 
+function backgroundJobRetryQueueSummary(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {
+  const queue = row.name === 'cooldown-account-retest' ? row.retryQueue : undefined
+  if (!queue) return undefined
+  const nextRunAt = formatRetryQueueNextRunAt(queue.nextRunAt)
+  return `复活队列：待执行 ${formatInteger(queue.pendingCount)} / 运行中 ${formatInteger(queue.runningCount)}${nextRunAt ? ` / 下次 ${nextRunAt}` : ''}`
+}
+
+function formatRetryQueueNextRunAt(value?: string) {
+  if (!value) return undefined
+  const date = new Date(value)
+  if (!Number.isFinite(date.getTime())) return undefined
+  return date.toLocaleTimeString('zh-CN', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit'
+  })
+}
+
 function backgroundJobDurationNote(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {
   if (row.name !== 'cooldown-account-retest') return undefined
   return '该任务会在冷却到期后按真实网关链路复测账号；失败后的复活重试会进入异步队列，按 3 秒、10 秒、30 秒唤醒执行，不会让本轮后台任务一直等待。'
@@ -701,8 +733,23 @@ watch(() => backgroundJobRows.value.length, (total) => {
   white-space: nowrap;
 }
 
+.process-event-loop-trend-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 220px;
+}
+
 .stats-background-jobs-table {
   min-height: 0;
+}
+
+.background-job-name-cell {
+  display: inline-grid;
+  min-width: 0;
+  max-width: 100%;
+  gap: 3px;
 }
 
 .background-job-name {
@@ -715,6 +762,15 @@ watch(() => backgroundJobRows.value.length, (total) => {
 
 .background-job-name span {
   min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.background-job-queue-summary {
+  min-width: 0;
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.35;
   overflow-wrap: anywhere;
 }
 

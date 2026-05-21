@@ -53,6 +53,14 @@ export function beginDatabaseTransaction(target = getDatabase()): boolean {
   return true
 }
 
+export function beginImmediateDatabaseTransaction(target = getDatabase()): boolean {
+  if (target.isTransaction) {
+    return false
+  }
+  target.exec('BEGIN IMMEDIATE')
+  return true
+}
+
 export function commitDatabaseTransaction(target: DatabaseSync, started: boolean): void {
   if (started) {
     target.exec('COMMIT')

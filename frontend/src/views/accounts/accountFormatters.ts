@@ -8,8 +8,6 @@ import {
 } from '@/shared/formatters'
 import type { AccountStatus, AccountSummary, AccountTestResult, AccountType, AccountUsageSummary } from '@/types/domain'
 
-export type SchedulableFilter = 'all' | 'enabled' | 'disabled' | 'cooling'
-
 export interface OAuthUsageBar {
   key: string
   label: string
@@ -47,6 +45,7 @@ export function accountErrorCodeText(code?: string): string {
   if (code === 'oauth_token_refresh_failed') return 'OAuth Token 刷新失败'
   if (code === 'upstream_failure') return '上游调用失败'
   if (code === 'account_expired') return '账户过期'
+  if (code === 'cooldown_retest_failed') return '后台复测失败'
   return code || '未分类异常'
 }
 
@@ -96,14 +95,27 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
   const cooldownText = accountCooldownText(account)
   if (cooldownText) {
     lines.push(cooldownText)
-  } else if (isTemporaryAccountStatus(account) && account.cooldownUntil) {
+    if (account.status === 'temporary_unavailable' && account.cooldownRetestFailureCount) {
+      lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
+    }
+  } else if (account.status === 'temporary_unavailable' && account.cooldownUntil) {
     lines.push(`已到期：${formatDateTime(account.cooldownUntil)}`)
     lines.push('等待后台复测；也可手动测试或在更多菜单恢复正常')
+    if (account.status === 'temporary_unavailable' && account.cooldownRetestFailureCount) {
+      lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
+    }
   } else if (account.status === 'disabled' && !accountExpired) {
     lines.push('停用账户不会被测试或后台任务自动恢复')
   } else if (account.status === 'error') {
     lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
+    if (account.cooldownRetestFailureCount) {
+      lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
+    }
     lines.push('异常账户不会参与调度，仅保留测试和恢复异常')
+  }
+  if (account.cooldownRetestLastAt) {
+    const suffix = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
+    lines.push(`最近后台复测：${formatDateTime(account.cooldownRetestLastAt)}${suffix}`)
   }
   if (account.lastErrorMessage) {
     lines.push(`原因：${account.lastErrorMessage}`)
@@ -193,13 +205,6 @@ export function asString(value: unknown): string {
 
 export function normalizeKeyword(value: unknown): string {
   return String(value ?? '').trim().toLowerCase()
-}
-
-export function matchesSchedulableFilter(account: AccountSummary, filter: SchedulableFilter): boolean {
-  if (filter === 'all') return true
-  if (filter === 'cooling') return isTemporaryAccountStatus(account) || isCoolingDown(account)
-  if (filter === 'enabled') return account.status === 'active' && account.schedulable && !isTemporaryAccountStatus(account) && !isCoolingDown(account)
-  return account.status === 'disabled' || !account.schedulable
 }
 
 export function formatAccountUsageSummary(usage: AccountUsageSummary): string {

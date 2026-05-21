@@ -12,6 +12,7 @@ interface AccountGroupOptionsScope {
 }
 
 interface UseAccountGroupOptionsConfig {
+  allowAllProviders?: boolean
   errorMessage?: string
   isManagementView: () => boolean
   limit?: number
@@ -35,7 +36,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   async function load(nextKeyword = keyword.value, force = false): Promise<void> {
     keyword.value = nextKeyword
     const scope = normalizedScope()
-    if ((config.isManagementView() && !scope.systemAccountId) || (!scope.providerCode && !scope.selectedIds.length)) {
+    if ((config.isManagementView() && !scope.systemAccountId) || (!config.allowAllProviders && !scope.providerCode && !scope.selectedIds.length)) {
       requestId += 1
       groups.value = []
       loadingKey = undefined
@@ -54,15 +55,18 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     if (!force && loadingKey === requestKey && loadingPromise) {
       return loadingPromise
     }
+    const currentRequestId = ++requestId
     if (!force) {
       const cachedGroups = optionCache.get(requestKey)
       if (cachedGroups) {
+        loadingKey = undefined
+        loadingPromise = undefined
+        loading.value = false
         groups.value = cachedGroups
         return
       }
     }
 
-    const currentRequestId = ++requestId
     loading.value = true
     loadingKey = requestKey
     loadingPromise = (async () => {

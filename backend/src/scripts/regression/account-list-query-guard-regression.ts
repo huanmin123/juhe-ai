@@ -76,12 +76,22 @@ try {
 
     const groupResult = repositories.listAccountsPage(access, { keyword: '账户绑定前缀', page: 1, pageSize: 20 })
     const groupIds = groupResult.items.map((item) => item.id)
-    assert(groupIds.includes(matchedByGroup.id), 'AI 账户搜索应命中绑定分组名前缀值')
+    assert(!groupIds.includes(matchedByGroup.id), 'AI 账户名称搜索不应通过绑定分组名命中')
     assert(!groupIds.includes(middleGroupOnly.id), 'AI 账户搜索不应命中绑定分组名中间包含值')
 
-    const idPrefix = uniquePrefix(matchedByName.id, matchedByNamePrefix.id)
-    const idResult = repositories.listAccountsPage(access, { keyword: idPrefix, page: 1, pageSize: 20 })
-    assert(idResult.items.some((item) => item.id === matchedByName.id), 'AI 账户搜索应支持账户 ID 前缀定位')
+    const groupFilterResult = repositories.listAccountsPage(access, { groupId: matchedGroup.id, page: 1, pageSize: 20 })
+    const groupFilterIds = groupFilterResult.items.map((item) => item.id)
+    assert(groupFilterIds.includes(matchedByGroup.id), 'AI 账户分组筛选应命中所选分组绑定账户')
+    assert(!groupFilterIds.includes(middleGroupOnly.id), 'AI 账户分组筛选不应混入其他分组绑定账户')
+
+    const idResult = repositories.listAccountsPage(access, { keyword: matchedByName.id, page: 1, pageSize: 20 })
+    assert(!idResult.items.some((item) => item.id === matchedByName.id), 'AI 账户名称搜索不应支持账户 ID 定位')
+
+    const providerResult = repositories.listAccountsPage(access, { keyword: 'openai', page: 1, pageSize: 20 })
+    assert(!providerResult.items.some((item) => item.id === matchedByName.id), 'AI 账户名称搜索不应通过供应商编码命中')
+
+    const typeResult = repositories.listAccountsPage(access, { keyword: 'api_key', page: 1, pageSize: 20 })
+    assert(!typeResult.items.some((item) => item.id === matchedByName.id), 'AI 账户名称搜索不应通过账户类型命中')
 
     const wildcardResult = repositories.listAccountsPage(access, { keyword: 'percent%', page: 1, pageSize: 20 })
     const wildcardIds = wildcardResult.items.map((item) => item.id)
@@ -124,16 +134,18 @@ try {
     assert(!/\bCOALESCE\s*\(\s*account_rows\.notes\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描备注字段')
     assert(!/\baccount_rows\.notes\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表搜索不应把备注字段放进通用关键词 WHERE')
     assert(!/\bCOALESCE\s*\(\s*bound_groups\.name\b/i.test(call.sql), 'AI 账户列表搜索不应通过 COALESCE 扫描分组名称')
-    assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'AI 账户列表前缀搜索应显式转义 LIKE 通配符')
+    assert(!/\bbound_groups\.name\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表搜索不应把分组名称放进通用关键词 WHERE')
+    assert(!/\baccount_rows\.id\s+(?:=|LIKE)\s+\?/i.test(call.sql), 'AI 账户列表名称搜索不应把账户 ID 放进通用关键词 WHERE')
+    assert(!/\baccount_rows\.provider_code\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表名称搜索不应把供应商编码放进通用关键词 WHERE')
+    assert(!/\baccount_rows\.type\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'AI 账户列表名称搜索不应把账户类型放进通用关键词 WHERE')
+    if (/\bLIKE\s+\?/i.test(call.sql)) {
+      assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'AI 账户列表前缀搜索应显式转义 LIKE 通配符')
+    }
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), 'AI 账户列表搜索不应传入前导通配符参数')
   }
   for (const indexName of [
     'idx_accounts_name_lookup',
     'idx_accounts_system_account_name_lookup',
-    'idx_accounts_provider_lookup',
-    'idx_accounts_system_account_provider_lookup',
-    'idx_accounts_type_lookup',
-    'idx_accounts_system_account_type_lookup',
     'idx_groups_name_lookup',
     'idx_groups_system_account_name_lookup'
   ]) {
@@ -147,7 +159,7 @@ try {
     assertBusinessIndexMissing(indexName)
   }
 
-  console.log('AI 账户列表查询防护回归通过：搜索仅支持精确/前缀匹配，不再使用前导通配符或包含匹配')
+  console.log('AI 账户列表查询防护回归通过：搜索仅按账户名称精确/前缀匹配，分组使用独立筛选')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -176,14 +188,6 @@ function createGuardAccount(
     groupId,
     status
   }, { systemAccountId: 'sys_admin', role: 'admin' as const })
-}
-
-function uniquePrefix(value: string, otherValue: string): string {
-  for (let length = 1; length <= value.length; length += 1) {
-    const prefix = value.slice(0, length)
-    if (!otherValue.startsWith(prefix)) return prefix
-  }
-  return value
 }
 
 function assertBusinessIndexExists(indexName: string): void {

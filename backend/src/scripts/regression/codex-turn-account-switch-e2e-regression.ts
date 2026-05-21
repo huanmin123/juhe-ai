@@ -88,7 +88,8 @@ async function main(): Promise<void> {
 
     const codexSwitch = seedTwoAccountGateway(upstreamBaseUrl, 'codex-switch')
     const nonCodex = seedTwoAccountGateway(upstreamBaseUrl, 'non-codex')
-    const terminal = seedTwoAccountGateway(upstreamBaseUrl, 'terminal-error')
+    const contextWindow = seedTwoAccountGateway(upstreamBaseUrl, 'context-window')
+    const cyberPolicy = seedTwoAccountGateway(upstreamBaseUrl, 'cyber-policy')
 
     gatewayServer = createGatewayServer()
     await listen(gatewayServer)
@@ -96,14 +97,15 @@ async function main(): Promise<void> {
 
     await assertCodexFourthRequestSwitchesAccount(baseUrl, codexSwitch, upstreamState)
     await assertNonCodexDoesNotSwitchAccount(baseUrl, nonCodex, upstreamState)
-    await assertCodexTerminalErrorDoesNotSwitchAccount(baseUrl, terminal, upstreamState)
+    await assertCodexContextWindowSwitchesAccount(baseUrl, contextWindow, upstreamState)
+    await assertCodexCyberPolicySwitchesAccount(baseUrl, cyberPolicy, upstreamState)
 
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
     assertUsageRecords(codexSwitch)
-    assertAccountsStillActive([codexSwitch, nonCodex, terminal])
+    assertAccountsStillActive([codexSwitch, nonCodex, contextWindow, cyberPolicy])
 
-    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、3 次失败后第 4 次避让、非 Codex 不切号、Codex 终止类错误不切号均符合预期')
+    console.log('Codex turn 切号 e2e 回归通过：临时库假账号、mock 上游、3 次失败后第 4 次避让、非 Codex 不切号、context_length_exceeded 和 cyber_policy 均可重试并切号，符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -172,7 +174,7 @@ async function assertNonCodexDoesNotSwitchAccount(
   assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, '非 Codex 不应命中备用账号')
 }
 
-async function assertCodexTerminalErrorDoesNotSwitchAccount(
+async function assertCodexContextWindowSwitchesAccount(
   baseUrl: string,
   seeded: SeededGateway,
   upstreamState: MockUpstreamState
@@ -180,18 +182,61 @@ async function assertCodexTerminalErrorDoesNotSwitchAccount(
   const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
   const beforeFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
 
-  for (let index = 1; index <= 4; index += 1) {
+  for (let index = 1; index <= 3; index += 1) {
     const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
-      scenario: 'codex-terminal-error',
-      turnId: 'turn-terminal-error',
+      scenario: 'context-window-error',
+      turnId: 'turn-context-window',
       codex: true
     })
-    assert(streamText.includes('context_length_exceeded'), `Codex 终止类错误第 ${index} 次应保留原始错误码：${streamText}`)
-    assert(!streamText.includes('upstream_retryable_error'), `Codex 终止类错误第 ${index} 次不应伪造成可重试：${streamText}`)
+    assert(streamText.includes('upstream_retryable_error'), `第 ${index} 次 context_length_exceeded 应改写为可重试错误：${streamText}`)
+    assert(!streamText.includes('context_length_exceeded'), `第 ${index} 次 context_length_exceeded 不应透出原始错误码：${streamText}`)
   }
 
-  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 4, 'Codex 终止类错误不应进入 turn 级切号计数')
-  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, 'Codex 终止类错误不应命中备用账号')
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, 'context_length_exceeded 前 3 次应都命中首选失败账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, 'context_length_exceeded 第 4 次前不应提前命中备用账号')
+
+  const fourthText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'context-window-error',
+    turnId: 'turn-context-window',
+    codex: true
+  })
+  assert(fourthText.includes('response.completed'), `context_length_exceeded 第 4 次应切到备用账号并完成：${fourthText}`)
+  assert(!fourthText.includes('response.failed'), `context_length_exceeded 第 4 次不应继续失败：${fourthText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, 'context_length_exceeded 第 4 次不应继续请求已失败账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'context_length_exceeded 第 4 次应命中备用账号')
+}
+
+async function assertCodexCyberPolicySwitchesAccount(
+  baseUrl: string,
+  seeded: SeededGateway,
+  upstreamState: MockUpstreamState
+): Promise<void> {
+  const beforeFailedHits = hitCount(upstreamState, seeded.failedUpstreamKey)
+  const beforeFreshHits = hitCount(upstreamState, seeded.freshUpstreamKey)
+
+  for (let index = 1; index <= 3; index += 1) {
+    const streamText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+      scenario: 'cyber-policy-after-output-error',
+      turnId: 'turn-cyber-policy',
+      codex: true
+    })
+    assert(streamText.includes('upstream_retryable_error'), `第 ${index} 次 cyber_policy 失败应改写为可重试错误：${streamText}`)
+    assert(streamText.includes('partial output'), `第 ${index} 次 cyber_policy 失败应保留已输出内容：${streamText}`)
+    assert(!streamText.includes('cyber_policy'), `第 ${index} 次 cyber_policy 失败不应透出原始错误码：${streamText}`)
+  }
+
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, 'cyber_policy 前 3 次应都命中首选失败账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 0, 'cyber_policy 第 4 次前不应提前命中备用账号')
+
+  const fourthText = await requestResponsesStream(baseUrl, seeded.apiKey, {
+    scenario: 'cyber-policy-after-output-error',
+    turnId: 'turn-cyber-policy',
+    codex: true
+  })
+  assert(fourthText.includes('response.completed'), `cyber_policy 第 4 次应切到备用账号并完成：${fourthText}`)
+  assert(!fourthText.includes('response.failed'), `cyber_policy 第 4 次不应继续失败：${fourthText}`)
+  assert.equal(hitCount(upstreamState, seeded.failedUpstreamKey) - beforeFailedHits, 3, 'cyber_policy 第 4 次不应继续请求已失败账号')
+  assert.equal(hitCount(upstreamState, seeded.freshUpstreamKey) - beforeFreshHits, 1, 'cyber_policy 第 4 次应命中备用账号')
 }
 
 function seedTwoAccountGateway(upstreamBaseUrl: string, label: string): SeededGateway {
@@ -284,8 +329,18 @@ function createMockOpenAIUpstream(state: MockUpstreamState): http.Server {
         sendCompletedStream(res)
         return
       }
-      if (scenario === 'codex-terminal-error') {
+      if (scenario === 'context-window-error') {
         sendFailedStream(res, 'context_length_exceeded', 'Your input exceeds the context window of this model.')
+        return
+      }
+      if (scenario === 'cyber-policy-error') {
+        sendFailedStream(res, 'cyber_policy', 'This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber')
+        return
+      }
+      if (scenario === 'cyber-policy-after-output-error') {
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"partial output"}\n\n')
+        sendFailedStream(res, 'cyber_policy', 'This content was flagged for possible cybersecurity risk. If this seems wrong, try rephrasing your request. To get authorized for security work, join the Trusted Access for Cyber program: https://chatgpt.com/cyber')
         return
       }
       sendFailedStream(res, 'internal_server_error', 'mock upstream failed before output')

@@ -52,7 +52,7 @@ try {
     targetId: account.id,
     model: 'gpt-5.5',
     profile: 'full',
-    officialBaseline: false
+    trustedComparison: false
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   await assertRunShape(accountRun, {
     targetType: 'account',
@@ -73,7 +73,7 @@ try {
   assert(!usageRows.some((row) => row.accountId && row.accountId !== account.id), '账户目标检测不应静默切到同分组其他账号')
   assert(!usageRows.some((row) => row.accountId === secondAccount.id), '账户目标检测不应命中第二个分组账号')
 
-  console.log('模型检测完整 profile 回归通过：AI 账户目标闭环，交叉模型与长上下文探针通过')
+  console.log('模型检测完整 profile 回归通过：AI 账户目标闭环，辅助模型对照与长上下文探针通过')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
@@ -91,7 +91,7 @@ async function assertRunShape(run: ModelCheckRunDetail, options: {
   assert.equal(run.level, options.highConfidence ? 'high_confidence' : run.level)
   assert(run.score >= 90, `完整检测分数应足够高，actual=${run.score}`)
   assert(run.checks.some((item) => item.itemKey === 'target.long_context' && item.status === 'passed'), '完整检测应包含并通过长上下文探针')
-  assert(run.checks.some((item) => item.itemKey === 'target.cross_model' && item.status === 'passed'), '完整检测应包含并通过交叉模型对照')
+  assert(run.checks.some((item) => item.itemKey === 'target.cross_model' && item.status === 'passed'), '完整检测应包含并通过辅助模型对照')
   assert(run.checks.some((item) => item.itemKey === 'target.stability' && item.status === 'passed'), '完整检测应包含并通过稳定性探针')
   assert(run.checks.every((item) => item.evidenceSummary.modelMismatch !== true), '通过场景不应出现模型不匹配证据')
   const serialized = JSON.stringify(run)

@@ -67,7 +67,7 @@ statsRouter.get('/account-usage', (req, res) => {
   res.json(ok(getAccountUsageStatsOverviewPage(getRequestAccessScope(req.query.systemAccountId), parseAccountUsageOptions(req.query))))
 })
 
-function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOptions & { range: ReturnType<typeof normalizeAccountUsageStatsRange>; accountIds?: string[] } {
+function parseAccountUsageOptions(query: Record<string, unknown>): Omit<AccountListOptions, 'type'> & { range: ReturnType<typeof normalizeAccountUsageStatsRange>; accountIds?: string[] } {
   const timezone = usageStatsTimezone()
   const startDate = optionalQueryText(query.startDate)
   const endDate = optionalQueryText(query.endDate)
@@ -81,7 +81,6 @@ function parseAccountUsageOptions(query: Record<string, unknown>): AccountListOp
     pageSize: pageSize ?? integerQueryValue(query.limit) ?? 10,
     limit: undefined,
     keyword: optionalQueryText(query.keyword),
-    type: optionalQueryText(query.type),
     accountIds: parseAccountIds(query.accountIds),
     schedulable: schedulableQueryValue(query.schedulable),
     range
@@ -127,7 +126,15 @@ statsRouter.get('/system-metrics', requireAdmin, async (req, res) => {
   const overview = getSystemMetricsOverview(normalizeStatsDateRange(parsed.data))
   const runtime = await requestServerRuntimeSnapshot(1000).catch(() => undefined)
   const workerSnapshot = runtime?.worker?.snapshot
-  const backgroundJobs = workerSnapshot?.jobs
+  const backgroundJobs = workerSnapshot?.jobs?.map((job) => {
+    if (job.name !== 'cooldown-account-retest' || !workerSnapshot.cooldownAccountRetestQueue) {
+      return job
+    }
+    return {
+      ...job,
+      retryQueue: workerSnapshot.cooldownAccountRetestQueue
+    }
+  })
   res.json(ok({
     ...overview,
     runtimeSnapshotAvailable: Boolean(runtime),

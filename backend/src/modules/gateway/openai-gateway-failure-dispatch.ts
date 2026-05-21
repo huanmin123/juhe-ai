@@ -328,7 +328,7 @@ export async function handleUpstreamRequestError(
     throw error
   }
 
-  const message = error instanceof Error ? error.message : '请求失败'
+  const message = formatUpstreamRequestErrorMessage(error)
   getRequestLogger().warn(errorLogFields(error, {
     event: 'gateway_upstream_request_failed',
     accountId: account.id,
@@ -362,6 +362,25 @@ export async function handleUpstreamRequestError(
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   return { action: 'skip_account', lastAttempt }
+}
+
+export function formatUpstreamRequestErrorMessage(error: unknown): string {
+  const explicitMessage = error instanceof Error ? error.message.trim() : stringValue(error)
+  if (explicitMessage) {
+    return explicitMessage
+  }
+
+  const code = objectStringProperty(error, 'code')
+  if (code) {
+    return `请求失败：${code}`
+  }
+
+  const name = error instanceof Error ? error.name : objectStringProperty(error, 'name')
+  if (name && name !== 'Error') {
+    return `请求失败：${name}`
+  }
+
+  return '请求失败'
 }
 
 export function flushDeferredAccountFailures(deferredAccountFailures: DeferredAccountFailure[], sessionAffinityKey?: string): void {
@@ -405,4 +424,16 @@ function deferUnknownAccountFailureOrRejectRequest(
   }
 
   deferredAccountFailures.push(failure)
+}
+
+function objectStringProperty(value: unknown, key: string): string | undefined {
+  if (typeof value !== 'object' || value === null) {
+    return undefined
+  }
+  const property = (value as Record<string, unknown>)[key]
+  return typeof property === 'string' && property.trim() ? property.trim() : undefined
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
 }

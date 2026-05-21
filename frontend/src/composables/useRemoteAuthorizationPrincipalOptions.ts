@@ -44,12 +44,15 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     if (loadingKey === requestKey && loadingPromise) {
       return loadingPromise
     }
+    const currentRequestId = ++requestId
     const cachedOptions = optionCache.get(requestKey)
     if (cachedOptions) {
+      loadingKey = undefined
+      loadingPromise = undefined
+      loading.value = false
       options.value = cachedOptions
       return
     }
-    const currentRequestId = ++requestId
     loading.value = true
     loadingKey = requestKey
     loadingPromise = (async () => {

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { beginDatabaseTransaction, commitDatabaseTransaction, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginImmediateDatabaseTransaction, commitDatabaseTransaction, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
 import { createUsageStatsAggregationContext, type UsageStatsAggregationContext } from './usage-stats-writers.js'
 
@@ -31,23 +31,25 @@ interface UsageStatsBackfillRunnerOptions {
 }
 
 export function ensureUsageStatsBackfill(options: UsageStatsBackfillRunnerOptions): UsageStatsBackfillResult {
-  const backfillState = readUsageStatsBackfillState(options.database, options.jobName)
-  if (backfillState?.last_success_at) {
-    return { complete: true, processed: 0 }
-  }
-
-  if (!options.sourceCursor.cursorCreatedAt) {
-    recordUsageStatsBackfillComplete(options.database, options.jobName, 'skipped')
-    return { complete: true, processed: 0 }
-  }
-
-  const cursorCreatedAt = backfillState?.cursor_created_at ?? ''
-  const cursorId = backfillState?.cursor_id ?? ''
-  const rows = readUsageStatsBackfillRows(options, cursorCreatedAt, cursorId)
-  const updatedAt = nowIso()
-  const aggregationContext = createUsageStatsAggregationContext(rows)
-  const transactionStarted = beginDatabaseTransaction(options.database)
+  const transactionStarted = beginImmediateDatabaseTransaction(options.database)
   try {
+    const backfillState = readUsageStatsBackfillState(options.database, options.jobName)
+    if (backfillState?.last_success_at) {
+      commitDatabaseTransaction(options.database, transactionStarted)
+      return { complete: true, processed: 0 }
+    }
+
+    if (!options.sourceCursor.cursorCreatedAt) {
+      recordUsageStatsBackfillComplete(options.database, options.jobName, 'skipped')
+      commitDatabaseTransaction(options.database, transactionStarted)
+      return { complete: true, processed: 0 }
+    }
+
+    const cursorCreatedAt = backfillState?.cursor_created_at ?? ''
+    const cursorId = backfillState?.cursor_id ?? ''
+    const rows = readUsageStatsBackfillRows(options, cursorCreatedAt, cursorId)
+    const updatedAt = nowIso()
+    const aggregationContext = createUsageStatsAggregationContext(rows)
     for (const row of rows) {
       options.aggregateRecord(options.database, row, updatedAt, aggregationContext)
     }

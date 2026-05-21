@@ -29,6 +29,7 @@ const [
   settingsRepository,
   gatewayCache,
   accountSideEffects,
+  gatewayFailureDispatch,
   usageRecordQueue,
   auditLogQueue
 ] = await Promise.all([
@@ -40,9 +41,17 @@ const [
   import('../../storage/settings.repository.js'),
   import('../../modules/gateway/gateway-runtime-cache.service.js'),
   import('../../modules/gateway/gateway-account-side-effects.service.js'),
+  import('../../modules/gateway/openai-gateway-failure-dispatch.js'),
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../modules/audit-logs/audit-log-queue.service.js')
 ])
+
+const timeoutError = Object.assign(new Error(''), { code: 'ETIMEDOUT' })
+assert.equal(
+  gatewayFailureDispatch.formatUpstreamRequestErrorMessage(timeoutError),
+  '请求失败：ETIMEDOUT',
+  '空错误消息应回退到错误码，避免最后一次尝试文案只剩空白'
+)
 
 const app = express()
 app.use(requestContextMiddleware)

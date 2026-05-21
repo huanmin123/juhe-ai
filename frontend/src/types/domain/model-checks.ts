@@ -11,7 +11,7 @@ export interface ModelCheckOption {
   description?: string
 }
 
-export interface ModelCheckOfficialBaselineOptions {
+export interface ModelCheckTrustedComparisonOptions {
   enabledByDefault?: boolean
   available: boolean
   unavailableReason?: string
@@ -21,7 +21,8 @@ export interface ModelCheckOfficialBaselineOptions {
 export interface ModelCheckOptions {
   supportedModels: ModelCheckOption[]
   supportedProfiles: ModelCheckOption[]
-  officialBaseline: ModelCheckOfficialBaselineOptions
+  trustedComparison: ModelCheckTrustedComparisonOptions
+  officialBaseline?: ModelCheckTrustedComparisonOptions
   defaultModel: ModelCheckModel
   defaultProfile: ModelCheckProfile
 }
@@ -31,6 +32,9 @@ export interface ModelCheckRunPayload {
   targetId: string
   model: ModelCheckModel
   profile?: ModelCheckProfile
+  trustedComparison?: boolean
+  trustedComparisonAccountId?: string
+  /** @deprecated 使用 trustedComparison + trustedComparisonAccountId。 */
   officialBaseline?: boolean
 }
 
@@ -58,6 +62,8 @@ export interface ModelCheckRunSummary {
   apiKeyId?: string
   model: ModelCheckModel
   profile: ModelCheckProfile
+  trustedComparison: boolean
+  trustedComparisonAvailable: boolean
   officialBaseline: boolean
   officialBaselineAvailable: boolean
   level: ModelCheckLevel
@@ -105,4 +111,56 @@ export interface ModelCheckRunListResult {
   pageSize: number
   total: number
   hasMore: boolean
+}
+
+export type ModelCheckProgressEvent = {
+  type: 'run_started'
+  message: string
+  targetId: string
+  model: string
+  trustedComparison: boolean
+  trustedComparisonAccountId?: string
+  /** @deprecated 使用 trustedComparison。 */
+  officialBaseline: boolean
+} | {
+  type: 'run_created'
+  message: string
+  runId: string
+  traceId: string
+  startedAt: string
+} | {
+  type: 'probe_started'
+  message: string
+  itemKey: string
+  method: 'GET' | 'POST'
+  path: string
+} | {
+  type: 'probe_completed'
+  message: string
+  itemKey: string
+  traceId: string
+  statusCode: number
+  success: boolean
+  durationMs: number
+  responseModel?: string
+  outputPreview?: string
+} | {
+  type: 'item_completed'
+  message: string
+  itemKey: string
+  itemType: string
+  status: ModelCheckItemStatus
+  score: number
+  maxScore: number
+  traceId?: string
+  durationMs?: number
+} | {
+  type: 'run_completed'
+  message: string
+  runId: string
+  status: ModelCheckStatus
+  level: ModelCheckLevel
+  score: number
+  maxScore: number
+  durationMs?: number
 }

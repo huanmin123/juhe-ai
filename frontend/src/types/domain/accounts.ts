@@ -91,6 +91,9 @@ export interface AccountSummary {
   cooldownUntil?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  cooldownRetestFailureCount?: number
+  cooldownRetestLastAt?: string
+  cooldownRetestLastStatusCode?: number
   localStatus?: AccountStatus
   localCooldownUntil?: string
   localLastErrorMessage?: string
@@ -153,6 +156,7 @@ export interface AccountTestResult {
   type: AccountType
   success: boolean
   statusCode?: number
+  errorCode?: string
   message: string
   model?: string
   requestUrl?: string

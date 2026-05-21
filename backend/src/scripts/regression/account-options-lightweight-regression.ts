@@ -146,7 +146,10 @@ try {
     assert.equal(keywordOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '账户选项关键词查询不应混入其他用户账户')
 
     const groupKeywordOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent('账户选项绑定分组')}&limit=20`, seed.adminCookie)
-    assert(groupKeywordOptions.some((account) => account.id === seed.groupMatchedAccountId), '账户选项关键词应保留绑定分组名称精确/前缀搜索能力')
+    assert(!groupKeywordOptions.some((account) => account.id === seed.groupMatchedAccountId), '账户选项关键词不应通过绑定分组名称命中')
+
+    const groupFilterOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&groupId=grp_account_options_keyword_match&limit=20`, seed.adminCookie)
+    assert(groupFilterOptions.some((account) => account.id === seed.groupMatchedAccountId), '账户选项应支持独立 groupId 筛选')
 
     const notesOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent('账户选项备注前缀')}&limit=20`, seed.adminCookie)
     assert(!notesOptions.some((account) => account.id === seed.notesAccountId), '账户选项关键词不应通过 notes 长文本命中')
@@ -170,6 +173,10 @@ try {
     assert(!/\baccount_rows\b/i.test(call.sql), '账户 options SQL 不应复用完整账户列表 account_rows 大查询')
     assert(!/\baccount_quality_scores\b/i.test(call.sql), '账户 options SQL 不应接入质量分记录库')
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账户 options 关键词不应通过 COALESCE 扫描字段')
+    assert(!/\baccounts\.id\s+(?:=|LIKE)\s+\?/i.test(call.sql), '账户 options 关键词不应把账户 ID 放进 WHERE')
+    assert(!/\baccounts\.provider_code\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账户 options 关键词不应把供应商编码放进 WHERE')
+    assert(!/\baccounts\.type\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账户 options 关键词不应把账户类型放进 WHERE')
+    assert(!/\boption_groups\.name\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账户 options 关键词不应把分组名称放进 WHERE')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账户 options 关键词不应传入前导通配符参数')
     if (/\bLIKE\s+\?/i.test(call.sql)) {
       assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账户 options 前缀搜索应显式转义 LIKE 通配符')
@@ -181,7 +188,7 @@ try {
   assertBusinessIndexExists('idx_group_accounts_account_scope_enabled')
   assertBusinessIndexExists('idx_groups_system_account_name_lookup')
 
-  console.log('账户选项轻量回归通过：options 接口不读取记录库统计，不返回完整账户摘要字段，关键词仅支持精确/前缀匹配并走轻量 SQL')
+  console.log('账户选项轻量回归通过：options 接口不读取记录库统计，不返回完整账户摘要字段，关键词仅按账户名称匹配，分组使用独立筛选')
 } finally {
   await closeServer(server)
   try {

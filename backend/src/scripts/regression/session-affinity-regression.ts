@@ -19,6 +19,7 @@ function main(): void {
   testAffinityDoesNotPromoteOverBetterQuality()
   testAffinityPromotesWithinSameAvailabilityBucket()
   testAffinityPromotesAcrossAccountTypesWithinSameBucket()
+  testAffinityBindingCanSwitchAcrossAccountTypesWithoutNewShard()
   testScopedMigrationOnlyMovesMatchingBindings()
   console.log('OpenAI session affinity regression passed')
 }
@@ -140,6 +141,30 @@ function testAffinityPromotesAcrossAccountTypesWithinSameBucket(): void {
   ]
 
   assert.deepEqual(orderedIds(accounts, sessionKey), ['sticky-oauth', 'api-key-candidate'])
+  forgetOpenAIAccountForSession(sessionKey)
+}
+
+function testAffinityBindingCanSwitchAcrossAccountTypesWithoutNewShard(): void {
+  const req = createSessionRequest('mixed-local-cache')
+  const identity = {
+    systemAccountId: 'system-a',
+    apiKeyId: 'key-a',
+    groupId: 'group-a'
+  }
+  const sessionKey = resolveOpenAIGatewaySessionAffinityKey(req, identity)
+  const repeatedSessionKey = resolveOpenAIGatewaySessionAffinityKey(req, identity)
+  const accounts = [
+    createAccount('api-key-candidate', { priority: 0, type: 'api_key' }),
+    createAccount('oauth-candidate', { priority: 0, type: 'oauth' })
+  ]
+
+  assert(sessionKey, '可识别本地会话应生成亲和 key')
+  assert.equal(sessionKey, repeatedSessionKey, 'OAuth/API Key 切换不应为同一本地会话生成新的亲和分片')
+  rememberOpenAIAccountForSession(sessionKey, 'oauth-candidate', identity)
+  assert.deepEqual(orderedIds(accounts, sessionKey), ['oauth-candidate', 'api-key-candidate'], '同一本地会话先命中 OAuth 后应保留会话亲和')
+
+  rememberOpenAIAccountForSession(sessionKey, 'api-key-candidate', identity)
+  assert.deepEqual(orderedIds(accounts, sessionKey), ['api-key-candidate', 'oauth-candidate'], '同一本地会话切到 API Key 后应覆盖同一个亲和槽，而不是按账号类型另起分片')
   forgetOpenAIAccountForSession(sessionKey)
 }
 

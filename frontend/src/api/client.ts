@@ -62,6 +62,7 @@ import type {
   SystemMetricsOverview,
   ApiKeyRecordCleanupQueueTarget,
   ModelCheckOptions,
+  ModelCheckProgressEvent,
   ModelCheckRunDetail,
   ModelCheckRunListParams,
   ModelCheckRunListResult,
@@ -137,7 +138,6 @@ interface AccountUsageStatsParams extends ListParams {
   page?: number
   pageSize?: number
   keyword?: string
-  type?: string
   startDate?: string
   endDate?: string
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
@@ -170,6 +170,7 @@ export interface AccountListParams extends ListParams {
   page?: number
   pageSize?: number
   keyword?: string
+  groupId?: string
   type?: string
   status?: string | string[]
   schedulable?: 'all' | 'enabled' | 'disabled' | 'cooling'
@@ -281,6 +282,12 @@ interface UsageRecordsCleanupPayload {
 
 export type ModelCheckListParams = ModelCheckRunListParams
 
+export interface ModelCheckStreamOptions extends RequestControlOptions {
+  onProgress?: (event: ModelCheckProgressEvent) => void
+  onComplete?: (detail: ModelCheckRunDetail) => void
+  onError?: (error: { message?: string; statusCode?: number }) => void
+}
+
 export interface AuthorizationListParams extends ListParams {
   resourceType?: AuthorizationResourceType
   resourceId?: string
@@ -354,6 +361,112 @@ async function unwrap<T>(request: Promise<{ data: ApiResponse<T> }>): Promise<T>
 }
 
 const noTimeout = { timeout: 0 }
+
+async function runModelCheckStream(path: string, payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions): Promise<ModelCheckRunDetail> {
+  const response = await fetch(`${normalizeApiBaseUrl(import.meta.env.VITE_JUHE_AI_API_BASE_URL as string | undefined)}${path}`, {
+    method: 'POST',
+    credentials: 'include',
+    headers: {
+      accept: 'text/event-stream',
+      'content-type': 'application/json'
+    },
+    body: JSON.stringify(payload),
+    signal: options?.signal
+  })
+  if (!response.ok) {
+    throw new Error(await readFetchErrorMessage(response))
+  }
+  if (!response.body) {
+    throw new Error('模型检测进度流不可用')
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let completedDetail: ModelCheckRunDetail | undefined
+  const handleMessage = (raw: string): void => {
+    const event = parseServerSentEvent(raw)
+    if (!event.data) return
+    const payload = parseJsonPayload(event.data)
+    if (event.event === 'progress') {
+      options?.onProgress?.(payload as ModelCheckProgressEvent)
+      return
+    }
+    if (event.event === 'complete') {
+      completedDetail = payload as ModelCheckRunDetail
+      options?.onComplete?.(completedDetail)
+      return
+    }
+    if (event.event === 'error') {
+      const error = payload as { message?: string; statusCode?: number }
+      options?.onError?.(error)
+      throw new Error(error.message || '模型检测失败')
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+    buffer = flushServerSentEvents(buffer, handleMessage)
+  }
+  buffer += decoder.decode()
+  flushServerSentEvents(buffer, handleMessage, true)
+  if (!completedDetail) {
+    throw new Error('模型检测进度流未返回完成结果')
+  }
+  return completedDetail
+}
+
+function flushServerSentEvents(buffer: string, handleMessage: (raw: string) => void, flushRemaining = false): string {
+  let normalized = buffer.replace(/\r\n/g, '\n')
+  let separatorIndex = normalized.indexOf('\n\n')
+  while (separatorIndex >= 0) {
+    const raw = normalized.slice(0, separatorIndex)
+    if (raw.trim()) {
+      handleMessage(raw)
+    }
+    normalized = normalized.slice(separatorIndex + 2)
+    separatorIndex = normalized.indexOf('\n\n')
+  }
+  if (flushRemaining && normalized.trim()) {
+    handleMessage(normalized)
+    return ''
+  }
+  return normalized
+}
+
+function parseServerSentEvent(raw: string): { event: string; data: string } {
+  let event = 'message'
+  const dataLines: string[] = []
+  for (const line of raw.split('\n')) {
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim()
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart())
+    }
+  }
+  return { event, data: dataLines.join('\n') }
+}
+
+function parseJsonPayload(text: string): unknown {
+  try {
+    return JSON.parse(text) as unknown
+  } catch {
+    return { message: text }
+  }
+}
+
+async function readFetchErrorMessage(response: Response): Promise<string> {
+  const text = await response.text()
+  if (!text.trim()) return `请求失败：HTTP ${response.status}`
+  try {
+    const json = JSON.parse(text) as { message?: string; data?: { message?: string } }
+    return json.message || json.data?.message || text
+  } catch {
+    return text
+  }
+}
 
 export const api = {
   auth: {
@@ -566,12 +679,14 @@ export const api = {
   modelChecks: {
     options: () => unwrap<ModelCheckOptions>(http.get('/model-checks/options')),
     run: (payload: ModelCheckRunPayload) => unwrap<ModelCheckRunDetail>(http.post('/model-checks/run', payload, noTimeout)),
+    runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions) => runModelCheckStream('/model-checks/run/stream', payload, options),
     list: (params?: ModelCheckRunListParams) => unwrap<ModelCheckRunListResult>(http.get('/model-checks/runs', { params: modelCheckRunListParams(params) })),
     detail: (id: string) => unwrap<ModelCheckRunDetail>(http.get(`/model-checks/runs/${id}`))
   },
   myModelChecks: {
     options: () => unwrap<ModelCheckOptions>(http.get('/my-model-checks/options')),
     run: (payload: ModelCheckRunPayload) => unwrap<ModelCheckRunDetail>(http.post('/my-model-checks/run', payload, noTimeout)),
+    runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions) => runModelCheckStream('/my-model-checks/run/stream', payload, options),
     list: (params?: ModelCheckRunListParams) => unwrap<ModelCheckRunListResult>(http.get('/my-model-checks/runs', { params: modelCheckRunListParams(params) })),
     detail: (id: string) => unwrap<ModelCheckRunDetail>(http.get(`/my-model-checks/runs/${id}`))
   },
@@ -617,6 +732,7 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
   if (params.pageSize) output.pageSize = params.pageSize
   if (params.limit) output.limit = params.limit
   if (params.keyword) output.keyword = params.keyword
+  if (params.groupId) output.groupId = params.groupId
   if (params.type && params.type !== 'all') output.type = params.type
   const status = joinedListParam(params.status)
   if (status) output.status = status
@@ -635,6 +751,7 @@ function accountOptionsParams(params?: AccountListParams, includeSystemAccount =
   if (params.pageSize) output.pageSize = params.pageSize
   if (params.limit) output.limit = params.limit
   if (params.keyword) output.keyword = params.keyword
+  if (params.groupId) output.groupId = params.groupId
   if (params.type && params.type !== 'all') output.type = params.type
   const status = joinedListParam(params.status)
   if (status) output.status = status
@@ -718,7 +835,6 @@ function accountUsageStatsParams(params?: AccountUsageStatsParams, includeSystem
   if (params.pageSize) output.pageSize = params.pageSize
   if (params.limit) output.limit = params.limit
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
-  if (params.type && params.type !== 'all') output.type = params.type
   if (params.startDate) output.startDate = params.startDate
   if (params.endDate) output.endDate = params.endDate
   if (params.accountIds?.length) output.accountIds = params.accountIds.join(',')

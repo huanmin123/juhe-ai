@@ -223,6 +223,7 @@ export interface SystemMetricsOverview {
   }>
   processEventLoopTrend: Array<{
     statHour: string
+    statMinute: string
     processRole: ProcessRole
     sampleCount: number
     eventLoopLagMsAvg?: number

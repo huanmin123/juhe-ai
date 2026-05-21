@@ -98,10 +98,12 @@ async function main(): Promise<void> {
     const overloadedBeforeOutputCredential = createScenarioCredential(upstreamBaseUrl, '容量错误未输出前重试')
     const slowDownCredential = createScenarioCredential(upstreamBaseUrl, 'slow_down 未输出前重试')
     const genericErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '未知 error 事件默认重试')
-    const contextWindowCredential = createScenarioCredential(upstreamBaseUrl, '上下文超限终止错误不改写')
+    const cyberPolicyCredential = createScenarioCredential(upstreamBaseUrl, 'cyber_policy 未输出前重试')
+    const contextWindowCredential = createScenarioCredential(upstreamBaseUrl, '上下文超限未输出前重试')
     const nonCodexErrorEventCredential = createScenarioCredential(upstreamBaseUrl, '非 Codex 未输出前不改写')
     const overloadedNoBoundaryCredential = createScenarioCredential(upstreamBaseUrl, '容量错误缺少收尾边界')
     const overloadedAfterOutputCredential = createScenarioCredential(upstreamBaseUrl, '输出后容量错误不拦截')
+    const cyberPolicyAfterOutputCredential = createScenarioCredential(upstreamBaseUrl, '输出后 cyber_policy 重试')
     const outputItemThenFailureCredential = createScenarioCredential(upstreamBaseUrl, 'output item 后失败')
     const topLevelCodeMessageCredential = createScenarioCredential(upstreamBaseUrl, '顶层 code message 非失败')
 
@@ -227,9 +229,42 @@ async function main(): Promise<void> {
       outputSeen: false
     })
 
+    const cyberPolicyResult = await requestStreamFailureBeforeOutput(baseUrl, cyberPolicyCredential.apiKey.key, 'cyber-policy-before-output')
+    assert(!cyberPolicyResult.streamText.includes('cyber_policy'), `未输出前 cyber_policy 不应把原始错误码发给客户端：${cyberPolicyResult.streamText}`)
+    assert(cyberPolicyResult.streamText.includes('upstream_retryable_error'), `未输出前 cyber_policy 应改写为可重试错误：${cyberPolicyResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    const cyberPolicyAccount = repositories.listAccounts().find((item) => item.id === cyberPolicyCredential.account.id)
+    assert.equal(cyberPolicyAccount?.status, 'active', '未输出前 cyber_policy 不应把账号置为临时不可调用')
+    assert.equal(cyberPolicyAccount?.streamFailureCount, 0, '未输出前 cyber_policy 不应累计账号流失败计数')
+    auditLogQueue.flushAllAuditLogQueue()
+    await assertStreamInterceptAuditMetadata(cyberPolicyCredential.account.id, {
+      upstreamErrorCode: 'cyber_policy',
+      rewriteErrorCode: 'upstream_retryable_error',
+      fallbackReason: 'before_output_stream_failure',
+      outputSeen: false
+    })
+
+    const cyberPolicyAfterOutputResult = await requestStreamScenario(baseUrl, cyberPolicyAfterOutputCredential.apiKey.key, 'cyber-policy-after-output')
+    assert(cyberPolicyAfterOutputResult.streamText.includes('hello'), `输出后 cyber_policy 场景应保留已输出内容：${cyberPolicyAfterOutputResult.streamText}`)
+    assert(!cyberPolicyAfterOutputResult.streamText.includes('cyber_policy'), `输出后 cyber_policy 不应把原始错误码发给客户端：${cyberPolicyAfterOutputResult.streamText}`)
+    assert(cyberPolicyAfterOutputResult.streamText.includes('upstream_retryable_error'), `输出后 cyber_policy 应改写为可重试错误：${cyberPolicyAfterOutputResult.streamText}`)
+    usageRecordQueue.flushAllUsageRecordQueue()
+    await accountSideEffects.flushGatewayAccountSideEffectsForTest()
+    const cyberPolicyAfterOutputAccount = repositories.listAccounts().find((item) => item.id === cyberPolicyAfterOutputCredential.account.id)
+    assert.equal(cyberPolicyAfterOutputAccount?.status, 'active', '输出后 cyber_policy 不应把账号置为临时不可调用')
+    assert.equal(cyberPolicyAfterOutputAccount?.streamFailureCount, 0, '输出后 cyber_policy 改写后不应累计账号流失败计数')
+    auditLogQueue.flushAllAuditLogQueue()
+    await assertStreamInterceptAuditMetadata(cyberPolicyAfterOutputCredential.account.id, {
+      upstreamErrorCode: 'cyber_policy',
+      rewriteErrorCode: 'upstream_retryable_error',
+      fallbackReason: 'cyber_policy_stream_failure',
+      outputSeen: true
+    })
+
     const contextWindowResult = await requestStreamFailureBeforeOutput(baseUrl, contextWindowCredential.apiKey.key, 'context-window-before-output')
-    assert(contextWindowResult.streamText.includes('context_length_exceeded'), `Codex 终止类错误应保留原始错误码：${contextWindowResult.streamText}`)
-    assert(!contextWindowResult.streamText.includes('upstream_retryable_error'), `Codex 终止类错误不应伪造成可重试错误：${contextWindowResult.streamText}`)
+    assert(!contextWindowResult.streamText.includes('context_length_exceeded'), `未输出前 context_length_exceeded 不应把原始错误码发给客户端：${contextWindowResult.streamText}`)
+    assert(contextWindowResult.streamText.includes('upstream_retryable_error'), `未输出前 context_length_exceeded 应改写为可重试错误：${contextWindowResult.streamText}`)
 
     const nonCodexErrorEventResult = await requestGenericStreamFailureBeforeOutput(baseUrl, nonCodexErrorEventCredential.apiKey.key, 'generic-error-event-before-output')
     assert(nonCodexErrorEventResult.streamText.includes('internal_server_error'), `非 Codex 未输出前失败应保留原始错误码：${nonCodexErrorEventResult.streamText}`)
@@ -264,7 +299,7 @@ async function main(): Promise<void> {
     assert(topLevelCodeMessageResult.streamText.includes('"code":"diagnostic_code"'), `普通事件的 code 字段应原样透传：${topLevelCodeMessageResult.streamText}`)
     assert(!topLevelCodeMessageResult.streamText.includes('upstream_retryable_error'), `普通事件顶层 code/message 不应误判为失败：${topLevelCodeMessageResult.streamText}`)
 
-    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、Codex 终止类错误不改写、非 Codex 不伪造可重试码、输出后通用流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
+    console.log('流式超时回归通过：Codex 首段等待、首段后无新数据、碎片化 SSE 有原始字节时不误熔断、解析跳过后原样转发、缺少终止事件未输出不计数、心跳刷新空闲计时、容量错误/slow_down 专属兜底、未知 error 事件兜底、context_length_exceeded/cyber_policy 可重试改写、非 Codex 不伪造可重试码、输出后通用流失败计数、output item 输出判定、顶层 code/message 非失败和 EOF 尾包场景符合预期')
   } finally {
     usageRecordQueue.flushAllUsageRecordQueue()
     await accountSideEffects.flushGatewayAccountSideEffectsForTest()
@@ -432,6 +467,12 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         res.end()
         return
       }
+      if (scenario === 'cyber-policy-before-output') {
+        res.write('event: response.failed\n')
+        res.write('data: {"type":"response.failed","response":{"id":"resp_cyber_policy","status":"failed","error":{"code":"cyber_policy","message":"This content was flagged for possible cybersecurity risk."}}}\n\n')
+        res.end()
+        return
+      }
       if (scenario === 'context-window-before-output') {
         res.write('event: response.failed\n')
         res.write('data: {"type":"response.failed","response":{"id":"resp_context","status":"failed","error":{"code":"context_length_exceeded","message":"Your input exceeds the context window of this model."}}}\n\n')
@@ -449,6 +490,14 @@ function createStreamTimeoutRegressionUpstream(): http.Server {
         res.write('data: {"type":"response.output_text.delta","delta":"hello"}\n\n')
         res.write('event: response.failed\n')
         res.write('data: {"type":"response.failed","response":{"id":"resp_overloaded_after_output","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}\n\n')
+        res.end()
+        return
+      }
+      if (scenario === 'cyber-policy-after-output') {
+        res.write('event: response.output_text.delta\n')
+        res.write('data: {"type":"response.output_text.delta","delta":"hello"}\n\n')
+        res.write('event: response.failed\n')
+        res.write('data: {"type":"response.failed","response":{"id":"resp_cyber_policy_after_output","status":"failed","error":{"code":"cyber_policy","message":"This content was flagged for possible cybersecurity risk."}}}\n\n')
         res.end()
         return
       }

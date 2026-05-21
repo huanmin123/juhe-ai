@@ -16,7 +16,6 @@ import {
 } from './openai-gateway-responses.js'
 import { closeAsyncIterator, endResponse, LimitedBufferCapture, writeResponseChunk } from './openai-gateway-body.js'
 import {
-  isCodexTerminalStreamFailureCode,
   OpenAIStreamInterceptBuffer,
   type StreamInterceptDecision
 } from './openai-gateway-stream-intercept.js'
@@ -657,7 +656,7 @@ function streamFailureContext(downstreamBytesWritten: number, outputReceived: bo
 }
 
 function streamClientFailureCode(errorCode: string, outputReceived: boolean, clientRetryEnabled: boolean): string {
-  return clientRetryEnabled && !outputReceived && !isCodexTerminalStreamFailureCode(errorCode)
+  return clientRetryEnabled && !outputReceived
     ? gatewayStreamClientRetryErrorCode
     : errorCode
 }

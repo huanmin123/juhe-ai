@@ -128,6 +128,9 @@ try {
     const auditTracePrefix = repositories.listAuditLogs({ traceId: 'trace-log-list-guard', pageSize: 10 })
     assert.equal(auditTracePrefix.items.length, 3, '审计 traceId 筛选应支持右侧前缀定位')
 
+    const auditClientIpPrefix = repositories.listAuditLogs({ clientIp: '127.0.', pageSize: 10 })
+    assert.equal(auditClientIpPrefix.items.length, 3, '审计 clientIp 筛选应支持右侧前缀定位')
+
     const errorGroups = repositories.listAuditErrorGroups({ path: '/v1/responses', model: 'gpt-5.5', statusCode: 503, pageSize: 10 })
     assert.equal(errorGroups.items.length, 1, '审计错误组 path/model/statusCode 应按结构化条件定位')
 
@@ -151,6 +154,8 @@ try {
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '无边界日志列表查询不应传入前导通配符参数')
   }
   assert(capturedCalls.some((call) => /\bINNER\s+JOIN\s+operation_log_search\b/i.test(call.sql) && /\boperation_log_search\s+MATCH\s+\?/i.test(call.sql)), '操作日志长关键词应走 operation_log_search FTS')
+  assert(capturedCalls.some((call) => /\bal\.client_ip\s+>=\s+\?/i.test(call.sql)
+    && /\bal\.client_ip\s+<\s+\?/i.test(call.sql)), '审计 clientIp 前缀检索应使用范围条件而不是 LIKE')
 
   const boundedCalls: Array<{ sql: string; params: unknown[] }> = []
   const boundedRecordDatabase = databaseModule.getRecordDatabase()
@@ -174,6 +179,14 @@ try {
       pageSize: 10
     })
     assert.deepEqual(shortKeywordWithWindow.items.map((item) => item.id), ['op_log_guard_short_keyword'], '短关键词只允许在明确小时间窗内做精确或前缀文本检索')
+
+    const viewerShortKeywordWithWindow = repositories.listOperationLogsForViewer('sys_user', {
+      keyword: '造数',
+      startAt: '2026-02-01T00:00:00.000Z',
+      endAt: '2026-02-01T01:00:00.000Z',
+      pageSize: 10
+    })
+    assert.deepEqual(viewerShortKeywordWithWindow.items.map((item) => item.id), ['op_log_guard_short_keyword'], '用户侧短关键词也只能在明确小时间窗内做精确或前缀文本检索')
   } finally {
     boundedRecordDatabase.prepare = boundedOriginalPrepare
   }

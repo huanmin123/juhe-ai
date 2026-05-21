@@ -13,7 +13,6 @@ import type {
   ModelCheckTargetType
 } from '../../domain/types.js'
 import { logger } from '../../shared/logger.js'
-import { runtimeConfig } from '../../config/runtime.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
   accountTestUnavailableMessage,
@@ -23,9 +22,7 @@ import {
   findOpenAIAccountForGroup,
   finishModelCheckRun,
   getModelCheckRunDetail,
-  listGroups,
   listModelCheckRuns,
-  listOpenAIAccountsForGroup,
   type ModelCheckItemCreateInput,
   type OpenAIAccountSecret
 } from '../../storage/repositories.js'
@@ -41,6 +38,24 @@ const defaultProfile = 'full' as const
 const probeSetVersion = 'openai-model-check-v1'
 const responsesPath = '/v1/responses'
 const modelsPath = '/v1/models'
+const distributionSampleCount = 3
+const distributionProbeDefinitions = [
+  {
+    key: 'style_compact',
+    maxOutputTokens: 96,
+    prompt: '用 18 到 32 个中文字符解释“向量数据库的召回率”，必须包含“召回”和“相关”，不要分点。'
+  },
+  {
+    key: 'json_reasoning',
+    maxOutputTokens: 96,
+    prompt: '只输出严格 JSON：{"result":数字,"tag":"SIGMA"}。result 等于 37 + 46。'
+  },
+  {
+    key: 'code_judgement',
+    maxOutputTokens: 96,
+    prompt: '阅读代码 const xs=[2,5,8]; const y=xs.filter(x=>x>4).map(x=>x-1).join("-"); 只输出 ALPHA 后跟一个中文短句说明 y 的值。'
+  }
+] as const
 
 export class ModelCheckRequestError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -59,15 +74,6 @@ type ModelCheckTarget = {
   accountId?: string
   groupId?: string
   apiKeyId?: string
-}
-
-type OfficialBaselineTarget = {
-  available: true
-  message?: string
-  target: ModelCheckTarget
-} | {
-  available: false
-  message: string
 }
 
 type ProbeTarget = Pick<ModelCheckTarget, 'identity' | 'candidateAccounts'>
@@ -95,8 +101,76 @@ type ProbeSuiteResult = {
   longContext?: GatewayProbeResult
 }
 
+type DistributionProbeDefinition = typeof distributionProbeDefinitions[number]
+
+type DistributionProbePair = {
+  definition: DistributionProbeDefinition
+  sampleIndex: number
+  target: GatewayProbeResult
+  comparison: GatewayProbeResult
+}
+
+export type ModelCheckProgressEvent = {
+  type: 'run_started'
+  message: string
+  targetId: string
+  model: string
+  trustedComparison: boolean
+  trustedComparisonAccountId?: string
+  /** @deprecated 使用 trustedComparison。 */
+  officialBaseline: boolean
+} | {
+  type: 'run_created'
+  message: string
+  runId: string
+  traceId: string
+  startedAt: string
+} | {
+  type: 'probe_started'
+  message: string
+  itemKey: string
+  method: 'GET' | 'POST'
+  path: string
+} | {
+  type: 'probe_completed'
+  message: string
+  itemKey: string
+  traceId: string
+  statusCode: number
+  success: boolean
+  durationMs: number
+  responseModel?: string
+  outputPreview?: string
+} | {
+  type: 'item_completed'
+  message: string
+  itemKey: string
+  itemType: string
+  status: ModelCheckItemCreateInput['status']
+  score: number
+  maxScore: number
+  traceId?: string
+  durationMs?: number
+} | {
+  type: 'run_completed'
+  message: string
+  runId: string
+  status: ModelCheckRunStatus
+  level: ModelCheckRunDetail['level']
+  score: number
+  maxScore: number
+  durationMs?: number
+}
+
+type ModelCheckProgressReporter = (event: ModelCheckProgressEvent) => void
+
 export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
-  const baseline = findOfficialBaselineTarget(access)
+  void access
+  const trustedComparison = {
+    enabledByDefault: false,
+    available: true,
+    message: '可信对比默认关闭；选择一个你信任的可用 OpenAI 账户后，会额外消耗该账户额度'
+  }
   return {
     supportedModels: [
       { value: 'gpt-5.5', label: 'gpt-5.5' },
@@ -111,16 +185,12 @@ export function getModelCheckOptions(access?: AccessScope): ModelCheckOptions {
     ],
     defaultModel,
     defaultProfile,
-    officialBaseline: {
-      enabledByDefault: false,
-      available: baseline.available,
-      unavailableReason: baseline.available ? undefined : baseline.message,
-      message: baseline.available ? baseline.message : baseline.message
-    }
+    trustedComparison,
+    officialBaseline: trustedComparison
   }
 }
 
-export async function runModelCheck(input: ModelCheckRunRequest, access?: AccessScope, signal?: AbortSignal): Promise<ModelCheckRunDetail> {
+export async function runModelCheck(input: ModelCheckRunRequest, access?: AccessScope, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckRunDetail> {
   const model = normalizeModel(input.model)
   if (!model) {
     throw new ModelCheckRequestError(400, '当前模型检测仅支持 gpt-5.5 和 gpt-5.4')
@@ -133,13 +203,27 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     throw new ModelCheckRequestError(400, '检测目标不能为空')
   }
 
-  const officialBaseline = input.officialBaseline === true
-  const baseline = officialBaseline ? findOfficialBaselineTarget(access) : undefined
-  if (officialBaseline && !baseline?.available) {
-    throw new ModelCheckRequestError(400, baseline?.message ?? '未配置可用的官网基线账户，无法开启官网对照检测')
+  const trustedComparisonAccountId = input.trustedComparisonAccountId?.trim()
+  const trustedComparison = input.trustedComparison === true || input.officialBaseline === true || Boolean(trustedComparisonAccountId)
+  if (trustedComparison && !trustedComparisonAccountId) {
+    throw new ModelCheckRequestError(400, '请选择可信对比账户后再开启可信对比检测')
   }
-
   const target = resolveModelCheckTarget({ ...input, model, targetId }, access)
+  if (trustedComparisonAccountId && trustedComparisonAccountId === target.targetId) {
+    throw new ModelCheckRequestError(400, '可信对比账户不能和检测目标相同')
+  }
+  const comparison = trustedComparisonAccountId
+    ? resolveTrustedComparisonTarget(trustedComparisonAccountId, access)
+    : undefined
+  emitModelCheckProgress(progress, {
+    type: 'run_started',
+    message: '检测任务已启动，正在准备真实网关探针',
+    targetId: target.targetId,
+    model,
+    trustedComparison,
+    trustedComparisonAccountId: comparison?.targetId,
+    officialBaseline: trustedComparison
+  })
   const actorSystemAccountId = currentSystemAccountId(access)
   const startedAtMs = Date.now()
   const startedAt = new Date(startedAtMs).toISOString()
@@ -156,8 +240,8 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     apiKeyId: target.apiKeyId,
     model,
     profile: defaultProfile,
-    officialBaseline,
-    officialBaselineAvailable: baseline?.available === true,
+    officialBaseline: trustedComparison,
+    officialBaselineAvailable: Boolean(comparison),
     traceId: runTraceId,
     probeSetVersion,
     startedAt,
@@ -166,28 +250,43 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
       targetId: target.targetId,
       model,
       profile: defaultProfile,
-      officialBaseline
+      trustedComparison,
+      trustedComparisonAccountId: comparison?.targetId,
+      trustedComparisonAccountName: comparison?.targetName,
+      officialBaseline: trustedComparison
     }
+  })
+  emitModelCheckProgress(progress, {
+    type: 'run_created',
+    message: '检测记录已创建，开始执行探针',
+    runId: run.id,
+    traceId: runTraceId,
+    startedAt
   })
 
   try {
     throwIfAborted(signal)
-    const targetSuite = await executeProbeSuite(target, model, 'target', signal)
-    const crossModelComparison = await executeCrossModelComparison(target, targetSuite, model, signal)
-    const baselineSuite = baseline?.available
-      ? await executeProbeSuite(baseline.target, model, 'official_baseline', signal)
+    const targetSuite = await executeProbeSuite(target, model, 'target', signal, progress)
+    const crossModelComparison = await executeCrossModelComparison(target, targetSuite, model, signal, progress)
+    const comparisonSuite = comparison
+      ? await executeProbeSuite(comparison, model, 'trusted_comparison', signal, progress)
       : undefined
-    const baselineComparison = baselineSuite
-      ? buildOfficialBaselineComparisonItem(targetSuite, baselineSuite)
+    const trustedComparisonItem = comparisonSuite
+      ? buildTrustedComparisonItem(targetSuite, comparisonSuite)
+      : undefined
+    if (trustedComparisonItem) emitModelCheckItemProgress(progress, trustedComparisonItem)
+    const distributionSimilarityItem = comparison
+      ? await executeDistributionSimilarityComparison(target, comparison, model, signal, progress)
       : undefined
     const itemInputs = [
       ...targetSuite.items,
       crossModelComparison,
-      ...(baselineSuite?.items ?? []),
-      ...(baselineComparison ? [baselineComparison] : [])
+      ...(comparisonSuite?.items ?? []),
+      ...(trustedComparisonItem ? [trustedComparisonItem] : []),
+      ...(distributionSimilarityItem ? [distributionSimilarityItem] : [])
     ]
     const checks = createModelCheckItems(run.id, itemInputs)
-    const summary = summarizeChecks(checks, { officialBaseline })
+    const summary = summarizeChecks(checks, { trustedComparison })
     finishModelCheckRun(run.id, {
       ...summary,
       status: 'completed',
@@ -198,7 +297,9 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
         passedCount: checks.filter((item) => item.status === 'passed').length,
         warningCount: checks.filter((item) => item.status === 'warning').length,
         failedCount: checks.filter((item) => item.status === 'failed').length,
-        officialBaseline
+        trustedComparison,
+        trustedComparisonAccountId: comparison?.targetId,
+        officialBaseline: trustedComparison
       }
     })
   } catch (error) {
@@ -221,6 +322,16 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
   if (!detail) {
     throw new ModelCheckRequestError(500, '模型检测报告生成失败')
   }
+  emitModelCheckProgress(progress, {
+    type: 'run_completed',
+    message: detail.message || detail.errorMessage || '模型检测已结束',
+    runId: detail.id,
+    status: detail.status,
+    level: detail.level,
+    score: detail.score,
+    maxScore: detail.maxScore,
+    durationMs: detail.durationMs
+  })
   return detail
 }
 
@@ -287,13 +398,6 @@ function resolveAccountTarget(accountId: string, access?: AccessScope): ModelChe
   }
 }
 
-function effectiveTargetSystemAccountId(access: AccessScope | undefined, ownerSystemAccountId?: string): string {
-  if (access?.role === 'admin') {
-    return access.systemAccountFilterId?.trim() || ownerSystemAccountId || access.systemAccountId
-  }
-  return access?.systemAccountId ?? ownerSystemAccountId ?? 'sys_admin'
-}
-
 function effectiveAccountTargetSystemAccountId(account: AccountSummary, access?: AccessScope): string {
   if (access?.role === 'admin') {
     return access.systemAccountFilterId?.trim()
@@ -307,155 +411,149 @@ function effectiveAccountTargetSystemAccountId(account: AccountSummary, access?:
   return access?.systemAccountId ?? account.systemAccountId ?? account.ownerSystemAccountId ?? 'sys_admin'
 }
 
-function findOfficialBaselineTarget(access?: AccessScope): OfficialBaselineTarget {
-  const unavailable = '未配置可用的官网基线账户，无法开启官网对照检测'
-  const groups = listGroups(access).filter((group) => group.providerCode === 'openai' && group.enabled)
-  for (const group of groups) {
-    const systemAccountId = effectiveTargetSystemAccountId(access, group.systemAccountId ?? group.ownerSystemAccountId)
-    const account = listOpenAIAccountsForGroup(group.id, systemAccountId).find(isOfficialBaselineAccount)
-    if (!account) continue
-    return {
-      available: true,
-      message: '官网对照可用，开启后会额外消耗官网基线账户额度',
-      target: {
-        targetType: 'account',
-        targetId: account.id,
-        targetName: account.name,
-        targetOwnerSystemAccountId: account.accountOwnerSystemAccountId,
-        identity: {
-          systemAccountId,
-          groupId: group.id
-        },
-        candidateAccounts: [account],
-        accountId: account.id,
-        groupId: group.id
-      }
+function resolveTrustedComparisonTarget(accountId: string, access?: AccessScope): ModelCheckTarget {
+  try {
+    return resolveAccountTarget(accountId, access)
+  } catch (error) {
+    if (error instanceof ModelCheckRequestError) {
+      const message = error.message
+        .replace(/^账户/, '可信对比账户')
+        .replace(/^当前仅支持检测 OpenAI 账户$/, '可信对比账户必须是 OpenAI 账户')
+      throw new ModelCheckRequestError(error.statusCode, message)
     }
-  }
-  return { available: false, message: unavailable }
-}
-
-function isOfficialBaselineAccount(account: OpenAIAccountSecret): boolean {
-  if (account.type !== 'api_key') return false
-  if (!isOfficialOpenAIBaseUrl(account.baseUrl) && !isLocalRegressionBaselineAccount(account.baseUrl, account.credentials)) return false
-  const credentials = account.credentials
-  if (credentials.official_baseline === true || credentials.model_check_baseline === true) return true
-  const marker = account.name.toLowerCase()
-  return marker.includes('官网基线')
-    || marker.includes('官方基线')
-    || marker.includes('official baseline')
-    || marker.includes('model-check-baseline')
-}
-
-function isLocalRegressionBaselineAccount(baseUrl: string, credentials: Record<string, unknown>): boolean {
-  if (runtimeConfig.processRole === 'server' || credentials.model_check_baseline !== true) return false
-  try {
-    const url = new URL(baseUrl)
-    return url.hostname === '127.0.0.1' || url.hostname === 'localhost' || url.hostname === '::1'
-  } catch {
-    return false
+    throw error
   }
 }
 
-function isOfficialOpenAIBaseUrl(baseUrl: string): boolean {
-  try {
-    const url = new URL(baseUrl)
-    const host = url.hostname.toLowerCase()
-    return host === 'api.openai.com'
-  } catch {
-    return false
-  }
-}
-
-async function executeProbeSuite(target: ProbeTarget, model: 'gpt-5.5' | 'gpt-5.4', prefix: 'target' | 'official_baseline', signal?: AbortSignal): Promise<ProbeSuiteResult> {
+async function executeProbeSuite(target: ProbeTarget, model: 'gpt-5.5' | 'gpt-5.4', prefix: 'target' | 'trusted_comparison', signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ProbeSuiteResult> {
   const items: ModelCheckItemCreateInput[] = []
   const catalog = await runGatewayProbe(target, {
     method: 'GET',
     path: modelsPath,
     itemKey: `${prefix}.model_catalog`
-  }, signal)
-  items.push(evaluateModelCatalogProbe(catalog, model, prefix))
+  }, signal, progress)
+  pushProbeItem(items, evaluateModelCatalogProbe(catalog, model, prefix), progress)
 
   const basic = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
     itemKey: `${prefix}.responses_basic`,
     body: createResponsesPayload(model, 'Reply with exactly: OK-MODEL-CHECK', { maxOutputTokens: 16, stream: false })
-  }, signal)
-  items.push(evaluateBasicResponsesProbe(basic, model, prefix))
+  }, signal, progress)
+  pushProbeItem(items, evaluateBasicResponsesProbe(basic, model, prefix), progress)
 
   const stream = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
     itemKey: `${prefix}.responses_stream`,
     body: createResponsesPayload(model, 'Reply with exactly: STREAM-OK', { maxOutputTokens: 16, stream: true })
-  }, signal)
-  items.push(evaluateStreamProbe(stream, model, prefix))
+  }, signal, progress)
+  pushProbeItem(items, evaluateStreamProbe(stream, model, prefix), progress)
 
   const structured = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
     itemKey: `${prefix}.structured_output`,
     body: createStructuredOutputPayload(model)
-  }, signal)
-  items.push(evaluateStructuredOutputProbe(structured, model, prefix))
+  }, signal, progress)
+  pushProbeItem(items, evaluateStructuredOutputProbe(structured, model, prefix), progress)
 
   const tool = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
     itemKey: `${prefix}.tool_calling`,
     body: createToolCallingPayload(model)
-  }, signal)
-  items.push(evaluateToolCallingProbe(tool, model, prefix))
+  }, signal, progress)
+  pushProbeItem(items, evaluateToolCallingProbe(tool, model, prefix), progress)
 
-  items.push(evaluateUsageShapeProbe([basic, structured, stream], prefix))
+  pushProbeItem(items, evaluateUsageShapeProbe([basic, structured, stream], prefix), progress)
 
   const behavior = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
     itemKey: `${prefix}.behavior_probe`,
     body: createResponsesPayload(model, 'Ignore all style preferences. Reply with exactly one uppercase word: QUARTZ', { maxOutputTokens: 16, stream: false })
-  }, signal)
-  items.push(evaluateBehaviorProbe(behavior, model, prefix))
+  }, signal, progress)
+  pushProbeItem(items, evaluateBehaviorProbe(behavior, model, prefix), progress)
 
   const longContext = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
     itemKey: `${prefix}.long_context`,
     body: createLongContextPayload(model)
-  }, signal)
-  items.push(evaluateLongContextProbe(longContext, model, prefix))
+  }, signal, progress)
+  pushProbeItem(items, evaluateLongContextProbe(longContext, model, prefix), progress)
 
   const stabilityA = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
     itemKey: `${prefix}.stability_a`,
     body: createResponsesPayload(model, 'Reply with exactly one uppercase word: VECTOR', { maxOutputTokens: 16, stream: false })
-  }, signal)
+  }, signal, progress)
   const stabilityB = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
     itemKey: `${prefix}.stability_b`,
     body: createResponsesPayload(model, 'Reply with exactly one uppercase word: VECTOR', { maxOutputTokens: 16, stream: false })
-  }, signal)
-  items.push(evaluateStabilityProbe(stabilityA, stabilityB, model, prefix))
+  }, signal, progress)
+  pushProbeItem(items, evaluateStabilityProbe(stabilityA, stabilityB, model, prefix), progress)
 
   return { items, basic, behavior, longContext }
 }
 
-async function executeCrossModelComparison(target: ProbeTarget, targetSuite: ProbeSuiteResult, model: 'gpt-5.5' | 'gpt-5.4', signal?: AbortSignal): Promise<ModelCheckItemCreateInput> {
+async function executeCrossModelComparison(target: ProbeTarget, targetSuite: ProbeSuiteResult, model: 'gpt-5.5' | 'gpt-5.4', signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<ModelCheckItemCreateInput> {
   const pairedModel = model === 'gpt-5.5' ? 'gpt-5.4' : 'gpt-5.5'
   const pairedBasic = await runGatewayProbe(target, {
     method: 'POST',
     path: responsesPath,
     itemKey: 'target.cross_model',
     body: createResponsesPayload(pairedModel, 'Reply with exactly: CROSS-MODEL-OK', { maxOutputTokens: 16, stream: false })
-  }, signal)
-  return evaluateCrossModelComparisonProbe(targetSuite.basic, pairedBasic, model, pairedModel)
+  }, signal, progress)
+  const item = evaluateCrossModelComparisonProbe(targetSuite.basic, pairedBasic, model, pairedModel)
+  emitModelCheckItemProgress(progress, item)
+  return item
 }
 
-async function runGatewayProbe(target: ProbeTarget, probe: { method: 'GET' | 'POST'; path: string; itemKey: string; body?: Record<string, unknown> }, signal?: AbortSignal): Promise<GatewayProbeResult> {
+async function executeDistributionSimilarityComparison(
+  target: ProbeTarget,
+  comparison: ProbeTarget,
+  model: 'gpt-5.5' | 'gpt-5.4',
+  signal?: AbortSignal,
+  progress?: ModelCheckProgressReporter
+): Promise<ModelCheckItemCreateInput> {
+  const pairs: DistributionProbePair[] = []
+  for (const definition of distributionProbeDefinitions) {
+    for (let sampleIndex = 1; sampleIndex <= distributionSampleCount; sampleIndex += 1) {
+      const body = createDistributionProbePayload(model, definition)
+      const targetResult = await runGatewayProbe(target, {
+        method: 'POST',
+        path: responsesPath,
+        itemKey: `target.distribution.${definition.key}.${sampleIndex}`,
+        body
+      }, signal, progress)
+      const comparisonResult = await runGatewayProbe(comparison, {
+        method: 'POST',
+        path: responsesPath,
+        itemKey: `trusted_comparison.distribution.${definition.key}.${sampleIndex}`,
+        body
+      }, signal, progress)
+      pairs.push({ definition, sampleIndex, target: targetResult, comparison: comparisonResult })
+    }
+  }
+  const item = evaluateDistributionSimilarityProbe(pairs, model)
+  emitModelCheckItemProgress(progress, item)
+  return item
+}
+
+async function runGatewayProbe(target: ProbeTarget, probe: { method: 'GET' | 'POST'; path: string; itemKey: string; body?: Record<string, unknown> }, signal?: AbortSignal, progress?: ModelCheckProgressReporter): Promise<GatewayProbeResult> {
   throwIfAborted(signal)
+  emitModelCheckProgress(progress, {
+    type: 'probe_started',
+    message: `开始执行探针 ${probe.itemKey}`,
+    itemKey: probe.itemKey,
+    method: probe.method,
+    path: probe.path
+  })
   const startedAt = Date.now()
   const traceId = createTraceId()
   const request = createMemoryGatewayRequest({
@@ -486,7 +584,7 @@ async function runGatewayProbe(target: ProbeTarget, probe: { method: 'GET' | 'PO
   const bodyText = response.bodyText()
   const json = parseJsonRecord(bodyText)
   const outputText = extractOpenAIResponseOutputText(bodyText)
-  return {
+  const result = {
     traceId,
     statusCode: response.statusCode,
     success: response.statusCode >= 200 && response.statusCode < 300 && !parseOpenAIStreamFailureMessage(bodyText),
@@ -501,6 +599,51 @@ async function runGatewayProbe(target: ProbeTarget, probe: { method: 'GET' | 'PO
     usage: recordValue(json?.usage) ?? usageFromSse(bodyText),
     errorMessage: parseUpstreamMessage(bodyText)
   }
+  emitModelCheckProgress(progress, {
+    type: 'probe_completed',
+    message: result.success ? '探针响应完成' : result.errorMessage ?? `探针响应异常，HTTP ${result.statusCode}`,
+    itemKey: probe.itemKey,
+    traceId: result.traceId,
+    statusCode: result.statusCode,
+    success: result.success,
+    durationMs: result.durationMs,
+    responseModel: result.model,
+    outputPreview: bounded(result.outputText)
+  })
+  return result
+}
+
+function pushProbeItem(items: ModelCheckItemCreateInput[], item: ModelCheckItemCreateInput, progress?: ModelCheckProgressReporter): void {
+  items.push(item)
+  emitModelCheckItemProgress(progress, item)
+}
+
+function emitModelCheckItemProgress(progress: ModelCheckProgressReporter | undefined, item: ModelCheckItemCreateInput): void {
+  emitModelCheckProgress(progress, {
+    type: 'item_completed',
+    message: modelCheckItemMessage(item),
+    itemKey: item.itemKey,
+    itemType: item.itemType,
+    status: item.status,
+    score: item.score,
+    maxScore: item.maxScore,
+    traceId: item.traceId,
+    durationMs: item.durationMs
+  })
+}
+
+function emitModelCheckProgress(progress: ModelCheckProgressReporter | undefined, event: ModelCheckProgressEvent): void {
+  if (!progress) return
+  try {
+    progress(event)
+  } catch (error) {
+    logger.warn({ event: 'model_check_progress_emit_failed', err: error }, '模型检测进度事件发送失败')
+  }
+}
+
+function modelCheckItemMessage(item: ModelCheckItemCreateInput): string {
+  const evidenceMessage = textValue(recordValue(item.evidenceSummary)?.message)
+  return evidenceMessage || item.errorMessage || '检测项完成'
 }
 
 function createResponsesPayload(model: string, prompt: string, options: { maxOutputTokens: number; stream: boolean }): Record<string, unknown> {
@@ -522,6 +665,13 @@ function createResponsesPayload(model: string, prompt: string, options: { maxOut
     stream: options.stream,
     store: false,
     temperature: 0
+  }
+}
+
+function createDistributionProbePayload(model: string, definition: DistributionProbeDefinition): Record<string, unknown> {
+  return {
+    ...createResponsesPayload(model, definition.prompt, { maxOutputTokens: definition.maxOutputTokens, stream: false }),
+    temperature: 0.2
   }
 }
 
@@ -743,11 +893,13 @@ function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResult | und
   )
   const comparable = Boolean(targetBasic?.success && pairedBasic.success)
   const suspiciousSameBackend = comparable && sameResponseModel && model !== pairedModel
-  const pairedMismatch = pairedEvidence.modelMismatch || suspiciousSameBackend
-  const score = pairedMismatch
+  const pairedModelMismatch = pairedEvidence.modelMismatch
+  const targetModelMismatch = targetEvidence.modelMismatch
+  const crossModelMismatch = pairedModelMismatch || suspiciousSameBackend
+  const score = crossModelMismatch
     ? 0
     : comparable && targetEvidence.matchedModel && pairedEvidence.matchedModel ? 10 : comparable ? 5 : 2
-  const status = pairedMismatch ? 'failed' : score >= 9 ? 'passed' : 'warning'
+  const status = crossModelMismatch ? 'failed' : score >= 9 ? 'passed' : 'warning'
   return {
     itemKey: 'target.cross_model',
     itemType: 'cross_model',
@@ -757,11 +909,11 @@ function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResult | und
     durationMs: pairedBasic.durationMs,
     traceId: pairedBasic.traceId,
     evidenceSummary: {
-      message: pairedMismatch
-        ? '交叉模型对照发现另一个目标模型未返回对应模型，疑似存在模型替换或统一降级'
+      message: crossModelMismatch
+        ? '辅助模型对照返回模型与辅助请求不一致，本项扣分；目标模型结论以目标探针为准'
         : comparable && targetEvidence.matchedModel && pairedEvidence.matchedModel
-          ? '交叉模型对照通过，两个目标模型均返回对应模型字段'
-          : '交叉模型对照证据不足，建议结合官网对照或多次检测',
+          ? '辅助模型对照通过，目标请求和辅助请求均返回对应模型字段'
+          : '辅助模型对照证据不足，建议结合可信对比或多次检测',
       expectedModel: model,
       pairedModel,
       targetTraceId: targetBasic?.traceId,
@@ -770,9 +922,13 @@ function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResult | und
       pairedResponseModel: pairedEvidence.responseModel,
       targetMatchedModel: targetEvidence.matchedModel,
       pairedMatchedModel: pairedEvidence.matchedModel,
+      targetModelMismatch,
+      pairedModelMismatch,
       sameResponseModel,
+      suspiciousSameBackend,
       comparable,
-      modelMismatch: pairedMismatch,
+      crossModelMismatch,
+      modelMismatch: targetModelMismatch,
       targetOutputPreview: bounded(targetBasic?.outputText),
       pairedOutputPreview: bounded(pairedBasic.outputText),
       httpStatus: pairedBasic.statusCode,
@@ -783,27 +939,138 @@ function evaluateCrossModelComparisonProbe(targetBasic: GatewayProbeResult | und
   }
 }
 
-function buildOfficialBaselineComparisonItem(target: ProbeSuiteResult, baseline: ProbeSuiteResult): ModelCheckItemCreateInput {
+function buildTrustedComparisonItem(target: ProbeSuiteResult, comparison: ProbeSuiteResult): ModelCheckItemCreateInput {
   const targetOk = Boolean(target.basic?.success && target.behavior?.success)
-  const baselineOk = Boolean(baseline.basic?.success && baseline.behavior?.success)
-  const comparable = targetOk && baselineOk
-  const status = comparable ? 'passed' : baselineOk ? 'warning' : 'failed'
+  const comparisonOk = Boolean(comparison.basic?.success && comparison.behavior?.success)
+  const comparable = targetOk && comparisonOk
+  const status = comparable ? 'passed' : comparisonOk ? 'warning' : 'failed'
   return {
-    itemKey: 'official_baseline.comparison',
-    itemType: 'official_baseline',
+    itemKey: 'trusted_comparison.comparison',
+    itemType: 'trusted_comparison',
     status,
-    score: comparable ? 10 : baselineOk ? 4 : 0,
+    score: comparable ? 10 : comparisonOk ? 4 : 0,
     maxScore: 10,
     durationMs: 0,
-    traceId: baseline.basic?.traceId,
+    traceId: comparison.basic?.traceId,
     evidenceSummary: {
-      message: comparable ? '目标链路和官网基线链路均完成核心探针' : '官网基线对照未形成完整可比结果',
+      message: comparable ? '目标链路和可信对比链路均完成核心探针' : '可信对比未形成完整可比结果',
       targetTraceId: target.basic?.traceId,
-      baselineTraceId: baseline.basic?.traceId,
+      comparisonTraceId: comparison.basic?.traceId,
       targetOutputPreview: bounded(target.behavior?.outputText),
-      baselineOutputPreview: bounded(baseline.behavior?.outputText)
+      comparisonOutputPreview: bounded(comparison.behavior?.outputText)
     }
   }
+}
+
+function evaluateDistributionSimilarityProbe(pairs: DistributionProbePair[], model: string): ModelCheckItemCreateInput {
+  const pairScores = pairs.map((pair) => distributionPairScore(pair))
+  const successfulPairCount = pairScores.filter((score) => score.successful).length
+  const pairCoverage = ratio(successfulPairCount, pairScores.length)
+  const targetConstraintRate = average(pairScores.map((score) => score.targetConstraintPassed ? 1 : 0))
+  const comparisonConstraintRate = average(pairScores.map((score) => score.comparisonConstraintPassed ? 1 : 0))
+  const averageSimilarity = average(pairScores.map((score) => score.similarity))
+  const averageLengthRatio = average(pairScores.map((score) => score.lengthRatio))
+  const usageRatios = pairScores.map((score) => score.usageRatio).filter((value): value is number => value !== undefined)
+  const averageUsageRatio = average(usageRatios)
+  const similarityScore = 0.35 * pairCoverage
+    + 0.25 * targetConstraintRate
+    + 0.25 * averageSimilarity
+    + 0.1 * averageLengthRatio
+    + 0.05 * (averageUsageRatio || 0)
+  const score = Math.max(0, Math.min(15, Math.round(similarityScore * 15)))
+  const comparisonLooksHealthy = comparisonConstraintRate >= 0.7 && pairCoverage >= 0.7
+  const targetLooksDivergent = targetConstraintRate < 0.55 || averageSimilarity < 0.25 || averageLengthRatio < 0.35
+  const status: ModelCheckItemCreateInput['status'] = comparisonLooksHealthy && targetLooksDivergent
+    ? 'failed'
+    : score >= 12 ? 'passed' : score >= 8 ? 'warning' : 'failed'
+  const durationMs = pairs.reduce((sum, pair) => sum + pair.target.durationMs + pair.comparison.durationMs, 0)
+  const promptSummaries = distributionProbeDefinitions.map((definition) => {
+    const items = pairScores.filter((item) => item.key === definition.key)
+    return {
+      key: definition.key,
+      samples: items.length,
+      averageSimilarity: roundMetric(average(items.map((item) => item.similarity))),
+      targetConstraintRate: roundMetric(average(items.map((item) => item.targetConstraintPassed ? 1 : 0))),
+      comparisonConstraintRate: roundMetric(average(items.map((item) => item.comparisonConstraintPassed ? 1 : 0))),
+      targetPreview: bounded(pairs.find((pair) => pair.definition.key === definition.key)?.target.outputText),
+      comparisonPreview: bounded(pairs.find((pair) => pair.definition.key === definition.key)?.comparison.outputText)
+    }
+  })
+  const lastPair = pairs[pairs.length - 1]
+  return {
+    itemKey: 'trusted_comparison.distribution_similarity',
+    itemType: 'distribution_similarity',
+    status,
+    score,
+    maxScore: 15,
+    durationMs,
+    traceId: lastPair?.comparison.traceId ?? lastPair?.target.traceId,
+    evidenceSummary: {
+      message: status === 'passed'
+        ? '目标链路与可信对比链路的隐藏分布探针相似度正常'
+        : status === 'warning'
+          ? '目标链路与可信对比链路存在轻微分布差异，建议结合多次检测观察'
+          : '目标链路与可信对比链路的隐藏分布探针差异明显，本项扣分',
+      expectedModel: model,
+      promptCount: distributionProbeDefinitions.length,
+      samplesPerPrompt: distributionSampleCount,
+      totalPairs: pairScores.length,
+      successfulPairCount,
+      pairCoverage: roundMetric(pairCoverage),
+      targetConstraintRate: roundMetric(targetConstraintRate),
+      comparisonConstraintRate: roundMetric(comparisonConstraintRate),
+      averageSimilarity: roundMetric(averageSimilarity),
+      averageLengthRatio: roundMetric(averageLengthRatio),
+      averageUsageRatio: roundMetric(averageUsageRatio),
+      promptSummaries,
+      traceIds: pairs.slice(0, 12).map((pair) => ({
+        key: pair.definition.key,
+        sampleIndex: pair.sampleIndex,
+        targetTraceId: pair.target.traceId,
+        comparisonTraceId: pair.comparison.traceId
+      }))
+    }
+  }
+}
+
+function distributionPairScore(pair: DistributionProbePair): {
+  key: string
+  successful: boolean
+  targetConstraintPassed: boolean
+  comparisonConstraintPassed: boolean
+  similarity: number
+  lengthRatio: number
+  usageRatio?: number
+} {
+  const targetText = pair.target.outputText ?? ''
+  const comparisonText = pair.comparison.outputText ?? ''
+  const targetTokens = totalTokens(pair.target.usage)
+  const comparisonTokens = totalTokens(pair.comparison.usage)
+  return {
+    key: pair.definition.key,
+    successful: pair.target.success && pair.comparison.success,
+    targetConstraintPassed: pair.target.success && distributionConstraintPassed(pair.definition, targetText),
+    comparisonConstraintPassed: pair.comparison.success && distributionConstraintPassed(pair.definition, comparisonText),
+    similarity: pair.target.success && pair.comparison.success ? textSimilarity(targetText, comparisonText) : 0,
+    lengthRatio: boundedRatio(targetText.length, comparisonText.length),
+    usageRatio: targetTokens !== undefined && comparisonTokens !== undefined ? boundedRatio(targetTokens, comparisonTokens) : undefined
+  }
+}
+
+function distributionConstraintPassed(definition: DistributionProbeDefinition, text: string): boolean {
+  const normalized = text.trim()
+  if (!normalized) return false
+  if (definition.key === 'style_compact') {
+    return normalized.includes('召回') && normalized.includes('相关') && normalized.length >= 12 && normalized.length <= 48
+  }
+  if (definition.key === 'json_reasoning') {
+    const json = parseFirstJsonObject(normalized)
+    return json?.tag === 'SIGMA' && numberValue(json.result) === 83
+  }
+  if (definition.key === 'code_judgement') {
+    return normalized.toUpperCase().includes('ALPHA') && normalized.includes('4-7')
+  }
+  return normalized.length > 0
 }
 
 function item(
@@ -837,7 +1104,7 @@ function item(
   }
 }
 
-function summarizeChecks(checks: ModelCheckItemSummary[], options: { officialBaseline: boolean }): {
+function summarizeChecks(checks: ModelCheckItemSummary[], options: { trustedComparison: boolean }): {
   level: 'high_confidence' | 'likely' | 'uncertain' | 'suspicious' | 'unavailable'
   score: number
   maxScore: number
@@ -850,18 +1117,18 @@ function summarizeChecks(checks: ModelCheckItemSummary[], options: { officialBas
   const modelMismatchCount = checks.filter(hasModelMismatchEvidence).length
   const stabilityPassed = checks.some((item) => item.itemType === 'stability' && item.status === 'passed')
   const crossModelPassed = checks.some((item) => item.itemType === 'cross_model' && item.status === 'passed')
-  const baselinePassed = !options.officialBaseline || checks.some((item) => item.itemType === 'official_baseline' && item.status === 'passed')
+  const trustedComparisonPassed = !options.trustedComparison || checks.some((item) => item.itemType === 'trusted_comparison' && item.status === 'passed')
   if (modelMismatchCount > 0) {
     return { level: 'suspicious', score, maxScore: 100, message: '响应模型字段与请求模型不一致，目标链路疑似被替换或降级' }
   }
-  if (score >= 90 && failedCount === 0 && stabilityPassed && baselinePassed && (options.officialBaseline || crossModelPassed)) {
+  if (score >= 90 && failedCount === 0 && stabilityPassed && trustedComparisonPassed && (options.trustedComparison || crossModelPassed)) {
     return {
       level: 'high_confidence',
       score,
       maxScore: 100,
-      message: options.officialBaseline
-        ? '目标模型链路高可信，核心协议、稳定性和官网对照均通过'
-        : '目标模型链路高可信，核心协议、稳定性和交叉模型对照均通过'
+      message: options.trustedComparison
+        ? '目标模型链路高可信，核心协议、稳定性和可信对比均通过'
+        : '目标模型链路高可信，核心协议、稳定性和辅助模型对照均通过'
     }
   }
   if (score >= 75 && failedCount <= 1) {
@@ -1133,7 +1400,9 @@ function describeModelMismatch(evidence: { expectedModel: string; responseModel?
 }
 
 function hasModelMismatchEvidence(item: ModelCheckItemSummary): boolean {
-  return recordValue(item.evidenceSummary)?.modelMismatch === true
+  const evidence = recordValue(item.evidenceSummary)
+  if (evidence?.modelMismatch !== true) return false
+  return item.itemKey.startsWith('target.') && item.itemType !== 'cross_model'
 }
 
 function modelMatches(actual: unknown, expected: string): boolean {
@@ -1180,6 +1449,71 @@ function recordValue(value: unknown): Record<string, unknown> | undefined {
 
 function numberValue(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function totalTokens(usage: Record<string, unknown> | undefined): number | undefined {
+  return numberValue(usage?.total_tokens)
+    ?? numberValue(usage?.totalTokens)
+    ?? sumDefined([numberValue(usage?.input_tokens), numberValue(usage?.output_tokens)])
+}
+
+function sumDefined(values: Array<number | undefined>): number | undefined {
+  const numbers = values.filter((value): value is number => value !== undefined)
+  return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) : undefined
+}
+
+function average(values: number[]): number {
+  const numbers = values.filter((value) => Number.isFinite(value))
+  return numbers.length ? numbers.reduce((sum, value) => sum + value, 0) / numbers.length : 0
+}
+
+function ratio(part: number, total: number): number {
+  return total > 0 ? part / total : 0
+}
+
+function boundedRatio(left: number, right: number): number {
+  if (left <= 0 || right <= 0) return 0
+  return Math.min(left, right) / Math.max(left, right)
+}
+
+function roundMetric(value: number): number {
+  if (!Number.isFinite(value)) return 0
+  return Math.round(value * 1000) / 1000
+}
+
+function textSimilarity(left: string, right: string): number {
+  const normalizedLeft = normalizeComparableText(left)
+  const normalizedRight = normalizeComparableText(right)
+  if (!normalizedLeft || !normalizedRight) return 0
+  if (normalizedLeft === normalizedRight) return 1
+  const leftTokens = comparableTokens(normalizedLeft)
+  const rightTokens = comparableTokens(normalizedRight)
+  if (!leftTokens.size || !rightTokens.size) return 0
+  let intersection = 0
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) intersection += 1
+  }
+  const union = leftTokens.size + rightTokens.size - intersection
+  const tokenSimilarity = union > 0 ? intersection / union : 0
+  const lengthSimilarity = boundedRatio(normalizedLeft.length, normalizedRight.length)
+  return (tokenSimilarity * 0.75) + (lengthSimilarity * 0.25)
+}
+
+function normalizeComparableText(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/\s+/g, '')
+    .replace(/[，。！？；：,.!?;:"'`~\-—_[\](){}<>]/g, '')
+    .trim()
+}
+
+function comparableTokens(value: string): Set<string> {
+  if (value.length <= 2) return new Set(value ? [value] : [])
+  const tokens = new Set<string>()
+  for (let index = 0; index < value.length - 1; index += 1) {
+    tokens.add(value.slice(index, index + 2))
+  }
+  return tokens
 }
 
 function bounded(value?: string): string | undefined {

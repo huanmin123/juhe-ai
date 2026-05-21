@@ -8,6 +8,7 @@ import {
 } from '../../modules/gateway/openai-gateway-usage.js'
 import { inspectOpenAIStreamText } from '../../modules/gateway/openai-gateway-stream-inspection.js'
 import { buildProviderCostBreakdown, estimateProviderCostUsd, getProviderModelPricing, listProviderModelPricing } from '../../modules/model-pricing/model-pricing.service.js'
+import { createRetryQueue } from '../../shared/retry-queue.js'
 import { retryDelayMs, retryAttemptCount, sequenceRetryPolicy } from '../../shared/retry-policy.js'
 import { usageSummaryFromAggregate } from '../../storage/usage-stats-helpers.js'
 
@@ -316,6 +317,7 @@ assert.deepEqual([
   retryDelayMs(cooldownRetestRetryPolicy, 2),
   retryDelayMs(cooldownRetestRetryPolicy, 3)
 ], [3000, 10000, 30000])
+await assertRetryQueueRetainsFailedItems()
 
 const gatewayUsageRecordsSource = readSource('modules/gateway/openai-gateway-usage-records.ts')
 assert.match(gatewayUsageRecordsSource, /function recordCompletedUpstreamAttempt/)
@@ -357,6 +359,7 @@ assert.match(settingsRepositorySource, /clearSystemSettingsCache\(\)\s*\n\s*noti
 
 const usageStatsHelpersSource = readSource('storage/usage-stats-helpers.ts')
 assert.match(usageStatsHelpersSource, /cachedUsageStatsTimezone/)
+assert.match(usageStatsHelpersSource, /usageStatsTimezoneCacheTtlMs/)
 assert.match(usageStatsHelpersSource, /export function clearUsageStatsTimezoneCache/)
 
 const accountTestSource = readSource('modules/accounts/account-test.service.ts')
@@ -373,14 +376,15 @@ assert.doesNotMatch(backgroundJobsSource, /refreshOpenAIOAuthUsageSnapshot/)
 assert.doesNotMatch(backgroundJobsSource, /accountQualityActiveProbeEnabled/)
 assert.doesNotMatch(backgroundJobsSource, /listAccountQualityProbeCandidates/)
 assert.doesNotMatch(backgroundJobsSource, /recordAccountQualityProbe/)
-assert.match(backgroundJobsSource, /cooldownAccountRetestEnabled/)
+assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestEnabled/)
 assert.doesNotMatch(backgroundJobsSource, /gatewaySettingsOverride/)
 assert.doesNotMatch(backgroundJobsSource, /temporaryUnschedulableRetryAttempts:\s*0/)
 assert.doesNotMatch(backgroundJobsSource, /temporaryUnschedulableRetryIntervalSeconds:\s*0/)
 assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestAttemptTimeoutMs/)
 assert.doesNotMatch(backgroundJobsSource, /cooldownAccountRetestRunBudgetMs/)
 assert.match(backgroundJobsSource, /flushUsageRecordQueue\(\{\s*drain:\s*true/)
-assert.match(backgroundJobsSource, /settingsBoolean\('cooldownAccountRetestEnabled', true\)/)
+assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestBatchSize', 10, 1, 100\)/)
+assert.match(backgroundJobsSource, /settingsNumber\('cooldownAccountRetestMaxBackoffHours', 24, 1, 24 \* 30\)/)
 
 const cooldownAccountRetestSource = readSource('modules/background/cooldown-account-retest.service.ts')
 assert.match(cooldownAccountRetestSource, /sequenceRetryPolicy\('cooldown_account_retest_revival', \[\s*3_000,\s*10_000,\s*30_000\s*\]\)/)
@@ -389,6 +393,7 @@ assert.match(cooldownAccountRetestSource, /background_cooldown_account_retest_re
 assert.match(cooldownAccountRetestSource, /diagnostics:\s*'limited'/)
 assert.match(cooldownAccountRetestSource, /testOpenAIAccount/)
 assert.match(cooldownAccountRetestSource, /findRecentOpenAIRequestShapeForAccount/)
+assert.match(cooldownAccountRetestSource, /account\.boundGroupId/)
 assert.doesNotMatch(cooldownAccountRetestSource, /waitForRetryDelay/)
 
 const oauthRoutesSource = readSource('modules/openai-oauth/openai-oauth.routes.ts')
@@ -399,7 +404,10 @@ assert.match(gatewayRoutesSource, /persistOpenAICodexHeadersIfNeeded\(account,\s
 assert.match(gatewayFailureDispatchSource, /persistOpenAICodexHeadersIfNeeded\(account,\s*response\.headers,\s*'gateway_error'\)/)
 
 const repositoriesSource = readSource('storage/repositories.ts')
-assert.match(repositoriesSource, /status IN \('rate_limited', 'temporary_unavailable'\)/)
+const cooldownRetestRepositorySource = sourceFunctionBlock(repositoriesSource, 'export function listAccountsDueForCooldownRetest')
+assert.match(cooldownRetestRepositorySource, /status = 'temporary_unavailable'/)
+assert.doesNotMatch(cooldownRetestRepositorySource, /rate_limited/)
+assert.match(repositoriesSource, /recordCooldownAccountRetestFailure/)
 
 const accountQualityRepositorySource = readSource('storage/account-quality.repository.ts')
 assert.doesNotMatch(accountQualityRepositorySource, /recordAccountQualityProbe/)
@@ -418,4 +426,40 @@ console.log('usage-pricing-regression passed')
 
 function readSource(path: string): string {
   return readFileSync(resolve(backendSrcDirectory, path), 'utf8')
+}
+
+function sourceFunctionBlock(source: string, marker: string): string {
+  const start = source.indexOf(marker)
+  assert.notEqual(start, -1, `${marker} should exist`)
+  const nextExport = source.indexOf('\nexport function ', start + marker.length)
+  return source.slice(start, nextExport === -1 ? undefined : nextExport)
+}
+
+async function assertRetryQueueRetainsFailedItems(): Promise<void> {
+  const attempts: number[] = []
+  const scheduledDelays: number[] = []
+  await new Promise<void>((resolve, reject) => {
+    const timeout = setTimeout(() => reject(new Error('retry queue did not finish')), 1000)
+    createRetryQueue<{ id: string }>({
+      name: 'regression-retry-queue',
+      policy: sequenceRetryPolicy('regression_retry_queue', [1, 2]),
+      run: (_item, context) => {
+        attempts.push(context.attemptIndex)
+        return attempts.length >= 3
+      },
+      onRetryScheduled: (event) => {
+        scheduledDelays.push(event.delayMs)
+      },
+      onSuccess: () => {
+        clearTimeout(timeout)
+        resolve()
+      },
+      onExhausted: () => {
+        clearTimeout(timeout)
+        reject(new Error('retry queue exhausted before success'))
+      }
+    }).enqueue('account-a', { id: 'account-a' })
+  })
+  assert.deepEqual(attempts, [0, 1, 2])
+  assert.deepEqual(scheduledDelays, [1, 2])
 }

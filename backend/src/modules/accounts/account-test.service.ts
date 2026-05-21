@@ -93,6 +93,7 @@ export async function testOpenAIAccount(
     const finalAccount = findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
     const responseText = response.bodyText()
     const upstreamMessage = parseUpstreamMessage(responseText)
+    const upstreamErrorCode = parseUpstreamErrorCode(responseText)
     const streamFailureMessage = parseOpenAIStreamFailureMessage(responseText)
     const outputText = extractOpenAIResponseOutputText(responseText)
     const success = response.statusCode >= 200 && response.statusCode < 300 && !streamFailureMessage
@@ -105,6 +106,7 @@ export async function testOpenAIAccount(
       type: account.type,
       success,
       statusCode: response.statusCode,
+      errorCode: success ? undefined : upstreamErrorCode,
       message: success
         ? responseTruncated ? 'OpenAI Responses 测试通过（响应体过大，已截断展示）' : 'OpenAI Responses 测试通过'
         : proxyFailureMessage || streamFailureMessage || upstreamMessage || `API 返回 HTTP ${response.statusCode}`,
@@ -156,6 +158,7 @@ function accountTestResultWithDiagnosticsMode(result: AccountTestResult, limited
     type: result.type,
     success: result.success,
     statusCode: result.statusCode,
+    errorCode: result.errorCode,
     message,
     model: result.model,
     responseText: result.success ? undefined : message,
@@ -591,6 +594,22 @@ function parseUpstreamMessage(bodyText: string): string | undefined {
     return bodyText.slice(0, 240)
   }
   return undefined
+}
+
+function parseUpstreamErrorCode(bodyText: string): string | undefined {
+  if (!bodyText) return undefined
+  try {
+    const payload = JSON.parse(bodyText) as Record<string, unknown>
+    const error = typeof payload.error === 'object' && payload.error !== null
+      ? payload.error as Record<string, unknown>
+      : payload
+    const code = stringValue(error.code)
+    if (code) return code
+    const type = stringValue(error.type)
+    return type || undefined
+  } catch {
+    return undefined
+  }
 }
 
 function parseErrorMessage(value: unknown): string | undefined {

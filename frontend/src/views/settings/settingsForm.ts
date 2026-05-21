@@ -15,6 +15,7 @@ export interface SystemForm {
   streamIdleTimeoutSeconds: number
   streamFailureThresholdCount: number
   streamFailureThresholdWindowMinutes: number
+  cooldownAccountRetestMaxBackoffHours: number
 }
 
 export const defaultGlobalSettings: GlobalForm = {
@@ -30,7 +31,8 @@ export const defaultSystemSettings: SystemForm = {
   streamRequestTimeoutSeconds: 180,
   streamIdleTimeoutSeconds: 60,
   streamFailureThresholdCount: 3,
-  streamFailureThresholdWindowMinutes: 10
+  streamFailureThresholdWindowMinutes: 10,
+  cooldownAccountRetestMaxBackoffHours: 24
 }
 
 export function normalizeGlobalSettings(settings: GlobalSettings | GlobalForm): GlobalForm {
@@ -49,7 +51,8 @@ export function normalizeSystemSettings(settings: SystemSettings | SystemForm): 
     streamRequestTimeoutSeconds: numberValue(settings.streamRequestTimeoutSeconds, defaultSystemSettings.streamRequestTimeoutSeconds, 10, 3600),
     streamIdleTimeoutSeconds: numberValue(settings.streamIdleTimeoutSeconds, defaultSystemSettings.streamIdleTimeoutSeconds, 1, 3600),
     streamFailureThresholdCount: numberValue(settings.streamFailureThresholdCount, defaultSystemSettings.streamFailureThresholdCount, 1, 100),
-    streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSystemSettings.streamFailureThresholdWindowMinutes, 1, 1440)
+    streamFailureThresholdWindowMinutes: numberValue(settings.streamFailureThresholdWindowMinutes, defaultSystemSettings.streamFailureThresholdWindowMinutes, 1, 1440),
+    cooldownAccountRetestMaxBackoffHours: numberValue(settings.cooldownAccountRetestMaxBackoffHours, defaultSystemSettings.cooldownAccountRetestMaxBackoffHours, 1, 720)
   }
 }
 

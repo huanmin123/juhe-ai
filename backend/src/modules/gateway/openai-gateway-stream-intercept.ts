@@ -11,9 +11,9 @@ import {
 } from './openai-gateway-stream-events.js'
 
 export interface StreamInterceptDecision {
-  reason: 'before_output_stream_failure'
+  reason: 'before_output_stream_failure' | 'cyber_policy_stream_failure'
   action: 'client_retry'
-  triggerPhase: 'before_output'
+  triggerPhase: 'before_output' | 'after_output'
   upstreamEventType: string
   upstreamErrorCode?: string
   upstreamErrorMessage?: string
@@ -75,7 +75,7 @@ export class OpenAIStreamInterceptBuffer {
       if (!rawBuffer) break
       const rawText = rawBuffer.toString('utf8')
       const event = parseOpenAISseEventText(rawText)
-      const decision = buildBeforeOutputFailureDecision(event, this.outputSeen)
+      const decision = buildStreamFailureDecision(event, this.outputSeen)
       if (decision) {
         chunks.push(buildGatewayStreamFailureEvent(decision.rewriteMessage, decision.rewriteErrorCode))
         return {
@@ -112,7 +112,7 @@ export class OpenAIStreamInterceptBuffer {
 
     const rawBuffer = this.pendingBuffer.drainEnsuringBoundary()
     const event = parseOpenAISseEventText(rawBuffer.toString('utf8'))
-    const decision = buildBeforeOutputFailureDecision(event, this.outputSeen)
+    const decision = buildStreamFailureDecision(event, this.outputSeen)
     if (decision) {
       return {
         chunks: [buildGatewayStreamFailureEvent(decision.rewriteMessage, decision.rewriteErrorCode)],
@@ -130,14 +130,18 @@ export class OpenAIStreamInterceptBuffer {
   }
 }
 
-function buildBeforeOutputFailureDecision(event: ParsedOpenAIStreamEvent, outputSeen: boolean): StreamInterceptDecision | undefined {
-  if (outputSeen || !isOpenAIStreamFailureEvent(event) || isCodexTerminalStreamFailureCode(event.errorCode)) {
+function buildStreamFailureDecision(event: ParsedOpenAIStreamEvent, outputSeen: boolean): StreamInterceptDecision | undefined {
+  if (!isOpenAIStreamFailureEvent(event)) {
+    return undefined
+  }
+  const retryableAfterOutput = isCodexRetryableAfterOutputStreamFailureCode(event.errorCode)
+  if (outputSeen && !retryableAfterOutput) {
     return undefined
   }
   return {
-    reason: 'before_output_stream_failure',
+    reason: outputSeen ? 'cyber_policy_stream_failure' : 'before_output_stream_failure',
     action: 'client_retry',
-    triggerPhase: 'before_output',
+    triggerPhase: outputSeen ? 'after_output' : 'before_output',
     upstreamEventType: event.eventType || event.eventName || 'message',
     upstreamErrorCode: event.errorCode,
     upstreamErrorMessage: event.errorMessage,
@@ -147,17 +151,9 @@ function buildBeforeOutputFailureDecision(event: ParsedOpenAIStreamEvent, output
   }
 }
 
-export function isCodexTerminalStreamFailureCode(errorCode: string | undefined): boolean {
-  return Boolean(errorCode && codexTerminalStreamFailureCodes.has(errorCode))
+export function isCodexRetryableAfterOutputStreamFailureCode(errorCode: string | undefined): boolean {
+  return errorCode === 'cyber_policy'
 }
-
-const codexTerminalStreamFailureCodes = new Set([
-  'context_length_exceeded',
-  'insufficient_quota',
-  'usage_not_included',
-  'invalid_prompt',
-  'cyber_policy'
-])
 
 class PendingSseEventBuffer {
   private chunks: Buffer[] = []

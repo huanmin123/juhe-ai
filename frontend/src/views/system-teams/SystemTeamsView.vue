@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card system-teams-page-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索团队名称 / ID 前缀" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchTeams" @reset="resetSearch" @refresh="refreshTeams">
+    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索团队名称" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchTeams" @reset="resetSearch" @refresh="refreshTeams">
       <template #actions>
         <a-button v-if="isManagementView" type="primary" @click="openCreateTeam">新建授权团队</a-button>
       </template>

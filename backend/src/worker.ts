@@ -28,6 +28,7 @@ import {
   getUsageRecordQueueRuntime,
   installUsageRecordQueueShutdownHooks
 } from './modules/gateway/usage-record-queue.service.js'
+import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cooldown-account-retest.service.js'
 import { getBusinessDatabase, getRecordDatabase } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
@@ -133,7 +134,8 @@ function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {
       failureRetentionDays: auditRuntime.failureRetentionDays,
       errorGroupRetentionDays: auditRuntime.errorGroupRetentionDays
     }),
-    runtimeLogIndexQueue: runtimeLogQueueRuntime(runtimeLogRuntime)
+    runtimeLogIndexQueue: runtimeLogQueueRuntime(runtimeLogRuntime),
+    cooldownAccountRetestQueue: getCooldownAccountRetestQueueSnapshot()
   }
 }
 

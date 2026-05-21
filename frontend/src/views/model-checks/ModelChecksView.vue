@@ -2,9 +2,9 @@
   <div class="model-checks-page">
     <a-card class="page-card model-checks-run-card">
       <a-form class="model-checks-form" layout="vertical">
-        <a-row :gutter="[16, 12]">
-          <a-col :xs="24" :lg="12">
-            <a-form-item label="AI 账户" required>
+        <div class="model-checks-control-panel">
+          <div class="model-checks-fields">
+            <a-form-item class="model-checks-account-field" required>
               <a-select
                 v-model:value="form.targetId"
                 show-search
@@ -13,100 +13,73 @@
                 :filter-option="false"
                 :loading="targetOptionsLoading"
                 :options="targetOptions"
-                :placeholder="targetPlaceholder"
+                placeholder="选择 AI 账户"
+                @change="handleTargetChange"
                 @dropdown-visible-change="handleTargetDropdownVisibleChange"
                 @search="handleTargetSearch"
               />
             </a-form-item>
-          </a-col>
-          <a-col :xs="24" :lg="6">
-            <a-form-item label="模型" required>
-              <a-select v-model:value="form.model" :options="modelOptions" :loading="optionsLoading" :disabled="submitting" />
+            <a-form-item class="model-checks-model-field" required>
+              <a-select v-model:value="form.model" :options="modelOptions" :loading="optionsLoading" :disabled="submitting" placeholder="模型" />
             </a-form-item>
-          </a-col>
-          <a-col :xs="24" :lg="6">
-            <a-form-item label="检测档位">
-              <a-select v-model:value="form.profile" :options="profileOptions" :loading="optionsLoading" :disabled="submitting" />
+            <a-form-item class="model-checks-comparison-field">
+              <a-select
+                v-model:value="form.trustedComparisonAccountId"
+                show-search
+                allow-clear
+                :disabled="submitting"
+                :filter-option="false"
+                :loading="comparisonOptionsLoading"
+                :options="comparisonOptions"
+                placeholder="可信对比账户（可选）"
+                @dropdown-visible-change="handleComparisonDropdownVisibleChange"
+                @search="handleComparisonSearch"
+              />
             </a-form-item>
-          </a-col>
-        </a-row>
-
-        <div class="model-checks-actions">
-          <a-space wrap>
-            <a-switch v-model:checked="form.officialBaseline" :disabled="submitting" @change="handleOfficialBaselineChange" />
-            <span class="baseline-label">官网对照</span>
-          </a-space>
-          <a-space wrap>
             <a-button :loading="optionsLoading" @click="loadOptions">
               <template #icon>
                 <ReloadOutlined />
               </template>
-              刷新选项
+              刷新
             </a-button>
+            <a-button :disabled="submitting" @click="resetRunForm">重置</a-button>
+          </div>
+
+          <div class="model-checks-toolbar">
             <a-button type="primary" :loading="submitting" @click="submitRun">
               <template #icon>
                 <ExperimentOutlined />
               </template>
               开始检测
             </a-button>
-          </a-space>
+          </div>
         </div>
 
-        <a-alert
-          v-if="officialBaselineMessage"
-          class="baseline-alert"
-          show-icon
-          :type="officialBaselineAvailable ? 'info' : 'warning'"
-          :message="officialBaselineMessage"
-        />
       </a-form>
-    </a-card>
 
-    <a-card class="page-card model-checks-detail-card" title="当前结果详情">
-      <a-skeleton v-if="detailLoading" active :paragraph="{ rows: 5 }" />
-      <a-empty v-else-if="!currentRun" description="尚未选择或发起检测" />
-      <div v-else class="run-detail">
-        <div class="run-detail-head">
+      <div v-if="terminalVisible" class="model-check-terminal">
+        <div class="model-check-terminal-head">
           <div>
-            <div class="run-detail-title">{{ currentRun.targetName || modelText(currentRun.model) }}</div>
-            <div class="run-detail-subtitle">
-              AI 账户：<span class="mono-cell">{{ currentRun.targetId }}</span>
-            </div>
+            <div class="terminal-title">AI 测试终端</div>
+            <div class="terminal-subtitle">按真实检测进度输出探针请求、响应、评分和 Trace ID</div>
           </div>
-          <a-space wrap>
-            <a-tag :color="statusColor(currentRun.status)">{{ statusText(currentRun.status) }}</a-tag>
-            <a-tag :color="levelColor(currentRun.level)">{{ levelText(currentRun.level) }}</a-tag>
-            <a-tag>{{ profileText(currentRun.profile) }}</a-tag>
-            <a-tag v-if="currentRun.officialBaseline" color="blue">官网对照</a-tag>
-            <a-tag>{{ currentRun.score }} / {{ currentRun.maxScore }}</a-tag>
+          <a-space>
+            <a-tag :color="terminalStatusColor">{{ terminalStatusText }}</a-tag>
+            <a-button v-if="submitting" size="small" danger @click="stopCurrentModelCheck()">停止检测</a-button>
           </a-space>
         </div>
-
-        <a-descriptions bordered size="small" :column="detailDescriptionColumns" class="run-descriptions">
-          <a-descriptions-item label="检测 ID">{{ currentRun.id }}</a-descriptions-item>
-          <a-descriptions-item label="模型">{{ modelText(currentRun.model) }}</a-descriptions-item>
-          <a-descriptions-item label="创建时间">{{ formatDateTime(currentRun.createdAt) }}</a-descriptions-item>
-          <a-descriptions-item label="完成时间">{{ formatDateTime(currentRun.finishedAt) }}</a-descriptions-item>
-          <a-descriptions-item label="耗时">{{ formatDuration(currentRun.durationMs) }}</a-descriptions-item>
-          <a-descriptions-item label="结论">{{ currentRun.message || currentRun.errorMessage || '-' }}</a-descriptions-item>
-          <a-descriptions-item label="Trace ID">{{ currentRun.traceId || '-' }}</a-descriptions-item>
-        </a-descriptions>
-
-        <div v-if="currentRun.checks.length" class="check-list">
-          <div v-for="check in currentRun.checks" :key="check.id" class="check-item">
-            <div class="check-item-head">
-              <span>{{ checkTitle(check) }}</span>
-              <a-space wrap>
-                <a-tag :color="checkStatusColor(check.status)">{{ checkStatusText(check.status) }}</a-tag>
-                <a-tag>{{ check.score }} / {{ check.maxScore }}</a-tag>
-              </a-space>
-            </div>
-            <div v-if="checkMessage(check)" class="check-message">{{ checkMessage(check) }}</div>
-            <pre v-if="hasCheckExtra(check)" class="json-block">{{ formatJson(checkExtra(check)) }}</pre>
+        <div ref="terminalBodyRef" class="model-check-terminal-body">
+          <div v-for="line in terminalLines" :key="line.id" class="terminal-line" :class="`terminal-line-${line.level}`">
+            <span class="terminal-time">[{{ line.time }}]</span>
+            <span class="terminal-prompt">$</span>
+            <span class="terminal-text">{{ line.text }}</span>
+          </div>
+          <div v-if="submitting" class="terminal-line terminal-line-muted">
+            <span class="terminal-time">[{{ terminalNow }}]</span>
+            <span class="terminal-prompt">_</span>
+            <span class="terminal-text terminal-cursor">等待下一个检测事件</span>
           </div>
         </div>
-
-        <pre class="json-block">{{ formatJson({ request: currentRun.requestSummary, result: currentRun.resultSummary }) }}</pre>
       </div>
     </a-card>
 
@@ -168,11 +141,64 @@
         </template>
       </a-table>
     </a-card>
+
+    <a-drawer
+      v-model:open="detailOpen"
+      class="model-checks-detail-drawer"
+      title="检测结果详情"
+      width="720px"
+      :body-style="{ padding: '16px' }"
+    >
+      <a-skeleton v-if="detailLoading" active :paragraph="{ rows: 5 }" />
+      <a-empty v-else-if="!currentRun" description="尚未选择检测记录" />
+      <div v-else class="run-detail">
+        <div class="run-detail-head">
+          <div>
+            <div class="run-detail-title">{{ currentRun.targetName || modelText(currentRun.model) }}</div>
+            <div class="run-detail-subtitle">
+              AI 账户：<span class="mono-cell">{{ currentRun.targetId }}</span>
+            </div>
+          </div>
+          <a-space wrap>
+            <a-tag :color="statusColor(currentRun.status)">{{ statusText(currentRun.status) }}</a-tag>
+            <a-tag :color="levelColor(currentRun.level)">{{ levelText(currentRun.level) }}</a-tag>
+            <a-tag v-if="runTrustedComparison(currentRun)" color="blue">可信对比</a-tag>
+            <a-tag>{{ currentRun.score }} / {{ currentRun.maxScore }}</a-tag>
+          </a-space>
+        </div>
+
+        <a-descriptions bordered size="small" :column="detailDescriptionColumns" class="run-descriptions">
+          <a-descriptions-item label="检测 ID">{{ currentRun.id }}</a-descriptions-item>
+          <a-descriptions-item label="模型">{{ modelText(currentRun.model) }}</a-descriptions-item>
+          <a-descriptions-item label="创建时间">{{ formatDateTime(currentRun.createdAt) }}</a-descriptions-item>
+          <a-descriptions-item label="完成时间">{{ formatDateTime(currentRun.finishedAt) }}</a-descriptions-item>
+          <a-descriptions-item label="耗时">{{ formatDuration(currentRun.durationMs) }}</a-descriptions-item>
+          <a-descriptions-item label="结论">{{ currentRun.message || currentRun.errorMessage || '-' }}</a-descriptions-item>
+          <a-descriptions-item label="Trace ID">{{ currentRun.traceId || '-' }}</a-descriptions-item>
+        </a-descriptions>
+
+        <div v-if="currentRun.checks.length" class="check-list">
+          <div v-for="check in currentRun.checks" :key="check.id" class="check-item">
+            <div class="check-item-head">
+              <span>{{ checkTitle(check) }}</span>
+              <a-space wrap>
+                <a-tag :color="checkStatusColor(check.status)">{{ checkStatusText(check.status) }}</a-tag>
+                <a-tag>{{ check.score }} / {{ check.maxScore }}</a-tag>
+              </a-space>
+            </div>
+            <div v-if="checkMessage(check)" class="check-message">{{ checkMessage(check) }}</div>
+            <pre v-if="hasCheckExtra(check)" class="json-block">{{ formatJson(checkExtra(check)) }}</pre>
+          </div>
+        </div>
+
+        <pre class="json-block">{{ formatJson({ request: currentRun.requestSummary, result: currentRun.resultSummary }) }}</pre>
+      </div>
+    </a-drawer>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, reactive, ref } from 'vue'
 import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
@@ -180,13 +206,14 @@ import { useScopedAccountsApi, useScopedModelChecksApi } from '@/composables/use
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type {
   AccountOptionSummary,
   ModelCheckCheckResult,
   ModelCheckLevel,
   ModelCheckModel,
   ModelCheckOptions,
-  ModelCheckProfile,
+  ModelCheckProgressEvent,
   ModelCheckRunDetail,
   ModelCheckRunPayload,
   ModelCheckRunSummary,
@@ -201,7 +228,7 @@ const fallbackOptions: ModelCheckOptions = {
   supportedProfiles: [
     { value: 'full', label: '完整检测', description: '完整检测' }
   ],
-  officialBaseline: { enabledByDefault: false, available: false, message: '当前后端未返回官网对照可用状态，默认关闭。' },
+  trustedComparison: { enabledByDefault: false, available: true, message: '可信对比默认关闭；选择可信账户后会额外消耗该账户额度。' },
   defaultModel: 'gpt-5.5',
   defaultProfile: 'full'
 }
@@ -234,11 +261,20 @@ const modelChecksApi = useScopedModelChecksApi(isManagementView)
 const accountsApi = useScopedAccountsApi(isManagementView)
 const optionsLoading = ref(false)
 const targetOptionsLoading = ref(false)
+const comparisonOptionsLoading = ref(false)
 const submitting = ref(false)
 const runsLoading = ref(false)
 const detailLoading = ref(false)
+const detailOpen = ref(false)
+const terminalVisible = ref(false)
+const terminalLines = ref<TerminalLine[]>([])
+const terminalBodyRef = ref<HTMLElement>()
+let modelCheckAbortController: AbortController | undefined
 const options = ref<ModelCheckOptions>(fallbackOptions)
 const targetOptions = ref<Array<{ label: string; value: string }>>([])
+const comparisonOptions = ref<Array<{ label: string; value: string }>>([])
+const targetOptionsCache = createShortLivedQueryCache<Array<{ label: string; value: string }>>({ ttlMs: 10_000 })
+const comparisonOptionsCache = createShortLivedQueryCache<Array<{ label: string; value: string }>>({ ttlMs: 10_000 })
 const runs = ref<ModelCheckRunSummary[]>([])
 const currentRun = ref<ModelCheckRunDetail>()
 const form = reactive<ModelCheckRunPayload>({
@@ -246,7 +282,8 @@ const form = reactive<ModelCheckRunPayload>({
   targetId: '',
   model: 'gpt-5.5',
   profile: 'full',
-  officialBaseline: false
+  trustedComparison: false,
+  trustedComparisonAccountId: undefined
 })
 const filters = reactive<{
   targetId?: string
@@ -263,19 +300,22 @@ const pagination = reactive({
 })
 
 const modelOptions = computed(() => options.value.supportedModels.map((item) => ({ label: item.label, value: item.value })))
-const profileOptions = computed(() => options.value.supportedProfiles.map((item) => ({
-  label: item.description ? `${item.label}（${item.description}）` : item.label,
-  value: item.value
-})))
-const targetPlaceholder = '搜索并选择我的 AI 账户'
-const officialBaselineAvailable = computed(() => options.value.officialBaseline.available)
-const officialBaselineMessage = computed(() => {
-  if (options.value.officialBaseline.message) return options.value.officialBaseline.message
-  if (options.value.officialBaseline.unavailableReason) return options.value.officialBaseline.unavailableReason
-  return officialBaselineAvailable.value ? '' : '当前环境未启用官网对照；如强制开启，后端会重新校验并返回失败原因。'
-})
 const detailDescriptionColumns = computed(() => (window.innerWidth < 900 ? 1 : 2))
+const terminalStatusText = computed(() => submitting.value ? '运行中' : terminalLines.value.length ? '最近一次' : '待开始')
+const terminalStatusColor = computed(() => submitting.value ? 'blue' : terminalLines.value.length ? 'green' : 'default')
+const terminalNow = computed(() => formatClockTime(new Date()))
 let targetOptionsRequestId = 0
+let comparisonOptionsRequestId = 0
+let terminalLineId = 0
+let modelCheckAbortReason: 'manual' | 'deactivated' | 'unmount' | undefined
+
+type TerminalLineLevel = 'info' | 'success' | 'warning' | 'error' | 'muted'
+type TerminalLine = {
+  id: number
+  time: string
+  level: TerminalLineLevel
+  text: string
+}
 
 async function loadOptions() {
   optionsLoading.value = true
@@ -284,9 +324,6 @@ async function loadOptions() {
     options.value = nextOptions
     form.model = nextOptions.defaultModel
     form.profile = nextOptions.defaultProfile
-    if (!nextOptions.officialBaseline.available) {
-      form.officialBaseline = false
-    }
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载模型检测选项失败'))
@@ -296,18 +333,27 @@ async function loadOptions() {
 }
 
 async function loadTargetOptions(keyword = '') {
+  const normalizedKeyword = keyword.trim()
+  const requestKey = JSON.stringify([normalizedKeyword, form.targetId])
   const requestId = ++targetOptionsRequestId
+  const cachedOptions = targetOptionsCache.get(requestKey)
+  if (cachedOptions) {
+    targetOptionsLoading.value = false
+    targetOptions.value = cachedOptions
+    return
+  }
   targetOptionsLoading.value = true
   try {
     const accounts = await accountsApi.options({
-      keyword: keyword.trim() || undefined,
+      keyword: normalizedKeyword || undefined,
       status: 'active',
       schedulable: 'enabled',
       limit: 50
     })
-    const nextOptions = accounts.filter((account) => account.providerCode === 'openai').map(accountTargetOption)
+    const nextOptions = keepSelectedTargetOption(accounts.filter((account) => account.providerCode === 'openai').map(accountTargetOption))
+    targetOptionsCache.set(requestKey, nextOptions)
     if (requestId === targetOptionsRequestId) {
-      targetOptions.value = keepSelectedTargetOption(nextOptions)
+      targetOptions.value = nextOptions
     }
   } catch (error) {
     console.error(error)
@@ -319,28 +365,97 @@ async function loadTargetOptions(keyword = '') {
   }
 }
 
+async function loadComparisonOptions(keyword = '') {
+  const normalizedKeyword = keyword.trim()
+  const requestKey = JSON.stringify([normalizedKeyword, form.trustedComparisonAccountId])
+  const requestId = ++comparisonOptionsRequestId
+  const cachedOptions = comparisonOptionsCache.get(requestKey)
+  if (cachedOptions) {
+    comparisonOptionsLoading.value = false
+    comparisonOptions.value = cachedOptions
+    return
+  }
+  comparisonOptionsLoading.value = true
+  try {
+    const accounts = await accountsApi.options({
+      keyword: normalizedKeyword || undefined,
+      status: 'active',
+      schedulable: 'enabled',
+      limit: 50
+    })
+    const nextOptions = keepSelectedComparisonOption(accounts
+      .filter((account) => account.providerCode === 'openai' && account.id !== form.targetId)
+      .map(accountTargetOption))
+    comparisonOptionsCache.set(requestKey, nextOptions)
+    if (requestId === comparisonOptionsRequestId) {
+      comparisonOptions.value = nextOptions
+    }
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载可信对比账户失败'))
+  } finally {
+    if (requestId === comparisonOptionsRequestId) {
+      comparisonOptionsLoading.value = false
+    }
+  }
+}
+
 async function submitRun() {
   const targetId = form.targetId.trim()
+  const trustedComparisonAccountId = form.trustedComparisonAccountId?.trim()
   if (!targetId) {
     message.warning('请选择 AI 账户')
     return
   }
+  if (trustedComparisonAccountId && trustedComparisonAccountId === targetId) {
+    message.warning('可信对比账户不能和检测目标相同')
+    return
+  }
+  stopCurrentModelCheck(false)
+  const controller = new AbortController()
+  modelCheckAbortController = controller
   submitting.value = true
+  detailOpen.value = false
+  resetTerminal()
+  currentRun.value = undefined
   try {
     const payload: ModelCheckRunPayload = {
       targetType: form.targetType,
       targetId,
       model: form.model,
       profile: form.profile,
-      officialBaseline: form.officialBaseline
+      trustedComparison: Boolean(trustedComparisonAccountId),
+      trustedComparisonAccountId: trustedComparisonAccountId || undefined
     }
-    currentRun.value = await modelChecksApi.run(payload)
+    appendTerminalLine('info', `juhe-ai model-check --account "${targetOptionText(targetId)}" --model ${form.model}${trustedComparisonAccountId ? ` --trusted-account "${comparisonOptionText(trustedComparisonAccountId)}"` : ''}`)
+    appendTerminalLine('muted', '已连接系统 API，等待后端返回检测进度流')
+    currentRun.value = await modelChecksApi.runStream(payload, {
+      signal: controller.signal,
+      onProgress: handleModelCheckProgress
+    })
+    appendTerminalLine('success', `检测报告已生成：${levelText(currentRun.value.level)}，${currentRun.value.score}/${currentRun.value.maxScore}，${currentRun.value.message || '-'}`)
     message.success('模型检测完成')
     await reloadRuns()
   } catch (error) {
     console.error(error)
-    message.error(extractApiErrorMessage(error, '模型检测提交失败'))
+    const errorMessage = extractApiErrorMessage(error, '模型检测提交失败')
+    if (controller.signal.aborted) {
+      if (modelCheckAbortReason !== 'deactivated' && modelCheckAbortReason !== 'unmount') {
+        appendTerminalLine('warning', '检测已停止')
+        message.info('模型检测已停止')
+      }
+    } else {
+      appendTerminalLine('error', errorMessage)
+      message.error(errorMessage)
+    }
+    if (!controller.signal.aborted) {
+      await loadRuns()
+    }
   } finally {
+    if (modelCheckAbortController === controller) {
+      modelCheckAbortController = undefined
+    }
+    modelCheckAbortReason = undefined
     submitting.value = false
   }
 }
@@ -375,6 +490,7 @@ async function loadRuns() {
 }
 
 async function loadRunDetail(id: string) {
+  detailOpen.value = true
   detailLoading.value = true
   try {
     currentRun.value = await modelChecksApi.detail(id)
@@ -396,18 +512,101 @@ function handleTargetSearch(value: string) {
   void loadTargetOptions(value)
 }
 
+function handleTargetChange() {
+  if (form.trustedComparisonAccountId && form.trustedComparisonAccountId === form.targetId) {
+    form.trustedComparisonAccountId = undefined
+  }
+  void loadComparisonOptions()
+}
+
 function handleTargetDropdownVisibleChange(open: boolean) {
   if (open && !targetOptions.value.length) {
     void loadTargetOptions()
   }
 }
 
-function handleOfficialBaselineChange(checked: boolean) {
-  if (!checked || officialBaselineAvailable.value) {
+function handleComparisonSearch(value: string) {
+  void loadComparisonOptions(value)
+}
+
+function handleComparisonDropdownVisibleChange(open: boolean) {
+  if (open && !comparisonOptions.value.length) {
+    void loadComparisonOptions()
+  }
+}
+
+function resetRunForm() {
+  form.targetId = ''
+  form.model = options.value.defaultModel
+  form.profile = options.value.defaultProfile
+  form.trustedComparison = false
+  form.trustedComparisonAccountId = undefined
+}
+
+function resetTerminal() {
+  terminalVisible.value = true
+  terminalLines.value = []
+  terminalLineId = 0
+}
+
+function stopCurrentModelCheck(appendLog = true, reason: 'manual' | 'deactivated' | 'unmount' = 'manual') {
+  if (modelCheckAbortController && !modelCheckAbortController.signal.aborted) {
+    modelCheckAbortReason = reason
+    modelCheckAbortController.abort()
+    if (appendLog) {
+      appendTerminalLine('warning', '已请求停止当前检测')
+    }
+  }
+}
+
+function clearTerminal() {
+  stopCurrentModelCheck(false)
+  terminalLines.value = []
+  terminalVisible.value = false
+}
+
+function appendTerminalLine(level: TerminalLineLevel, text: string) {
+  terminalLines.value.push({
+    id: ++terminalLineId,
+    time: formatClockTime(new Date()),
+    level,
+    text
+  })
+  void nextTick(scrollTerminalToBottom)
+}
+
+function scrollTerminalToBottom() {
+  if (!terminalBodyRef.value) return
+  terminalBodyRef.value.scrollTop = terminalBodyRef.value.scrollHeight
+}
+
+function handleModelCheckProgress(event: ModelCheckProgressEvent) {
+  if (event.type === 'run_started') {
+    appendTerminalLine('info', `检测启动：目标 AI 账户 ${event.targetId}，模型 ${event.model}，可信对比 ${event.trustedComparison ? '开启' : '关闭'}`)
     return
   }
-  form.officialBaseline = false
-  message.warning(options.value.officialBaseline.unavailableReason || options.value.officialBaseline.message || '未配置可用的官网基线账户，无法开启官网对照检测')
+  if (event.type === 'run_created') {
+    appendTerminalLine('success', `检测记录已创建：${event.runId}，Trace ${event.traceId}`)
+    void loadRuns()
+    return
+  }
+  if (event.type === 'probe_started') {
+    appendTerminalLine('info', `AI 请求 -> ${progressItemTitle(event.itemKey)} (${event.method} ${event.path})`)
+    return
+  }
+  if (event.type === 'probe_completed') {
+    const output = event.outputPreview ? `，输出 "${event.outputPreview}"` : ''
+    const responseModel = event.responseModel ? `，返回模型 ${event.responseModel}` : ''
+    appendTerminalLine(event.success ? 'success' : 'warning', `${progressItemTitle(event.itemKey)} 响应完成：HTTP ${event.statusCode}，${formatDuration(event.durationMs)}，Trace ${event.traceId}${responseModel}${output}`)
+    return
+  }
+  if (event.type === 'item_completed') {
+    appendTerminalLine(terminalLevelForCheckStatus(event.status), `${progressItemTitle(event.itemKey, event.itemType)} 评分：${checkStatusText(event.status)}，${event.score}/${event.maxScore}，${event.message}`)
+    return
+  }
+  if (event.type === 'run_completed') {
+    appendTerminalLine(event.status === 'completed' ? 'success' : 'error', `检测结束：${statusText(event.status)}，${levelText(event.level)}，${event.score}/${event.maxScore}，${event.message}`)
+  }
 }
 
 function accountTargetOption(account: AccountOptionSummary) {
@@ -423,10 +622,29 @@ function keepSelectedTargetOption(nextOptions: Array<{ label: string; value: str
   return [{ label: form.targetId, value: form.targetId }, ...nextOptions]
 }
 
+function targetOptionText(id: string) {
+  return targetOptions.value.find((item) => item.value === id)?.label ?? id
+}
+
+function keepSelectedComparisonOption(nextOptions: Array<{ label: string; value: string }>) {
+  if (!form.trustedComparisonAccountId || nextOptions.some((item) => item.value === form.trustedComparisonAccountId)) {
+    return nextOptions
+  }
+  return [{ label: form.trustedComparisonAccountId, value: form.trustedComparisonAccountId }, ...nextOptions]
+}
+
+function comparisonOptionText(id: string) {
+  return comparisonOptions.value.find((item) => item.value === id)?.label ?? id
+}
+
 function accountTypeText(value: string) {
   if (value === 'api_key') return 'API Key 账户'
   if (value === 'oauth') return 'OAuth 账户'
   return value
+}
+
+function runTrustedComparison(run: Pick<ModelCheckRunSummary, 'trustedComparison' | 'officialBaseline'>) {
+  return run.trustedComparison || run.officialBaseline
 }
 
 function statusText(value: ModelCheckStatus) {
@@ -472,10 +690,6 @@ function modelText(value: string) {
   return options.value.supportedModels.find((item) => item.value === value)?.label ?? value
 }
 
-function profileText(value?: string) {
-  return options.value.supportedProfiles.find((item) => item.value === value)?.label ?? '完整检测'
-}
-
 function formatDuration(value?: number) {
   if (value === undefined) return '-'
   if (value >= 1000) return `${(value / 1000).toFixed(1)} 秒`
@@ -483,6 +697,10 @@ function formatDuration(value?: number) {
 }
 
 function checkTitle(check: ModelCheckCheckResult) {
+  return checkTitleByType(check.itemType, check.itemKey)
+}
+
+function checkTitleByType(itemType: string, itemKey: string) {
   const labels: Record<string, string> = {
     model_catalog: '模型目录',
     responses_basic: 'Responses 非流式',
@@ -493,10 +711,24 @@ function checkTitle(check: ModelCheckCheckResult) {
     behavior_probe: '行为探针',
     long_context: '长上下文找针',
     stability: '稳定性探针',
-    cross_model: '交叉模型对照',
-    official_baseline: '官网对照'
+    cross_model: '辅助模型对照',
+    distribution_similarity: '分布相似度对照',
+    trusted_comparison: '可信对比',
+    official_baseline: '可信对比'
   }
-  return labels[check.itemType] ?? check.itemKey
+  return labels[itemType] ?? itemKey
+}
+
+function progressItemTitle(itemKey: string, itemType?: string) {
+  if (itemKey.includes('.distribution.')) return '分布相似度采样'
+  return checkTitleByType(itemType ?? itemKey.split('.').pop() ?? itemKey, itemKey)
+}
+
+function terminalLevelForCheckStatus(status: ModelCheckCheckResult['status']): TerminalLineLevel {
+  if (status === 'passed') return 'success'
+  if (status === 'warning') return 'warning'
+  if (status === 'failed') return 'error'
+  return 'muted'
 }
 
 function checkMessage(check: ModelCheckCheckResult) {
@@ -521,8 +753,22 @@ function formatJson(value: unknown) {
   return JSON.stringify(value, null, 2)
 }
 
+function formatClockTime(value: Date) {
+  return [value.getHours(), value.getMinutes(), value.getSeconds()]
+    .map((item) => String(item).padStart(2, '0'))
+    .join(':')
+}
+
 onMounted(async () => {
-  await Promise.all([loadOptions(), loadRuns(), loadTargetOptions()])
+  await Promise.all([loadOptions(), loadRuns(), loadTargetOptions(), loadComparisonOptions()])
+})
+
+onDeactivated(() => {
+  stopCurrentModelCheck(false, 'deactivated')
+})
+
+onBeforeUnmount(() => {
+  stopCurrentModelCheck(false, 'unmount')
 })
 </script>
 
@@ -534,7 +780,6 @@ onMounted(async () => {
 }
 
 .model-checks-run-card,
-.model-checks-detail-card,
 .model-checks-history-card {
   border: 1px solid #e8edf5;
   border-radius: 16px;
@@ -544,7 +789,6 @@ onMounted(async () => {
   margin-bottom: 0;
 }
 
-.model-checks-actions,
 .history-toolbar,
 .run-detail-head {
   display: flex;
@@ -553,14 +797,138 @@ onMounted(async () => {
   gap: 14px;
 }
 
-.baseline-label {
-  color: #334155;
-  font-size: 14px;
+.model-checks-control-panel {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
-.baseline-alert {
+.model-checks-fields {
+  display: flex;
+  flex: 1 1 620px;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+}
+
+.model-checks-account-field {
+  flex: 0 1 300px;
+  width: 300px;
+  min-width: 240px;
+}
+
+.model-checks-model-field {
+  flex: 0 0 160px;
+  width: 160px;
+  min-width: 140px;
+}
+
+.model-checks-comparison-field {
+  flex: 0 1 300px;
+  width: 300px;
+  min-width: 240px;
+}
+
+.model-checks-toolbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.model-check-terminal {
   margin-top: 14px;
-  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  background: #020617;
+}
+
+.model-check-terminal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #1e293b;
+  background: #0f172a;
+}
+
+.terminal-title {
+  color: #e2e8f0;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.terminal-subtitle {
+  margin-top: 2px;
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.model-check-terminal-body {
+  max-height: 280px;
+  padding: 12px;
+  overflow: auto;
+  color: #cbd5e1;
+  font-family: Consolas, 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.terminal-line {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  word-break: break-word;
+}
+
+.terminal-time {
+  color: #64748b;
+  white-space: nowrap;
+}
+
+.terminal-prompt {
+  color: #38bdf8;
+}
+
+.terminal-line-success .terminal-text {
+  color: #86efac;
+}
+
+.terminal-line-warning .terminal-text {
+  color: #fde68a;
+}
+
+.terminal-line-error .terminal-text {
+  color: #fca5a5;
+}
+
+.terminal-line-muted .terminal-text {
+  color: #94a3b8;
+}
+
+.terminal-cursor::after {
+  display: inline-block;
+  width: 6px;
+  height: 12px;
+  margin-left: 4px;
+  vertical-align: -2px;
+  background: #38bdf8;
+  content: '';
+  animation: terminal-cursor-blink 1s steps(1) infinite;
+}
+
+@keyframes terminal-cursor-blink {
+  50% {
+    opacity: 0;
+  }
 }
 
 .run-detail {
@@ -658,11 +1026,46 @@ onMounted(async () => {
   white-space: nowrap;
 }
 
+.model-checks-detail-drawer :deep(.ant-drawer-content-wrapper) {
+  max-width: 100vw;
+}
+
 @media (max-width: 900px) {
-  .model-checks-actions,
   .history-toolbar,
   .run-detail-head,
   .check-item-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .model-checks-control-panel,
+  .model-checks-fields {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .model-checks-account-field,
+  .model-checks-model-field,
+  .model-checks-comparison-field {
+    width: 100%;
+    flex: none;
+    min-width: 0;
+  }
+
+  .model-checks-toolbar {
+    align-items: stretch;
+    width: 100%;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  .model-checks-fields :deep(.ant-btn),
+  .model-checks-toolbar :deep(.ant-btn) {
+    width: 100%;
+  }
+
+  .model-check-terminal-head {
     align-items: flex-start;
     flex-direction: column;
   }

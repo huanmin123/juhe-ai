@@ -37,8 +37,8 @@ export function buildApiKeyFilters(scope: { clause: string; params: string[] }, 
   }
   if (options.keyword) {
     const keywordPrefix = `${escapeLikePrefix(options.keyword)}%`
-    clauses.push("(api_keys.key_prefix = ? OR api_keys.key_prefix LIKE ? ESCAPE '\\' OR api_keys.name COLLATE NOCASE = ? OR api_keys.name LIKE ? ESCAPE '\\')")
-    params.push(options.keyword, keywordPrefix, options.keyword, keywordPrefix)
+    clauses.push("(api_keys.name COLLATE NOCASE = ? OR api_keys.name LIKE ? ESCAPE '\\')")
+    params.push(options.keyword, keywordPrefix)
   }
   if (options.status) {
     clauses.push('api_keys.status = ?')

@@ -80,6 +80,32 @@ try {
   assert.equal(latestStatusByRole.get('db-service')?.sampleAvailable, true, 'db-service 有最新采样时应显式标记可用')
   assert.deepEqual(overview.backgroundJobs, [], 'repository 层系统指标应提供空后台任务数组，路由层再补运行时快照')
 
+  const recentMinute = new Date(Date.now() - 60_000)
+  recentMinute.setSeconds(0, 0)
+  usageStatsRepository.insertProcessEventLoopSample({
+    processRole: 'server',
+    processPid: 1002,
+    sampledAt: recentMinute.toISOString(),
+    eventLoopLagMs: 10
+  })
+  usageStatsRepository.insertProcessEventLoopSample({
+    processRole: 'server',
+    processPid: 1002,
+    sampledAt: new Date(recentMinute.getTime() + 30_000).toISOString(),
+    eventLoopLagMs: 20
+  })
+  const minuteOverview = usageStatsRepository.getSystemMetricsOverview({
+    startDate: '2026-01-01',
+    endDate: '2026-01-01',
+    days: 1,
+    maxDays: 31
+  })
+  const serverMinuteBucket = minuteOverview.processEventLoopTrend.find((row) => row.processRole === 'server' && row.sampleCount === 2)
+  assert(serverMinuteBucket, '进程事件循环趋势应按最近 24 小时分钟桶聚合')
+  assert.match(serverMinuteBucket.statMinute, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, '进程事件循环趋势桶应精确到分钟')
+  assert.equal(serverMinuteBucket.eventLoopLagMsAvg, 15, '同一分钟内多个采样应按分钟计算平均延迟')
+  assert.equal(serverMinuteBucket.eventLoopLagMsMax, 20, '分钟桶应保留峰值延迟，便于定位尖峰')
+
   console.log('系统指标进程最新样本回归通过：每个进程角色独立取最新样本')
 } finally {
   try {

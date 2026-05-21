@@ -313,7 +313,7 @@ function loadAiPerformanceAccountOptionRows(
     FROM accounts
     WHERE (${keywordClauses.join(' OR ')})
       ${systemAccountWhere}
-    ORDER BY lower(accounts.name) ASC, accounts.id ASC
+    ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
     LIMIT ?
   `).all(...keywordParams, ...systemAccountParams, options.limit) as unknown as Array<{ id: string }>
   const accountIds = accountRows.map((row) => row.id)
@@ -339,7 +339,7 @@ function loadAiPerformanceAccountOptionOwnerIds(systemAccountId: string, keyword
     SELECT id
     FROM system_accounts
     WHERE username = ? OR username LIKE ? ESCAPE '\\' OR display_name COLLATE NOCASE = ? OR display_name LIKE ? ESCAPE '\\'
-    ORDER BY lower(display_name) ASC, id ASC
+    ORDER BY display_name COLLATE NOCASE ASC, id ASC
     LIMIT ?
   `).all(keyword, keywordPrefix, keyword, keywordPrefix, limit) as unknown as Array<{ id?: string }>
   return rows.map((row) => row.id).filter((id): id is string => Boolean(id))

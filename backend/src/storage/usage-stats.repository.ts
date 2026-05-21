@@ -5,10 +5,10 @@ import type {
   AccountUsageStatsRange,
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { averageFromSum, dateKey, hourKey, usageStatsTimezone } from './usage-stats-helpers.js'
-import { emptyStatsAggregateMathRow, mapProcessEventLoopHourly, mapProcessEventLoopLatestRows, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
+import { averageFromSum, dateKey, hourKey, minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
+import { emptyStatsAggregateMathRow, mapProcessEventLoopLatestRows, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 import { ensureUsageStatsBackfill } from './usage-stats-backfill-runner.js'
@@ -66,6 +66,7 @@ const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
 const CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME = 'caller_account_usage_stats_backfill'
 const ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME = 'account_quality_minute_stats_backfill'
 const PROCESS_EVENT_LOOP_ROLES: ProcessRole[] = ['server', 'worker', 'db-service']
+const PROCESS_EVENT_LOOP_TREND_WINDOW_MS = 24 * 60 * 60 * 1000
 const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
@@ -79,31 +80,34 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
   if (!accountQualityBackfill.complete || accountQualityBackfill.processed > 0) {
     return accountQualityBackfill.processed
   }
-  const state = usageStatsJobState(database)
   const safeCreatedBefore = usageStatsSafeCreatedBefore()
-  const rows = database
-    .prepare(`
-      SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
-      FROM usage_records
-      WHERE created_at <= ?
-        AND (created_at > ? OR (created_at = ? AND id > ?))
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, batchLimit) as unknown as UsageStatsRecordRow[]
-
-  if (!rows.length) {
-    updateStatsJobState(database, {
-      lastSuccessAt: nowIso(),
-      lagSeconds: latestUsageRecordLagSeconds(database, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
-    })
-    return 0
-  }
-
-  const updatedAt = nowIso()
-  const aggregationContext = createUsageStatsAggregationContext(rows)
-  const transactionStarted = beginDatabaseTransaction(database)
+  const transactionStarted = beginImmediateDatabaseTransaction(database)
+  let processedRows = 0
   try {
+    const state = usageStatsJobState(database)
+    const rows = database
+      .prepare(`
+        SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
+        FROM usage_records
+        WHERE created_at <= ?
+          AND (created_at > ? OR (created_at = ? AND id > ?))
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+      `)
+      .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, batchLimit) as unknown as UsageStatsRecordRow[]
+
+    if (!rows.length) {
+      updateStatsJobState(database, {
+        lastSuccessAt: nowIso(),
+        lagSeconds: latestUsageRecordLagSeconds(database, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
+      })
+      commitDatabaseTransaction(database, transactionStarted)
+      return 0
+    }
+
+    const updatedAt = nowIso()
+    const aggregationContext = createUsageStatsAggregationContext(rows)
+    processedRows = rows.length
     for (const row of rows) {
       aggregateUsageStatsRecord(database, row, updatedAt, aggregationContext)
     }
@@ -124,7 +128,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
     throw error
   }
 
-  return rows.length
+  return processedRows
 }
 
 function ensureCallerAccountUsageStatsBackfill(database: DatabaseSync, limit: number): { complete: boolean; processed: number } {
@@ -1346,21 +1350,70 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
   const processLatestRows = PROCESS_EVENT_LOOP_ROLES
     .map((role) => processLatestStatement.get(role) as unknown as Record<string, unknown> | undefined)
     .filter((row): row is Record<string, unknown> => Boolean(row))
-  const processRows = database.prepare(`
-    SELECT bucket_key AS stat_hour, process_role, sample_count, event_loop_lag_ms_sum, event_loop_lag_ms_max
-    FROM process_event_loop_trend_windows
-    WHERE window_key = ? AND start_date = ? AND end_date = ?
-    ORDER BY bucket_key ASC, process_role ASC
-  `).all(windowKey, range.startDate, range.endDate) as unknown as Array<Record<string, unknown>>
+  const processRows = processEventLoopMinuteTrendRows(database, usageStatsTimezone())
   const processEventLoopLatestStatus = buildProcessEventLoopLatestStatus(processLatestRows)
   return {
     latest: latest ? mapSystemMetricsLatest(latest) : undefined,
     hourlyTrend: rows.map(mapSystemMetricsHourly),
     processEventLoopLatest: mapProcessEventLoopLatestRows(processLatestRows),
     processEventLoopLatestStatus,
-    processEventLoopTrend: processRows.map(mapProcessEventLoopHourly),
+    processEventLoopTrend: processRows,
     backgroundJobs: []
   }
+}
+
+function processEventLoopMinuteTrendRows(database: DatabaseSync, timezone: string): SystemMetricsOverview['processEventLoopTrend'] {
+  const startedAt = new Date(Date.now() - PROCESS_EVENT_LOOP_TREND_WINDOW_MS).toISOString()
+  const rows = database.prepare(`
+    SELECT sampled_at, process_role, event_loop_lag_ms
+    FROM process_event_loop_samples
+    WHERE sampled_at >= ?
+      AND event_loop_lag_ms IS NOT NULL
+    ORDER BY sampled_at ASC, process_role ASC, id ASC
+  `).all(startedAt) as unknown as Array<Record<string, unknown>>
+  const buckets = new Map<string, ProcessEventLoopMinuteBucket>()
+  for (const row of rows) {
+    const processRole = processRoleFromValue(row.process_role)
+    const lag = nullableNumber(row.event_loop_lag_ms)
+    const sampledAt = new Date(String(row.sampled_at ?? ''))
+    if (!processRole || lag === null || !Number.isFinite(sampledAt.getTime())) continue
+    const statMinute = minuteKey(sampledAt, timezone)
+    const bucketKey = `${statMinute}:${processRole}`
+    const bucket = buckets.get(bucketKey) ?? {
+      statHour: statMinute,
+      statMinute,
+      processRole,
+      sampleCount: 0,
+      eventLoopLagMsSum: 0
+    }
+    bucket.sampleCount += 1
+    bucket.eventLoopLagMsSum += lag
+    bucket.eventLoopLagMsMax = bucket.eventLoopLagMsMax === undefined ? lag : Math.max(bucket.eventLoopLagMsMax, lag)
+    buckets.set(bucketKey, bucket)
+  }
+  return [...buckets.values()]
+    .sort((left, right) => compareText(left.statMinute, right.statMinute) || processRoleSort(left.processRole) - processRoleSort(right.processRole))
+    .map((bucket) => ({
+      statHour: bucket.statMinute,
+      statMinute: bucket.statMinute,
+      processRole: bucket.processRole,
+      sampleCount: bucket.sampleCount,
+      eventLoopLagMsAvg: averageFromSum(bucket.eventLoopLagMsSum, bucket.sampleCount),
+      eventLoopLagMsMax: bucket.eventLoopLagMsMax
+    }))
+}
+
+type ProcessEventLoopMinuteBucket = SystemMetricsOverview['processEventLoopTrend'][number] & {
+  eventLoopLagMsSum: number
+}
+
+function processRoleFromValue(value: unknown): ProcessRole | undefined {
+  return PROCESS_EVENT_LOOP_ROLES.find((role) => role === value)
+}
+
+function processRoleSort(role: ProcessRole): number {
+  const index = PROCESS_EVENT_LOOP_ROLES.indexOf(role)
+  return index >= 0 ? index : PROCESS_EVENT_LOOP_ROLES.length
 }
 
 function buildProcessEventLoopLatestStatus(rows: Array<Record<string, unknown>>): SystemMetricsOverview['processEventLoopLatestStatus'] {

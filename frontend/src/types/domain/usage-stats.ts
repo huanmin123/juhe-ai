@@ -168,6 +168,7 @@ export interface SystemMetricsOverview {
   }>
   processEventLoopTrend: Array<{
     statHour: string
+    statMinute: string
     processRole: ProcessRole
     sampleCount: number
     eventLoopLagMsAvg?: number
@@ -191,5 +192,11 @@ export interface SystemMetricsOverview {
     successCount: number
     failureCount: number
     skippedCount: number
+    retryQueue?: {
+      name: string
+      pendingCount: number
+      runningCount: number
+      nextRunAt?: string
+    }
   }> | null
 }

@@ -103,8 +103,10 @@ export function mapProcessEventLoopLatestRows(rows: Array<Record<string, unknown
 
 export function mapProcessEventLoopHourly(row: Record<string, unknown>): SystemMetricsOverview['processEventLoopTrend'][number] {
   const processRole = processRoleFromUnknown(row.process_role)
+  const statBucket = String(row.stat_minute ?? row.stat_hour)
   return {
-    statHour: String(row.stat_hour),
+    statHour: statBucket,
+    statMinute: statBucket,
     processRole: processRole ?? 'worker',
     sampleCount: Number(row.sample_count ?? 0),
     eventLoopLagMsAvg: averageFromSum(row.event_loop_lag_ms_sum, row.sample_count),

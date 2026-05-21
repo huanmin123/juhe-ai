@@ -25,6 +25,7 @@ import {
 } from './openai-gateway-responses.js'
 import { type UpstreamAccount } from './openai-gateway-route-helpers.js'
 import { pipeUpstreamStream } from './openai-gateway-stream.js'
+import { isCodexRetryableAfterOutputStreamFailureCode } from './openai-gateway-stream-intercept.js'
 import {
   copyResponseHeaders,
   isEffectiveOpenAIStreamRequest,
@@ -293,8 +294,9 @@ function shouldRememberCodexTurnStreamFailure(
   streamResult: GatewayStreamPipeResult,
   clientStrategy: OpenAIGatewayClientStrategyContext | undefined
 ): clientStrategy is OpenAIGatewayClientStrategyContext {
+  const retryableAfterOutput = isCodexRetryableAfterOutputStreamFailureCode(streamResult.streamIntercept?.upstreamErrorCode ?? streamResult.errorCode)
   return !streamResult.completed
-    && !streamResult.outputReceived
+    && (!streamResult.outputReceived || retryableAfterOutput)
     && clientStrategy?.allowCodexTurnAccountAvoidance === true
     && (
       streamResult.errorCode === gatewayStreamClientRetryErrorCode

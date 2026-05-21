@@ -199,6 +199,9 @@ function accountRowSelectColumns(includeCredentials: boolean): string {
     'accounts.cooldown_until',
     'accounts.last_error_code',
     'accounts.last_error_message',
+    'accounts.cooldown_retest_failure_count',
+    'accounts.cooldown_retest_last_at',
+    'accounts.cooldown_retest_last_status_code',
     'accounts.stream_failure_count',
     'accounts.stream_failure_window_started_at',
     'accounts.created_at',
@@ -231,6 +234,9 @@ function accountListOuterSelectColumns(): string {
     'cooldown_until',
     'last_error_code',
     'last_error_message',
+    'cooldown_retest_failure_count',
+    'cooldown_retest_last_at',
+    'cooldown_retest_last_status_code',
     'stream_failure_count',
     'stream_failure_window_started_at',
     'created_at',
@@ -337,29 +343,18 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
   if (keyword) {
     const keywordPrefix = `${escapeLikePrefix(keyword)}%`
     clauses.push(`(
-      account_rows.id = ?
-      OR account_rows.id LIKE ? ESCAPE '\\'
-      OR account_rows.name COLLATE NOCASE = ?
+      account_rows.name COLLATE NOCASE = ?
       OR account_rows.name LIKE ? ESCAPE '\\'
-      OR account_rows.provider_code COLLATE NOCASE = ?
-      OR account_rows.provider_code LIKE ? ESCAPE '\\'
-      OR account_rows.type COLLATE NOCASE = ?
-      OR account_rows.type LIKE ? ESCAPE '\\'
-      OR bound_groups.name COLLATE NOCASE = ?
-      OR bound_groups.name LIKE ? ESCAPE '\\'
     )`)
     params.push(
       keyword,
-      keywordPrefix,
-      keyword,
-      keywordPrefix,
-      keyword,
-      keywordPrefix,
-      keyword,
-      keywordPrefix,
-      keyword,
       keywordPrefix
     )
+  }
+  const groupId = options.groupId?.trim()
+  if (groupId) {
+    clauses.push('group_bindings.group_id = ?')
+    params.push(groupId)
   }
   if (options.type && options.type !== 'all') {
     clauses.push('account_rows.type = ?')

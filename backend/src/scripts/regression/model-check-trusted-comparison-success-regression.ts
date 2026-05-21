@@ -6,17 +6,15 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 
-const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-strict-match-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-trusted-comparison-success-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
-runtimeConfig.secret = 'model-check-strict-match-secret'
+runtimeConfig.secret = 'model-check-trusted-comparison-success-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 
-const responseModel = 'gpt-5.4-mini-2026-03-17'
-const targetModel = 'gpt-5.4'
 const upstream = createMockUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
@@ -24,7 +22,7 @@ try {
   await listen(upstream)
   const [
     { createMockGatewayFixture },
-    { runModelCheck },
+    { getModelCheckOptions, runModelCheck },
     gatewayJsonParser
   ] = await Promise.all([
     import('../maintenance/mockdata-fixtures.js'),
@@ -33,38 +31,50 @@ try {
   ])
   stopGatewayJsonParseWorker = gatewayJsonParser.stopGatewayJsonParseWorker
 
-  const fixture = createMockGatewayFixture({
-    label: '模型检测严格模型匹配',
+  const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const targetFixture = createMockGatewayFixture({
+    label: '模型检测目标',
     upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
     systemAccountId: 'sys_admin',
     accountCount: 1,
     createApiKey: false
   })
-  const account = fixture.accounts[0]
-  assert(account, 'mock fixture should create an account')
+  const comparisonFixture = createMockGatewayFixture({
+    label: '可信对比',
+    upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
+    systemAccountId: 'sys_admin',
+    accountCount: 1,
+    createApiKey: false
+  })
+  const targetAccount = targetFixture.accounts[0]
+  const comparisonAccount = comparisonFixture.accounts[0]
+  assert(targetAccount, 'target account should exist')
+  assert(comparisonAccount, 'trusted comparison account should exist')
+
+  const options = getModelCheckOptions(access)
+  assert.equal(options.trustedComparison.enabledByDefault, false, '可信对比仍必须默认关闭')
+  assert.equal(options.trustedComparison.available, true, '可信对比能力应可用，具体账户由用户选择')
 
   const detail = await runModelCheck({
     targetType: 'account',
-    targetId: account.id,
-    model: targetModel,
+    targetId: targetAccount.id,
+    model: 'gpt-5.5',
     profile: 'full',
-    trustedComparison: false
-  }, { systemAccountId: 'sys_admin', role: 'admin' })
+    trustedComparison: true,
+    trustedComparisonAccountId: comparisonAccount.id
+  }, access)
 
   assert.equal(detail.status, 'completed')
-  assert.equal(detail.level, 'suspicious', '变体模型响应不能被判为较可信或高可信')
-  assert.match(detail.message, /不一致|降级/, '总览消息应提示模型字段不一致')
+  assert.equal(detail.trustedComparison, true)
+  assert.equal(detail.trustedComparisonAvailable, true)
+  assert.equal(detail.level, 'high_confidence', '可信对比通过后应允许高可信')
+  assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.responses_basic' && item.status === 'passed'), '应记录可信对比基础探针')
+  assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.long_context' && item.status === 'passed'), '可信对比也应执行长上下文探针')
+  assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.comparison' && item.status === 'passed'), '应记录可信对比汇总项')
+  assert(detail.checks.some((item) => item.itemKey === 'trusted_comparison.distribution_similarity' && item.status === 'passed'), '可信对比应执行并通过分布相似度对照')
+  assert(!JSON.stringify(detail).includes('sk-mockdata'), '可信对比报告不应泄露账户 API Key')
 
-  const mismatchItems = detail.checks.filter((item) => item.evidenceSummary.modelMismatch === true)
-  assert(mismatchItems.length >= 5, '关键 Responses 探针都应记录模型不匹配证据')
-  assert(mismatchItems.every((item) => item.status === 'failed'), '模型字段明显不匹配时关键探针应失败')
-  assert(
-    mismatchItems.some((item) => item.itemKey === 'target.responses_basic' && item.evidenceSummary.responseModel === responseModel),
-    '基础 Responses 探针应保存脱敏后的实际 response model'
-  )
-  assert(!JSON.stringify(detail).includes('sk-mockdata'), '检测报告不应泄露上游 API Key')
-
-  console.log('模型检测严格模型匹配回归通过：gpt-5.4-mini 不会被误判为 gpt-5.4')
+  console.log('模型检测可信对比成功回归通过：显式选择账户后执行目标与可信对比同探针集')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
@@ -82,14 +92,17 @@ function createMockUpstream(): http.Server {
       if (req.method === 'GET' && url.pathname === '/v1/models') {
         sendJson(res, {
           object: 'list',
-          data: [{ id: targetModel, object: 'model', created: 0, owned_by: 'mock' }]
+          data: [
+            { id: 'gpt-5.5', object: 'model', created: 0, owned_by: 'mock' },
+            { id: 'gpt-5.4', object: 'model', created: 0, owned_by: 'mock' }
+          ]
         })
         return
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const outputText = outputForProbe(body)
         if (body.stream === true) {
-          sendStream(res, outputText)
+          sendStream(res, String(body.model ?? 'gpt-5.5'), outputText)
         } else {
           sendJson(res, responsePayload(body, outputText))
         }
@@ -104,10 +117,10 @@ function createMockUpstream(): http.Server {
 function responsePayload(body: Record<string, unknown>, outputText: string): Record<string, unknown> {
   const hasTool = Array.isArray(body.tools)
   return {
-    id: 'resp_model_check_strict_match',
+    id: 'resp_model_check_trusted_comparison_success',
     object: 'response',
     status: 'completed',
-    model: responseModel,
+    model: String(body.model ?? 'gpt-5.5'),
     output: hasTool
       ? [{
           type: 'function_call',
@@ -121,14 +134,14 @@ function responsePayload(body: Record<string, unknown>, outputText: string): Rec
           content: [{ type: 'output_text', text: outputText }]
         }],
     usage: {
-      input_tokens: 8,
-      output_tokens: 3,
-      total_tokens: 11
+      input_tokens: 12,
+      output_tokens: 4,
+      total_tokens: 16
     }
   }
 }
 
-function sendStream(res: http.ServerResponse, outputText: string): void {
+function sendStream(res: http.ServerResponse, model: string, outputText: string): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
@@ -139,11 +152,11 @@ function sendStream(res: http.ServerResponse, outputText: string): void {
     type: 'response.completed',
     response: {
       status: 'completed',
-      model: responseModel,
+      model,
       usage: {
-        input_tokens: 8,
-        output_tokens: 3,
-        total_tokens: 11
+        input_tokens: 12,
+        output_tokens: 4,
+        total_tokens: 16
       }
     }
   })}\n\n`)
@@ -155,6 +168,11 @@ function outputForProbe(body: Record<string, unknown>): string {
   if (text.includes('STREAM-OK')) return 'STREAM-OK'
   if (text.includes('QUARTZ')) return 'QUARTZ'
   if (text.includes('VECTOR')) return 'VECTOR'
+  if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
+  if (text.includes('NEEDLE-7482-ORCHID')) return 'NEEDLE-7482-ORCHID'
+  if (text.includes('向量数据库')) return '召回衡量相关内容被找回的程度'
+  if (text.includes('SIGMA')) return '{"result":83,"tag":"SIGMA"}'
+  if (text.includes('XS=[2,5,8]')) return 'ALPHA y 的值是 4-7'
   if (body.text || text.includes('JSON')) return '{"status":"ok","value":7}'
   return 'OK-MODEL-CHECK'
 }

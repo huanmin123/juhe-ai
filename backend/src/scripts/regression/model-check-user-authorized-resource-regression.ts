@@ -109,7 +109,7 @@ try {
       targetId: seed.ownerAccountId,
       model: 'gpt-5.5',
       profile: 'full',
-      officialBaseline: false
+      trustedComparison: false
     }
   )
 
@@ -124,7 +124,7 @@ try {
   assert.equal(detail.actorSystemAccountId, undefined, '用户侧模型检测详情不应暴露 actorSystemAccountId')
   assert.equal(detail.targetOwnerSystemAccountId, undefined, '用户侧授权资源检测不应暴露资源所有者系统账户 ID')
   assert(detail.checks.some((item) => item.itemKey === 'target.long_context' && item.status === 'passed'), '用户侧授权账户检测应包含长上下文探针')
-  assert(detail.checks.some((item) => item.itemKey === 'target.cross_model' && item.status === 'passed'), '用户侧授权账户检测应包含交叉模型对照')
+  assert(detail.checks.some((item) => item.itemKey === 'target.cross_model' && item.status === 'passed'), '用户侧授权账户检测应包含辅助模型对照')
   assert(!JSON.stringify(detail).includes('sk-user-authorized-model-check'), '用户侧模型检测报告不应泄露授权账户上游 API Key')
 
   usageRecordQueue.flushUsageRecordQueue({ drain: true, retryOnFailure: false })
@@ -151,7 +151,7 @@ try {
       targetId: seed.ownerAccountId,
       model: 'gpt-5.5',
       profile: 'full',
-      officialBaseline: false
+      trustedComparison: false
     }
   )
   assert.equal(intruderResponse.status, 404, '未授权用户不能检测别人账户')

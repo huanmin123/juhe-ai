@@ -1,5 +1,4 @@
 import type { AccountStatus, AccountType, ProviderDefinition } from '@/types/domain'
-import type { SchedulableFilter } from './accountFormatters'
 
 export const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
@@ -18,13 +17,6 @@ export const typeOptions: Array<{ label: string; value: 'all' | AccountType }> =
   { label: '全部类型', value: 'all' },
   { label: 'OAuth', value: 'oauth' },
   { label: 'API Key', value: 'api_key' }
-]
-
-export const schedulableOptions: Array<{ label: string; value: SchedulableFilter }> = [
-  { label: '全部启停', value: 'all' },
-  { label: '已启用', value: 'enabled' },
-  { label: '已停用', value: 'disabled' },
-  { label: '临时不可调用', value: 'cooling' }
 ]
 
 export const statusOptions: Array<{ label: string; value: AccountStatus }> = [

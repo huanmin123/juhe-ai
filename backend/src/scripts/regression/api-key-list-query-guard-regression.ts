@@ -87,15 +87,15 @@ try {
     assert(nameIds.includes(matchedByName.id), 'API Key 搜索应命中名称精确值')
     assert(nameIds.includes(matchedByNamePrefix.id), 'API Key 搜索应命中名称前缀值')
     assert(!nameIds.includes(middleNameOnly.id), 'API Key 搜索不应命中名称中间包含值')
+    assert.equal(nameResult.items.find((item) => item.id === matchedByName.id)?.key, matchedByName.key, 'API Key 列表应返回完整本地密钥供页面复制')
 
     const descriptionResult = repositories.listApiKeysPage(access, { keyword: '说明前缀', page: 1, pageSize: 20 })
     const descriptionIds = descriptionResult.items.map((item) => item.id)
     assert(!descriptionIds.includes(matchedByDescription.id), 'API Key 搜索不应通过说明字段命中，避免通用关键词扫描长文本')
     assert(!descriptionIds.includes(middleDescriptionOnly.id), 'API Key 搜索不应命中说明中间包含值')
 
-    const keyPrefix = uniquePrefix(matchedByName.keyPrefix, matchedByNamePrefix.keyPrefix)
-    const keyPrefixResult = repositories.listApiKeysPage(access, { keyword: keyPrefix, page: 1, pageSize: 20 })
-    assert(keyPrefixResult.items.some((item) => item.id === matchedByName.id), 'API Key 搜索应支持 Key 前缀定位')
+    const keyPrefixResult = repositories.listApiKeysPage(access, { keyword: matchedByName.keyPrefix, page: 1, pageSize: 20 })
+    assert(!keyPrefixResult.items.some((item) => item.id === matchedByName.id), 'API Key 搜索不应通过 Key 前缀命中')
 
     const wildcardResult = repositories.listApiKeysPage(access, { keyword: 'percent%', page: 1, pageSize: 20 })
     const wildcardIds = wildcardResult.items.map((item) => item.id)
@@ -108,19 +108,20 @@ try {
   assert(capturedCalls.length >= 4, '回归应捕获 API Key 列表 SQL')
   for (const call of capturedCalls) {
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), 'API Key 列表搜索不应通过 COALESCE 扫描说明字段')
+    assert(!/\bapi_keys\.key_prefix\s+(?:=|LIKE)\s+\?/i.test(call.sql), 'API Key 列表名称搜索不应把 Key 前缀放进通用关键词 WHERE')
     assert(!/\bapi_keys\.description\s+(?:COLLATE|LIKE)\b/i.test(call.sql), 'API Key 列表搜索不应把说明字段放进通用关键词 WHERE')
     assert(/\bESCAPE\s+'\\'/i.test(call.sql), 'API Key 列表前缀搜索应显式转义 LIKE 通配符')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), 'API Key 列表搜索不应传入前导通配符参数')
   }
-  assertBusinessIndexExists('idx_api_keys_key_prefix_lookup')
-  assertBusinessIndexExists('idx_api_keys_system_account_key_prefix_lookup')
   assertBusinessIndexExists('idx_api_keys_name_lookup')
   assertBusinessIndexExists('idx_api_keys_system_account_name_lookup')
-  assertObsoleteApiKeyDescriptionIndexesDroppedBySchema()
+  assertObsoleteApiKeySearchIndexesDroppedBySchema()
+  assertBusinessIndexMissing('idx_api_keys_key_prefix_lookup')
+  assertBusinessIndexMissing('idx_api_keys_system_account_key_prefix_lookup')
   assertBusinessIndexMissing('idx_api_keys_description_lookup')
   assertBusinessIndexMissing('idx_api_keys_system_account_description_lookup')
 
-  console.log('API Key 列表查询防护回归通过：搜索仅支持精确/前缀匹配，不再使用前导通配符或包含匹配')
+  console.log('API Key 列表查询防护回归通过：搜索仅按名称精确/前缀匹配，不再使用 Key 前缀、前导通配符或包含匹配')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -130,14 +131,6 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function uniquePrefix(value: string, otherValue: string): string {
-  for (let length = 1; length <= value.length; length += 1) {
-    const prefix = value.slice(0, length)
-    if (!otherValue.startsWith(prefix)) return prefix
-  }
-  return value
-}
-
 function assertBusinessIndexExists(indexName: string): void {
   const row = databaseModule.getDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
@@ -145,9 +138,11 @@ function assertBusinessIndexExists(indexName: string): void {
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
 }
 
-function assertObsoleteApiKeyDescriptionIndexesDroppedBySchema(): void {
+function assertObsoleteApiKeySearchIndexesDroppedBySchema(): void {
   const database = databaseModule.getDatabase()
   database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix_lookup ON api_keys(key_prefix, id);
+    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_key_prefix_lookup ON api_keys(system_account_id, key_prefix, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_description_lookup ON api_keys(description COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_description_lookup ON api_keys(system_account_id, description COLLATE NOCASE, id);
   `)
@@ -158,5 +153,5 @@ function assertBusinessIndexMissing(indexName: string): void {
   const row = databaseModule.getDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
-  assert.equal(row?.name, undefined, `业务库不应保留已废弃的长文本搜索索引 ${indexName}`)
+  assert.equal(row?.name, undefined, `业务库不应保留已废弃的 API Key 搜索索引 ${indexName}`)
 }

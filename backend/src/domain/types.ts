@@ -314,6 +314,9 @@ export interface AccountSummary {
   cooldownUntil?: string
   lastErrorCode?: string
   lastErrorMessage?: string
+  cooldownRetestFailureCount?: number
+  cooldownRetestLastAt?: string
+  cooldownRetestLastStatusCode?: number
   streamFailureCount?: number
   streamFailureWindowStartedAt?: string
   localStatus?: AccountStatus
@@ -405,6 +408,7 @@ export interface AccountTestResult {
   type: AccountType
   success: boolean
   statusCode?: number
+  errorCode?: string
   message: string
   model?: string
   requestUrl?: string
@@ -437,7 +441,7 @@ export interface ModelCheckSupportedOption {
   description?: string
 }
 
-export interface ModelCheckOfficialBaselineStatus {
+export interface ModelCheckTrustedComparisonStatus {
   enabledByDefault: boolean
   available: boolean
   unavailableReason?: string
@@ -449,7 +453,8 @@ export interface ModelCheckOptions {
   supportedProfiles: ModelCheckSupportedOption[]
   defaultModel: 'gpt-5.5'
   defaultProfile: ModelCheckProfile
-  officialBaseline: ModelCheckOfficialBaselineStatus
+  trustedComparison: ModelCheckTrustedComparisonStatus
+  officialBaseline?: ModelCheckTrustedComparisonStatus
 }
 
 export interface ModelCheckRunRequest {
@@ -457,6 +462,9 @@ export interface ModelCheckRunRequest {
   targetId: string
   model: 'gpt-5.5' | 'gpt-5.4'
   profile?: ModelCheckProfile
+  trustedComparison?: boolean
+  trustedComparisonAccountId?: string
+  /** @deprecated 使用 trustedComparison + trustedComparisonAccountId。 */
   officialBaseline?: boolean
 }
 
@@ -491,6 +499,8 @@ export interface ModelCheckRunSummary {
   apiKeyId?: string
   model: 'gpt-5.5' | 'gpt-5.4'
   profile: ModelCheckProfile
+  trustedComparison: boolean
+  trustedComparisonAvailable: boolean
   officialBaseline: boolean
   officialBaselineAvailable: boolean
   level: ModelCheckLevel

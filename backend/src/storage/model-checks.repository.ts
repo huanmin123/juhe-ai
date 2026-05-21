@@ -431,6 +431,8 @@ function modelCheckRunFromRow(row: ModelCheckRunRow, showSystemAccountFields: bo
     apiKeyId: row.api_key_id ?? undefined,
     model: row.model,
     profile: row.profile,
+    trustedComparison: row.official_baseline_enabled === 1,
+    trustedComparisonAvailable: row.official_baseline_available === 1,
     officialBaseline: row.official_baseline_enabled === 1,
     officialBaselineAvailable: row.official_baseline_available === 1,
     level: row.level,

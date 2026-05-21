@@ -21,6 +21,8 @@ const modelCheckRunSchema = z.object({
   targetId: z.string().trim().min(1, '检测目标不能为空'),
   model: z.enum(['gpt-5.5', 'gpt-5.4'], { invalid_type_error: '当前模型检测仅支持 gpt-5.5 和 gpt-5.4' }),
   profile: z.enum(['full']).optional(),
+  trustedComparison: z.boolean().optional(),
+  trustedComparisonAccountId: z.string().trim().optional(),
   officialBaseline: z.boolean().optional()
 })
 
@@ -65,6 +67,63 @@ modelChecksRouter.post('/run', async (req, res, next) => {
       return
     }
     next(error)
+  }
+})
+
+modelChecksRouter.post('/run/stream', async (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const parsed = modelCheckRunSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(parsed.error.issues[0]?.message ?? '模型检测参数无效'))
+    return
+  }
+
+  const abortController = new AbortController()
+  req.once('aborted', () => abortController.abort())
+  res.once('close', () => {
+    if (!res.writableEnded) {
+      abortController.abort()
+    }
+  })
+  res.writeHead(200, {
+    'content-type': 'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache, no-transform',
+    connection: 'keep-alive',
+    'x-accel-buffering': 'no'
+  })
+
+  const writeEvent = (event: string, data: unknown): void => {
+    if (abortController.signal.aborted || res.writableEnded) return
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+  }
+
+  try {
+    const result = await runModelCheck(
+      parsed.data,
+      getRequestAccessScope(scopeQuery.data.systemAccountId),
+      abortController.signal,
+      (event) => writeEvent('progress', event)
+    )
+    if (abortController.signal.aborted || res.writableEnded) {
+      return
+    }
+    writeEvent('complete', result)
+    res.end()
+  } catch (error) {
+    if (abortController.signal.aborted || res.writableEnded) {
+      return
+    }
+    if (error instanceof ModelCheckRequestError) {
+      writeEvent('error', { message: error.message, statusCode: error.statusCode })
+      res.end()
+      return
+    }
+    writeEvent('error', { message: error instanceof Error ? error.message : '模型检测失败' })
+    res.end()
   }
 })
 

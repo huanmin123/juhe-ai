@@ -62,7 +62,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/model-checks/ModelChecksView.vue'),
     meta: {
       title: '模型检测',
-      description: '对自己的 API Key、分组或账户发起模型能力检测，并查看历史检测结果。',
+      description: '对我的 AI 账户发起目标模型可信度检测，并查看历史检测结果。',
       viewScope: 'self',
       heavy: true
     }
@@ -283,7 +283,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/model-checks/ModelChecksView.vue'),
     meta: {
       title: '模型检测',
-      description: '对 API Key、分组或账户发起模型能力检测，并查看历史检测结果。',
+      description: '对 AI 账户发起目标模型可信度检测，并查看历史检测结果。',
       menuGroup: 'ai-management',
       menuGroupTitle: 'AI 管理',
       viewScope: 'admin',

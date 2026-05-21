@@ -219,6 +219,35 @@ async function main(): Promise<void> {
     assertAccountDispatchFlags(errorAccount.id, false, true, '成功回写不应清理异常账户调度标记')
     assertAccountErrorCode(errorAccount.id, 'oauth_token_refresh_failed', '成功回写不应清理异常类型')
 
+    const errorRaceAccount = repositories.createAccount({
+      providerCode: 'openai',
+      name: '异常竞态成功回写不自动恢复',
+      type: 'api_key',
+      credentials: {
+        api_key: 'sk-error-race-account-guard',
+        base_url: 'http://127.0.0.1:9/v1'
+      },
+      status: 'active',
+      schedulable: true
+    }, access)
+    const errorRaceBound = repositories.setAccountGroup(errorRaceAccount.id, group.id, access)
+    assert(errorRaceBound?.boundGroupId === group.id, '异常竞态测试账户未绑定分组')
+    repositories.markAccountCooldown(errorRaceAccount.id, new Date(Date.now() - 1000).toISOString(), '模拟旧冷却状态')
+    const staleCooldownGatewayAccount = repositories.findOpenAIAccountForGroup(group.id, errorRaceAccount.id, 'sys_admin', { ignoreAvailability: true })
+    assert(staleCooldownGatewayAccount?.status === 'temporary_unavailable', '异常竞态前应能读取到旧冷却网关账号对象')
+    repositories.markAccountException(errorRaceAccount.id, 'oauth_token_refresh_failed', '模拟复测期间进入异常')
+    const staleSuccessAfterErrorResult = await handleDbServiceOperation({
+      type: 'apply_account_error_handling',
+      account: staleCooldownGatewayAccount,
+      input: {
+        success: true,
+        bodyText: ''
+      }
+    })
+    assert(staleSuccessAfterErrorResult.changed === false, '旧成功回写不应把复测期间进入异常的账户恢复正常')
+    assertAccountStatus(errorRaceAccount.id, 'error', false, '旧成功回写不应改变复测期间进入异常的账户状态')
+    assertAccountErrorCode(errorRaceAccount.id, 'oauth_token_refresh_failed', '旧成功回写不应清理复测期间进入异常的账户异常类型')
+
     const staleFailureOnErrorResult = await handleDbServiceOperation({
       type: 'apply_account_error_handling',
       account: staleActiveErrorGatewayAccount,

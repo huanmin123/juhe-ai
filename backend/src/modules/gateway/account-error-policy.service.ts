@@ -1,6 +1,6 @@
 import type { AccountStatus } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
-import { clearAccountFailureState, getSettings, markAccountCooldown, markAccountDisabledByFailure } from '../../storage/repositories.js'
+import { clearAccountFailureStateResult, getSettings, markAccountCooldown, markAccountDisabledByFailure } from '../../storage/repositories.js'
 import { calculateOpenAICodexRateLimitResetAt } from './openai-codex-usage.service.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
@@ -69,12 +69,12 @@ export function applyAccountErrorHandling(
   }
 
   if (input.success) {
-    const changed = (account.status !== undefined && account.status !== 'active') || Boolean(account.cooldownUntil) || Boolean(account.lastErrorMessage)
-    if (!changed) {
+    const shouldClear = (account.status !== undefined && account.status !== 'active') || Boolean(account.cooldownUntil) || Boolean(account.lastErrorMessage)
+    if (!shouldClear) {
       return { action: 'none', changed: false, accountStatus: account.status }
     }
-    const updated = clearAccountFailureState(account.id)
-    return { action: 'none', changed, accountStatus: updated?.status ?? account.status }
+    const result = clearAccountFailureStateResult(account.id, undefined, { allowErrorRestore: false })
+    return { action: 'none', changed: result.changed, accountStatus: result.account?.status ?? account.status }
   }
 
   const settings = input.settings ?? readGatewaySettings()

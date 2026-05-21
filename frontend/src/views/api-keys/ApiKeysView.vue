@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card api-keys-page-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="名称 / Key 前缀" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
+    <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="API Key 名称" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
       <template #inline-filters>
         <a-select v-model:value="statusFilter" class="toolbar-select responsive-list-inline-filter" :options="listStatusOptions" @change="applyFilters" />
         <a-select
@@ -87,7 +87,7 @@
         </template>
         <template v-else-if="column.key === 'key'">
           <div class="key-preview-cell">
-            <span class="key-preview" :title="record.key || '密钥明文仅创建时展示，请重新创建密钥'">{{ formatKeyPreview(record.key) }}</span>
+            <span class="key-preview" :title="keyDisplayTitle(record)">{{ formatKeyPreview(record) }}</span>
             <a-button class="key-copy-button" type="text" size="small" :disabled="!record.key" @click="copyText(record.key)">
               <template #icon><copy-outlined /></template>
             </a-button>
@@ -121,7 +121,7 @@
           <div class="mobile-list-meta-grid">
             <div class="mobile-list-meta-item mobile-list-meta-wide">
               <span>API Key</span>
-              <strong>{{ formatKeyPreview(record.key) }}</strong>
+              <strong>{{ formatKeyPreview(record) }}</strong>
             </div>
             <div v-if="isManagementView" class="mobile-list-meta-item mobile-list-meta-wide">
               <span>系统账户</span>
@@ -177,7 +177,7 @@
 
     <a-modal v-model:open="modalOpen" :title="editingId ? '编辑 API Key' : '新建 API Key'" width="640px" :confirm-loading="apiKeySaving" :ok-button-props="{ type: 'primary', disabled: apiKeySaving }" @ok="saveApiKey">
       <a-alert v-if="!editingId && isManagementView && targetSystemAccountLabel" class="modal-alert" type="info" show-icon :message="`当前创建目标：${targetSystemAccountLabel}`" />
-      <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建后直接复制保存即可。" type="info" show-icon />
+      <a-alert class="modal-alert" message="系统会自动生成完整密钥，创建后可在列表继续复制。" type="info" show-icon />
       <a-form layout="vertical" class="modal-form">
         <a-form-item label="名称" required>
           <a-input v-model:value="form.name" />
@@ -407,10 +407,18 @@ function groupOptionLabel(group: GroupOptionSummary) {
   return `${group.name}（来自 ${group.ownerSystemAccountName || '其他用户'} 授权）`
 }
 
-function formatKeyPreview(value?: string) {
-  if (!value) return '仅创建时展示'
+function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
+  const value = apiKey.key
+  if (!value) return apiKey.keyPrefix ? `${apiKey.keyPrefix}...` : '密钥不可还原'
   if (value.length <= 14) return value
   return `${value.slice(0, 6)}...${value.slice(-4)}`
+}
+
+function keyDisplayTitle(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
+  if (apiKey.key) return apiKey.key
+  return apiKey.keyPrefix
+    ? `历史密钥只保留前缀 ${apiKey.keyPrefix}，请重新创建后复制完整密钥`
+    : '历史密钥缺少可解密明文，请重新创建后复制完整密钥'
 }
 
 function apiKeyActions(apiKey: ApiKeySummary): RowActionItem[] {
@@ -466,14 +474,17 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
   if (groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
     return groupOptionsLoadingPromise
   }
+  const requestId = ++groupOptionsRequestId
   if (!force) {
     const cachedGroups = groupOptionsCache.get(requestKey)
     if (cachedGroups) {
+      groupOptionsLoadingKey = undefined
+      groupOptionsLoadingPromise = undefined
+      groupOptionsLoading.value = false
       groups.value = cachedGroups
       return
     }
   }
-  const requestId = ++groupOptionsRequestId
   groupOptionsLoading.value = true
   groupOptionsLoadingKey = requestKey
   groupOptionsLoadingPromise = (async () => {

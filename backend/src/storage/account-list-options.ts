@@ -14,6 +14,7 @@ export interface AccountListOptions {
   pageSize?: number
   limit?: number
   keyword?: string
+  groupId?: string
   type?: string
   status?: string
   schedulable?: AccountListSchedulableFilter
@@ -24,6 +25,7 @@ export interface NormalizedAccountListOptions {
   page: number
   pageSize: number
   keyword?: string
+  groupId?: string
   type?: string
   status?: string
   schedulable: AccountListSchedulableFilter
@@ -74,6 +76,7 @@ export function normalizeAccountListOptions(options?: AccountListOptions, normal
     page,
     pageSize,
     keyword: normalizeTextFilter(options?.keyword),
+    groupId: normalizeTextFilter(options?.groupId),
     type: normalizeTextFilter(options?.type),
     status: normalizeTextFilter(options?.status),
     schedulable: isSchedulableFilter(options?.schedulable) ? options.schedulable : 'all'

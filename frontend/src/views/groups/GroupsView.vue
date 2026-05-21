@@ -137,7 +137,7 @@
         </a-form-item>
         <a-form-item label="所属供应商" required>
           <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked" />
-          <div class="form-help">只有这个供应商下的账户才能选择归入该分组。</div>
+          <div class="form-help">同一供应商下可混合 OAuth / API Key 账户；分组只决定账户归属，不拆统计、会话亲和或缓存边界。</div>
         </a-form-item>
         <a-form-item label="说明">
           <a-textarea v-model:value="form.description" :rows="3" />

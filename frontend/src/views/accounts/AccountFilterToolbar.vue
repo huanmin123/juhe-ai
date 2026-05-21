@@ -1,7 +1,7 @@
 <template>
   <ResponsiveListToolbar
     :keyword="filters.keyword"
-    search-placeholder="名称 / ID / 分组 / 类型前缀"
+    search-placeholder="账户名称"
     filter-title="筛选账户"
     :active-filter-count="activeFilterCount"
     :mobile-action-count="1"
@@ -12,6 +12,20 @@
     @refresh="emit('refresh')"
   >
     <template #inline-filters>
+      <a-select
+        :value="filters.groupId || undefined"
+        allow-clear
+        class="toolbar-select account-group-filter responsive-list-inline-filter"
+        :disabled="groupFilterDisabled"
+        :filter-option="false"
+        :loading="groupOptionsLoading"
+        :options="groupSelectOptions"
+        placeholder="全部分组"
+        show-search
+        @dropdown-visible-change="emit('group-dropdown', $event)"
+        @search="emit('group-search', $event)"
+        @update:value="handleGroupUpdate"
+      />
       <a-select :value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" @update:value="emit('update:type', $event)" />
       <a-select
         :value="filters.status"
@@ -23,7 +37,6 @@
         placeholder="全部状态"
         @change="handleStatusChange"
       />
-      <a-select :value="filters.schedulable" class="toolbar-select responsive-list-inline-filter" :options="schedulableOptions" @update:value="emit('update:schedulable', $event)" />
       <SystemPrincipalSelect
         v-if="isManagementView"
         :value="filters.systemAccountId"
@@ -44,6 +57,22 @@
     </template>
     <template #filters>
       <label class="mobile-filter-field">
+        <span>分组</span>
+        <a-select
+          :value="filters.groupId || undefined"
+          allow-clear
+          :disabled="groupFilterDisabled"
+          :filter-option="false"
+          :loading="groupOptionsLoading"
+          :options="groupSelectOptions"
+          placeholder="全部分组"
+          show-search
+          @dropdown-visible-change="emit('group-dropdown', $event)"
+          @search="emit('group-search', $event)"
+          @update:value="handleGroupUpdate"
+        />
+      </label>
+      <label class="mobile-filter-field">
         <span>账户类型</span>
         <a-select :value="filters.type" :options="typeOptions" @update:value="emit('update:type', $event)" />
       </label>
@@ -58,10 +87,6 @@
           placeholder="全部状态"
           @change="handleStatusChange"
         />
-      </label>
-      <label class="mobile-filter-field">
-        <span>启停状态</span>
-        <a-select :value="filters.schedulable" :options="schedulableOptions" @update:value="emit('update:schedulable', $event)" />
       </label>
       <label v-if="isManagementView" class="mobile-filter-field">
         <span>系统账户</span>
@@ -83,11 +108,12 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { AccountStatus, AccountType, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountStatus, AccountType, GroupOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import type { AccountFilters } from './accountFormTypes'
-import type { SchedulableFilter } from './accountFormatters'
 
 type FilterOption<T extends string> = {
   label: string
@@ -95,12 +121,14 @@ type FilterOption<T extends string> = {
 }
 type SelectValue = string | string[] | undefined
 
-defineProps<{
+const props = defineProps<{
   activeFilterCount: number
   filters: AccountFilters
+  groupFilterDisabled?: boolean
+  groupOptions: GroupOptionSummary[]
+  groupOptionsLoading?: boolean
   isManagementView: boolean
   refreshLoading: boolean
-  schedulableOptions: ReadonlyArray<FilterOption<SchedulableFilter>>
   statusOptions: Array<FilterOption<AccountStatus>>
   systemAccounts: SystemAccountPrincipalSummary[]
   systemAccountsLoading?: boolean
@@ -109,20 +137,32 @@ defineProps<{
 
 const emit = defineEmits<{
   (event: 'create'): void
+  (event: 'group-dropdown', open: boolean): void
+  (event: 'group-search', value: string): void
   (event: 'refresh'): void
   (event: 'reset'): void
   (event: 'search'): void
   (event: 'system-account-change'): void
   (event: 'system-account-dropdown', open: boolean): void
   (event: 'system-account-search', value: string): void
+  (event: 'update:groupId', value: string): void
   (event: 'update:keyword', value: string): void
-  (event: 'update:schedulable', value: SchedulableFilter): void
   (event: 'update:status', value: AccountStatus[]): void
   (event: 'update:systemAccountId', value: string): void
   (event: 'update:type', value: 'all' | AccountType): void
 }>()
 
 const accountStatusValues = new Set<AccountStatus>(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'])
+
+const groupSelectOptions = computed(() => props.groupOptions.map((group) => ({
+  label: group.name,
+  value: group.id
+})))
+
+function handleGroupUpdate(value: SelectValue) {
+  emit('update:groupId', typeof value === 'string' ? value : '')
+  emit('search')
+}
 
 function handleSystemAccountUpdate(value: SelectValue) {
   emit('update:systemAccountId', typeof value === 'string' ? value : '')
@@ -145,6 +185,10 @@ function isAccountStatus(value: string): value is AccountStatus {
 
 .account-status-filter {
   min-width: 172px;
+}
+
+.account-group-filter {
+  min-width: 180px;
 }
 
 .mobile-filter-field {

@@ -25,7 +25,7 @@
           @search="$emit('group-options-search', $event)"
           @update:value="$emit('update:groupId', String($event))"
         />
-        <div class="form-help">API Key 只能调用绑定分组内的账户；授权账户需要先加入你的分组。</div>
+        <div class="form-help">同一分组可混合 OAuth / API Key 账户；API Key 只按绑定分组调度，统计、会话亲和和缓存按本地 API Key 与分组连续。</div>
       </a-form-item>
     </a-form>
   </a-modal>

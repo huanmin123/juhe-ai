@@ -112,7 +112,7 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 - 允许在调度候选账号排序时避让该 turn 已失败账号。
 - 允许在审计日志和使用记录里标记 `clientProfile = codex`、`codexTurnIdPresent = true`、`codexTurnRetryCount`、`turnAccountAvoided` 等诊断字段。
 - 禁止因为 Codex turn 失败直接写账号 `temporary_unavailable`，除非已输出后流熔断或账号错误策略本身另有明确命中。
-- Codex 源码明确终止类的 `context_length_exceeded`、`insufficient_quota`、`usage_not_included`、`invalid_prompt`、`cyber_policy` 原样返回，不改写为可重试错误，也不参与 turn 级切号计数。
+- 2026-05-21 运行补充：不再维护 Codex 终止类错误码白名单；可见输出前的可识别流式失败统一改写为 `upstream_retryable_error` 并参与 turn 级切号计数。`cyber_policy` 是输出后也允许改写的显式例外，原始错误码只保留在诊断记录中。
 - 状态丢失、解析失败或字段不完整时，系统必须回到普通 OpenAI 网关行为，而不是扩大匹配范围。
 
 ## 执行拆解
@@ -133,7 +133,7 @@ Codex 客户端最多自动重试 5 次，因此网关在同一 Codex turn 的�
 | 命令类验证 | 后端类型检查 | `pnpm --filter juhe-ai-backend typecheck` | 类型通过 | 已通过 | 2026-05-18 执行通过 |
 | 功能主流程 | Codex turn 前 3 次失败 | `pnpm --filter juhe-ai-backend test:codex-client-strategy` | 返回 Codex 可重试事件并记录 turn 失败账号 | 已通过 | 纯逻辑回归覆盖失败计数与账号记录 |
 | 功能主流程 | Codex turn 第 4 次切号 | `pnpm --filter juhe-ai-backend test:codex-client-strategy` | 候选账号避让前序失败账号，不升级到全部客户端 | 已通过 | 3 次失败后第 4 次候选账号排序为未失败账号优先 |
-| e2e 模拟 | 临时库假账号 + mock 上游第 4 次切号 | `pnpm --filter juhe-ai-backend test:smoke:mock` | 前 3 次命中失败账号，第 4 次命中备用账号；非 Codex 和终止类错误不切号 | 已通过 | 2026-05-18 新增并执行通过，不依赖真实账户 |
+| e2e 模拟 | 临时库假账号 + mock 上游第 4 次切号 | `pnpm --filter juhe-ai-backend test:smoke:mock` | 前 3 次命中失败账号，第 4 次命中备用账号；非 Codex 不切号；`context_length_exceeded` 和 `cyber_policy` 均可重试并切号 | 已通过 | 2026-05-21 去掉终止类白名单覆盖，不依赖真实账户 |
 | 异常与边界 | 缺少 `x-codex-turn-metadata` 或缺 `turn_id` | `pnpm --filter juhe-ai-backend test:codex-client-strategy` | 不触发 Codex turn 策略，不做 session fallback | 已通过 | `session_id` / `x-client-request-id` 不能单独升级为 Codex |
 | 回归场景 | 非 Codex OpenAI-compatible 客户端 | `pnpm --filter juhe-ai-backend test:stream-first-output-timeout` | 不被 Codex 可重试码和第 4 次切号逻辑影响 | 已通过 | 非 Codex Responses SSE 保留原始错误码，不伪造 `upstream_retryable_error` |
 | 回归场景 | OAuth Codex adapter | `pnpm --filter juhe-ai-backend test:openai-oauth-codex-adapter` | OAuth adapter 原有 header/body/session 规则不退化 | 已通过 | 2026-05-18 执行通过 |

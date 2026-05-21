@@ -59,6 +59,12 @@ export interface DbServiceServerRuntimeSnapshot {
       recordMaintenanceQueue: DbServiceRuntimeQueueSnapshot
       auditLogQueue: DbServiceRuntimeQueueSnapshot
       runtimeLogIndexQueue: DbServiceRuntimeQueueSnapshot & { retentionDays?: number }
+      cooldownAccountRetestQueue?: {
+        name: string
+        pendingCount: number
+        runningCount: number
+        nextRunAt?: string
+      }
     }
   }
   dbService?: {

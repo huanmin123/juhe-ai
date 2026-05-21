@@ -43,6 +43,12 @@ export function formatNetworkRateFromMbps(value?: number) {
 export function formatHourLabel(value: string) {
   const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
   if (dateMatch) return `${dateMatch[2]}-${dateMatch[3]}`
+  const minuteMatch = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/.exec(value)
+  if (minuteMatch) {
+    return minuteMatch[4] === '00' && minuteMatch[5] === '00'
+      ? `${minuteMatch[2]}-${minuteMatch[3]} 00:00`
+      : `${minuteMatch[4]}:${minuteMatch[5]}`
+  }
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2})$/.exec(value)
   if (!match) return value
   return match[4] === '00' ? `${match[2]}-${match[3]} 00:00` : `${match[4]}:00`

@@ -3,7 +3,7 @@
     <div class="form-section-head">
       <div>
         <h4>基础信息</h4>
-        <p>账户资源归属创建目标系统账户；这里选择的是初始加入的本地分组。</p>
+        <p>账户资源归属创建目标系统账户；这里选择的是初始加入的本地分组，同组可混合 OAuth / API Key 账户。</p>
       </div>
     </div>
     <div class="form-grid">
@@ -21,7 +21,7 @@
           @dropdown-visible-change="$emit('group-options-dropdown', $event)"
           @search="$emit('group-options-search', $event)"
         />
-        <div class="form-help">API Key 通过分组调度账户，创建时会按供应商默认选择默认分组。</div>
+        <div class="form-help">统计、会话亲和和缓存按本地 API Key 与分组连续。</div>
       </a-form-item>
       <a-form-item label="账户到期时间">
         <a-date-picker v-model:value="form.accountExpiresAt" show-time allow-clear style="width: 100%" />

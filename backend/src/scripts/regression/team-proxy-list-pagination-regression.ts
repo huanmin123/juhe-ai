@@ -17,9 +17,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, businessSchema] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/schema/business-schema.js')
 ])
 
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
@@ -52,7 +53,7 @@ try {
   repositories.addSystemTeamMembers(teamWildcardNeighbor.id, { systemAccountIds: [userA.id] }, adminAccess)
   repositories.addSystemTeamMembers(teamDescriptionOnly.id, { systemAccountIds: [userA.id] }, adminAccess)
 
-  repositories.createProxy({
+  const proxyMatched = repositories.createProxy({
     name: '分页搜索代理',
     type: 'http',
     host: 'proxy-page-host',
@@ -154,6 +155,9 @@ try {
     assert(teamWildcardIds.includes(teamWildcard.id), '系统团队搜索应把 % 当作字面量前缀处理')
     assert(!teamWildcardIds.includes(teamWildcardNeighbor.id), '系统团队搜索不应把用户输入的 % 当作 LIKE 通配符')
 
+    const teamIdSearchIds = repositories.listSystemTeamsPage(adminAccess, { keyword: teamMatched.id, page: 1, pageSize: 20 }).items.map((team) => team.id)
+    assert(!teamIdSearchIds.includes(teamMatched.id), '系统团队列表搜索不应通过团队 ID 命中')
+
     const proxyPageOne = repositories.listProxiesPage({ page: 1, pageSize: 1 })
     assert.equal(proxyPageOne.items.length, 1, '代理分页第一页应只返回 pageSize 条')
     assert.equal(proxyPageOne.hasMore, true, '代理第一页应通过 pageSize + 1 标记还有更多')
@@ -166,6 +170,13 @@ try {
     assert(!proxySearchNames.includes('普通分页搜索代理'), '代理搜索不应命中名称中间包含值')
     assert(!proxySearchNames.includes('说明字段代理'), '代理搜索不应通过说明字段命中，避免扫描长文本')
     assert(!proxySearchNames.includes('用户名字段代理'), '代理搜索不应通过用户名字段命中，避免弱索引字段进通用搜索')
+
+    const proxyIdNames = repositories.listProxiesPage({ keyword: proxyMatched.id, page: 1, pageSize: 20 }).items.map((proxy) => proxy.name)
+    assert(!proxyIdNames.includes('分页搜索代理'), '代理搜索不应通过 ID 命中')
+    const proxyHostNames = repositories.listProxiesPage({ keyword: 'proxy-page-host', page: 1, pageSize: 20 }).items.map((proxy) => proxy.name)
+    assert(!proxyHostNames.includes('分页搜索代理'), '代理搜索不应通过地址命中')
+    const proxyTypeNames = repositories.listProxiesPage({ keyword: 'http', page: 1, pageSize: 20 }).items.map((proxy) => proxy.name)
+    assert(!proxyTypeNames.includes('分页搜索代理'), '代理搜索不应通过类型命中')
 
     const proxyWildcardNames = repositories.listProxiesPage({ keyword: 'proxy%', page: 1, pageSize: 20 }).items.map((proxy) => proxy.name)
     assert(proxyWildcardNames.includes('proxy%literal 代理'), '代理搜索应把 % 当作字面量前缀处理')
@@ -185,14 +196,19 @@ try {
       assert(/\bESCAPE\s+'\\'/i.test(call.sql), '团队 / 代理前缀搜索应显式转义 LIKE 通配符')
     }
     assert(!/\bdescription\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '团队 / 代理关键词搜索不应把 description 放进 WHERE')
+    assert(!/\bsystem_teams\.id\s+(?:=|LIKE)\s+\?/i.test(call.sql), '系统团队列表搜索不应把团队 ID 放进通用关键词 WHERE')
+    assert(!/\bproxy_profiles\.id\s+(?:=|LIKE)\s+\?/i.test(call.sql) && !/\bid\s+(?:=|LIKE)\s+\?/i.test(call.sql), '代理列表搜索不应把 ID 放进通用关键词 WHERE')
+    assert(!/\bhost\s+(?:=|LIKE)\s+\?/i.test(call.sql), '代理列表搜索不应把地址放进通用关键词 WHERE')
+    assert(!/\btype\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '代理列表搜索不应把类型放进通用关键词 WHERE')
     assert(!/\busername\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '代理关键词搜索不应把 username 放进 WHERE')
   }
   assertBusinessIndexExists('idx_system_teams_name_lookup')
   assertBusinessIndexExists('idx_proxy_profiles_name_lookup')
-  assertBusinessIndexExists('idx_proxy_profiles_host_lookup')
-  assertBusinessIndexExists('idx_proxy_profiles_type_lookup')
+  assertObsoleteProxySearchIndexesDroppedBySchema()
+  assertBusinessIndexMissing('idx_proxy_profiles_host_lookup')
+  assertBusinessIndexMissing('idx_proxy_profiles_type_lookup')
 
-  console.log('系统团队和代理分页搜索回归通过：分页使用 pageSize+1，关键词只做精确/前缀匹配并转义通配符')
+  console.log('系统团队和代理分页搜索回归通过：分页使用 pageSize+1，关键词仅按名称精确/前缀匹配并转义通配符')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -207,4 +223,20 @@ function assertBusinessIndexExists(indexName: string): void {
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `业务库应创建索引 ${indexName}`)
+}
+
+function assertObsoleteProxySearchIndexesDroppedBySchema(): void {
+  const database = databaseModule.getDatabase()
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_proxy_profiles_host_lookup ON proxy_profiles(host, id);
+    CREATE INDEX IF NOT EXISTS idx_proxy_profiles_type_lookup ON proxy_profiles(type COLLATE NOCASE, id);
+  `)
+  businessSchema.applyBusinessSchema(database)
+}
+
+function assertBusinessIndexMissing(indexName: string): void {
+  const row = databaseModule.getDatabase()
+    .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
+    .get(indexName) as unknown as { name?: string } | undefined
+  assert.equal(row?.name, undefined, `业务库不应保留已废弃的代理搜索索引 ${indexName}`)
 }

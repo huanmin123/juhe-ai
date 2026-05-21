@@ -1,7 +1,6 @@
 import type { Dayjs } from 'dayjs'
 
 import type { AccountStatus, AccountType } from '@/types/domain'
-import type { SchedulableFilter } from './accountFormatters'
 
 export interface AccountFormModel {
   providerCode: string
@@ -26,8 +25,8 @@ export type AccountOAuthAuthorizeForm = Pick<AccountFormModel, 'oauthMode' | 'ca
 
 export interface AccountFilters {
   keyword: string
+  groupId: string
   type: 'all' | AccountType
   status: AccountStatus[]
-  schedulable: SchedulableFilter
   systemAccountId: string
 }

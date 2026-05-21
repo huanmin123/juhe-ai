@@ -6,17 +6,18 @@ import { join, resolve } from 'node:path'
 
 import { runtimeConfig } from '../../config/runtime.js'
 
-const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-strict-match-${Date.now()}-${Math.random().toString(16).slice(2)}`)
+const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-cross-paired-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
 runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
-runtimeConfig.secret = 'model-check-strict-match-secret'
+runtimeConfig.secret = 'model-check-cross-paired-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 
-const responseModel = 'gpt-5.4-mini-2026-03-17'
-const targetModel = 'gpt-5.4'
+const targetModel = 'gpt-5.5'
+const pairedModel = 'gpt-5.4'
+const pairedResponseModel = 'gpt-5.4-mini-2026-03-17'
 const upstream = createMockUpstream()
 let stopGatewayJsonParseWorker: (() => Promise<void>) | undefined
 
@@ -34,11 +35,10 @@ try {
   stopGatewayJsonParseWorker = gatewayJsonParser.stopGatewayJsonParseWorker
 
   const fixture = createMockGatewayFixture({
-    label: '模型检测严格模型匹配',
+    label: '模型检测辅助模型对照误判',
     upstreamBaseUrl: `http://127.0.0.1:${serverPort(upstream)}/v1`,
     systemAccountId: 'sys_admin',
-    accountCount: 1,
-    createApiKey: false
+    accountCount: 1
   })
   const account = fixture.accounts[0]
   assert(account, 'mock fixture should create an account')
@@ -52,19 +52,22 @@ try {
   }, { systemAccountId: 'sys_admin', role: 'admin' })
 
   assert.equal(detail.status, 'completed')
-  assert.equal(detail.level, 'suspicious', '变体模型响应不能被判为较可信或高可信')
-  assert.match(detail.message, /不一致|降级/, '总览消息应提示模型字段不一致')
+  assert.equal(detail.level, 'likely', '辅助模型对照不匹配只能降低可信度，不能把目标模型直接判为疑似不符')
+  assert(detail.score >= 75, `目标探针通过时总分应保持较可信区间，actual=${detail.score}`)
+  assert(!/响应模型字段与请求模型不一致/.test(detail.message), '总览消息不应把辅助模型不匹配描述成目标模型字段不一致')
 
-  const mismatchItems = detail.checks.filter((item) => item.evidenceSummary.modelMismatch === true)
-  assert(mismatchItems.length >= 5, '关键 Responses 探针都应记录模型不匹配证据')
-  assert(mismatchItems.every((item) => item.status === 'failed'), '模型字段明显不匹配时关键探针应失败')
-  assert(
-    mismatchItems.some((item) => item.itemKey === 'target.responses_basic' && item.evidenceSummary.responseModel === responseModel),
-    '基础 Responses 探针应保存脱敏后的实际 response model'
-  )
-  assert(!JSON.stringify(detail).includes('sk-mockdata'), '检测报告不应泄露上游 API Key')
+  const targetMismatches = detail.checks.filter((item) => item.itemKey !== 'target.cross_model' && item.evidenceSummary.modelMismatch === true)
+  assert.equal(targetMismatches.length, 0, '目标模型自身探针全部返回目标模型时不应记录目标模型不匹配证据')
 
-  console.log('模型检测严格模型匹配回归通过：gpt-5.4-mini 不会被误判为 gpt-5.4')
+  const crossModelItem = detail.checks.find((item) => item.itemKey === 'target.cross_model')
+  assert(crossModelItem, '完整检测应包含辅助模型对照项')
+  assert.equal(crossModelItem.status, 'failed', '辅助模型返回变体时辅助模型对照项应失败并扣分')
+  assert.equal(crossModelItem.evidenceSummary.pairedResponseModel, pairedResponseModel)
+  assert.equal(crossModelItem.evidenceSummary.pairedModelMismatch, true)
+  assert.equal(crossModelItem.evidenceSummary.crossModelMismatch, true)
+  assert.notEqual(crossModelItem.evidenceSummary.modelMismatch, true, '辅助模型不匹配不应写成目标模型硬不匹配证据')
+
+  console.log('模型检测辅助模型对照回归通过：目标模型正常时不会被辅助对照误判为疑似不符')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)
@@ -82,16 +85,20 @@ function createMockUpstream(): http.Server {
       if (req.method === 'GET' && url.pathname === '/v1/models') {
         sendJson(res, {
           object: 'list',
-          data: [{ id: targetModel, object: 'model', created: 0, owned_by: 'mock' }]
+          data: [
+            { id: targetModel, object: 'model', created: 0, owned_by: 'mock' },
+            { id: pairedModel, object: 'model', created: 0, owned_by: 'mock' }
+          ]
         })
         return
       }
       if (req.method === 'POST' && url.pathname === '/v1/responses') {
         const outputText = outputForProbe(body)
+        const model = responseModelForBody(body)
         if (body.stream === true) {
-          sendStream(res, outputText)
+          sendStream(res, model, outputText)
         } else {
-          sendJson(res, responsePayload(body, outputText))
+          sendJson(res, responsePayload(model, outputText, body))
         }
         return
       }
@@ -101,13 +108,17 @@ function createMockUpstream(): http.Server {
   })
 }
 
-function responsePayload(body: Record<string, unknown>, outputText: string): Record<string, unknown> {
+function responseModelForBody(body: Record<string, unknown>): string {
+  return body.model === pairedModel ? pairedResponseModel : targetModel
+}
+
+function responsePayload(model: string, outputText: string, body: Record<string, unknown>): Record<string, unknown> {
   const hasTool = Array.isArray(body.tools)
   return {
-    id: 'resp_model_check_strict_match',
+    id: 'resp_model_check_cross_paired',
     object: 'response',
     status: 'completed',
-    model: responseModel,
+    model,
     output: hasTool
       ? [{
           type: 'function_call',
@@ -121,14 +132,14 @@ function responsePayload(body: Record<string, unknown>, outputText: string): Rec
           content: [{ type: 'output_text', text: outputText }]
         }],
     usage: {
-      input_tokens: 8,
-      output_tokens: 3,
-      total_tokens: 11
+      input_tokens: 12,
+      output_tokens: 4,
+      total_tokens: 16
     }
   }
 }
 
-function sendStream(res: http.ServerResponse, outputText: string): void {
+function sendStream(res: http.ServerResponse, model: string, outputText: string): void {
   res.writeHead(200, {
     'content-type': 'text/event-stream; charset=utf-8',
     'cache-control': 'no-cache',
@@ -139,11 +150,11 @@ function sendStream(res: http.ServerResponse, outputText: string): void {
     type: 'response.completed',
     response: {
       status: 'completed',
-      model: responseModel,
+      model,
       usage: {
-        input_tokens: 8,
-        output_tokens: 3,
-        total_tokens: 11
+        input_tokens: 12,
+        output_tokens: 4,
+        total_tokens: 16
       }
     }
   })}\n\n`)
@@ -155,6 +166,8 @@ function outputForProbe(body: Record<string, unknown>): string {
   if (text.includes('STREAM-OK')) return 'STREAM-OK'
   if (text.includes('QUARTZ')) return 'QUARTZ'
   if (text.includes('VECTOR')) return 'VECTOR'
+  if (text.includes('CROSS-MODEL-OK')) return 'CROSS-MODEL-OK'
+  if (text.includes('NEEDLE-7482-ORCHID')) return 'NEEDLE-7482-ORCHID'
   if (body.text || text.includes('JSON')) return '{"status":"ok","value":7}'
   return 'OK-MODEL-CHECK'
 }

@@ -127,6 +127,7 @@ function parseAccountOptionsQuery(query: Record<string, unknown>): AccountListOp
     pageSize: integerQueryValue(query.pageSize),
     limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword),
+    groupId: optionalQueryText(query.groupId),
     type: optionalQueryText(query.type),
     status: statusQueryValue(query.status),
     schedulable: schedulableQueryValue(query.schedulable)
@@ -147,6 +148,7 @@ function parseAccountListOptions(query: Record<string, unknown>): AccountListOpt
     pageSize: integerQueryValue(query.pageSize),
     limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword),
+    groupId: optionalQueryText(query.groupId),
     type: optionalQueryText(query.type),
     status: statusQueryValue(query.status),
     schedulable: schedulableQueryValue(query.schedulable)

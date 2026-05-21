@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card system-account-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索用户名称 / 用户名 / ID 前缀" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchAccounts" @reset="resetSearch" @refresh="refreshAccounts">
+    <ResponsiveListToolbar v-model:keyword="keyword" search-placeholder="搜索用户名称" :show-reset="Boolean(keyword.trim())" :refresh-loading="loading" @search="searchAccounts" @reset="resetSearch" @refresh="refreshAccounts">
       <template #actions>
         <a-button type="primary" @click="openCreate">新增系统账户</a-button>
       </template>

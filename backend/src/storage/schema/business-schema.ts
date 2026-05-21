@@ -103,6 +103,9 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       cooldown_until TEXT,
       last_error_code TEXT,
       last_error_message TEXT,
+      cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
+      cooldown_retest_last_at TEXT,
+      cooldown_retest_last_status_code INTEGER,
       stream_failure_count INTEGER NOT NULL DEFAULT 0,
       stream_failure_window_started_at TEXT,
       created_at TEXT NOT NULL,
@@ -360,8 +363,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account ON api_keys(system_account_id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_updated ON api_keys(system_account_id, updated_at DESC, created_at DESC, id DESC);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_owner_name_unique_lower ON api_keys(system_account_id, lower(name));
-    CREATE INDEX IF NOT EXISTS idx_api_keys_key_prefix_lookup ON api_keys(key_prefix, id);
-    CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_key_prefix_lookup ON api_keys(system_account_id, key_prefix, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_name_lookup ON api_keys(name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_api_keys_system_account_name_lookup ON api_keys(system_account_id, name COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_resource_authorization_grants_owner ON resource_authorization_grants(resource_owner_system_account_id, status);
@@ -375,16 +376,45 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_proxy_profiles_system_account ON proxy_profiles(system_account_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_proxy_profiles_name_unique_lower ON proxy_profiles(lower(name));
     CREATE INDEX IF NOT EXISTS idx_proxy_profiles_name_lookup ON proxy_profiles(name COLLATE NOCASE, id);
-    CREATE INDEX IF NOT EXISTS idx_proxy_profiles_host_lookup ON proxy_profiles(host, id);
-    CREATE INDEX IF NOT EXISTS idx_proxy_profiles_type_lookup ON proxy_profiles(type COLLATE NOCASE, id);
     CREATE INDEX IF NOT EXISTS idx_announcements_public ON announcements(status, published_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcements_admin ON announcements(updated_at DESC, created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_announcement_reads_account ON announcement_reads(system_account_id, read_at DESC);
 
     DROP INDEX IF EXISTS idx_accounts_notes_lookup;
     DROP INDEX IF EXISTS idx_accounts_system_account_notes_lookup;
+    DROP INDEX IF EXISTS idx_api_keys_key_prefix_lookup;
+    DROP INDEX IF EXISTS idx_api_keys_system_account_key_prefix_lookup;
     DROP INDEX IF EXISTS idx_api_keys_description_lookup;
     DROP INDEX IF EXISTS idx_api_keys_system_account_description_lookup;
+    DROP INDEX IF EXISTS idx_proxy_profiles_host_lookup;
+    DROP INDEX IF EXISTS idx_proxy_profiles_type_lookup;
   `)
+  ensureAccountsCooldownRetestColumns(database)
 
+}
+
+function ensureAccountsCooldownRetestColumns(database: DatabaseSync): void {
+  ensureTableColumns(database, 'accounts', [
+    { name: 'cooldown_retest_failure_count', definition: 'INTEGER NOT NULL DEFAULT 0' },
+    { name: 'cooldown_retest_last_at', definition: 'TEXT' },
+    { name: 'cooldown_retest_last_status_code', definition: 'INTEGER' }
+  ])
+}
+
+function ensureTableColumns(database: DatabaseSync, tableName: string, columns: Array<{ name: string; definition: string }>): void {
+  const existing = new Set(tableColumns(database, tableName).map((column) => column.name).filter(Boolean))
+  for (const column of columns) {
+    if (existing.has(column.name)) {
+      continue
+    }
+    database.exec(`ALTER TABLE ${quoteIdentifier(tableName)} ADD COLUMN ${quoteIdentifier(column.name)} ${column.definition};`)
+  }
+}
+
+function tableColumns(database: DatabaseSync, tableName: string): Array<{ name?: string }> {
+  return database.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all() as Array<{ name?: string }>
+}
+
+function quoteIdentifier(value: string): string {
+  return `"${value.replace(/"/g, '""')}"`
 }

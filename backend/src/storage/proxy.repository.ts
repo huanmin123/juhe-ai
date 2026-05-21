@@ -149,16 +149,10 @@ function buildProxyKeywordFilter(keyword?: string): { clause: string; params: st
   const prefix = `${escapeLikePrefix(text)}%`
   return {
     clause: `(
-      id = ?
-      OR id LIKE ? ESCAPE '\\'
-      OR name COLLATE NOCASE = ?
+      name COLLATE NOCASE = ?
       OR name LIKE ? ESCAPE '\\'
-      OR type COLLATE NOCASE = ?
-      OR type LIKE ? ESCAPE '\\'
-      OR host = ?
-      OR host LIKE ? ESCAPE '\\'
     )`,
-    params: [text, prefix, text, prefix, text, prefix, text, prefix]
+    params: [text, prefix]
   }
 }
 

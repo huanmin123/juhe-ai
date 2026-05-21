@@ -65,7 +65,7 @@ export function listSystemAccounts(): SystemAccountSummary[] {
 
 export function listSystemAccountsPage(options: SystemAccountListOptions = {}): SystemAccountListResult {
   const normalized = normalizeSystemAccountListOptions(options)
-  const keywordFilter = buildSystemAccountKeywordFilter(normalized.keyword)
+  const keywordFilter = buildSystemAccountListKeywordFilter(normalized.keyword)
   const rows = getDatabase()
     .prepare(`
       SELECT id, username, display_name, description, role, status, must_change_password, last_login_at, created_at, updated_at
@@ -99,6 +99,19 @@ export function listSystemAccountOptions(options: SystemAccountOptionListOptions
     `)
     .all(...keywordFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
   return rows.map(systemAccountPrincipalSummaryFromRow)
+}
+
+function buildSystemAccountListKeywordFilter(keyword?: string): { clause: string; params: string[] } {
+  const text = optionalString(keyword)
+  if (!text) return { clause: '', params: [] }
+  const prefix = `${escapeLikePrefix(text)}%`
+  return {
+    clause: `WHERE (
+      display_name COLLATE NOCASE = ?
+      OR display_name LIKE ? ESCAPE '\\'
+    )`,
+    params: [text, prefix]
+  }
 }
 
 function buildSystemAccountKeywordFilter(keyword?: string): { clause: string; params: string[] } {

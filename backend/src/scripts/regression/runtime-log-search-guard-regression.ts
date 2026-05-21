@@ -24,7 +24,24 @@ const [databaseModule, runtimeLogsRepository, runtimeLogGrep] = await Promise.al
 
 try {
   const now = new Date().toISOString()
+  const oldTime = new Date(Date.parse(now) - 10_000).toISOString()
   runtimeLogsRepository.createRuntimeLogsBatch([
+    {
+      id: 'rtlog_facet_cleanup_guard',
+      time: oldTime,
+      level: 'info',
+      traceId: 'trace-runtime-cleanup-guard',
+      event: 'facet_cleanup_guard_event',
+      message: 'cleanup guard',
+      rawJson: JSON.stringify({
+        time: oldTime,
+        level: 'info',
+        traceId: 'trace-runtime-cleanup-guard',
+        event: 'facet_cleanup_guard_event',
+        msg: 'cleanup guard'
+      }),
+      createdAt: oldTime
+    },
     {
       id: 'rtlog_short_keyword_guard',
       time: now,
@@ -72,6 +89,29 @@ try {
     tracePrefix.items.map((item) => item.traceId).sort(),
     ['trace-runtime-guard-long', 'trace-runtime-guard-short'],
     '运行日志 traceId 筛选应支持右侧前缀定位，与审计/操作日志契约一致'
+  )
+
+  const recordDatabase = databaseModule.getRecordDatabase()
+  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const facetMaintenanceSql: string[] = []
+  recordDatabase.prepare = ((sql: string) => {
+    facetMaintenanceSql.push(sql)
+    return originalPrepare(sql)
+  }) as typeof recordDatabase.prepare
+  try {
+    recordDatabase.prepare('DELETE FROM runtime_log_facet_summary').run()
+    runtimeLogsRepository.ensureRuntimeLogFacetSnapshots()
+    runtimeLogsRepository.cleanupRuntimeLogIndex(new Date(Date.parse(now) - 1).toISOString(), 10)
+  } finally {
+    recordDatabase.prepare = originalPrepare
+  }
+  assert(
+    !facetMaintenanceSql.some((sql) => /\bFROM\s+runtime_logs\b[\s\S]*\bGROUP\s+BY\b/i.test(sql)),
+    '运行日志 facets 维护不应在缺快照或清理路径对 runtime_logs 做 GROUP BY 聚合扫描'
+  )
+  assert(
+    !facetMaintenanceSql.some((sql) => /\bSELECT\s+MIN\(time\)[\s\S]*\bFROM\s+runtime_logs\b/i.test(sql)),
+    '运行日志清理不应为了更新 facets 对保留窗口做 MIN/MAX 聚合扫描'
   )
 
   const largeDetail = runtimeLogsRepository.getRuntimeLogDetail('rtlog_short_keyword_guard')

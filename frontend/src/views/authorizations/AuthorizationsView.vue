@@ -96,6 +96,7 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
 import AuthorizationExpireModal from './AuthorizationExpireModal.vue'
@@ -154,6 +155,10 @@ const filterUserSearchKeyword = ref('')
 const expireAuthorization = ref<ResourceAuthorizationSummary>()
 const remoteOptionLimit = 50
 const remoteSearchDelayMs = 250
+const authorizationAccountOptionCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
+const authorizationGroupOptionCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
+const authorizationUserOptionCache = createShortLivedQueryCache<SystemAccountPrincipalSummary[]>({ ttlMs: 10_000 })
+const authorizationTeamOptionCache = createShortLivedQueryCache<SystemTeamPrincipalSummary[]>({ ttlMs: 10_000 })
 let createOwnerUserRequestId = 0
 let createOwnerUserSearchTimer: ReturnType<typeof window.setTimeout> | undefined
 let createOwnerResourceRequestId = 0
@@ -509,12 +514,21 @@ async function loadCreateOwnerOptions(keyword?: string): Promise<void> {
     createOwnerUsers.value = []
     return
   }
+  const search = normalizeSearchKeyword(keyword)
+  const requestKey = JSON.stringify(['create-owner', search ?? '', createForm.ownerSystemAccountId ?? ''])
+  const cachedUsers = authorizationUserOptionCache.get(requestKey)
+  if (cachedUsers) {
+    createOwnerUserRequestId += 1
+    createOwnerUsersLoading.value = false
+    createOwnerUsers.value = cachedUsers
+    return
+  }
   const requestId = ++createOwnerUserRequestId
   createOwnerUsersLoading.value = true
   try {
-    const search = normalizeSearchKeyword(keyword)
     let nextOptions = await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
     nextOptions = await ensureSelectedSystemAccountPrincipal(nextOptions, createForm.ownerSystemAccountId)
+    authorizationUserOptionCache.set(requestKey, nextOptions)
     if (requestId !== createOwnerUserRequestId) return
     createOwnerUsers.value = nextOptions
   } catch (error) {
@@ -530,20 +544,41 @@ async function loadCreateOwnerOptions(keyword?: string): Promise<void> {
 
 async function loadCreateResourceOptions(keyword?: string): Promise<void> {
   const ownerSystemAccountId = createForm.ownerSystemAccountId
-  const requestId = ++createOwnerResourceRequestId
-  createResourceOptionsLoading.value = true
-  try {
-    if (isManagementView.value && !ownerSystemAccountId) {
-      createAccounts.value = []
+  if (isManagementView.value && !ownerSystemAccountId) {
+    createAccounts.value = []
+    createGroups.value = []
+    return
+  }
+  const search = normalizeSearchKeyword(keyword)
+  const requestKey = JSON.stringify(['create-resource', createForm.resourceType, isManagementView.value ? 'management' : 'self', ownerSystemAccountId ?? '', search ?? '', createForm.resourceId ?? ''])
+  if (createForm.resourceType === 'account') {
+    const cachedAccounts = authorizationAccountOptionCache.get(requestKey)
+    if (cachedAccounts) {
+      createOwnerResourceRequestId += 1
+      createResourceOptionsLoading.value = false
+      createAccounts.value = cachedAccounts
       createGroups.value = []
       return
     }
-    const search = normalizeSearchKeyword(keyword)
+  } else {
+    const cachedGroups = authorizationGroupOptionCache.get(requestKey)
+    if (cachedGroups) {
+      createOwnerResourceRequestId += 1
+      createResourceOptionsLoading.value = false
+      createGroups.value = cachedGroups
+      createAccounts.value = []
+      return
+    }
+  }
+  const requestId = ++createOwnerResourceRequestId
+  createResourceOptionsLoading.value = true
+  try {
     if (createForm.resourceType === 'account') {
       let nextAccounts = isManagementView.value
         ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
         : await api.myAccounts.options({ keyword: search, limit: remoteOptionLimit })
       nextAccounts = await ensureSelectedAccountOption(nextAccounts, createForm.resourceId, ownerSystemAccountId)
+      authorizationAccountOptionCache.set(requestKey, nextAccounts)
       if (requestId !== createOwnerResourceRequestId) return
       createAccounts.value = nextAccounts
       createGroups.value = []
@@ -552,6 +587,7 @@ async function loadCreateResourceOptions(keyword?: string): Promise<void> {
         ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
         : await api.myGroups.options({ keyword: search, limit: remoteOptionLimit })
       nextGroups = await ensureSelectedGroupOption(nextGroups, createForm.resourceId, ownerSystemAccountId)
+      authorizationGroupOptionCache.set(requestKey, nextGroups)
       if (requestId !== createOwnerResourceRequestId) return
       createGroups.value = nextGroups
       createAccounts.value = []
@@ -568,16 +604,38 @@ async function loadCreateResourceOptions(keyword?: string): Promise<void> {
 }
 
 async function loadCreateGranteeOptions(keyword?: string): Promise<void> {
+  const search = normalizeSearchKeyword(keyword)
+  const excludedGranteeIds = [...createExcludedGranteeIds.value].sort()
+  const requestKey = JSON.stringify(['create-grantee', createForm.granteeType, isManagementView.value ? 'management' : 'self', search ?? '', createForm.granteeId ?? '', excludedGranteeIds])
+  if (createForm.granteeType === 'system_account') {
+    const cachedUsers = authorizationUserOptionCache.get(requestKey)
+    if (cachedUsers) {
+      createGranteeRequestId += 1
+      createGranteeOptionsLoading.value = false
+      createUsers.value = cachedUsers
+      createTeams.value = []
+      return
+    }
+  } else {
+    const cachedTeams = authorizationTeamOptionCache.get(requestKey)
+    if (cachedTeams) {
+      createGranteeRequestId += 1
+      createGranteeOptionsLoading.value = false
+      createTeams.value = cachedTeams
+      createUsers.value = []
+      return
+    }
+  }
   const requestId = ++createGranteeRequestId
   createGranteeOptionsLoading.value = true
   try {
-    const search = normalizeSearchKeyword(keyword)
     if (createForm.granteeType === 'system_account') {
       let nextUsers = isManagementView.value
         ? await api.authorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
         : await api.myAuthorizationOptions.granteeAccounts({ keyword: search, limit: remoteOptionLimit })
       nextUsers = nextUsers.filter((user) => !createExcludedGranteeIds.value.includes(user.id))
       nextUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, createForm.granteeId)
+      authorizationUserOptionCache.set(requestKey, nextUsers)
       if (requestId !== createGranteeRequestId) return
       createUsers.value = nextUsers
       createTeams.value = []
@@ -586,6 +644,7 @@ async function loadCreateGranteeOptions(keyword?: string): Promise<void> {
         ? await api.authorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
         : await api.myAuthorizationOptions.granteeTeams({ keyword: search, limit: remoteOptionLimit })
       nextTeams = await ensureSelectedTeamOption(nextTeams, createForm.granteeId)
+      authorizationTeamOptionCache.set(requestKey, nextTeams)
       if (requestId !== createGranteeRequestId) return
       createTeams.value = nextTeams
       createUsers.value = []
@@ -607,19 +666,40 @@ async function loadFilterResourceOptions(keyword?: string): Promise<void> {
     groups.value = []
     return
   }
-  const requestId = ++filterResourceRequestId
   if (filters.resourceType === 'all') {
     accounts.value = []
     groups.value = []
     return
   }
-  filterResourceOptionsLoading.value = true
   const requestKeyword = normalizeSearchKeyword(keyword)
   const systemAccountId = scopedSystemAccountId()
+  const requestKey = JSON.stringify(['filter-resource', filters.resourceType, systemAccountId ?? '', requestKeyword ?? '', filters.resourceId ?? ''])
+  if (filters.resourceType === 'account') {
+    const cachedAccounts = authorizationAccountOptionCache.get(requestKey)
+    if (cachedAccounts) {
+      filterResourceRequestId += 1
+      filterResourceOptionsLoading.value = false
+      accounts.value = cachedAccounts
+      groups.value = []
+      return
+    }
+  } else {
+    const cachedGroups = authorizationGroupOptionCache.get(requestKey)
+    if (cachedGroups) {
+      filterResourceRequestId += 1
+      filterResourceOptionsLoading.value = false
+      groups.value = cachedGroups
+      accounts.value = []
+      return
+    }
+  }
+  const requestId = ++filterResourceRequestId
+  filterResourceOptionsLoading.value = true
   try {
     if (filters.resourceType === 'account') {
       const nextAccounts = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
       const mergedAccounts = await ensureSelectedAccountOption(nextAccounts, filters.resourceId, systemAccountId)
+      authorizationAccountOptionCache.set(requestKey, mergedAccounts)
       if (requestId !== filterResourceRequestId) return
       accounts.value = mergedAccounts
       groups.value = []
@@ -627,6 +707,7 @@ async function loadFilterResourceOptions(keyword?: string): Promise<void> {
     }
     const nextGroups = await api.groups.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
     const mergedGroups = await ensureSelectedGroupOption(nextGroups, filters.resourceId, systemAccountId)
+    authorizationGroupOptionCache.set(requestKey, mergedGroups)
     if (requestId !== filterResourceRequestId) return
     groups.value = mergedGroups
     accounts.value = []
@@ -646,12 +727,23 @@ async function loadFilterTeamOptions(keyword?: string): Promise<void> {
     teams.value = []
     return
   }
+  const requestKeyword = normalizeSearchKeyword(keyword)
+  const requestKey = JSON.stringify(['filter-team', requestKeyword ?? '', filters.teamId ?? ''])
+  const cachedTeams = authorizationTeamOptionCache.get(requestKey)
+  if (cachedTeams) {
+    filterTeamRequestId += 1
+    filterTeamOptionsLoading.value = false
+    teams.value = cachedTeams
+    return
+  }
   const requestId = ++filterTeamRequestId
   filterTeamOptionsLoading.value = true
   try {
-    const nextTeams = await api.authorizationOptions.granteeTeams({ keyword: normalizeSearchKeyword(keyword), limit: remoteOptionLimit })
+    const nextTeams = await api.authorizationOptions.granteeTeams({ keyword: requestKeyword, limit: remoteOptionLimit })
+    const mergedTeams = await ensureSelectedTeamOption(nextTeams, filters.teamId)
+    authorizationTeamOptionCache.set(requestKey, mergedTeams)
     if (requestId !== filterTeamRequestId) return
-    teams.value = await ensureSelectedTeamOption(nextTeams, filters.teamId)
+    teams.value = mergedTeams
   } catch (error) {
     if (requestId !== filterTeamRequestId) return
     console.error(error)
@@ -668,12 +760,23 @@ async function loadFilterUserOptions(keyword?: string): Promise<void> {
     users.value = []
     return
   }
+  const requestKeyword = normalizeSearchKeyword(keyword)
+  const requestKey = JSON.stringify(['filter-user', requestKeyword ?? '', filters.granteeSystemAccountId ?? ''])
+  const cachedUsers = authorizationUserOptionCache.get(requestKey)
+  if (cachedUsers) {
+    filterUserRequestId += 1
+    filterUserOptionsLoading.value = false
+    users.value = cachedUsers
+    return
+  }
   const requestId = ++filterUserRequestId
   filterUserOptionsLoading.value = true
   try {
-    const nextUsers = await api.authorizationOptions.granteeAccounts({ keyword: normalizeSearchKeyword(keyword), limit: remoteOptionLimit })
+    const nextUsers = await api.authorizationOptions.granteeAccounts({ keyword: requestKeyword, limit: remoteOptionLimit })
+    const mergedUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, filters.granteeSystemAccountId)
+    authorizationUserOptionCache.set(requestKey, mergedUsers)
     if (requestId !== filterUserRequestId) return
-    users.value = await ensureSelectedSystemAccountPrincipal(nextUsers, filters.granteeSystemAccountId)
+    users.value = mergedUsers
   } catch (error) {
     if (requestId !== filterUserRequestId) return
     console.error(error)

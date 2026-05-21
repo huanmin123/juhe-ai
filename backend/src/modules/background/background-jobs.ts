@@ -142,9 +142,9 @@ async function runSystemMetricsSample(): Promise<void> {
     logger.warn(errorLogFields(error, {
       event: 'background_system_metrics_remote_event_loop_sample_failed'
     }), '系统指标远端事件循环采样失败')
-    return []
+    return undefined
   })
-  if (remoteProcessSamples.length === 0) {
+  if (!remoteProcessSamples || remoteProcessSamples.length === 0) {
     missingRemoteProcessEventLoopSampleWarningCount += 1
     if (missingRemoteProcessEventLoopSampleWarningCount === 1 || missingRemoteProcessEventLoopSampleWarningCount % 10 === 0) {
       logger.warn({
@@ -155,6 +155,7 @@ async function runSystemMetricsSample(): Promise<void> {
   } else {
     missingRemoteProcessEventLoopSampleWarningCount = 0
   }
+  const processEventLoopSamples = remoteProcessSamples ?? []
   const workerEventLoopSample = buildProcessEventLoopSample('worker')
   try {
     insertSystemMetricsSample({
@@ -170,7 +171,7 @@ async function runSystemMetricsSample(): Promise<void> {
       dbFileBytes: databaseFileBytes(),
       statsLagSeconds: latestUsageStatsLagSeconds()
     })
-    for (const sample of [workerEventLoopSample, ...remoteProcessSamples]) {
+    for (const sample of [workerEventLoopSample, ...processEventLoopSamples]) {
       insertProcessEventLoopSample(sample)
     }
   } catch (error) {
@@ -303,17 +304,16 @@ async function runAccountQualityRefresh(): Promise<void> {
 }
 
 async function runCooldownAccountRetest(): Promise<void> {
-  const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 10, 0, 100)
-  if (!settingsBoolean('cooldownAccountRetestEnabled', true) || batchSize <= 0) {
-    return
-  }
+  const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 10, 1, 100)
   const model = settingsString('cooldownAccountRetestModel', 'gpt-5.5')
+  const initialBackoffMinutes = settingsNumber('defaultTemporaryUnschedulableMinutes', 5, 1, 1440)
+  const maxBackoffHours = settingsNumber('cooldownAccountRetestMaxBackoffHours', 24, 1, 24 * 30)
   const candidates = listAccountsDueForCooldownRetest(batchSize)
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0
   for (const account of candidates) {
-    if (enqueueCooldownAccountRetest(account, model)) {
+    if (enqueueCooldownAccountRetest(account, model, { initialBackoffMinutes, maxBackoffHours })) {
       enqueuedCount += 1
     } else {
       skippedQueuedCount += 1
@@ -369,18 +369,6 @@ function settingsNumber(key: string, fallback: number, min: number, max: number)
   const value = getSettings()[key]
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   return Number.isFinite(number) ? Math.min(Math.max(Math.trunc(number), min), max) : fallback
-}
-
-function settingsBoolean(key: string, fallback: boolean): boolean {
-  const value = getSettings()[key]
-  if (typeof value === 'boolean') return value
-  if (typeof value === 'number') return value !== 0
-  if (typeof value === 'string') {
-    const normalized = value.trim().toLowerCase()
-    if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
-    if (['0', 'false', 'no', 'off'].includes(normalized)) return false
-  }
-  return fallback
 }
 
 function settingsString(key: string, fallback: string): string {

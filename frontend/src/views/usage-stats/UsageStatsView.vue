@@ -88,6 +88,7 @@
       <div class="usage-stats-table-head">
         <div>
           <h3>账户统计明细</h3>
+          <p>账户类型仅作运行态参考；统计、会话亲和和缓存按本地 API Key 与分组连续。</p>
         </div>
       </div>
       <ResponsiveDataList
@@ -598,14 +599,17 @@ async function loadAccountOptions(keyword = accountOptionsKeyword.value, force =
   if (!force && accountOptionsLoadingKey === requestKey && accountOptionsLoadingPromise) {
     return accountOptionsLoadingPromise
   }
+  const requestSeq = ++accountOptionsRequestSeq
   if (!force) {
     const cachedOptions = accountOptionsCache.get(requestKey)
     if (cachedOptions) {
+      accountOptionsLoadingKey = undefined
+      accountOptionsLoadingPromise = undefined
+      accountOptionsLoading.value = false
       accountOptionRows.value = cachedOptions
       return
     }
   }
-  const requestSeq = ++accountOptionsRequestSeq
   accountOptionsLoading.value = true
   accountOptionsLoadingKey = requestKey
   accountOptionsLoadingPromise = (async () => {
@@ -903,6 +907,13 @@ watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), 
   color: #0f172a;
   font-size: 16px;
   font-weight: 700;
+}
+
+.usage-stats-table-head p {
+  margin: 4px 0 0;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 .usage-account-cell {

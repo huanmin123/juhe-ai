@@ -610,7 +610,10 @@ async function buildServerRuntimeSnapshot(): Promise<DbServiceServerRuntimeSnaps
           operationLogQueue: { ...workerSnapshot.operationLogQueue },
           recordMaintenanceQueue: { ...workerSnapshot.recordMaintenanceQueue },
           auditLogQueue: { ...workerSnapshot.auditLogQueue },
-          runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue }
+          runtimeLogIndexQueue: { ...workerSnapshot.runtimeLogIndexQueue },
+          cooldownAccountRetestQueue: workerSnapshot.cooldownAccountRetestQueue
+            ? { ...workerSnapshot.cooldownAccountRetestQueue }
+            : undefined
         }
         : undefined
     },

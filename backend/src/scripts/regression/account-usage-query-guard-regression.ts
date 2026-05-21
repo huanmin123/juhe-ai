@@ -171,6 +171,14 @@ try {
     })
     assert.deepEqual(selectedPageTwoResult.rows.map((row) => row.id), [otherAccount.id, selectedAccount.id], '账号用量翻页后仍应把手动选择账户补入当前页结果')
     assert.equal(selectedPageTwoResult.total, 3, '账号用量手动补入行不应让兼容 total 低估总结果数')
+
+    const typeIgnoredResult = repositories.getAccountUsageStatsOverviewPage(access, {
+      type: 'oauth',
+      page: 1,
+      pageSize: 10,
+      range
+    })
+    assert.deepEqual(typeIgnoredResult.rows.map((row) => row.id), [matchedAccount.id, otherAccount.id, selectedAccount.id], '账号用量统计不应按 OAuth/API Key 账号类型缩窄明细')
   } finally {
     recordDatabase.prepare = originalPrepare
     businessDatabase.prepare = originalBusinessPrepare

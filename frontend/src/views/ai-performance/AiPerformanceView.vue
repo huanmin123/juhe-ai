@@ -98,6 +98,7 @@ import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from '@/views/stats/StatsChartCard.vue'
@@ -128,6 +129,7 @@ let accountSearchSeq = 0
 let loadedAccountOptionsKey: string | undefined
 let loadingAccountOptionsKey: string | undefined
 let loadingAccountOptionsPromise: Promise<void> | undefined
+const accountOptionsCache = createShortLivedQueryCache<AiPerformanceAccountOption[]>({ ttlMs: 10_000 })
 let performanceRequestSeq = 0
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const {
@@ -323,11 +325,25 @@ async function loadPerformance() {
 async function loadAccounts() {
   await loadSystemAccounts()
   const request = currentAccountOptionsRequest()
-  if (loadedAccountOptionsKey === request.key) return
   if (loadingAccountOptionsKey === request.key && loadingAccountOptionsPromise) {
     return loadingAccountOptionsPromise
   }
   const requestSeq = ++accountSearchSeq
+  if (loadedAccountOptionsKey === request.key) {
+    loadingAccountOptionsKey = undefined
+    loadingAccountOptionsPromise = undefined
+    accountsLoading.value = false
+    return
+  }
+  const cachedAccounts = accountOptionsCache.get(request.key)
+  if (cachedAccounts) {
+    accounts.value = cachedAccounts
+    loadedAccountOptionsKey = request.key
+    loadingAccountOptionsKey = undefined
+    loadingAccountOptionsPromise = undefined
+    accountsLoading.value = false
+    return
+  }
   accountsLoading.value = true
   loadingAccountOptionsKey = request.key
   const loadingPromise = (async () => {
@@ -341,6 +357,7 @@ async function loadAccounts() {
       const nextAccounts = isManagementView.value
         ? await api.stats.aiPerformanceAccounts(accountParams)
         : await api.myStats.aiPerformanceAccounts(accountParams)
+      accountOptionsCache.set(request.key, nextAccounts)
       if (requestSeq !== accountSearchSeq) return
       accounts.value = nextAccounts
       loadedAccountOptionsKey = request.key

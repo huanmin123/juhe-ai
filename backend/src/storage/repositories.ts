@@ -502,6 +502,9 @@ function disableExpiredAccounts(access?: AccessScope): void {
           cooldown_until = NULL,
           last_error_code = NULL,
           last_error_message = ?,
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
           updated_at = ?
       WHERE account_expires_at IS NOT NULL
         AND account_expires_at <= ?
@@ -539,6 +542,10 @@ function isHardUnavailableAccountStatus(status: AccountStatus): boolean {
 
 function boolInt(value: unknown, fallback: boolean): number {
   return typeof value === 'boolean' ? (value ? 1 : 0) : fallback ? 1 : 0
+}
+
+function optionalNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
 }
 
 function normalizeSuperPriorityInput(value: unknown, fallback: boolean): boolean {
@@ -867,37 +874,25 @@ function buildAccountOptionFilters(
   if (keyword) {
     const keywordPrefix = `${escapeLikePrefix(keyword)}%`
     clauses.push(`(
-      accounts.id = ?
-      OR accounts.id LIKE ? ESCAPE '\\'
-      OR accounts.name COLLATE NOCASE = ?
+      accounts.name COLLATE NOCASE = ?
       OR accounts.name LIKE ? ESCAPE '\\'
-      OR accounts.provider_code COLLATE NOCASE = ?
-      OR accounts.provider_code LIKE ? ESCAPE '\\'
-      OR accounts.type COLLATE NOCASE = ?
-      OR accounts.type LIKE ? ESCAPE '\\'
-      OR EXISTS (
-        SELECT 1
-        FROM group_accounts option_group_accounts
-        INNER JOIN groups option_groups ON option_groups.id = option_group_accounts.group_id
-        WHERE option_group_accounts.account_id = accounts.id
-          AND option_group_accounts.system_account_id = ${groupBindingSystemAccountExpression}
-          AND option_group_accounts.enabled = 1
-          AND (option_groups.name COLLATE NOCASE = ? OR option_groups.name LIKE ? ESCAPE '\\')
-      )
     )`)
     params.push(
       keyword,
-      keywordPrefix,
-      keyword,
-      keywordPrefix,
-      keyword,
-      keywordPrefix,
-      keyword,
-      keywordPrefix,
-      ...groupBindingSystemAccountParams,
-      keyword,
       keywordPrefix
     )
+  }
+  const groupId = options.groupId?.trim()
+  if (groupId) {
+    clauses.push(`EXISTS (
+      SELECT 1
+      FROM group_accounts option_group_accounts
+      WHERE option_group_accounts.account_id = accounts.id
+        AND option_group_accounts.system_account_id = ${groupBindingSystemAccountExpression}
+        AND option_group_accounts.group_id = ?
+        AND option_group_accounts.enabled = 1
+    )`)
+    params.push(...groupBindingSystemAccountParams, groupId)
   }
   if (options.type && options.type !== 'all') {
     clauses.push('accounts.type = ?')
@@ -1009,6 +1004,9 @@ function accountSummariesFromRows(
       cooldownUntil: isAuthorizedView ? row.bound_group_local_cooldown_until ?? undefined : row.cooldown_until ?? undefined,
       lastErrorCode: isAuthorizedView ? (effectiveAuthorizedStatus === row.status ? row.last_error_code ?? undefined : undefined) : row.last_error_code ?? undefined,
       lastErrorMessage: isAuthorizedView ? row.bound_group_local_last_error_message ?? undefined : row.last_error_message ?? undefined,
+      cooldownRetestFailureCount: isAuthorizedView ? 0 : Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
+      cooldownRetestLastAt: isAuthorizedView ? undefined : row.cooldown_retest_last_at ?? undefined,
+      cooldownRetestLastStatusCode: isAuthorizedView ? undefined : optionalNumber(row.cooldown_retest_last_status_code),
       streamFailureCount: isAuthorizedView ? 0 : Math.max(0, Number(row.stream_failure_count ?? 0)),
       streamFailureWindowStartedAt: isAuthorizedView ? undefined : row.stream_failure_window_started_at ?? undefined,
       localStatus: isAuthorizedView ? authorizedLocalStatus : undefined,
@@ -1146,7 +1144,6 @@ export function getAccountUsageStatsOverviewPage(access?: AccessScope, options?:
     page: listOptions.page,
     pageSize: listOptions.pageSize,
     keyword: listOptions.keyword,
-    type: listOptions.type,
     accountIds: options?.accountIds,
     defaultTrendAccountIds,
   })
@@ -1220,11 +1217,18 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       FROM accounts
       WHERE provider_code = 'openai'
         AND type IN ('api_key', 'oauth')
-        AND status IN ('rate_limited', 'temporary_unavailable')
+        AND status = 'temporary_unavailable'
         AND schedulable = 1
         AND cooldown_until IS NOT NULL
         AND cooldown_until <= ?
         AND (account_expires_at IS NULL OR account_expires_at > ?)
+        AND EXISTS (
+          SELECT 1
+          FROM group_accounts
+          WHERE group_accounts.account_id = accounts.id
+            AND group_accounts.system_account_id = accounts.system_account_id
+            AND group_accounts.enabled = 1
+        )
       ORDER BY cooldown_until ASC, priority ASC, created_at ASC, id ASC
       LIMIT ?
     `)
@@ -1260,6 +1264,9 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       cooldownUntil: row.cooldown_until ?? undefined,
       lastErrorCode: row.last_error_code ?? undefined,
       lastErrorMessage: row.last_error_message ?? undefined,
+      cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
+      cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
+      cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
       lastUsedAt: row.last_used_at ?? undefined,
       todayUsage: emptyAccountUsageSummary(),
       usage: emptyAccountUsageSummary(),
@@ -1341,6 +1348,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     cooldownUntil: expiredByPackage ? undefined : initialCooldownUntil,
     lastErrorCode: undefined,
     lastErrorMessage: expiredByPackage ? '账户套餐已过期，已自动停用' : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
+    cooldownRetestFailureCount: 0,
+    cooldownRetestLastAt: undefined,
+    cooldownRetestLastStatusCode: undefined,
     lastUsedAt: undefined,
     todayUsage: emptyAccountUsageSummary(),
     usage: emptyAccountUsageSummary(),
@@ -1463,15 +1473,18 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorCode = current.lastErrorCode
   let nextLastErrorMessage = current.lastErrorMessage
+  let clearCooldownRetestState = false
   if (hasStatusInput) {
     if (nextStatus === 'active') {
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
       nextLastErrorMessage = undefined
+      clearCooldownRetestState = true
     } else if (nextStatus === 'disabled' || nextStatus === 'error') {
       nextCooldownUntil = undefined
       if (nextStatus === 'disabled') {
         nextLastErrorCode = undefined
+        clearCooldownRetestState = true
       }
     } else if (isCoolingAccountStatus(nextStatus) && !nextCooldownUntil) {
       nextCooldownUntil = new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
@@ -1483,6 +1496,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     nextCooldownUntil = undefined
     nextLastErrorCode = undefined
     nextLastErrorMessage = '账户套餐已过期，已自动停用'
+    clearCooldownRetestState = true
   }
   const hasSuperPriorityInput = Object.prototype.hasOwnProperty.call(input, 'superPriorityEnabled')
     || Object.prototype.hasOwnProperty.call(input, 'super_priority_enabled')
@@ -1541,6 +1555,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     cooldownUntil: nextCooldownUntil,
     lastErrorCode: nextLastErrorCode,
     lastErrorMessage: nextLastErrorMessage,
+    cooldownRetestFailureCount: clearCooldownRetestState ? 0 : current.cooldownRetestFailureCount,
+    cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
+    cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
     lastUsedAt: current.lastUsedAt,
     usage: current.usage
   }
@@ -1554,7 +1571,8 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       UPDATE accounts
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
-            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?, updated_at = ?
+            error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
+            cooldown_retest_failure_count = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
       .run(
@@ -1576,6 +1594,9 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.cooldownUntil ?? null,
         next.lastErrorCode ?? null,
         next.lastErrorMessage ?? null,
+        next.cooldownRetestFailureCount ?? 0,
+        next.cooldownRetestLastAt ?? null,
+        next.cooldownRetestLastStatusCode ?? null,
         nowIso(),
         id,
         systemAccountId
@@ -1615,21 +1636,42 @@ export function deleteAccount(id: string, access?: AccessScope): boolean {
   return result.changes > 0
 }
 
+interface ClearAccountFailureStateOptions {
+  allowErrorRestore?: boolean
+}
+
+export interface AccountFailureStateClearResult {
+  account?: AccountSummary
+  changed: boolean
+}
+
 export function clearAccountFailureState(
   id: string,
-  access?: AccessScope
+  access?: AccessScope,
+  options: ClearAccountFailureStateOptions = {}
 ): AccountSummary | undefined {
+  return clearAccountFailureStateResult(id, access, options).account
+}
+
+export function clearAccountFailureStateResult(
+  id: string,
+  access?: AccessScope,
+  options: ClearAccountFailureStateOptions = {}
+): AccountFailureStateClearResult {
   const current = findAccountSummary(id, access)
   if (!current) {
-    return undefined
+    return { changed: false }
   }
   const ownerSystemAccountId = accountSystemAccountId(id)
   if (ownerSystemAccountId && !canManageResourceOwner(ownerSystemAccountId, access)) {
-    return undefined
+    return { changed: false }
   }
   const expiredByPackage = isAccountExpired(current.accountExpiresAt)
   if (current.status === 'disabled' && !expiredByPackage) {
-    return current
+    return { account: current, changed: false }
+  }
+  if (current.status === 'error' && options.allowErrorRestore === false) {
+    return { account: current, changed: false }
   }
   if (expiredByPackage) {
     const result = getDatabase()
@@ -1640,17 +1682,21 @@ export function clearAccountFailureState(
             cooldown_until = NULL,
             last_error_code = NULL,
             last_error_message = ?,
+            cooldown_retest_failure_count = 0,
+            cooldown_retest_last_at = NULL,
+            cooldown_retest_last_status_code = NULL,
             stream_failure_count = 0,
             stream_failure_window_started_at = NULL,
             updated_at = ?
         WHERE id = ?
       `)
       .run('账户套餐已过期，已自动停用', nowIso(), id)
-    if (Number(result.changes ?? 0) > 0) {
+    const changed = Number(result.changes ?? 0) > 0
+    if (changed) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
       invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     }
-    return findAccountSummary(id, access)
+    return { account: findAccountSummary(id, access), changed }
   }
 
   const result = getDatabase()
@@ -1661,18 +1707,37 @@ export function clearAccountFailureState(
           cooldown_until = NULL,
           last_error_code = NULL,
           last_error_message = NULL,
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
           updated_at = ?
       WHERE id = ?
+        AND status <> 'disabled'
+        AND (? = 1 OR status <> 'error')
+        AND (
+          status <> 'active'
+          OR schedulable <> 1
+          OR cooldown_until IS NOT NULL
+          OR last_error_code IS NOT NULL
+          OR last_error_message IS NOT NULL
+          OR cooldown_retest_failure_count > 0
+          OR cooldown_retest_last_at IS NOT NULL
+          OR cooldown_retest_last_status_code IS NOT NULL
+          OR stream_failure_count > 0
+          OR stream_failure_window_started_at IS NOT NULL
+        )
     `)
-    .run(nowIso(), id)
-  if (Number(result.changes ?? 0) > 0) {
+    .run(nowIso(), id, options.allowErrorRestore === false ? 0 : 1)
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_restored' })
+    invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_restored')
   }
 
-  return findAccountSummary(id, access)
+  return { account: findAccountSummary(id, access), changed }
 }
 
 export function clearAccountStreamFailureState(id: string): boolean {
@@ -1707,6 +1772,202 @@ export function clearAccountStreamFailureState(id: string): boolean {
   return changed
 }
 
+export interface CooldownAccountRetestFailureInput {
+  statusCode?: number
+  errorCode?: string
+  errorMessage?: string
+  failureThreshold?: number
+  initialBackoffMinutes?: number
+  backoffMultiplier?: number
+  maxBackoffHours?: number
+}
+
+export interface CooldownAccountRetestFailureResult {
+  action: 'retry_immediately' | 'cooldown' | 'error' | 'discard'
+  changed: boolean
+  failureCount: number
+  account?: AccountSummary
+  cooldownUntil?: string
+  backoffMinutes?: number
+  errorCode: string
+  errorMessage: string
+}
+
+export function recordCooldownAccountRetestFailure(id: string, input: CooldownAccountRetestFailureInput): CooldownAccountRetestFailureResult {
+  const current = findAccountSummary(id)
+  const errorCode = normalizedCooldownRetestErrorCode(input)
+  const testErrorMessage = normalizedCooldownRetestErrorMessage(input, errorCode)
+  if (!current || current.status !== 'temporary_unavailable') {
+    return {
+      action: 'discard',
+      changed: false,
+      failureCount: current?.cooldownRetestFailureCount ?? 0,
+      account: current,
+      errorCode,
+      errorMessage: testErrorMessage
+    }
+  }
+
+  const now = nowIso()
+  const failureCount = Math.max(0, current.cooldownRetestFailureCount ?? 0) + 1
+  const failureThreshold = boundedInteger(input.failureThreshold, 3, 1, 10)
+  const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
+  if (failureCount <= failureThreshold) {
+    const result = getDatabase()
+      .prepare(`
+        UPDATE accounts
+        SET cooldown_retest_failure_count = ?,
+            cooldown_retest_last_at = ?,
+            cooldown_retest_last_status_code = ?,
+            last_error_code = ?,
+            last_error_message = ?,
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'temporary_unavailable'
+      `)
+      .run(failureCount, now, lastStatusCode, errorCode, testErrorMessage, now, id)
+    const changed = Number(result.changes ?? 0) > 0
+    if (changed) {
+      invalidateAccountLookupCache(id)
+      invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_failed')
+    }
+    return {
+      action: 'retry_immediately',
+      changed,
+      failureCount,
+      account: failureAccountSummary(id, current),
+      errorCode,
+      errorMessage: testErrorMessage
+    }
+  }
+
+  const initialBackoffMinutes = boundedInteger(input.initialBackoffMinutes, defaultTemporaryUnschedulableMinutes(), 1, 1440)
+  const maxBackoffMinutes = boundedInteger(input.maxBackoffHours, 24, 1, 24 * 30) * 60
+  const multiplier = boundedInteger(input.backoffMultiplier, 2, 2, 10)
+  const exponent = Math.max(0, Math.min(failureCount - failureThreshold - 1, 24))
+  const backoffMinutes = Math.min(Number.MAX_SAFE_INTEGER, initialBackoffMinutes * Math.pow(multiplier, exponent))
+  if (backoffMinutes > maxBackoffMinutes) {
+    const finalMessage = cooldownRetestExhaustedMessage(failureCount, backoffMinutes, maxBackoffMinutes, testErrorMessage)
+    const result = getDatabase()
+      .prepare(`
+        UPDATE accounts
+        SET status = 'error',
+            schedulable = 0,
+            cooldown_until = NULL,
+            last_error_code = ?,
+            last_error_message = ?,
+            cooldown_retest_failure_count = ?,
+            cooldown_retest_last_at = ?,
+            cooldown_retest_last_status_code = ?,
+            stream_failure_count = 0,
+            stream_failure_window_started_at = NULL,
+            updated_at = ?
+        WHERE id = ?
+          AND status = 'temporary_unavailable'
+      `)
+      .run(errorCode, finalMessage, failureCount, now, lastStatusCode, now, id)
+    const changed = Number(result.changes ?? 0) > 0
+    if (changed) {
+      refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_exhausted' })
+      invalidateAccountLookupCache(id)
+      invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_exhausted')
+    }
+    return {
+      action: 'error',
+      changed,
+      failureCount,
+      account: failureAccountSummary(id, current),
+      backoffMinutes,
+      errorCode,
+      errorMessage: finalMessage
+    }
+  }
+
+  const cooldownUntil = new Date(Date.parse(now) + backoffMinutes * 60_000).toISOString()
+  const cooldownMessage = cooldownRetestCooldownMessage(failureCount, backoffMinutes, testErrorMessage)
+  const result = getDatabase()
+    .prepare(`
+      UPDATE accounts
+      SET schedulable = 1,
+          cooldown_until = ?,
+          last_error_code = ?,
+          last_error_message = ?,
+          cooldown_retest_failure_count = ?,
+          cooldown_retest_last_at = ?,
+          cooldown_retest_last_status_code = ?,
+          stream_failure_count = 0,
+          stream_failure_window_started_at = NULL,
+          updated_at = ?
+      WHERE id = ?
+        AND status = 'temporary_unavailable'
+    `)
+    .run(cooldownUntil, errorCode, cooldownMessage, failureCount, now, lastStatusCode, now, id)
+  const changed = Number(result.changes ?? 0) > 0
+  if (changed) {
+    refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_backoff' })
+    invalidateAccountLookupCache(id)
+    invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_backoff')
+  }
+  return {
+    action: 'cooldown',
+    changed,
+    failureCount,
+    account: failureAccountSummary(id, current),
+    cooldownUntil,
+    backoffMinutes,
+    errorCode,
+    errorMessage: cooldownMessage
+  }
+}
+
+function normalizedCooldownRetestErrorCode(input: CooldownAccountRetestFailureInput): string {
+  const code = optionalString(input.errorCode)
+  if (code) return code.slice(0, 120)
+  if (typeof input.statusCode === 'number' && Number.isFinite(input.statusCode)) {
+    return `http_${Math.trunc(input.statusCode)}`
+  }
+  return 'cooldown_retest_failed'
+}
+
+function failureAccountSummary(id: string, fallback: AccountSummary): AccountSummary {
+  return findAccountSummary(id) ?? fallback
+}
+
+function normalizedCooldownRetestErrorMessage(input: CooldownAccountRetestFailureInput, errorCode: string): string {
+  const message = optionalString(input.errorMessage) ?? '后台冷却复测失败'
+  const parts: string[] = []
+  if (typeof input.statusCode === 'number' && Number.isFinite(input.statusCode)) {
+    parts.push(`HTTP ${Math.trunc(input.statusCode)}`)
+  }
+  if (errorCode && !errorCode.startsWith('http_') && !message.includes(errorCode)) {
+    parts.push(errorCode)
+  }
+  parts.push(message)
+  return parts.join('；').slice(0, 1000)
+}
+
+function cooldownRetestCooldownMessage(failureCount: number, backoffMinutes: number, lastError: string): string {
+  return `后台冷却复测连续失败 ${failureCount} 次，下次复测延后 ${formatDurationMinutes(backoffMinutes)}；最后错误：${lastError}`.slice(0, 1000)
+}
+
+function cooldownRetestExhaustedMessage(failureCount: number, backoffMinutes: number, maxBackoffMinutes: number, lastError: string): string {
+  return `后台冷却复测连续失败 ${failureCount} 次，下一次退避 ${formatDurationMinutes(backoffMinutes)} 已超过最大 ${formatDurationMinutes(maxBackoffMinutes)}，已转为异常；最后错误：${lastError}`.slice(0, 1000)
+}
+
+function formatDurationMinutes(minutes: number): string {
+  const safeMinutes = Math.max(1, Math.trunc(minutes))
+  if (safeMinutes < 60) return `${safeMinutes} 分钟`
+  const hours = Math.floor(safeMinutes / 60)
+  const restMinutes = safeMinutes % 60
+  return restMinutes > 0 ? `${hours} 小时 ${restMinutes} 分钟` : `${hours} 小时`
+}
+
+function boundedInteger(value: unknown, fallback: number, min: number, max: number): number {
+  const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
+  if (!Number.isFinite(parsed)) return fallback
+  return Math.min(Math.max(Math.trunc(parsed), min), max)
+}
+
 export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {
   const current = findAccountSummary(id)
   if (!current) {
@@ -1726,6 +1987,9 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
             cooldown_until = NULL,
             last_error_code = NULL,
             last_error_message = ?,
+            cooldown_retest_failure_count = 0,
+            cooldown_retest_last_at = NULL,
+            cooldown_retest_last_status_code = NULL,
             stream_failure_count = 0,
             stream_failure_window_started_at = NULL,
             updated_at = ?
@@ -1734,6 +1998,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
       .run('账户套餐已过期，已自动停用', nowIso(), id)
     if (Number(result.changes ?? 0) > 0) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_expired' })
+      invalidateAccountLookupCache(id)
       invalidateGatewayRuntimeAfterBusinessWrite('account_expired')
     }
     return findAccountSummary(id)
@@ -1749,6 +2014,9 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
           cooldown_until = ?,
           last_error_code = NULL,
           last_error_message = ?,
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
           updated_at = ?
@@ -1757,6 +2025,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
     .run(cooldownStatus, until, reason || null, nowIso(), id)
   if (Number(result.changes ?? 0) > 0) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown' })
+    invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown')
   }
 
@@ -1994,6 +2263,9 @@ export function markAccountException(
           cooldown_until = NULL,
           last_error_code = ?,
           last_error_message = ?,
+          cooldown_retest_failure_count = 0,
+          cooldown_retest_last_at = NULL,
+          cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
           stream_failure_window_started_at = NULL,
           updated_at = ?
@@ -2002,6 +2274,7 @@ export function markAccountException(
     .run(errorCode || null, reason || null, nowIso(), id)
   if (Number(result.changes ?? 0) > 0) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_exception' })
+    invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_exception')
   }
 
@@ -2426,12 +2699,10 @@ function querySystemTeamRows(access: AccessScope | undefined, pagination: { limi
   if (keyword) {
     const prefix = `${escapeLikePrefix(keyword)}%`
     clauses.push(`(
-      system_teams.id = ?
-      OR system_teams.id LIKE ? ESCAPE '\\'
-      OR system_teams.name COLLATE NOCASE = ?
+      system_teams.name COLLATE NOCASE = ?
       OR system_teams.name LIKE ? ESCAPE '\\'
     )`)
-    params.push(keyword, prefix, keyword, prefix)
+    params.push(keyword, prefix)
   }
   const whereClause = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : ''
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''

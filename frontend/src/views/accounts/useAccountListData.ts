@@ -27,13 +27,13 @@ interface UseAccountListDataOptions {
 }
 
 const defaultAccountsPageState = (): AccountsPageState => ({
-  filters: { keyword: '', type: 'all', status: [], schedulable: 'all', systemAccountId: allSystemAccountsValue },
+  filters: { keyword: '', groupId: '', type: 'all', status: [], systemAccountId: allSystemAccountsValue },
   pagination: { current: 1, pageSize: ACCOUNT_PAGE_SIZE },
   sorts: [{ field: 'priority', order: 'asc' }]
 })
 
 export function useAccountListData(options: UseAccountListDataOptions) {
-  const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 2 })
+  const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 4 })
   const initialPageState = pageStateCache.read()
   const loading = ref(false)
   const accounts = ref<AccountSummary[]>([])
@@ -239,9 +239,9 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       page: accountPagination.current,
       pageSize: accountPagination.pageSize,
       keyword: filters.keyword.trim() || undefined,
+      groupId: options.isManagementView.value && !systemAccountId ? undefined : filters.groupId || undefined,
       type: filters.type,
-      status: filters.status,
-      schedulable: filters.schedulable
+      status: filters.status
     }
   }
 

@@ -143,10 +143,11 @@ assert.equal(atomicDetail?.checks.length, 0, '检测项批量写入必须原子�
 const otherRun = repositories.createModelCheckRun({
   systemAccountId: 'sys_other',
   actorSystemAccountId: 'sys_other',
-  targetType: 'group',
-  targetId: 'grp_storage_other',
+  targetType: 'account',
+  targetId: 'acc_storage_other',
   targetName: '范围隔离检测',
   targetOwnerSystemAccountId: 'sys_other',
+  accountId: 'acc_storage_other',
   groupId: 'grp_storage_other',
   model: 'gpt-5.4',
   profile: 'full',

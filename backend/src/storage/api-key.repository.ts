@@ -62,7 +62,7 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
     .prepare(`SELECT ${apiKeyListColumns()} FROM api_keys LEFT JOIN groups ON groups.id = api_keys.group_id LEFT JOIN system_accounts ON system_accounts.id = groups.system_account_id ${filters.clause} ORDER BY api_keys.updated_at DESC, api_keys.created_at DESC, api_keys.id DESC ${limitClause}`)
     .all(...filters.params, ...limitParams) as unknown as ApiKeyRow[]
   const pageRows = paged ? takePageRows(rows, normalized.pageSize) : { rows, hasMore: false }
-  const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: false })
+  const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: true })
   return {
     items,
     total: paged ? compatiblePagedTotal(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
@@ -79,7 +79,7 @@ function apiKeyListColumns(): string {
     'api_keys.name',
     'api_keys.description',
     'api_keys.key_prefix',
-    'NULL AS key_secret_encrypted',
+    'api_keys.key_secret_encrypted',
     'api_keys.status',
     'api_keys.group_id',
     'groups.name AS group_name',

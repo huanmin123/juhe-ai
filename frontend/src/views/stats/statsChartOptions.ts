@@ -294,7 +294,7 @@ export function buildProcessEventLoopOption(trend: SystemMetricsOverview['proces
     },
     xAxis: {
       type: 'category',
-      data: processEventLoopHours(trend).map((item) => formatHourLabel(item)),
+      data: processEventLoopBuckets(trend).map((item) => formatHourLabel(item)),
       axisLabel: { color: '#64748b' },
       axisLine: { lineStyle: { color: '#d9e2ef' } }
     },
@@ -310,7 +310,7 @@ export function buildProcessEventLoopOption(trend: SystemMetricsOverview['proces
       smooth: true,
       symbol: 'circle',
       symbolSize: 6,
-      data: processEventLoopHours(trend).map((statHour) => processEventLoopValue(trend, statHour, role))
+      data: processEventLoopBuckets(trend).map((bucketKey) => processEventLoopValue(trend, bucketKey, role))
     }))
   }
 }
@@ -387,12 +387,16 @@ function processEventLoopRoles(trend: SystemMetricsOverview['processEventLoopTre
   return (['server', 'worker', 'db-service'] as const).filter((role) => roles.has(role))
 }
 
-function processEventLoopHours(trend: SystemMetricsOverview['processEventLoopTrend']) {
-  return [...new Set(trend.map((item) => item.statHour))].sort()
+function processEventLoopBuckets(trend: SystemMetricsOverview['processEventLoopTrend']) {
+  return [...new Set(trend.map(processEventLoopBucketKey))].sort()
 }
 
-function processEventLoopValue(trend: SystemMetricsOverview['processEventLoopTrend'], statHour: string, processRole: string) {
-  return trend.find((item) => item.statHour === statHour && item.processRole === processRole)?.eventLoopLagMsAvg ?? null
+function processEventLoopValue(trend: SystemMetricsOverview['processEventLoopTrend'], bucketKey: string, processRole: string) {
+  return trend.find((item) => processEventLoopBucketKey(item) === bucketKey && item.processRole === processRole)?.eventLoopLagMsAvg ?? null
+}
+
+function processEventLoopBucketKey(row: SystemMetricsOverview['processEventLoopTrend'][number]) {
+  return row.statMinute || row.statHour
 }
 
 export function processRoleLabel(processRole: string) {

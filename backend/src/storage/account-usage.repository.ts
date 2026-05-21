@@ -458,7 +458,7 @@ function loadAccountUsageKeywordAccountIds(input: {
       SELECT accounts.id
       FROM accounts
       WHERE ${clauses.join(' AND ')}
-      ORDER BY lower(accounts.name) ASC, accounts.id ASC
+      ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
       LIMIT ?
     `)
     .all(...params, 500) as unknown as Array<{ id?: string }>

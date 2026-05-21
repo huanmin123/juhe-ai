@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary } from '@/types/domain'
 import type { AuthorizationFilterResourceType } from './authorizationTableColumns'
 
@@ -19,6 +20,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
   const resourceOptionsLoading = ref(false)
   const resourceOptionLimit = 50
   const searchDelayMs = 250
+  const accountOptionCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
+  const groupOptionCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
   let requestId = 0
   let loadingKey: string | undefined
   let loadingPromise: Promise<void> | undefined
@@ -57,6 +60,27 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
       return loadingPromise
     }
     const currentRequestId = ++requestId
+    if (filters.resourceType === 'account') {
+      const cachedAccounts = accountOptionCache.get(requestKey)
+      if (cachedAccounts) {
+        loadingKey = undefined
+        loadingPromise = undefined
+        resourceOptionsLoading.value = false
+        accounts.value = cachedAccounts
+        groups.value = []
+        return
+      }
+    } else {
+      const cachedGroups = groupOptionCache.get(requestKey)
+      if (cachedGroups) {
+        loadingKey = undefined
+        loadingPromise = undefined
+        resourceOptionsLoading.value = false
+        groups.value = cachedGroups
+        accounts.value = []
+        return
+      }
+    }
     resourceOptionsLoading.value = true
     loadingKey = requestKey
     loadingPromise = (async () => {
@@ -66,6 +90,7 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
             ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
             : await api.myAccounts.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
           nextAccounts = await ensureSelectedAccountOption(nextAccounts, ownerSystemAccountId)
+          accountOptionCache.set(requestKey, nextAccounts)
           if (currentRequestId !== requestId) return
           accounts.value = nextAccounts
           groups.value = []
@@ -74,6 +99,7 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
             ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
             : await api.myGroups.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
           nextGroups = await ensureSelectedGroupOption(nextGroups, ownerSystemAccountId)
+          groupOptionCache.set(requestKey, nextGroups)
           if (currentRequestId !== requestId) return
           groups.value = nextGroups
           accounts.value = []

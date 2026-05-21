@@ -349,8 +349,6 @@ export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso())
     .prepare('SELECT id FROM runtime_logs WHERE time >= ? LIMIT 1')
     .get(cutoffIso) as RuntimeLogRow | undefined
   if (!hasIndexedLogs?.id) return
-
-  refreshRuntimeLogFacetSnapshots(cutoffIso)
 }
 
 export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit = 10000): number {
@@ -809,8 +807,11 @@ function decrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getRecord
     : rows
   if (countedRows.length === 0) return
 
-  const range = database
-    .prepare('SELECT MIN(time) AS earliest_time, MAX(time) AS latest_time FROM runtime_logs WHERE time >= ?')
+  const earliestRow = database
+    .prepare('SELECT time FROM runtime_logs WHERE time >= ? ORDER BY time ASC, id ASC LIMIT 1')
+    .get(cutoffIso) as RuntimeLogRow | undefined
+  const latestRow = database
+    .prepare('SELECT time FROM runtime_logs WHERE time >= ? ORDER BY time DESC, id DESC LIMIT 1')
     .get(cutoffIso) as RuntimeLogRow | undefined
   database.prepare(`
     UPDATE runtime_log_facet_summary
@@ -821,8 +822,8 @@ function decrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getRecord
     WHERE bucket_key = ?
   `).run(
     countedRows.length,
-    optionalString(range?.earliest_time) ?? null,
-    optionalString(range?.latest_time) ?? null,
+    optionalString(earliestRow?.time) ?? null,
+    optionalString(latestRow?.time) ?? null,
     timestamp,
     runtimeLogFacetBucketKey
   )

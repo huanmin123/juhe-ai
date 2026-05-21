@@ -67,6 +67,7 @@
         <a-tag color="blue">{{ item.tag }}</a-tag>
       </button>
     </div>
+    <div class="type-note">账号类型只影响上游能力和转发方式；统计、会话亲和和缓存按本地 API Key 与分组连续。</div>
   </section>
 </template>
 
@@ -251,6 +252,13 @@ defineEmits<{
   line-height: 18px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.type-note {
+  margin-top: 8px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 @media (max-width: 992px) {

@@ -1,6 +1,6 @@
 import type { Ref } from 'vue'
 
-import { api, type AccountListParams, type ApiKeyListParams, type ModelCheckListParams, type OperationLogListParams, type UsageRecordListParams } from '@/api/client'
+import { api, type AccountListParams, type ApiKeyListParams, type ModelCheckListParams, type ModelCheckStreamOptions, type OperationLogListParams, type UsageRecordListParams } from '@/api/client'
 import type { ModelCheckRunPayload } from '@/types/domain'
 
 type ApiKeyMutationScopeParams = Parameters<typeof api.apiKeys.create>[1]
@@ -83,6 +83,9 @@ export function useScopedModelChecksApi(isManagementView: Ref<boolean>) {
     run: (payload: ModelCheckRunPayload) => isManagementView.value
       ? api.modelChecks.run(payload)
       : api.myModelChecks.run(payload),
+    runStream: (payload: ModelCheckRunPayload, options?: ModelCheckStreamOptions) => isManagementView.value
+      ? api.modelChecks.runStream(payload, options)
+      : api.myModelChecks.runStream(payload, options),
     list: (params?: ModelCheckListParams) => isManagementView.value
       ? api.modelChecks.list(params)
       : api.myModelChecks.list(params),

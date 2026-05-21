@@ -22,46 +22,71 @@ try {
   await listen(upstream)
   const [
     repositories,
+    { getDatabase },
     { createMockGatewayFixture },
     { ModelCheckRequestError, runModelCheck },
-    databaseModule,
     gatewayJsonParser
   ] = await Promise.all([
     import('../../storage/repositories.js'),
+    import('../../storage/database.js'),
     import('../maintenance/mockdata-fixtures.js'),
     import('../../modules/model-checks/model-checks.service.js'),
-    import('../../storage/database.js'),
     import('../../modules/gateway/openai-gateway-json-parser.js')
   ])
   stopGatewayJsonParseWorker = gatewayJsonParser.stopGatewayJsonParseWorker
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
-  const emptyGroup = repositories.createGroup({
-    name: '模型检测无可用账号边界分组',
-    providerCode: 'openai',
-    description: '模型检测异常边界回归：分组内无可用账号',
-    enabled: true
-  }, access)
-  const beforeEmptyGroupRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
-
+  const beforeInvalidTargetRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
   await assert.rejects(
     () => runModelCheck({
       targetType: 'group',
-      targetId: emptyGroup.id,
+      targetId: 'grp_legacy_target',
       model: 'gpt-5.5',
       profile: 'full',
-      officialBaseline: false
+      trustedComparison: false
+    } as never, access),
+    (error: unknown) => {
+      assert(error instanceof ModelCheckRequestError, '旧目标类型应返回模型检测请求错误')
+      assert.equal(error.statusCode, 400)
+      assert.match(error.message, /AI 账户/)
+      return true
+    }
+  )
+  const afterInvalidTargetRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
+  assert.equal(afterInvalidTargetRuns, beforeInvalidTargetRuns, '旧目标类型被拒绝时不应创建模型检测报告')
+
+  const unboundAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '模型检测未绑定分组边界账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-model-check-unbound-account',
+      base_url: `http://127.0.0.1:${serverPort(upstream)}/v1`
+    },
+    status: 'active',
+    schedulable: true
+  }, access)
+  getDatabase().prepare('DELETE FROM group_accounts WHERE account_id = ?').run(unboundAccount.id)
+  const beforeUnboundRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
+
+  await assert.rejects(
+    () => runModelCheck({
+      targetType: 'account',
+      targetId: unboundAccount.id,
+      model: 'gpt-5.5',
+      profile: 'full',
+      trustedComparison: false
     }, access),
     (error: unknown) => {
-      assert(error instanceof ModelCheckRequestError, '无可用账号应返回模型检测请求错误')
+      assert(error instanceof ModelCheckRequestError, '不可检测账户应返回模型检测请求错误')
       assert.equal(error.statusCode, 400)
-      assert.match(error.message, /分组内没有可用的 OpenAI 账户，无法执行模型检测/)
+      assert.match(error.message, /账户未绑定可用分组/)
       return true
     }
   )
 
-  const afterEmptyGroupRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
-  assert.equal(afterEmptyGroupRuns, beforeEmptyGroupRuns, '目标解析阶段无可用账号时不应创建模型检测成功报告')
+  const afterUnboundRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
+  assert.equal(afterUnboundRuns, beforeUnboundRuns, '目标解析阶段账户不可检测时不应创建模型检测报告')
 
   const fixture = createMockGatewayFixture({
     label: '模型检测上游失败边界',
@@ -78,7 +103,7 @@ try {
     targetId: account.id,
     model: 'gpt-5.5',
     profile: 'full',
-    officialBaseline: false
+    trustedComparison: false
   }, access)
 
   assert.equal(failedRun.status, 'completed', '上游失败应形成可排查报告')
@@ -91,38 +116,6 @@ try {
   assert(upstreamDependentChecks.every((item) => item.status !== 'passed'), '上游失败不应创建上游响应探针通过项')
   assert(upstreamDependentChecks.every((item) => item.evidenceSummary.success !== true), '上游失败不应记录上游响应成功证据')
   assert(!JSON.stringify(failedRun).includes('sk-mockdata'), '异常报告不应泄露上游 API Key')
-
-  const quotaApiKey = repositories.createApiKeyRecord({
-    name: '模型检测额度不足边界 Key',
-    groupId: fixture.group.id,
-    status: 'active',
-    quotaLimits: {
-      total: { enabled: true, limit: 1 }
-    }
-  }, access)
-  databaseModule.getRecordDatabase()
-    .prepare(`
-      INSERT INTO usage_stats_totals (
-        system_account_id, scope_type, scope_id, total_cost_usd, updated_at
-      ) VALUES (?, ?, ?, ?, ?)
-    `)
-    .run('sys_admin', 'api_key', quotaApiKey.id, 1, new Date().toISOString())
-
-  const quotaRun = await runModelCheck({
-    targetType: 'api_key',
-    targetId: quotaApiKey.id,
-    model: 'gpt-5.5',
-    profile: 'full',
-    officialBaseline: false
-  }, access)
-
-  assert.equal(quotaRun.status, 'completed', '额度不足应形成可排查报告')
-  assert.equal(quotaRun.level, 'unavailable', '额度不足不能误判为模型不符或可信')
-  assert(!['suspicious', 'likely', 'high_confidence'].includes(quotaRun.level), '额度不足不能落成可疑、较可信或高可信结论')
-  assert.match(JSON.stringify(quotaRun), /额度已用完/, '额度不足报告应保留中文排障线索')
-  assert(quotaRun.checks.length > 0, '额度不足报告应保留失败探针用于排查')
-  assert(quotaRun.checks.every((item) => item.evidenceSummary.success !== true), '额度不足不应记录成功探针证据')
-  assert(!JSON.stringify(quotaRun).includes('sk-mockdata'), '额度不足报告不应泄露上游 API Key')
 
   const proxyFixture = createMockGatewayFixture({
     label: '模型检测代理失败边界',
@@ -148,7 +141,7 @@ try {
     targetId: proxyAccount.id,
     model: 'gpt-5.5',
     profile: 'full',
-    officialBaseline: false
+    trustedComparison: false
   }, access)
 
   assert.equal(proxyRun.status, 'completed', '代理失败应形成可排查报告')
@@ -162,7 +155,7 @@ try {
   assert(proxyDependentChecks.every((item) => item.evidenceSummary.success !== true), '代理失败不应记录上游响应成功证据')
   assert(!JSON.stringify(proxyRun).includes('sk-mockdata'), '代理失败报告不应泄露上游 API Key')
 
-  console.log('模型检测异常边界回归通过：无可用账号返回中文错误且不建报告，上游失败、额度不足和代理失败只落 unavailable')
+  console.log('模型检测异常边界回归通过：旧目标类型被拒绝，账户不可检测不建报告，上游失败和代理失败只落 unavailable')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)

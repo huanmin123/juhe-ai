@@ -266,12 +266,16 @@ export async function fetchFirstAvailableUpstream(
   }
 
   flushDeferredAccountFailures(deferredAccountFailures, sessionAffinityKey)
-  throw new UpstreamAttemptError(
-    lastAttempt
-      ? '所有上游账户均失败；最后一次尝试 ' + lastAttempt.accountName + ' ' + lastAttempt.upstreamUrl + ' 返回 ' + (lastAttempt.message ?? lastAttempt.status)
-      : '所有上游账户均失败',
-    lastAttempt
-  )
+  throw new UpstreamAttemptError(buildUpstreamAttemptFailureMessage(accounts.length, lastAttempt), lastAttempt)
+}
+
+function buildUpstreamAttemptFailureMessage(accountCount: number, lastAttempt?: UpstreamAttempt): string {
+  const prefix = accountCount === 1 ? '上游账户请求失败' : '所有上游账户均失败'
+  if (!lastAttempt) {
+    return prefix
+  }
+  const result = stringValue(lastAttempt.message) || numberValue(lastAttempt.status) || '未知错误'
+  return `${prefix}；最后一次尝试 ${lastAttempt.accountName} ${lastAttempt.upstreamUrl} 返回 ${result}`
 }
 
 async function acquireAccountConcurrencyWithShortRetry(
@@ -305,4 +309,12 @@ async function waitForAccountConcurrencyRetry(delayMs: number, signal?: AbortSig
   throwIfRequestAborted(signal)
   await waitForRetryDelayMs(delayMs, { signal })
   throwIfRequestAborted(signal)
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+function numberValue(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : ''
 }

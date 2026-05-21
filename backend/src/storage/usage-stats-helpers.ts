@@ -5,7 +5,8 @@ const hourMs = 60 * 60 * 1000
 const dayMs = 24 * hourMs
 export const ACCOUNT_USAGE_STATS_MAX_RANGE_DAYS = 31
 export const DEFAULT_USAGE_STATS_TIMEZONE = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
-let cachedUsageStatsTimezone: string | undefined
+const usageStatsTimezoneCacheTtlMs = 60_000
+let cachedUsageStatsTimezone: { value: string; expiresAtMs: number } | undefined
 
 interface DateParts {
   year: number
@@ -209,26 +210,32 @@ export function monthKey(date: Date, timezone = DEFAULT_USAGE_STATS_TIMEZONE): s
 }
 
 export function usageStatsTimezone(): string {
-  if (cachedUsageStatsTimezone) {
-    return cachedUsageStatsTimezone
+  const nowMs = Date.now()
+  if (cachedUsageStatsTimezone && cachedUsageStatsTimezone.expiresAtMs > nowMs) {
+    return cachedUsageStatsTimezone.value
   }
   const row = getDatabase().prepare("SELECT value_json FROM system_settings WHERE system_account_id = 'sys_admin' AND key = 'usageStatsTimezone'").get() as unknown as { value_json?: string } | undefined
   if (!row?.value_json) {
-    cachedUsageStatsTimezone = DEFAULT_USAGE_STATS_TIMEZONE
-    return cachedUsageStatsTimezone
+    return cacheUsageStatsTimezone(DEFAULT_USAGE_STATS_TIMEZONE, nowMs)
   }
   try {
     const value = JSON.parse(row.value_json) as unknown
-    cachedUsageStatsTimezone = normalizeUsageStatsTimezone(value)
-    return cachedUsageStatsTimezone
+    return cacheUsageStatsTimezone(normalizeUsageStatsTimezone(value), nowMs)
   } catch {
-    cachedUsageStatsTimezone = DEFAULT_USAGE_STATS_TIMEZONE
-    return cachedUsageStatsTimezone
+    return cacheUsageStatsTimezone(DEFAULT_USAGE_STATS_TIMEZONE, nowMs)
   }
 }
 
 export function clearUsageStatsTimezoneCache(): void {
   cachedUsageStatsTimezone = undefined
+}
+
+function cacheUsageStatsTimezone(value: string, nowMs = Date.now()): string {
+  cachedUsageStatsTimezone = {
+    value,
+    expiresAtMs: nowMs + usageStatsTimezoneCacheTtlMs
+  }
+  return value
 }
 
 export function normalizeUsageStatsTimezone(value: unknown): string {

@@ -3,22 +3,26 @@
     <AccountFilterToolbar
       :active-filter-count="activeAdvancedFilterCount"
       :filters="filters"
+      :group-filter-disabled="isManagementView && !accountScopeParams?.systemAccountId"
+      :group-options="filterGroupOptions"
+      :group-options-loading="filterGroupOptionsLoading"
       :is-management-view="isManagementView"
       :refresh-loading="loading"
-      :schedulable-options="schedulableOptions"
       :status-options="statusOptions"
       :system-accounts="systemAccounts"
       :system-accounts-loading="systemAccountOptionsLoading"
       :type-options="typeOptions"
       @create="openCreate"
+      @group-dropdown="handleFilterGroupOptionsDropdown"
+      @group-search="handleFilterGroupOptionsSearch"
       @refresh="refreshData"
       @reset="resetFilters"
       @search="applyFilters"
       @system-account-change="handleSystemAccountFilterChange"
       @system-account-dropdown="handleSystemAccountOptionsDropdown"
       @system-account-search="handleSystemAccountOptionsSearch"
+      @update:group-id="filters.groupId = $event"
       @update:keyword="filters.keyword = $event"
-      @update:schedulable="filters.schedulable = $event"
       @update:status="filters.status = $event"
       @update:system-account-id="filters.systemAccountId = $event"
       @update:type="filters.type = $event"
@@ -180,7 +184,6 @@ import {
   proxyByIdMap
 } from './accountDerivedState'
 import {
-  schedulableOptions,
   statusOptions,
   typeOptions
 } from './accountOptions'
@@ -248,6 +251,22 @@ const {
   isManagementView,
   scopedSystemAccountId,
   onLoaded: handleAccountListLoaded
+})
+const {
+  groups: filterGroupOptions,
+  handleDropdown: handleFilterGroupOptionsDropdown,
+  handleSearch: handleFilterGroupOptionsSearch,
+  loading: filterGroupOptionsLoading,
+  resetSearch: resetFilterGroupOptionsSearch
+} = useAccountGroupOptions({
+  allowAllProviders: true,
+  errorMessage: '加载筛选分组选项失败',
+  isManagementView: () => isManagementView.value,
+  limit: 100,
+  scope: () => ({
+    systemAccountId: isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined,
+    selectedIds: [filters.groupId]
+  })
 })
 
 function handleAccountListLoaded(selectableAccountIds: Set<string>) {
@@ -488,12 +507,15 @@ async function copyText(value: string) {
 function resetFilters() {
   selectedAccountIds.value = []
   resetGroupOptionsSearch()
+  resetFilterGroupOptionsSearch()
   resetAccountListFilters()
 }
 
 function handleSystemAccountFilterChange() {
   selectedAccountIds.value = []
+  filters.groupId = ''
   resetGroupOptionsSearch()
+  resetFilterGroupOptionsSearch()
   handleAccountListSystemAccountFilterChange()
 }
 

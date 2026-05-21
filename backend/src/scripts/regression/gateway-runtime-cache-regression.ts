@@ -104,12 +104,15 @@ try {
     database.prepare = originalPrepare
   }
   assert(first.apiKey?.id === apiKey.id, '首次读取应返回 API Key 运行配置')
-  assert.equal(first.accounts.length, 1, '首次读取应返回候选账号')
+  assert.equal(first.accounts.length, 2, '首次读取应返回同一分组内 OAuth/API Key 混合候选账号')
+  assert.deepEqual(sortedAccountTypes(first.accounts), ['api_key', 'oauth'], '运行配置缓存不应按上游账号类型拆分候选账号')
   assert.equal(fakeChild.sentOperationCount, 1, '首次读取应请求 DB service')
   assert.equal(groupOwnerLookupCount, 1, 'read_gateway_runtime 应复用已解析的 groupAccess，避免账号选择阶段重复查询分组归属')
 
   const second = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
   assert(second.apiKey?.id === apiKey.id, '第二次读取应仍返回 API Key 运行配置')
+  assert.equal(second.accounts.length, 2, '第二次读取应从同一本地运行配置缓存返回 OAuth/API Key 混合候选账号')
+  assert.deepEqual(sortedAccountTypes(second.accounts), ['api_key', 'oauth'], 'server 本地运行配置缓存命中后仍不应按账号类型拆分')
   assert.equal(fakeChild.sentOperationCount, 1, '第二次读取应命中网关 server 本地运行配置缓存')
 
   const updatedCredentials = {
@@ -118,13 +121,14 @@ try {
   }
   const updateResult = await runWithDbServiceParentMessageBridge(fakeChild, () => dbServiceIpc.requestDbService({
     type: 'update_openai_oauth_credentials',
-    accountId: apiKey.accountId,
+    accountId: apiKey.apiKeyAccountId,
     credentials: updatedCredentials
   }))
   assert.equal(updateResult.updated, true, 'DB service 直写账号凭据应成功')
   await delay(10)
   const reloadedAfterDbServiceStorageWrite = await gatewayCache.readCachedGatewayRuntimeAsync(apiKey.key)
-  assert.equal(reloadedAfterDbServiceStorageWrite.accounts[0]?.apiKey, updatedCredentials.api_key, 'DB service 仓储写入后应清掉 server 本地运行配置缓存')
+  assert.equal(accountById(reloadedAfterDbServiceStorageWrite.accounts, apiKey.apiKeyAccountId)?.apiKey, updatedCredentials.api_key, 'DB service 仓储写入后应清掉 server 本地运行配置缓存')
+  assert.equal(accountById(reloadedAfterDbServiceStorageWrite.accounts, apiKey.oauthAccountId)?.apiKey, 'access-runtime-cache-oauth', 'API Key 账号刷新不应影响同一缓存边界内的 OAuth 候选账号')
   assert.equal(fakeChild.sentOperationCount, 3, 'DB service 仓储写入触发失效后应重新请求 DB service')
 
   await simulateDbServiceRuntimeCacheInvalidation(fakeChild)
@@ -137,7 +141,7 @@ try {
   assert(third.apiKey?.id === apiKey.id, '清缓存后读取应返回 API Key 运行配置')
   assert.equal(fakeChild.sentOperationCount, 5, '清缓存后应重新请求 DB service')
 
-  console.log('网关运行配置缓存回归通过：server 按需缓存 API Key、分组和候选账号，清缓存后重新加载')
+  console.log('网关运行配置缓存回归通过：server 按需缓存本地 API Key、分组和 OAuth/API Key 混合候选账号，清缓存后重新加载')
 } finally {
   try {
     databaseModule.getDatabase().close()
@@ -147,24 +151,58 @@ try {
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function seedGatewayRuntime(): { accountId: string; id: string; key: string } {
-  const account = repositories.createAccount({
+function seedGatewayRuntime(): { apiKeyAccountId: string; oauthAccountId: string; id: string; key: string } {
+  const group = repositories.createGroup({
+    name: '运行配置缓存混合账号分组',
     providerCode: 'openai',
-    name: '运行配置缓存账号',
+    enabled: true
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const apiKeyAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '运行配置缓存 API Key 账号',
     type: 'api_key',
     credentials: {
       api_key: 'sk-runtime-cache-account',
       base_url: 'http://127.0.0.1:9/v1'
     },
+    groupId: group.id,
+    status: 'active',
+    concurrencyLimit: 20,
+    schedulable: true
+  }, { systemAccountId: 'sys_admin', role: 'admin' })
+  const oauthAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '运行配置缓存 OAuth 账号',
+    type: 'oauth',
+    credentials: {
+      refresh_token: 'refresh-runtime-cache-oauth',
+      access_token: 'access-runtime-cache-oauth',
+      expires_at: new Date(Date.now() + 3600_000).toISOString(),
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: group.id,
     status: 'active',
     concurrencyLimit: 20,
     schedulable: true
   }, { systemAccountId: 'sys_admin', role: 'admin' })
   const apiKey = repositories.createApiKeyRecord({
     name: '运行配置缓存 API Key',
-    groupId: account.boundGroupId
+    groupId: group.id
   }, { systemAccountId: 'sys_admin', role: 'admin' })
-  return { accountId: account.id, id: apiKey.id, key: apiKey.key }
+  return {
+    apiKeyAccountId: apiKeyAccount.id,
+    oauthAccountId: oauthAccount.id,
+    id: apiKey.id,
+    key: apiKey.key
+  }
+}
+
+function sortedAccountTypes(accounts: Array<{ type: string }>): string[] {
+  return accounts.map((account) => account.type).sort()
+}
+
+function accountById<T extends { id: string }>(accounts: T[], accountId: string): T | undefined {
+  return accounts.find((account) => account.id === accountId)
 }
 
 function isDbServiceRequest(value: unknown): value is { type: 'db_service_request'; requestId: string; operation: Parameters<typeof dbServiceHandlers.handleDbServiceOperation>[0] } {
