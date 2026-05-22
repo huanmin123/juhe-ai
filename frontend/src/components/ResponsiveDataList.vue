@@ -82,7 +82,16 @@
             <slot name="card" :record="record" :index="index" />
           </template>
         </template>
-        <div v-if="mobilePagination" class="responsive-data-list-footer">
+        <div
+          v-if="mobilePagination"
+          class="responsive-data-list-footer"
+          :class="{ 'responsive-data-list-footer-clickable': mobileFooterInteractive }"
+          :role="mobileFooterInteractive ? 'button' : undefined"
+          :tabindex="mobileFooterInteractive ? 0 : undefined"
+          @click="handleMobileFooterClick"
+          @keydown.enter="handleMobileFooterClick"
+          @keydown.space.prevent="handleMobileFooterClick"
+        >
           <a-spin v-if="loadingMore" size="small" />
           <span>{{ mobileFooterText }}</span>
         </div>
@@ -275,8 +284,10 @@ const pullRefreshing = computed(() => props.refreshing && pullRefreshRequested.v
 
 const mobileFooterText = computed(() => {
   if (props.loadingMore) return '正在加载更多...'
-  return props.mobileHasMore ? '上拉加载更多' : '没有更多了'
+  return props.mobileHasMore ? '上拉或点击加载更多' : '没有更多了'
 })
+
+const mobileFooterInteractive = computed(() => props.mobilePagination && props.mobileHasMore && !props.loadingMore && !props.refreshing)
 
 const shouldVirtualizeMobileCards = computed(() => (
   props.mobileVirtualized &&
@@ -743,6 +754,11 @@ function handleMobileScroll(event: Event) {
   if (distanceToBottom <= 80) emit('mobile-load-more')
 }
 
+function handleMobileFooterClick() {
+  if (!mobileFooterInteractive.value) return
+  emit('mobile-load-more')
+}
+
 function handleTableChange(...args: unknown[]) {
   emit('change', ...args)
   if (tableChangeAction(args[3]) === 'sort') {
@@ -1031,6 +1047,14 @@ onBeforeUnmount(() => {
   min-height: 34px;
   color: #64748b;
   font-size: 12px;
+}
+
+.responsive-data-list-footer-clickable {
+  cursor: pointer;
+}
+
+.responsive-data-list-footer-clickable:hover {
+  color: #1677ff;
 }
 
 .responsive-data-list-pull {

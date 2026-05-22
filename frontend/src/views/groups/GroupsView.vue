@@ -227,8 +227,8 @@ const defaultHighConcurrencySchedulingPolicy: Required<GroupSchedulingPolicy> = 
   recentTimeoutWindowSeconds: 120,
   recentTimeoutPenaltyThreshold: 2,
   maxQueueWaitMs: 60000,
-  maxQueueSize: 100,
-  perApiKeyQueueLimit: 50
+  maxQueueSize: 1000,
+  perApiKeyQueueLimit: 1000
 }
 type GroupsPageState = {
   pagination?: { current: number; pageSize: number }
@@ -359,7 +359,7 @@ function groupPolicySummary(group: GroupSummary): string {
     return '个人分组保持稳定调度'
   }
   const policy = cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy)
-  return `最大单账户排队 ${policy.defaultSoftConcurrency}，最大等待 ${Math.round(policy.maxQueueWaitMs / 1000)} 秒，快速优先、亲和打破、慢请求分流默认开启`
+  return `最大单账户排队 ${policy.defaultSoftConcurrency}，最大等待 ${Math.round(policy.maxQueueWaitMs / 1000)} 秒，队列上限 ${policy.maxQueueSize}，快速优先、亲和打破、慢请求分流默认开启`
 }
 
 function setFormMaxQueueWaitSeconds(value: unknown) {

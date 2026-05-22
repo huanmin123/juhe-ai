@@ -5,7 +5,7 @@ import { cpus, freemem, platform, totalmem } from 'node:os'
 import { runtimeConfig } from '../../config/runtime.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { buildProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
-import { nowIso } from '../../storage/database.js'
+import { datasetDatabasePath, nowIso, statsDatabasePath } from '../../storage/database.js'
 import {
   expireDueResourceAuthorizations,
   getSettings,
@@ -358,9 +358,12 @@ function settingsString(key: string, fallback: string): string {
 
 function databaseFileBytes(): number | undefined {
   try {
-    const businessBytes = existsSync(runtimeConfig.databasePath) ? statSync(runtimeConfig.databasePath).size : 0
-    const recordBytes = existsSync(runtimeConfig.recordDatabasePath) ? statSync(runtimeConfig.recordDatabasePath).size : 0
-    return businessBytes + recordBytes || undefined
+    const databasePaths = new Set([runtimeConfig.databasePath, datasetDatabasePath(), statsDatabasePath()])
+    let totalBytes = 0
+    for (const databasePath of databasePaths) {
+      totalBytes += existsSync(databasePath) ? statSync(databasePath).size : 0
+    }
+    return totalBytes || undefined
   } catch {
     return undefined
   }

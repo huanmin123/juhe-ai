@@ -99,13 +99,17 @@
         :mobile-data-source="rows"
         row-key="id"
         :loading="loading"
+        :loading-more="accountUsageMobileLoadingMore"
+        :mobile-has-more="accountUsageMobileHasMore"
         :pagination="tablePagination"
         :scroll-x="tableScrollX"
         :table-scroll-enabled="false"
         :lock-body-scroll="false"
+        mobile-pagination
         pull-refresh-enabled
-        :refreshing="mobileRefreshing"
+        :refreshing="loading"
         @change="handleTableChange"
+        @mobile-load-more="loadMoreMobileRows"
         @mobile-refresh="refreshMobileRows"
       >
         <template #emptyText>
@@ -216,6 +220,7 @@ import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
+import { useResponsivePagedList, type ResponsivePagedListResult } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, recentDateRange } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
@@ -240,6 +245,7 @@ type UsageStatsPageState = {
     endDate: string
   }
 }
+type AccountUsagePageState = { current: number; pageSize: number }
 
 const MAX_RANGE_DAYS = 31
 const accountUsagePageSize = 10
@@ -272,8 +278,6 @@ const defaultUsageStatsPageState = (): UsageStatsPageState => {
   }
 }
 
-const loading = ref(false)
-const mobileRefreshing = ref(false)
 const overview = ref<AccountUsageStatsOverview>()
 const providers = ref<ProviderDefinition[]>([])
 const usageStatsOptionsLoaded = ref(false)
@@ -307,11 +311,46 @@ let accountOptionsRequestSeq = 0
 let accountOptionsLoadingKey: string | undefined
 let accountOptionsLoadingPromise: Promise<void> | undefined
 const accountOptionsCache = createShortLivedQueryCache<AccountOptionSummary[]>({ ttlMs: 10_000 })
-const accountUsagePagination = reactive({
-  current: 1,
+const {
+  items: accountUsageRows,
+  loading,
+  mobileHasMore: accountUsageMobileHasMore,
+  mobileLoadingMore: accountUsageMobileLoadingMore,
+  pagination: accountUsagePagination,
+  tablePagination,
+  handleTableChange,
+  loadData,
+  loadMoreMobile: loadMoreMobileRows,
+  resetPagination: resetAccountUsagePagination
+} = useResponsivePagedList<AccountUsageStatsRow, { forceOptions?: boolean }>({
   pageSize: accountUsagePageSize,
-  total: 0,
-  hasMore: false
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${formatInteger(range?.[1] ?? Math.max(0, total - 1))} 条账户消耗，还有更多`
+    : `共 ${formatInteger(total)} 条账户消耗`,
+  fetchPage: async (options, pageState): Promise<ResponsivePagedListResult<AccountUsageStatsRow>> => {
+    const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
+    const [usageOverview] = await Promise.all([
+      isManagementView.value ? api.stats.accountUsage(accountUsageParams(systemAccountId, pageState)) : api.myStats.accountUsage(accountUsageParams(undefined, pageState)),
+      loadUsageStatsOptions(options.forceOptions === true)
+    ])
+    overview.value = usageOverview
+    syncDateRangeFromResponse(usageOverview.range)
+    pruneSelectedTrendAccounts(usageOverview.rows)
+    return {
+      items: usageOverview.rows,
+      page: usageOverview.page,
+      pageSize: usageOverview.pageSize || accountUsagePageSize,
+      total: usageOverview.total,
+      hasMore: usageOverview.hasMore
+    }
+  },
+  mergeItems: (currentRows, nextRows) => dedupeRowsById([...currentRows, ...nextRows]),
+  onLoaded: () => renderChart(),
+  onError: (error) => {
+    console.error(error)
+    message.error('用量统计加载失败')
+    renderChart()
+  }
 })
 
 const trendChartRef = ref<HTMLDivElement>()
@@ -329,7 +368,7 @@ const { pageActive, requestRender: renderChart } = useEchartsPageLifecycle({
 })
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])
-const rows = computed(() => orderedUsageRows(overview.value?.rows ?? []))
+const rows = computed(() => orderedUsageRows(accountUsageRows.value))
 const hasOverview = computed(() => Boolean(overview.value))
 const initialLoading = computed(() => loading.value && !hasOverview.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
@@ -355,16 +394,6 @@ const hasSelectedTrendAccounts = computed(() => selectedTrendAccountIds.value.le
 const trendEmptyDescription = computed(() => visibleTrendRows.value.length ? `${rangeLabel.value} 暂无${metricText(selectedMetric.value)}消耗趋势` : '暂无可展示账户')
 const hasTrendData = computed(() => visibleTrendRows.value.some((row) => row.dailyUsage.some((point) => metricValue(point, selectedMetric.value) > 0)))
 const tableScrollX = computed(() => isManagementView.value ? 1620 : 1450)
-const tablePagination = computed(() => ({
-  current: accountUsagePagination.current,
-  pageSize: accountUsagePagination.pageSize,
-  total: accountUsagePagination.total,
-  hideOnSinglePage: false,
-  showSizeChanger: false,
-  showTotal: (total: number) => accountUsagePagination.hasMore
-    ? `已加载到第 ${formatInteger(Math.max(0, total - 1))} 条账户消耗，还有更多`
-    : `共 ${formatInteger(total)} 条账户消耗`
-}))
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '排名', key: 'rank', width: 76 },
@@ -415,34 +444,6 @@ function cacheReadRate(summary?: AccountUsageSummary) {
   return ((summary?.cacheReadTokens ?? 0) / inputTokens) * 100
 }
 
-async function loadData(options: { quiet?: boolean; forceOptions?: boolean } = {}) {
-  if (!options.quiet) {
-    loading.value = true
-  }
-  try {
-    const systemAccountId = isManagementView.value ? scopedSystemAccountId(filters.systemAccountId) : undefined
-    const [usageOverview] = await Promise.all([
-      isManagementView.value ? api.stats.accountUsage(accountUsageParams(systemAccountId)) : api.myStats.accountUsage(accountUsageParams()),
-      loadUsageStatsOptions(options.forceOptions === true)
-    ])
-    overview.value = usageOverview
-    syncDateRangeFromResponse(usageOverview.range)
-    accountUsagePagination.current = usageOverview.page
-    accountUsagePagination.pageSize = usageOverview.pageSize || accountUsagePageSize
-    accountUsagePagination.total = usageOverview.total
-    accountUsagePagination.hasMore = usageOverview.hasMore
-    pruneSelectedTrendAccounts(usageOverview.rows)
-  } catch (error) {
-    console.error(error)
-    message.error('用量统计加载失败')
-  } finally {
-    if (!options.quiet) {
-      loading.value = false
-    }
-    renderChart()
-  }
-}
-
 async function loadUsageStatsOptions(force = false): Promise<void> {
   const scopeKey = isManagementView.value ? 'management' : 'self'
   if (force) {
@@ -469,7 +470,7 @@ async function loadUsageStatsOptions(force = false): Promise<void> {
 }
 
 function refreshUsageStats() {
-  accountUsagePagination.current = 1
+  resetAccountUsagePagination()
   void loadData({ forceOptions: true })
 }
 
@@ -485,32 +486,25 @@ function resetFilters() {
   accountOptionRows.value = []
   accountOptionsKeyword.value = ''
   clearAccountOptionsSearchTimer()
-  accountUsagePagination.current = 1
-  accountUsagePagination.pageSize = accountUsagePageSize
-  accountUsagePagination.total = 0
-  accountUsagePagination.hasMore = false
+  resetAccountUsagePagination()
   resetSystemAccountOptionsSearch()
   pageStateCache.clear()
   void loadData({ forceOptions: true })
 }
 
 function handleSystemAccountFilterChange() {
-  accountUsagePagination.current = 1
+  resetAccountUsagePagination()
   clearTrendAccountState()
   void loadAccountOptions('', true)
   void loadData()
 }
 
 async function refreshMobileRows() {
-  mobileRefreshing.value = true
-  try {
-    await loadData({ forceOptions: true })
-  } finally {
-    mobileRefreshing.value = false
-  }
+  resetAccountUsagePagination()
+  await loadData({ forceOptions: true })
 }
 
-function accountUsageParams(systemAccountId?: string) {
+function accountUsageParams(systemAccountId: string | undefined, pageState: AccountUsagePageState) {
   const [startDate, endDate] = selectedRange.value
   const params: {
     systemAccountId?: string
@@ -522,8 +516,8 @@ function accountUsageParams(systemAccountId?: string) {
   } = {
     systemAccountId,
     accountIds: addedTrendAccountIds.value,
-    page: accountUsagePagination.current,
-    pageSize: accountUsagePagination.pageSize
+    page: pageState.current,
+    pageSize: pageState.pageSize
   }
   params.startDate = startDate
   params.endDate = endDate
@@ -536,17 +530,8 @@ function handleDateRangeChange() {
     endDate: formatDateKey(dateRange.value[1])
   })
   dateRangeExplicit.value = true
-  accountUsagePagination.current = 1
+  resetAccountUsagePagination()
   void loadData()
-}
-
-function handleTableChange(paginationInfo: unknown) {
-  const next = paginationInfo as { current?: unknown; pageSize?: unknown }
-  const nextCurrent = Number(next.current)
-  const nextPageSize = Number(next.pageSize)
-  accountUsagePagination.current = Number.isFinite(nextCurrent) && nextCurrent > 0 ? nextCurrent : 1
-  accountUsagePagination.pageSize = Number.isFinite(nextPageSize) && nextPageSize > 0 ? nextPageSize : accountUsagePageSize
-  void loadData({ quiet: true })
 }
 
 function handleCalendarChange(value: Array<Dayjs | null> | null) {

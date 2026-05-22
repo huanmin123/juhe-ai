@@ -137,7 +137,7 @@
             table-class="stats-background-jobs-table"
             :columns="backgroundJobColumns"
             :data-source="backgroundJobRows"
-            :mobile-data-source="backgroundJobPagedRows"
+            :mobile-data-source="backgroundJobRows"
             :pagination="backgroundJobPagination"
             row-key="name"
             size="small"
@@ -233,15 +233,6 @@
               </article>
             </template>
           </ResponsiveDataList>
-          <a-pagination
-            v-if="hasBackgroundJobs && backgroundJobRows.length > backgroundJobPageSize"
-            v-model:current="backgroundJobPage"
-            class="background-jobs-mobile-pagination"
-            :page-size="backgroundJobPageSize"
-            :total="backgroundJobRows.length"
-            :show-size-changer="false"
-            size="small"
-          />
         </StatsChartCard>
       </a-col>
     </a-row>
@@ -350,10 +341,6 @@ const backgroundJobRows = computed(() => {
     if (leftDuration !== rightDuration) return rightDuration - leftDuration
     return left.name.localeCompare(right.name)
   })
-})
-const backgroundJobPagedRows = computed(() => {
-  const start = (backgroundJobPage.value - 1) * backgroundJobPageSize
-  return backgroundJobRows.value.slice(start, start + backgroundJobPageSize)
 })
 const backgroundJobPagination = computed(() => ({
   current: backgroundJobPage.value,
@@ -805,10 +792,6 @@ watch(() => backgroundJobRows.value.length, (total) => {
   overflow-wrap: anywhere;
 }
 
-.background-jobs-mobile-pagination {
-  display: none;
-}
-
 :global(.stats-error-tooltip) {
   cursor: text;
   line-height: 1.55;
@@ -855,14 +838,6 @@ watch(() => backgroundJobRows.value.length, (total) => {
   max-height: 128px;
   margin-top: 4px;
   overflow: auto;
-}
-
-@media (max-width: 900px) {
-  .background-jobs-mobile-pagination {
-    display: flex;
-    justify-content: flex-end;
-    padding-top: 12px;
-  }
 }
 
 @media (max-width: 768px) {

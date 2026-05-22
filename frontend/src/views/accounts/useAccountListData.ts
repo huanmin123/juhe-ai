@@ -5,6 +5,8 @@ import { api, type AccountListParams, type AccountListSortParam } from '@/api/cl
 import type { ResponsiveDataListSort } from '@/components/responsiveDataListSorting'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
+import { formatNumber } from '@/shared/formatters'
 import type { AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
@@ -12,7 +14,6 @@ import { ACCOUNT_PAGE_SIZE, FALLBACK_PROVIDER } from './accountOptions'
 import { countActiveAccountFilters } from './accountListFilters'
 import { normalizeAccountTableSorts } from './accountTableColumns'
 import { canBatchManageAccount } from './accountRules'
-import { useAccountMobilePagination } from './useAccountMobilePagination'
 
 interface AccountsPageState {
   filters: AccountFilters
@@ -35,22 +36,13 @@ const defaultAccountsPageState = (): AccountsPageState => ({
 export function useAccountListData(options: UseAccountListDataOptions) {
   const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 4 })
   const initialPageState = pageStateCache.read()
-  const loading = ref(false)
-  const accounts = ref<AccountSummary[]>([])
   const providers = ref<ProviderDefinition[]>([])
   const proxies = ref<ProxyProfileOptionSummary[]>([])
   const accountOptionsLoaded = ref(false)
   const accountOptionsScopeKey = ref('')
   const accountOptionsInFlight = new Map<string, Promise<void>>()
-  let accountListRequestId = 0
-  let loadingRequestId = 0
   const accountSorts = ref<AccountListSortParam[]>(initialPageState.sorts)
   const filters = reactive<AccountFilters>({ ...initialPageState.filters })
-  const accountPagination = reactive({
-    current: initialPageState.pagination.current,
-    pageSize: initialPageState.pagination.pageSize,
-    total: 0
-  })
   const {
     handleDropdown: handleSystemAccountOptionsDropdown,
     handleSearch: handleSystemAccountOptionsSearch,
@@ -67,79 +59,58 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const systemAccountId = options.scopedSystemAccountId(filters.systemAccountId)
     return systemAccountId ? { systemAccountId } : undefined
   })
-  const filteredAccounts = computed(() => accounts.value)
   const activeAdvancedFilterCount = computed(() => countActiveAccountFilters(filters, options.isManagementView.value, allSystemAccountsValue))
 
   const {
+    items: accounts,
+    loading,
     mobileHasMore: mobileHasMoreAccounts,
     mobileLoadingMore,
-    mobileRefreshing,
+    pagination: accountPagination,
     tablePagination: accountTablePagination,
     handleTableChange: handleAccountTableChange,
+    loadData,
     loadMoreMobile: loadMoreMobileAccounts,
     refreshMobile: refreshMobileAccounts,
     resetPagination: resetAccountListPagination
-  } = useAccountMobilePagination(ACCOUNT_PAGE_SIZE, () => accountPagination.total, loadData, accountPagination)
-  const mobileVisibleAccounts = computed(() => filteredAccounts.value)
-
-  async function loadData(loadOptions: { append?: boolean; quiet?: boolean; forceOptions?: boolean } = {}): Promise<boolean> {
-    const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-    const requestId = accountListRequestId + 1
-    accountListRequestId = requestId
-    if (!loadOptions.quiet) {
-      loading.value = true
-      loadingRequestId = requestId
-    }
-    void loadAccountOptions(systemAccountId, loadOptions.forceOptions === true).catch((error) => {
-      console.error(error)
-      message.error('加载账户辅助信息失败')
-    })
-    try {
-      const initialAccountList = await fetchAccountList(systemAccountId)
-      if (requestId !== accountListRequestId) return false
-      const accountList = await resolvedAccountListPage(initialAccountList, systemAccountId, loadOptions, () => requestId === accountListRequestId)
-      if (requestId !== accountListRequestId) return false
-      applyAccountList(accountList, loadOptions)
-      return true
-    } catch (error) {
-      if (requestId !== accountListRequestId) return false
+  } = useResponsivePagedList<AccountSummary, { forceOptions?: boolean }>({
+    pageSize: ACCOUNT_PAGE_SIZE,
+    initialPagination: initialPageState.pagination,
+    showTotal: (total, range, context) => context?.hasMore
+      ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 个账户，还有更多`
+      : `共 ${formatNumber(total)} 个账户`,
+    fetchPage: async (loadOptions, pageState) => {
+      const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
+      void loadAccountOptions(systemAccountId, loadOptions.forceOptions === true).catch((error) => {
+        console.error(error)
+        message.error('加载账户辅助信息失败')
+      })
+      const accountList = await fetchAccountList(systemAccountId, pageState)
+      return {
+        items: accountList.items,
+        page: accountList.page,
+        pageSize: accountList.pageSize,
+        total: accountList.total,
+        hasMore: accountList.hasMore
+      }
+    },
+    onLoaded: () => {
+      const selectableAccountIds = new Set(accounts.value.filter(canBatchManageAccount).map((account) => account.id))
+      options.onLoaded?.(selectableAccountIds)
+    },
+    onError: (error) => {
       console.error(error)
       message.error('加载账户失败')
-      return false
-    } finally {
-      if (!loadOptions.quiet && loadingRequestId === requestId) {
-        loading.value = false
-      }
     }
-  }
+  })
+  const filteredAccounts = computed(() => accounts.value)
+  const mobileRefreshing = computed(() => loading.value)
+  const mobileVisibleAccounts = computed(() => filteredAccounts.value)
 
-  function fetchAccountList(systemAccountId?: string) {
-    return options.isManagementView.value ? api.accounts.list(accountListParams(systemAccountId)) : api.myAccounts.list(accountListParams())
-  }
-
-  async function resolvedAccountListPage(
-    accountList: Awaited<ReturnType<typeof fetchAccountList>>,
-    systemAccountId: string | undefined,
-    loadOptions: { append?: boolean },
-    isCurrentRequest: () => boolean
-  ): Promise<Awaited<ReturnType<typeof fetchAccountList>>> {
-    if (loadOptions.append || accountList.page <= 1 || accountList.items.length > 0 || accountList.hasMore !== false) {
-      return accountList
-    }
-    if (!isCurrentRequest()) {
-      return accountList
-    }
-    accountPagination.current = 1
-    return fetchAccountList(systemAccountId)
-  }
-
-  function applyAccountList(accountList: Awaited<ReturnType<typeof fetchAccountList>>, loadOptions: { append?: boolean }) {
-    accountPagination.current = accountList.page
-    accountPagination.pageSize = accountList.pageSize
-    accountPagination.total = accountList.total
-    accounts.value = loadOptions.append ? [...accounts.value, ...accountList.items] : accountList.items
-    const selectableAccountIds = new Set(accounts.value.filter(canBatchManageAccount).map((account) => account.id))
-    options.onLoaded?.(selectableAccountIds)
+  function fetchAccountList(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
+    return options.isManagementView.value
+      ? api.accounts.list(accountListParams(systemAccountId, pageState))
+      : api.myAccounts.list(accountListParams(undefined, pageState))
   }
 
   function refreshData() {
@@ -153,9 +124,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     void loadData()
   }
 
-  async function handleAccountTableChangeAndLoad(paginationInfo: unknown): Promise<void> {
+  function handleAccountTableChangeAndLoad(paginationInfo: unknown): void {
     handleAccountTableChange(paginationInfo)
-    await loadData()
   }
 
   async function handleAccountSortChange(sorts: ResponsiveDataListSort[]) {
@@ -174,8 +144,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const defaults = defaultAccountsPageState()
     Object.assign(filters, defaults.filters)
     accountSorts.value = defaults.sorts
-    accountPagination.current = defaults.pagination.current
-    accountPagination.pageSize = defaults.pagination.pageSize
     resetSystemAccountOptionsSearch()
     resetAccountListPagination()
     pageStateCache.clear()
@@ -232,12 +200,12 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     return request
   }
 
-  function accountListParams(systemAccountId?: string): AccountListParams {
+  function accountListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }): AccountListParams {
     return {
       systemAccountId,
       sorts: accountSorts.value,
-      page: accountPagination.current,
-      pageSize: accountPagination.pageSize,
+      page: pageState.current,
+      pageSize: pageState.pageSize,
       keyword: filters.keyword.trim() || undefined,
       groupId: options.isManagementView.value && !systemAccountId ? undefined : filters.groupId || undefined,
       type: filters.type,

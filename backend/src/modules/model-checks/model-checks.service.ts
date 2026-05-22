@@ -114,9 +114,11 @@ export type ModelCheckProgressEvent = {
   type: 'run_started'
   message: string
   targetId: string
+  targetName?: string
   model: string
   trustedComparison: boolean
   trustedComparisonAccountId?: string
+  trustedComparisonAccountName?: string
   /** @deprecated 使用 trustedComparison。 */
   officialBaseline: boolean
 } | {
@@ -219,9 +221,11 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     type: 'run_started',
     message: '检测任务已启动，正在准备真实网关探针',
     targetId: target.targetId,
+    targetName: target.targetName,
     model,
     trustedComparison,
     trustedComparisonAccountId: comparison?.targetId,
+    trustedComparisonAccountName: comparison?.targetName,
     officialBaseline: trustedComparison
   })
   const actorSystemAccountId = currentSystemAccountId(access)
@@ -248,6 +252,7 @@ export async function runModelCheck(input: ModelCheckRunRequest, access?: Access
     requestSummary: {
       targetType: target.targetType,
       targetId: target.targetId,
+      targetName: target.targetName,
       model,
       profile: defaultProfile,
       trustedComparison,

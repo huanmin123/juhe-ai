@@ -6,11 +6,13 @@
 
 ## 默认位置
 
-后端默认使用两个 SQLite 文件：
+后端运行时按三个职责打开 SQLite。为了兼容旧本地库，`JUHE_AI_DATASET_DATABASE_PATH` 和 `JUHE_AI_STATS_DATABASE_PATH` 未配置时会回退到旧记录库路径；新部署或完成迁移后推荐显式配置三库：
 
 ```text
 业务库：backend/data/juhe-ai.sqlite3
-记录库：backend/data/juhe-ai-records.sqlite3
+旧记录库兼容路径：backend/data/juhe-ai-records.sqlite3
+统计数据集库：backend/data/juhe-ai-dataset.sqlite3
+统计结果库：backend/data/juhe-ai-stats.sqlite3
 ```
 
 如需调整位置，编辑项目内本地配置文件 `backend/.env`，不设置系统环境变量：
@@ -18,13 +20,15 @@
 ```dotenv
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
 JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
+JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
+JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 ```
 
-相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3` 和 `./data/juhe-ai-records.sqlite3` 这类项目内相对路径；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
+相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-dataset.sqlite3` 和 `./data/juhe-ai-stats.sqlite3` 这类项目内相对路径；如果需要兼容旧记录库，也继续保留 `./data/juhe-ai-records.sqlite3`。如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
 
 迁移到其他电脑或服务器时，保留 `backend/.env` 和 `backend/data/` 即可带走配置与数据。
 
-## 业务库与记录库边界
+## 业务库、统计数据集库与统计结果库边界
 
 业务库只保存可恢复的核心业务数据：
 
@@ -36,28 +40,35 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `resource_authorization_grants`、`resource_authorizations`、`resource_authorization_sources`
 - `announcements`、`announcement_reads`
 
-记录库保存可丢失、可重建、可过期或排障类数据：
+统计数据集库保存高增长、可丢失、可过期或排障类事实数据：
 
 - `usage_records`
-- `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、`usage_rank_snapshots`、`stats_job_state`
-- `group_account_stats`、`account_quality_scores`、`account_quality_minute_stats`
 - `audit_logs`、`audit_log_attempts`、`audit_payload_blobs`、`audit_payload_refs`、`audit_error_groups`
 - `operation_logs`、`operation_log_targets`、`operation_log_viewers`
 - `runtime_logs`、`runtime_log_file_cursors`
+- `model_check_runs`、`model_check_items`
+- `api_key_record_cleanup_targets`
+
+统计结果库保存可重建、紧凑且面向查询的结果数据：
+
+- `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、`usage_rank_snapshots`、`stats_job_state`
+- `authorization_*_usage_*`、`usage_quota_hourly_windows`、`usage_scope_range_windows`
+- `group_account_stats`、`group_account_stats_dirty`、`account_quality_scores`、`account_quality_minute_stats`
 - `account_usage_snapshots`
-- `system_metrics_samples`、`system_metrics_hourly`、`process_event_loop_samples`、`process_event_loop_hourly`、`process_event_loop_trend_windows`
+- `system_metrics_samples`、`system_metrics_hourly`、`system_metrics_trend_windows`
+- `process_event_loop_samples`、`process_event_loop_hourly`、`process_event_loop_trend_windows`
 - `database_storage_snapshots`、`table_storage_snapshots`
 
-运行时代码不通过 `ATTACH` 跨库查询，也不在业务库里兼容读取旧记录表。旧整库需要拆分或清理时，只能使用停机后的显式脚本。
+运行时代码不通过 `ATTACH` 跨库查询，也不在业务库里兼容读取旧记录表。业务库是迁移和恢复的硬边界，必须保留；统计数据集库和统计结果库都可以丢弃、清空或重建。旧整库需要拆分或清理时，只能使用停机后的显式脚本；不关心历史统计和排障明细时，可以直接新建空数据集库和统计结果库。
 
 ## 统计数据集与结果库拆分方案
 
-当前实现仍使用业务库 / 记录库两个 SQLite 文件。为减少高频数据集写入对统计结果查询的影响，下一阶段按 [统计数据集与结果库拆分设计](统计数据集与结果库拆分设计.md) 将记录库继续拆为：
+当前实现已经落地统计数据集库和统计结果库入口。为减少高频数据集写入对统计结果查询的影响，记录库职责继续拆为：
 
-- 统计数据集库：保存 `usage_records`、原始审计、操作日志、运行日志索引、模型检测明细、原始系统采样和记录清理目标等高增长事实数据。
-- 统计结果库：保存 `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、额度窗口、范围窗口、排行快照、授权消耗窗口、账号质量结果、分组统计、监控趋势和 `stats_job_state` 等紧凑结果。
+- 统计数据集库：保存 `usage_records`、原始审计、操作日志、运行日志索引、模型检测明细和记录清理目标等高增长事实数据。
+- 统计结果库：保存 `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、额度窗口、范围窗口、排行快照、授权消耗窗口、账号质量结果、分组统计、系统监控采样、监控趋势和 `stats_job_state` 等紧凑结果。
 
-拆分落地后，页面统计、列表用量和网关额度只读统计结果库；明细排障只读统计数据集库；后台 worker 从数据集库按游标读取事实，并在统计结果库事务中写入结果和推进水位。本文其他章节在实施完成前仍保留当前两库运行事实。
+页面统计、列表用量和网关额度只读统计结果库；明细排障只读统计数据集库；后台 worker 从数据集库按游标读取事实，并在统计结果库事务中写入结果和推进水位。未配置新路径时，两个新入口会回退到旧 `JUHE_AI_RECORD_DATABASE_PATH`，用于平滑兼容旧本地库和回归脚本。
 
 ## 当前实现
 
@@ -68,12 +79,12 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 系统管理 API、登录态校验、管理面 CRUD、客户请求链路中的高频 SQLite 读写、公开设置读取、运行日志索引查询、账号错误状态副作用、OAuth Access Token 刷新持久化和 OAuth Codex 额度快照写入，都通过独立本地 DB service 进程完成；主 Web 进程只代理 `/__aisys__/api/*`，不解析管理 API JSON body，不直接导入管理路由或 repository。DB service 不改变 SQLite 单写者模型，DB service 不可用时请求返回可读错误，不能回退到主 Web 进程本地同步执行。
-- 业务库通过 `JUHE_AI_DATABASE_PATH` 打开，记录库通过 `JUHE_AI_RECORD_DATABASE_PATH` 打开；两者都使用 WAL。
-- 使用记录按每次上游尝试写入记录库；server 角色只把使用记录投递给 background worker IPC 队列，不在 worker 未就绪时回落到主进程本地队列或同步写库。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
+- 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；统计数据集库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开，未配置时回退到 `JUHE_AI_RECORD_DATABASE_PATH`；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开，未配置时同样回退到 `JUHE_AI_RECORD_DATABASE_PATH`。三类入口都使用 WAL。
+- 使用记录按每次上游尝试写入统计数据集库；server 角色只把使用记录投递给 background worker IPC 队列，不在 worker 未就绪时回落到主进程本地队列或同步写库。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
 - 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志。
 - 原始审计日志使用独立表保存完全成功请求的 10% 稳定样本，以及失败、异常、客户端中断、流式中断和重试后成功链路；请求 / 响应正文按 [审计日志保全策略设计](审计日志保全策略设计.md) 压缩、去重并通过 payload 引用保存，server 角色只能终态投递 background worker IPC 队列，后台批量写库，不能同步写审计表，也不能在 worker 未就绪时本地落库。
-- 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用记录库表 `runtime_logs`，后台 worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配，完整日志正文搜索交给 `grep 模式`。
+- 普通运行日志仍以 JSON Lines 写入日志文件并滚动清理；最近 3 天的索引查询只使用数据集库表 `runtime_logs`，后台 worker 通过 `runtime_log_file_cursors` 记录当前日志文件读取游标，只追新增内容，不在启动时全量扫描当前日志文件；管理后台索引查询和 facets 读取经 DB service 完成，不在主进程同步读取 SQLite 索引。运行日志不再维护额外搜索影子表，关键字只在 `runtime_logs.message` 列做普通模糊匹配，完整日志正文搜索交给 `grep 模式`。
 - 系统团队、团队成员和统一资源授权使用独立表记录；授权不复制账户凭据，授权资源调用时使用记录按实际调用方隔离，同时冗余资源所有者、授权关系和授权对象用于聚合统计。
 - `accounts.system_account_id` 和 `groups.system_account_id` 表示资源归属人；`group_accounts.system_account_id` 表示本地分组绑定所属的使用方系统账户。授权账户绑定到被授权用户分组时写入同一个物理 `account_id` 和稳定的 `account_authorization_id`，只改变该使用方本地绑定与本地调度状态，不改变账户资源归属或账户所有者的分组绑定。
 - `accounts.account_expires_at` 保存可选的本地套餐/账号购买到期时间；为空表示不过期，到期后账户自动改为停用并退出调度。
@@ -109,11 +120,11 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 
 敏感和大体积数据不得进入通用 lookup 缓存：API Key 明文、OAuth token、代理密码、完整请求 / 响应 payload、审计正文、日志大字段和可能造成越权的权限判定中间结果，必须走专门的受控读取、脱敏和分块策略。
 
-当前轻量缓存优先使用 `backend/src/shared/cache.ts` 的进程内 LRU 封装；多实例或跨进程一致性需求出现前，不引入 Redis 等分布式依赖。缓存只用于降低请求链路反查成本，事实源仍是 SQLite 表、记录库预聚合表或网关运行态事实。
+当前轻量缓存优先使用 `backend/src/shared/cache.ts` 的进程内 LRU 封装；多实例或跨进程一致性需求出现前，不引入 Redis 等分布式依赖。缓存只用于降低请求链路反查成本，事实源仍是 SQLite 表、统计结果库预聚合表或网关运行态事实。
 
 ## 大文件与频繁读取底线
 
-记录库会持有日志索引、审计 payload、使用记录和监控采样等持续增长数据。任何运行路径只要涉及大文件或高频文件读取，都必须按 offset / cursor / stream / 分块窗口推进，不能先全量读入内存再 `split`、过滤、排序或分页。
+统计数据集库会持有日志索引、审计 payload、使用记录和原始监控采样等持续增长数据。任何运行路径只要涉及大文件或高频文件读取，都必须按 offset / cursor / stream / 分块窗口推进，不能先全量读入内存再 `split`、过滤、排序或分页。
 
 - 运行日志索引通过 `runtime_log_file_cursors` 保存文件 offset、行号和文件标识；worker 重启后从游标继续，首次遇到已有当前日志文件时默认从文件末尾开始，避免导入历史大文件。
 - 按行读取只在完整换行结束后推进 offset；末尾半行保留到下一轮，轮转、截断或文件标识变化时重置游标。
@@ -123,7 +134,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 
 ## 统计缓存与监控存储
 
-个人或几个人使用时，统计缓存也优先放在记录库内，不额外引入 Redis、ClickHouse 或 Prometheus。`usage_records` 仍是事实源，但账户列表、分组列表、用户统计概览、管理员统计概览和监控图都应读取缓存表。缓存表属于记录库数据，必须按 `system_account_id` 隔离；用户统计概览只读取当前用户缓存，管理员统计概览默认读取全局缓存并支持筛选指定系统账户，主机级系统监控只给管理员看。
+个人或几个人使用时，统计缓存优先放在统计结果库内，不额外引入 Redis、ClickHouse 或 Prometheus。`usage_records` 仍是数据集库事实源，但账户列表、分组列表、用户统计概览、管理员统计概览和监控图都应读取统计结果库缓存表。缓存表必须按 `system_account_id` 隔离；用户统计概览只读取当前用户缓存，管理员统计概览默认读取全局缓存并支持筛选指定系统账户，主机级系统监控只给管理员看。
 
 统计底线：所有业务汇总都只能由后台 worker 或离线重建脚本按游标增量计算；管理 API、前端页面、详情接口和下拉接口只能直读已经预聚合好的 staged / window / summary 行。请求路径不得为了展示临时 `SUM/GROUP BY`，也不得把明细行或缓存桶再相加成页面汇总。统计缓存是可丢弃数据，表结构不匹配时优先重建和改造，不能牺牲请求性能兼容旧口径。
 
@@ -155,7 +166,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `process_event_loop_samples`：按采样时间和进程角色保存事件循环额外延迟，当前角色为 `server`、`worker`、`db-service`，用于区分主 Web 进程、后台 worker 和本地 DB service 哪个进程卡顿。
 - `process_event_loop_hourly`：按 `stat_hour + process_role` 汇总事件循环延迟样本数、平均值和最大值，保留为长期粗粒度排障和兼容缓存。
 - `process_event_loop_trend_windows`：保留旧统计概览范围窗口缓存；管理侧事件循环趋势展示不再按日期范围读这个窗口，改为固定读取最近 24 小时 `process_event_loop_samples` 并按分钟聚合，避免长范围窗口膨胀，也避免把卡顿尖峰压成天级趋势。
-- `database_storage_snapshots`：按采样时间保存业务库 / 记录库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；这是 10 分钟常规采样的主指标。
+- `database_storage_snapshots`：按采样时间保存业务库、统计数据集库和统计结果库文件大小、WAL / SHM、页大小、总页数、空闲页和表数量；这是 10 分钟常规采样的主指标。
 - `table_storage_snapshots`：按采样时间保存表级可选行数、表大小、索引大小、总大小和 1 小时 / 24 小时增长；表级数据按游标轮转分批刷新，不要求所有表在同一采样时间都有新快照。后台常规采样默认不执行精确 `COUNT(*)`，`row_count` 可为空；SQLite `dbstat` 不可用时，表大小、索引大小、总大小和页数保持为空，不写入伪造的 0。
 - 表监控文件级采样由后台 worker 每 10 分钟执行一次；表级采样默认每轮每个库最多刷新 4 张表，历史默认保留最近一月。
 - `stats_job_state`：记录后台任务的作用域、游标、上次成功时间、上次错误和滞后秒数；业务统计作用域为 `system_account`，主机监控作用域为 `global`。任务尚未写入状态或滞后无法判断时，`lag_seconds` 保持为空，不按 0 处理。
@@ -278,7 +289,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 所有定时和批处理任务都必须在独立 background worker 进程内调度和执行，不能在 Web/API 主进程里用 `setInterval`、cron 或调度框架直接执行任务函数。
 - 调度框架只负责 worker 进程内的注册、不可重入、错误隔离和触发时机；worker 不能通过 IPC 回到主进程执行统计、清理、刷新或批量落库。
 - 主进程和 DB service 可以把请求链路产生的待处理记录投递给 worker，但 IPC 或等价通道必须有上限，满载时按任务安全等级丢弃或降级，不能阻塞正常请求；server / DB service 角色下使用记录、操作日志、审计记录和运行日志索引都只能进入 worker IPC 队列，不能因为 worker 未就绪而回退到本地 SQLite 队列。
-- DB service 负责系统管理 API 与数据库请求隔离，不负责后台定时调度；后台 worker 仍负责统计、操作日志落库、审计、运行日志索引、数据保留、代理检测和 OAuth 后台刷新。server 角色下 DB service 未就绪、队列满、IPC 超时或内部系统 API 不可用时，请求链路返回可读错误并等待 supervisor 重启，不能在主进程同步执行 DB service 操作，也不能恢复主进程管理 CRUD。业务库写入必须短事务同步提交；记录库记录型写入优先投递 worker 队列，由 worker 作为消费端使用短事务和 `busy_timeout` 控制 SQLite 写锁等待。
+- DB service 负责系统管理 API 与数据库请求隔离，不负责后台定时调度；后台 worker 仍负责统计、操作日志落库、审计、运行日志索引、数据保留、代理检测和 OAuth 后台刷新。server 角色下 DB service 未就绪、队列满、IPC 超时或内部系统 API 不可用时，请求链路返回可读错误并等待 supervisor 重启，不能在主进程同步执行 DB service 操作，也不能恢复主进程管理 CRUD。业务库写入必须短事务同步提交；数据集库记录型写入优先投递 worker 队列，由 worker 作为消费端使用短事务和 `busy_timeout` 控制 SQLite 写锁等待。
 - 统计 worker 每 1 分钟按 `system_account_id` 和 `(created_at, id)` 游标增量读取 `usage_records` 并 upsert 到聚合表。
 - 用量统计菜单只读取统计缓存，且口径是当前调用方自己的账户消耗：用户侧 `我的用量` 和管理侧 `用量统计管理` 页面日期范围都默认最近 31 天，最大最近 31 天；筛选区下方趋势账户列表在普通用户和管理员指定用户时，默认从 `usage_rank_snapshots` 读取 `caller_account + last7d + request_count` 的最近 7 天活跃前 10。趋势点读取 `usage_stats_daily` 的日行，范围累计读取 `usage_scope_range_windows` 的范围行；管理员全部用户视图的顶部摘要读取 `system_account = global` 的范围行。接口不能把每日行再相加生成范围汇总，前端也不能把行汇总成摘要。
 - 统计概览属于监控窗口；页面日期范围默认今天，最大最近 31 天。概览摘要、请求 / 失败 / Token / 平均总耗时趋势、模型分布和错误 Top 10 均读取 worker 写入的 `usage_overview_*_windows`、`usage_model_rank_windows` 和 `usage_error_rank_windows`，不在接口中按小时缓存临时相加；这些窗口快照由 worker 按功能表分阶段短事务刷新，阶段之间让出事件循环；用户侧展示自己的错误 Top 10，系统性能 / 网络吞吐趋势和进程事件循环趋势只在管理侧展示。
@@ -298,7 +309,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 团队授权美元额度读取 `account_authorization_team` / `group_authorization_team` 作用域缓存，`scope_id = resource_id + ':' + team_id`，由统计 worker 随使用记录增量写入；网关不再枚举成员授权并求和。统计 worker 默认每 1 分钟增量推进并刷新额度小时窗口，网关额度判断带短 TTL 内存缓存，因此允许轻微超额，统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
 - API Key 列表展示累计用量，读取 `usage_stats_totals` 中 `scope_type = api_key` 的缓存，不使用今日 `usage_stats_daily` 口径；API Key 可选美元成本额度保存在 `api_keys.quota_limits_json`，JSON 内 `limit` 表示美元金额。网关按 `usage_stats_totals`、`usage_stats_daily`、`usage_stats_weekly`、`usage_stats_monthly` 和 `usage_quota_hourly_windows` 的 API Key 维度直读成本，判断 n 小时、日、周、月和总额度，不在请求内扫描 `usage_records`，也不在请求内按小时桶求和。
 - API Key 额度是轻量异步统计口径：统计 worker 默认每 1 分钟增量推进，网关额度判断带短 TTL 内存缓存，因此允许轻微超额；统计追平后下一次请求会返回 429 和“额度已用完，请联系管理员提升额度”。
-- API Key 生命周期分为停用、业务删除和记录库物理清理：停用只改状态并立即拒绝后续调用；业务删除同步移除业务库记录并让后续请求立即无法再使用该 Key；该 Key 关联的历史使用记录、API Key 维度统计缓存、额度窗口、排行 / 范围窗口、原始审计日志、审计尝试、payload 引用和审计错误组清理由记录库维护队列投递给 worker 后分批执行，并基于该 Key 的历史使用记录从调用方、账户、分组、授权、模型和错误等相关聚合缓存中反向扣减。未被任何审计引用继续使用的 payload blob 由后续无引用 blob 清理任务删除。
+- API Key 生命周期分为停用、业务删除和记录物理清理：停用只改状态并立即拒绝后续调用；业务删除同步移除业务库记录并让后续请求立即无法再使用该 Key；该 Key 关联的历史使用记录、原始审计日志、审计尝试、payload 引用和审计错误组由数据集库维护队列分批清理，API Key 维度统计缓存、额度窗口、排行 / 范围窗口以及调用方、账户、分组、授权、模型和错误等相关聚合缓存由统计结果库反向扣减。未被任何审计引用继续使用的 payload blob 由后续无引用 blob 清理任务删除。
 - 管理员全局汇总读取后台写入的 `system_account = global` 缓存行，不在概览接口里临时汇总多个系统账户缓存行，更不能回扫 `usage_records`。
 - 系统采样 worker 每 10 到 30 秒写入一次 `system_metrics_samples`，不写用户级业务归属；`event_loop_lag_ms` 来自 worker 内独立事件循环直方图，记录上个采样窗口内去除采样分辨率基线后的额外最大延迟，保留为主机采样兼容字段。多进程事件循环延迟单独写入 `process_event_loop_samples`：worker 本地采样自身，server 通过 IPC 返回主进程样本，并通过专用诊断 IPC 读取 DB service 样本；诊断 IPC 不进入 DB service 业务请求计数，也不触发不可用熔断。采样频率跟随系统监控间隔，只有少量 IPC 和一次直方图读取，不扫描业务数据。概览接口的最新进程采样状态和最近 24 小时峰值状态都固定返回 `server`、`worker`、`db-service` 三个角色；缺少样本时用 `sampleAvailable = false` 和 `null` 字段表达未知，不用缺项、0 或默认时间伪装正常。事件循环趋势固定展示最近 24 小时分钟峰值桶，不跟随概览日期范围，单次读取被原始采样 7 天保留期和 24 小时窗口硬限制住。
 - 后台 worker 是一个固定常驻子进程，不是每个后台任务临时创建一个进程；内部各定时任务由同一个调度器注册、不可重入执行并记录运行快照。管理侧系统监控可查看每个后台任务的最近耗时、最长耗时、运行中状态、成功次数、失败次数、跳过次数和最近错误，用于判断具体是哪一个任务拖慢 worker；worker snapshot 不可用时接口必须返回显式可用性标记和 `null`，不能把未知状态压成空任务数组。
@@ -306,12 +317,12 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 审计日志 worker 每隔短时间或达到批量阈值后，从 worker 队列取终态审计记录，按策略计算正文保留、压缩、去重和错误聚合，并用短事务批量写入 `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 元数据；超过单次读取窗口的大 blob 保持 plain，文件写入本地数据目录。
 - 网关请求处理中不能同步写 `audit_logs`；SSE 和其他流式响应必须等自然结束、失败、超时或客户端断开后，才按终态记录入队。
 - 操作日志在业务库写操作提交成功后入队，worker 从操作日志队列批量写入 `operation_logs`、`operation_log_targets` 和 `operation_log_viewers`；操作日志入队或落库失败只影响追溯数据，不反向回滚已提交业务变更。
-- 记录库维护类动作不在管理接口或 DB service 内直接执行；API Key 删除后的关联记录清理、表监控手动清理使用记录、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue`，由 worker 分批执行。
+- 数据集库和统计结果库维护类动作不在管理接口或 DB service 内直接执行；API Key 删除后的关联记录清理、表监控手动清理使用记录、OpenAI Codex 用量快照写入等都投递 `recordMaintenanceQueue`，由 worker 分批执行。
 - 运行日志索引 worker 从 Pino JSONL 输出流旁路接收日志行，按 worker 队列批量写入 `runtime_logs`，并随新增日志增量维护级别 / 事件 facets；常规维护只在 facets 缺失时重建，数据保留清理按已删除索引行扣减 facets，不能每轮或每次清理后对 `runtime_logs` 全量 `COUNT/GROUP BY`。
 - 日志搜索不再有额外搜索影子表回填任务。
 - “日志搜索”索引查询读取当前 SQLite `runtime_logs` 表，使用 `traceId`、级别、事件和日志时间等通用索引条件缩小结果，关键字只对 `message` 列做普通模糊匹配；列表默认展示最近 100 条并通过后端分页继续翻页。索引表保留周期由后台清理任务控制。
 - “日志搜索”的 `grep 模式` 通过后端 `rg` 直接扫描日志目录中当前保留的 `.log` 文件，不受索引表 3 天保留期限制；文件日志默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制。该模式默认按文件时间搜索最近 3 天，单次文件时间范围最多 7 天，时间范围只用于筛选参与扫描的文件，不读取文件内容判断行时间；不设置查询超时，最多展示 100 行；多关键字必须在同一行同时命中，后端按日志时间或文件时间返回最新匹配。运行环境缺少 `rg` 时直接返回错误提示，不回退到慢速文件扫描。
-- 使用记录、操作日志、记录库维护、审计和运行日志索引队列都是 best-effort 队列，系统重启、进程崩溃或队列溢出导致记录库数据丢失或维护延迟可以接受；队列丢弃或投递失败计数应进入运维监控。
+- 使用记录、操作日志、数据集库维护、审计和运行日志索引队列都是 best-effort 队列，系统重启、进程崩溃或队列溢出导致数据集库事实丢失或维护延迟可以接受；队列丢弃或投递失败计数应进入运维监控。
 - 账户、分组、API Key 等列表接口只读 `usage_stats_totals` / `usage_stats_daily`，不要在列表查询里 `SUM usage_records`。
 - 概览图表接口读取 `usage_overview_*_windows`、`usage_model_rank_windows`、`usage_error_rank_windows` 和 `system_metrics_trend_windows`；进程事件循环趋势是短期运维排障图，固定读取最近 24 小时低频采样并按分钟聚合，不跟随业务日期范围，页面上方摘要取同一 24 小时窗口内各进程最大延迟；后台任务运行状态来自 worker 运行态快照，不落表；运行态快照缺失时通过可用性字段表达不可观测，不用 `0`、`false`、`[]` 或默认天数伪装正常；`AI性能监控` 图表只读 `usage_stats_hourly` 和账户元数据，摘要只读 `ai_performance_summary_windows`。
 - 全局规则：除独立 background worker、离线清洗脚本、使用记录分页明细外，任何前端列表、概览、详情和下拉元数据接口都不能在请求时做统计聚合。
@@ -353,7 +364,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - `usage_stats_totals` 长期保留，作为账户、分组、授权和全局总量缓存。
 - `stats_job_state` 长期保留，作为统计游标和任务状态；它是自动保留任务和管理员手动清理删除 `usage_records` 的安全边界。
 - `group_account_stats` 是当前分组账户状态缓存，由刷新任务按脏分组刷新；`group_account_stats_dirty` 是刷新队列，不属于历史日志，处理完成即可删除。
-- 记录库不维护日志搜索影子表；当前记录库表都应是普通表或普通索引，新增表必须接入统一保留期或明确说明长期保留理由。
+- 数据集库不维护日志搜索影子表；数据集库和统计结果库新增表都应是普通表或普通索引，必须接入统一保留期或明确说明长期保留理由。
 - 普通日志文件由文件日志滚动配置清理，不属于 SQLite 表清理；当前默认保留 30 天，并受最多 500 个轮转文件和单文件大小限制；`grep 模式` 扫描当前保留的 `.log` 文件，但单次文件时间范围最多 7 天。
 
 统一清理规则：
@@ -362,7 +373,7 @@ JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 - 清理任务按批次删除，默认每类表每轮最多处理 `dataRetentionCleanupBatchSize = 10000` 条、最多 `dataRetentionCleanupMaxBatchesPerRun = 10` 批，避免长时间占用 SQLite 写锁。
 - 手动清理 `usage_records` 同样按批次执行，截止时间不能晚于当前时间 24 小时前，并且必须受统计聚合游标和必要回填游标保护。提交前先按 `created_at < cutoffAt` 与统计安全游标交集做有限预检查；没有可安全清理记录、统计游标尚未建立或 worker 投递不可用时返回 `queued = false` 和原因；预检查通过后才返回 `queued = true` 并交给 worker 分批清理。
 - 统计聚合、系统指标采样、审计日志落库和运行日志索引队列只负责写入或聚合，不再在各自流程里顺手删除历史表数据。
-- 如果统计缓存损坏或统计口径升级，可以停服务后在发布包根目录运行 `node backend/dist/scripts/maintenance/rebuild-usage-stats.js`，从尚未清理的 `usage_records` 重新构建缓存。该命令会清空并重建当前 `backend/.env` 指向数据库里的统计缓存，执行前应确认数据库路径并先备份。
+- 如果统计缓存损坏或统计口径升级，可以停服务后在发布包根目录运行 `node backend/dist/scripts/maintenance/rebuild-usage-stats.js`，从统计数据集库中尚未清理的 `usage_records` 重新构建缓存。该命令会清空并重建当前 `backend/.env` 指向统计结果库里的统计缓存；如果数据集库为空或历史 `usage_records` 已丢弃，历史统计明确放弃，后续从新请求重新累计。执行前必须确认业务库路径无误，避免误操作业务数据。
 
 ## 操作日志存储
 

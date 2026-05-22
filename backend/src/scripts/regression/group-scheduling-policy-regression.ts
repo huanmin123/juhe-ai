@@ -38,6 +38,8 @@ try {
     schedulingPolicy: {
       defaultSoftConcurrency: 3,
       maxQueueWaitMs: 45000,
+      maxQueueSize: 50,
+      perApiKeyQueueLimit: 10,
       breakAffinityOnSoftLimit: false,
       fastFirstEnabled: false
     }
@@ -49,19 +51,26 @@ try {
   assert.equal(highConcurrencyGroup.schedulingPolicy?.fastFirstEnabled, true, '高并发快速优先应默认开启，不允许分组配置关闭')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.breakAffinityOnSoftLimit, true, '达到阈值打破亲和应默认开启，不允许分组配置关闭')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.maxQueueWaitMs, 45000, '短队列最大等待时间应允许按分组配置')
+  assert.equal(highConcurrencyGroup.schedulingPolicy?.maxQueueSize, 1000, '分组队列上限应使用内置默认值，不允许被请求体调小')
+  assert.equal(highConcurrencyGroup.schedulingPolicy?.perApiKeyQueueLimit, 1000, '单 Key 队列上限默认应跟随分组队列上限')
 
   const stored = database
     .prepare('SELECT group_type, scheduling_policy_json FROM groups WHERE id = ?')
     .get(highConcurrencyGroup.id) as unknown as { group_type: string; scheduling_policy_json: string | null }
+  const storedPolicy = JSON.parse(stored.scheduling_policy_json ?? '{}') as Record<string, unknown>
   assert.equal(stored.group_type, 'high_concurrency')
-  assert(stored.scheduling_policy_json?.includes('"defaultSoftConcurrency":3'), '高并发策略应写入 JSON 配置')
-  assert(stored.scheduling_policy_json?.includes('"maxQueueWaitMs":45000'), '最大等待时间应按请求值写入')
-  assert(!stored.scheduling_policy_json?.includes('"fastFirstEnabled":false'), '默认开启策略不应按请求关闭')
+  assert.equal(storedPolicy.defaultSoftConcurrency, 3, '高并发策略应写入 JSON 配置')
+  assert.equal(storedPolicy.maxQueueWaitMs, 45000, '最大等待时间应按请求值写入')
+  assert.equal(storedPolicy.maxQueueSize, 1000, '队列上限应按内置默认值写入')
+  assert.equal(storedPolicy.perApiKeyQueueLimit, 1000, '单 Key 队列上限应跟随分组队列上限写入')
+  assert.equal(storedPolicy.fastFirstEnabled, true, '默认开启策略不应按请求关闭')
 
   const runtimeAccess = repositories.resolveGroupUsageAccessMetadata(highConcurrencyGroup.id, 'sys_admin')
   assert.equal(runtimeAccess?.groupType, 'high_concurrency')
   assert.equal(runtimeAccess?.schedulingPolicy?.defaultSoftConcurrency, 3)
   assert.equal(runtimeAccess?.schedulingPolicy?.maxQueueWaitMs, 45000)
+  assert.equal(runtimeAccess?.schedulingPolicy?.maxQueueSize, 1000)
+  assert.equal(runtimeAccess?.schedulingPolicy?.perApiKeyQueueLimit, 1000)
 
   const options = repositories.listGroupOptions(access, { keyword: highConcurrencyGroup.name })
   assert.equal(options[0]?.groupType, 'high_concurrency', '分组选项应携带分组类型')

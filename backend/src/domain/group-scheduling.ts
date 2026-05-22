@@ -30,8 +30,8 @@ export const DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY: Required<GroupSch
   recentTimeoutWindowSeconds: 120,
   recentTimeoutPenaltyThreshold: 2,
   maxQueueWaitMs: 60_000,
-  maxQueueSize: 100,
-  perApiKeyQueueLimit: 50
+  maxQueueSize: 1_000,
+  perApiKeyQueueLimit: 1_000
 }
 
 export function normalizeGroupType(value: unknown): GroupType {
@@ -43,6 +43,7 @@ export function resolveGroupSchedulingPolicy(groupType: GroupType, value: unknow
     return undefined
   }
   const input = objectValue(value)
+  const maxQueueSize = numericPolicy(input.maxQueueSize, 'maxQueueSize')
   return {
     mode: 'balanced_fast',
     defaultSoftConcurrency: numericPolicy(input.defaultSoftConcurrency, 'defaultSoftConcurrency'),
@@ -56,8 +57,8 @@ export function resolveGroupSchedulingPolicy(groupType: GroupType, value: unknow
     recentTimeoutWindowSeconds: numericPolicy(input.recentTimeoutWindowSeconds, 'recentTimeoutWindowSeconds'),
     recentTimeoutPenaltyThreshold: numericPolicy(input.recentTimeoutPenaltyThreshold, 'recentTimeoutPenaltyThreshold'),
     maxQueueWaitMs: numericPolicy(input.maxQueueWaitMs, 'maxQueueWaitMs'),
-    maxQueueSize: numericPolicy(input.maxQueueSize, 'maxQueueSize'),
-    perApiKeyQueueLimit: numericPolicy(input.perApiKeyQueueLimit, 'perApiKeyQueueLimit')
+    maxQueueSize,
+    perApiKeyQueueLimit: resolvePerApiKeyQueueLimit(input.perApiKeyQueueLimit, maxQueueSize)
   }
 }
 
@@ -122,6 +123,13 @@ function resolvePersistedGroupSchedulingPolicy(groupType: GroupType, value: unkn
     defaultSoftConcurrency: input.defaultSoftConcurrency,
     maxQueueWaitMs: input.maxQueueWaitMs
   })
+}
+
+function resolvePerApiKeyQueueLimit(value: unknown, maxQueueSize: number): number {
+  if (value === undefined || value === null) {
+    return maxQueueSize
+  }
+  return boundedInteger(value, maxQueueSize, 1, maxQueueSize)
 }
 
 function positiveInteger(value: unknown, fallback: number, max = 1_000_000): number {

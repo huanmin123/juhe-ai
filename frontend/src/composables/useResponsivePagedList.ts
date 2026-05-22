@@ -29,6 +29,8 @@ type UseResponsivePagedListOptions<T, ExtraOptions extends Record<string, unknow
   initialPagination?: { current?: number; pageSize?: number; total?: number }
   showTotal: (total: number, range?: TableShowTotalRange, context?: TableShowTotalContext) => string
   fetchPage: (options: ResponsivePagedListLoadOptions & ExtraOptions, pagination: PaginationState) => Promise<ResponsivePagedListResult<T>>
+  mergeItems?: (currentItems: T[], nextItems: T[], options: ResponsivePagedListLoadOptions & ExtraOptions) => T[]
+  onLoaded?: (result: ResponsivePagedListResult<T>, options: ResponsivePagedListLoadOptions & ExtraOptions) => void
   onError?: (error: unknown) => void
 }
 
@@ -105,13 +107,17 @@ export function useResponsivePagedList<T, ExtraOptions extends Record<string, un
   }
 
   function applyPageResult(result: ResponsivePagedListResult<T>, loadOptions: ResponsivePagedListLoadOptions & ExtraOptions): void {
-    const loadedCount = loadOptions.append ? items.value.length + result.items.length : result.items.length
+    const nextItems = loadOptions.append
+      ? options.mergeItems?.(items.value, result.items, loadOptions) ?? [...items.value, ...result.items]
+      : result.items
+    const loadedCount = nextItems.length
     pagination.current = result.page
     pagination.pageSize = result.pageSize
     pagination.total = result.total
     hasMore.value = typeof result.hasMore === 'boolean' ? result.hasMore : loadedCount < result.total
     currentPageCount.value = result.items.length
-    items.value = loadOptions.append ? [...items.value, ...result.items] : result.items
+    items.value = nextItems
+    options.onLoaded?.(result, loadOptions)
   }
 
   function handleTableChange(paginationInfo: unknown): void {

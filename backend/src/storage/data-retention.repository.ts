@@ -176,7 +176,7 @@ export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: st
     cutoffCreatedAt,
     safetyCursorCreatedAt: cursorCreatedAt,
     safetyCursorId: cursorId,
-    deletedRows: deleteRowsById('usage_records', rows.slice(0, batchLimit)),
+    deletedRows: deleteRowsById(database, 'usage_records', rows.slice(0, batchLimit)),
     hasMore: rows.length > batchLimit
   }
 }

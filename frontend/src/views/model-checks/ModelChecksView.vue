@@ -6,21 +6,28 @@
           <div class="model-checks-fields">
             <a-form-item class="model-checks-account-field" required>
               <a-select
-                v-model:value="form.targetId"
+                :value="selectValueOrUndefined(form.targetId)"
                 show-search
                 allow-clear
                 :disabled="submitting"
                 :filter-option="false"
                 :loading="targetOptionsLoading"
                 :options="targetOptions"
-                placeholder="选择 AI 账户"
+                placeholder="选择要检测的 OpenAI 账户"
                 @change="handleTargetChange"
                 @dropdown-visible-change="handleTargetDropdownVisibleChange"
                 @search="handleTargetSearch"
+                @update:value="handleTargetValueUpdate"
               />
             </a-form-item>
             <a-form-item class="model-checks-model-field" required>
-              <a-select v-model:value="form.model" :options="modelOptions" :loading="optionsLoading" :disabled="submitting" placeholder="模型" />
+              <a-select
+                v-model:value="form.model"
+                :options="modelOptions"
+                :loading="optionsLoading"
+                :disabled="submitting"
+                placeholder="选择检测模型"
+              />
             </a-form-item>
             <a-form-item class="model-checks-comparison-field">
               <a-select
@@ -31,7 +38,7 @@
                 :filter-option="false"
                 :loading="comparisonOptionsLoading"
                 :options="comparisonOptions"
-                placeholder="可信对比账户（可选）"
+                placeholder="选择可信对比账户（可选，会额外消耗额度）"
                 @dropdown-visible-change="handleComparisonDropdownVisibleChange"
                 @search="handleComparisonSearch"
               />
@@ -86,10 +93,22 @@
     <a-card class="page-card model-checks-history-card" title="历史检测">
       <div class="history-toolbar">
         <a-space wrap>
-          <a-select v-model:value="filters.model" allow-clear class="history-filter" :options="modelOptions" placeholder="全部模型" @change="reloadRuns" />
-          <a-select v-model:value="filters.status" allow-clear class="history-filter" :options="statusOptions" placeholder="全部状态" @change="reloadRuns" />
-          <a-select v-model:value="filters.level" allow-clear class="history-filter" :options="levelOptions" placeholder="全部级别" @change="reloadRuns" />
-          <a-input-search v-model:value="filters.targetId" class="history-target-filter" placeholder="按账户 ID 过滤" allow-clear @search="reloadRuns" />
+          <a-select v-model:value="filters.model" allow-clear class="history-filter" :options="modelOptions" placeholder="筛选检测模型" @change="reloadRuns" />
+          <a-select v-model:value="filters.status" allow-clear class="history-filter" :options="statusOptions" placeholder="筛选检测状态" @change="reloadRuns" />
+          <a-select v-model:value="filters.level" allow-clear class="history-filter" :options="levelOptions" placeholder="筛选可信级别" @change="reloadRuns" />
+          <a-select
+            v-model:value="filters.targetId"
+            show-search
+            allow-clear
+            class="history-target-filter"
+            :filter-option="false"
+            :loading="historyTargetOptionsLoading"
+            :options="historyTargetOptions"
+            placeholder="按 AI 账户名称筛选历史记录"
+            @change="() => reloadRuns()"
+            @dropdown-visible-change="handleHistoryTargetDropdownVisibleChange"
+            @search="handleHistoryTargetSearch"
+          />
         </a-space>
         <a-button :loading="runsLoading" @click="reloadRuns">
           <template #icon>
@@ -99,16 +118,25 @@
         </a-button>
       </div>
 
-      <a-table
-        class="model-checks-table"
+      <ResponsiveDataList
+        class="model-checks-responsive-list"
+        table-class="model-checks-table"
         size="middle"
         row-key="id"
         :columns="columns"
         :data-source="runs"
+        :mobile-data-source="runs"
         :loading="runsLoading"
-        :pagination="pagination"
-        :scroll="{ x: 1100 }"
-        @change="handleTableChange"
+        :pagination="runsTablePagination"
+        :scroll-x="1100"
+        :loading-more="runsMobileLoadingMore"
+        :mobile-has-more="runsMobileHasMore"
+        mobile-pagination
+        pull-refresh-enabled
+        :refreshing="runsLoading"
+        @change="handleRunsTableChange"
+        @mobile-load-more="loadMoreMobileRuns"
+        @mobile-refresh="refreshMobileRuns"
       >
         <template #emptyText>
           <a-empty description="暂无模型检测历史" />
@@ -117,7 +145,7 @@
           <template v-if="column.key === 'target'">
             <div class="target-cell">
               <a-tag>AI 账户</a-tag>
-              <span class="mono-cell">{{ record.targetId }}</span>
+              <span class="target-name-cell">{{ targetDisplayName(record) }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'status'">
@@ -139,7 +167,44 @@
             <a-button type="link" size="small" @click="loadRunDetail(record.id)">查看</a-button>
           </template>
         </template>
-      </a-table>
+        <template #card="{ record }">
+          <article class="model-check-mobile-card">
+            <div class="model-check-mobile-head">
+              <div>
+                <div class="model-check-mobile-title">{{ targetDisplayName(record) }}</div>
+                <div class="model-check-mobile-subtitle">AI 账户</div>
+              </div>
+              <a-tag :color="statusColor(record.status)">{{ statusText(record.status) }}</a-tag>
+            </div>
+            <div class="model-check-mobile-tags">
+              <a-tag>{{ modelText(record.model) }}</a-tag>
+              <a-tag :color="levelColor(record.level)">{{ levelText(record.level) }}</a-tag>
+              <a-tag v-if="runTrustedComparison(record)" color="blue">可信对比</a-tag>
+            </div>
+            <div class="model-check-mobile-grid">
+              <div class="model-check-mobile-metric">
+                <span>得分</span>
+                <strong>{{ record.score }} / {{ record.maxScore }}</strong>
+              </div>
+              <div class="model-check-mobile-metric">
+                <span>耗时</span>
+                <strong>{{ formatDuration(record.durationMs) }}</strong>
+              </div>
+              <div class="model-check-mobile-metric model-check-mobile-wide">
+                <span>创建时间</span>
+                <strong>{{ formatDateTime(record.createdAt) }}</strong>
+              </div>
+              <div class="model-check-mobile-metric model-check-mobile-wide">
+                <span>结论</span>
+                <strong>{{ record.message || record.errorMessage || '-' }}</strong>
+              </div>
+            </div>
+            <div class="model-check-mobile-actions">
+              <a-button size="small" type="primary" @click="loadRunDetail(record.id)">查看</a-button>
+            </div>
+          </article>
+        </template>
+      </ResponsiveDataList>
     </a-card>
 
     <a-drawer
@@ -154,9 +219,9 @@
       <div v-else class="run-detail">
         <div class="run-detail-head">
           <div>
-            <div class="run-detail-title">{{ currentRun.targetName || modelText(currentRun.model) }}</div>
+            <div class="run-detail-title">{{ targetDisplayName(currentRun) }}</div>
             <div class="run-detail-subtitle">
-              AI 账户：<span class="mono-cell">{{ currentRun.targetId }}</span>
+              检测目标：AI 账户
             </div>
           </div>
           <a-space wrap>
@@ -169,6 +234,7 @@
 
         <a-descriptions bordered size="small" :column="detailDescriptionColumns" class="run-descriptions">
           <a-descriptions-item label="检测 ID">{{ currentRun.id }}</a-descriptions-item>
+          <a-descriptions-item label="账户名称">{{ targetDisplayName(currentRun) }}</a-descriptions-item>
           <a-descriptions-item label="模型">{{ modelText(currentRun.model) }}</a-descriptions-item>
           <a-descriptions-item label="创建时间">{{ formatDateTime(currentRun.createdAt) }}</a-descriptions-item>
           <a-descriptions-item label="完成时间">{{ formatDateTime(currentRun.finishedAt) }}</a-descriptions-item>
@@ -202,6 +268,8 @@ import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, reactive
 import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
+import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedAccountsApi, useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
@@ -255,6 +323,8 @@ const columns = [
   { title: '创建时间', key: 'createdAt', width: 180 },
   { title: '操作', key: 'actions', width: 90, fixed: 'right' }
 ]
+const modelCheckPageSize = 20
+type AccountSelectOption = { label: string; value: string }
 
 const { isManagementView } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
@@ -262,8 +332,8 @@ const accountsApi = useScopedAccountsApi(isManagementView)
 const optionsLoading = ref(false)
 const targetOptionsLoading = ref(false)
 const comparisonOptionsLoading = ref(false)
+const historyTargetOptionsLoading = ref(false)
 const submitting = ref(false)
-const runsLoading = ref(false)
 const detailLoading = ref(false)
 const detailOpen = ref(false)
 const terminalVisible = ref(false)
@@ -271,11 +341,12 @@ const terminalLines = ref<TerminalLine[]>([])
 const terminalBodyRef = ref<HTMLElement>()
 let modelCheckAbortController: AbortController | undefined
 const options = ref<ModelCheckOptions>(fallbackOptions)
-const targetOptions = ref<Array<{ label: string; value: string }>>([])
-const comparisonOptions = ref<Array<{ label: string; value: string }>>([])
-const targetOptionsCache = createShortLivedQueryCache<Array<{ label: string; value: string }>>({ ttlMs: 10_000 })
-const comparisonOptionsCache = createShortLivedQueryCache<Array<{ label: string; value: string }>>({ ttlMs: 10_000 })
-const runs = ref<ModelCheckRunSummary[]>([])
+const targetOptions = ref<AccountSelectOption[]>([])
+const comparisonOptions = ref<AccountSelectOption[]>([])
+const historyTargetOptions = ref<AccountSelectOption[]>([])
+const targetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
+const comparisonOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
+const historyTargetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
 const currentRun = ref<ModelCheckRunDetail>()
 const form = reactive<ModelCheckRunPayload>({
   targetType: 'account',
@@ -291,12 +362,35 @@ const filters = reactive<{
   level?: ModelCheckLevel
   status?: ModelCheckStatus
 }>({})
-const pagination = reactive({
-  current: 1,
-  pageSize: 20,
-  total: 0,
-  showSizeChanger: true,
-  showTotal: (total: number) => `共 ${formatNumber(total)} 条检测记录`
+const {
+  items: runs,
+  loading: runsLoading,
+  mobileHasMore: runsMobileHasMore,
+  mobileLoadingMore: runsMobileLoadingMore,
+  tablePagination: runsTablePagination,
+  handleTableChange: handleRunsTableChange,
+  loadData: loadRuns,
+  loadMoreMobile: loadMoreMobileRuns,
+  refreshMobile: refreshMobileRuns,
+  resetPagination: resetRunsPagination
+} = useResponsivePagedList<ModelCheckRunSummary>({
+  pageSize: modelCheckPageSize,
+  showTotal: (total, range, context) => context?.hasMore
+    ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 条检测记录，还有更多`
+    : `共 ${formatNumber(total)} 条检测记录`,
+  fetchPage: (_options, pageState) => modelChecksApi.list({
+    page: pageState.current,
+    pageSize: pageState.pageSize,
+    targetType: 'account',
+    targetId: filters.targetId?.trim() || undefined,
+    model: filters.model,
+    level: filters.level,
+    status: filters.status
+  }),
+  onError: (error) => {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载模型检测历史失败'))
+  }
 })
 
 const modelOptions = computed(() => options.value.supportedModels.map((item) => ({ label: item.label, value: item.value })))
@@ -306,6 +400,7 @@ const terminalStatusColor = computed(() => submitting.value ? 'blue' : terminalL
 const terminalNow = computed(() => formatClockTime(new Date()))
 let targetOptionsRequestId = 0
 let comparisonOptionsRequestId = 0
+let historyTargetOptionsRequestId = 0
 let terminalLineId = 0
 let modelCheckAbortReason: 'manual' | 'deactivated' | 'unmount' | undefined
 
@@ -350,7 +445,9 @@ async function loadTargetOptions(keyword = '') {
       schedulable: 'enabled',
       limit: 50
     })
-    const nextOptions = keepSelectedTargetOption(accounts.filter((account) => account.providerCode === 'openai').map(accountTargetOption))
+    const nextOptions = keepSelectedTargetOption(accounts
+      .filter((account) => account.providerCode === 'openai')
+      .map(accountTargetOption))
     targetOptionsCache.set(requestKey, nextOptions)
     if (requestId === targetOptionsRequestId) {
       targetOptions.value = nextOptions
@@ -396,6 +493,39 @@ async function loadComparisonOptions(keyword = '') {
   } finally {
     if (requestId === comparisonOptionsRequestId) {
       comparisonOptionsLoading.value = false
+    }
+  }
+}
+
+async function loadHistoryTargetOptions(keyword = '') {
+  const normalizedKeyword = keyword.trim()
+  const requestKey = JSON.stringify([normalizedKeyword, filters.targetId])
+  const requestId = ++historyTargetOptionsRequestId
+  const cachedOptions = historyTargetOptionsCache.get(requestKey)
+  if (cachedOptions) {
+    historyTargetOptionsLoading.value = false
+    historyTargetOptions.value = cachedOptions
+    return
+  }
+  historyTargetOptionsLoading.value = true
+  try {
+    const accounts = await accountsApi.options({
+      keyword: normalizedKeyword || undefined,
+      limit: 50
+    })
+    const nextOptions = keepSelectedHistoryTargetOption(accounts
+      .filter((account) => account.providerCode === 'openai')
+      .map(accountTargetOption))
+    historyTargetOptionsCache.set(requestKey, nextOptions)
+    if (requestId === historyTargetOptionsRequestId) {
+      historyTargetOptions.value = nextOptions
+    }
+  } catch (error) {
+    console.error(error)
+    message.error(extractApiErrorMessage(error, '加载历史账户筛选项失败'))
+  } finally {
+    if (requestId === historyTargetOptionsRequestId) {
+      historyTargetOptionsLoading.value = false
     }
   }
 }
@@ -461,32 +591,8 @@ async function submitRun() {
 }
 
 async function reloadRuns() {
-  pagination.current = 1
+  resetRunsPagination()
   await loadRuns()
-}
-
-async function loadRuns() {
-  runsLoading.value = true
-  try {
-    const result = await modelChecksApi.list({
-      page: pagination.current,
-      pageSize: pagination.pageSize,
-      targetType: 'account',
-      targetId: filters.targetId?.trim() || undefined,
-      model: filters.model,
-      level: filters.level,
-      status: filters.status
-    })
-    runs.value = result.items
-    pagination.current = result.page
-    pagination.pageSize = result.pageSize
-    pagination.total = result.total
-  } catch (error) {
-    console.error(error)
-    message.error(extractApiErrorMessage(error, '加载模型检测历史失败'))
-  } finally {
-    runsLoading.value = false
-  }
 }
 
 async function loadRunDetail(id: string) {
@@ -502,14 +608,12 @@ async function loadRunDetail(id: string) {
   }
 }
 
-function handleTableChange(nextPagination: { current?: number; pageSize?: number }) {
-  pagination.current = nextPagination.current ?? pagination.current
-  pagination.pageSize = nextPagination.pageSize ?? pagination.pageSize
-  void loadRuns()
-}
-
 function handleTargetSearch(value: string) {
   void loadTargetOptions(value)
+}
+
+function handleTargetValueUpdate(value: string | undefined) {
+  form.targetId = value ?? ''
 }
 
 function handleTargetChange() {
@@ -532,6 +636,16 @@ function handleComparisonSearch(value: string) {
 function handleComparisonDropdownVisibleChange(open: boolean) {
   if (open && !comparisonOptions.value.length) {
     void loadComparisonOptions()
+  }
+}
+
+function handleHistoryTargetSearch(value: string) {
+  void loadHistoryTargetOptions(value)
+}
+
+function handleHistoryTargetDropdownVisibleChange(open: boolean) {
+  if (open && !historyTargetOptions.value.length) {
+    void loadHistoryTargetOptions()
   }
 }
 
@@ -582,7 +696,11 @@ function scrollTerminalToBottom() {
 
 function handleModelCheckProgress(event: ModelCheckProgressEvent) {
   if (event.type === 'run_started') {
-    appendTerminalLine('info', `检测启动：目标 AI 账户 ${event.targetId}，模型 ${event.model}，可信对比 ${event.trustedComparison ? '开启' : '关闭'}`)
+    const targetLabel = event.targetName?.trim() || targetOptionText(event.targetId)
+    const comparisonText = event.trustedComparison
+      ? `，可信对比 ${event.trustedComparisonAccountName?.trim() || (event.trustedComparisonAccountId ? comparisonOptionText(event.trustedComparisonAccountId) : '已开启')}`
+      : '，可信对比关闭'
+    appendTerminalLine('info', `检测启动：目标 AI 账户 ${targetLabel}，模型 ${event.model}${comparisonText}`)
     return
   }
   if (event.type === 'run_created') {
@@ -615,26 +733,50 @@ function accountTargetOption(account: AccountOptionSummary) {
   return { label: parts.join(' · '), value: account.id }
 }
 
-function keepSelectedTargetOption(nextOptions: Array<{ label: string; value: string }>) {
+function keepSelectedTargetOption(nextOptions: AccountSelectOption[]) {
   if (!form.targetId || nextOptions.some((item) => item.value === form.targetId)) {
     return nextOptions
   }
-  return [{ label: form.targetId, value: form.targetId }, ...nextOptions]
+  return [{ label: selectedAccountFallbackLabel(form.targetId), value: form.targetId }, ...nextOptions]
 }
 
 function targetOptionText(id: string) {
-  return targetOptions.value.find((item) => item.value === id)?.label ?? id
+  return targetOptions.value.find((item) => item.value === id)?.label ?? selectedAccountFallbackLabel(id)
 }
 
-function keepSelectedComparisonOption(nextOptions: Array<{ label: string; value: string }>) {
+function keepSelectedComparisonOption(nextOptions: AccountSelectOption[]) {
   if (!form.trustedComparisonAccountId || nextOptions.some((item) => item.value === form.trustedComparisonAccountId)) {
     return nextOptions
   }
-  return [{ label: form.trustedComparisonAccountId, value: form.trustedComparisonAccountId }, ...nextOptions]
+  return [{ label: '已选可信对比账户', value: form.trustedComparisonAccountId }, ...nextOptions]
 }
 
 function comparisonOptionText(id: string) {
-  return comparisonOptions.value.find((item) => item.value === id)?.label ?? id
+  return comparisonOptions.value.find((item) => item.value === id)?.label ?? '已选可信对比账户'
+}
+
+function keepSelectedHistoryTargetOption(nextOptions: AccountSelectOption[]) {
+  if (!filters.targetId || nextOptions.some((item) => item.value === filters.targetId)) {
+    return nextOptions
+  }
+  return [{ label: selectedAccountFallbackLabel(filters.targetId), value: filters.targetId }, ...nextOptions]
+}
+
+function selectedAccountFallbackLabel(id: string) {
+  return knownTargetName(id) ?? '已选账户'
+}
+
+function knownTargetName(id: string) {
+  const targetName = runs.value.find((item) => item.targetId === id)?.targetName?.trim()
+  if (targetName) return targetName
+  if (currentRun.value?.targetId === id) {
+    return currentRun.value.targetName?.trim() || undefined
+  }
+  return undefined
+}
+
+function targetDisplayName(run: Pick<ModelCheckRunSummary, 'targetName' | 'targetId'>) {
+  return run.targetName?.trim() || knownTargetName(run.targetId) || '未记录账户名称'
 }
 
 function accountTypeText(value: string) {
@@ -688,6 +830,10 @@ function checkStatusColor(value: NonNullable<ModelCheckCheckResult['status']>) {
 
 function modelText(value: string) {
   return options.value.supportedModels.find((item) => item.value === value)?.label ?? value
+}
+
+function selectValueOrUndefined(value?: string) {
+  return value?.trim() || undefined
 }
 
 function formatDuration(value?: number) {
@@ -760,7 +906,7 @@ function formatClockTime(value: Date) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadOptions(), loadRuns(), loadTargetOptions(), loadComparisonOptions()])
+  await Promise.all([loadOptions(), loadRuns(), loadTargetOptions(), loadComparisonOptions(), loadHistoryTargetOptions()])
 })
 
 onDeactivated(() => {
@@ -1014,6 +1160,17 @@ onBeforeUnmount(() => {
   gap: 8px;
 }
 
+.target-name-cell {
+  display: block;
+  min-width: 0;
+  max-width: 210px;
+  overflow: hidden;
+  color: #0f172a;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .summary-cell {
   display: block;
   max-width: 360px;
@@ -1024,6 +1181,79 @@ onBeforeUnmount(() => {
 
 .model-checks-table :deep(.ant-table-cell) {
   white-space: nowrap;
+}
+
+.model-check-mobile-card {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.model-check-mobile-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.model-check-mobile-title {
+  color: #0f172a;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.model-check-mobile-subtitle {
+  margin-top: 4px;
+  color: #64748b;
+  word-break: break-all;
+}
+
+.model-check-mobile-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.model-check-mobile-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.model-check-mobile-metric {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #eef2f7;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.model-check-mobile-wide {
+  grid-column: 1 / -1;
+}
+
+.model-check-mobile-metric span {
+  display: block;
+  color: #64748b;
+  font-size: 12px;
+}
+
+.model-check-mobile-metric strong {
+  display: block;
+  margin-top: 4px;
+  overflow: hidden;
+  color: #0f172a;
+  font-size: 13px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-check-mobile-actions {
+  display: flex;
+  justify-content: flex-end;
 }
 
 .model-checks-detail-drawer :deep(.ant-drawer-content-wrapper) {

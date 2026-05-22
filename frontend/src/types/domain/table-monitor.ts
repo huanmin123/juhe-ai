@@ -1,4 +1,4 @@
-export type MonitoredDatabaseRole = 'business' | 'records'
+export type MonitoredDatabaseRole = 'business' | 'dataset' | 'stats'
 
 export interface DatabaseStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole

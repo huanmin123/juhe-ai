@@ -889,10 +889,14 @@ function buildAccountOptionFilters(
   if (keyword) {
     const keywordPrefix = `${escapeLikePrefix(keyword)}%`
     clauses.push(`(
-      accounts.name COLLATE NOCASE = ?
+      accounts.id = ?
+      OR accounts.id LIKE ? ESCAPE '\\'
+      OR accounts.name COLLATE NOCASE = ?
       OR accounts.name LIKE ? ESCAPE '\\'
     )`)
     params.push(
+      keyword,
+      keywordPrefix,
       keyword,
       keywordPrefix
     )

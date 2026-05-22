@@ -12,7 +12,7 @@ import type {
 import { backendRoot, runtimeConfig } from '../../config/runtime.js'
 import type { AccessScope } from '../../storage/access-scope.js'
 import { refreshAccountQualityFromUsage } from '../../storage/account-quality.repository.js'
-import { getDatabase, getRecordDatabase, nowIso } from '../../storage/database.js'
+import { datasetDatabasePath, getDatabase, getDatasetDatabase, getStatsDatabase, nowIso, statsDatabasePath } from '../../storage/database.js'
 import * as repositories from '../../storage/repositories.js'
 import { createRuntimeLogsBatch, refreshRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
 import type { AuditLogInput } from '../../storage/audit-logs.repository.js'
@@ -170,12 +170,13 @@ function main(): void {
 
   const startedAt = Date.now()
   const businessDatabase = getDatabase()
-  const recordDatabase = getRecordDatabase()
+  const datasetDatabase = getDatasetDatabase()
+  const statsDatabase = getStatsDatabase()
   const admin = findAdminAccount()
   const adminAccess: AccessScope = { systemAccountId: admin.id, role: 'admin', systemAccountFilterId: admin.id }
 
   console.log(`开始生成 Mockdata：${options.days} 天，每天 ${options.dailyRequests} 条使用记录，资源归属 ${admin.username}`)
-  cleanupMockdata(businessDatabase, recordDatabase, admin.id)
+  cleanupMockdata(businessDatabase, datasetDatabase, statsDatabase, admin.id)
 
   const created = createBusinessMockdata(admin, adminAccess)
   const usageRecords = createUsageMockdata(created, options)
@@ -185,13 +186,14 @@ function main(): void {
   createMonitoringMockdata(options)
   createStorageMockdata(created, options)
 
-  rebuildDerivedCaches(recordDatabase)
+  rebuildDerivedCaches(statsDatabase)
   updateApiKeyLastUsedAt(usageRecords)
   writeSummary(created, usageRecords, options, Date.now() - startedAt)
 
   console.log(`Mockdata 已生成：使用记录 ${usageRecords.length} 条，审计 ${Math.ceil(usageRecords.length / 4)} 条，耗时 ${Date.now() - startedAt}ms`)
   console.log(`业务库：${runtimeConfig.databasePath}`)
-  console.log(`记录库：${runtimeConfig.recordDatabasePath}`)
+  console.log(`数据集库：${datasetDatabasePath()}`)
+  console.log(`统计结果库：${statsDatabasePath()}`)
   console.log(`摘要文件：${mockdataSummaryPath()}`)
 }
 
@@ -1505,7 +1507,7 @@ function createRuntimeLogMockdata(usageRecords: UsageRecordSeed[]): void {
 }
 
 function createMonitoringMockdata(options: MockdataOptions): void {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const now = Date.now() - 10 * minuteMs
   const start = now - (options.days * dayMs)
   const insertMetric = database.prepare(`
@@ -1571,7 +1573,7 @@ function createMonitoringMockdata(options: MockdataOptions): void {
 }
 
 function createStorageMockdata(created: CreatedMockdata, options: MockdataOptions): void {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const now = Date.now() - 10 * minuteMs
   const insertDatabase = database.prepare(`
     INSERT INTO database_storage_snapshots (
@@ -1593,27 +1595,32 @@ function createStorageMockdata(created: CreatedMockdata, options: MockdataOption
     ['system_accounts', Object.keys(created.users).length],
     ['system_teams', Object.keys(created.teams).length]
   ] as const
-  const recordTables = [
+  const datasetTables = [
     ['usage_records', options.days * options.dailyRequests],
     ['audit_logs', Math.ceil(options.days * options.dailyRequests / 4)],
     ['operation_logs', 90],
-    ['runtime_logs', Math.min(240, options.days * options.dailyRequests)],
+    ['runtime_logs', Math.min(240, options.days * options.dailyRequests)]
+  ] as const
+  const statsTables = [
     ['usage_stats_daily', options.days * 12],
     ['system_metrics_samples', options.days * 24]
+  ] as const
+  const databaseTargets = [
+    { role: 'business', path: runtimeConfig.databasePath, baseBytes: 80_000_000, growthBytes: 1_200_000, tableCount: 20, indexCount: 38 },
+    { role: 'dataset', path: datasetDatabasePath(), baseBytes: 220_000_000, growthBytes: 7_000_000, tableCount: 24, indexCount: 48 },
+    { role: 'stats', path: statsDatabasePath(), baseBytes: 90_000_000, growthBytes: 1_500_000, tableCount: 36, indexCount: 62 }
   ] as const
 
   database.exec('BEGIN')
   try {
     for (let dayIndex = 0; dayIndex < options.days; dayIndex += 1) {
       const sampledAt = new Date(now - (options.days - dayIndex - 1) * dayMs).toISOString()
-      for (const role of ['business', 'records']) {
-        const base = role === 'business' ? 80_000_000 : 260_000_000
-        const growth = dayIndex * (role === 'business' ? 1_200_000 : 8_500_000)
-        const fileBytes = base + growth
+      for (const target of databaseTargets) {
+        const fileBytes = target.baseBytes + dayIndex * target.growthBytes
         insertDatabase.run(
-          `${idPrefix}storage_db_${role}_${String(dayIndex + 1).padStart(2, '0')}`,
-          role,
-          role === 'business' ? runtimeConfig.databasePath : runtimeConfig.recordDatabasePath,
+          `${idPrefix}storage_db_${target.role}_${String(dayIndex + 1).padStart(2, '0')}`,
+          target.role,
+          target.path,
           sampledAt,
           fileBytes,
           Math.floor(fileBytes * 0.08),
@@ -1623,8 +1630,8 @@ function createStorageMockdata(created: CreatedMockdata, options: MockdataOption
           128 + dayIndex,
           Math.floor(fileBytes * 0.82),
           Math.floor(fileBytes * 0.18),
-          role === 'business' ? 20 : 42,
-          role === 'business' ? 38 : 74,
+          target.tableCount,
+          target.indexCount,
           sampledAt
         )
       }
@@ -1632,9 +1639,13 @@ function createStorageMockdata(created: CreatedMockdata, options: MockdataOption
         const rows = baseRows + dayIndex * 2
         insertTable.run(...tableStorageValues('business', tableName, dayIndex, sampledAt, rows, 24_000 + rows * 900))
       }
-      for (const [tableName, baseRows] of recordTables) {
+      for (const [tableName, baseRows] of datasetTables) {
         const rows = baseRows + dayIndex * 12
-        insertTable.run(...tableStorageValues('records', tableName, dayIndex, sampledAt, rows, 80_000 + rows * 1100))
+        insertTable.run(...tableStorageValues('dataset', tableName, dayIndex, sampledAt, rows, 80_000 + rows * 1100))
+      }
+      for (const [tableName, baseRows] of statsTables) {
+        const rows = baseRows + dayIndex * 4
+        insertTable.run(...tableStorageValues('stats', tableName, dayIndex, sampledAt, rows, 60_000 + rows * 700))
       }
     }
     database.exec('COMMIT')
@@ -1673,8 +1684,8 @@ function tableStorageValues(
   ]
 }
 
-function rebuildDerivedCaches(recordDatabase: Database): void {
-  resetUsageStatsCache(recordDatabase)
+function rebuildDerivedCaches(statsDatabase: Database): void {
+  resetUsageStatsCache(statsDatabase)
   let totalProcessed = 0
   while (true) {
     const processed = aggregateUsageStatsBatch(5000)
@@ -1746,10 +1757,11 @@ function resetUsageStatsCache(database: Database): void {
   }
 }
 
-function cleanupMockdata(businessDatabase: Database, recordDatabase: Database, adminId: string): void {
+function cleanupMockdata(businessDatabase: Database, datasetDatabase: Database, statsDatabase: Database, adminId: string): void {
   const mockUserIds = selectIds(businessDatabase, "SELECT id FROM system_accounts WHERE username LIKE 'mockdata_%'")
   const mockAccountIds = selectIds(businessDatabase, 'SELECT id FROM accounts WHERE name LIKE ?', `${namePrefix}%`)
-  cleanupRecordMockdata(recordDatabase, mockAccountIds)
+  cleanupDatasetMockdata(datasetDatabase)
+  cleanupStatsMockdata(statsDatabase, mockAccountIds)
   cleanupBusinessMockdata(businessDatabase, adminId, mockUserIds)
 }
 
@@ -1801,10 +1813,9 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
   }
 }
 
-function cleanupRecordMockdata(database: Database, mockAccountIds: string[]): void {
+function cleanupDatasetMockdata(database: Database): void {
   database.exec('BEGIN')
   try {
-    deleteWhereIn(database, 'account_usage_snapshots', 'account_id', mockAccountIds)
     database.prepare("DELETE FROM usage_records WHERE id LIKE ? OR trace_id LIKE ?").run(`${idPrefix}%`, `${tracePrefix}%`)
 
     const auditIds = selectIds(database, 'SELECT id FROM audit_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
@@ -1816,6 +1827,18 @@ function cleanupRecordMockdata(database: Database, mockAccountIds: string[]): vo
     const runtimeIds = selectIds(database, 'SELECT id FROM runtime_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
     deleteWhereIn(database, 'runtime_logs', 'id', runtimeIds)
 
+    database.exec('COMMIT')
+  } catch (error) {
+    database.exec('ROLLBACK')
+    throw error
+  }
+  repositories.cleanupUnreferencedAuditPayloadBlobs(10000)
+}
+
+function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): void {
+  database.exec('BEGIN')
+  try {
+    deleteWhereIn(database, 'account_usage_snapshots', 'account_id', mockAccountIds)
     database.prepare('DELETE FROM system_metrics_samples WHERE id LIKE ?').run(`${idPrefix}%`)
     database.prepare('DELETE FROM process_event_loop_samples WHERE id LIKE ?').run(`${idPrefix}%`)
     database.prepare('DELETE FROM database_storage_snapshots WHERE id LIKE ?').run(`${idPrefix}%`)
@@ -1825,7 +1848,6 @@ function cleanupRecordMockdata(database: Database, mockAccountIds: string[]): vo
     database.exec('ROLLBACK')
     throw error
   }
-  repositories.cleanupUnreferencedAuditPayloadBlobs(10000)
 }
 
 function rebuildSystemMetricsHourly(database: Database): void {

@@ -86,7 +86,7 @@
     </a-modal>
 
     <a-row :gutter="[16, 16]" class="database-summary-grid">
-      <a-col v-for="item in databaseSummaryRows" :key="item.role" :xs="24" :lg="12">
+      <a-col v-for="item in databaseSummaryRows" :key="item.role" :xs="24" :lg="8">
         <a-card class="database-summary-card">
           <div class="database-summary-head">
             <a-tag :color="databaseRoleColor(item.role)">{{ databaseRoleLabel(item.role) }}</a-tag>
@@ -258,23 +258,27 @@ const cleanupModalOpen = ref(false)
 const cleanupSubmitting = ref(false)
 const cleanupCutoffAt = ref<Dayjs | undefined>(defaultCleanupCutoffAt())
 const cleanupResult = ref<UsageRecordsCleanupResult>()
-const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'records']
+const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'stats']
 const historyChartPointLimit = 720
 const selectedTableKeys = ref<Record<MonitoredDatabaseRole, string | undefined>>({
   business: undefined,
-  records: undefined
+  dataset: undefined,
+  stats: undefined
 })
 const historyRowsByRole = ref<Record<MonitoredDatabaseRole, TableStorageSnapshotSummary[]>>({
   business: [],
-  records: []
+  dataset: [],
+  stats: []
 })
 const historyChartElements: Record<MonitoredDatabaseRole, HTMLDivElement | undefined> = {
   business: undefined,
-  records: undefined
+  dataset: undefined,
+  stats: undefined
 }
 const historyCharts: Record<MonitoredDatabaseRole, ShallowRef<ECharts | undefined>> = {
   business: shallowRef<ECharts>(),
-  records: shallowRef<ECharts>()
+  dataset: shallowRef<ECharts>(),
+  stats: shallowRef<ECharts>()
 }
 const { pageActive } = useEchartsPageLifecycle({
   renderCharts: renderHistoryCharts,
@@ -300,6 +304,7 @@ const databaseSummaryRows = computed(() => {
 const filteredTables = computed(() => {
   const text = keyword.value.trim().toLowerCase()
   return (overview.value?.tables ?? [])
+    .filter((row) => databaseSummaryRoles.includes(row.databaseRole))
     .filter((row) => matchesTableNameKeyword(row.tableName, text))
 })
 const activeFilterCount = computed(() => {
@@ -312,7 +317,8 @@ const activeFilterCount = computed(() => {
 const selectedTable = computed(() => {
   return {
     business: selectedTableForRole('business'),
-    records: selectedTableForRole('records')
+    dataset: selectedTableForRole('dataset'),
+    stats: selectedTableForRole('stats')
   }
 })
 
@@ -361,7 +367,7 @@ const cleanupResultDescription = computed(() => {
       result.eligibleRows !== undefined ? `首批可清理：${formatInteger(result.eligibleRows)} 条` : undefined,
       result.submittedAt ? `提交时间：${formatDateTime(result.submittedAt)}` : undefined,
       result.jobId ? `任务：${result.jobId}` : undefined,
-      'worker 会在后台分批清理，稍后刷新表监控可查看记录库变化。'
+      'worker 会在后台分批清理，稍后刷新表监控可查看数据集库变化。'
     ].filter((item): item is string => Boolean(item))
     return details.join('；')
   }
@@ -440,7 +446,8 @@ function resetFilters() {
   historyRange.value = defaultHistoryRange()
   selectedTableKeys.value = {
     business: undefined,
-    records: undefined
+    dataset: undefined,
+    stats: undefined
   }
   void loadData()
 }
@@ -628,11 +635,19 @@ function tableKey(row: TableStorageSnapshotSummary) {
 }
 
 function databaseRoleLabel(role: MonitoredDatabaseRole) {
-  return role === 'business' ? '业务库' : '记录库'
+  return {
+    business: '业务库',
+    dataset: '数据集库',
+    stats: '统计结果库'
+  }[role]
 }
 
 function databaseRoleColor(role: MonitoredDatabaseRole) {
-  return role === 'business' ? 'blue' : 'purple'
+  return {
+    business: 'blue',
+    dataset: 'orange',
+    stats: 'purple'
+  }[role]
 }
 
 function totalDatabaseBytes(database?: DatabaseStorageSnapshotSummary): number | undefined {

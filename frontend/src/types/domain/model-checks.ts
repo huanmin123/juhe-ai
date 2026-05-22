@@ -117,9 +117,11 @@ export type ModelCheckProgressEvent = {
   type: 'run_started'
   message: string
   targetId: string
+  targetName?: string
   model: string
   trustedComparison: boolean
   trustedComparisonAccountId?: string
+  trustedComparisonAccountName?: string
   /** @deprecated 使用 trustedComparison。 */
   officialBaseline: boolean
 } | {

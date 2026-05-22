@@ -12,6 +12,7 @@ import type {
 import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
 import { getDatasetDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
 import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
+import { loadAccountNameMap } from './repository-lookups.js'
 
 const defaultModelCheckPageSize = 20
 const maxModelCheckPageSize = 100
@@ -317,7 +318,8 @@ export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunL
     `)
     .all(...filters.params, normalized.pageSize + 1, (normalized.page - 1) * normalized.pageSize) as unknown as ModelCheckRunRow[]
   const pageRows = takePageRows(rows, normalized.pageSize)
-  const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access)))
+  const accountNames = loadModelCheckTargetNameMap(pageRows.rows)
+  const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames))
   return {
     items,
     total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
@@ -339,6 +341,7 @@ export function getModelCheckRunDetail(runId: string, access?: AccessScope): Mod
     `)
     .get(runId, ...scope.params) as unknown as ModelCheckRunRow | undefined
   if (!row) return undefined
+  const accountNames = loadModelCheckTargetNameMap([row])
   const checks = getDatasetDatabase()
     .prepare(`
       SELECT *
@@ -348,7 +351,7 @@ export function getModelCheckRunDetail(runId: string, access?: AccessScope): Mod
     `)
     .all(runId) as unknown as ModelCheckItemRow[]
   return {
-    ...modelCheckRunFromRow(row, includeSystemAccountFields(access)),
+    ...modelCheckRunFromRow(row, includeSystemAccountFields(access), accountNames),
     checks: checks.map(modelCheckItemFromRow)
   }
 }
@@ -357,7 +360,7 @@ function findModelCheckRun(runId: string): ModelCheckRunSummary | undefined {
   const row = getDatasetDatabase()
     .prepare('SELECT * FROM model_check_runs WHERE id = ? LIMIT 1')
     .get(runId) as unknown as ModelCheckRunRow | undefined
-  return row ? modelCheckRunFromRow(row, includeSystemAccountFields()) : undefined
+  return row ? modelCheckRunFromRow(row, includeSystemAccountFields(), loadModelCheckTargetNameMap([row])) : undefined
 }
 
 function buildModelCheckRunFilters(access: AccessScope | undefined, options: NormalizedModelCheckRunListOptions): { clause: string; params: Array<string | number | null> } {
@@ -416,7 +419,12 @@ function normalizeListOptions(options: ModelCheckRunListOptions): NormalizedMode
   }
 }
 
-function modelCheckRunFromRow(row: ModelCheckRunRow, showSystemAccountFields: boolean): ModelCheckRunSummary {
+function loadModelCheckTargetNameMap(rows: ModelCheckRunRow[]): Map<string, string> {
+  return loadAccountNameMap(rows.map((row) => row.account_id ?? row.target_id))
+}
+
+function modelCheckRunFromRow(row: ModelCheckRunRow, showSystemAccountFields: boolean, accountNames: Map<string, string> = new Map()): ModelCheckRunSummary {
+  const targetName = row.target_name?.trim() || accountNames.get(row.account_id ?? row.target_id)
   return {
     id: row.id,
     systemAccountId: showSystemAccountFields ? row.system_account_id : undefined,
@@ -424,7 +432,7 @@ function modelCheckRunFromRow(row: ModelCheckRunRow, showSystemAccountFields: bo
     providerCode: row.provider_code,
     targetType: row.target_type,
     targetId: row.target_id,
-    targetName: row.target_name ?? undefined,
+    targetName: targetName ?? undefined,
     targetOwnerSystemAccountId: showSystemAccountFields ? row.target_owner_system_account_id ?? undefined : undefined,
     accountId: row.account_id ?? undefined,
     groupId: row.group_id ?? undefined,

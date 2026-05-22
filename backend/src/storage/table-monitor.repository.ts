@@ -6,7 +6,7 @@ import { runtimeConfig } from '../config/runtime.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 
-export type MonitoredDatabaseRole = 'business' | 'records' | 'dataset' | 'stats'
+export type MonitoredDatabaseRole = 'business' | 'dataset' | 'stats'
 
 export interface TableStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole
