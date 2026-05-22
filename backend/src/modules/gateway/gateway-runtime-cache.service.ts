@@ -1,4 +1,5 @@
 import { createAppCache } from '../../shared/cache.js'
+import { loadAccountCurrentConcurrencyByIds } from '../../shared/account-concurrency.js'
 import { registerGatewayRuntimeCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { hashSecret } from '../../storage/crypto.js'
@@ -69,26 +70,26 @@ export function resolveCachedGroupUsageAccessMetadata(groupId: string, systemAcc
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = groupUsageAccessCache.get(cacheKey)
   if (cached !== undefined) {
-    return cached || undefined
+    return cached ? cloneGroupUsageAccessMetadata(cached) : undefined
   }
   const value = resolveGroupUsageAccessMetadata(groupId, systemAccountId)
-  groupUsageAccessCache.set(cacheKey, value ?? false)
-  return value
+  groupUsageAccessCache.set(cacheKey, value ? cloneGroupUsageAccessMetadata(value) : false)
+  return value ? cloneGroupUsageAccessMetadata(value) : undefined
 }
 
 export async function resolveCachedGroupUsageAccessMetadataAsync(groupId: string, systemAccountId: string): Promise<GroupUsageAccessMetadata | undefined> {
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = groupUsageAccessCache.get(cacheKey)
   if (cached !== undefined) {
-    return cached ? { ...cached } : undefined
+    return cached ? cloneGroupUsageAccessMetadata(cached) : undefined
   }
   const value = await requestDbService({
     type: 'resolve_group_usage_access',
     groupId,
     systemAccountId
   })
-  groupUsageAccessCache.set(cacheKey, value ?? false)
-  return value ? { ...value } : undefined
+  groupUsageAccessCache.set(cacheKey, value ? cloneGroupUsageAccessMetadata(value) : false)
+  return value ? cloneGroupUsageAccessMetadata(value) : undefined
 }
 
 export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountId: string): OpenAIAccountSecret[] {
@@ -96,33 +97,33 @@ export function listCachedOpenAIAccountsForGroup(groupId: string, systemAccountI
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = openAIAccountsCache.get(cacheKey)
   if (cached) {
-    return cached.map(cloneOpenAIAccountSecret)
+    return cloneOpenAIAccountsWithCurrentConcurrency(cached)
   }
   const value = listOpenAIAccountsForGroup(groupId, systemAccountId)
-  openAIAccountsCache.set(cacheKey, value)
-  return value.map(cloneOpenAIAccountSecret)
+  openAIAccountsCache.set(cacheKey, value.map(cloneStaticOpenAIAccountSecret))
+  return cloneOpenAIAccountsWithCurrentConcurrency(value)
 }
 
 export async function listCachedOpenAIAccountsForGroupAsync(groupId: string, systemAccountId: string): Promise<OpenAIAccountSecret[]> {
   const cacheKey = gatewayCacheKey(groupId, systemAccountId)
   const cached = openAIAccountsCache.get(cacheKey)
   if (cached) {
-    return cached.map(cloneOpenAIAccountSecret)
+    return cloneOpenAIAccountsWithCurrentConcurrency(cached)
   }
   const accounts = await requestDbService({
     type: 'list_openai_accounts_for_group',
     groupId,
     systemAccountId
   })
-  openAIAccountsCache.set(cacheKey, accounts.map(cloneOpenAIAccountSecret))
-  return accounts.map(cloneOpenAIAccountSecret)
+  openAIAccountsCache.set(cacheKey, accounts.map(cloneStaticOpenAIAccountSecret))
+  return cloneOpenAIAccountsWithCurrentConcurrency(accounts)
 }
 
 export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbServiceGatewayRuntime> {
   const cacheKey = hashSecret(apiKey)
   const cached = gatewayRuntimeCache.get(cacheKey)
   if (cached && cached.apiKey) {
-    return cloneGatewayRuntime(cached)
+    return cloneGatewayRuntimeForDispatch(cached)
   }
 
   const runtime = await requestDbService({
@@ -130,16 +131,16 @@ export async function readCachedGatewayRuntimeAsync(apiKey: string): Promise<DbS
     key: apiKey
   })
   if (!runtime.apiKey) {
-    return cloneGatewayRuntime(runtime)
+    return cloneStaticGatewayRuntime(runtime)
   }
 
-  gatewayRuntimeCache.set(cacheKey, cloneGatewayRuntime(runtime), { ttlMs: gatewayRuntimeCacheTtlMs(runtime) })
+  gatewayRuntimeCache.set(cacheKey, cloneStaticGatewayRuntime(runtime), { ttlMs: gatewayRuntimeCacheTtlMs(runtime) })
   gatewaySettingsCache.set('current', runtime.settings)
   if (runtime.groupAccess) {
-    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.group_id, runtime.apiKey.system_account_id), runtime.groupAccess)
+    groupUsageAccessCache.set(gatewayCacheKey(runtime.apiKey.group_id, runtime.apiKey.system_account_id), cloneGroupUsageAccessMetadata(runtime.groupAccess))
   }
-  openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.group_id, runtime.apiKey.system_account_id), runtime.accounts.map(cloneOpenAIAccountSecret))
-  return cloneGatewayRuntime(runtime)
+  openAIAccountsCache.set(gatewayCacheKey(runtime.apiKey.group_id, runtime.apiKey.system_account_id), runtime.accounts.map(cloneStaticOpenAIAccountSecret))
+  return cloneGatewayRuntimeForDispatch(runtime)
 }
 
 export function clearGatewayRuntimeCache(): void {
@@ -175,20 +176,43 @@ function assertLocalGatewayDatabaseAccess(operation: string): void {
   }
 }
 
-function cloneOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAccountSecret {
+function cloneStaticOpenAIAccountSecret(account: OpenAIAccountSecret): OpenAIAccountSecret {
   return {
     ...account,
+    currentConcurrency: undefined,
     supportedModels: [...(account.supportedModels ?? [])],
     credentials: { ...account.credentials }
   }
 }
 
-function cloneGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {
+function cloneOpenAIAccountsWithCurrentConcurrency(accounts: OpenAIAccountSecret[]): OpenAIAccountSecret[] {
+  const concurrency = loadAccountCurrentConcurrencyByIds(accounts.map((account) => account.id))
+  return accounts.map((account) => ({
+    ...cloneStaticOpenAIAccountSecret(account),
+    currentConcurrency: concurrency.get(account.id) ?? 0
+  }))
+}
+
+function cloneGroupUsageAccessMetadata(value: GroupUsageAccessMetadata): GroupUsageAccessMetadata {
+  return {
+    ...value,
+    schedulingPolicy: value.schedulingPolicy ? { ...value.schedulingPolicy } : undefined
+  }
+}
+
+function cloneStaticGatewayRuntime(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {
   return {
     apiKey: runtime.apiKey ? { ...runtime.apiKey } : undefined,
     settings: { ...runtime.settings },
-    groupAccess: runtime.groupAccess ? { ...runtime.groupAccess } : undefined,
-    accounts: runtime.accounts.map(cloneOpenAIAccountSecret)
+    groupAccess: runtime.groupAccess ? cloneGroupUsageAccessMetadata(runtime.groupAccess) : undefined,
+    accounts: runtime.accounts.map(cloneStaticOpenAIAccountSecret)
+  }
+}
+
+function cloneGatewayRuntimeForDispatch(runtime: DbServiceGatewayRuntime): DbServiceGatewayRuntime {
+  return {
+    ...cloneStaticGatewayRuntime(runtime),
+    accounts: cloneOpenAIAccountsWithCurrentConcurrency(runtime.accounts)
   }
 }
 

@@ -26,11 +26,13 @@ export interface ResponseWriteResult {
   bytes: number
   backpressure: boolean
   drainWaitMs?: number
+  logLevel?: 'debug' | 'warn'
 }
 
 export const nonStreamResponseCaptureBytes = 2 * 1024 * 1024
 export const nonStreamUsageTailCaptureBytes = 256 * 1024
 export const upstreamErrorBodyCaptureBytes = 256 * 1024
+export const responseBackpressureWarnThresholdMs = 50
 
 export async function pipeNonStreamUpstreamResponse(
   upstreamBody: AsyncIterable<Uint8Array>,
@@ -40,6 +42,7 @@ export async function pipeNonStreamUpstreamResponse(
     captureBytes?: number
     usageTailBytes?: number
     signal?: AbortSignal
+    onFirstByte?: () => void
   }
 ): Promise<NonStreamPipeResult> {
   const iterator = upstreamBody[Symbol.asyncIterator]()
@@ -68,6 +71,7 @@ export async function pipeNonStreamUpstreamResponse(
       const buffer = Buffer.from(result.value)
       if (firstByteMs === undefined) {
         firstByteMs = Date.now() - input.startedAt
+        input.onFirstByte?.()
       }
       transferredBytes += buffer.length
       capture.push(buffer)
@@ -100,6 +104,7 @@ export async function readUpstreamBodyLimited(
     maxBytes?: number
     startedAt?: number
     signal?: AbortSignal
+    onFirstByte?: () => void
   } = {}
 ): Promise<LimitedBodyReadResult> {
   if (!upstreamBody) {
@@ -123,6 +128,7 @@ export async function readUpstreamBodyLimited(
       const buffer = Buffer.from(result.value)
       if (firstByteMs === undefined && input.startedAt !== undefined) {
         firstByteMs = Date.now() - input.startedAt
+        input.onFirstByte?.()
       }
       readBytes += buffer.length
       capture.push(buffer)
@@ -158,28 +164,30 @@ export async function writeResponseChunk(res: Response, buffer: Buffer): Promise
     return { bytes: buffer.length, backpressure: false }
   }
   const drainStartedAt = Date.now()
-  getRequestLogger().warn({
-    event: 'gateway_response_backpressure_started',
-    bytes: buffer.length,
-    writableLength: res.writableLength,
-    writableHighWaterMark: res.writableHighWaterMark,
-    headersSent: res.headersSent,
-    writableEnded: res.writableEnded,
-    destroyed: res.destroyed
-  }, '下游响应写入触发 backpressure，开始等待 drain')
+  const startedWritableLength = res.writableLength
+  const startedWritableHighWaterMark = res.writableHighWaterMark
+  const startedHeadersSent = res.headersSent
+  const startedWritableEnded = res.writableEnded
+  const startedDestroyed = res.destroyed
   await waitForResponseDrain(res, drainStartedAt)
   const drainWaitMs = Date.now() - drainStartedAt
-  getRequestLogger().info({
-    event: 'gateway_response_backpressure_drained',
+  const logLevel = drainWaitMs >= responseBackpressureWarnThresholdMs ? 'warn' : 'debug'
+  getRequestLogger()[logLevel]({
+    event: logLevel === 'warn' ? 'gateway_response_backpressure_slow' : 'gateway_response_backpressure_drained',
     bytes: buffer.length,
     drainWaitMs,
+    startedWritableLength,
+    startedWritableHighWaterMark,
+    startedHeadersSent,
+    startedWritableEnded,
+    startedDestroyed,
     writableLength: res.writableLength,
     writableHighWaterMark: res.writableHighWaterMark,
     headersSent: res.headersSent,
     writableEnded: res.writableEnded,
     destroyed: res.destroyed
-  }, '下游响应 drain 已恢复')
-  return { bytes: buffer.length, backpressure: true, drainWaitMs }
+  }, logLevel === 'warn' ? '下游响应 backpressure 等待时间过长' : '下游响应短暂 backpressure 已恢复')
+  return { bytes: buffer.length, backpressure: true, drainWaitMs, logLevel }
 }
 
 export function endResponse(res: Response): void {

@@ -16,7 +16,9 @@ const groupSchema = z.object({
   name: z.string().trim().min(1),
   providerCode: z.string().trim().min(1).optional(),
   description: z.string().trim().optional(),
-  enabled: z.boolean().optional()
+  enabled: z.boolean().optional(),
+  groupType: z.enum(['personal', 'high_concurrency']).optional(),
+  schedulingPolicy: z.record(z.unknown()).optional()
 })
 
 groupsRouter.get('/', async (req, res, next) => {
@@ -130,6 +132,7 @@ groupsRouter.post('/', mutationGuard({
           changes: [
             safeChange('name', '名称', undefined, group.name),
             safeChange('providerCode', '供应商', undefined, group.providerCode),
+            safeChange('groupType', '分组类型', undefined, group.groupType),
             safeChange('enabled', '启用状态', undefined, group.enabled)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
@@ -188,6 +191,8 @@ groupsRouter.patch('/:id', (req, res) => {
             name: '名称',
             providerCode: '供应商',
             description: '说明',
+            groupType: '分组类型',
+            schedulingPolicy: '调度策略',
             enabled: '启用状态'
           }),
           viewers: viewer(ownerSystemAccountId, 'resource_owner')

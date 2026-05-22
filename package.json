@@ -30,6 +30,8 @@
     "test:account-list-visible": "pnpm --filter juhe-ai-backend test:account-list-visible",
     "test:account-options-lightweight": "pnpm --filter juhe-ai-backend test:account-options-lightweight",
     "test:group-options-lightweight": "pnpm --filter juhe-ai-backend test:group-options-lightweight",
+    "test:group-scheduling-policy": "pnpm --filter juhe-ai-backend test:group-scheduling-policy",
+    "test:high-concurrency-queue": "pnpm --filter juhe-ai-backend test:high-concurrency-queue",
     "test:authorization-options-query-guard": "pnpm --filter juhe-ai-backend test:authorization-options-query-guard",
     "test:team-proxy-list-pagination": "pnpm --filter juhe-ai-backend test:team-proxy-list-pagination",
     "test:system-account-list-query-guard": "pnpm --filter juhe-ai-backend test:system-account-list-query-guard",

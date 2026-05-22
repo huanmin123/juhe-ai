@@ -172,6 +172,8 @@ function groupRowSelectColumns(alias: string): string {
     'description',
     'enabled',
     'is_default',
+    'group_type',
+    'scheduling_policy_json',
     'created_at',
     'updated_at'
   ].map((column) => `${alias}.${column}`).join(', ')
@@ -186,6 +188,8 @@ function groupListRowOuterSelectColumns(): string {
     'description',
     'enabled',
     'is_default',
+    'group_type',
+    'scheduling_policy_json',
     'created_at',
     'updated_at',
     'access_type',

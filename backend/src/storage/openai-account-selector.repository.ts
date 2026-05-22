@@ -1,11 +1,12 @@
-import type { AccountStatus, AccountType, ResourceAuthorizationSourceType } from '../domain/types.js'
+import { normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
+import type { AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, ResourceAuthorizationSourceType } from '../domain/types.js'
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
 import { getDatabase, getRecordDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
-import { activeResourceAuthorization, activeResourceAuthorizationsByResourceIds, groupSystemAccountId } from './resource-authorization-helpers.js'
+import { activeResourceAuthorization, activeResourceAuthorizationsByResourceIds } from './resource-authorization-helpers.js'
 import type { ResourceAuthorizationRow } from './repository-row-types.js'
 import { getSettings } from './settings.repository.js'
 
@@ -35,6 +36,9 @@ export interface OpenAIAccountSecret {
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
+  dispatchWeight?: number
+  softConcurrencyLimit?: number
+  currentConcurrency?: number
   baseUrl: string
   apiKey: string
   refreshToken?: string
@@ -57,6 +61,8 @@ export interface OpenAIAccountSecret {
 export interface GroupUsageAccessMetadata {
   groupOwnerSystemAccountId: string
   groupAccessType: 'owner' | 'authorized'
+  groupType?: GroupType
+  schedulingPolicy?: GroupSchedulingPolicy
   groupAuthorizationId?: string
   groupAuthorizationExpiresAt?: string
   groupAuthorizationSourceType?: ResourceAuthorizationSourceType
@@ -71,6 +77,8 @@ interface GroupAccountRow {
   local_last_error_message?: string | null
   local_super_priority_enabled?: number | null
   local_fallback_enabled?: number | null
+  weight?: number | null
+  soft_concurrency_limit?: number | null
 }
 
 type OpenAIGroupAccountSelectionRow = GroupAccountRow & OpenAIAccountRow
@@ -111,7 +119,8 @@ export function findOpenAIAccountForGroup(
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.account_authorization_id,
         group_accounts.local_status, group_accounts.local_cooldown_until, group_accounts.local_last_error_message,
-        group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled
+        group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
+        group_accounts.weight, group_accounts.soft_concurrency_limit
       FROM group_accounts
       WHERE group_accounts.group_id = ?
         AND group_accounts.account_id = ?
@@ -163,16 +172,23 @@ export function findOpenAIAccountForGroup(
 }
 
 export function resolveGroupUsageAccessMetadata(groupId: string, systemAccountId: string): GroupUsageAccessMetadata | undefined {
-  const groupOwnerSystemAccountId = groupSystemAccountId(groupId)
+  const groupRow = getDatabase()
+    .prepare('SELECT system_account_id, group_type, scheduling_policy_json FROM groups WHERE id = ?')
+    .get(groupId) as unknown as { system_account_id?: string; group_type?: GroupType | null; scheduling_policy_json?: string | null } | undefined
+  const groupOwnerSystemAccountId = groupRow?.system_account_id
   if (!groupOwnerSystemAccountId) return undefined
+  const groupType = normalizeGroupType(groupRow?.group_type)
+  const schedulingPolicy = parseGroupSchedulingPolicyJson(groupRow?.scheduling_policy_json ?? null, groupType)
   if (groupOwnerSystemAccountId === systemAccountId) {
-    return { groupOwnerSystemAccountId, groupAccessType: 'owner' }
+    return { groupOwnerSystemAccountId, groupAccessType: 'owner', groupType, schedulingPolicy }
   }
   const authorization = activeResourceAuthorization('group', groupId, systemAccountId)
   if (!authorization) return undefined
   return {
     groupOwnerSystemAccountId,
     groupAccessType: 'authorized',
+    groupType,
+    schedulingPolicy,
     groupAuthorizationId: authorization.id,
     groupAuthorizationExpiresAt: authorization.expires_at ?? undefined,
     groupAuthorizationSourceType: authorization.effective_source_type ?? undefined,
@@ -197,6 +213,7 @@ export function listOpenAIAccountsForGroup(
       SELECT group_accounts.account_id, group_accounts.account_authorization_id,
         group_accounts.local_status, group_accounts.local_cooldown_until, group_accounts.local_last_error_message,
         group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
+        group_accounts.weight, group_accounts.soft_concurrency_limit,
         accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.account_expires_at,
@@ -324,6 +341,10 @@ function openAIAccountSecretFromRow(
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
     qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
+    dispatchWeight: Math.max(1, Number(groupAccount?.weight ?? 1)),
+    softConcurrencyLimit: typeof groupAccount?.soft_concurrency_limit === 'number' && groupAccount.soft_concurrency_limit > 0
+      ? Math.trunc(groupAccount.soft_concurrency_limit)
+      : undefined,
     baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
     apiKey,
     refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,

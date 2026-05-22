@@ -7,6 +7,7 @@ export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'
 export type AccountUsageAccessType = 'owner' | 'authorized' | 'account_authorized' | 'group_authorized'
 export type GroupUsageAccessType = 'owner' | 'authorized'
+export type GroupType = 'personal' | 'high_concurrency'
 export type AuthorizationStatus = 'active' | 'paused' | 'expired' | 'revoked'
 export type SystemTeamStatus = 'active' | 'disabled'
 export type SystemTeamMemberStatus = 'active' | 'removed'
@@ -330,6 +331,8 @@ export interface AccountSummary {
   accountAuthorizationId?: string
   boundGroupId?: string
   boundGroupName?: string
+  boundGroupDispatchWeight?: number
+  boundGroupSoftConcurrencyLimit?: number
   groupBindStatus?: AccountGroupBindStatus
   bindingSystemAccountId?: string
   ownerSystemAccountId?: string
@@ -540,6 +543,23 @@ export interface ErrorPolicySummary {
   rules: Array<Record<string, unknown>>
 }
 
+export interface GroupSchedulingPolicy {
+  mode?: 'balanced_fast'
+  defaultSoftConcurrency?: number
+  weightAffectsSoftConcurrency?: boolean
+  fastFirstEnabled?: boolean
+  fallbackOnQueueEnabled?: boolean
+  breakAffinityOnSoftLimit?: boolean
+  breakAffinityOnQueueWaitMs?: number
+  slowRequestThresholdMs?: number
+  firstOutputSlowThresholdMs?: number
+  recentTimeoutWindowSeconds?: number
+  recentTimeoutPenaltyThreshold?: number
+  maxQueueWaitMs?: number
+  maxQueueSize?: number
+  perApiKeyQueueLimit?: number
+}
+
 export interface GroupSummary {
   id: string
   systemAccountId?: string
@@ -549,6 +569,8 @@ export interface GroupSummary {
   description?: string
   enabled: boolean
   isDefault: boolean
+  groupType: GroupType
+  schedulingPolicy?: GroupSchedulingPolicy
   accountIds: string[]
   accountStats: GroupAccountStats
   accessType?: ResourceAccessType
@@ -579,6 +601,8 @@ export type GroupOptionSummary = Pick<
   | 'providerCode'
   | 'enabled'
   | 'isDefault'
+  | 'groupType'
+  | 'schedulingPolicy'
   | 'accessType'
   | 'groupAuthorizationId'
   | 'authorizationStatus'

@@ -1,5 +1,6 @@
 import type { Request, Response } from 'express'
 
+import { loadAccountCurrentConcurrencyByIds } from '../../shared/account-concurrency.js'
 import { logger } from '../../shared/logger.js'
 import { bindRequestContextFields } from '../../shared/request-context.js'
 import { findActiveGatewayApiKeyById, type GatewayApiKeyRow, type GroupUsageAccessMetadata } from '../../storage/repositories.js'
@@ -26,6 +27,7 @@ import {
   resolveOpenAIGatewayClientStrategy,
   type OpenAIGatewayClientStrategyContext
 } from './openai-gateway-client-strategy.js'
+import { waitForHighConcurrencyGroupCapacity } from './openai-gateway-high-concurrency-queue.service.js'
 import { finalizeGatewayAuthFailureAudit, sendOpenAIModelsGatewayResponse } from './openai-gateway-fixed-responses.js'
 import { sendGatewayFailureResponse, sendQuotaExceededResponse } from './openai-gateway-failure-response.js'
 import { filterGatewayAccountsByRequestedModel, gatewayModelFilterFailureMessage } from './openai-gateway-model-filter.js'
@@ -33,6 +35,7 @@ import { gatewayErrorPayload } from './openai-gateway-responses.js'
 import { resolveGatewayRuntimeAsync } from './openai-gateway-request.js'
 import { isOpenAIModelsRequest, type UpstreamAccount } from './openai-gateway-route-helpers.js'
 import {
+  areOpenAIHighConcurrencyAccountsHardBusy,
   orderOpenAIAccountsBySessionAffinity,
   resolveOpenAIGatewaySessionAffinityKey
 } from './openai-gateway-session-affinity.service.js'
@@ -65,6 +68,7 @@ interface PrepareOpenAIGatewayDispatchContextInput {
   clientIp?: string
   endpoint: string
   requestSnapshot: UsageRequestSnapshot
+  signal?: AbortSignal
 }
 
 export interface OpenAIGatewayDispatchContext {
@@ -78,7 +82,7 @@ export interface OpenAIGatewayDispatchContext {
 export async function prepareOpenAIGatewayDispatchContext(
   input: PrepareOpenAIGatewayDispatchContextInput
 ): Promise<OpenAIGatewayDispatchContext | undefined> {
-  const { req, res, auditCapture, options, startedAt, traceId, clientIp, endpoint, requestSnapshot } = input
+  const { req, res, auditCapture, options, startedAt, traceId, clientIp, endpoint, requestSnapshot, signal } = input
   let gatewaySettings: GatewaySettings | undefined
   let apiKeyRecord: GatewayApiKeyRow | undefined
   let runtimeGroupAccess: GroupUsageAccessMetadata | undefined
@@ -269,6 +273,10 @@ export async function prepareOpenAIGatewayDispatchContext(
   })
   const sessionAffinityKey = options.disableSessionAffinity ? undefined : rawSessionAffinityKey
   const rawCandidateAccounts = options.candidateAccounts ?? runtimeAccounts ?? await listCachedOpenAIAccountsForGroupAsync(groupId, systemAccountId)
+  const dispatchOrderingOptions = {
+    groupType: groupAccess.groupType,
+    schedulingPolicy: groupAccess.schedulingPolicy
+  }
   const modelFilter = filterGatewayAccountsByRequestedModel(rawCandidateAccounts, requestModel(req))
   if (modelFilter.skippedCount > 0) {
     auditCapture.addGatewayMetadata({
@@ -305,7 +313,8 @@ export async function prepareOpenAIGatewayDispatchContext(
   }
   const orderedCandidateAccounts = orderOpenAIAccountsBySessionAffinity(
     modelFilter.accounts,
-    sessionAffinityKey
+    sessionAffinityKey,
+    dispatchOrderingOptions
   )
   const localSuppressionFilter = filterLocallySuppressedGatewayAccounts(orderedCandidateAccounts)
   if (localSuppressionFilter.suppressedCount > 0) {
@@ -344,7 +353,7 @@ export async function prepareOpenAIGatewayDispatchContext(
 
   const candidateAccounts = codexTurnAvoidance.accounts
   let authorizationQuotaDeniedAccountCount = 0
-  const accounts: UpstreamAccount[] = []
+  let accounts: UpstreamAccount[] = []
   const accountQuotaDecisions = await checkGatewayAuthorizationQuotaBatchAsync({ groupAccess, accounts: candidateAccounts })
   for (const account of candidateAccounts) {
     const decision = accountQuotaDecisions.get(account.id) ?? { allowed: true }
@@ -353,6 +362,9 @@ export async function prepareOpenAIGatewayDispatchContext(
       continue
     }
     accounts.push(account)
+  }
+  if (dispatchOrderingOptions.groupType === 'high_concurrency') {
+    accounts = refreshGatewayAccountCurrentConcurrency(accounts)
   }
 
   if (accounts.length === 0) {
@@ -380,6 +392,58 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
+  if (areOpenAIHighConcurrencyAccountsHardBusy(accounts, dispatchOrderingOptions)) {
+    accounts = orderOpenAIAccountsBySessionAffinity(
+      refreshGatewayAccountCurrentConcurrency(accounts),
+      sessionAffinityKey,
+      dispatchOrderingOptions
+    )
+  }
+
+  if (areOpenAIHighConcurrencyAccountsHardBusy(accounts, dispatchOrderingOptions)) {
+    const queueWait = await waitForHighConcurrencyGroupCapacity({
+      systemAccountId,
+      groupId,
+      apiKeyId,
+      accountIds: accounts.map((account) => account.id),
+      policy: groupAccess.schedulingPolicy,
+      signal
+    })
+    auditCapture.addGatewayMetadata({
+      label: 'high_concurrency_group_queue',
+      metadata: queueWait
+    })
+    if (signal?.aborted || res.writableEnded) {
+      return undefined
+    }
+    accounts = orderOpenAIAccountsBySessionAffinity(
+      refreshGatewayAccountCurrentConcurrency(accounts),
+      sessionAffinityKey,
+      dispatchOrderingOptions
+    )
+  }
+
+  if (areOpenAIHighConcurrencyAccountsHardBusy(accounts, dispatchOrderingOptions)) {
+    const statusCode = 429
+    const responsePayload = gatewayErrorPayload('分组繁忙，请稍后重试', 'rate_limit_exceeded')
+    sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext,
+      startedAt,
+      statusCode,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'dispatch',
+        errorCode: 'rate_limit_exceeded',
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
+
   return {
     activeGatewaySettings,
     usageContext,
@@ -387,6 +451,14 @@ export async function prepareOpenAIGatewayDispatchContext(
     sessionAffinityKey,
     clientStrategy
   }
+}
+
+function refreshGatewayAccountCurrentConcurrency(accounts: UpstreamAccount[]): UpstreamAccount[] {
+  const concurrency = loadAccountCurrentConcurrencyByIds(accounts.map((account) => account.id))
+  return accounts.map((account) => ({
+    ...account,
+    currentConcurrency: concurrency.get(account.id) ?? 0
+  }))
 }
 
 function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewaySettings>): GatewaySettings {

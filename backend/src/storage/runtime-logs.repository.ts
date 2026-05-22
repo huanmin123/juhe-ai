@@ -390,6 +390,20 @@ export function backfillRuntimeLogSearchIndex(limit = 1000): RuntimeLogSearchBac
   const database = getRecordDatabase()
   const batchLimit = positiveRuntimeLogSearchBackfillLimit(limit)
   const state = runtimeLogSearchBackfillState(database)
+  const completedCursor = runtimeLogSearchBackfillCompletedCursor(database)
+  if (completedCursor) {
+    updateRuntimeLogSearchBackfillState(database, {
+      cursorCreatedAt: completedCursor.cursorCreatedAt,
+      cursorId: completedCursor.cursorId,
+      lastSuccessAt: nowIso()
+    })
+    return {
+      processed: 0,
+      hasMore: false,
+      cursorCreatedAt: completedCursor.cursorCreatedAt,
+      cursorId: completedCursor.cursorId
+    }
+  }
   const rows = database
     .prepare(`
       SELECT id, trace_id, event, message, error_message, raw_json, created_at
@@ -405,8 +419,7 @@ export function backfillRuntimeLogSearchIndex(limit = 1000): RuntimeLogSearchBac
     updateRuntimeLogSearchBackfillState(database, {
       cursorCreatedAt: state.cursorCreatedAt || undefined,
       cursorId: state.cursorId || undefined,
-      lastSuccessAt: nowIso(),
-      lagSeconds: 0
+      lastSuccessAt: nowIso()
     })
     return {
       processed: 0,
@@ -443,7 +456,7 @@ export function backfillRuntimeLogSearchIndex(limit = 1000): RuntimeLogSearchBac
       cursorCreatedAt,
       cursorId,
       lastSuccessAt: updatedAt,
-      lagSeconds: hasMore ? searchBackfillLagSeconds(cursorCreatedAt) : 0
+      ...(hasMore ? { lagSeconds: searchBackfillLagSeconds(cursorCreatedAt) } : {})
     })
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -602,6 +615,21 @@ function runtimeLogSearchBackfillState(database: ReturnType<typeof getRecordData
   return {
     cursorCreatedAt: optionalString(row?.cursor_created_at) ?? '',
     cursorId: optionalString(row?.cursor_id) ?? ''
+  }
+}
+
+function runtimeLogSearchBackfillCompletedCursor(database: ReturnType<typeof getRecordDatabase>): { cursorCreatedAt?: string; cursorId?: string } | undefined {
+  const runtimeLogs = database.prepare('SELECT COUNT(*) AS count FROM runtime_logs').get() as { count?: number } | undefined
+  const searchLogs = database.prepare('SELECT COUNT(*) AS count FROM runtime_log_search').get() as { count?: number } | undefined
+  if (Number(runtimeLogs?.count ?? 0) !== Number(searchLogs?.count ?? 0)) {
+    return undefined
+  }
+  const latest = database
+    .prepare('SELECT id, created_at FROM runtime_logs ORDER BY created_at DESC, id DESC LIMIT 1')
+    .get() as RuntimeLogRow | undefined
+  return {
+    cursorCreatedAt: optionalString(latest?.created_at),
+    cursorId: optionalString(latest?.id)
   }
 }
 

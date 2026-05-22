@@ -37,7 +37,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1480 : 1300" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileGroups" @mobile-refresh="refreshMobileGroups">
+    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1610 : 1430" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileGroups" @mobile-refresh="refreshMobileGroups">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页把账户加入对应分组。" />
       </template>
@@ -49,6 +49,11 @@
         </template>
         <template v-else-if="column.key === 'providerCode'">
           <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+        </template>
+        <template v-else-if="column.key === 'groupType'">
+          <a-tooltip :title="groupPolicySummary(record)">
+            <a-tag :color="groupTypeColor(record.groupType)">{{ groupTypeText(record.groupType) }}</a-tag>
+          </a-tooltip>
         </template>
         <template v-else-if="column.key === 'systemAccount'">
           <span :class="record.systemAccountName ? 'name-cell' : 'muted-cell'">{{ groupSystemAccountText(record) }}</span>
@@ -94,6 +99,7 @@
             </div>
             <div class="mobile-list-card-tags">
               <a-tag color="geekblue">{{ providerName(record.providerCode) }}</a-tag>
+              <a-tag :color="groupTypeColor(record.groupType)">{{ groupTypeText(record.groupType) }}</a-tag>
               <StatusTag class="status-tag" :color="groupStatusColor(record)" :label="groupStatusText(record)" />
               <a-tag v-if="isAuthorizedGroup(record)" color="cyan">仅可使用</a-tag>
             </div>
@@ -139,6 +145,18 @@
           <a-select v-model:value="form.providerCode" :options="providerOptions" :disabled="providerLocked" />
           <div class="form-help">同一供应商下可混合 OAuth / API Key 账户；分组只决定账户归属，不拆统计、会话亲和或缓存边界。</div>
         </a-form-item>
+        <a-form-item label="分组类型" required>
+          <a-radio-group v-model:value="form.groupType" button-style="solid">
+            <a-radio-button value="personal">个人分组</a-radio-button>
+            <a-radio-button value="high_concurrency">高并发分组</a-radio-button>
+          </a-radio-group>
+        </a-form-item>
+        <div v-if="form.groupType === 'high_concurrency'" class="scheduling-policy-grid">
+          <a-form-item label="最大单账户排队阈值">
+            <a-input-number v-model:value="form.schedulingPolicy.defaultSoftConcurrency" :min="1" :max="1000000" />
+            <div class="form-help">达到该阈值后优先切到其他账户；实际值不会超过账户并发上限。</div>
+          </a-form-item>
+        </div>
         <a-form-item label="说明">
           <a-textarea v-model:value="form.description" :rows="3" />
         </a-form-item>
@@ -171,7 +189,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
-import type { GroupSummary, ProviderDefinition } from '@/types/domain'
+import type { GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 const FALLBACK_PROVIDER: ProviderDefinition = {
@@ -192,6 +210,22 @@ const groupSaving = submittingRef('groups.save')
 const providers = ref<ProviderDefinition[]>([])
 const groupOptionsLoaded = ref(false)
 const groupOptionsScopeKey = ref('')
+const defaultHighConcurrencySchedulingPolicy: Required<GroupSchedulingPolicy> = {
+  mode: 'balanced_fast',
+  defaultSoftConcurrency: 5,
+  weightAffectsSoftConcurrency: true,
+  fastFirstEnabled: true,
+  fallbackOnQueueEnabled: true,
+  breakAffinityOnSoftLimit: true,
+  breakAffinityOnQueueWaitMs: 0,
+  slowRequestThresholdMs: 30000,
+  firstOutputSlowThresholdMs: 15000,
+  recentTimeoutWindowSeconds: 120,
+  recentTimeoutPenaltyThreshold: 2,
+  maxQueueWaitMs: 3000,
+  maxQueueSize: 100,
+  perApiKeyQueueLimit: 50
+}
 type GroupsPageState = {
   pagination?: { current: number; pageSize: number }
   systemAccountFilter: string
@@ -203,7 +237,14 @@ const defaultGroupsPageState = (): GroupsPageState => ({
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
-const form = reactive({ name: '', providerCode: 'openai', description: '', enabled: true })
+const form = reactive({
+  name: '',
+  providerCode: 'openai',
+  description: '',
+  enabled: true,
+  groupType: 'personal' as GroupType,
+  schedulingPolicy: cloneHighConcurrencySchedulingPolicy()
+})
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const groupsApi = useScopedGroupsApi(isManagementView)
 const {
@@ -252,7 +293,8 @@ const {
 const columns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '分组名称', dataIndex: 'name', key: 'name', width: 240 },
-    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 }
+    { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 },
+    { title: '类型', dataIndex: 'groupType', key: 'groupType', width: 130 }
   ]
   if (isManagementView.value) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
@@ -289,6 +331,30 @@ const targetSystemAccountLabel = computed(() => {
 
 function groupStats(group: GroupSummary) {
   return group.accountStats
+}
+
+function cloneHighConcurrencySchedulingPolicy(source?: GroupSchedulingPolicy): Required<GroupSchedulingPolicy> {
+  return {
+    ...defaultHighConcurrencySchedulingPolicy,
+    ...(source ?? {}),
+    mode: 'balanced_fast'
+  }
+}
+
+function groupTypeText(groupType?: GroupType): string {
+  return groupType === 'high_concurrency' ? '高并发' : '个人'
+}
+
+function groupTypeColor(groupType?: GroupType): string {
+  return groupType === 'high_concurrency' ? 'purple' : 'blue'
+}
+
+function groupPolicySummary(group: GroupSummary): string {
+  if (group.groupType !== 'high_concurrency') {
+    return '个人分组保持稳定调度'
+  }
+  const policy = cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy)
+  return `最大单账户排队 ${policy.defaultSoftConcurrency}，快速优先、亲和打破、慢请求分流和短队列默认开启`
 }
 
 function groupConcurrencyAvailable(group: GroupSummary): boolean {
@@ -437,7 +503,14 @@ function openCreate() {
     return
   }
   editingId.value = undefined
-  Object.assign(form, { name: '', providerCode: defaultProviderCode(), description: '', enabled: true })
+  Object.assign(form, {
+    name: '',
+    providerCode: defaultProviderCode(),
+    description: '',
+    enabled: true,
+    groupType: 'personal' as GroupType,
+    schedulingPolicy: cloneHighConcurrencySchedulingPolicy()
+  })
   modalOpen.value = true
 }
 
@@ -447,7 +520,14 @@ function openEdit(group: GroupSummary) {
     return
   }
   editingId.value = group.id
-  Object.assign(form, { name: group.name, providerCode: group.providerCode, description: group.description ?? '', enabled: group.enabled })
+  Object.assign(form, {
+    name: group.name,
+    providerCode: group.providerCode,
+    description: group.description ?? '',
+    enabled: group.enabled,
+    groupType: group.groupType,
+    schedulingPolicy: cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy)
+  })
   modalOpen.value = true
 }
 
@@ -457,11 +537,12 @@ const saveGroup = submitAction('groups.save', async () => {
     return
   }
   try {
+    const payload = groupFormPayload()
     if (editingId.value) {
-      await groupsApi.update(editingId.value, { ...form }, groupScopeParams.value)
+      await groupsApi.update(editingId.value, payload, groupScopeParams.value)
       message.success('分组已更新')
     } else {
-      await groupsApi.create({ ...form }, groupScopeParams.value)
+      await groupsApi.create(payload, groupScopeParams.value)
       message.success('分组已创建')
     }
     modalOpen.value = false
@@ -471,6 +552,19 @@ const saveGroup = submitAction('groups.save', async () => {
     message.error(extractApiErrorMessage(error, '保存分组失败'))
   }
 })
+
+function groupFormPayload(): Record<string, unknown> {
+  return {
+    name: form.name,
+    providerCode: form.providerCode,
+    description: form.description,
+    enabled: form.enabled,
+    groupType: form.groupType,
+    schedulingPolicy: form.groupType === 'high_concurrency'
+      ? { defaultSoftConcurrency: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).defaultSoftConcurrency }
+      : undefined
+  }
+}
 
 async function removeGroup(id: string) {
   const group = groups.value.find((item) => item.id === id)
@@ -530,6 +624,16 @@ onMounted(() => {
   font-size: 12px;
 }
 
+.scheduling-policy-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  column-gap: 16px;
+}
+
+.scheduling-policy-grid :deep(.ant-input-number) {
+  width: 100%;
+}
+
 .groups-table :deep(.ant-table-cell) {
   white-space: nowrap;
 }
@@ -587,6 +691,12 @@ onMounted(() => {
 
 .status-tag {
   width: fit-content;
+}
+
+@media (max-width: 640px) {
+  .scheduling-policy-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 </style>

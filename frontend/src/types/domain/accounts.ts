@@ -1,4 +1,4 @@
-import type { AccountGroupBindStatus, AccountStatus, AccountTrafficMigrationSourceStatus, AccountType, AuthorizationStatus, ProviderCode, ResourceAccessType } from './base'
+import type { AccountGroupBindStatus, AccountStatus, AccountTrafficMigrationSourceStatus, AccountType, AuthorizationStatus, GroupType, ProviderCode, ResourceAccessType } from './base'
 import type { RequestQuotaLimits } from './access'
 import type { AuthorizationSourceSummary } from './authorizations'
 import type { AccountUsageSummary } from './usage-stats'
@@ -105,6 +105,8 @@ export interface AccountSummary {
   accountAuthorizationId?: string
   boundGroupId?: string
   boundGroupName?: string
+  boundGroupDispatchWeight?: number
+  boundGroupSoftConcurrencyLimit?: number
   groupBindStatus?: AccountGroupBindStatus
   bindingSystemAccountId?: string
   ownerSystemAccountId?: string
@@ -192,6 +194,23 @@ export interface ErrorPolicySummary {
   rules: Array<Record<string, unknown>>
 }
 
+export interface GroupSchedulingPolicy {
+  mode?: 'balanced_fast'
+  defaultSoftConcurrency?: number
+  weightAffectsSoftConcurrency?: boolean
+  fastFirstEnabled?: boolean
+  fallbackOnQueueEnabled?: boolean
+  breakAffinityOnSoftLimit?: boolean
+  breakAffinityOnQueueWaitMs?: number
+  slowRequestThresholdMs?: number
+  firstOutputSlowThresholdMs?: number
+  recentTimeoutWindowSeconds?: number
+  recentTimeoutPenaltyThreshold?: number
+  maxQueueWaitMs?: number
+  maxQueueSize?: number
+  perApiKeyQueueLimit?: number
+}
+
 export interface GroupSummary {
   id: string
   systemAccountId?: string
@@ -201,6 +220,8 @@ export interface GroupSummary {
   description?: string
   enabled: boolean
   isDefault: boolean
+  groupType: GroupType
+  schedulingPolicy?: GroupSchedulingPolicy
   accountIds: string[]
   accountStats: GroupAccountStats
   accessType?: ResourceAccessType
@@ -233,6 +254,8 @@ export type GroupOptionSummary = Pick<
   | 'providerCode'
   | 'enabled'
   | 'isDefault'
+  | 'groupType'
+  | 'schedulingPolicy'
   | 'accessType'
   | 'groupAuthorizationId'
   | 'authorizationStatus'

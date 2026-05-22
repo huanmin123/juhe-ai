@@ -1,7 +1,9 @@
 import { strict as assert } from 'node:assert'
 import type { Request } from 'express'
 
+import { clearAccountConcurrency, tryAcquireAccountConcurrency } from '../../shared/account-concurrency.js'
 import {
+  areOpenAIHighConcurrencyAccountsHardBusy,
   forgetOpenAIAccountForSession,
   migrateOpenAIAccountSessionAffinity,
   orderOpenAIAccountsBySessionAffinity,
@@ -10,7 +12,7 @@ import {
 } from '../../modules/gateway/openai-gateway-session-affinity.service.js'
 import type { OpenAIAccountSecret } from '../../storage/repositories.js'
 
-function main(): void {
+async function main(): Promise<void> {
   testAffinityKeyUsesLocalIdentityOnly()
   testMissingBoundAccountDoesNotAffectCandidates()
   testForgetOnlyClearsMatchingBoundAccount()
@@ -21,6 +23,12 @@ function main(): void {
   testAffinityPromotesAcrossAccountTypesWithinSameBucket()
   testAffinityBindingCanSwitchAcrossAccountTypesWithoutNewShard()
   testScopedMigrationOnlyMovesMatchingBindings()
+  testHighConcurrencyUsesLeastLoadedWithinSameTier()
+  testHighConcurrencyBreaksAffinityAtSoftLimit()
+  testHighConcurrencyKeepsAffinityBelowSoftLimitWhenLoadTied()
+  testHighConcurrencyKeepsFallbackIdleUntilPrimarySoftLimit()
+  testHighConcurrencyDetectsHardBusyGroup()
+  await testHighConcurrencyPenalizesRealtimeSlowInFlight()
   console.log('OpenAI session affinity regression passed')
 }
 
@@ -199,6 +207,116 @@ function testScopedMigrationOnlyMovesMatchingBindings(): void {
   forgetOpenAIAccountForSession(legacyKey)
 }
 
+function testHighConcurrencyUsesLeastLoadedWithinSameTier(): void {
+  const accounts = [
+    createAccount('busy-primary', { priority: 0, currentConcurrency: 4 }),
+    createAccount('idle-primary', { priority: 0, currentConcurrency: 0 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, { groupType: 'high_concurrency' }).map((account) => account.id),
+    ['idle-primary', 'busy-primary'],
+    '高并发分组应在同层级内优先选择更空闲账号'
+  )
+}
+
+function testHighConcurrencyBreaksAffinityAtSoftLimit(): void {
+  const sessionKey = 'session-affinity-regression:high-concurrency-soft-break'
+  rememberOpenAIAccountForSession(sessionKey, 'sticky-soft-full')
+  const accounts = [
+    createAccount('idle-peer', { priority: 0, currentConcurrency: 0 }),
+    createAccount('sticky-soft-full', { priority: 0, currentConcurrency: 5 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, sessionKey, { groupType: 'high_concurrency' }).map((account) => account.id),
+    ['idle-peer', 'sticky-soft-full'],
+    '高并发分组达到默认软并发后应打破会话亲和'
+  )
+  forgetOpenAIAccountForSession(sessionKey)
+}
+
+function testHighConcurrencyKeepsAffinityBelowSoftLimitWhenLoadTied(): void {
+  const sessionKey = 'session-affinity-regression:high-concurrency-affinity-tie'
+  rememberOpenAIAccountForSession(sessionKey, 'sticky-idle')
+  const accounts = [
+    createAccount('same-tier-idle', { priority: 0, currentConcurrency: 0 }),
+    createAccount('sticky-idle', { priority: 0, currentConcurrency: 0 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, sessionKey, { groupType: 'high_concurrency' }).map((account) => account.id),
+    ['sticky-idle', 'same-tier-idle'],
+    '高并发分组在负载相同且未达软并发时仍可保留会话亲和'
+  )
+  forgetOpenAIAccountForSession(sessionKey)
+}
+
+function testHighConcurrencyKeepsFallbackIdleUntilPrimarySoftLimit(): void {
+  const primaryAvailable = [
+    createAccount('primary-under-soft', { priority: 0, currentConcurrency: 1 }),
+    createAccount('fallback-idle', { priority: 0, currentConcurrency: 0, fallbackEnabled: true })
+  ]
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(primaryAvailable, undefined, { groupType: 'high_concurrency' }).map((account) => account.id),
+    ['primary-under-soft', 'fallback-idle'],
+    '高并发分组在主池未达软并发前不应让备用账号抢首流量'
+  )
+
+  const primarySoftFull = [
+    createAccount('primary-soft-full', { priority: 0, currentConcurrency: 5 }),
+    createAccount('fallback-idle', { priority: 0, currentConcurrency: 0, fallbackEnabled: true })
+  ]
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(primarySoftFull, undefined, { groupType: 'high_concurrency' }).map((account) => account.id),
+    ['fallback-idle', 'primary-soft-full'],
+    '高并发分组在主池达到软并发后应允许备用账号接单'
+  )
+}
+
+function testHighConcurrencyDetectsHardBusyGroup(): void {
+  assert.equal(
+    areOpenAIHighConcurrencyAccountsHardBusy([
+      createAccount('limit-a', { priority: 0, currentConcurrency: 2, concurrencyLimit: 2 }),
+      createAccount('limit-b', { priority: 0, currentConcurrency: 1, concurrencyLimit: 1 })
+    ], { groupType: 'high_concurrency' }),
+    true,
+    '高并发分组全部账号达到硬并发时应判定为分组繁忙'
+  )
+  assert.equal(
+    areOpenAIHighConcurrencyAccountsHardBusy([
+      createAccount('available-a', { priority: 0, currentConcurrency: 1, concurrencyLimit: 2 })
+    ], { groupType: 'high_concurrency' }),
+    false,
+    '仍有账号低于硬并发时不应判定分组繁忙'
+  )
+}
+
+async function testHighConcurrencyPenalizesRealtimeSlowInFlight(): Promise<void> {
+  clearAccountConcurrency()
+  const slowSlot = tryAcquireAccountConcurrency('slow-runtime', 10)
+  assert.equal(slowSlot.acquired, true, '测试前应成功占用慢请求账号并发槽')
+  await new Promise((resolve) => setTimeout(resolve, 5))
+  const accounts = [
+    createAccount('slow-runtime', { priority: 0, currentConcurrency: 1 }),
+    createAccount('fast-runtime', { priority: 0, currentConcurrency: 1 })
+  ]
+
+  assert.deepEqual(
+    orderOpenAIAccountsBySessionAffinity(accounts, undefined, {
+      groupType: 'high_concurrency',
+      schedulingPolicy: {
+        slowRequestThresholdMs: 1,
+        firstOutputSlowThresholdMs: 1
+      }
+    }).map((account) => account.id),
+    ['fast-runtime', 'slow-runtime'],
+    '高并发分组应让进行中慢请求账号降低新请求优先级'
+  )
+  slowSlot.release()
+  clearAccountConcurrency()
+}
+
 function orderedIds(accounts: OpenAIAccountSecret[], sessionKey: string): string[] {
   return orderOpenAIAccountsBySessionAffinity(accounts, sessionKey).map((account) => account.id)
 }
@@ -211,6 +329,10 @@ function createAccount(
     superPriorityEnabled?: boolean
     fallbackEnabled?: boolean
     type?: 'api_key' | 'oauth'
+    currentConcurrency?: number
+    concurrencyLimit?: number
+    dispatchWeight?: number
+    softConcurrencyLimit?: number
   }
 ): OpenAIAccountSecret {
   return {
@@ -224,11 +346,14 @@ function createAccount(
     type: options.type ?? 'api_key',
     status: 'active',
     supportedModels: [],
-    concurrencyLimit: 20,
+    concurrencyLimit: options.concurrencyLimit ?? 20,
+    currentConcurrency: options.currentConcurrency ?? 0,
     priority: options.priority,
     superPriorityEnabled: options.superPriorityEnabled ?? false,
     fallbackEnabled: options.fallbackEnabled ?? false,
     qualityScore: options.qualityScore,
+    dispatchWeight: options.dispatchWeight,
+    softConcurrencyLimit: options.softConcurrencyLimit,
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-test',
     passthroughEnabled: true,
@@ -250,4 +375,4 @@ function createSessionRequest(promptCacheKey: string): Request {
   } as Request
 }
 
-main()
+await main()

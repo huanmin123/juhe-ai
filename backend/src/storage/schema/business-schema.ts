@@ -229,6 +229,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       description TEXT,
       enabled INTEGER NOT NULL DEFAULT 1,
       is_default INTEGER NOT NULL DEFAULT 0,
+      group_type TEXT NOT NULL DEFAULT 'personal',
+      scheduling_policy_json TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       FOREIGN KEY (provider_code) REFERENCES providers(code)
@@ -245,6 +247,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       local_super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
       weight INTEGER NOT NULL DEFAULT 1,
+      soft_concurrency_limit INTEGER,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -390,6 +393,8 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     DROP INDEX IF EXISTS idx_proxy_profiles_type_lookup;
   `)
   ensureAccountsCooldownRetestColumns(database)
+  ensureGroupsSchedulingColumns(database)
+  ensureGroupAccountsSchedulingColumns(database)
 
 }
 
@@ -398,6 +403,19 @@ function ensureAccountsCooldownRetestColumns(database: DatabaseSync): void {
     { name: 'cooldown_retest_failure_count', definition: 'INTEGER NOT NULL DEFAULT 0' },
     { name: 'cooldown_retest_last_at', definition: 'TEXT' },
     { name: 'cooldown_retest_last_status_code', definition: 'INTEGER' }
+  ])
+}
+
+function ensureGroupsSchedulingColumns(database: DatabaseSync): void {
+  ensureTableColumns(database, 'groups', [
+    { name: 'group_type', definition: "TEXT NOT NULL DEFAULT 'personal'" },
+    { name: 'scheduling_policy_json', definition: 'TEXT' }
+  ])
+}
+
+function ensureGroupAccountsSchedulingColumns(database: DatabaseSync): void {
+  ensureTableColumns(database, 'group_accounts', [
+    { name: 'soft_concurrency_limit', definition: 'INTEGER' }
   ])
 }
 

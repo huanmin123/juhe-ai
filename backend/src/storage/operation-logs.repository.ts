@@ -319,6 +319,20 @@ export function backfillOperationLogSearchIndex(limit = 1000): OperationLogSearc
   const database = getRecordDatabase()
   const batchLimit = positiveOperationLogSearchBackfillLimit(limit)
   const state = operationLogSearchBackfillState(database)
+  const completedCursor = operationLogSearchBackfillCompletedCursor(database)
+  if (completedCursor) {
+    updateOperationLogSearchBackfillState(database, {
+      cursorCreatedAt: completedCursor.cursorCreatedAt,
+      cursorId: completedCursor.cursorId,
+      lastSuccessAt: nowIso()
+    })
+    return {
+      processed: 0,
+      hasMore: false,
+      cursorCreatedAt: completedCursor.cursorCreatedAt,
+      cursorId: completedCursor.cursorId
+    }
+  }
   const rows = database
     .prepare(`
       SELECT id, summary, resource_name, resource_id, actor_display_name, actor_username,
@@ -335,8 +349,7 @@ export function backfillOperationLogSearchIndex(limit = 1000): OperationLogSearc
     updateOperationLogSearchBackfillState(database, {
       cursorCreatedAt: state.cursorCreatedAt || undefined,
       cursorId: state.cursorId || undefined,
-      lastSuccessAt: nowIso(),
-      lagSeconds: 0
+      lastSuccessAt: nowIso()
     })
     return {
       processed: 0,
@@ -376,7 +389,7 @@ export function backfillOperationLogSearchIndex(limit = 1000): OperationLogSearc
       cursorCreatedAt,
       cursorId,
       lastSuccessAt: updatedAt,
-      lagSeconds: hasMore ? searchBackfillLagSeconds(cursorCreatedAt) : 0
+      ...(hasMore ? { lagSeconds: searchBackfillLagSeconds(cursorCreatedAt) } : {})
     })
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -823,6 +836,21 @@ function operationLogSearchBackfillState(database: ReturnType<typeof getRecordDa
   return {
     cursorCreatedAt: optionalString(row?.cursor_created_at) ?? '',
     cursorId: optionalString(row?.cursor_id) ?? ''
+  }
+}
+
+function operationLogSearchBackfillCompletedCursor(database: ReturnType<typeof getRecordDatabase>): { cursorCreatedAt?: string; cursorId?: string } | undefined {
+  const operationLogs = database.prepare('SELECT COUNT(*) AS count FROM operation_logs').get() as { count?: number } | undefined
+  const searchLogs = database.prepare('SELECT COUNT(*) AS count FROM operation_log_search').get() as { count?: number } | undefined
+  if (Number(operationLogs?.count ?? 0) !== Number(searchLogs?.count ?? 0)) {
+    return undefined
+  }
+  const latest = database
+    .prepare('SELECT id, created_at FROM operation_logs ORDER BY created_at DESC, id DESC LIMIT 1')
+    .get() as OperationLogRow | undefined
+  return {
+    cursorCreatedAt: optionalString(latest?.created_at),
+    cursorId: optionalString(latest?.id)
   }
 }
 

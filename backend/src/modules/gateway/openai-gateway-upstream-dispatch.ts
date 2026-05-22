@@ -39,6 +39,7 @@ export interface OpenAIUpstreamDispatchResult {
   upstreamUrl: string
   auditAttemptId: string
   releaseConcurrency: () => void
+  markFirstOutput: () => void
 }
 
 export class UpstreamAttemptError extends Error {
@@ -198,7 +199,14 @@ export async function fetchFirstAvailableUpstream(
                 groupId: usageContext.groupId
               })
               keepConcurrencySlot = true
-              return { account, response, upstreamUrl, auditAttemptId, releaseConcurrency: concurrencySlot.release }
+              return {
+                account,
+                response,
+                upstreamUrl,
+                auditAttemptId,
+                releaseConcurrency: concurrencySlot.release,
+                markFirstOutput: concurrencySlot.markFirstOutput
+              }
             }
 
             const failedResponseResult = await handleFailedUpstreamResponse({

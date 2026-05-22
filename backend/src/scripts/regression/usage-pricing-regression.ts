@@ -396,6 +396,20 @@ assert.match(cooldownAccountRetestSource, /findRecentOpenAIRequestShapeForAccoun
 assert.match(cooldownAccountRetestSource, /account\.boundGroupId/)
 assert.doesNotMatch(cooldownAccountRetestSource, /waitForRetryDelay/)
 
+const gatewayBodySource = readSource('modules/gateway/openai-gateway-body.ts')
+assert.match(gatewayBodySource, /responseBackpressureWarnThresholdMs\s*=\s*50/)
+assert.match(gatewayBodySource, /gateway_response_backpressure_slow/)
+assert.match(gatewayBodySource, /gateway_response_backpressure_drained/)
+assert.match(gatewayBodySource, /logLevel\s*===\s*'warn'\s*\?\s*'gateway_response_backpressure_slow'\s*:\s*'gateway_response_backpressure_drained'/)
+assert.doesNotMatch(gatewayBodySource, /gateway_response_backpressure_started/)
+
+const gatewayStreamSource = readSource('modules/gateway/openai-gateway-stream.ts')
+assert.match(gatewayStreamSource, /writeResult\.logLevel\s*===\s*'warn'/)
+assert.match(gatewayStreamSource, /responseBackpressureWarnThresholdMs/)
+
+const releaseStartScriptSource = readFileSync(resolve(backendSrcDirectory, '../../deploy/start.sh'), 'utf8')
+assert.match(releaseStartScriptSource, /JUHE_AI_LOG_CONSOLE_ENABLED="\$\{JUHE_AI_LOG_CONSOLE_ENABLED:-false\}"/)
+
 const oauthRoutesSource = readSource('modules/openai-oauth/openai-oauth.routes.ts')
 assert.doesNotMatch(oauthRoutesSource, /refreshOpenAIOAuthUsageSnapshot/)
 

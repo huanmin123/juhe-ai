@@ -72,6 +72,7 @@ interface HandleUpstreamResponseInput {
   signal: AbortSignal
   sessionAffinityKey?: string
   clientStrategy?: OpenAIGatewayClientStrategyContext
+  markFirstOutput?: () => void
 }
 
 interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
@@ -108,7 +109,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
     startedAt,
     signal,
     sessionAffinityKey,
-    clientStrategy
+    clientStrategy,
+    markFirstOutput
   } = input
 
   if (!upstreamResponse.body) {
@@ -163,7 +165,8 @@ export async function handleStreamUpstreamResponse(input: HandleUpstreamResponse
       (message, errorCode, context) => handleStreamFailure(account, message, settings, errorCode, context),
       signal,
       {
-        clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true
+        clientRetryEnabled: clientStrategy?.allowCodexStreamClientRetry === true,
+        onFirstOutput: markFirstOutput
       }
     )
   } catch (error) {
@@ -315,7 +318,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     auditCapture,
     usageContext,
     startedAt,
-    signal
+    signal,
+    markFirstOutput
   } = input
 
   if (signal.aborted) {
@@ -332,11 +336,13 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
       responseBody = Buffer.alloc(0)
       responseBodyText = ''
       firstTokenMs = Date.now() - startedAt
+      markFirstOutput?.()
       res.end()
     } else if (upstreamResponse.ok) {
       const pipeResult = await pipeNonStreamUpstreamResponse(upstreamResponse.body, res, {
         startedAt,
-        signal
+        signal,
+        onFirstByte: markFirstOutput
       })
       responseBody = pipeResult.capturedBody
       responseBodyText = pipeResult.captureTruncated ? undefined : pipeResult.capturedBodyText
@@ -354,7 +360,8 @@ export async function handleNonStreamUpstreamResponse(input: HandleUpstreamRespo
     } else {
       const readResult = await readUpstreamBodyLimited(upstreamResponse.body, {
         startedAt,
-        signal
+        signal,
+        onFirstByte: markFirstOutput
       })
       responseBody = readResult.body
       responseBodyText = readResult.diagnosticBodyText

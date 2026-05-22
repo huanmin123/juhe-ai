@@ -127,10 +127,13 @@
       v-if="bindGroupModalOpen"
       v-model:open="bindGroupModalOpen"
       v-model:group-id="bindGroupForm.groupId"
+      v-model:dispatch-weight="bindGroupForm.dispatchWeight"
+      v-model:soft-concurrency-limit="bindGroupForm.softConcurrencyLimit"
       :account="bindingAccount"
       :group-options="bindGroupOptions"
       :group-options-loading="groupOptionsLoading"
       :saving="bindGroupSaving"
+      :soft-concurrency-visible="bindGroupSoftConcurrencyVisible"
       :tip="bindGroupTip"
       @group-options-dropdown="handleGroupOptionsDropdown"
       @group-options-search="handleGroupOptionsSearch"
@@ -382,6 +385,7 @@ const {
   bindGroupModalOpen,
   bindGroupOptions,
   bindGroupSaving,
+  bindGroupSoftConcurrencyVisible,
   bindGroupTip,
   bindingAccount,
   openBindGroup,

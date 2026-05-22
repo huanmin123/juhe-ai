@@ -64,6 +64,30 @@ try {
   assert.deepEqual(stateRows.map((row) => row.job_name), ['operation_log_search_backfill', 'runtime_log_search_backfill'], '搜索索引回填应复用 stats_job_state 记录游标')
   assert(stateRows.every((row) => row.cursor_id?.endsWith('_legacy_search_2') && !row.last_error_message), '搜索索引回填完成后应推进到第二条且清空错误')
 
+  seedStaleBackfillCursor('operation_log_search_backfill', '1999-01-01T00:00:00.000Z', 'stale_operation_cursor')
+  const operationNoOp = operationLogsRepository.backfillOperationLogSearchIndex(1)
+  assert.equal(operationNoOp.processed, 0, '操作日志搜索索引已对齐时不应继续重写已索引行')
+  assert.equal(operationNoOp.hasMore, false, '操作日志搜索索引已对齐时应直接结束')
+  assert.equal(operationNoOp.cursorCreatedAt, '2026-01-01T00:00:01.000Z', '操作日志搜索索引已对齐时应把游标推进到源表最新行')
+  assert.equal(operationNoOp.cursorId, 'oplog_legacy_search_2', '操作日志搜索索引已对齐时应把游标推进到源表最新 ID')
+
+  seedStaleBackfillCursor('runtime_log_search_backfill', '1999-01-01T00:00:00.000Z', 'stale_runtime_cursor')
+  const runtimeNoOp = runtimeLogsRepository.backfillRuntimeLogSearchIndex(1)
+  assert.equal(runtimeNoOp.processed, 0, '运行日志搜索索引已对齐时不应继续重写已索引行')
+  assert.equal(runtimeNoOp.hasMore, false, '运行日志搜索索引已对齐时应直接结束')
+  assert.equal(runtimeNoOp.cursorCreatedAt, '2026-01-01T00:00:01.000Z', '运行日志搜索索引已对齐时应把游标推进到源表最新行')
+  assert.equal(runtimeNoOp.cursorId, 'rtlog_legacy_search_2', '运行日志搜索索引已对齐时应把游标推进到源表最新 ID')
+
+  const backfillStatesAfterNoOp = recordDatabase
+    .prepare(`
+      SELECT job_name, cursor_id, lag_seconds, last_error_message
+      FROM stats_job_state
+      WHERE job_name IN ('operation_log_search_backfill', 'runtime_log_search_backfill')
+      ORDER BY job_name
+    `)
+    .all() as Array<{ job_name: string; cursor_id?: string | null; lag_seconds?: number | null; last_error_message?: string | null }>
+  assert(backfillStatesAfterNoOp.every((row) => row.cursor_id?.endsWith('_legacy_search_2') && row.lag_seconds === null && !row.last_error_message), '已对齐的搜索索引回填应清空 lag_seconds 并把游标推进到源表最新行')
+
   console.log('日志搜索索引回填回归通过：历史 operation/runtime logs 分批补齐 FTS 且不重复命中')
 } finally {
   try {
@@ -132,4 +156,14 @@ function seedLegacyRuntimeLog(id: string, needle: string, createdAt: string): vo
 function searchRowCount(tableName: 'operation_log_search' | 'runtime_log_search'): number {
   const row = databaseModule.getRecordDatabase().prepare(`SELECT COUNT(*) AS total FROM ${tableName}`).get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
+}
+
+function seedStaleBackfillCursor(jobName: 'operation_log_search_backfill' | 'runtime_log_search_backfill', cursorCreatedAt: string, cursorId: string): void {
+  databaseModule.getRecordDatabase()
+    .prepare(`
+      UPDATE stats_job_state
+      SET cursor_created_at = ?, cursor_id = ?, last_error_message = NULL, lag_seconds = 999, updated_at = ?
+      WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?
+    `)
+    .run(cursorCreatedAt, cursorId, cursorCreatedAt, jobName)
 }

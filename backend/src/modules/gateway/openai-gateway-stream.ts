@@ -14,7 +14,13 @@ import {
   gatewayStreamFailureCode,
   writeGatewayStreamFailureEvent
 } from './openai-gateway-responses.js'
-import { closeAsyncIterator, endResponse, LimitedBufferCapture, writeResponseChunk } from './openai-gateway-body.js'
+import {
+  closeAsyncIterator,
+  endResponse,
+  LimitedBufferCapture,
+  responseBackpressureWarnThresholdMs,
+  writeResponseChunk
+} from './openai-gateway-body.js'
 import {
   OpenAIStreamInterceptBuffer,
   type StreamInterceptDecision
@@ -48,6 +54,7 @@ export interface StreamFailureContext {
 
 export interface StreamPipeOptions {
   clientRetryEnabled?: boolean
+  onFirstOutput?: () => void
 }
 
 const streamDiagnosticCaptureBytes = 256 * 1024
@@ -130,6 +137,7 @@ export async function pipeUpstreamStream(
       lastUpstreamActivityAt = Date.now()
       if (firstTokenMs === undefined) {
         firstTokenMs = lastUpstreamActivityAt - startedAt
+        options.onFirstOutput?.()
       }
       upstreamCapture.push(buffer)
       const interceptResult = interceptor.pushChunk(buffer)
@@ -172,7 +180,12 @@ export async function pipeUpstreamStream(
           throw new StreamCompletedAfterTerminalSignal()
         }
         const writeNow = Date.now()
-        if (writeResult.backpressure && writeNow - lastBackpressureLogAt >= streamBackpressureLogIntervalMs) {
+        if (
+          writeResult.backpressure
+          && writeResult.logLevel === 'warn'
+          && (writeResult.drainWaitMs ?? 0) >= responseBackpressureWarnThresholdMs
+          && writeNow - lastBackpressureLogAt >= streamBackpressureLogIntervalMs
+        ) {
           lastBackpressureLogAt = writeNow
           streamLogger.warn({
             event: 'gateway_stream_response_backpressure',
@@ -288,7 +301,12 @@ export async function pipeUpstreamStream(
           return streamResult(true, '已完成', undefined, firstTokenMs, latestInspection.usage, responseCapture, upstreamCapture, diagnosticCapture, undefined, latestInspection.outputReceived, latestInspection.estimatedOutputTokens)
         }
         const writeNow = Date.now()
-        if (writeResult.backpressure && writeNow - lastBackpressureLogAt >= streamBackpressureLogIntervalMs) {
+        if (
+          writeResult.backpressure
+          && writeResult.logLevel === 'warn'
+          && (writeResult.drainWaitMs ?? 0) >= responseBackpressureWarnThresholdMs
+          && writeNow - lastBackpressureLogAt >= streamBackpressureLogIntervalMs
+        ) {
           lastBackpressureLogAt = writeNow
           streamLogger.warn({
             event: 'gateway_stream_response_backpressure',

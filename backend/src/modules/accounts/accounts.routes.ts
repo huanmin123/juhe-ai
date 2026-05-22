@@ -41,7 +41,9 @@ const accountTestSchema = z.object({
 }).optional()
 
 const accountGroupSchema = z.object({
-  groupId: z.string().trim().min(1, '分组不能为空')
+  groupId: z.string().trim().min(1, '分组不能为空'),
+  dispatchWeight: z.number().int().min(1).max(1000).optional(),
+  softConcurrencyLimit: z.number().int().min(1).nullable().optional()
 })
 
 const accountTrafficMigrationSchema = z.object({
@@ -298,7 +300,10 @@ accountsRouter.post('/:id/group', (req, res) => {
   const before = findAccountForTest(req.params.id, requestAccess)
   try {
     const account = runLoggedOperation(() => {
-      const account = setAccountGroup(req.params.id, parsed.data.groupId, requestAccess)
+      const account = setAccountGroup(req.params.id, parsed.data.groupId, requestAccess, {
+        dispatchWeight: parsed.data.dispatchWeight,
+        softConcurrencyLimit: parsed.data.softConcurrencyLimit
+      })
       if (!account) {
         throw new Error('账户不存在、授权已失效或分组不可用')
       }
@@ -315,7 +320,11 @@ accountsRouter.post('/:id/group', (req, res) => {
           resourceId: account.id,
           resourceName: account.name,
           summary: `绑定账户分组：${account.name}`,
-          changes: [safeChange('groupId', '绑定分组', before?.boundGroupId, account.boundGroupId)],
+          changes: [
+            safeChange('groupId', '绑定分组', before?.boundGroupId, account.boundGroupId),
+            safeChange('dispatchWeight', '绑定权重', before?.boundGroupDispatchWeight, account.boundGroupDispatchWeight),
+            safeChange('softConcurrencyLimit', '绑定软并发', before?.boundGroupSoftConcurrencyLimit, account.boundGroupSoftConcurrencyLimit)
+          ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }
       }

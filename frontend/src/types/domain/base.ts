@@ -5,6 +5,7 @@ export type AccountTrafficMigrationSourceStatus = 'temporary_unavailable' | 'dis
 export type SystemAccountRole = 'admin' | 'user'
 export type SystemAccountStatus = 'active' | 'disabled'
 export type ResourceAccessType = 'owner' | 'authorized'
+export type GroupType = 'personal' | 'high_concurrency'
 export type AuthorizationStatus = 'active' | 'paused' | 'expired' | 'revoked'
 export type AccountGroupBindStatus = 'bound' | 'authorization_unavailable'
 export type AuthorizationResourceType = 'account' | 'group'

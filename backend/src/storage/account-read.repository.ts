@@ -317,6 +317,8 @@ function groupBindingSelectColumns(): string {
           group_bindings.group_id AS bound_group_id,
           bound_groups.name AS bound_group_name,
           group_bindings.account_authorization_id AS bound_group_account_authorization_id,
+          group_bindings.weight AS bound_group_weight,
+          group_bindings.soft_concurrency_limit AS bound_group_soft_concurrency_limit,
           group_bindings.local_status AS bound_group_local_status,
           group_bindings.local_cooldown_until AS bound_group_local_cooldown_until,
           group_bindings.local_last_error_message AS bound_group_local_last_error_message,

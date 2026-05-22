@@ -92,7 +92,8 @@ try {
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   let groupOwnerLookupCount = 0
   database.prepare = ((sql: string) => {
-    if (/\bSELECT\s+system_account_id\s+FROM\s+groups\s+WHERE\s+id\s*=\s*\?/i.test(sql.replace(/\s+/g, ' '))) {
+    const normalizedSql = sql.replace(/\s+/g, ' ')
+    if (/\bFROM\s+groups\b/i.test(normalizedSql) && /\bWHERE\s+id\s*=\s*\?/i.test(normalizedSql)) {
       groupOwnerLookupCount += 1
     }
     return originalPrepare(sql)

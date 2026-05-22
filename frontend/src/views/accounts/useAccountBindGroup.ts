@@ -28,10 +28,16 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
   const bindGroupModalOpen = ref(false)
   const bindGroupSaving = ref(false)
   const bindingAccount = ref<AccountSummary>()
-  const bindGroupForm = reactive({ groupId: '' })
+  const bindGroupForm = reactive<{ groupId: string; dispatchWeight: number; softConcurrencyLimit: number | null }>({
+    groupId: '',
+    dispatchWeight: 1,
+    softConcurrencyLimit: null
+  })
 
   const bindGroupOptions = computed(() => bindGroupOptionsForAccount(options.groups.value, bindingAccount.value))
   const bindGroupTip = computed(() => buildBindGroupTip(bindingAccount.value))
+  const bindGroupSelectedGroup = computed(() => options.groups.value.find((group) => group.id === bindGroupForm.groupId))
+  const bindGroupSoftConcurrencyVisible = computed(() => bindGroupSelectedGroup.value?.groupType === 'high_concurrency')
 
   async function openBindGroup(account: AccountSummary) {
     if (account.status === 'error') {
@@ -40,6 +46,8 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     }
     bindingAccount.value = account
     bindGroupForm.groupId = options.groupIdForAccount(account.id) ?? defaultGroupForProvider(options.groups.value, account.providerCode)?.id ?? ''
+    bindGroupForm.dispatchWeight = account.boundGroupDispatchWeight ?? 1
+    bindGroupForm.softConcurrencyLimit = account.boundGroupSoftConcurrencyLimit ?? null
     bindGroupModalOpen.value = true
     await nextTick()
     await options.loadGroupOptions('', true)
@@ -55,10 +63,15 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     }
     bindGroupSaving.value = true
     try {
+      const payload = {
+        groupId: bindGroupForm.groupId,
+        dispatchWeight: bindGroupSoftConcurrencyVisible.value ? bindGroupForm.dispatchWeight : 1,
+        softConcurrencyLimit: bindGroupSoftConcurrencyVisible.value ? bindGroupForm.softConcurrencyLimit : null
+      }
       if (options.isManagementView.value) {
-        await api.accounts.bindGroup(bindingAccount.value.id, { groupId: bindGroupForm.groupId }, accountOperationScopeParams(bindingAccount.value, options.accountScopeParams.value))
+        await api.accounts.bindGroup(bindingAccount.value.id, payload, accountOperationScopeParams(bindingAccount.value, options.accountScopeParams.value))
       } else {
-        await api.myAccounts.bindGroup(bindingAccount.value.id, { groupId: bindGroupForm.groupId })
+        await api.myAccounts.bindGroup(bindingAccount.value.id, payload)
       }
       message.success('授权账户已绑定分组')
       bindGroupModalOpen.value = false
@@ -77,6 +90,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     bindGroupModalOpen,
     bindGroupOptions,
     bindGroupSaving,
+    bindGroupSoftConcurrencyVisible,
     bindGroupTip,
     bindingAccount,
     openBindGroup,

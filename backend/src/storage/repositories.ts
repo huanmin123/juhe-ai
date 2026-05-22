@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSummary, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
 import { listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
@@ -402,12 +403,14 @@ function accountEnabledGroupId(accountId: string, systemAccountId: string): stri
   return row?.group_id
 }
 
-function accountGroupBinding(accountId: string, systemAccountId: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
+function accountGroupBinding(accountId: string, systemAccountId: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus; dispatchWeight?: number; softConcurrencyLimit?: number } | undefined {
   const row = getDatabase()
     .prepare(`
       SELECT
         group_accounts.group_id,
         group_accounts.account_authorization_id,
+        group_accounts.weight,
+        group_accounts.soft_concurrency_limit,
         groups.name AS group_name
       FROM group_accounts
       INNER JOIN groups ON groups.id = group_accounts.group_id
@@ -417,7 +420,7 @@ function accountGroupBinding(accountId: string, systemAccountId: string): { grou
       ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
       LIMIT 1
     `)
-    .get(accountId, systemAccountId) as unknown as { group_id?: string; group_name?: string; account_authorization_id?: string | null } | undefined
+    .get(accountId, systemAccountId) as unknown as { group_id?: string; group_name?: string; account_authorization_id?: string | null; weight?: number | null; soft_concurrency_limit?: number | null } | undefined
   if (!row?.group_id) {
     return undefined
   }
@@ -426,11 +429,13 @@ function accountGroupBinding(accountId: string, systemAccountId: string): { grou
   return {
     groupId: row.group_id,
     groupName: row.group_name ?? row.group_id,
-    groupBindStatus: row.account_authorization_id && authorization?.id !== row.account_authorization_id ? 'authorization_unavailable' : 'bound'
+    groupBindStatus: row.account_authorization_id && authorization?.id !== row.account_authorization_id ? 'authorization_unavailable' : 'bound',
+    dispatchWeight: positiveOptionalInteger(row.weight),
+    softConcurrencyLimit: positiveOptionalInteger(row.soft_concurrency_limit)
   }
 }
 
-function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
+function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus; dispatchWeight?: number; softConcurrencyLimit?: number } | undefined {
   if (!row.bound_group_id || row.binding_system_account_id !== systemAccountId) {
     return undefined
   }
@@ -441,7 +446,9 @@ function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: strin
   return {
     groupId: row.bound_group_id,
     groupName: row.bound_group_name ?? row.bound_group_id,
-    groupBindStatus: row.bound_group_account_authorization_id && activeAuthorizationId !== row.bound_group_account_authorization_id ? 'authorization_unavailable' : 'bound'
+    groupBindStatus: row.bound_group_account_authorization_id && activeAuthorizationId !== row.bound_group_account_authorization_id ? 'authorization_unavailable' : 'bound',
+    dispatchWeight: positiveOptionalInteger(row.bound_group_weight),
+    softConcurrencyLimit: positiveOptionalInteger(row.bound_group_soft_concurrency_limit)
   }
 }
 
@@ -546,6 +553,14 @@ function boolInt(value: unknown, fallback: boolean): number {
 
 function optionalNumber(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function positiveOptionalInteger(value: unknown): number | undefined {
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : Number.NaN
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return undefined
+  }
+  return Math.trunc(numeric)
 }
 
 function normalizeSuperPriorityInput(value: unknown, fallback: boolean): boolean {
@@ -1020,6 +1035,8 @@ function accountSummariesFromRows(
       accountAuthorizationId: row.authorization_id ?? undefined,
       boundGroupId: groupBinding?.groupId,
       boundGroupName: groupBinding?.groupName,
+      boundGroupDispatchWeight: groupBinding?.dispatchWeight,
+      boundGroupSoftConcurrencyLimit: groupBinding?.softConcurrencyLimit,
       groupBindStatus: groupBinding?.groupBindStatus,
       bindingSystemAccountId: isAuthorizedView && groupBinding ? groupBindingSystemAccountId : undefined,
       authorizationStatus: row.authorization_status ?? undefined,
@@ -2400,6 +2417,8 @@ function buildGroupOptionSummaries(rows: GroupListRow[], access?: AccessScope): 
       providerCode: row.provider_code,
       enabled: row.enabled === 1,
       isDefault: isAuthorizedView ? false : row.is_default === 1,
+      groupType: groupTypeFromRow(row),
+      schedulingPolicy: groupSchedulingPolicyFromRow(row),
       accessType: row.access_type ?? 'owner',
       groupAuthorizationId: row.authorization_id ?? undefined,
       authorizationStatus: row.authorization_status ?? undefined,
@@ -2448,6 +2467,8 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
       description: isAuthorizedView ? undefined : row.description ?? undefined,
       enabled: row.enabled === 1,
       isDefault: isAuthorizedView ? false : row.is_default === 1,
+      groupType: groupTypeFromRow(row),
+      schedulingPolicy: groupSchedulingPolicyFromRow(row),
       accountIds: isAuthorizedView ? [] : accountIdsByGroup.get(row.id) ?? [],
       accountStats,
       accessType: row.access_type ?? 'owner',
@@ -2459,10 +2480,31 @@ function buildGroupSummaries(rows: GroupListRow[], access?: AccessScope): GroupS
   })
 }
 
+function groupTypeFromRow(row: Pick<GroupListRow, 'group_type'>): GroupType {
+  return normalizeGroupType(row.group_type)
+}
+
+function groupSchedulingPolicyFromRow(row: Pick<GroupListRow, 'group_type' | 'scheduling_policy_json'>): GroupSchedulingPolicy | undefined {
+  return parseGroupSchedulingPolicyJson(row.scheduling_policy_json, groupTypeFromRow(row))
+}
+
+function hasGroupSchedulingPolicyInput(input: Record<string, unknown>): boolean {
+  return Object.prototype.hasOwnProperty.call(input, 'schedulingPolicy')
+    || Object.prototype.hasOwnProperty.call(input, 'scheduling_policy')
+    || Object.prototype.hasOwnProperty.call(input, 'schedulingPolicyJson')
+    || Object.prototype.hasOwnProperty.call(input, 'scheduling_policy_json')
+}
+
+function groupSchedulingPolicyInput(input: Record<string, unknown>): unknown {
+  return input.schedulingPolicy ?? input.scheduling_policy ?? input.schedulingPolicyJson ?? input.scheduling_policy_json
+}
+
 export function createGroup(input: Record<string, unknown>, access?: AccessScope): GroupSummary {
   const now = nowIso()
   const systemAccountId = writeSystemAccountId(access)
   const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai').trim() || 'openai'
+  const groupType = normalizeGroupType(input.groupType ?? input.group_type)
+  const schedulingPolicyJson = groupSchedulingPolicyJson(groupSchedulingPolicyInput(input), groupType)
   const name = normalizedEntityName(input.name, '未命名分组')
   assertGroupNameAvailable(systemAccountId, providerCode, name)
   const group: GroupSummary = {
@@ -2474,13 +2516,15 @@ export function createGroup(input: Record<string, unknown>, access?: AccessScope
     description: optionalString(input.description),
     enabled: input.enabled !== false,
     isDefault: false,
+    groupType,
+    schedulingPolicy: parseGroupSchedulingPolicyJson(schedulingPolicyJson, groupType),
     accountIds: [],
     accountStats: emptyGroupAccountStats()
   }
   try {
     getDatabase()
-      .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)')
-      .run(group.id, systemAccountId, group.name, group.providerCode, group.description ?? null, group.enabled ? 1 : 0, now, now)
+      .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, group_type, scheduling_policy_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)')
+      .run(group.id, systemAccountId, group.name, group.providerCode, group.description ?? null, group.enabled ? 1 : 0, group.groupType, schedulingPolicyJson, now, now)
   } catch (error) {
     if (isDuplicateGroupNameError(error)) {
       throw new Error(`同一供应商下分组名称已存在：${group.name}`)
@@ -2505,6 +2549,10 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
     return undefined
   }
   const hasDescriptionInput = Object.prototype.hasOwnProperty.call(input, 'description')
+  const hasGroupTypeInput = Object.prototype.hasOwnProperty.call(input, 'groupType') || Object.prototype.hasOwnProperty.call(input, 'group_type')
+  const hasSchedulingPolicyInput = hasGroupSchedulingPolicyInput(input)
+  const nextGroupType = hasGroupTypeInput ? normalizeGroupType(input.groupType ?? input.group_type) : current.groupType
+  const nextSchedulingPolicyInput = hasSchedulingPolicyInput ? groupSchedulingPolicyInput(input) : current.schedulingPolicy
   const next: GroupSummary = {
     ...current,
     name: typeof input.name === 'string' && input.name.trim() ? input.name.trim() : current.name,
@@ -2514,7 +2562,9 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
         ? input.provider_code.trim()
         : current.providerCode,
     description: hasDescriptionInput ? optionalNullableString(input.description) ?? undefined : current.description,
-    enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled
+    enabled: typeof input.enabled === 'boolean' ? input.enabled : current.enabled,
+    groupType: nextGroupType,
+    schedulingPolicy: parseGroupSchedulingPolicyJson(groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nextGroupType)
   }
   if (next.providerCode !== current.providerCode && current.accountStats.total > 0) {
     throw new Error('已有账户的分组不允许修改供应商')
@@ -2523,8 +2573,8 @@ export function updateGroup(id: string, input: Record<string, unknown>, access?:
   const database = getDatabase()
   try {
     database
-      .prepare('UPDATE groups SET name = ?, provider_code = ?, description = ?, enabled = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-      .run(next.name, next.providerCode, next.description ?? null, next.enabled ? 1 : 0, nowIso(), id, systemAccountId)
+      .prepare('UPDATE groups SET name = ?, provider_code = ?, description = ?, enabled = ?, group_type = ?, scheduling_policy_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
+      .run(next.name, next.providerCode, next.description ?? null, next.enabled ? 1 : 0, next.groupType, groupSchedulingPolicyJson(nextSchedulingPolicyInput, nextGroupType), nowIso(), id, systemAccountId)
   } catch (error) {
     if (isDuplicateGroupNameError(error)) {
       throw new Error(`同一供应商下分组名称已存在：${next.name}`)
@@ -2555,7 +2605,12 @@ export function deleteGroup(id: string, access?: AccessScope): boolean {
   return result.changes > 0
 }
 
-export function setAccountGroup(accountId: string, groupId: string | null, access?: AccessScope): AccountSummary | undefined {
+export function setAccountGroup(
+  accountId: string,
+  groupId: string | null,
+  access?: AccessScope,
+  options: { dispatchWeight?: number | null; softConcurrencyLimit?: number | null } = {}
+): AccountSummary | undefined {
   const database = getDatabase()
   if (!groupId) {
     return undefined
@@ -2585,17 +2640,20 @@ export function setAccountGroup(accountId: string, groupId: string | null, acces
   const previousGroupId = accountEnabledGroupId(accountId, group.systemAccountId)
   database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, group.systemAccountId)
   const now = nowIso()
+  const dispatchWeight = positiveOptionalInteger(options.dispatchWeight) ?? 1
+  const softConcurrencyLimit = positiveOptionalInteger(options.softConcurrencyLimit) ?? null
   database
     .prepare(`
-      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, weight, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, weight, soft_concurrency_limit, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(group_id, account_id) DO UPDATE SET
         account_authorization_id = excluded.account_authorization_id,
         weight = excluded.weight,
+        soft_concurrency_limit = excluded.soft_concurrency_limit,
         enabled = 1,
         updated_at = excluded.updated_at
     `)
-    .run(group.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, 1, now, now)
+    .run(group.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, dispatchWeight, softConcurrencyLimit, now, now)
   refreshGroupAccountStatsAfterWrite({ groupIds: [previousGroupId, groupId], reason: 'group_account_binding' })
   if (previousGroupId && previousGroupId !== groupId) {
     invalidateGroupAccountIdsCache(previousGroupId)

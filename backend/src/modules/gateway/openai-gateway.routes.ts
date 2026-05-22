@@ -119,7 +119,8 @@ export async function handleOpenAIGatewayRequest(
     traceId,
     clientIp,
     endpoint,
-    requestSnapshot
+    requestSnapshot,
+    signal: abortController.signal
   })
   if (!preflight) {
     return
@@ -136,7 +137,7 @@ export async function handleOpenAIGatewayRequest(
       sessionAffinityKey,
       abortController.signal
     )
-    const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency } = upstreamResult
+    const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
 
     try {
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
@@ -158,7 +159,8 @@ export async function handleOpenAIGatewayRequest(
           startedAt,
           signal: abortController.signal,
           sessionAffinityKey,
-          clientStrategy
+          clientStrategy,
+          markFirstOutput
         })
         : await handleNonStreamUpstreamResponse({
           req,
@@ -172,7 +174,8 @@ export async function handleOpenAIGatewayRequest(
           usageContext: gatewayUsageContext,
           startedAt,
           signal: abortController.signal,
-          sessionAffinityKey
+          sessionAffinityKey,
+          markFirstOutput
         })
       if (handledResponse.alreadyFinalized) {
         return

@@ -2,6 +2,7 @@ import type {
   AccountStatus,
   AccountType,
   AuthorizationStatus,
+  GroupType,
   ProviderCode,
   ResourceAuthorizationResourceType,
   ResourceAuthorizationSourceStatus,
@@ -169,6 +170,8 @@ export type AccountListRow = AccountRow & {
   bound_group_id?: string | null
   bound_group_name?: string | null
   bound_group_account_authorization_id?: string | null
+  bound_group_weight?: number | null
+  bound_group_soft_concurrency_limit?: number | null
   bound_group_local_status?: AccountStatus | null
   bound_group_local_cooldown_until?: string | null
   bound_group_local_last_error_message?: string | null
@@ -191,6 +194,8 @@ export interface GroupRow {
   description: string | null
   enabled: number
   is_default: number
+  group_type: GroupType | null
+  scheduling_policy_json: string | null
   created_at: string
   updated_at: string
 }
