@@ -26,7 +26,6 @@ export type AccountOAuthAuthorizeForm = Pick<AccountFormModel, 'oauthMode' | 'ca
 export interface AccountFilters {
   keyword: string
   groupId: string
-  type: 'all' | AccountType
   status: AccountStatus[]
   systemAccountId: string
 }

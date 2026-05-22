@@ -26,7 +26,6 @@
         @search="emit('group-search', $event)"
         @update:value="handleGroupUpdate"
       />
-      <a-select :value="filters.type" class="toolbar-select responsive-list-inline-filter" :options="typeOptions" @update:value="emit('update:type', $event)" />
       <a-select
         :value="filters.status"
         allow-clear
@@ -79,10 +78,6 @@
         />
       </label>
       <label class="mobile-filter-field">
-        <span>账户类型</span>
-        <a-select :value="filters.type" :options="typeOptions" @update:value="emit('update:type', $event)" />
-      </label>
-      <label class="mobile-filter-field">
         <span>账户状态</span>
         <a-select
           :value="filters.status"
@@ -119,7 +114,7 @@ import { computed } from 'vue'
 
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
-import type { AccountStatus, AccountType, GroupOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import type { AccountStatus, GroupOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
 import type { AccountFilters } from './accountFormTypes'
 
 type FilterOption<T extends string> = {
@@ -139,7 +134,6 @@ const props = defineProps<{
   statusOptions: Array<FilterOption<AccountStatus>>
   systemAccounts: SystemAccountPrincipalSummary[]
   systemAccountsLoading?: boolean
-  typeOptions: Array<FilterOption<'all' | AccountType>>
 }>()
 
 const emit = defineEmits<{
@@ -157,7 +151,6 @@ const emit = defineEmits<{
   (event: 'update:keyword', value: string): void
   (event: 'update:status', value: AccountStatus[]): void
   (event: 'update:systemAccountId', value: string): void
-  (event: 'update:type', value: 'all' | AccountType): void
 }>()
 
 const accountStatusValues = new Set<AccountStatus>(['active', 'disabled', 'error', 'rate_limited', 'temporary_unavailable'])

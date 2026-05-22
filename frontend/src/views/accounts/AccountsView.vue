@@ -11,7 +11,6 @@
       :status-options="statusOptions"
       :system-accounts="systemAccounts"
       :system-accounts-loading="systemAccountOptionsLoading"
-      :type-options="typeOptions"
       @create="openCreate"
       @group-dropdown="handleFilterGroupOptionsDropdown"
       @group-search="handleFilterGroupOptionsSearch"
@@ -26,7 +25,6 @@
       @update:keyword="filters.keyword = $event"
       @update:status="filters.status = $event"
       @update:system-account-id="filters.systemAccountId = $event"
-      @update:type="filters.type = $event"
     />
 
     <AccountBatchToolbar
@@ -196,8 +194,7 @@ import {
   proxyByIdMap
 } from './accountDerivedState'
 import {
-  statusOptions,
-  typeOptions
+  statusOptions
 } from './accountOptions'
 import {
   accountSelectionColumnWidth,

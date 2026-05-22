@@ -28,13 +28,13 @@ interface UseAccountListDataOptions {
 }
 
 const defaultAccountsPageState = (): AccountsPageState => ({
-  filters: { keyword: '', groupId: '', type: 'all', status: [], systemAccountId: allSystemAccountsValue },
+  filters: { keyword: '', groupId: '', status: [], systemAccountId: allSystemAccountsValue },
   pagination: { current: 1, pageSize: ACCOUNT_PAGE_SIZE },
   sorts: [{ field: 'priority', order: 'asc' }]
 })
 
 export function useAccountListData(options: UseAccountListDataOptions) {
-  const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 4 })
+  const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 5 })
   const initialPageState = pageStateCache.read()
   const providers = ref<ProviderDefinition[]>([])
   const proxies = ref<ProxyProfileOptionSummary[]>([])
@@ -208,7 +208,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       pageSize: pageState.pageSize,
       keyword: filters.keyword.trim() || undefined,
       groupId: options.isManagementView.value && !systemAccountId ? undefined : filters.groupId || undefined,
-      type: filters.type,
       status: filters.status
     }
   }

@@ -1,4 +1,4 @@
-import type { AccountStatus, AccountType, ProviderDefinition } from '@/types/domain'
+import type { AccountStatus, ProviderDefinition } from '@/types/domain'
 
 export const FALLBACK_PROVIDER: ProviderDefinition = {
   id: 'openai',
@@ -12,12 +12,6 @@ export const FALLBACK_PROVIDER: ProviderDefinition = {
 
 export const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 export const ACCOUNT_PAGE_SIZE = 20
-
-export const typeOptions: Array<{ label: string; value: 'all' | AccountType }> = [
-  { label: '全部类型', value: 'all' },
-  { label: 'OAuth', value: 'oauth' },
-  { label: 'API Key', value: 'api_key' }
-]
 
 export const statusOptions: Array<{ label: string; value: AccountStatus }> = [
   { label: '正常', value: 'active' },
