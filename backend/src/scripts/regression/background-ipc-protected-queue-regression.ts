@@ -28,14 +28,14 @@ const [backgroundIpc, recordMaintenanceQueue, operationLogQueue, auditLogQueue, 
 try {
   for (let index = 0; index < 5000; index += 1) {
     const result = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildUsageRecordsCleanupJob(index))
-    assert.equal(result.queued, true, `记录库维护任务 ${index} 应被 server IPC 队列保留`)
+    assert.equal(result.queued, true, `数据维护任务 ${index} 应被 server IPC 队列保留`)
   }
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '应填满 regular IPC 队列')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.recordMaintenance.queueLength, 5000, 'server IPC runtime 应按类型展示维护任务排队数')
 
   const droppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
   const protectedOverflow = recordMaintenanceQueue.enqueueRecordMaintenanceJobWithResult(buildUsageRecordsCleanupJob(5000))
-  assert.equal(protectedOverflow.queued, false, '队列已满且没有可丢弃项时，新记录库维护任务应显式返回投递失败')
+  assert.equal(protectedOverflow.queued, false, '队列已满且没有可丢弃项时，新数据维护任务应显式返回投递失败')
   assert.equal(protectedOverflow.droppedReason, 'worker_dispatch_failed', '显式失败应带上投递失败原因')
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount, droppedBefore + 1, '队列满导致的 server 投递失败应进入维护队列 dropped 指标')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '队列满时不应为保护消息突破上限')
@@ -83,7 +83,7 @@ try {
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, 5000, '审计日志被拒绝时不应突破队列上限')
   assert.equal(backgroundIpc.getBackgroundWorkerState().pendingQueues.auditLogs.rejectedCount, 1, 'server IPC runtime 应记录审计日志拒绝次数')
 
-  console.log('后台 IPC 保护队列回归通过：记录库维护任务不会被 regular 队列溢出静默丢弃，队列满时会显式失败')
+  console.log('后台 IPC 保护队列回归通过：数据维护任务不会被 regular 队列溢出静默丢弃，队列满时会显式失败')
 } finally {
   try {
     databaseModule.getDatabase().close()

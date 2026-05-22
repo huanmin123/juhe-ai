@@ -162,7 +162,7 @@ export function flushRecordMaintenanceQueue(options: RecordMaintenanceFlushOptio
             jobId: job.id,
             pendingCount: pendingJobs.length,
             flushFailureCount
-          }), '记录库维护队列执行失败，已保留任务等待重试')
+          }), '数据维护队列执行失败，已保留任务等待重试')
           shouldRetry = options.retryOnFailure !== false
           return
         }
@@ -220,7 +220,7 @@ function enqueueRecordMaintenanceJobLocal(job: RecordMaintenanceJob): void {
       overflowCount,
       retainedOverflowWarningCount,
       pendingCount: pendingJobs.length
-    }, '记录库维护队列超过软上限，已保留待执行任务并触发立即处理')
+    }, '数据维护队列超过软上限，已保留待执行任务并触发立即处理')
     flushRecordMaintenanceQueue({ drain: true, maxBatches: 5 })
   }
   scheduleRecordMaintenanceFlush(pendingJobs.length >= recordMaintenanceBatchSize ? 0 : recordMaintenanceFlushIntervalMs)
@@ -238,7 +238,7 @@ function processRecordMaintenanceJob(job: RecordMaintenanceJob): void {
         event: deferred ? 'record_maintenance_api_key_cleanup_deferred' : 'record_maintenance_api_key_cleanup_completed',
         jobId: job.id,
         ...result
-      }, deferred ? 'API Key 关联记录库数据清理等待统计游标追平' : 'API Key 关联记录库数据清理完成')
+      }, deferred ? 'API Key 关联数据清理等待统计游标追平' : 'API Key 关联数据清理完成')
       return
     }
     case 'usage_records_cleanup': {
@@ -420,7 +420,7 @@ function recordRecordMaintenanceDispatchFailure(error: unknown, job: RecordMaint
     jobType: job.type,
     jobId: job.id,
     droppedDispatchCount
-  }), 'DB service 记录库维护任务投递失败，已跳过投递')
+  }), 'DB service 数据维护任务投递失败，已跳过投递')
 }
 
 function normalizeMaxBatches(value: number | undefined): number {
@@ -429,10 +429,10 @@ function normalizeMaxBatches(value: number | undefined): number {
 
 function assertLocalRecordMaintenanceWriteAllowed(operation: string): void {
   if (runtimeConfig.processRole !== 'worker') {
-    throw new Error(`${runtimeConfig.processRole} 角色禁止直接执行记录库维护：${operation} 必须投递 background worker`)
+    throw new Error(`${runtimeConfig.processRole} 角色禁止直接执行数据维护：${operation} 必须投递 background worker`)
   }
 }
 
 function assertNever(value: never): never {
-  throw new Error(`未知记录库维护任务：${JSON.stringify(value)}`)
+  throw new Error(`未知数据维护任务：${JSON.stringify(value)}`)
 }

@@ -86,7 +86,7 @@ try {
     { rejectTempSort: true }
   )
 
-  console.log('记录库维护索引回归通过：删除清理、详情读取和过期清理查询均使用目标索引且避免临时排序')
+  console.log('数据维护索引回归通过：删除清理、详情读取和过期清理查询均使用目标索引且避免临时排序')
 } finally {
   try {
     databaseModule.getDatabase().close()

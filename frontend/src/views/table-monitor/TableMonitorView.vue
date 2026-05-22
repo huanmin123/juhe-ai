@@ -103,26 +103,22 @@
       </a-col>
     </a-row>
 
-    <a-row :gutter="[16, 16]" class="history-grid">
-      <a-col v-for="item in historyCards" :key="item.role" :xs="24" :xl="12">
-        <a-card class="page-card history-card" :title="item.title">
-          <DeferredRender
-            v-if="item.rows.length > 0"
-            :active="pageActive"
-            :delay-frames="2"
-            :min-height="320"
-            :reset-key="`${item.role}:${item.rows.length}:${selectedTableKeys[item.role] || ''}`"
-            reset-on-deactivate
-            @ready="renderHistoryChart(item.role)"
-          >
-            <div :ref="item.setChartRef" class="history-chart" />
-          </DeferredRender>
-          <div v-else class="page-empty-card">
-            <a-empty :description="`${databaseRoleLabel(item.role)}暂无增长历史`" />
-          </div>
-        </a-card>
-      </a-col>
-    </a-row>
+    <a-card class="page-card history-card" title="三库增长趋势">
+      <DeferredRender
+        v-if="hasHistoryRows"
+        :active="pageActive"
+        :delay-frames="2"
+        :min-height="340"
+        :reset-key="historyChartResetKey"
+        reset-on-deactivate
+        @ready="renderHistoryChart"
+      >
+        <div ref="historyChartElement" class="history-chart" />
+      </DeferredRender>
+      <div v-else class="page-empty-card">
+        <a-empty description="暂无增长历史" />
+      </div>
+    </a-card>
 
     <a-card class="page-card">
       <DeferredRender :active="pageActive" :delay-frames="1" :min-height="360" reset-on-deactivate>
@@ -135,12 +131,10 @@
           :scroll-x="1180"
           :table-scroll-enabled="false"
           :lock-body-scroll="false"
-          row-clickable
           class="table-monitor-table"
           table-class="table-monitor-table"
           size="middle"
           mobile-pagination
-          @row-click="selectTable"
         >
           <template #emptyText>
             <a-empty class="page-empty-card" description="当前条件下没有表监控数据。" />
@@ -152,7 +146,6 @@
             <template v-else-if="column.key === 'tableName'">
               <span class="table-name-cell">
                 <span class="mono-cell">{{ record.tableName }}</span>
-                <a-tag v-if="isSelectedTable(record)" color="blue">趋势</a-tag>
               </span>
             </template>
             <template v-else-if="column.key === 'rowCount'">
@@ -180,7 +173,7 @@
             </template>
           </template>
           <template #card="{ record }">
-            <button class="table-monitor-mobile-card" type="button" @click="selectTable(record)">
+            <article class="table-monitor-mobile-card">
               <div class="mobile-card-head">
                 <span class="mono-cell">{{ record.tableName }}</span>
                 <a-tag :color="databaseRoleColor(record.databaseRole)">{{ databaseRoleLabel(record.databaseRole) }}</a-tag>
@@ -207,8 +200,7 @@
                   <strong>{{ formatDateTime(record.sampledAt) }}</strong>
                 </div>
               </div>
-              <a-tag v-if="isSelectedTable(record)" color="blue">当前趋势表</a-tag>
-            </button>
+            </article>
           </template>
         </ResponsiveDataList>
         <template #placeholder>
@@ -223,7 +215,6 @@
 
 <script setup lang="ts">
 import { computed, nextTick, ref, shallowRef } from 'vue'
-import type { ShallowRef } from 'vue'
 import type { Dayjs } from 'dayjs'
 import dayjs from 'dayjs'
 import { DeleteOutlined } from '@ant-design/icons-vue'
@@ -260,26 +251,9 @@ const cleanupCutoffAt = ref<Dayjs | undefined>(defaultCleanupCutoffAt())
 const cleanupResult = ref<UsageRecordsCleanupResult>()
 const databaseSummaryRoles: MonitoredDatabaseRole[] = ['business', 'dataset', 'stats']
 const historyChartPointLimit = 720
-const selectedTableKeys = ref<Record<MonitoredDatabaseRole, string | undefined>>({
-  business: undefined,
-  dataset: undefined,
-  stats: undefined
-})
-const historyRowsByRole = ref<Record<MonitoredDatabaseRole, TableStorageSnapshotSummary[]>>({
-  business: [],
-  dataset: [],
-  stats: []
-})
-const historyChartElements: Record<MonitoredDatabaseRole, HTMLDivElement | undefined> = {
-  business: undefined,
-  dataset: undefined,
-  stats: undefined
-}
-const historyCharts: Record<MonitoredDatabaseRole, ShallowRef<ECharts | undefined>> = {
-  business: shallowRef<ECharts>(),
-  dataset: shallowRef<ECharts>(),
-  stats: shallowRef<ECharts>()
-}
+const databaseHistoryRows = ref<DatabaseStorageSnapshotSummary[]>([])
+const historyChartElement = ref<HTMLDivElement>()
+const historyChart = shallowRef<ECharts>()
 const { pageActive } = useEchartsPageLifecycle({
   renderCharts: renderHistoryCharts,
   resizeCharts: resizeHistoryChart,
@@ -314,26 +288,10 @@ const activeFilterCount = computed(() => {
   return count
 })
 
-const selectedTable = computed(() => {
-  return {
-    business: selectedTableForRole('business'),
-    dataset: selectedTableForRole('dataset'),
-    stats: selectedTableForRole('stats')
-  }
-})
-
-const historyCards = computed(() => {
-  return databaseSummaryRoles.map((role) => {
-    const table = selectedTable.value[role]
-    return {
-      role,
-      rows: historyRowsByRole.value[role],
-      title: table ? `${databaseRoleLabel(role)} · ${table.tableName} 增长趋势` : `${databaseRoleLabel(role)}增长趋势`,
-      setChartRef: (element: unknown) => {
-        historyChartElements[role] = element instanceof HTMLDivElement ? element : undefined
-      }
-    }
-  })
+const hasHistoryRows = computed(() => databaseHistoryRows.value.length > 0)
+const historyChartResetKey = computed(() => {
+  const latestSample = databaseHistoryRows.value.at(-1)?.sampledAt ?? ''
+  return `${databaseHistoryRows.value.length}:${latestSample}`
 })
 
 const cleanupResultType = computed(() => {
@@ -381,9 +339,16 @@ const cleanupResultDescription = computed(() => {
 async function loadData() {
   loading.value = true
   try {
-    overview.value = await api.tableMonitor.overview(historyRangeParams())
-    ensureSelectedTable()
-    await loadAllHistory()
+    const [nextOverview, nextDatabaseHistory] = await Promise.all([
+      api.tableMonitor.overview(historyRangeParams()),
+      api.tableMonitor.databaseHistory({
+        ...historyRangeParams(),
+        limit: historyChartPointLimit
+      })
+    ])
+    overview.value = nextOverview
+    databaseHistoryRows.value = nextDatabaseHistory
+    renderHistoryChart()
   } catch (error) {
     console.error(error)
     message.error('表监控加载失败')
@@ -435,79 +400,13 @@ async function submitUsageRecordsCleanup() {
 }
 
 function handleFilterChange() {
-  const changedRoles = ensureSelectedTable()
-  if (changedRoles.length > 0) {
-    void loadHistoryForRoles(changedRoles)
-  }
+  renderHistoryChart()
 }
 
 function resetFilters() {
   keyword.value = ''
   historyRange.value = defaultHistoryRange()
-  selectedTableKeys.value = {
-    business: undefined,
-    dataset: undefined,
-    stats: undefined
-  }
   void loadData()
-}
-
-async function loadAllHistory() {
-  await Promise.all(databaseSummaryRoles.map((role) => loadHistoryForRole(role)))
-}
-
-async function loadHistoryForRoles(roles: MonitoredDatabaseRole[]) {
-  await Promise.all(roles.map((role) => loadHistoryForRole(role)))
-}
-
-async function loadHistoryForRole(role: MonitoredDatabaseRole) {
-  const table = selectedTable.value[role]
-  if (!table) {
-    historyRowsByRole.value[role] = []
-    renderHistoryChart(role)
-    return
-  }
-  selectedTableKeys.value[role] = tableKey(table)
-  try {
-    historyRowsByRole.value[role] = await api.tableMonitor.history({
-      databaseRole: table.databaseRole,
-      tableName: table.tableName,
-      ...historyRangeParams(),
-      limit: historyChartPointLimit
-    })
-  } catch (error) {
-    console.error(error)
-    message.error(`${databaseRoleLabel(role)}增长历史加载失败`)
-    historyRowsByRole.value[role] = []
-  } finally {
-    renderHistoryChart(role)
-  }
-}
-
-function ensureSelectedTable(reset = false): MonitoredDatabaseRole[] {
-  const changedRoles: MonitoredDatabaseRole[] = []
-  for (const role of databaseSummaryRoles) {
-    const previousKey = selectedTableKeys.value[role]
-    const previousVisible = !reset && previousKey
-      ? filteredTables.value.some((row) => row.databaseRole === role && tableKey(row) === previousKey)
-      : false
-    const firstTable = firstTableForRole(role)
-    const nextKey = previousVisible ? previousKey : firstTable ? tableKey(firstTable) : undefined
-    if (previousKey !== nextKey) {
-      changedRoles.push(role)
-    }
-    selectedTableKeys.value[role] = nextKey
-  }
-  return changedRoles
-}
-
-function selectedTableForRole(role: MonitoredDatabaseRole): TableStorageSnapshotSummary | undefined {
-  const current = selectedTableKeys.value[role]
-  return filteredTables.value.find((row) => row.databaseRole === role && tableKey(row) === current) ?? firstTableForRole(role)
-}
-
-function firstTableForRole(role: MonitoredDatabaseRole): TableStorageSnapshotSummary | undefined {
-  return filteredTables.value.find((row) => row.databaseRole === role)
 }
 
 function matchesTableNameKeyword(tableName: string, keyword: string): boolean {
@@ -568,66 +467,73 @@ function range(start: number, end: number) {
   return output
 }
 
-function selectTable(record: TableStorageSnapshotSummary) {
-  selectedTableKeys.value[record.databaseRole] = tableKey(record)
-  void loadHistoryForRole(record.databaseRole)
-}
-
-function isSelectedTable(record: TableStorageSnapshotSummary) {
-  return tableKey(record) === selectedTableKeys.value[record.databaseRole]
-}
-
-function renderHistoryChart(role: MonitoredDatabaseRole) {
+function renderHistoryChart() {
   if (!pageActive.value) return
   void nextTick(() => {
     if (!pageActive.value) return
-    const rows = historyRowsByRole.value[role]
-    if (!rows.length) {
-      disposeChart(historyCharts[role])
+    if (!hasHistoryRows.value) {
+      disposeChart(historyChart)
       return
     }
-    const chart = ensureChartFromElement(historyChartElements[role], historyCharts[role])
+    const chart = ensureChartFromElement(historyChartElement.value, historyChart)
     if (!chart) return
+    const buckets = historyTimeBuckets()
     chart.setOption({
-      tooltip: { trigger: 'axis' },
-      legend: { top: 4, data: ['总大小', '行数'] },
-      grid: { left: 56, right: 56, top: 44, bottom: 42 },
+      color: ['#1677ff', '#fa8c16', '#722ed1'],
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: unknown) => historyTooltip(params)
+      },
+      legend: {
+        top: 4,
+        data: databaseSummaryRoles.map(databaseRoleLabel)
+      },
+      grid: { left: 56, right: 24, top: 48, bottom: 42 },
       xAxis: {
         type: 'category',
         boundaryGap: false,
-        data: rows.map((row) => formatSampleTime(row.sampledAt))
+        data: buckets.map((bucket) => formatSampleTime(bucket))
       },
-      yAxis: [
-        {
-          type: 'value',
-          name: '大小',
-          axisLabel: { formatter: (value: number) => formatBytes(value) }
-        },
-        {
-          type: 'value',
-          name: '行数',
-          axisLabel: { formatter: (value: number) => compactNumber(value) }
-        }
-      ],
-      series: [
-        {
-          name: '总大小',
-          type: 'line',
-          smooth: true,
-          showSymbol: false,
-          data: rows.map((row) => row.totalBytes)
-        },
-        {
-          name: '行数',
-          type: 'line',
-          yAxisIndex: 1,
-          smooth: true,
-          showSymbol: false,
-          data: rows.map((row) => row.rowCount ?? null)
-        }
-      ]
+      yAxis: {
+        type: 'value',
+        name: '大小',
+        axisLabel: { formatter: (value: number) => formatBytes(value) },
+        splitLine: { lineStyle: { color: '#edf2f7' } }
+      },
+      series: databaseSummaryRoles.map((role) => historySeries(role, buckets))
     }, { notMerge: true })
   })
+}
+
+function historyTimeBuckets() {
+  return [...new Set(databaseHistoryRows.value.map((row) => row.sampledAt))].sort()
+}
+
+function historySeries(role: MonitoredDatabaseRole, buckets: string[]) {
+  const rowsByTime = new Map(databaseHistoryRows.value
+    .filter((row) => row.databaseRole === role)
+    .map((row) => [row.sampledAt, row]))
+  return {
+    name: databaseRoleLabel(role),
+    type: 'line',
+    smooth: true,
+    showSymbol: false,
+    connectNulls: false,
+    data: buckets.map((bucket) => {
+      const row = rowsByTime.get(bucket)
+      const totalBytes = totalDatabaseBytes(row)
+      return totalBytes === undefined
+        ? null
+        : {
+            value: totalBytes,
+            fileBytes: row?.fileBytes,
+            walBytes: row?.walBytes,
+            freeBytes: row?.freeBytes,
+            tableCount: row?.tableCount,
+            sampledAt: row?.sampledAt
+          }
+    })
+  }
 }
 
 function tableKey(row: TableStorageSnapshotSummary) {
@@ -687,13 +593,48 @@ function formatInteger(value?: number) {
   return value === undefined ? '-' : new Intl.NumberFormat('zh-CN').format(Math.round(value))
 }
 
-function compactNumber(value?: number) {
-  if (value === undefined || !Number.isFinite(value)) return '-'
-  const absolute = Math.abs(value)
-  if (absolute >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(1)}B`
-  if (absolute >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`
-  if (absolute >= 1_000) return `${(value / 1_000).toFixed(1)}K`
-  return `${Math.round(value)}`
+function historyTooltip(params: unknown) {
+  const points = Array.isArray(params) ? params as HistoryTooltipPoint[] : [params as HistoryTooltipPoint]
+  const title = points[0]?.axisValueLabel ?? points[0]?.name ?? ''
+  const lines = [`<strong>${escapeHtml(title)}</strong>`]
+  for (const point of points) {
+    const data = point.data && typeof point.data === 'object' ? point.data as HistoryTooltipData : undefined
+    if (!data || !Number.isFinite(data.value)) continue
+    const details = [
+      `主库 ${formatBytes(data.fileBytes)}`,
+      `WAL ${formatBytes(data.walBytes)}`,
+      `空闲 ${formatBytes(data.freeBytes)}`,
+      `表 ${formatInteger(data.tableCount)}`
+    ].join(' / ')
+    lines.push(`${point.marker ?? ''}${escapeHtml(point.seriesName ?? '')}: ${formatBytes(data.value)} · ${details}`)
+  }
+  return lines.join('<br/>')
+}
+
+interface HistoryTooltipPoint {
+  marker?: string
+  seriesName?: string
+  name?: string
+  axisValueLabel?: string
+  data?: unknown
+}
+
+interface HistoryTooltipData {
+  value: number
+  fileBytes?: number
+  walBytes?: number
+  freeBytes?: number
+  tableCount?: number
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;',
+    '<': '&lt;',
+    '>': '&gt;',
+    '"': '&quot;',
+    "'": '&#39;'
+  }[character] ?? character))
 }
 
 function formatSampleTime(value: string) {
@@ -703,19 +644,15 @@ function formatSampleTime(value: string) {
 }
 
 function renderHistoryCharts() {
-  for (const role of databaseSummaryRoles) {
-    renderHistoryChart(role)
-  }
+  renderHistoryChart()
 }
 
 function disposeHistoryCharts() {
-  for (const role of databaseSummaryRoles) {
-    disposeChart(historyCharts[role])
-  }
+  disposeChart(historyChart)
 }
 
 function resizeHistoryChart() {
-  resizeEcharts(databaseSummaryRoles.map((role) => historyCharts[role].value))
+  resizeEcharts([historyChart.value])
 }
 </script>
 
@@ -751,10 +688,6 @@ function resizeHistoryChart() {
 }
 
 .database-summary-grid :deep(.ant-col) {
-  display: flex;
-}
-
-.history-grid :deep(.ant-col) {
   display: flex;
 }
 
@@ -849,7 +782,7 @@ function resizeHistoryChart() {
 
 .history-chart {
   width: 100%;
-  height: 320px;
+  height: 340px;
 }
 
 @media (max-width: 768px) {
@@ -858,7 +791,7 @@ function resizeHistoryChart() {
   }
 
   .history-chart {
-    height: 280px;
+    height: 300px;
   }
 }
 </style>

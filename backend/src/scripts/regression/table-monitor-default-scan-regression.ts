@@ -33,7 +33,7 @@ try {
   assert.equal(result.tableScanMode, 'cursor', '表监控默认采样应使用 cursor，避免误触发全库表扫描')
   assert.equal(result.rowCountMode, 'none', '表监控默认采样不应执行 COUNT(*) 行数统计')
   assert(result.tableSnapshots > 0, '表监控默认采样应写入本轮 cursor 表快照')
-  assert(result.tableSnapshots < 16, `默认 cursor 采样不应一次采完业务库和记录库所有表，实际 ${result.tableSnapshots}`)
+  assert(result.tableSnapshots < 16, `默认 cursor 采样不应一次采完业务库、统计数据集库和统计结果库所有表，实际 ${result.tableSnapshots}`)
 
   const sampledRows = databaseModule.getStatsDatabase()
     .prepare('SELECT row_count FROM table_storage_snapshots')
@@ -61,8 +61,19 @@ try {
   } finally {
     recordDatabase.prepare = originalPrepare as typeof recordDatabase.prepare
   }
-  assert(capturedSql.length > 0, '表监控概览应查询记录库采样表')
+  assert(capturedSql.length > 0, '表监控概览应查询统计结果库采样表')
   assert(capturedSql.every((sql) => !/\bJOIN\b/i.test(sql)), '表监控概览不应使用关联查询拼接采样结果')
+
+  const databaseHistory = tableMonitorRepository.listDatabaseStorageHistory({
+    startAt: '2026-01-01T00:00:00.000Z',
+    endAt: '2026-01-01T00:00:00.000Z',
+    limit: 720
+  })
+  const databaseHistoryRoles = new Set(databaseHistory.map((row) => row.databaseRole))
+  assert.equal(databaseHistory.length, 3, '三库增长趋势应一次返回业务库、数据集库和统计结果库历史点')
+  assert(databaseHistoryRoles.has('business'), '三库增长趋势应包含业务库')
+  assert(databaseHistoryRoles.has('dataset'), '三库增长趋势应包含数据集库')
+  assert(databaseHistoryRoles.has('stats'), '三库增长趋势应包含统计结果库')
 
   console.log('表监控默认采样回归通过：默认 cursor/none，不做全表扫描和 COUNT(*)')
 } finally {

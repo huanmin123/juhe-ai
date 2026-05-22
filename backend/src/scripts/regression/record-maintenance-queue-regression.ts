@@ -29,10 +29,10 @@ try {
   runtimeConfig.processRole = 'worker'
   const completedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().completedCount
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildUsageRecordsCleanupJob('worker_local'))
-  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 1, 'worker 角色应进入本地记录库维护队列')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 1, 'worker 角色应进入本地数据维护队列')
   recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
-  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'worker flush 后记录库维护队列应清空')
-  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().completedCount, completedBefore + 1, 'worker flush 应执行记录库维护任务')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'worker flush 后数据维护队列应清空')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().completedCount, completedBefore + 1, 'worker flush 应执行数据维护任务')
 
   seedUsageRecord('usage_cleanup_regression', '2000-01-01T00:00:00.000Z')
   recordMaintenanceQueue.enqueueRecordMaintenanceJob({
@@ -65,7 +65,7 @@ try {
     maxBatches: 1
   })
   recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
-  assert.equal(usageRecordCount('usage_cleanup_recent_protected'), 1, 'worker 记录库维护任务应强制保留最近 1 天的使用记录')
+  assert.equal(usageRecordCount('usage_cleanup_recent_protected'), 1, 'worker 数据维护任务应强制保留最近 1 天的使用记录')
 
   seedAccount('acct_codex_snapshot', 'sys_admin')
   recordMaintenanceQueue.enqueueRecordMaintenanceJob({
@@ -81,7 +81,7 @@ try {
     updatedAt: '2000-01-01T00:00:00.000Z'
   })
   recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
-  assert.equal(accountUsageSnapshotCount('acct_codex_snapshot'), 1, 'worker 应能通过记录库维护队列写入账号用量快照')
+  assert.equal(accountUsageSnapshotCount('acct_codex_snapshot'), 1, 'worker 应能通过数据维护队列写入账号用量快照')
 
   for (let index = 0; index < 5; index += 1) {
     seedAccount(`acct_codex_snapshot_batch_${index}`, 'sys_admin')
@@ -181,13 +181,13 @@ try {
   runtimeConfig.processRole = 'server'
   const pendingBefore = backgroundIpc.getBackgroundWorkerState().pendingMessageCount
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildUsageRecordsCleanupJob('server_ipc'))
-  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'server 角色不能进入本地记录库维护队列')
-  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, pendingBefore + 1, 'server 角色应把记录库维护任务投递到 worker IPC 队列')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'server 角色不能进入本地数据维护队列')
+  assert.equal(backgroundIpc.getBackgroundWorkerState().pendingMessageCount, pendingBefore + 1, 'server 角色应把数据维护任务投递到 worker IPC 队列')
 
   runtimeConfig.processRole = 'db-service'
   const droppedBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount
   recordMaintenanceQueue.enqueueRecordMaintenanceJob(buildApiKeyCleanupJob('db_service_parent_ipc_missing'))
-  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'db-service 角色不能进入本地记录库维护队列')
+  assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, 'db-service 角色不能进入本地数据维护队列')
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().droppedCount, droppedBefore + 1, '无父进程 IPC 的 db-service 测试态应记录投递失败计数')
 
   const originalProcessSend = process.send
@@ -206,7 +206,7 @@ try {
     process.send = originalProcessSend
   }
 
-  console.log('记录库维护队列回归通过：server/db-service 只投递，worker 才执行记录库清理')
+  console.log('数据维护队列回归通过：server/db-service 只投递，worker 才执行数据清理')
 } finally {
   try {
     databaseModule.getDatabase().close()

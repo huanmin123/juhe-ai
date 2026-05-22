@@ -123,10 +123,10 @@ async function runApiKeyRecordCleanupRetry(): Promise<void> {
       logger.info({
         event: 'background_api_key_record_cleanup_retry_completed',
         ...summary
-      }, '已删除 API Key 关联记录库清理重试完成')
+      }, '已删除 API Key 关联数据清理重试完成')
     }
   } catch (error) {
-    logger.error(errorLogFields(error, { event: 'background_api_key_record_cleanup_retry_failed' }), '已删除 API Key 关联记录库清理重试失败')
+    logger.error(errorLogFields(error, { event: 'background_api_key_record_cleanup_retry_failed' }), '已删除 API Key 关联数据清理重试失败')
     throw error
   }
 }

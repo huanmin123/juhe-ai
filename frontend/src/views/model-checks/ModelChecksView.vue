@@ -13,7 +13,7 @@
                 :filter-option="false"
                 :loading="targetOptionsLoading"
                 :options="targetOptions"
-                placeholder="选择要检测的 OpenAI 账户"
+                placeholder="输入账户名称搜索"
                 @change="handleTargetChange"
                 @dropdown-visible-change="handleTargetDropdownVisibleChange"
                 @search="handleTargetSearch"
@@ -26,7 +26,7 @@
                 :options="modelOptions"
                 :loading="optionsLoading"
                 :disabled="submitting"
-                placeholder="选择检测模型"
+                placeholder="模型"
               />
             </a-form-item>
             <a-form-item class="model-checks-comparison-field">
@@ -38,7 +38,7 @@
                 :filter-option="false"
                 :loading="comparisonOptionsLoading"
                 :options="comparisonOptions"
-                placeholder="选择可信对比账户（可选，会额外消耗额度）"
+                placeholder="可信对比账户（可选）"
                 @dropdown-visible-change="handleComparisonDropdownVisibleChange"
                 @search="handleComparisonSearch"
               />
@@ -93,9 +93,9 @@
     <a-card class="page-card model-checks-history-card" title="历史检测">
       <div class="history-toolbar">
         <a-space wrap>
-          <a-select v-model:value="filters.model" allow-clear class="history-filter" :options="modelOptions" placeholder="筛选检测模型" @change="reloadRuns" />
-          <a-select v-model:value="filters.status" allow-clear class="history-filter" :options="statusOptions" placeholder="筛选检测状态" @change="reloadRuns" />
-          <a-select v-model:value="filters.level" allow-clear class="history-filter" :options="levelOptions" placeholder="筛选可信级别" @change="reloadRuns" />
+          <a-select v-model:value="filters.model" allow-clear class="history-filter" :options="modelOptions" placeholder="全部模型" @change="reloadRuns" />
+          <a-select v-model:value="filters.status" allow-clear class="history-filter" :options="statusOptions" placeholder="全部状态" @change="reloadRuns" />
+          <a-select v-model:value="filters.level" allow-clear class="history-filter" :options="levelOptions" placeholder="全部级别" @change="reloadRuns" />
           <a-select
             v-model:value="filters.targetId"
             show-search
@@ -104,7 +104,7 @@
             :filter-option="false"
             :loading="historyTargetOptionsLoading"
             :options="historyTargetOptions"
-            placeholder="按 AI 账户名称筛选历史记录"
+            placeholder="全部账户"
             @change="() => reloadRuns()"
             @dropdown-visible-change="handleHistoryTargetDropdownVisibleChange"
             @search="handleHistoryTargetSearch"
@@ -728,9 +728,7 @@ function handleModelCheckProgress(event: ModelCheckProgressEvent) {
 }
 
 function accountTargetOption(account: AccountOptionSummary) {
-  const owner = account.systemAccountName || account.ownerSystemAccountName
-  const parts = [account.name, accountTypeText(account.type), owner].filter(Boolean)
-  return { label: parts.join(' · '), value: account.id }
+  return { label: account.name, value: account.id }
 }
 
 function keepSelectedTargetOption(nextOptions: AccountSelectOption[]) {

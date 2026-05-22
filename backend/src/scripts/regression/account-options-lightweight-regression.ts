@@ -174,7 +174,7 @@ try {
     assert(!/\bcredentials_encrypted\b/i.test(call.sql), '账户 options SQL 不应读取 credentials_encrypted')
     assert(!/\baccounts\.notes\b/i.test(call.sql), '账户 options SQL 不应读取或搜索 notes 长文本')
     assert(!/\baccount_rows\b/i.test(call.sql), '账户 options SQL 不应复用完整账户列表 account_rows 大查询')
-    assert(!/\baccount_quality_scores\b/i.test(call.sql), '账户 options SQL 不应接入质量分记录库')
+    assert(!/\baccount_quality_scores\b/i.test(call.sql), '账户 options SQL 不应接入统计结果库质量分')
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账户 options 关键词不应通过 COALESCE 扫描字段')
     assert(!/\baccounts\.id\s+(?:=|LIKE)\s+\?/i.test(call.sql), '账户 options 关键词不应把账户 ID 放进 WHERE')
     assert(!/\baccounts\.provider_code\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账户 options 关键词不应把供应商编码放进 WHERE')
@@ -191,7 +191,7 @@ try {
   assertBusinessIndexExists('idx_group_accounts_account_scope_enabled')
   assertBusinessIndexExists('idx_groups_system_account_name_lookup')
 
-  console.log('账户选项轻量回归通过：options 接口不读取记录库统计，不返回完整账户摘要字段，关键词仅按账户名称匹配，分组使用独立筛选')
+  console.log('账户选项轻量回归通过：options 接口不读取统计结果库质量统计，不返回完整账户摘要字段，关键词仅按账户名称匹配，分组使用独立筛选')
 } finally {
   await closeServer(server)
   try {

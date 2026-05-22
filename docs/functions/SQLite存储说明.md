@@ -61,7 +61,7 @@ JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 
 ## 统计数据集与结果库拆分方案
 
-当前实现已经落地统计数据集库和统计结果库入口。为减少高频数据集写入对统计结果查询的影响，记录库职责继续拆为：
+当前实现已经落地统计数据集库和统计结果库入口。为减少高频数据集写入对统计结果查询的影响，旧记录库职责已经拆为：
 
 - 统计数据集库：保存 `usage_records`、原始审计、操作日志、运行日志索引、模型检测明细和记录清理目标等高增长事实数据。
 - 统计结果库：保存 `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、额度窗口、范围窗口、排行快照、授权消耗窗口、账号质量结果、分组统计、系统监控采样、监控趋势和 `stats_job_state` 等紧凑结果。
@@ -94,7 +94,7 @@ JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 - 高并发分组需要的近期质量、超时率、首 token 和总耗时趋势应由 background worker 或请求终态事件增量写入紧凑缓存，网关热路径只读取 DB service 已批量带出的运行时快照，不实时回扫 `usage_records` 或 `account_quality_minute_stats`。跨进程共享指标必须落到 SQLite 缓存表或明确 IPC，不能只放在 worker 进程内存。
 - 登录验证码挑战暂不写入 SQLite，使用后端进程内存保存短时一次性验证码；过期和已提交的挑战会被清理。
 - 登录失败限频和账号临时锁定暂不写入 SQLite，使用后端进程内存保存短时窗口和锁定状态；后续多实例部署时再迁移到共享存储。
-- 会话亲和、当前并发占用、短 TTL 网关校验缓存、验证码挑战、登录失败窗口和 IPC 待投递队列都属于单节点易失运行态；SQLite 只承载长期事实、业务状态、记录库明细和预聚合缓存。服务或子进程重启后这些易失状态允许丢失，并从 SQLite 事实和预聚合结果重新恢复保守判断。
+- 会话亲和、当前并发占用、短 TTL 网关校验缓存、验证码挑战、登录失败窗口和 IPC 待投递队列都属于单节点易失运行态；SQLite 只承载长期事实、业务状态、数据集明细和预聚合缓存。服务或子进程重启后这些易失状态允许丢失，并从 SQLite 事实和预聚合结果重新恢复保守判断。
 
 ## 列表补数与缓存策略
 
@@ -151,7 +151,7 @@ JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 - `usage_error_rank_windows`：按 `system_account_id + window_key + start_date + end_date + rank` 保存统计概览错误 TopN，接口只按范围窗口读取排名行。
 - `ai_performance_summary_windows`：按 `system_account_id + window_key + start_date + end_date` 保存 AI 性能监控摘要，前端账户筛选只影响图表显隐，不重新计算摘要。
 - `usage_quota_hourly_windows`：按 `system_account_id + scope_type + scope_id + window_hours` 保存 n 小时额度成本，随 `statsAggregationIntervalSeconds` 刷新，网关额度判断不再 `SUM usage_stats_hourly`。
-- `usage_scope_range_windows`：按 `system_account_id + scope_type + scope_id + start_date + end_date` 保存最近 31 天范围内的范围总量，用量统计和授权详情只按范围 key 直读；账号用量页关键词先在业务库解析为账号 ID，再用 `scope_id` 命中窗口表，不能在记录库窗口查询中拼业务字段多列 `LIKE`。
+- `usage_scope_range_windows`：按 `system_account_id + scope_type + scope_id + start_date + end_date` 保存最近 31 天范围内的范围总量，用量统计和授权详情只按范围 key 直读；账号用量页关键词先在业务库解析为账号 ID，再用 `scope_id` 命中窗口表，不能在统计结果窗口查询中拼业务字段多列 `LIKE`。
 - `usage_model_daily`：按 `system_account_id + stat_date + model` 保存请求数、Token 和成本，用于自然日模型分布。
 - `usage_model_hourly`：按 `system_account_id + stat_hour + model` 保存小时级模型分布，用于统计概览监控窗口。
 - `usage_error_daily`：按 `system_account_id + stat_date + error_group + error_code` 保存错误数量，用于自然日错误情况。
@@ -194,7 +194,7 @@ JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 - `accounts(provider_code, id)`、`accounts(system_account_id, provider_code, id)`、`accounts(type, id)`、`accounts(system_account_id, type, id)`：保留给供应商、账户类型筛选或排序使用；AI 账户通用搜索不再匹配这些字段。
 - `groups(system_account_id, provider_code, lower(name))`：保证同一用户同一供应商下分组名称唯一。
 - `groups(name, id)`、`groups(system_account_id, name, id)`：账户绑定分组和分组选项按分组名前缀定位。
-- 高并发分组实现时可新增 `groups(system_account_id, provider_code, group_type, id)`：供分组列表和网关候选快照按分组类型读取。
+- 当前未为 `group_type` 单独增加索引；分组列表和网关候选快照仍复用所有者、供应商和名称相关索引读取，只有出现明确查询瓶颈时再补 `groups(system_account_id, provider_code, group_type, id)` 这类定向索引。
 - `groups(system_account_id, provider_code) WHERE is_default = 1`：保证同一用户同一供应商只有一个默认分组。
 - `system_teams(name, id)`：授权团队列表只按团队名称精确 / 前缀匹配，不搜索团队 ID 或说明。
 - `api_keys(system_account_id, lower(name))`：保证同一用户下 API Key 名称唯一，密钥本身仍由 `key_hash` 兜底。

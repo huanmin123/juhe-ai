@@ -106,6 +106,48 @@ try {
   assert.equal(queuedSlot.queued, true, '唤醒后的请求应标记为排队获得槽位')
   queuedSlot.release()
 
+  const queueFullFirstSlot = await acquireHighConcurrencyClientIpSlot({
+    systemAccountId: 'sys_ip',
+    groupId: 'grp_queue_full',
+    apiKeyId: 'key_queue_full',
+    clientIp: '10.0.0.10',
+    policy: {
+      clientIpConcurrencyLimit: 1,
+      clientIpConcurrencyOverflowMode: 'queue',
+      maxQueueWaitMs: 500
+    }
+  })
+  const queueFullAbort = new AbortController()
+  const queuedItems = Array.from({ length: 20 }, () => acquireHighConcurrencyClientIpSlot({
+    systemAccountId: 'sys_ip',
+    groupId: 'grp_queue_full',
+    apiKeyId: 'key_queue_full',
+    clientIp: '10.0.0.10',
+    policy: {
+      clientIpConcurrencyLimit: 1,
+      clientIpConcurrencyOverflowMode: 'queue',
+      maxQueueWaitMs: 500
+    },
+    signal: queueFullAbort.signal
+  }))
+  const queueFullResult = await acquireHighConcurrencyClientIpSlot({
+    systemAccountId: 'sys_ip',
+    groupId: 'grp_queue_full',
+    apiKeyId: 'key_queue_full',
+    clientIp: '10.0.0.10',
+    policy: {
+      clientIpConcurrencyLimit: 1,
+      clientIpConcurrencyOverflowMode: 'queue',
+      maxQueueWaitMs: 500
+    }
+  })
+  assert.equal(queueFullResult.acquired, false, '单 IP 等待队列满后应快速失败')
+  assert.equal(queueFullResult.acquired === false ? queueFullResult.reason : '', 'queue_full')
+  queueFullAbort.abort()
+  await Promise.all(queuedItems)
+  assert(queueFullFirstSlot.acquired, '队列满回归的第一个请求应已占用槽位')
+  queueFullFirstSlot.release()
+
   const timeoutFirstSlot = await acquireHighConcurrencyClientIpSlot({
     systemAccountId: 'sys_ip',
     groupId: 'grp_timeout',

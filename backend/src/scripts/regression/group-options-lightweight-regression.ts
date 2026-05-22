@@ -170,7 +170,7 @@ try {
   assertBusinessIndexExists('idx_groups_provider_name_lookup')
   assertBusinessIndexExists('idx_groups_system_account_provider_name_lookup')
 
-  console.log('分组选项轻量回归通过：options/account-options 接口不读取记录库统计，关键词仅支持精确/前缀匹配，账户表单分组候选按供应商和可管理范围小窗口返回')
+  console.log('分组选项轻量回归通过：options/account-options 接口不读取统计结果库统计，关键词仅支持精确/前缀匹配，账户表单分组候选按供应商和可管理范围小窗口返回')
 } finally {
   await closeServer(server)
   try {

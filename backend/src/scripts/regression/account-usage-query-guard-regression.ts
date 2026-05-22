@@ -198,7 +198,7 @@ try {
   assert(capturedCalls.some((call) => /\bAND\s+0\s+=\s+1\b/i.test(call.sql)), '账号用量关键词无匹配时应避免扫描窗口表')
   for (const call of capturedCalls) {
     assert(!/\bLIKE\s+\?/i.test(call.sql), '账号用量窗口查询不应拼入业务字段 LIKE')
-    assert(!/\baccount_usage_business\.accounts\b/i.test(call.sql), '账号用量关键词窗口查询不应在记录库查询内挂业务库账号表')
+    assert(!/\baccount_usage_business\.accounts\b/i.test(call.sql), '账号用量关键词窗口查询不应在统计结果库查询内挂业务库账号表')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量窗口查询不应接收前导通配符参数')
   }
 

@@ -223,5 +223,5 @@ function assertRecordIndexExists(indexName: string): void {
   const row = databaseModule.getDatasetDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
-  assert.equal(row?.name, indexName, `记录库应创建索引 ${indexName}`)
+  assert.equal(row?.name, indexName, `统计数据集库应创建索引 ${indexName}`)
 }

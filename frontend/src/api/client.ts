@@ -32,6 +32,7 @@ import type {
   CaptchaChallengeSummary,
   CreatedApiKey,
   CurrentUserSummary,
+  DatabaseStorageSnapshotSummary,
   ErrorPolicySummary,
   GlobalSettings,
   GroupListResult,
@@ -266,6 +267,12 @@ interface TableMonitorHistoryParams {
 }
 
 interface TableMonitorOverviewParams {
+  startAt?: string
+  endAt?: string
+  limit?: number
+}
+
+interface TableMonitorDatabaseHistoryParams {
   startAt?: string
   endAt?: string
   limit?: number
@@ -671,6 +678,7 @@ export const api = {
   },
   tableMonitor: {
     overview: (params?: TableMonitorOverviewParams) => unwrap<TableStorageOverview>(http.get('/table-monitor/overview', { params })),
+    databaseHistory: (params?: TableMonitorDatabaseHistoryParams) => unwrap<DatabaseStorageSnapshotSummary[]>(http.get('/table-monitor/database-history', { params })),
     history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params })),
     cleanupUsageRecords: (payload: UsageRecordsCleanupPayload) => unwrap<UsageRecordsCleanupResult>(http.post('/table-monitor/usage-records/cleanup', payload, noTimeout))
   },

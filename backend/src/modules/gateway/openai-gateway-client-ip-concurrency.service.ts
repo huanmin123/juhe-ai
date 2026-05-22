@@ -62,6 +62,7 @@ export interface ClientIpConcurrencyAcquireInput {
 
 const states = new Map<string, ClientIpConcurrencyState>()
 let nextQueueItemId = 1
+const clientIpQueueLimitMax = 1_000
 
 export function acquireHighConcurrencyClientIpSlot(input: ClientIpConcurrencyAcquireInput): Promise<ClientIpConcurrencyDecision> {
   const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
@@ -251,7 +252,7 @@ function clientIpConcurrencyKey(systemAccountId: string, groupId: string, apiKey
 }
 
 function clientIpQueueLimit(limit: number): number {
-  return Math.max(20, normalizePositiveInteger(limit, 1) * 2)
+  return Math.min(clientIpQueueLimitMax, Math.max(20, normalizePositiveInteger(limit, 1) * 2))
 }
 
 function normalizeNonNegativeInteger(value: unknown, fallback: number): number {

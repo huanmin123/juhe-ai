@@ -675,6 +675,6 @@ async function forwardRecordMaintenanceJobsToWorker(items: unknown[]): Promise<v
     logger.warn({
       event: 'db_service_record_maintenance_forward_failed',
       itemCount: jobs.length
-    }, 'DB service 转发记录库维护任务到后台 worker 失败')
+    }, 'DB service 转发数据维护任务到后台 worker 失败')
   }
 }

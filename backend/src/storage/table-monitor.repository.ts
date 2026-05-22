@@ -248,6 +248,37 @@ export function listTableStorageHistory(input: {
   return rows.reverse().map(tableSnapshotFromRow)
 }
 
+export function listDatabaseStorageHistory(input: {
+  startAt?: string
+  endAt?: string
+  limit?: number
+} = {}): DatabaseStorageSnapshotSummary[] {
+  const range = normalizeDateRange(input.startAt, input.endAt)
+  const rows = getStatsDatabase()
+    .prepare(`
+      SELECT ${databaseStorageSnapshotSelectColumns()}
+      FROM (
+        SELECT
+          ${databaseStorageSnapshotSelectColumns()},
+          ROW_NUMBER() OVER (
+            PARTITION BY database_role
+            ORDER BY sampled_at DESC, id DESC
+          ) AS rank
+        FROM database_storage_snapshots
+        WHERE sampled_at >= ?
+          AND sampled_at <= ?
+      )
+      WHERE rank <= ?
+      ORDER BY sampled_at ASC, database_role ASC
+    `)
+    .all(
+      range.startAt,
+      range.endAt,
+      normalizeLimit(input.limit ?? defaultTableStorageHistoryLimit)
+    ) as unknown as LatestDatabaseSnapshotRow[]
+  return rows.map(databaseSnapshotFromRow)
+}
+
 export function cleanupTableStorageSnapshotsBefore(cutoffIso: string, limit = 10000): number {
   const database = getStatsDatabase()
   return deleteSnapshotRowsById(database, 'table_storage_snapshots', cutoffIso, limit)

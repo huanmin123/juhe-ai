@@ -12,7 +12,7 @@ export function submitApiKeyRelatedCleanup(target: DeletedApiKeyRecordCleanupTar
       event: 'api_key_related_cleanup_target_register_failed',
       apiKeyId: target.apiKeyId,
       systemAccountId: target.systemAccountId
-    }), 'API Key 删除后的记录库清理目标登记失败，将继续尝试投递 worker')
+    }), 'API Key 删除后的关联数据清理目标登记失败，将继续尝试投递 worker')
   }
 
   const enqueueResult = enqueueRecordMaintenanceJobWithResult({
@@ -29,6 +29,6 @@ export function submitApiKeyRelatedCleanup(target: DeletedApiKeyRecordCleanupTar
     apiKeyId: target.apiKeyId,
     systemAccountId: target.systemAccountId,
     droppedReason: enqueueResult.droppedReason
-  }, 'API Key 删除后的记录库清理投递失败，已保留清理目标等待后台重试')
+  }, 'API Key 删除后的关联数据清理投递失败，已保留清理目标等待后台重试')
   return enqueueResult
 }

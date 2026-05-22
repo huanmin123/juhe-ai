@@ -424,7 +424,7 @@ function changed(result: { changes?: number | bigint }): number {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : '已删除 API Key 记录库清理失败'
+  return error instanceof Error ? error.message : '已删除 API Key 关联数据清理失败'
 }
 
 function optionalText(value: unknown): string | undefined {

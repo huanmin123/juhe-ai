@@ -18,7 +18,7 @@ Mockdata 是项目里“可复用本地造数”的唯一职责入口：
 - 不再新增独立的 `seed-*`、`demo-*`、`sample-*`、`fixture-*` 造数脚本；如果某段造数逻辑会被多个脚本、页面验收或人工联调用到，必须收口到 Mockdata。
 - `seedDefaults()` 只负责系统启动所需的最小默认数据，例如默认管理员、OpenAI 供应商、默认分组和系统设置；它不是业务演示 / 测试造数入口。
 - 回归脚本内部为了断言某个 bug 的最小私有 fixture 可以保留在对应脚本内，但不能被文档、人工联调或其他脚本当作通用造数方案；一旦需要复用，就移动到 Mockdata。
-- Mockdata 写出的数据必须带稳定清理标识：业务名称使用 `造数-` 前缀，记录库 ID / trace 使用 `mockdata_` / `mockdata-` 前缀，配套用户使用 `mockdata_` 用户名前缀。
+- Mockdata 写出的数据必须带稳定清理标识：业务名称使用 `造数-` 前缀，数据集库 ID / trace 使用 `mockdata_` / `mockdata-` 前缀，配套用户使用 `mockdata_` 用户名前缀。
 
 当前已收口的散落入口：
 
@@ -60,7 +60,7 @@ pnpm mockdata -- --days 31 --daily-requests 80
 默认只清理以下数据：
 
 - 名称以 `造数-` 开头的业务数据。
-- ID 或 trace 前缀为 `mockdata_` / `mockdata-` 的记录库数据。
+- ID 或 trace 前缀为 `mockdata_` / `mockdata-` 的数据集库记录。
 - 用户名以 `mockdata_` 开头的配套系统用户。
 
 清理后会重建全量用量统计缓存。系统监控小时缓存会从现有 `system_metrics_samples` 和本次 Mockdata 样本重新聚合，避免重复执行导致小时指标累加。

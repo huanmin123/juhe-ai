@@ -5,7 +5,7 @@ import { badRequest, firstIssueMessage, ok } from '../../shared/http.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { inspectProcessedUsageRecordsCleanupBefore } from '../../storage/data-retention.repository.js'
 import { nowIso } from '../../storage/database.js'
-import { getTableStorageOverview, listTableStorageHistory, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
+import { getTableStorageOverview, listDatabaseStorageHistory, listTableStorageHistory, type MonitoredDatabaseRole } from '../../storage/table-monitor.repository.js'
 import { bodyField, mutationGuard } from '../deduplication/mutation-guard.middleware.js'
 import { recordOperationLog, safeChange } from '../operation-logs/operation-log.service.js'
 import { enqueueRecordMaintenanceJobWithResult } from '../record-maintenance/record-maintenance-queue.service.js'
@@ -25,6 +25,12 @@ const overviewQuerySchema = z.object({
 const historyQuerySchema = z.object({
   databaseRole: z.enum(['business', 'dataset', 'stats']),
   tableName: z.string().trim().min(1),
+  startAt: z.string().trim().optional(),
+  endAt: z.string().trim().optional(),
+  limit: z.coerce.number().int().min(1).max(10000).optional()
+})
+
+const databaseHistoryQuerySchema = z.object({
   startAt: z.string().trim().optional(),
   endAt: z.string().trim().optional(),
   limit: z.coerce.number().int().min(1).max(10000).optional()
@@ -193,6 +199,19 @@ tableMonitorRouter.get('/history', (req, res) => {
   res.json(ok(listTableStorageHistory({
     databaseRole: parsed.data.databaseRole as MonitoredDatabaseRole,
     tableName: parsed.data.tableName,
+    startAt: parsed.data.startAt,
+    endAt: parsed.data.endAt,
+    limit: parsed.data.limit
+  })))
+})
+
+tableMonitorRouter.get('/database-history', (req, res) => {
+  const parsed = databaseHistoryQuerySchema.safeParse(req.query)
+  if (!parsed.success) {
+    res.status(400).json(badRequest(firstIssueMessage(parsed.error, '数据库增长历史参数无效')))
+    return
+  }
+  res.json(ok(listDatabaseStorageHistory({
     startAt: parsed.data.startAt,
     endAt: parsed.data.endAt,
     limit: parsed.data.limit
