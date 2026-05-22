@@ -156,6 +156,10 @@
             <a-input-number v-model:value="form.schedulingPolicy.defaultSoftConcurrency" :min="1" :max="1000000" />
             <div class="form-help">达到该阈值后优先切到其他账户；实际值不会超过账户并发上限。</div>
           </a-form-item>
+          <a-form-item label="最大等待时间（秒）">
+            <a-input-number :value="formMaxQueueWaitSeconds" :min="1" :max="3600" @update:value="setFormMaxQueueWaitSeconds" />
+            <div class="form-help">所有账户硬并发都满时，请求最多在分组短队列等待这么久；超时后返回 429。</div>
+          </a-form-item>
         </div>
         <a-form-item label="说明">
           <a-textarea v-model:value="form.description" :rows="3" />
@@ -222,7 +226,7 @@ const defaultHighConcurrencySchedulingPolicy: Required<GroupSchedulingPolicy> = 
   firstOutputSlowThresholdMs: 15000,
   recentTimeoutWindowSeconds: 120,
   recentTimeoutPenaltyThreshold: 2,
-  maxQueueWaitMs: 3000,
+  maxQueueWaitMs: 60000,
   maxQueueSize: 100,
   perApiKeyQueueLimit: 50
 }
@@ -245,6 +249,7 @@ const form = reactive({
   groupType: 'personal' as GroupType,
   schedulingPolicy: cloneHighConcurrencySchedulingPolicy()
 })
+const formMaxQueueWaitSeconds = computed(() => Math.max(1, Math.round((form.schedulingPolicy.maxQueueWaitMs ?? defaultHighConcurrencySchedulingPolicy.maxQueueWaitMs) / 1000)))
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const groupsApi = useScopedGroupsApi(isManagementView)
 const {
@@ -354,7 +359,14 @@ function groupPolicySummary(group: GroupSummary): string {
     return '个人分组保持稳定调度'
   }
   const policy = cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy)
-  return `最大单账户排队 ${policy.defaultSoftConcurrency}，快速优先、亲和打破、慢请求分流和短队列默认开启`
+  return `最大单账户排队 ${policy.defaultSoftConcurrency}，最大等待 ${Math.round(policy.maxQueueWaitMs / 1000)} 秒，快速优先、亲和打破、慢请求分流默认开启`
+}
+
+function setFormMaxQueueWaitSeconds(value: unknown) {
+  const seconds = typeof value === 'number' && Number.isFinite(value) && value > 0
+    ? Math.trunc(value)
+    : Math.round(defaultHighConcurrencySchedulingPolicy.maxQueueWaitMs / 1000)
+  form.schedulingPolicy.maxQueueWaitMs = Math.min(3600, Math.max(1, seconds)) * 1000
 }
 
 function groupConcurrencyAvailable(group: GroupSummary): boolean {
@@ -561,7 +573,10 @@ function groupFormPayload(): Record<string, unknown> {
     enabled: form.enabled,
     groupType: form.groupType,
     schedulingPolicy: form.groupType === 'high_concurrency'
-      ? { defaultSoftConcurrency: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).defaultSoftConcurrency }
+      ? {
+          defaultSoftConcurrency: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).defaultSoftConcurrency,
+          maxQueueWaitMs: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).maxQueueWaitMs
+        }
       : undefined
   }
 }

@@ -333,19 +333,6 @@ export function applyRecordSchema(database: DatabaseSync): void {
       FOREIGN KEY (operation_log_id) REFERENCES operation_logs(id) ON DELETE CASCADE
     );
 
-    CREATE VIRTUAL TABLE IF NOT EXISTS operation_log_search USING fts5(
-      log_id UNINDEXED,
-      summary,
-      resource_name,
-      resource_id,
-      actor_display_name,
-      actor_username,
-      operation_key,
-      module,
-      action,
-      tokenize = 'trigram'
-    );
-
     CREATE TABLE IF NOT EXISTS runtime_logs (
       id TEXT PRIMARY KEY,
       log_file TEXT,
@@ -372,16 +359,6 @@ export function applyRecordSchema(database: DatabaseSync): void {
       last_error_message TEXT,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL
-    );
-
-    CREATE VIRTUAL TABLE IF NOT EXISTS runtime_log_search USING fts5(
-      log_id UNINDEXED,
-      trace_id,
-      event,
-      message,
-      error_message,
-      raw_json,
-      tokenize = 'trigram'
     );
 
     CREATE TABLE IF NOT EXISTS runtime_log_facet_summary (
@@ -1345,61 +1322,4 @@ export function applyRecordSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_latest ON table_storage_snapshots(database_role, table_name, sampled_at DESC);
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)
-  ensureStatsJobStateNullableLagSeconds(database)
-}
-
-function ensureStatsJobStateNullableLagSeconds(database: DatabaseSync): void {
-  const lagColumn = tableColumns(database, 'stats_job_state').find((column) => column.name === 'lag_seconds')
-  if (!lagColumn?.notnull) {
-    return
-  }
-
-  const legacyTableName = `stats_job_state_legacy_${Date.now().toString(36)}`
-  const transactionStarted = !database.isTransaction
-  try {
-    if (transactionStarted) {
-      database.exec('BEGIN')
-    }
-    database.exec(`
-      ALTER TABLE stats_job_state RENAME TO ${quoteIdentifier(legacyTableName)};
-
-      CREATE TABLE stats_job_state (
-        scope_type TEXT NOT NULL,
-        scope_id TEXT NOT NULL DEFAULT '',
-        job_name TEXT NOT NULL,
-        cursor_created_at TEXT,
-        cursor_id TEXT,
-        last_success_at TEXT,
-        last_error_message TEXT,
-        lag_seconds INTEGER,
-        updated_at TEXT NOT NULL,
-        PRIMARY KEY (scope_type, scope_id, job_name)
-      );
-
-      INSERT INTO stats_job_state (
-        scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at
-      )
-      SELECT
-        scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at
-      FROM ${quoteIdentifier(legacyTableName)};
-
-      DROP TABLE ${quoteIdentifier(legacyTableName)};
-    `)
-    if (transactionStarted) {
-      database.exec('COMMIT')
-    }
-  } catch (error) {
-    if (transactionStarted) {
-      database.exec('ROLLBACK')
-    }
-    throw error
-  }
-}
-
-function tableColumns(database: DatabaseSync, tableName: string): Array<{ name?: string; notnull?: number }> {
-  return database.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all() as Array<{ name?: string; notnull?: number }>
-}
-
-function quoteIdentifier(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`
 }

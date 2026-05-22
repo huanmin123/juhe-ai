@@ -23,7 +23,7 @@ try {
       time: now,
       level: 'info',
       event: 'keyword_only_match_event',
-      message: 'keywordonlyneedle',
+      message: '前缀 keywordonlyneedle 后缀',
       rawJson: JSON.stringify({
         time: now,
         level: 'info',
@@ -41,15 +41,16 @@ try {
       rawJson: JSON.stringify({
         time: now,
         level: 'info',
-        event: 'keyword_only_miss_event',
-        msg: 'unrelated message'
+        event: 'keywordonlyneedle',
+        msg: 'unrelated message',
+        body: 'keywordonlyneedle'
       }),
       createdAt: now
     }
   ])
 
   const keywordOnly = runtimeLogsRepository.listRuntimeLogs({ keyword: 'keywordonlyneedle', pageSize: 10 })
-  assert.equal(keywordOnly.items.length, 1, '只有 keyword、没有其他筛选条件时应生成合法 FTS 查询')
+  assert.equal(keywordOnly.items.length, 1, '只有 keyword、没有其他筛选条件时应生成合法 message 模糊查询')
   assert.equal(keywordOnly.items[0]?.event, 'keyword_only_match_event')
 
   const keywordWithFilter = runtimeLogsRepository.listRuntimeLogs({
@@ -60,7 +61,7 @@ try {
   assert.equal(keywordWithFilter.items.length, 1, 'keyword 与普通筛选条件组合时仍应保留 AND 语义')
   assert.equal(keywordWithFilter.items[0]?.id, 'rtlog_keyword_only_match')
 
-  console.log('运行日志纯 keyword SQL 回归通过：无其他 filter 时不会拼出非法 AND')
+  console.log('运行日志纯 keyword SQL 回归通过：无其他 filter 时只在 message 列模糊匹配')
 } finally {
   try {
     databaseModule.getDatabase().close()

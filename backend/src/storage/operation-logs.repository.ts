@@ -1,5 +1,5 @@
-import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
@@ -96,13 +96,6 @@ export interface OperationLogListResult {
   pageSize: number
 }
 
-export interface OperationLogSearchBackfillResult {
-  processed: number
-  hasMore: boolean
-  cursorCreatedAt?: string
-  cursorId?: string
-}
-
 export interface OperationLogTargetSummary {
   id: string
   targetType: string
@@ -159,11 +152,10 @@ export interface OperationLogDetail extends OperationLogSummary {
 
 type OperationLogRow = Record<string, unknown>
 type OperationLogFilterValue = string | number
-type OperationLogInsertStatement = ReturnType<ReturnType<typeof getRecordDatabase>['prepare']>
+type OperationLogInsertStatement = ReturnType<ReturnType<typeof getDatasetDatabase>['prepare']>
 
 interface OperationLogInsertStatements {
   insertLog: OperationLogInsertStatement
-  insertSearch: OperationLogInsertStatement
   insertTarget: OperationLogInsertStatement
   insertViewer: OperationLogInsertStatement
 }
@@ -171,13 +163,11 @@ interface OperationLogInsertStatements {
 interface OperationLogSqlFilters {
   clauses: string[]
   params: OperationLogFilterValue[]
-  searchJoin: string
 }
 
 interface OperationLogWhereFilters {
   clause: string
   params: OperationLogFilterValue[]
-  searchJoin: string
 }
 
 interface PreparedOperationLogInput {
@@ -194,13 +184,19 @@ interface PreparedOperationLogInput {
 
 const operationLogDefaultPageSize = 100
 const operationLogMaxPageSize = 100
-const operationLogMinKeywordLength = 3
-const operationLogShortKeywordMaxWindowMs = 24 * 60 * 60 * 1000
-const operationLogSearchBackfillJobName = 'operation_log_search_backfill'
-const operationLogSearchBackfillMaxBatchSize = 5000
+const operationLogKeywordColumns = [
+  'ol.summary',
+  'ol.resource_name',
+  'ol.resource_id',
+  'ol.actor_display_name',
+  'ol.actor_username',
+  'ol.operation_key',
+  'ol.module',
+  'ol.action'
+] as const
 
 export function createOperationLog(input: OperationLogInput): OperationLogSummary {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const prepared = prepareOperationLogInput(input)
   const statements = prepareOperationLogInsertStatements(database)
   const transactionStarted = beginDatabaseTransaction(database)
@@ -221,7 +217,7 @@ export function createOperationLog(input: OperationLogInput): OperationLogSummar
 export function createOperationLogsBatch(inputs: OperationLogInput[]): void {
   if (inputs.length === 0) return
 
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const statements = prepareOperationLogInsertStatements(database)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -272,25 +268,12 @@ export function getOperationLogDetailForViewer(id: string, systemAccountId: stri
 }
 
 export function cleanupOperationLogsBefore(cutoffCreatedAt: string, limit?: number): number {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   if (!limit) {
-    const transactionStarted = beginDatabaseTransaction(database)
-    try {
-      database
-        .prepare('DELETE FROM operation_log_search WHERE log_id IN (SELECT id FROM operation_logs WHERE created_at < ?)')
-        .run(cutoffCreatedAt)
-      const result = database
-        .prepare('DELETE FROM operation_logs WHERE created_at < ?')
-        .run(cutoffCreatedAt)
-      commitDatabaseTransaction(database, transactionStarted)
-      return Number(result.changes ?? 0)
-    } catch (error) {
-      try {
-        rollbackDatabaseTransaction(database, transactionStarted)
-      } catch {
-      }
-      throw error
-    }
+    const result = database
+      .prepare('DELETE FROM operation_logs WHERE created_at < ?')
+      .run(cutoffCreatedAt)
+    return Number(result.changes ?? 0)
   }
 
   const rows = database
@@ -302,7 +285,6 @@ export function cleanupOperationLogsBefore(cutoffCreatedAt: string, limit?: numb
   const placeholders = sqlPlaceholders(ids.length)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
-    deleteOperationLogSearchByIds(database, ids)
     const result = database.prepare(`DELETE FROM operation_logs WHERE id IN (${placeholders})`).run(...ids)
     commitDatabaseTransaction(database, transactionStarted)
     return Number(result.changes ?? 0)
@@ -315,110 +297,15 @@ export function cleanupOperationLogsBefore(cutoffCreatedAt: string, limit?: numb
   }
 }
 
-export function backfillOperationLogSearchIndex(limit = 1000): OperationLogSearchBackfillResult {
-  const database = getRecordDatabase()
-  const batchLimit = positiveOperationLogSearchBackfillLimit(limit)
-  const state = operationLogSearchBackfillState(database)
-  const completedCursor = operationLogSearchBackfillCompletedCursor(database)
-  if (completedCursor) {
-    updateOperationLogSearchBackfillState(database, {
-      cursorCreatedAt: completedCursor.cursorCreatedAt,
-      cursorId: completedCursor.cursorId,
-      lastSuccessAt: nowIso()
-    })
-    return {
-      processed: 0,
-      hasMore: false,
-      cursorCreatedAt: completedCursor.cursorCreatedAt,
-      cursorId: completedCursor.cursorId
-    }
-  }
-  const rows = database
-    .prepare(`
-      SELECT id, summary, resource_name, resource_id, actor_display_name, actor_username,
-        operation_key, module, action, created_at
-      FROM operation_logs
-      WHERE created_at > ? OR (created_at = ? AND id > ?)
-      ORDER BY created_at ASC, id ASC
-      LIMIT ?
-    `)
-    .all(state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, batchLimit + 1) as OperationLogRow[]
-  const batchRows = rows.slice(0, batchLimit)
-  const hasMore = rows.length > batchLimit
-  if (batchRows.length === 0) {
-    updateOperationLogSearchBackfillState(database, {
-      cursorCreatedAt: state.cursorCreatedAt || undefined,
-      cursorId: state.cursorId || undefined,
-      lastSuccessAt: nowIso()
-    })
-    return {
-      processed: 0,
-      hasMore: false,
-      cursorCreatedAt: state.cursorCreatedAt || undefined,
-      cursorId: state.cursorId || undefined
-    }
-  }
-
-  const ids = batchRows.map((row) => String(row.id)).filter(Boolean)
-  const insertSearch = database.prepare(`
-    INSERT INTO operation_log_search (
-      log_id, summary, resource_name, resource_id, actor_display_name, actor_username, operation_key, module, action
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  const updatedAt = nowIso()
-  const last = batchRows[batchRows.length - 1]
-  const cursorCreatedAt = String(last.created_at)
-  const cursorId = String(last.id)
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    deleteOperationLogSearchByIds(database, ids)
-    for (const row of batchRows) {
-      insertSearch.run(
-        String(row.id),
-        optionalString(row.summary) ?? '',
-        optionalString(row.resource_name) ?? '',
-        optionalString(row.resource_id) ?? '',
-        optionalString(row.actor_display_name) ?? '',
-        optionalString(row.actor_username) ?? '',
-        optionalString(row.operation_key) ?? '',
-        optionalString(row.module) ?? '',
-        optionalString(row.action) ?? ''
-      )
-    }
-    updateOperationLogSearchBackfillState(database, {
-      cursorCreatedAt,
-      cursorId,
-      lastSuccessAt: updatedAt,
-      ...(hasMore ? { lagSeconds: searchBackfillLagSeconds(cursorCreatedAt) } : {})
-    })
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    try {
-      rollbackDatabaseTransaction(database, transactionStarted)
-    } catch {
-    }
-    markOperationLogSearchBackfillFailed(database, error)
-    throw error
-  }
-
-  return {
-    processed: batchRows.length,
-    hasMore,
-    cursorCreatedAt,
-    cursorId
-  }
-}
-
 function listOperationLogsWithFilters(filters: OperationLogWhereFilters, options: OperationLogListOptions, viewerSystemAccountId?: string): OperationLogListResult {
   const pageSize = normalizeOperationLogPageSize(options.pageSize ?? options.limit)
   const page = normalizeOperationLogPage(options.page)
   const offset = (page - 1) * pageSize
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const rows = database
     .prepare(`
       SELECT ${operationLogListSelectColumns('ol')}
       FROM operation_logs ol
-      ${filters.searchJoin}
       ${filters.clause}
       ORDER BY ol.created_at DESC, ol.id DESC
       LIMIT ? OFFSET ?
@@ -439,7 +326,7 @@ function listOperationLogsWithFilters(filters: OperationLogWhereFilters, options
   })
   return {
     items,
-    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page,
     pageSize
@@ -510,7 +397,7 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
   const pageSize = normalizeOperationLogPageSize(options.pageSize ?? options.limit)
   const page = normalizeOperationLogPage(options.page)
   const offset = (page - 1) * pageSize
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const commonFilters = buildCommonOperationLogFilters(options)
   const targetedClause = ['ol.visibility_scope = \'targeted\'', ...commonFilters.clauses].join(' AND ')
   const allUsersClause = ['ol.visibility_scope = \'all_users\'', ...commonFilters.clauses].join(' AND ')
@@ -530,13 +417,11 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
       FROM (
         SELECT ${operationLogListSelectColumns('ol')}
         FROM operation_logs ol
-        ${commonFilters.searchJoin}
         ${targetedVisibleJoin}
         WHERE ${targetedClause}
         UNION ALL
         SELECT ${operationLogListSelectColumns('ol')}
         FROM operation_logs ol
-        ${commonFilters.searchJoin}
         WHERE ${allUsersClause}
       ) visible_logs
       ORDER BY created_at DESC, id DESC
@@ -555,7 +440,7 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
   })
   return {
     items,
-    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page,
     pageSize
@@ -563,7 +448,7 @@ function listVisibleOperationLogsForViewer(systemAccountId: string, options: Ope
 }
 
 function getOperationLogDetailWithClause(whereClause: string, params: OperationLogFilterValue[]): OperationLogDetail | undefined {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const row = database
     .prepare(`SELECT ol.* FROM operation_logs ol WHERE ${whereClause} LIMIT 1`)
     .get(...params) as OperationLogRow | undefined
@@ -592,8 +477,7 @@ function buildOperationLogFilters(options: OperationLogListOptions): OperationLo
   const filters = buildCommonOperationLogFilters(options)
   return {
     clause: filters.clauses.length ? `WHERE ${filters.clauses.join(' AND ')}` : '',
-    params: filters.params,
-    searchJoin: filters.searchJoin
+    params: filters.params
   }
 }
 
@@ -608,8 +492,7 @@ function buildCommonOperationLogFilters(options: OperationLogListOptions): Opera
   }
   return {
     clauses,
-    params,
-    searchJoin: keywordFilter?.searchJoin ?? ''
+    params
   }
 }
 
@@ -660,58 +543,18 @@ function pushPrefixFilter(clauses: string[], params: OperationLogFilterValue[], 
   params.push(text, `${text}\uffff`)
 }
 
-function buildOperationLogKeywordFilter(options: OperationLogListOptions): { clause: string; params: OperationLogFilterValue[]; searchJoin?: string } | undefined {
+function buildOperationLogKeywordFilter(options: OperationLogListOptions): { clause: string; params: OperationLogFilterValue[] } | undefined {
   const keyword = options.keyword?.trim()
   if (!keyword) return undefined
-  if ([...keyword].length >= operationLogMinKeywordLength) {
-    return {
-      clause: 'operation_log_search MATCH ?',
-      params: [quoteFts5Term(keyword)],
-      searchJoin: 'INNER JOIN operation_log_search ON operation_log_search.log_id = ol.id'
-    }
-  }
-  if (isBoundedShortKeywordWindow(options.startAt, options.endAt)) {
-    const keywordEnd = `${keyword}\uffff`
-    return {
-      clause: `(
-        ol.summary COLLATE NOCASE = ?
-        OR (ol.summary COLLATE NOCASE >= ? AND ol.summary COLLATE NOCASE < ?)
-        OR ol.resource_name COLLATE NOCASE = ?
-        OR (ol.resource_name COLLATE NOCASE >= ? AND ol.resource_name COLLATE NOCASE < ?)
-        OR ol.actor_display_name COLLATE NOCASE = ?
-        OR (ol.actor_display_name COLLATE NOCASE >= ? AND ol.actor_display_name COLLATE NOCASE < ?)
-        OR ol.actor_username COLLATE NOCASE = ?
-        OR (ol.actor_username COLLATE NOCASE >= ? AND ol.actor_username COLLATE NOCASE < ?)
-        OR ol.resource_id = ?
-        OR (ol.resource_id >= ? AND ol.resource_id < ?)
-      )`,
-      params: [
-        keyword, keyword, keywordEnd,
-        keyword, keyword, keywordEnd,
-        keyword, keyword, keywordEnd,
-        keyword, keyword, keywordEnd,
-        keyword, keyword, keywordEnd
-      ]
-    }
-  }
+  const pattern = `%${escapeLikePattern(keyword)}%`
   return {
-    clause: '0 = 1',
-    params: []
+    clause: `(${operationLogKeywordColumns.map((column) => `${column} LIKE ? ESCAPE '\\'`).join(' OR ')})`,
+    params: operationLogKeywordColumns.map(() => pattern)
   }
 }
 
-function isBoundedShortKeywordWindow(startAt?: string, endAt?: string): boolean {
-  if (!startAt?.trim() || !endAt?.trim()) return false
-  const start = Date.parse(startAt)
-  const end = Date.parse(endAt)
-  return Number.isFinite(start)
-    && Number.isFinite(end)
-    && end >= start
-    && end - start <= operationLogShortKeywordMaxWindowMs
-}
-
-function quoteFts5Term(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`
+function escapeLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (match) => `\\${match}`)
 }
 
 function prepareOperationLogInput(input: OperationLogInput): PreparedOperationLogInput {
@@ -729,7 +572,7 @@ function prepareOperationLogInput(input: OperationLogInput): PreparedOperationLo
   }
 }
 
-function prepareOperationLogInsertStatements(database: ReturnType<typeof getRecordDatabase>): OperationLogInsertStatements {
+function prepareOperationLogInsertStatements(database: ReturnType<typeof getDatasetDatabase>): OperationLogInsertStatements {
   return {
     insertLog: database.prepare(`
       INSERT INTO operation_logs (
@@ -738,11 +581,6 @@ function prepareOperationLogInsertStatements(database: ReturnType<typeof getReco
         resource_name, summary, detail_level, visibility_scope, changes_json, metadata_json, method, path,
         status_code, client_ip, user_agent, created_at
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `),
-    insertSearch: database.prepare(`
-      INSERT INTO operation_log_search (
-        log_id, summary, resource_name, resource_id, actor_display_name, actor_username, operation_key, module, action
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `),
     insertTarget: database.prepare(`
       INSERT INTO operation_log_targets (
@@ -786,17 +624,6 @@ function insertPreparedOperationLog(statements: OperationLogInsertStatements, pr
     input.userAgent ?? null,
     prepared.createdAt
   )
-  statements.insertSearch.run(
-    prepared.id,
-    input.summary,
-    input.resourceName ?? '',
-    input.resourceId ?? '',
-    input.actorDisplayName ?? '',
-    input.actorUsername ?? '',
-    input.operationKey,
-    input.module,
-    input.action
-  )
 
   for (const target of prepared.targets) {
     statements.insertTarget.run(
@@ -820,82 +647,6 @@ function insertPreparedOperationLog(statements: OperationLogInsertStatements, pr
       prepared.createdAt
     )
   }
-}
-
-function deleteOperationLogSearchByIds(database: ReturnType<typeof getRecordDatabase>, ids: string[]): void {
-  for (const chunk of chunkValues(ids, 900)) {
-    if (chunk.length === 0) continue
-    database.prepare(`DELETE FROM operation_log_search WHERE log_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
-  }
-}
-
-function operationLogSearchBackfillState(database: ReturnType<typeof getRecordDatabase>): { cursorCreatedAt: string; cursorId: string } {
-  const row = database
-    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
-    .get(operationLogSearchBackfillJobName) as OperationLogRow | undefined
-  return {
-    cursorCreatedAt: optionalString(row?.cursor_created_at) ?? '',
-    cursorId: optionalString(row?.cursor_id) ?? ''
-  }
-}
-
-function operationLogSearchBackfillCompletedCursor(database: ReturnType<typeof getRecordDatabase>): { cursorCreatedAt?: string; cursorId?: string } | undefined {
-  const operationLogs = database.prepare('SELECT COUNT(*) AS count FROM operation_logs').get() as { count?: number } | undefined
-  const searchLogs = database.prepare('SELECT COUNT(*) AS count FROM operation_log_search').get() as { count?: number } | undefined
-  if (Number(operationLogs?.count ?? 0) !== Number(searchLogs?.count ?? 0)) {
-    return undefined
-  }
-  const latest = database
-    .prepare('SELECT id, created_at FROM operation_logs ORDER BY created_at DESC, id DESC LIMIT 1')
-    .get() as OperationLogRow | undefined
-  return {
-    cursorCreatedAt: optionalString(latest?.created_at),
-    cursorId: optionalString(latest?.id)
-  }
-}
-
-function updateOperationLogSearchBackfillState(
-  database: ReturnType<typeof getRecordDatabase>,
-  input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }
-): void {
-  const updatedAt = nowIso()
-  database.prepare(`
-    INSERT INTO stats_job_state (
-      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at
-    ) VALUES ('global', '', ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_created_at = COALESCE(excluded.cursor_created_at, stats_job_state.cursor_created_at),
-      cursor_id = COALESCE(excluded.cursor_id, stats_job_state.cursor_id),
-      last_success_at = COALESCE(excluded.last_success_at, stats_job_state.last_success_at),
-      last_error_message = excluded.last_error_message,
-      lag_seconds = excluded.lag_seconds,
-      updated_at = excluded.updated_at
-  `).run(
-    operationLogSearchBackfillJobName,
-    input.cursorCreatedAt ?? null,
-    input.cursorId ?? null,
-    input.lastSuccessAt ?? null,
-    input.lastErrorMessage ?? null,
-    input.lagSeconds ?? null,
-    updatedAt
-  )
-}
-
-function markOperationLogSearchBackfillFailed(database: ReturnType<typeof getRecordDatabase>, error: unknown): void {
-  updateOperationLogSearchBackfillState(database, {
-    lastErrorMessage: error instanceof Error ? error.message : '操作日志搜索索引回填失败'
-  })
-}
-
-function positiveOperationLogSearchBackfillLimit(value: number): number {
-  return Number.isFinite(value)
-    ? Math.min(operationLogSearchBackfillMaxBatchSize, Math.max(1, Math.trunc(value)))
-    : 1000
-}
-
-function searchBackfillLagSeconds(cursorCreatedAt: string): number {
-  const cursorMs = Date.parse(cursorCreatedAt)
-  return Number.isFinite(cursorMs) ? Math.max(0, Math.floor((Date.now() - cursorMs) / 1000)) : 0
 }
 
 function operationLogSummaryFromPrepared(prepared: PreparedOperationLogInput): OperationLogSummary {
@@ -994,7 +745,7 @@ function loadViewerDetailLevels(operationLogIds: string[], systemAccountId: stri
   if (ids.length === 0) return new Map()
 
   const rows: OperationLogRow[] = []
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database
       .prepare(`

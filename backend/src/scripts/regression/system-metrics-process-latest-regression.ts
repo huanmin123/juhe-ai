@@ -37,6 +37,15 @@ try {
     ],
     '无最新采样时应显式返回每个进程角色的不可用状态'
   )
+  assert.deepEqual(
+    emptyOverview.processEventLoopPeakStatus,
+    [
+      { processRole: 'server', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'worker', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null },
+      { processRole: 'db-service', sampleAvailable: false, processPid: null, sampledAt: null, eventLoopLagMs: null }
+    ],
+    '无最近 24 小时采样时应显式返回每个进程角色的峰值不可用状态'
+  )
 
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'server',
@@ -65,34 +74,45 @@ try {
     days: 1,
     maxDays: 31
   })
-  const latestByRole = new Map(overview.processEventLoopLatest.map((row) => [row.processRole, row]))
-  assert.equal(latestByRole.size, 3, '各进程角色的最新事件循环样本都应可见')
-  assert.equal(latestByRole.get('server')?.eventLoopLagMs, 11, 'server 最新样本不应被 worker 连续样本挤掉')
-  assert.equal(latestByRole.get('db-service')?.eventLoopLagMs, 31, 'db-service 最新样本不应被 worker 连续样本挤掉')
-  assert.equal(latestByRole.get('worker')?.eventLoopLagMs, 144, 'worker 应返回自身最新样本')
-  assert.deepEqual([...latestByRole.keys()], ['server', 'worker', 'db-service'], '最新进程样本应按固定角色顺序返回')
   const latestStatusByRole = new Map(overview.processEventLoopLatestStatus.map((row) => [row.processRole, row]))
   assert.deepEqual([...latestStatusByRole.keys()], ['server', 'worker', 'db-service'], '最新进程样本可用性应固定覆盖所有角色')
   assert.equal(latestStatusByRole.get('server')?.sampleAvailable, true, 'server 有最新采样时应显式标记可用')
-  assert.equal(latestStatusByRole.get('server')?.eventLoopLagMs, 11, 'server 可用性行应带最新延迟值')
+  assert.equal(latestStatusByRole.get('server')?.eventLoopLagMs, 11, 'server 最新样本不应被 worker 连续样本挤掉')
   assert.equal(latestStatusByRole.get('worker')?.sampleAvailable, true, 'worker 有最新采样时应显式标记可用')
   assert.equal(latestStatusByRole.get('worker')?.processPid, 2124, 'worker 可用性行应带最新 PID')
   assert.equal(latestStatusByRole.get('db-service')?.sampleAvailable, true, 'db-service 有最新采样时应显式标记可用')
+  assert.equal(latestStatusByRole.get('db-service')?.eventLoopLagMs, 31, 'db-service 最新样本不应被 worker 连续样本挤掉')
+  assert.equal(latestStatusByRole.get('worker')?.eventLoopLagMs, 144, 'worker 应返回自身最新样本')
   assert.deepEqual(overview.backgroundJobs, [], 'repository 层系统指标应提供空后台任务数组，路由层再补运行时快照')
 
   const recentMinute = new Date(Date.now() - 60_000)
   recentMinute.setSeconds(0, 0)
+  const staleHighLagAt = new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()
+  usageStatsRepository.insertProcessEventLoopSample({
+    processRole: 'server',
+    processPid: 1000,
+    sampledAt: staleHighLagAt,
+    eventLoopLagMs: 999
+  })
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'server',
     processPid: 1002,
     sampledAt: recentMinute.toISOString(),
     eventLoopLagMs: 10
   })
+  const serverPeakAt = new Date(recentMinute.getTime() + 30_000).toISOString()
   usageStatsRepository.insertProcessEventLoopSample({
     processRole: 'server',
     processPid: 1002,
-    sampledAt: new Date(recentMinute.getTime() + 30_000).toISOString(),
+    sampledAt: serverPeakAt,
     eventLoopLagMs: 20
+  })
+  const workerPeakAt = new Date(recentMinute.getTime() + 10_000).toISOString()
+  usageStatsRepository.insertProcessEventLoopSample({
+    processRole: 'worker',
+    processPid: 2200,
+    sampledAt: workerPeakAt,
+    eventLoopLagMs: 42
   })
   const minuteOverview = usageStatsRepository.getSystemMetricsOverview({
     startDate: '2026-01-01',
@@ -100,13 +120,20 @@ try {
     days: 1,
     maxDays: 31
   })
+  const peakStatusByRole = new Map(minuteOverview.processEventLoopPeakStatus.map((row) => [row.processRole, row]))
+  assert.equal(peakStatusByRole.get('server')?.sampleAvailable, true, 'server 最近 24 小时内有采样时应标记峰值可用')
+  assert.equal(peakStatusByRole.get('server')?.eventLoopLagMs, 20, 'server 峰值应取最近 24 小时最大延迟，忽略窗口外高值')
+  assert.equal(peakStatusByRole.get('server')?.sampledAt, serverPeakAt, 'server 峰值状态应返回最大值对应采样时间')
+  assert.equal(peakStatusByRole.get('worker')?.eventLoopLagMs, 42, 'worker 峰值应独立按进程角色计算')
+  assert.equal(peakStatusByRole.get('worker')?.sampledAt, workerPeakAt, 'worker 峰值状态应返回对应采样时间')
+  assert.equal(peakStatusByRole.get('db-service')?.sampleAvailable, false, 'db-service 无最近 24 小时采样时不应使用旧样本伪装峰值')
   const serverMinuteBucket = minuteOverview.processEventLoopTrend.find((row) => row.processRole === 'server' && row.sampleCount === 2)
   assert(serverMinuteBucket, '进程事件循环趋势应按最近 24 小时分钟桶聚合')
   assert.match(serverMinuteBucket.statMinute, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/, '进程事件循环趋势桶应精确到分钟')
   assert.equal(serverMinuteBucket.eventLoopLagMsAvg, 15, '同一分钟内多个采样应按分钟计算平均延迟')
   assert.equal(serverMinuteBucket.eventLoopLagMsMax, 20, '分钟桶应保留峰值延迟，便于定位尖峰')
 
-  console.log('系统指标进程最新样本回归通过：每个进程角色独立取最新样本')
+  console.log('系统指标进程事件循环回归通过：最新样本和 24 小时峰值按进程角色独立计算')
 } finally {
   try {
     databaseModule.getDatabase().close()

@@ -50,6 +50,7 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['oauthAccessTokenRefreshLeadSeconds', 300],
   ['oauthAccessTokenRefreshBatchSize', 20],
   ['oauthAccessTokenRefreshRetryBackoffSeconds', 300],
+  ['modelCheckRetentionDays', 30],
   ['usageRecordRetentionDays', 7],
   ['usageStatsTimezone', Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'],
   ['usageStatsMinuteRetentionHours', 48],

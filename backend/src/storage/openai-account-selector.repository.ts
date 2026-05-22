@@ -3,7 +3,7 @@ import type { AccountStatus, AccountType, GroupSchedulingPolicy, GroupType, Reso
 import { loadSupportedModelsByAccountIds, loadSupportedModelsForAccount } from './account-supported-models.repository.js'
 import { currentSystemAccountId } from './access-scope.js'
 import { decryptJson } from './crypto.js'
-import { getDatabase, getRecordDatabase, nowIso } from './database.js'
+import { getDatabase, getStatsDatabase, nowIso } from './database.js'
 import { ProxyProfileUnavailableError, resolveProxyUrlForProfile, resolveProxyUrlsForProfiles, type ProxyProfileUrlResolution } from './proxy.repository.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { activeResourceAuthorization, activeResourceAuthorizationsByResourceIds } from './resource-authorization-helpers.js'
@@ -431,7 +431,7 @@ function loadFreshAccountQualityRows(accountIds: string[], freshAfter: string): 
     quality_state: string | null
     quality_ewma_first_token_ms: number | null
   }> = []
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database
       .prepare(`

@@ -1,4 +1,4 @@
-import { getDatabase, getRecordDatabase, nowIso } from './database.js'
+import { getDatabase, getStatsDatabase, nowIso } from './database.js'
 import { createAppCache } from '../shared/cache.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { clearUsageStatsTimezoneCache, normalizeUsageStatsTimezone, usageStatsTimezone } from './usage-stats-helpers.js'
@@ -39,6 +39,7 @@ export const systemSettingKeys = [
   'oauthAccessTokenRefreshLeadSeconds',
   'oauthAccessTokenRefreshBatchSize',
   'oauthAccessTokenRefreshRetryBackoffSeconds',
+  'modelCheckRetentionDays',
   'usageRecordRetentionDays',
   'usageStatsTimezone',
   'usageStatsMinuteRetentionHours',
@@ -165,7 +166,7 @@ function assertUsageStatsTimezoneUpdateAllowed(input: Record<string, unknown>): 
 }
 
 function usageStatsDataExists(): boolean {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const tables = [
     'usage_stats_totals',
     'usage_stats_minute',

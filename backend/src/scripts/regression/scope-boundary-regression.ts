@@ -319,7 +319,7 @@ async function main(): Promise<void> {
     assert(createdGroup.systemAccountId === seed.userBId, '管理员按用户 B 创建分组没有归属到用户 B')
     const userBGroupPage1 = await getEnvelope<GroupListResult>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}&page=1&pageSize=1`, seed.adminCookie)
     assert(userBGroupPage1.items.length === 1 && userBGroupPage1.page === 1 && userBGroupPage1.pageSize === 1, '管理分组分页第一页异常')
-    assert(userBGroupPage1.hasMore === true && userBGroupPage1.total >= 2, '管理分组分页应使用兼容 total 并提示还有更多')
+    assert(userBGroupPage1.hasMore === true && userBGroupPage1.total >= 2, '管理分组分页应使用分页上界 total 并提示还有更多')
     const userAMyGroupPage1 = await getEnvelope<GroupListResult>(baseUrl, '/__aisys__/api/my-groups?page=1&pageSize=1', seed.userACookie)
     assert(userAMyGroupPage1.items.length === 1 && userAMyGroupPage1.pageSize === 1, '用户侧分组分页第一页异常')
     assert(userAMyGroupPage1.hasMore === true, '用户侧分组分页应提示还有更多')

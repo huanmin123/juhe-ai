@@ -93,7 +93,7 @@ try {
   assert.deepEqual(userAMyAccounts.items.map((account) => account.id), [seed.userAAccountId], '用户侧账户列表应固定为当前用户，不应被 systemAccountId 查询参数筛空或越权')
 
   const outOfRangePage = await getEnvelope<AccountListResult>(baseUrl, `/__aisys__/api/accounts?systemAccountId=${seed.userAId}&page=99&pageSize=20`, seed.adminCookie)
-  assert.equal(outOfRangePage.total, 1960, '页码越界时应返回兼容分页 total，避免额外 COUNT(*)')
+  assert.equal(outOfRangePage.total, 1960, '页码越界时应返回分页上界 total，避免额外 COUNT(*)')
   assert.equal(outOfRangePage.hasMore, false, '页码越界时应明确 hasMore=false，供前端回退到第一页')
   assert.equal(outOfRangePage.items.length, 0, '页码越界契约应保持为空页，由前端根据 hasMore 回退')
 

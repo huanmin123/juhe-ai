@@ -29,7 +29,7 @@ export const DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY: Required<GroupSch
   firstOutputSlowThresholdMs: 15_000,
   recentTimeoutWindowSeconds: 120,
   recentTimeoutPenaltyThreshold: 2,
-  maxQueueWaitMs: 3_000,
+  maxQueueWaitMs: 60_000,
   maxQueueSize: 100,
   perApiKeyQueueLimit: 50
 }
@@ -108,7 +108,8 @@ function objectValue(value: unknown): Record<string, unknown> {
 }
 
 function numericPolicy(value: unknown, key: NumericPolicyKey): number {
-  return boundedInteger(value, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY[key], key === 'breakAffinityOnQueueWaitMs' ? 0 : 1, 1_000_000)
+  const max = key === 'maxQueueWaitMs' ? 3_600_000 : 1_000_000
+  return boundedInteger(value, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY[key], key === 'breakAffinityOnQueueWaitMs' ? 0 : 1, max)
 }
 
 function booleanPolicy(value: unknown, key: BooleanPolicyKey): boolean {
@@ -118,7 +119,8 @@ function booleanPolicy(value: unknown, key: BooleanPolicyKey): boolean {
 function resolvePersistedGroupSchedulingPolicy(groupType: GroupType, value: unknown): GroupSchedulingPolicy | undefined {
   const input = objectValue(value)
   return resolveGroupSchedulingPolicy(groupType, {
-    defaultSoftConcurrency: input.defaultSoftConcurrency
+    defaultSoftConcurrency: input.defaultSoftConcurrency,
+    maxQueueWaitMs: input.maxQueueWaitMs
   })
 }
 

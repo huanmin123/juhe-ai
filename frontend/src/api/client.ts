@@ -2,6 +2,8 @@ import axios from 'axios'
 
 import type {
   AccountSummary,
+  AccountImportOptions,
+  AccountImportResult,
   AccountListResult,
   AccountGroupOptionSummary,
   AccountOptionSummary,
@@ -60,7 +62,6 @@ import type {
   SystemAccountListResult,
   SystemAccountSummary,
   SystemMetricsOverview,
-  ApiKeyRecordCleanupQueueTarget,
   ModelCheckOptions,
   ModelCheckProgressEvent,
   ModelCheckRunDetail,
@@ -267,10 +268,6 @@ interface TableMonitorHistoryParams {
 interface TableMonitorOverviewParams {
   startAt?: string
   endAt?: string
-  limit?: number
-}
-
-interface TableMonitorCleanupTargetsParams {
   limit?: number
 }
 
@@ -513,6 +510,8 @@ export const api = {
     list: (params?: AccountListParams) => unwrap<AccountListResult>(http.get('/accounts', { params: accountListParams(params) })),
     options: (params?: AccountListParams) => unwrap<AccountOptionSummary[]>(http.get('/accounts/options', { params: accountOptionsParams(params) })),
     detail: (id: string, params?: ListParams) => unwrap<AccountSummary>(http.get(`/accounts/${id}`, { params })),
+    importPreview: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/preview', payload, { params })),
+    importConfirm: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/accounts', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
     updateAuthorizedDispatch: (id: string, payload: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
@@ -673,7 +672,6 @@ export const api = {
   tableMonitor: {
     overview: (params?: TableMonitorOverviewParams) => unwrap<TableStorageOverview>(http.get('/table-monitor/overview', { params })),
     history: (params: TableMonitorHistoryParams) => unwrap<TableStorageSnapshotSummary[]>(http.get('/table-monitor/history', { params })),
-    apiKeyCleanupTargets: (params?: TableMonitorCleanupTargetsParams) => unwrap<ApiKeyRecordCleanupQueueTarget[]>(http.get('/table-monitor/record-maintenance/api-key-cleanup-targets', { params })),
     cleanupUsageRecords: (payload: UsageRecordsCleanupPayload) => unwrap<UsageRecordsCleanupResult>(http.post('/table-monitor/usage-records/cleanup', payload, noTimeout))
   },
   modelChecks: {

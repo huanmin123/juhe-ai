@@ -10,8 +10,8 @@ import type {
   ModelCheckTargetType
 } from '../domain/types.js'
 import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { getRecordDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
-import { compatiblePagedTotal, takePageRows } from './query-utils.js'
+import { getDatasetDatabase, newId, nowIso, runInDatabaseTransaction } from './database.js'
+import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 
 const defaultModelCheckPageSize = 20
 const maxModelCheckPageSize = 100
@@ -180,7 +180,7 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
     created_at: now,
     updated_at: now
   }
-  getRecordDatabase()
+  getDatasetDatabase()
     .prepare(`
       INSERT INTO model_check_runs (
         id, system_account_id, actor_system_account_id, provider_code, target_type, target_id, target_name,
@@ -228,7 +228,7 @@ export function createModelCheckRun(input: ModelCheckRunCreateInput): ModelCheck
 
 export function createModelCheckItems(runId: string, items: ModelCheckItemCreateInput[]): ModelCheckItemSummary[] {
   if (!items.length) return []
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const insert = database.prepare(`
     INSERT INTO model_check_items (
       id, run_id, item_key, item_type, status, score, max_score, duration_ms, trace_id,
@@ -280,7 +280,7 @@ export function createModelCheckItems(runId: string, items: ModelCheckItemCreate
 export function finishModelCheckRun(runId: string, input: ModelCheckRunFinishInput): ModelCheckRunSummary | undefined {
   const finishedAt = input.finishedAt ?? nowIso()
   const updatedAt = nowIso()
-  const result = getRecordDatabase()
+  const result = getDatasetDatabase()
     .prepare(`
       UPDATE model_check_runs
       SET level = ?, score = ?, max_score = ?, status = ?, message = ?, finished_at = ?,
@@ -307,7 +307,7 @@ export function finishModelCheckRun(runId: string, input: ModelCheckRunFinishInp
 export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunListOptions = {}): ModelCheckRunListResult {
   const normalized = normalizeListOptions(options)
   const filters = buildModelCheckRunFilters(access, normalized)
-  const rows = getRecordDatabase()
+  const rows = getDatasetDatabase()
     .prepare(`
       SELECT *
       FROM model_check_runs mcr
@@ -320,7 +320,7 @@ export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunL
   const items = pageRows.rows.map((row) => modelCheckRunFromRow(row, includeSystemAccountFields(access)))
   return {
     items,
-    total: compatiblePagedTotal(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page: normalized.page,
     pageSize: normalized.pageSize
@@ -329,7 +329,7 @@ export function listModelCheckRuns(access?: AccessScope, options: ModelCheckRunL
 
 export function getModelCheckRunDetail(runId: string, access?: AccessScope): ModelCheckRunDetail | undefined {
   const scope = buildSystemAccountScopeClause(access, 'mcr.system_account_id')
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare(`
       SELECT *
       FROM model_check_runs mcr
@@ -339,7 +339,7 @@ export function getModelCheckRunDetail(runId: string, access?: AccessScope): Mod
     `)
     .get(runId, ...scope.params) as unknown as ModelCheckRunRow | undefined
   if (!row) return undefined
-  const checks = getRecordDatabase()
+  const checks = getDatasetDatabase()
     .prepare(`
       SELECT *
       FROM model_check_items
@@ -354,7 +354,7 @@ export function getModelCheckRunDetail(runId: string, access?: AccessScope): Mod
 }
 
 function findModelCheckRun(runId: string): ModelCheckRunSummary | undefined {
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare('SELECT * FROM model_check_runs WHERE id = ? LIMIT 1')
     .get(runId) as unknown as ModelCheckRunRow | undefined
   return row ? modelCheckRunFromRow(row, includeSystemAccountFields()) : undefined

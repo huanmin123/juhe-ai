@@ -15,6 +15,7 @@
       @create="openCreate"
       @group-dropdown="handleFilterGroupOptionsDropdown"
       @group-search="handleFilterGroupOptionsSearch"
+      @import="openImportModal"
       @refresh="refreshData"
       @reset="resetFilters"
       @search="applyFilters"
@@ -34,6 +35,14 @@
       @disable="batchSetStatus('disabled')"
       @enable="batchSetStatus('active')"
       @test="batchTestSelected"
+    />
+
+    <AccountImportModal
+      v-if="importModalOpen"
+      v-model:open="importModalOpen"
+      :scope-params="accountScopeParams"
+      :target-system-account-label="targetSystemAccountLabel"
+      @imported="handleImportCompleted"
     />
 
     <AccountList
@@ -216,11 +225,13 @@ import { useAccountTrafficMigration } from './useAccountTrafficMigration'
 
 const AccountBindGroupModal = defineAsyncComponent(() => import('./AccountBindGroupModal.vue'))
 const AccountEditModal = defineAsyncComponent(() => import('./AccountEditModal.vue'))
+const AccountImportModal = defineAsyncComponent(() => import('./AccountImportModal.vue'))
 const AccountReauthorizeModal = defineAsyncComponent(() => import('./AccountReauthorizeModal.vue'))
 const AccountTestModal = defineAsyncComponent(() => import('./AccountTestModal.vue'))
 const AccountTrafficMigrationModal = defineAsyncComponent(() => import('./AccountTrafficMigrationModal.vue'))
 
 const selectedAccountIds = ref<string[]>([])
+const importModalOpen = ref(false)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const {
   loading,
@@ -525,6 +536,19 @@ function handleSystemAccountFilterChange() {
 
 function clearSelection() {
   selectedAccountIds.value = []
+}
+
+function openImportModal() {
+  if (isManagementView.value && !accountScopeParams.value?.systemAccountId) {
+    message.warning('请先在右侧选择目标系统账户，再导入 AI 账户')
+    return
+  }
+  importModalOpen.value = true
+}
+
+async function handleImportCompleted() {
+  selectedAccountIds.value = []
+  await loadData({ forceOptions: true })
 }
 
 async function removeAccount(id: string) {

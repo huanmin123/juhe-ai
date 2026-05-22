@@ -21,6 +21,7 @@
         :table-layout="tableLayout"
         :row-selection="rowSelection"
         :expandable="expandable"
+        :custom-row="tableCustomRow"
         @change="handleTableChange"
       >
         <template #emptyText>
@@ -124,6 +125,7 @@ const props = withDefaults(defineProps<{
   size?: 'small' | 'middle' | 'large'
   lockBodyScroll?: boolean
   adaptiveColumnWidth?: boolean
+  rowClickable?: boolean
   deferTableMount?: boolean
   tableMountDelayFrames?: number
   mobileVirtualized?: boolean
@@ -145,6 +147,7 @@ const props = withDefaults(defineProps<{
   refreshing: false,
   pullRefreshEnabled: false,
   adaptiveColumnWidth: true,
+  rowClickable: false,
   deferTableMount: true,
   tableMountDelayFrames: 1,
   mobileVirtualized: true,
@@ -154,6 +157,7 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   (event: 'change', ...args: unknown[]): void
   (event: 'sort-change', sorts: ResponsiveDataListSort[]): void
+  (event: 'row-click', record: T, index?: number): void
   (event: 'mobile-load-more'): void
   (event: 'mobile-refresh'): void
 }>()
@@ -752,6 +756,33 @@ function tableChangeAction(value: unknown): string | undefined {
     : undefined
 }
 
+function tableCustomRow(record: T, index?: number): Record<string, unknown> {
+  if (!props.rowClickable) return {}
+  return {
+    class: 'responsive-data-list-clickable-row',
+    onClick: (event: MouseEvent) => {
+      if (isInteractiveElementClick(event)) return
+      emit('row-click', record, index)
+    }
+  }
+}
+
+function isInteractiveElementClick(event: MouseEvent): boolean {
+  const target = event.target
+  if (!(target instanceof HTMLElement)) return false
+  return Boolean(target.closest([
+    'a',
+    'button',
+    'input',
+    'textarea',
+    'select',
+    '[role="button"]',
+    '.ant-checkbox-wrapper',
+    '.ant-radio-wrapper',
+    '.ant-dropdown-trigger'
+  ].join(',')))
+}
+
 function handleTouchStart(event: TouchEvent) {
   if (!props.pullRefreshEnabled || props.refreshing || props.loadingMore) return
   touchStartY.value = event.touches[0]?.clientY ?? 0
@@ -780,6 +811,14 @@ watch(() => props.refreshing, (refreshing) => {
     pullRefreshRequested.value = false
   }
 })
+
+watch(() => props.lockBodyScroll, (enabled) => {
+  if (enabled && pageActive.value) {
+    lockBodyScroll()
+    return
+  }
+  unlockBodyScroll()
+}, { immediate: true })
 
 watch([
   isMobile,
@@ -909,6 +948,10 @@ onBeforeUnmount(() => {
 .responsive-data-list-table :deep(.ant-table-body) {
   min-height: 0;
   overscroll-behavior: contain;
+}
+
+.responsive-data-list-table :deep(.responsive-data-list-clickable-row) {
+  cursor: pointer;
 }
 
 .responsive-data-list-table-overlay-scrollbar :deep(.ant-table-cell-scrollbar) {

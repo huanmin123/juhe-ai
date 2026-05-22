@@ -1,5 +1,5 @@
 import { currentSystemAccountId } from './access-scope.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export interface AccountUsageSnapshotUpsertInput {
@@ -20,7 +20,7 @@ export function upsertAccountUsageSnapshots(inputs: AccountUsageSnapshotUpsertIn
   const now = nowIso()
   const fallbackSystemAccountId = currentSystemAccountId()
   const ownersByAccountId = loadAccountSystemAccountIds(inputs.map((input) => input.accountId))
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const upsert = database.prepare(`
     INSERT INTO account_usage_snapshots (
       system_account_id, account_id, kind, source, snapshot_json, refresh_status,
@@ -70,7 +70,7 @@ export function updateAccountUsageSnapshotRefreshState(input: {
 }): void {
   const now = nowIso()
   const systemAccountId = accountSystemAccountId(input.accountId) ?? currentSystemAccountId()
-  getRecordDatabase()
+  getStatsDatabase()
     .prepare(`
       INSERT INTO account_usage_snapshots (
         system_account_id, account_id, kind, source, snapshot_json, refresh_status,

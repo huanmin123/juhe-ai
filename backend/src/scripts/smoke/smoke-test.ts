@@ -118,6 +118,7 @@ interface SystemSettings {
   oauthAccessTokenRefreshLeadSeconds?: number
   oauthAccessTokenRefreshBatchSize?: number
   oauthAccessTokenRefreshRetryBackoffSeconds?: number
+  modelCheckRetentionDays?: number
   usageRecordRetentionDays?: number
   usageStatsDailyRetentionDays?: number
   usageStatsHourlyRetentionDays?: number
@@ -190,6 +191,7 @@ async function main(): Promise<void> {
     assert(typeof settings.oauthAccessTokenRefreshLeadSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshLeadSeconds')
     assert(typeof settings.oauthAccessTokenRefreshBatchSize === 'number', '系统设置缺少 oauthAccessTokenRefreshBatchSize')
     assert(typeof settings.oauthAccessTokenRefreshRetryBackoffSeconds === 'number', '系统设置缺少 oauthAccessTokenRefreshRetryBackoffSeconds')
+    assert(typeof settings.modelCheckRetentionDays === 'number', '系统设置缺少 modelCheckRetentionDays')
     assert(typeof settings.usageRecordRetentionDays === 'number', '系统设置缺少 usageRecordRetentionDays')
     assert(typeof settings.usageStatsDailyRetentionDays === 'number', '系统设置缺少 usageStatsDailyRetentionDays')
     assert(typeof settings.usageStatsHourlyRetentionDays === 'number', '系统设置缺少 usageStatsHourlyRetentionDays')

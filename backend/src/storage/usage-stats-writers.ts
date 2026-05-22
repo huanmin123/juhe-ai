@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { estimateProviderCacheReadCostUsd } from '../modules/model-pricing/model-pricing.service.js'
+import { getDatasetDatabase } from './database.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
 import {
@@ -106,7 +107,7 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
   if (!shouldAggregateUsageStatsRecord(row)) {
     return
   }
-  persistEstimatedCacheReadCost(database, row)
+  persistEstimatedCacheReadCost(row)
 
   const timeKeys = usageStatsTimeKeys(database, row)
   for (const entry of usageStatsEntries(row)) {
@@ -117,29 +118,6 @@ export function aggregateUsageStatsRecord(database: DatabaseSync, row: UsageStat
   upsertUsageModelBuckets(database, row, timeKeys, updatedAt)
   if (row.success !== 1) {
     upsertUsageErrorBuckets(database, row, timeKeys, updatedAt)
-  }
-  upsertAccountQualityMinuteStats(database, row, updatedAt)
-}
-
-export function aggregateCallerAccountUsageStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string, context?: UsageStatsAggregationContext): void {
-  if (!row.account_id || !shouldAggregateUsageStatsRecord(row)) {
-    return
-  }
-  const timeKeys = usageStatsTimeKeys(database, row)
-  const entry = {
-    systemAccountId: row.system_account_id,
-    scopeType: 'caller_account',
-    scopeId: row.account_id,
-    accumulator: usageStatsAccumulatorFromRecord(row)
-  }
-  upsertUsageStatsEntry(database, entry, timeKeys, updatedAt, context)
-  upsertUsageLatencyEntry(database, entry, row, timeKeys, updatedAt)
-}
-
-export function aggregateAccountQualityMinuteStatsRecord(database: DatabaseSync, row: UsageStatsRecordRow, updatedAt: string, context?: UsageStatsAggregationContext): void {
-  void context
-  if (!shouldAggregateUsageStatsRecord(row)) {
-    return
   }
   upsertAccountQualityMinuteStats(database, row, updatedAt)
 }
@@ -174,7 +152,7 @@ function usageStatsTimeKeys(database: DatabaseSync, row: UsageStatsRecordRow): U
   }
 }
 
-function persistEstimatedCacheReadCost(database: DatabaseSync, row: UsageStatsRecordRow): void {
+function persistEstimatedCacheReadCost(row: UsageStatsRecordRow): void {
   if (row.cache_read_cost_usd !== null && row.cache_read_cost_usd !== undefined) {
     return
   }
@@ -186,7 +164,7 @@ function persistEstimatedCacheReadCost(database: DatabaseSync, row: UsageStatsRe
   if (cacheReadCostUsd <= 0) {
     return
   }
-  database.prepare('UPDATE usage_records SET cache_read_cost_usd = ? WHERE id = ?').run(cacheReadCostUsd, row.id)
+  getDatasetDatabase().prepare('UPDATE usage_records SET cache_read_cost_usd = ? WHERE id = ?').run(cacheReadCostUsd, row.id)
   row.cache_read_cost_usd = cacheReadCostUsd
 }
 

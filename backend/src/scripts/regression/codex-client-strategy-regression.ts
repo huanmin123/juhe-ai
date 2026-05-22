@@ -67,7 +67,7 @@ function testSessionOnlyDoesNotBecomeCodex(): void {
       thread_id: 'thread_only'
     }),
     'x-client-request-id': 'client-request-a',
-    session_id: 'legacy-session-a'
+    session_id: 'session-a'
   }), identity)
 
   assert.equal(strategy.clientProfile, 'generic_openai')

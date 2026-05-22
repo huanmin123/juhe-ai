@@ -7,7 +7,7 @@ import type {
   AccountUsageStatsRange
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, getRecordDatabase } from './database.js'
+import { getDatabase, getStatsDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { averageFromSum, hourKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
@@ -25,7 +25,7 @@ const AI_PERFORMANCE_ACCOUNT_OPTION_DEFAULT_LIMIT = 30
 const AI_PERFORMANCE_ACCOUNT_OPTION_MAX_LIMIT = 50
 
 export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange(), accountIds: string[] = []): AiPerformanceOverview {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const timezone = usageStatsTimezone()
   const systemAccountId = aiPerformanceSystemAccountId(access)
   const hourBuckets = hourBucketsForRange(range)
@@ -93,7 +93,7 @@ export function listAiPerformanceAccountOptions(
   access?: AccessScope,
   options: { keyword?: string; accountIds?: string[]; limit?: number } = {}
 ): AiPerformanceAccountOption[] {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const timezone = usageStatsTimezone()
   const systemAccountId = aiPerformanceSystemAccountId(access)
   const activeSinceHour = hourKey(new Date(Date.now() - 6 * DAY_MS), timezone)

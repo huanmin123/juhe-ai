@@ -35,31 +35,7 @@ export interface TableStorageSnapshotSummary {
 export interface TableStorageOverview {
   sampledAt?: string
   databases: DatabaseStorageSnapshotSummary[]
-  recordMaintenance?: TableRecordMaintenanceOverview
   tables: TableStorageSnapshotSummary[]
-}
-
-export interface TableRecordMaintenanceOverview {
-  apiKeyRecordCleanup?: ApiKeyRecordCleanupQueueSummary
-}
-
-export interface ApiKeyRecordCleanupQueueSummary {
-  pendingTargets: number
-  blockedTargets: number
-  failedTargets: number
-  oldestCreatedAt?: string
-  lastAttemptAt?: string
-}
-
-export interface ApiKeyRecordCleanupQueueTarget {
-  apiKeyId: string
-  systemAccountId: string
-  createdAt: string
-  updatedAt: string
-  attemptCount: number
-  lastAttemptAt?: string
-  lastBlockedReason?: string
-  lastErrorMessage?: string
 }
 
 export interface UsageRecordsCleanupResult {

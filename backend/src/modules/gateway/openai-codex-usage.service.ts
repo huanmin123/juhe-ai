@@ -117,19 +117,9 @@ function normalizeOpenAICodexUsageSnapshot(snapshot: OpenAICodexUsageSnapshot): 
   const secondary = codexWindowCandidate('secondary', snapshot)
   const primaryKey = windowKeyFromMinutes(primary.windowMinutes)
   const secondaryKey = windowKeyFromMinutes(secondary.windowMinutes)
-  const hasExplicitWindow = Boolean(primaryKey || secondaryKey)
 
   if (primaryKey) assignNormalizedWindow(normalized, primaryKey, primary)
   if (secondaryKey) assignNormalizedWindow(normalized, secondaryKey, secondary)
-
-  if (!hasExplicitWindow) {
-    assignNormalizedWindow(normalized, '7d', primary)
-    assignNormalizedWindow(normalized, '5h', secondary)
-  } else if (primaryKey && !secondaryKey && secondary.windowMinutes === undefined) {
-    assignNormalizedWindow(normalized, oppositeWindowKey(primaryKey), secondary)
-  } else if (secondaryKey && !primaryKey && primary.windowMinutes === undefined) {
-    assignNormalizedWindow(normalized, oppositeWindowKey(secondaryKey), primary)
-  }
 
   return Object.values(normalized).some((value) => value !== undefined) ? normalized : undefined
 }
@@ -151,10 +141,6 @@ function codexWindowCandidate(side: 'primary' | 'secondary', snapshot: OpenAICod
 function windowKeyFromMinutes(minutes?: number): NormalizedWindowKey | undefined {
   if (minutes === undefined || minutes <= 0) return undefined
   return minutes <= 360 ? '5h' : '7d'
-}
-
-function oppositeWindowKey(key: NormalizedWindowKey): NormalizedWindowKey {
-  return key === '5h' ? '7d' : '5h'
 }
 
 function assignNormalizedWindow(normalized: NormalizedCodexLimits, key: NormalizedWindowKey, candidate: CodexWindowCandidate): void {

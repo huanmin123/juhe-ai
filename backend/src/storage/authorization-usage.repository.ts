@@ -9,8 +9,8 @@ import type {
   SystemTeamStatus
 } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, getRecordDatabase } from './database.js'
-import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { getDatabase, getStatsDatabase } from './database.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { loadAccountLookupMap, loadActiveSystemAccountTeamNameMapByIds, loadGroupLookupMap, loadSystemAccountNameMapByIds, loadSystemAccountPrincipalMapByIds, loadSystemTeamLookupMap } from './repository-lookups.js'
 
@@ -75,7 +75,7 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
-  const rows = getRecordDatabase().prepare(`
+  const rows = getStatsDatabase().prepare(`
     SELECT
       report.team_filter_id AS team_id,
       report.resource_filter_type,
@@ -130,8 +130,8 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
     range: filterKey.range,
     summary,
     rows: overviewRows,
-    teamCount: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
-    total: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
+    teamCount: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     page: pageOptions.page,
     pageSize: pageOptions.pageSize,
     hasMore: pageRows.hasMore
@@ -146,7 +146,7 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
   }
 
   const resourcePredicate = authorizationDetailResourcePredicate(filterKey)
-  const rows = getRecordDatabase().prepare(`
+  const rows = getStatsDatabase().prepare(`
     SELECT
       report.team_filter_id,
       report.grantee_filter_system_account_id AS grantee_system_account_id,
@@ -210,8 +210,8 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     range: filterKey.range,
     summary,
     rows: overviewRows,
-    userCount: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
-    total: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
+    userCount: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, overviewRows.length, pageRows.hasMore),
     page: pageOptions.page,
     pageSize: pageOptions.pageSize,
     hasMore: pageRows.hasMore
@@ -261,7 +261,7 @@ function authorizationDetailResourcePredicate(filterKey: ReportFilterKey): { sql
 }
 
 function loadAuthorizationTeamUsageSummary(filterKey: ReportFilterKey): AccountUsageSummary {
-  const row = getRecordDatabase().prepare(`
+  const row = getStatsDatabase().prepare(`
     SELECT
       request_count,
       input_tokens,
@@ -290,7 +290,7 @@ function loadAuthorizationTeamUsageSummary(filterKey: ReportFilterKey): AccountU
 }
 
 function loadAuthorizationUserUsageSummary(filterKey: ReportFilterKey): AccountUsageSummary {
-  const row = getRecordDatabase().prepare(`
+  const row = getStatsDatabase().prepare(`
     SELECT
       request_count,
       input_tokens,

@@ -4,10 +4,12 @@ import { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
-import { applyBusinessSchema, applyRecordSchema, seedDefaults } from './schema.js'
+import { applyBusinessSchema, applyDatasetSchema, applyRecordSchema, applyStatsSchema, seedDefaults } from './schema.js'
 
 let businessDatabase: DatabaseSync | undefined
 let recordDatabase: DatabaseSync | undefined
+let datasetDatabase: DatabaseSync | undefined
+let statsDatabase: DatabaseSync | undefined
 const sqliteBusyTimeoutMs = 5000
 type AfterCommitEffect = () => void
 const afterCommitEffectsByDatabase = new WeakMap<DatabaseSync, AfterCommitEffect[]>()
@@ -36,13 +38,75 @@ export function getRecordDatabase(): DatabaseSync {
     return recordDatabase
   }
 
-  const databasePath = runtimeConfig.recordDatabasePath
-  mkdirSync(dirname(databasePath), { recursive: true })
-
-  recordDatabase = new DatabaseSync(databasePath)
-  configureDatabase(recordDatabase)
-  applyRecordSchema(recordDatabase)
+  recordDatabase = openRecordStyleDatabase(runtimeConfig.recordDatabasePath)
   return recordDatabase
+}
+
+export function getDatasetDatabase(): DatabaseSync {
+  const databasePath = datasetDatabasePath()
+  if (databasePath === runtimeConfig.recordDatabasePath) {
+    return getRecordDatabase()
+  }
+  if (databasePath === statsDatabasePath() && statsDatabase) {
+    applyDatasetSchema(statsDatabase)
+    datasetDatabase = statsDatabase
+    return datasetDatabase
+  }
+  if (datasetDatabase) {
+    return datasetDatabase
+  }
+  datasetDatabase = openDatasetDatabase(databasePath)
+  return datasetDatabase
+}
+
+export function getStatsDatabase(): DatabaseSync {
+  const databasePath = statsDatabasePath()
+  if (databasePath === runtimeConfig.recordDatabasePath) {
+    return getRecordDatabase()
+  }
+  if (databasePath === datasetDatabasePath()) {
+    const database = getDatasetDatabase()
+    applyStatsSchema(database)
+    statsDatabase = database
+    return statsDatabase
+  }
+  if (statsDatabase) {
+    return statsDatabase
+  }
+  statsDatabase = openStatsDatabase(databasePath)
+  return statsDatabase
+}
+
+export function datasetDatabasePath(): string {
+  return runtimeConfig.datasetDatabasePath ?? runtimeConfig.recordDatabasePath
+}
+
+export function statsDatabasePath(): string {
+  return runtimeConfig.statsDatabasePath ?? runtimeConfig.recordDatabasePath
+}
+
+function openRecordStyleDatabase(databasePath: string): DatabaseSync {
+  mkdirSync(dirname(databasePath), { recursive: true })
+  const database = new DatabaseSync(databasePath)
+  configureDatabase(database)
+  applyRecordSchema(database)
+  return database
+}
+
+function openDatasetDatabase(databasePath: string): DatabaseSync {
+  mkdirSync(dirname(databasePath), { recursive: true })
+  const database = new DatabaseSync(databasePath)
+  configureDatabase(database)
+  applyDatasetSchema(database)
+  return database
+}
+
+function openStatsDatabase(databasePath: string): DatabaseSync {
+  mkdirSync(dirname(databasePath), { recursive: true })
+  const database = new DatabaseSync(databasePath)
+  configureDatabase(database)
+  applyStatsSchema(database)
+  return database
 }
 
 export function beginDatabaseTransaction(target = getDatabase()): boolean {

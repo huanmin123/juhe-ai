@@ -1729,23 +1729,12 @@ function resetUsageStatsCache(database: Database): void {
     'account_quality_minute_stats',
     'account_quality_scores'
   ]
-  const statsJobNames = [
-    'usage_stats_aggregation',
-    'caller_account_usage_stats_backfill',
-    'account_quality_minute_stats_backfill',
-    'usage_stats_extended_buckets_migration',
-    'usage_model_error_extended_buckets_migration',
-    'usage_latency_buckets_migration'
-  ]
   database.exec('BEGIN')
   try {
     for (const tableName of usageStatsTables) {
       database.prepare(`DELETE FROM ${tableName}`).run()
     }
-    const deleteState = database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
-    for (const jobName of statsJobNames) {
-      deleteState.run(jobName)
-    }
+    database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'").run()
     database.prepare(`
       INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
       VALUES ('global', '', 'usage_stats_aggregation', '', '', NULL, NULL, 0, ?)
@@ -1822,11 +1811,9 @@ function cleanupRecordMockdata(database: Database, mockAccountIds: string[]): vo
     deleteWhereIn(database, 'audit_logs', 'id', auditIds)
 
     const operationIds = selectIds(database, 'SELECT id FROM operation_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
-    deleteWhereIn(database, 'operation_log_search', 'log_id', operationIds)
     deleteWhereIn(database, 'operation_logs', 'id', operationIds)
 
     const runtimeIds = selectIds(database, 'SELECT id FROM runtime_logs WHERE id LIKE ? OR trace_id LIKE ?', `${idPrefix}%`, `${tracePrefix}%`)
-    deleteWhereIn(database, 'runtime_log_search', 'log_id', runtimeIds)
     deleteWhereIn(database, 'runtime_logs', 'id', runtimeIds)
 
     database.prepare('DELETE FROM system_metrics_samples WHERE id LIKE ?').run(`${idPrefix}%`)

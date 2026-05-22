@@ -1,5 +1,5 @@
 import { createAppCache } from '../shared/cache.js'
-import { getDatabase, getRecordDatabase, nowIso } from './database.js'
+import { getDatabase, getStatsDatabase, nowIso } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 export type GroupAccountStatsRow = {
@@ -91,7 +91,7 @@ export function loadGroupAccountStatsByGroupIds(groupIds: string[]): Map<string,
   const ids = uniqueIds(groupIds)
   if (!ids.length) return new Map()
   const rows: GroupAccountStatsRow[] = []
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database
       .prepare(`

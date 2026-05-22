@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues } from './query-utils.js'
 import { minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
 
@@ -40,7 +40,7 @@ const failurePenaltyMs = 60_000
 const stalePenaltyMs = 5_000
 
 export function refreshAccountQualityFromUsage(windowMinutes = 10): AccountQualityRealtimeRefreshResult {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const now = new Date()
   const timezone = usageStatsTimezone()
   const windowMs = Math.max(1, Math.min(Math.trunc(windowMinutes), 24 * 60)) * 60 * 1000
@@ -187,7 +187,7 @@ function loadQualityAccountMetadata(): Map<string, { systemAccountId: string; pr
 }
 
 function loadAccountQualityRows(): Map<string, AccountQualityRow> {
-  const rows = getRecordDatabase()
+  const rows = getStatsDatabase()
     .prepare(`SELECT ${accountQualitySelectColumns()} FROM account_quality_scores`)
     .all() as unknown as AccountQualityRow[]
   return new Map(rows.map((row) => [row.account_id, row]))
@@ -217,7 +217,7 @@ function accountQualitySelectColumns(): string {
   ].join(', ')
 }
 
-function cleanupInactiveQualityRows(database: ReturnType<typeof getRecordDatabase>, activeIds: string[]): { changes?: number | bigint } {
+function cleanupInactiveQualityRows(database: ReturnType<typeof getStatsDatabase>, activeIds: string[]): { changes?: number | bigint } {
   database.prepare('DROP TABLE IF EXISTS temp_active_quality_accounts').run()
   database.prepare('CREATE TEMP TABLE temp_active_quality_accounts (id TEXT PRIMARY KEY)').run()
   for (const chunk of chunkValues(activeIds, 500)) {
@@ -266,7 +266,7 @@ function markAccountQualityStale(upsertQuality: ReturnType<DatabaseSync['prepare
   })
 }
 
-function prepareAccountQualityUpsert(database: ReturnType<typeof getRecordDatabase>): ReturnType<DatabaseSync['prepare']> {
+function prepareAccountQualityUpsert(database: ReturnType<typeof getStatsDatabase>): ReturnType<DatabaseSync['prepare']> {
   return database.prepare(`
     INSERT INTO account_quality_scores (
       account_id, system_account_id, provider_code, quality_score, quality_state,

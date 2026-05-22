@@ -29,7 +29,7 @@ import {
   installUsageRecordQueueShutdownHooks
 } from './modules/gateway/usage-record-queue.service.js'
 import { getCooldownAccountRetestQueueSnapshot } from './modules/background/cooldown-account-retest.service.js'
-import { getBusinessDatabase, getRecordDatabase } from './storage/database.js'
+import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, statsDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
@@ -43,7 +43,8 @@ type WorkerIncomingMessage =
   | { type: 'background_worker_status_request'; requestId: unknown }
 
 getBusinessDatabase()
-getRecordDatabase()
+getDatasetDatabase()
+getStatsDatabase()
 installProcessLogHandlers()
 startProcessEventLoopMonitor()
 startLogMaintenance()
@@ -103,7 +104,9 @@ logger.info({
   event: 'background_worker_started',
   pid: process.pid,
   processRole: runtimeConfig.processRole,
-  databasePath: runtimeConfig.databasePath
+  databasePath: runtimeConfig.databasePath,
+  datasetDatabasePath: datasetDatabasePath(),
+  statsDatabasePath: statsDatabasePath()
 }, '后台 worker 已启动')
 
 function buildRuntimeSnapshot(): BackgroundWorkerRuntimeSnapshot {

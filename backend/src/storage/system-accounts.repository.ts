@@ -6,7 +6,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId
 import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { compatiblePagedTotal, takePageRows } from './query-utils.js'
+import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
@@ -79,7 +79,7 @@ export function listSystemAccountsPage(options: SystemAccountListOptions = {}): 
   const items = pageRows.rows.map(systemAccountSummaryFromRow)
   return {
     items,
-    total: compatiblePagedTotal(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page: normalized.page,
     pageSize: normalized.pageSize

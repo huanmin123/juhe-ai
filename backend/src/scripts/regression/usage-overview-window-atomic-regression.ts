@@ -57,9 +57,9 @@ try {
 
   const afterFailure = usageStatsRepository.getUsageStatsOverview(adminAccess, range)
   assert.equal(afterFailure.summary.requestCount, 1, '概览窗口 stage 失败后 summary 不应单独发布为新数据')
-  assert.equal(afterFailure.hourlyTrend[0]?.requestCount, 1, '概览窗口 stage 失败后 trend 应保留旧数据')
-  assert.equal(afterFailure.modelDistribution[0]?.requestCount, 1, '概览窗口 stage 失败后 model 排行应保留旧数据')
-  assert.equal(afterFailure.errors[0]?.errorCount, 1, '概览窗口 stage 失败后 error 排行应保留旧数据')
+  assert.equal(afterFailure.hourlyTrend[0]?.requestCount, 1, '概览窗口 stage 失败后 trend 应保留原有数据')
+  assert.equal(afterFailure.modelDistribution[0]?.requestCount, 1, '概览窗口 stage 失败后 model 排行应保留原有数据')
+  assert.equal(afterFailure.errors[0]?.errorCount, 1, '概览窗口 stage 失败后 error 排行应保留原有数据')
   assertOverviewWindowTables({
     systemAccountId: GLOBAL_STATS_SYSTEM_ACCOUNT_ID,
     windowKey,

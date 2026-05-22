@@ -6,7 +6,7 @@ import { handleDbServiceOperation, setDbServiceHttpEndpoint } from './modules/db
 import type { DbServiceParentMessage } from './modules/db-service/db-service-types.js'
 import { setRuntimeLogLineSink } from './modules/runtime-logs/runtime-log-stream.js'
 import { createSystemApiApp } from './modules/system-api/system-api-app.js'
-import { getBusinessDatabase, getRecordDatabase } from './storage/database.js'
+import { datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, statsDatabasePath } from './storage/database.js'
 import { errorLogFields, installProcessLogHandlers, logger, startLogMaintenance } from './shared/logger.js'
 import { startProcessEventLoopMonitor } from './shared/process-event-loop-monitor.js'
 
@@ -29,7 +29,8 @@ interface DbServiceHttpEndpoint {
 
 async function startDbService(): Promise<void> {
   getBusinessDatabase()
-  getRecordDatabase()
+  getDatasetDatabase()
+  getStatsDatabase()
   installProcessLogHandlers()
   startProcessEventLoopMonitor()
   startLogMaintenance()
@@ -55,6 +56,8 @@ async function startDbService(): Promise<void> {
     processRole: runtimeConfig.processRole,
     databasePath: runtimeConfig.databasePath,
     recordDatabasePath: runtimeConfig.recordDatabasePath,
+    datasetDatabasePath: datasetDatabasePath(),
+    statsDatabasePath: statsDatabasePath(),
     httpHost: httpEndpoint.host,
     httpPort: httpEndpoint.port
   }, `数据库服务已启动，内部系统 API 监听 http://${httpEndpoint.host}:${httpEndpoint.port}`)

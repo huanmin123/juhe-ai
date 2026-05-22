@@ -389,7 +389,6 @@ function authorizationListParams(systemAccountId: string | undefined, pageState:
     granteeSystemAccountId: isManagementView.value ? filters.granteeSystemAccountId : undefined,
     direction: isManagementView.value ? undefined : filters.direction,
     sourceType: !isManagementView.value && filters.sourceType !== 'all' ? filters.sourceType : undefined,
-    status: 'all' as const,
     systemAccountId,
     page: pageState.current,
     pageSize: pageState.pageSize

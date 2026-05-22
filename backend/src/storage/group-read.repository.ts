@@ -1,7 +1,7 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
 import { canAccessAll, manageableSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase, nowIso } from './database.js'
-import { compatiblePagedTotal, takePageRows } from './query-utils.js'
+import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import type { GroupListRow } from './repository-row-types.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
@@ -52,7 +52,7 @@ export function listGroupRowsPageForAccess(access: AccessScope | undefined, opti
   const pageRows = takePageRows(rows, listOptions.pageSize)
   return {
     rows: pageRows.rows,
-    total: compatiblePagedTotal(listOptions.page, listOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page: listOptions.page,
     pageSize: listOptions.pageSize

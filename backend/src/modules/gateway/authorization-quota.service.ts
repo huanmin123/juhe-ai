@@ -2,7 +2,7 @@ import { createAppCache } from '../../shared/cache.js'
 import { registerAuthorizationQuotaCacheInvalidator } from '../../shared/gateway-cache-invalidation.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import type { RequestQuotaLimits } from '../../domain/types.js'
-import { getDatabase, getRecordDatabase } from '../../storage/database.js'
+import { getDatabase, getStatsDatabase } from '../../storage/database.js'
 import { chunkValues, sqlPlaceholders } from '../../storage/query-utils.js'
 import type { GroupUsageAccessMetadata, OpenAIAccountSecret } from '../../storage/repositories.js'
 import { hasEnabledRequestQuotaLimit, parseRequestQuotaLimitsJson } from '../../storage/request-quota-limits.js'
@@ -221,7 +221,7 @@ function authorizationQuotaCostChecksForTeamRow(row: TeamAuthorizationQuotaRow, 
 }
 
 function materializeAuthorizationQuotaCostChecks(costChecks: AuthorizationQuotaCostCheck[]): AuthorizationQuotaCheck[] {
-  const costsByKey = loadRequestQuotaCostsBatch(getRecordDatabase(), costChecks.map((check) => check.costInput))
+  const costsByKey = loadRequestQuotaCostsBatch(getStatsDatabase(), costChecks.map((check) => check.costInput))
   return costChecks.map((check) => ({
     cacheKey: check.cacheKey,
     exceeded: isRequestQuotaExceeded(check.limits, costsByKey.get(requestQuotaCostKey(check.costInput)) ?? emptyRequestQuotaCosts())

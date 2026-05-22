@@ -23,7 +23,7 @@
             :filter-option="filterEventOption"
             @change="applyIndexFilters"
           />
-          <a-input v-model:value="keywordFilter" allow-clear class="toolbar-select log-keyword-filter responsive-list-inline-filter" placeholder="关键字" @press-enter="applyIndexFilters" />
+          <a-input v-model:value="keywordFilter" allow-clear class="toolbar-select log-keyword-filter responsive-list-inline-filter" placeholder="消息关键字" @press-enter="applyIndexFilters" />
           <a-range-picker
             v-model:value="indexTimeRange"
             allow-clear
@@ -46,7 +46,7 @@
               <a-select v-model:value="eventFilter" allow-clear show-search :options="eventOptions" :filter-option="filterEventOption" placeholder="选择或输入事件" />
             </a-form-item>
             <a-form-item label="关键字">
-              <a-input v-model:value="keywordFilter" allow-clear placeholder="错误摘要或日志内容" />
+              <a-input v-model:value="keywordFilter" allow-clear placeholder="模糊匹配消息列" />
             </a-form-item>
             <a-form-item label="索引时间范围">
               <a-range-picker

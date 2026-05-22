@@ -5,7 +5,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { createGunzip, gzipSync } from 'node:zlib'
 
 import { backendRoot } from '../config/runtime.js'
-import { getRecordDatabase, newId } from './database.js'
+import { getDatasetDatabase, newId } from './database.js'
 import { optionalString } from './value-utils.js'
 
 export type StoredAuditPayloadCompression = 'none' | 'gzip'
@@ -124,7 +124,7 @@ export function prepareAuditPayloadBlobStatements(database: DatabaseSync): Audit
 }
 
 export function cleanupUnreferencedAuditPayloadBlobs(limit = 1000): number {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const rows = database
     .prepare(`
       SELECT b.id, b.storage_key
@@ -243,7 +243,7 @@ function isCompressiblePayload(contentType: string, contentEncoding?: string): b
 }
 
 function loadPayloadBlobMeta(blobId: string): StoredPayloadBlobMeta | undefined {
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare('SELECT storage_key, compression, raw_size_bytes, compressed_size_bytes FROM audit_payload_blobs WHERE id = ?')
     .get(blobId) as AuditPayloadBlobRow | undefined
   const storageKey = optionalString(row?.storage_key)

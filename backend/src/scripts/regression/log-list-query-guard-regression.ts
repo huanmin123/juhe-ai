@@ -56,7 +56,7 @@ try {
 
   repositories.createOperationLogsBatch([
     operationLog({
-      id: 'op_log_guard_fts_match',
+      id: 'op_log_guard_keyword_match',
       traceId: 'trace-op-list-guard-match',
       summary: '更新 keywordguardneedle 相关 API Key 配置',
       resourceId: 'resource_keywordguardneedle',
@@ -66,7 +66,7 @@ try {
       viewers: [{ systemAccountId: 'sys_user', visibilityReason: 'resource_owner' }]
     }),
     operationLog({
-      id: 'op_log_guard_fts_miss',
+      id: 'op_log_guard_keyword_miss',
       traceId: 'trace-op-list-guard-miss',
       summary: '更新普通资源配置',
       resourceId: 'resource_plain',
@@ -135,13 +135,17 @@ try {
     assert.equal(errorGroups.items.length, 1, '审计错误组 path/model/statusCode 应按结构化条件定位')
 
     const operationKeyword = repositories.listOperationLogs({ keyword: 'keywordguardneedle', pageSize: 10 })
-    assert.deepEqual(operationKeyword.items.map((item) => item.id), ['op_log_guard_fts_match'], '操作日志长关键词应通过 FTS 命中自由文本')
+    assert.deepEqual(operationKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '操作日志长关键词应通过普通 SQL 模糊匹配命中自由文本')
 
     const viewerKeyword = repositories.listOperationLogsForViewer('sys_user', { keyword: 'keywordguardneedle', pageSize: 10 })
-    assert.deepEqual(viewerKeyword.items.map((item) => item.id), ['op_log_guard_fts_match'], '用户侧操作日志关键词也应通过 FTS 保留可见性过滤')
+    assert.deepEqual(viewerKeyword.items.map((item) => item.id), ['op_log_guard_keyword_match'], '用户侧操作日志关键词也应通过普通 SQL 模糊匹配保留可见性过滤')
 
     const shortKeywordWithoutWindow = repositories.listOperationLogs({ keyword: '造数', pageSize: 10 })
-    assert.equal(shortKeywordWithoutWindow.items.length, 0, '短关键词没有小时间窗时不应退回无边界 LIKE 扫描')
+    assert.deepEqual(
+      shortKeywordWithoutWindow.items.map((item) => item.id),
+      ['op_log_guard_short_keyword_middle', 'op_log_guard_short_keyword'],
+      '短关键词不再走搜索影子表，应直接通过普通 SQL 模糊匹配操作日志表字段'
+    )
   } finally {
     recordDatabase.prepare = originalPrepare
   }
@@ -150,10 +154,13 @@ try {
   for (const call of capturedCalls) {
     assert(!/\b(?:al|aeg)\.[a-z_]+\s+LIKE\s+\?/i.test(call.sql), '审计日志和错误组列表不应使用 LIKE 扫描结构化字段')
     assert(!/\bol\.trace_id\s+LIKE\s+\?/i.test(call.sql), '操作日志 traceId 不应使用 LIKE 扫描')
-    assert(!/\bol\.(summary|resource_name|actor_display_name|actor_username)\s+LIKE\s+\?/i.test(call.sql), '操作日志关键词不应使用多列 LIKE 扫描')
-    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '无边界日志列表查询不应传入前导通配符参数')
+    assert(!/\bMATCH\s+\?/i.test(call.sql), '操作日志列表不应再使用 MATCH 查询')
+    if (/\bFROM\s+(audit_logs|audit_error_groups)\s+(al|aeg)\b/i.test(call.sql)) {
+      assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '审计日志和错误组列表不应传入前导通配符参数')
+    }
   }
-  assert(capturedCalls.some((call) => /\bINNER\s+JOIN\s+operation_log_search\b/i.test(call.sql) && /\boperation_log_search\s+MATCH\s+\?/i.test(call.sql)), '操作日志长关键词应走 operation_log_search FTS')
+  assert(capturedCalls.some((call) => /\bol\.summary\s+LIKE\s+\?\s+ESCAPE/i.test(call.sql)
+    && call.params.some((param) => param === '%keywordguardneedle%')), '操作日志关键词应直接使用主表字段 LIKE 模糊匹配')
   assert(capturedCalls.some((call) => /\bal\.client_ip\s+>=\s+\?/i.test(call.sql)
     && /\bal\.client_ip\s+<\s+\?/i.test(call.sql)), '审计 clientIp 前缀检索应使用范围条件而不是 LIKE')
 
@@ -178,7 +185,11 @@ try {
       endAt: '2026-02-01T01:00:00.000Z',
       pageSize: 10
     })
-    assert.deepEqual(shortKeywordWithWindow.items.map((item) => item.id), ['op_log_guard_short_keyword'], '短关键词只允许在明确小时间窗内做精确或前缀文本检索')
+    assert.deepEqual(
+      shortKeywordWithWindow.items.map((item) => item.id),
+      ['op_log_guard_short_keyword_middle', 'op_log_guard_short_keyword'],
+      '短关键词带时间窗时仍直接通过普通 SQL 模糊匹配'
+    )
 
     const viewerShortKeywordWithWindow = repositories.listOperationLogsForViewer('sys_user', {
       keyword: '造数',
@@ -186,19 +197,22 @@ try {
       endAt: '2026-02-01T01:00:00.000Z',
       pageSize: 10
     })
-    assert.deepEqual(viewerShortKeywordWithWindow.items.map((item) => item.id), ['op_log_guard_short_keyword'], '用户侧短关键词也只能在明确小时间窗内做精确或前缀文本检索')
+    assert.deepEqual(
+      viewerShortKeywordWithWindow.items.map((item) => item.id),
+      ['op_log_guard_short_keyword_middle', 'op_log_guard_short_keyword'],
+      '用户侧短关键词也应通过普通 SQL 模糊匹配并保留可见性过滤'
+    )
   } finally {
     boundedRecordDatabase.prepare = boundedOriginalPrepare
   }
   assert(boundedCalls.some((call) => /\bol\.created_at\s+>=\s+\?/i.test(call.sql)
     && /\bol\.created_at\s+<=\s+\?/i.test(call.sql)
-    && /\bol\.summary\s+COLLATE\s+NOCASE\s+>=\s+\?/i.test(call.sql)), '短关键词前缀检索必须绑定小时间窗')
+    && /\bol\.summary\s+LIKE\s+\?\s+ESCAPE/i.test(call.sql)), '短关键词带时间窗时应同时绑定时间条件和普通 SQL 模糊匹配')
   for (const call of boundedCalls) {
-    assert(!/\bol\.(summary|resource_name|actor_display_name|actor_username)\s+LIKE\s+\?/i.test(call.sql), '小时间窗操作日志关键词也不应使用多列 LIKE 扫描')
-    assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '小时间窗操作日志关键词不应传入前导通配符参数')
+    assert(!/\bMATCH\s+\?/i.test(call.sql), '小时间窗操作日志关键词也不应使用 MATCH 查询')
   }
 
-  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志长关键词走 FTS，短关键词仅允许小时间窗精确或前缀检索')
+  console.log('日志列表查询防护回归通过：审计结构化过滤无前导通配符，操作日志关键词不再走搜索影子表，改为主表字段普通 SQL 模糊匹配')
 } finally {
   try {
     databaseModule.getDatabase().close()

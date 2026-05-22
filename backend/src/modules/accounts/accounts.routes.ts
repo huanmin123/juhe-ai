@@ -5,12 +5,14 @@ import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
 import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
 import { bodyField, mutationGuard, normalizedText, queryField, sensitiveFingerprint } from '../deduplication/mutation-guard.middleware.js'
 import { applyServerAccountConcurrencyToAccountList } from '../gateway/gateway-runtime-snapshot.service.js'
 import { migrateOpenAIAccountSessionAffinity } from '../gateway/openai-gateway-session-affinity.service.js'
 import { diffSafeFields, operationMode, recordOperationLog, resolveOperationOwner, runLoggedOperation, safeChange, viewer } from '../operation-logs/operation-log.service.js'
+import { executeAccountImport, previewAccountImport, type AccountImportOptions } from './account-import.service.js'
 import { testOpenAIAccount } from './account-test.service.js'
 
 export const accountsRouter = Router()
@@ -55,6 +57,15 @@ const authorizedAccountDispatchSchema = z.object({
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   clearFailureState: z.boolean().optional()
+})
+
+const accountImportRequestSchema = z.object({
+  data: z.unknown(),
+  options: z.object({
+    createMissingGroups: z.boolean().optional(),
+    createMissingProxies: z.boolean().optional(),
+    skipDuplicates: z.boolean().optional()
+  }).optional()
 })
 
 const accountListSortFields = new Set<AccountListSortField>([
@@ -186,6 +197,70 @@ function schedulableQueryValue(value: unknown): AccountListSchedulableFilter | u
 function serverTimingMetric(name: string, durationMs: number): string {
   return `${name};dur=${Math.max(0, durationMs).toFixed(1)}`
 }
+
+accountsRouter.post('/import/preview', requireAdmin, (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const parsed = accountImportRequestSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('账户导入参数无效'))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  res.json(ok(previewAccountImport(parsed.data.data, parsed.data.options, requestAccess)))
+})
+
+accountsRouter.post('/import/confirm', requireAdmin, mutationGuard({
+  operationKey: 'accounts.import',
+  scope: (req) => normalizedText(queryField(req, 'systemAccountId')),
+  fingerprint: (req) => ({
+    owner: normalizedText(queryField(req, 'systemAccountId')),
+    data: bodyField(req, 'data'),
+    options: bodyField(req, 'options')
+  })
+}), (req, res) => {
+  const scopeQuery = parseRequestScopeQuery(req.query)
+  if (!scopeQuery.success) {
+    res.status(400).json(badRequest(scopeQuery.message))
+    return
+  }
+  const parsed = accountImportRequestSchema.safeParse(req.body)
+  if (!parsed.success) {
+    res.status(400).json(badRequest('账户导入参数无效'))
+    return
+  }
+  const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
+  const importOptions: AccountImportOptions = parsed.data.options ?? {}
+  const result = runLoggedOperation(() => {
+    const result = executeAccountImport(parsed.data.data, importOptions, requestAccess)
+    const ownerSystemAccountId = resolveOperationOwner(undefined, requestAccess)
+    return {
+      result,
+      log: {
+        operationScopeSystemAccountId: ownerSystemAccountId,
+        mode: operationMode(requestAccess),
+        module: 'accounts',
+        action: 'import',
+        operationKey: 'accounts.import',
+        resourceType: 'account',
+        resourceName: 'AI 账户导入',
+        summary: `导入 AI 账户：创建 ${result.summary.accounts.create} 个，跳过 ${result.summary.accounts.skip} 个，失败 ${result.summary.accounts.failed} 个`,
+        changes: [
+          safeChange('accountCreated', '创建账户数', undefined, result.summary.accounts.create),
+          safeChange('accountSkipped', '跳过账户数', undefined, result.summary.accounts.skip),
+          safeChange('accountFailed', '失败账户数', undefined, result.summary.accounts.failed),
+          safeChange('proxyCreated', '创建代理数', undefined, result.summary.proxies.create),
+          safeChange('groupCreated', '创建分组数', undefined, result.summary.groups.create)
+        ],
+        viewers: viewer(ownerSystemAccountId, 'resource_owner')
+      }
+    }
+  }, req)
+  res.json(ok(result))
+})
 
 accountsRouter.post('/', mutationGuard({
   operationKey: 'accounts.create',

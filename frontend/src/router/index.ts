@@ -361,7 +361,7 @@ export const menuRoutes: RouteRecordRaw[] = [
     component: () => import('@/views/runtime-logs/RuntimeLogsView.vue'),
     meta: {
       title: '日志搜索',
-      description: '索引查询检索最近 3 天运行日志；grep 模式由后端 rg 按任意关键字扫描文件日志，多关键字同时命中。',
+      description: '索引查询检索最近 3 天运行日志，关键字只模糊匹配消息列；grep 模式由后端 rg 按任意关键字扫描文件日志。',
       menuGroup: 'log-management',
       menuGroupTitle: '日志管理',
       viewScope: 'admin',

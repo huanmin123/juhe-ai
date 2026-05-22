@@ -170,7 +170,7 @@ try {
       range
     })
     assert.deepEqual(selectedPageTwoResult.rows.map((row) => row.id), [otherAccount.id, selectedAccount.id], '账号用量翻页后仍应把手动选择账户补入当前页结果')
-    assert.equal(selectedPageTwoResult.total, 3, '账号用量手动补入行不应让兼容 total 低估总结果数')
+    assert.equal(selectedPageTwoResult.total, 3, '账号用量手动补入行不应让分页上界 total 低估总结果数')
 
     const typeIgnoredResult = repositories.getAccountUsageStatsOverviewPage(access, {
       type: 'oauth',

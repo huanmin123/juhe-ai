@@ -285,9 +285,7 @@ function seedUsageStatsCleanupCursors(cursorCreatedAt: string, cursorId: string)
       last_success_at = excluded.last_success_at,
       updated_at = excluded.updated_at
   `)
-  for (const jobName of ['usage_stats_aggregation', 'caller_account_usage_stats_backfill', 'account_quality_minute_stats_backfill']) {
-    statement.run(jobName, cursorCreatedAt, cursorId, cursorCreatedAt, cursorCreatedAt)
-  }
+  statement.run('usage_stats_aggregation', cursorCreatedAt, cursorId, cursorCreatedAt, cursorCreatedAt)
 }
 
 function usageRecordCount(id: string): number {

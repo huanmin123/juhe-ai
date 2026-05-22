@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { AccountGroupBindStatus, AccountGroupOptionSummary, AccountOptionSummary, AccountStatus, AccountSummary, AccountTrafficMigrationSourceStatus, AccountUsageStatsOverview, AccountUsageStatsRange, AccountUsageSummary, AuthorizationStatus, GroupListResult, GroupOptionSummary, GroupSchedulingPolicy, GroupSummary, GroupType, ResourceAuthorizationListResult, ResourceAuthorizationResourceType, ResourceAuthorizationSourceStatus, ResourceAuthorizationSourceType, ResourceAuthorizationSummary, ResourceAuthorizationUsageDetail, ResourcePermissions, SystemAccountPrincipalSummary, SystemTeamListResult, SystemTeamMemberSummary, SystemTeamPrincipalSummary, SystemTeamSummary } from '../domain/types.js'
+export type { GroupOptionSummary } from '../domain/types.js'
 import { groupSchedulingPolicyJson, normalizeGroupType, parseGroupSchedulingPolicyJson } from '../domain/group-scheduling.js'
 import { listProviderModelPricing } from '../modules/model-pricing/model-pricing.service.js'
 import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from '../shared/account-concurrency.js'
@@ -17,7 +18,7 @@ import { updateAccountUsageSnapshotRefreshState, upsertAccountUsageSnapshot } fr
 import { createApiKeyRecord, deleteApiKey, findApiKeySummary, listApiKeys, listApiKeysPage, updateApiKey } from './api-key.repository.js'
 import { clearResourceAuthorizationLookupCaches, loadResourceAuthorizationSourcesByAuthorizationIds, loadResourceAuthorizationStatsByResourceIds } from './authorization-read-loaders.js'
 import { decryptJson, encryptJson, hashSecret, maskSecret } from './crypto.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { defaultGroupIdForSystemAccount } from './default-group.repository.js'
 import { listErrorPolicies } from './error-policy.repository.js'
 import { emptyGroupAccountStats, groupAccountStatsFromRow } from './group-account-stats.mapper.js'
@@ -26,7 +27,7 @@ import { invalidateGroupAccountIdsCache, loadGroupAccountIdsByGroupIds, loadGrou
 import { loadOpenAICodexUsageSnapshotsByAccountIds } from './oauth-usage-loaders.js'
 import { listProviders, providerPassthroughEnabled } from './provider.repository.js'
 import { resolveEnabledProxyProfileId } from './proxy.repository.js'
-import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { isRequestQuotaExceeded, loadRequestQuotaCostsBatch, requestQuotaCostKey, type RequestQuotaCostInput } from './request-quota-checker.js'
 import {
   accountSystemAccountId,
@@ -277,7 +278,6 @@ export {
   type AuditPayloadPartType
 } from './audit-logs.repository.js'
 export {
-  backfillOperationLogSearchIndex,
   cleanupOperationLogsBefore,
   createOperationLog,
   createOperationLogsBatch,
@@ -292,7 +292,6 @@ export {
   type OperationLogListOptions,
   type OperationLogListResult,
   type OperationLogMode,
-  type OperationLogSearchBackfillResult,
   type OperationLogSummary,
   type OperationLogTargetInput,
   type OperationLogTargetRelation,
@@ -303,7 +302,7 @@ export {
   type OperationLogVisibilityScope
 } from './operation-logs.repository.js'
 export {
-  backfillRuntimeLogSearchIndex,
+  cleanupRuntimeLogFileCursorsBefore,
   cleanupRuntimeLogIndex,
   createRuntimeLogsBatch,
   getRuntimeLogFacets,
@@ -314,15 +313,16 @@ export {
   type RuntimeLogLevel,
   type RuntimeLogListResult,
   type RuntimeLogListOptions,
-  type RuntimeLogSearchBackfillResult,
   type RuntimeLogSummary
 } from './runtime-logs.repository.js'
 export {
   cleanupExpiredSystemSessions,
+  cleanupModelCheckRunsBefore,
   cleanupProcessedUsageRecordsBefore,
   cleanupProcessedUsageRecordsBeforeWithResult,
   cleanupSystemMetricsBefore,
   cleanupUsageStatsBucketsBefore,
+  type ModelCheckRetentionCleanupResult,
   type ProcessedUsageRecordsCleanupBatchResult,
   type SystemMetricsRetentionCleanupResult,
   type UsageStatsRetentionCleanupResult
@@ -1095,7 +1095,7 @@ function loadAuthorizationQuotaExceededByAuthorizationId(rows: AccountListRow[])
     })
   }
   if (!checks.length) return output
-  const costsByKey = loadRequestQuotaCostsBatch(getRecordDatabase(), checks.map((check) => check.input))
+  const costsByKey = loadRequestQuotaCostsBatch(getStatsDatabase(), checks.map((check) => check.input))
   for (const check of checks) {
     const costs = costsByKey.get(requestQuotaCostKey(check.input))
     if (costs && isRequestQuotaExceeded(check.limits, costs)) {
@@ -1186,7 +1186,7 @@ function loadAccountUsageDefaultTrendAccountIds(access?: AccessScope): string[] 
   const systemAccountId = scopedId ?? (canAccessAll(access) ? GLOBAL_STATS_SYSTEM_ACCOUNT_ID : undefined)
   if (!systemAccountId) return []
   const scopeType = scopedId ? 'caller_account' : 'account'
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const rows = database.prepare(`
     SELECT scope_id
     FROM usage_rank_snapshots
@@ -2732,7 +2732,7 @@ export function listSystemTeamsPage(access?: AccessScope, options: SystemTeamLis
   const items = pageRows.rows.map((row) => systemTeamSummaryFromRow(row, members.get(row.id) ?? [], access))
   return {
     items,
-    total: compatiblePagedTotal(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page: listOptions.page,
     pageSize: listOptions.pageSize
@@ -3365,7 +3365,7 @@ function loadResourceAuthorizationGrantUsageDetailForTeam(
       }
       return left.systemAccountId.localeCompare(right.systemAccountId)
     }),
-    usageBySystemAccountTotal: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, usageBySystemAccount.length, pageRows.hasMore),
+    usageBySystemAccountTotal: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, usageBySystemAccount.length, pageRows.hasMore),
     usageBySystemAccountPage: pageOptions.page,
     usageBySystemAccountPageSize: pageOptions.pageSize,
     usageBySystemAccountHasMore: pageRows.hasMore

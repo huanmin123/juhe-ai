@@ -1,7 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { usageRecordsCleanupCursor } from './data-retention.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
 import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
@@ -87,7 +87,7 @@ const apiKeyScopeStatsTables = [
 const deletedApiKeyRecordCleanupBatchLimit = 1000
 
 export function registerDeletedApiKeyRecordCleanupTarget(input: DeletedApiKeyRecordCleanupTarget): void {
-  upsertDeletedApiKeyRecordCleanupTarget(getRecordDatabase(), input, nowIso())
+  upsertDeletedApiKeyRecordCleanupTarget(getDatasetDatabase(), input, nowIso())
 }
 
 export function cleanupPendingDeletedApiKeyRecordTargets(limit = 50): PendingDeletedApiKeyRecordCleanupSummary {
@@ -111,14 +111,14 @@ export function cleanupPendingDeletedApiKeyRecordTargets(limit = 50): PendingDel
       }
     } catch (error) {
       summary.failed += 1
-      markDeletedApiKeyRecordCleanupTargetError(getRecordDatabase(), target, errorMessage(error), nowIso())
+      markDeletedApiKeyRecordCleanupTargetError(getDatasetDatabase(), target, errorMessage(error), nowIso())
     }
   }
   return summary
 }
 
 export function listDeletedApiKeyRecordCleanupTargets(limit = 50): DeletedApiKeyRecordCleanupTarget[] {
-  const rows = getRecordDatabase()
+  const rows = getDatasetDatabase()
     .prepare(`
       SELECT api_key_id, system_account_id
       FROM api_key_record_cleanup_targets
@@ -135,7 +135,7 @@ export function listDeletedApiKeyRecordCleanupTargets(limit = 50): DeletedApiKey
 }
 
 export function getDeletedApiKeyRecordCleanupQueueSummary(): DeletedApiKeyRecordCleanupQueueSummary {
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare(`
       SELECT
         COUNT(*) AS pending_targets,
@@ -156,7 +156,7 @@ export function getDeletedApiKeyRecordCleanupQueueSummary(): DeletedApiKeyRecord
 }
 
 export function listDeletedApiKeyRecordCleanupQueueTargets(limit = 50): DeletedApiKeyRecordCleanupQueueTarget[] {
-  const rows = getRecordDatabase()
+  const rows = getDatasetDatabase()
     .prepare(`
       SELECT
         api_key_id,
@@ -195,10 +195,11 @@ export function listDeletedApiKeyRecordCleanupQueueTargets(limit = 50): DeletedA
 }
 
 export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecordCleanupTarget): DeletedApiKeyRecordCleanupResult {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
+  const statsDatabase = getStatsDatabase()
   const updatedAt = nowIso()
   upsertDeletedApiKeyRecordCleanupTarget(database, input, updatedAt)
-  const cursor = usageRecordsCleanupCursor(database)
+  const cursor = usageRecordsCleanupCursor(statsDatabase)
   const cursorCreatedAt = cursor.cursorCreatedAt
   const cursorId = cursor.cursorId
   let shouldRefreshDerivedWindows = false
@@ -222,7 +223,7 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
       if (hasMore) {
         markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '仍有关联记录待后台重试', updatedAt)
       } else {
-        deleteApiKeyScopeStats(database, input)
+        deleteApiKeyScopeStats(statsDatabase, input)
         clearDeletedApiKeyRecordCleanupTarget(database, input)
         shouldRefreshDerivedWindows = true
       }
@@ -239,8 +240,11 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
 
   const batchLimit = deletedApiKeyRecordCleanupBatchLimit
   let deletedRows = 0
-  const transactionStarted = beginDatabaseTransaction(database)
+  let transactionStarted = false
+  let statsTransactionStarted = false
   try {
+    transactionStarted = beginDatabaseTransaction(database)
+    statsTransactionStarted = beginDatabaseTransaction(statsDatabase)
     const usageRows = database.prepare(`
         SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
         FROM usage_records
@@ -253,7 +257,7 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
     const rowsToDelete = usageRows.slice(0, batchLimit)
     const deleteUsageRecord = database.prepare('DELETE FROM usage_records WHERE id = ? AND api_key_id = ? AND system_account_id = ?')
     for (const usageRow of rowsToDelete) {
-      subtractUsageStatsRecord(database, usageRow, updatedAt)
+      subtractUsageStatsRecord(statsDatabase, usageRow, updatedAt)
       deletedRows += changed(deleteUsageRecord.run(usageRow.id, input.apiKeyId, input.systemAccountId))
     }
     deletedRows += deleteApiKeyAuditDataBatch(database, input, batchLimit)
@@ -279,15 +283,17 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
     if (hasMore) {
       markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '等待统计安全游标追平', updatedAt)
     } else {
-      deleteApiKeyScopeStats(database, input)
+      deleteApiKeyScopeStats(statsDatabase, input)
       clearDeletedApiKeyRecordCleanupTarget(database, input)
       shouldRefreshDerivedWindows = true
     }
+    commitDatabaseTransaction(statsDatabase, statsTransactionStarted)
     commitDatabaseTransaction(database, transactionStarted)
     refreshDeletedApiKeyDerivedWindowsIfNeeded(input, shouldRefreshDerivedWindows)
     cleanupAuditPayloadBlobsBestEffort(batchLimit)
     return result
   } catch (error) {
+    rollbackDatabaseTransaction(statsDatabase, statsTransactionStarted)
     rollbackDatabaseTransaction(database, transactionStarted)
     markDeletedApiKeyRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
     throw error
@@ -373,6 +379,17 @@ function deleteApiKeyAuditDataBatch(database: DatabaseSync, input: DeletedApiKey
 }
 
 function deleteApiKeyScopeStats(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): void {
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    deleteApiKeyScopeStatsRows(database, input)
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+function deleteApiKeyScopeStatsRows(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): void {
   for (const tableName of apiKeyScopeStatsTables) {
     database.prepare(`DELETE FROM ${tableName} WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`)
       .run(input.systemAccountId, input.apiKeyId)
@@ -387,7 +404,7 @@ function refreshDeletedApiKeyDerivedWindowsIfNeeded(input: DeletedApiKeyRecordCl
     refreshUsageQuotaHourlyWindowsCache()
     refreshUsageRankSnapshots()
   } catch (error) {
-    const database = getRecordDatabase()
+    const database = getDatasetDatabase()
     const updatedAt = nowIso()
     upsertDeletedApiKeyRecordCleanupTarget(database, input, updatedAt)
     markDeletedApiKeyRecordCleanupTargetError(database, input, `已删除 API Key 衍生统计窗口刷新失败：${errorMessage(error)}`, updatedAt)

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { DatabaseSync } from 'node:sqlite'
 
-import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import {
   auditPayloadBodyDetail,
   cleanupCreatedAuditBlobFiles,
@@ -21,7 +21,7 @@ import {
   hydrateAuditRows,
   type AuditLogRow
 } from './audit-log-mappers.js'
-import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { loadAccountNameMap, loadGroupNameMap, loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { optionalString } from './value-utils.js'
 
@@ -315,7 +315,7 @@ const auditHeadersContentType = 'application/json; audit=headers'
 export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   if (inputs.length === 0) return
 
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const insertLog = database.prepare(`
     INSERT INTO audit_logs (
       id, trace_id, system_account_id, api_key_id, group_id, account_id, provider_code, method, path, query_string,
@@ -468,7 +468,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   }
 }
 
-function loadExistingAuditLogIds(database: ReturnType<typeof getRecordDatabase>, inputs: AuditLogInput[]): Set<string> {
+function loadExistingAuditLogIds(database: ReturnType<typeof getDatasetDatabase>, inputs: AuditLogInput[]): Set<string> {
   const ids = [...new Set(inputs.map((input) => input.id).filter((id): id is string => Boolean(id?.trim())))]
   const existingIds = new Set<string>()
   for (const chunk of chunkValues(ids, 900)) {
@@ -489,7 +489,7 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
   const pageSize = normalizePageSize(options.pageSize ?? options.limit, auditLogDefaultPageSize, auditLogMaxPageSize)
   const page = normalizePage(options.page)
   const offset = (page - 1) * pageSize
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const rows = database
     .prepare(`
       SELECT
@@ -506,7 +506,7 @@ export function listAuditLogs(options: AuditLogListOptions = {}): AuditLogListRe
   const items = rowsWithNames.map((row) => auditLogSummaryFromRow(row, systemAccountNames))
   return {
     items,
-    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page,
     pageSize
@@ -518,7 +518,7 @@ export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): 
   const pageSize = normalizePageSize(options.pageSize ?? options.limit, errorGroupDefaultPageSize, errorGroupMaxPageSize)
   const page = normalizePage(options.page)
   const offset = (page - 1) * pageSize
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const rows = database
     .prepare(`
       SELECT ${auditErrorGroupListSelectColumns('aeg')}
@@ -534,7 +534,7 @@ export function listAuditErrorGroups(options: AuditErrorGroupListOptions = {}): 
   const items = rowsWithNames.map((row) => auditErrorGroupFromRow(row, systemAccountNames))
   return {
     items,
-    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page,
     pageSize
@@ -546,7 +546,7 @@ export function listAuditErrorGroupEvents(errorGroupId: string, options: AuditLo
 }
 
 export function getAuditLogDetail(id: string): AuditLogDetail | undefined {
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare(`
       SELECT
         al.*
@@ -557,7 +557,7 @@ export function getAuditLogDetail(id: string): AuditLogDetail | undefined {
   if (!row) return undefined
   const namedRow = hydrateAuditRows([row])[0] ?? row
 
-  const attemptRows = getRecordDatabase()
+  const attemptRows = getDatasetDatabase()
     .prepare('SELECT * FROM audit_log_attempts WHERE audit_log_id = ? ORDER BY attempt_index ASC, id ASC')
     .all(id) as AuditLogRow[]
   const payloadRows = getAuditPayloadRows(id)
@@ -574,7 +574,7 @@ export function getAuditLogDetail(id: string): AuditLogDetail | undefined {
 }
 
 function getAuditErrorGroupById(id: string): AuditErrorGroupSummary | undefined {
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare(`
       SELECT
         aeg.*
@@ -592,7 +592,7 @@ export async function getAuditLogPayload(
   payloadId: string,
   options: AuditLogPayloadReadOptions = {}
 ): Promise<AuditLogPayloadDetail | undefined> {
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare(`
       SELECT *
       FROM audit_payload_refs
@@ -640,7 +640,7 @@ export function cleanupAuditLogsByRetention(input: {
 }
 
 function deleteAuditLogsByWhere(whereClause: string, params: AuditLogFilterValue[], limit?: number): number {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   if (!limit) {
     const result = database.prepare(`DELETE FROM audit_logs WHERE ${whereClause}`).run(...params)
     return Number(result.changes ?? 0)
@@ -658,7 +658,7 @@ function deleteAuditLogsByWhere(whereClause: string, params: AuditLogFilterValue
 }
 
 function cleanupAuditErrorGroupsBefore(cutoffUpdatedAt: string, limit?: number): number {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const unreferencedGroupWhere = `
     updated_at < ?
     AND NOT EXISTS (
@@ -706,7 +706,7 @@ function preparePayloadInput(payload: AuditLogPayloadInput, fallbackIndex: numbe
   }
 }
 
-function prepareAuditErrorGroupStatements(database: ReturnType<typeof getRecordDatabase>): AuditErrorGroupStatements {
+function prepareAuditErrorGroupStatements(database: ReturnType<typeof getDatasetDatabase>): AuditErrorGroupStatements {
   return {
     selectExisting: database.prepare('SELECT id FROM audit_error_groups WHERE fingerprint = ? AND window_started_at = ?'),
     updateExisting: database.prepare(`
@@ -829,7 +829,7 @@ function auditErrorWindowStart(timestamp: string): string {
 }
 
 function getAuditPayloadRows(auditLogId: string): AuditLogRow[] {
-  return getRecordDatabase()
+  return getDatasetDatabase()
     .prepare('SELECT * FROM audit_payload_refs WHERE audit_log_id = ? ORDER BY sequence_index ASC, id ASC')
     .all(auditLogId) as AuditLogRow[]
 }

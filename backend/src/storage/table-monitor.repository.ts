@@ -3,10 +3,10 @@ import { basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 
-export type MonitoredDatabaseRole = 'business' | 'records'
+export type MonitoredDatabaseRole = 'business' | 'records' | 'dataset' | 'stats'
 
 export interface TableStorageSnapshotSummary {
   databaseRole: MonitoredDatabaseRole
@@ -129,15 +129,11 @@ const defaultTableStorageHistoryLimit = 720
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
   const rowCountMode = options.rowCountMode ?? 'none'
-  const recordDatabase = getRecordDatabase()
-  const targets: MonitoredDatabaseTarget[] = [
-    { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },
-    { role: 'records', path: runtimeConfig.recordDatabasePath, database: recordDatabase }
-  ]
+  const targets = monitoredDatabaseTargets()
   const preparedTargets: PreparedTableMonitorTarget[] = targets.map((target) => {
     const tables = listTargetTables(target.database)
     const indexesByTable = listIndexesByTable(target.database)
-    const tableSelection = selectTableScan(recordDatabase, target.role, tables, tableScanMode, options.maxTablesPerDatabase ?? 4)
+    const tableSelection = selectTableScan(getStatsDatabase(), target.role, tables, tableScanMode, options.maxTablesPerDatabase ?? 4)
     const tableRows = collectTargetTableRows(target, sampledAt, tableSelection.tableNames, indexesByTable, rowCountMode)
     return {
       target,
@@ -148,19 +144,20 @@ export function collectTableStorageSnapshot(sampledAt = nowIso(), options: Colle
     }
   })
 
-  const transactionStarted = beginDatabaseTransaction(recordDatabase)
+  const statsDatabase = getStatsDatabase()
+  const transactionStarted = beginDatabaseTransaction(statsDatabase)
   let tableSnapshots = 0
   try {
     for (const prepared of preparedTargets) {
-      insertDatabaseSnapshot(recordDatabase, prepared.target, sampledAt, prepared.tables.length, countIndexes(prepared.indexesByTable))
-      insertTableSnapshots(recordDatabase, prepared.target, sampledAt, prepared.tableRows)
+      insertDatabaseSnapshot(statsDatabase, prepared.target, sampledAt, prepared.tables.length, countIndexes(prepared.indexesByTable))
+      insertTableSnapshots(statsDatabase, prepared.target, sampledAt, prepared.tableRows)
       if (tableScanMode === 'cursor') {
-        recordTableScanCursor(recordDatabase, prepared.target.role, prepared.cursorTableName, sampledAt)
+        recordTableScanCursor(statsDatabase, prepared.target.role, prepared.cursorTableName, sampledAt)
       }
       tableSnapshots += prepared.tableRows.length
     }
-    cleanupOldTableStorageSnapshots(recordDatabase, sampledAt)
-    commitDatabaseTransaction(recordDatabase, transactionStarted)
+    cleanupOldTableStorageSnapshots(statsDatabase, sampledAt)
+    commitDatabaseTransaction(statsDatabase, transactionStarted)
     return {
       sampledAt,
       databaseSnapshots: targets.length,
@@ -169,84 +166,52 @@ export function collectTableStorageSnapshot(sampledAt = nowIso(), options: Colle
       rowCountMode
     }
   } catch (error) {
-    rollbackDatabaseTransaction(recordDatabase, transactionStarted)
+    rollbackDatabaseTransaction(statsDatabase, transactionStarted)
     throw error
   }
 }
 
 export function getTableStorageOverview(input: { startAt?: string; endAt?: string; limit?: number } = {}): TableStorageOverview {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const range = normalizeDateRange(input.startAt, input.endAt)
   const databases = database
     .prepare(`
-      SELECT ${databaseStorageSnapshotSelectColumns('d')}
-      FROM database_storage_snapshots d
-      INNER JOIN (
-        SELECT database_role, MAX(sampled_at) AS sampled_at
+      SELECT ${databaseStorageSnapshotSelectColumns()}
+      FROM (
+        SELECT
+          ${databaseStorageSnapshotSelectColumns()},
+          ROW_NUMBER() OVER (
+            PARTITION BY database_role
+            ORDER BY sampled_at DESC, id DESC
+          ) AS rank
         FROM database_storage_snapshots
         WHERE sampled_at >= ?
           AND sampled_at <= ?
-        GROUP BY database_role
-      ) latest
-        ON latest.database_role = d.database_role
-        AND latest.sampled_at = d.sampled_at
-      ORDER BY d.database_role ASC
+      )
+      WHERE rank = 1
+      ORDER BY database_role ASC
     `)
     .all(range.startAt, range.endAt) as unknown as LatestDatabaseSnapshotRow[]
   const sampledAt = databases.map((row) => row.sampled_at).sort().at(-1)
   const tables = database
     .prepare(`
-      WITH latest_table_samples AS (
-        SELECT database_role, table_name, MAX(sampled_at) AS sampled_at
+      SELECT ${tableStorageSnapshotSelectColumns()}
+      FROM (
+        SELECT
+          ${tableStorageSnapshotSelectColumns()},
+          ROW_NUMBER() OVER (
+            PARTITION BY database_role, table_name
+            ORDER BY sampled_at DESC, id DESC
+          ) AS rank
         FROM table_storage_snapshots
         WHERE sampled_at >= ?
           AND sampled_at <= ?
-        GROUP BY database_role, table_name
-      ),
-      latest_row_counts AS (
-        SELECT database_role, table_name, row_count
-        FROM (
-          SELECT
-            database_role,
-            table_name,
-            row_count,
-            ROW_NUMBER() OVER (
-              PARTITION BY database_role, table_name
-              ORDER BY sampled_at DESC
-            ) AS rank
-          FROM table_storage_snapshots
-          WHERE sampled_at >= ?
-            AND sampled_at <= ?
-            AND row_count IS NOT NULL
-        )
-        WHERE rank = 1
       )
-      SELECT
-        t.database_role,
-        t.table_name,
-        t.sampled_at,
-        COALESCE(t.row_count, latest_row_counts.row_count) AS row_count,
-        t.table_bytes,
-        t.index_bytes,
-        t.total_bytes,
-        t.page_count,
-        t.index_count,
-        t.growth_bytes_1h,
-        t.growth_rows_1h,
-        t.growth_bytes_24h,
-        t.growth_rows_24h
-      FROM table_storage_snapshots t
-      INNER JOIN latest_table_samples latest
-        ON latest.database_role = t.database_role
-        AND latest.table_name = t.table_name
-        AND latest.sampled_at = t.sampled_at
-      LEFT JOIN latest_row_counts
-        ON latest_row_counts.database_role = t.database_role
-        AND latest_row_counts.table_name = t.table_name
-      ORDER BY t.total_bytes DESC, COALESCE(t.row_count, latest_row_counts.row_count) DESC, t.table_name ASC
+      WHERE rank = 1
+      ORDER BY total_bytes DESC, row_count DESC, table_name ASC
       LIMIT ?
     `)
-    .all(range.startAt, range.endAt, range.startAt, range.endAt, normalizeLimit(input.limit ?? 200)) as unknown as LatestTableSnapshotRow[]
+    .all(range.startAt, range.endAt, normalizeLimit(input.limit ?? 200)) as unknown as LatestTableSnapshotRow[]
   return {
     sampledAt,
     databases: databases.map(databaseSnapshotFromRow),
@@ -262,7 +227,7 @@ export function listTableStorageHistory(input: {
   limit?: number
 }): TableStorageSnapshotSummary[] {
   const range = normalizeDateRange(input.startAt, input.endAt)
-  const rows = getRecordDatabase()
+  const rows = getStatsDatabase()
     .prepare(`
       SELECT ${tableStorageSnapshotSelectColumns()}
       FROM table_storage_snapshots
@@ -284,9 +249,17 @@ export function listTableStorageHistory(input: {
 }
 
 export function cleanupTableStorageSnapshotsBefore(cutoffIso: string, limit = 10000): number {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   return deleteSnapshotRowsById(database, 'table_storage_snapshots', cutoffIso, limit)
     + deleteSnapshotRowsById(database, 'database_storage_snapshots', cutoffIso, limit)
+}
+
+function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
+  return [
+    { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },
+    { role: 'dataset', path: runtimeConfig.datasetDatabasePath ?? runtimeConfig.recordDatabasePath, database: getDatasetDatabase() },
+    { role: 'stats', path: runtimeConfig.statsDatabasePath ?? runtimeConfig.recordDatabasePath, database: getStatsDatabase() }
+  ]
 }
 
 function collectTargetTableRows(
@@ -543,7 +516,7 @@ function isFtsShadowTable(tableName: string): boolean {
 
 function findPreviousTableSnapshot(databaseRole: MonitoredDatabaseRole, tableName: string, sampledAt: string, minutesBack: number): LatestTableSnapshotRow | undefined {
   const targetTime = new Date(Date.parse(sampledAt) - minutesBack * 60 * 1000).toISOString()
-  return getRecordDatabase()
+  return getStatsDatabase()
     .prepare(`
       SELECT ${tableStorageSnapshotSelectColumns()}
       FROM table_storage_snapshots

@@ -37,7 +37,7 @@ try {
     groupType: 'high_concurrency',
     schedulingPolicy: {
       defaultSoftConcurrency: 3,
-      maxQueueWaitMs: 2000,
+      maxQueueWaitMs: 45000,
       breakAffinityOnSoftLimit: false,
       fastFirstEnabled: false
     }
@@ -48,19 +48,20 @@ try {
   assert.equal(highConcurrencyGroup.schedulingPolicy?.weightAffectsSoftConcurrency, true)
   assert.equal(highConcurrencyGroup.schedulingPolicy?.fastFirstEnabled, true, '高并发快速优先应默认开启，不允许分组配置关闭')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.breakAffinityOnSoftLimit, true, '达到阈值打破亲和应默认开启，不允许分组配置关闭')
-  assert.equal(highConcurrencyGroup.schedulingPolicy?.maxQueueWaitMs, 3000, '短队列等待阈值应使用内置默认值，不暴露为分组配置')
+  assert.equal(highConcurrencyGroup.schedulingPolicy?.maxQueueWaitMs, 45000, '短队列最大等待时间应允许按分组配置')
 
   const stored = database
     .prepare('SELECT group_type, scheduling_policy_json FROM groups WHERE id = ?')
     .get(highConcurrencyGroup.id) as unknown as { group_type: string; scheduling_policy_json: string | null }
   assert.equal(stored.group_type, 'high_concurrency')
   assert(stored.scheduling_policy_json?.includes('"defaultSoftConcurrency":3'), '高并发策略应写入 JSON 配置')
-  assert(!stored.scheduling_policy_json?.includes('"maxQueueWaitMs":2000'), '非用户配置项不应按请求值写入')
+  assert(stored.scheduling_policy_json?.includes('"maxQueueWaitMs":45000'), '最大等待时间应按请求值写入')
   assert(!stored.scheduling_policy_json?.includes('"fastFirstEnabled":false'), '默认开启策略不应按请求关闭')
 
   const runtimeAccess = repositories.resolveGroupUsageAccessMetadata(highConcurrencyGroup.id, 'sys_admin')
   assert.equal(runtimeAccess?.groupType, 'high_concurrency')
   assert.equal(runtimeAccess?.schedulingPolicy?.defaultSoftConcurrency, 3)
+  assert.equal(runtimeAccess?.schedulingPolicy?.maxQueueWaitMs, 45000)
 
   const options = repositories.listGroupOptions(access, { keyword: highConcurrencyGroup.name })
   assert.equal(options[0]?.groupType, 'high_concurrency', '分组选项应携带分组类型')

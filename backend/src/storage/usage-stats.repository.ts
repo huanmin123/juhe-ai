@@ -5,13 +5,12 @@ import type {
   AccountUsageStatsRange,
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getDatabase, getDatasetDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { averageFromSum, dateKey, hourKey, minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
-import { emptyStatsAggregateMathRow, mapProcessEventLoopLatestRows, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
+import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
 import { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
-import { ensureUsageStatsBackfill } from './usage-stats-backfill-runner.js'
 import {
   refreshAccountLast7dRequestRankSnapshot,
   refreshApiKeyCurrentMonthCostRankSnapshot,
@@ -19,7 +18,7 @@ import {
   refreshCallerAccountLast7dRequestRankSnapshot,
   refreshUsageQuotaHourlyWindowSnapshots
 } from './usage-stats-snapshot-helpers.js'
-import { aggregateAccountQualityMinuteStatsRecord, aggregateCallerAccountUsageStatsRecord, aggregateUsageStatsRecord, createUsageStatsAggregationContext } from './usage-stats-writers.js'
+import { aggregateUsageStatsRecord, createUsageStatsAggregationContext } from './usage-stats-writers.js'
 import {
   aggregateUsageErrorRows,
   aggregateUsageModelRows,
@@ -63,29 +62,20 @@ export { getAiPerformanceOverview, listAiPerformanceAccountOptions } from './usa
 export { latestUsageStatsLagSeconds, normalizeDefaultUsageStatsRange } from './usage-stats-runtime-helpers.js'
 
 const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
-const CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME = 'caller_account_usage_stats_backfill'
-const ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME = 'account_quality_minute_stats_backfill'
 const PROCESS_EVENT_LOOP_ROLES: ProcessRole[] = ['server', 'worker', 'db-service']
 const PROCESS_EVENT_LOOP_TREND_WINDOW_MS = 24 * 60 * 60 * 1000
 const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
+  const datasetDatabase = getDatasetDatabase()
   const batchLimit = Math.max(1, limit)
-  const callerAccountBackfill = ensureCallerAccountUsageStatsBackfill(database, batchLimit)
-  if (!callerAccountBackfill.complete || callerAccountBackfill.processed > 0) {
-    return callerAccountBackfill.processed
-  }
-  const accountQualityBackfill = ensureAccountQualityMinuteStatsBackfill(database, batchLimit)
-  if (!accountQualityBackfill.complete || accountQualityBackfill.processed > 0) {
-    return accountQualityBackfill.processed
-  }
   const safeCreatedBefore = usageStatsSafeCreatedBefore()
   const transactionStarted = beginImmediateDatabaseTransaction(database)
   let processedRows = 0
   try {
     const state = usageStatsJobState(database)
-    const rows = database
+    const rows = datasetDatabase
       .prepare(`
         SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
         FROM usage_records
@@ -99,7 +89,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
     if (!rows.length) {
       updateStatsJobState(database, {
         lastSuccessAt: nowIso(),
-        lagSeconds: latestUsageRecordLagSeconds(database, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
+        lagSeconds: latestUsageRecordLagSeconds(datasetDatabase, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
       })
       commitDatabaseTransaction(database, transactionStarted)
       return 0
@@ -131,34 +121,10 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
   return processedRows
 }
 
-function ensureCallerAccountUsageStatsBackfill(database: DatabaseSync, limit: number): { complete: boolean; processed: number } {
-  return ensureUsageStatsBackfill({
-    database,
-    jobName: CALLER_ACCOUNT_USAGE_STATS_BACKFILL_JOB_NAME,
-    limit,
-    sourceCursor: usageStatsJobState(database),
-    recordFilterSql: 'account_id IS NOT NULL',
-    failureMessage: 'caller_account 用量统计回填失败',
-    aggregateRecord: aggregateCallerAccountUsageStatsRecord
-  })
-}
-
-function ensureAccountQualityMinuteStatsBackfill(database: DatabaseSync, limit: number): { complete: boolean; processed: number } {
-  return ensureUsageStatsBackfill({
-    database,
-    jobName: ACCOUNT_QUALITY_MINUTE_STATS_BACKFILL_JOB_NAME,
-    limit,
-    sourceCursor: usageStatsJobState(database),
-    recordFilterSql: 'account_id IS NOT NULL AND api_key_id IS NOT NULL',
-    failureMessage: '账号质量分钟缓存回填失败',
-    aggregateRecord: aggregateAccountQualityMinuteStatsRecord
-  })
-}
-
 export function markGroupAccountStatsDirty(groupIds: Array<string | null | undefined> | string | null | undefined, reason = 'write'): void {
   const ids = uniqueGroupAccountStatsIds(Array.isArray(groupIds) ? groupIds : [groupIds])
   if (!ids.length) return
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const updatedAt = nowIso()
   const insert = database.prepare(`
     INSERT INTO group_account_stats_dirty (group_id, reason, updated_at)
@@ -192,7 +158,7 @@ export function markGroupAccountStatsDirtyByAccountIds(accountIds: Array<string 
 }
 
 export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const allDirty = database
     .prepare('SELECT updated_at FROM group_account_stats_dirty WHERE group_id = ? LIMIT 1')
     .get(GROUP_ACCOUNT_STATS_DIRTY_ALL) as unknown as { updated_at: string } | undefined
@@ -225,7 +191,7 @@ export function refreshDirtyGroupAccountStatsCache(limit = 1000): number {
 }
 
 export function refreshGroupAccountStatsCache(groupIds?: Array<string | null | undefined>): void {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const businessDatabase = getDatabase()
   const updatedAt = nowIso()
   const targetGroupIds = groupIds === undefined ? undefined : uniqueGroupAccountStatsIds(groupIds)
@@ -421,7 +387,7 @@ interface UsageRankSnapshotStage {
 }
 
 export function refreshUsageRankSnapshots(): void {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const context = createUsageRankSnapshotContext(database)
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -436,7 +402,7 @@ export function refreshUsageRankSnapshots(): void {
 }
 
 export function refreshUsageQuotaHourlyWindowsCache(): void {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
     refreshUsageQuotaHourlyWindowSnapshots(database, nowIso(), usageStatsTimezone())
@@ -450,7 +416,7 @@ export function refreshUsageQuotaHourlyWindowsCache(): void {
 export async function refreshUsageRankSnapshotsInStages(options: {
   yieldToEventLoop?: () => Promise<void>
 } = {}): Promise<void> {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const context = createUsageRankSnapshotContext(database)
   const stages = usageRankSnapshotStages()
   const yieldToEventLoop = options.yieldToEventLoop ?? defaultUsageSnapshotYield
@@ -1146,7 +1112,7 @@ export interface UsageStatsConsistencyIssue {
 }
 
 export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsistencyIssue[] {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const samples = database.prepare(`
     SELECT system_account_id, scope_type, scope_id, stat_date,
       request_count, success_count, error_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, total_cost_usd
@@ -1187,7 +1153,7 @@ export function checkUsageStatsConsistency(sampleLimit = 20): UsageStatsConsiste
 }
 
 export function insertSystemMetricsSample(input: SystemMetricsSampleInput): void {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const sampledAt = nowIso()
   const statHour = hourKey(new Date(sampledAt), usageStatsTimezone())
   const transactionStarted = beginDatabaseTransaction(database)
@@ -1234,7 +1200,7 @@ export function insertProcessEventLoopSample(input: ProcessEventLoopSampleInput)
     return
   }
 
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const sampledAt = input.sampledAt ?? nowIso()
   const statHour = hourKey(new Date(sampledAt), usageStatsTimezone())
   const transactionStarted = beginDatabaseTransaction(database)
@@ -1262,7 +1228,7 @@ export function insertProcessEventLoopSample(input: ProcessEventLoopSampleInput)
 }
 
 export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): UsageStatsOverview {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const statsScope = usageOverviewStatsScope(access)
   const windowKey = rangeWindowKey(range)
 
@@ -1320,7 +1286,7 @@ export function getUsageStatsOverview(access?: AccessScope, range: AccountUsageS
 }
 
 export function getSystemMetricsOverview(range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange()): SystemMetricsOverview {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const latest = database.prepare(`
     SELECT ${systemMetricsLatestSelectColumns()}
     FROM system_metrics_samples
@@ -1350,20 +1316,25 @@ export function getSystemMetricsOverview(range: AccountUsageStatsRange = normali
   const processLatestRows = PROCESS_EVENT_LOOP_ROLES
     .map((role) => processLatestStatement.get(role) as unknown as Record<string, unknown> | undefined)
     .filter((row): row is Record<string, unknown> => Boolean(row))
-  const processRows = processEventLoopMinuteTrendRows(database, usageStatsTimezone())
-  const processEventLoopLatestStatus = buildProcessEventLoopLatestStatus(processLatestRows)
+  const processEventLoopStartedAt = processEventLoopTrendStartIso()
+  const processRows = processEventLoopMinuteTrendRows(database, usageStatsTimezone(), processEventLoopStartedAt)
+  const processEventLoopLatestStatus = buildProcessEventLoopStatus(processLatestRows)
+  const processEventLoopPeakStatus = buildProcessEventLoopStatus(processEventLoopPeakRows(database, processEventLoopStartedAt))
   return {
     latest: latest ? mapSystemMetricsLatest(latest) : undefined,
     hourlyTrend: rows.map(mapSystemMetricsHourly),
-    processEventLoopLatest: mapProcessEventLoopLatestRows(processLatestRows),
     processEventLoopLatestStatus,
+    processEventLoopPeakStatus,
     processEventLoopTrend: processRows,
     backgroundJobs: []
   }
 }
 
-function processEventLoopMinuteTrendRows(database: DatabaseSync, timezone: string): SystemMetricsOverview['processEventLoopTrend'] {
-  const startedAt = new Date(Date.now() - PROCESS_EVENT_LOOP_TREND_WINDOW_MS).toISOString()
+function processEventLoopTrendStartIso(): string {
+  return new Date(Date.now() - PROCESS_EVENT_LOOP_TREND_WINDOW_MS).toISOString()
+}
+
+function processEventLoopMinuteTrendRows(database: DatabaseSync, timezone: string, startedAt: string): SystemMetricsOverview['processEventLoopTrend'] {
   const rows = database.prepare(`
     SELECT sampled_at, process_role, event_loop_lag_ms
     FROM process_event_loop_samples
@@ -1407,6 +1378,21 @@ type ProcessEventLoopMinuteBucket = SystemMetricsOverview['processEventLoopTrend
   eventLoopLagMsSum: number
 }
 
+function processEventLoopPeakRows(database: DatabaseSync, startedAt: string): Array<Record<string, unknown>> {
+  const peakStatement = database.prepare(`
+    SELECT ${processEventLoopLatestSelectColumns()}
+    FROM process_event_loop_samples
+    WHERE process_role = ?
+      AND sampled_at >= ?
+      AND event_loop_lag_ms IS NOT NULL
+    ORDER BY event_loop_lag_ms DESC, sampled_at DESC, id DESC
+    LIMIT 1
+  `)
+  return PROCESS_EVENT_LOOP_ROLES
+    .map((role) => peakStatement.get(role, startedAt) as unknown as Record<string, unknown> | undefined)
+    .filter((row): row is Record<string, unknown> => Boolean(row))
+}
+
 function processRoleFromValue(value: unknown): ProcessRole | undefined {
   return PROCESS_EVENT_LOOP_ROLES.find((role) => role === value)
 }
@@ -1416,12 +1402,19 @@ function processRoleSort(role: ProcessRole): number {
   return index >= 0 ? index : PROCESS_EVENT_LOOP_ROLES.length
 }
 
-function buildProcessEventLoopLatestStatus(rows: Array<Record<string, unknown>>): SystemMetricsOverview['processEventLoopLatestStatus'] {
-  const latestByRole = new Map(
-    mapProcessEventLoopLatestRows(rows).map((row) => [row.processRole, row] as const)
-  )
+function buildProcessEventLoopStatus(rows: Array<Record<string, unknown>>): SystemMetricsOverview['processEventLoopLatestStatus'] {
+  const statusByRole = new Map<ProcessRole, { processPid?: number; sampledAt: string; eventLoopLagMs?: number }>()
+  for (const row of rows) {
+    const processRole = processRoleFromValue(row.process_role)
+    if (!processRole || statusByRole.has(processRole)) continue
+    statusByRole.set(processRole, {
+      processPid: nullableNumber(row.process_pid) ?? undefined,
+      sampledAt: String(row.sampled_at ?? ''),
+      eventLoopLagMs: nullableNumber(row.event_loop_lag_ms) ?? undefined
+    })
+  }
   return PROCESS_EVENT_LOOP_ROLES.map((processRole) => {
-    const row = latestByRole.get(processRole)
+    const row = statusByRole.get(processRole)
     if (!row) {
       return {
         processRole,

@@ -44,6 +44,25 @@ try {
     .get() as { lag_seconds?: number | null } | undefined
   assert.equal(jobState?.lag_seconds, null, '表监控游标状态不应伪装成 0')
 
+  const recordDatabase = databaseModule.getRecordDatabase()
+  const capturedSql: string[] = []
+  const originalPrepare = recordDatabase.prepare.bind(recordDatabase)
+  recordDatabase.prepare = ((sql: string) => {
+    capturedSql.push(sql)
+    return originalPrepare(sql)
+  }) as typeof recordDatabase.prepare
+  try {
+    tableMonitorRepository.getTableStorageOverview({
+      startAt: '2026-01-01T00:00:00.000Z',
+      endAt: '2026-01-01T00:00:00.000Z',
+      limit: 200
+    })
+  } finally {
+    recordDatabase.prepare = originalPrepare as typeof recordDatabase.prepare
+  }
+  assert(capturedSql.length > 0, '表监控概览应查询记录库采样表')
+  assert(capturedSql.every((sql) => !/\bJOIN\b/i.test(sql)), '表监控概览不应使用关联查询拼接采样结果')
+
   console.log('表监控默认采样回归通过：默认 cursor/none，不做全表扫描和 COUNT(*)')
 } finally {
   try {

@@ -18,7 +18,7 @@ import { resourceAuthorizationSelectColumns, usageScope } from './resource-autho
 import { loadAccountLookupMap, loadGroupNameMap, loadSystemAccountPrincipalMapByIds, loadSystemTeamNameMap } from './repository-lookups.js'
 import { parseRequestQuotaLimitsJson } from './request-quota-limits.js'
 import type { ResourceAuthorizationGrantRow, ResourceAuthorizationRow } from './repository-row-types.js'
-import { compatiblePagedTotal, takePageRows } from './query-utils.js'
+import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { emptyAccountUsageSummary, todayDateKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
 
@@ -100,7 +100,7 @@ function listResourceAuthorizationGrantOperationRowsPage(filters: Record<string,
   const pageRows = takePageRows(rows, pageOptions.pageSize)
   return {
     rows: pageRows.rows,
-    total: compatiblePagedTotal(pageOptions.page, pageOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(pageOptions.page, pageOptions.pageSize, pageRows.rows.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page: pageOptions.page,
     pageSize: pageOptions.pageSize
@@ -135,6 +135,9 @@ function listResourceAuthorizationGrantOperationRows(filters: Record<string, unk
   }
   const status = authorizationStatusFilter(filters.status)
   if (status) { clauses.push('rag.status = ?'); params.push(status) }
+  else if (filters.status !== 'all') {
+    clauses.push("rag.status <> 'revoked'")
+  }
   const sourceType = optionalString(filters.sourceType ?? filters.source_type)
   if (sourceType === 'manual') {
     clauses.push('rag.grantee_type = ?')

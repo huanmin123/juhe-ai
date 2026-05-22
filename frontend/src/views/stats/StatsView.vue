@@ -104,16 +104,16 @@
       <a-col :xs="24" :xl="14">
         <StatsChartCard
           title="进程事件循环延迟（最近 24 小时）"
-          description="主进程、后台 worker 和 DB service 独立采样，按分钟展示；单位为毫秒。"
+          description="主进程、后台 worker 和 DB service 独立采样，按分钟展示峰值；上方为最近 24 小时最大值。单位为毫秒。"
           :loading="systemInitialLoading"
           :has-data="hasProcessEventLoopData"
           :empty-description="processEventLoopEmptyDescription"
         >
-          <div v-if="processEventLoopLatestRows.length > 0" class="process-event-loop-latest">
-            <div v-for="item in processEventLoopLatestRows" :key="item.processRole" class="process-event-loop-latest-item" :class="{ unavailable: !item.sampleAvailable }">
-              <span class="process-event-loop-latest-role">{{ processRoleLabel(item.processRole) }}</span>
-              <span class="process-event-loop-latest-value">{{ item.sampleAvailable ? formatJobDuration(item.eventLoopLagMs ?? undefined) : '未知' }}</span>
-              <span class="process-event-loop-latest-meta">{{ item.sampleAvailable ? `PID ${item.processPid ?? '-'} · ${formatDateTime(item.sampledAt ?? undefined)}` : '暂无进程采样' }}</span>
+          <div v-if="processEventLoopPeakRows.length > 0" class="process-event-loop-peak">
+            <div v-for="item in processEventLoopPeakRows" :key="item.processRole" class="process-event-loop-peak-item" :class="{ unavailable: !item.sampleAvailable }">
+              <span class="process-event-loop-peak-role">{{ processRoleLabel(item.processRole) }}</span>
+              <span class="process-event-loop-peak-value">{{ item.sampleAvailable ? formatJobDuration(item.eventLoopLagMs ?? undefined) : '未知' }}</span>
+              <span class="process-event-loop-peak-meta">{{ item.sampleAvailable ? `PID ${item.processPid ?? '-'} · ${formatDateTime(item.sampledAt ?? undefined)}` : '最近 24 小时暂无采样' }}</span>
             </div>
           </div>
           <div v-if="hasProcessEventLoopTrend" ref="processEventLoopChartRef" class="chart-panel chart-panel-large" />
@@ -334,24 +334,15 @@ const hasErrors = computed(() => (usageOverview.value?.errors.length ?? 0) > 0)
 const hasSystemTrend = computed(() => (systemMetrics.value?.hourlyTrend.length ?? 0) > 0)
 const hasVisibleSystemTrend = computed(() => showAdminDetailCharts.value && hasSystemTrend.value)
 const hasProcessEventLoopTrend = computed(() => showAdminDetailCharts.value && (systemMetrics.value?.processEventLoopTrend.length ?? 0) > 0)
-const processEventLoopLatestRows = computed(() => {
-  const statusRows = systemMetrics.value?.processEventLoopLatestStatus
+const processEventLoopPeakRows = computed(() => {
+  const statusRows = systemMetrics.value?.processEventLoopPeakStatus
   const order = new Map([['server', 0], ['worker', 1], ['db-service', 2]])
   if (statusRows?.length) {
     return [...statusRows].sort((left, right) => (order.get(left.processRole) ?? 99) - (order.get(right.processRole) ?? 99))
   }
-  const rows = systemMetrics.value?.processEventLoopLatest ?? []
-  return rows
-    .map((row) => ({
-      ...row,
-      sampleAvailable: true,
-      processPid: row.processPid ?? null,
-      sampledAt: row.sampledAt ?? null,
-      eventLoopLagMs: row.eventLoopLagMs ?? null
-    }))
-    .sort((left, right) => (order.get(left.processRole) ?? 99) - (order.get(right.processRole) ?? 99))
+  return []
 })
-const hasProcessEventLoopData = computed(() => hasProcessEventLoopTrend.value || processEventLoopLatestRows.value.length > 0)
+const hasProcessEventLoopData = computed(() => hasProcessEventLoopTrend.value || processEventLoopPeakRows.value.some((item) => item.sampleAvailable))
 const backgroundJobRows = computed(() => {
   return [...(systemMetrics.value?.backgroundJobs ?? [])].sort((left, right) => {
     const leftDuration = left.maxDurationMs ?? -1
@@ -687,14 +678,14 @@ watch(() => backgroundJobRows.value.length, (total) => {
   height: 340px;
 }
 
-.process-event-loop-latest {
+.process-event-loop-peak {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
 
-.process-event-loop-latest-item {
+.process-event-loop-peak-item {
   display: grid;
   gap: 2px;
   min-width: 0;
@@ -704,28 +695,28 @@ watch(() => backgroundJobRows.value.length, (total) => {
   background: #fbfcff;
 }
 
-.process-event-loop-latest-item.unavailable {
+.process-event-loop-peak-item.unavailable {
   border-color: #ffd591;
   background: #fff7e6;
 }
 
-.process-event-loop-latest-role {
+.process-event-loop-peak-role {
   color: #64748b;
   font-size: 12px;
 }
 
-.process-event-loop-latest-value {
+.process-event-loop-peak-value {
   color: #0f172a;
   font-size: 18px;
   font-weight: 700;
   line-height: 1.3;
 }
 
-.process-event-loop-latest-item.unavailable .process-event-loop-latest-value {
+.process-event-loop-peak-item.unavailable .process-event-loop-peak-value {
   color: #ad6800;
 }
 
-.process-event-loop-latest-meta {
+.process-event-loop-peak-meta {
   overflow: hidden;
   color: #94a3b8;
   font-size: 12px;
@@ -899,7 +890,7 @@ watch(() => backgroundJobRows.value.length, (total) => {
     height: 280px;
   }
 
-  .process-event-loop-latest {
+  .process-event-loop-peak {
     grid-template-columns: 1fr;
   }
 }

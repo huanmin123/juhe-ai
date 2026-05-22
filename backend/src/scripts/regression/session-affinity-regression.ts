@@ -180,11 +180,11 @@ function testScopedMigrationOnlyMovesMatchingBindings(): void {
   const scopedKey = 'session-affinity-regression:scoped-migration'
   const otherGranteeKey = 'session-affinity-regression:scoped-migration-other-grantee'
   const ownerKey = 'session-affinity-regression:scoped-migration-owner'
-  const legacyKey = 'session-affinity-regression:scoped-migration-legacy'
+  const unscopedKey = 'session-affinity-regression:scoped-migration-unscoped'
   rememberOpenAIAccountForSession(scopedKey, 'shared-source', { systemAccountId: 'grantee-a', apiKeyId: 'key-a', groupId: 'group-a' })
   rememberOpenAIAccountForSession(otherGranteeKey, 'shared-source', { systemAccountId: 'grantee-b', apiKeyId: 'key-b', groupId: 'group-b' })
   rememberOpenAIAccountForSession(ownerKey, 'shared-source', { systemAccountId: 'owner', apiKeyId: 'owner-key', groupId: 'owner-group' })
-  rememberOpenAIAccountForSession(legacyKey, 'shared-source')
+  rememberOpenAIAccountForSession(unscopedKey, 'shared-source')
   const accounts = [
     createAccount('shared-source', { priority: 0 }),
     createAccount('scoped-target', { priority: 0 })
@@ -198,13 +198,13 @@ function testScopedMigrationOnlyMovesMatchingBindings(): void {
   assert.deepEqual(orderedIds(accounts, scopedKey), ['scoped-target', 'shared-source'])
   assert.deepEqual(orderedIds(accounts, otherGranteeKey), ['shared-source', 'scoped-target'])
   assert.deepEqual(orderedIds(accounts, ownerKey), ['shared-source', 'scoped-target'])
-  assert.deepEqual(orderedIds(accounts, legacyKey), ['shared-source', 'scoped-target'])
+  assert.deepEqual(orderedIds(accounts, unscopedKey), ['shared-source', 'scoped-target'])
 
   assert.equal(migrateOpenAIAccountSessionAffinity('shared-source', 'scoped-target').migratedSessionCount, 3)
   forgetOpenAIAccountForSession(scopedKey)
   forgetOpenAIAccountForSession(otherGranteeKey)
   forgetOpenAIAccountForSession(ownerKey)
-  forgetOpenAIAccountForSession(legacyKey)
+  forgetOpenAIAccountForSession(unscopedKey)
 }
 
 function testHighConcurrencyUsesLeastLoadedWithinSameTier(): void {

@@ -187,6 +187,70 @@ export interface AccountTrafficMigrationResult {
   sourceCooldownUntil?: string | null
 }
 
+export interface AccountImportOptions {
+  createMissingGroups?: boolean
+  createMissingProxies?: boolean
+  skipDuplicates?: boolean
+}
+
+export interface AccountImportSummary {
+  accounts: {
+    total: number
+    create: number
+    skip: number
+    failed: number
+  }
+  proxies: {
+    total: number
+    create: number
+    reuse: number
+    skip: number
+    failed: number
+  }
+  groups: {
+    create: number
+    reuse: number
+    failed: number
+  }
+}
+
+export interface AccountImportItem {
+  index: number
+  ref?: string
+  name?: string
+  providerCode?: ProviderCode
+  accountType?: AccountType
+  groupName?: string
+  groupId?: string
+  proxyRef?: string
+  action: 'create' | 'reuse' | 'skip' | 'failed'
+  messages: string[]
+  warnings: string[]
+  accountId?: string
+}
+
+export interface AccountImportProxyItem {
+  index: number
+  ref?: string
+  name?: string
+  action: 'create' | 'reuse' | 'skip' | 'failed'
+  messages: string[]
+  warnings: string[]
+  proxyProfileId?: string
+}
+
+export interface AccountImportResult {
+  type: 'juhe-ai-account-import'
+  version: 1
+  mode: 'preview' | 'import'
+  canImport: boolean
+  imported: boolean
+  summary: AccountImportSummary
+  accounts: AccountImportItem[]
+  proxies: AccountImportProxyItem[]
+  messages: string[]
+}
+
 export interface ErrorPolicySummary {
   id: string
   name: string

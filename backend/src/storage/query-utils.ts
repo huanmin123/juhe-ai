@@ -20,7 +20,7 @@ export function takePageRows<T>(rows: T[], pageSize: number): { rows: T[]; hasMo
   }
 }
 
-export function compatiblePagedTotal(page: number, pageSize: number, itemCount: number, hasMore: boolean): number {
+export function pagedTotalUpperBound(page: number, pageSize: number, itemCount: number, hasMore: boolean): number {
   const safePage = Math.max(1, Math.trunc(page))
   const safePageSize = Math.max(0, Math.trunc(pageSize))
   const safeItemCount = Math.max(0, Math.trunc(itemCount))

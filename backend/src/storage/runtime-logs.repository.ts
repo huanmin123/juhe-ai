@@ -1,5 +1,5 @@
-import { beginDatabaseTransaction, commitDatabaseTransaction, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalString } from './value-utils.js'
 
 export type RuntimeLogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
@@ -37,13 +37,6 @@ export interface RuntimeLogListResult {
   hasMore: boolean
   page: number
   pageSize: number
-}
-
-export interface RuntimeLogSearchBackfillResult {
-  processed: number
-  hasMore: boolean
-  cursorCreatedAt?: string
-  cursorId?: string
 }
 
 export interface RuntimeLogSummary {
@@ -103,23 +96,15 @@ export const runtimeLogIndexRetentionDays = 3
 const runtimeLogFacetBucketKey = 'current'
 const runtimeLogFacetMaxEvents = 80
 const runtimeLogMaxRawJsonChars = 128 * 1024
-const runtimeLogMinKeywordLength = 3
-const runtimeLogSearchBackfillJobName = 'runtime_log_search_backfill'
-const runtimeLogSearchBackfillMaxBatchSize = 5000
 
 export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
   if (inputs.length === 0) return
 
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const insertLog = database.prepare(`
     INSERT OR IGNORE INTO runtime_logs (
       id, log_file, log_offset, line_number, time, level, trace_id, event, message, error_message, raw_json, created_at
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `)
-  const insertSearch = database.prepare(`
-    INSERT INTO runtime_log_search (
-      log_id, trace_id, event, message, error_message, raw_json
-    ) VALUES (?, ?, ?, ?, ?, ?)
   `)
 
   const transactionStarted = beginDatabaseTransaction(database)
@@ -148,14 +133,6 @@ export function createRuntimeLogsBatch(inputs: RuntimeLogIndexInput[]): void {
         continue
       }
       facetRows.push({ time: input.time, level, event: input.event })
-      insertSearch.run(
-        id,
-        input.traceId ?? '',
-        input.event ?? '',
-        input.message ?? '',
-        input.errorMessage ?? '',
-        rawJson
-      )
     }
     incrementRuntimeLogFacetSnapshots(database, facetRows)
     commitDatabaseTransaction(database, transactionStarted)
@@ -173,38 +150,23 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
   const pageSize = normalizeRuntimeLogPageSize(options.pageSize ?? options.limit)
   const page = normalizeRuntimeLogPage(options.page)
   const offset = (page - 1) * pageSize
-  const keywordFilter = buildRuntimeLogKeywordFilter(options.keyword)
-  const keywordWhereClause = keywordFilter
-    ? buildRuntimeLogKeywordWhereClause(filters.clause, keywordFilter.clause)
-    : ''
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
 
-  const rows = keywordFilter
-    ? database
-      .prepare(`
-        SELECT ${runtimeLogListSelectColumns('rl')}
-        FROM runtime_log_search
-        INNER JOIN runtime_logs rl ON rl.id = runtime_log_search.log_id
-        ${keywordWhereClause}
-        ORDER BY rl.time DESC, rl.id DESC
-        LIMIT ? OFFSET ?
-      `)
-      .all(...filters.params, ...keywordFilter.params, pageSize + 1, offset) as RuntimeLogRow[]
-    : database
-      .prepare(`
-        SELECT ${runtimeLogListSelectColumns('rl')}
-        FROM runtime_logs rl
-        ${filters.clause}
-        ORDER BY rl.time DESC, rl.id DESC
-        LIMIT ? OFFSET ?
-      `)
-      .all(...filters.params, pageSize + 1, offset) as RuntimeLogRow[]
+  const rows = database
+    .prepare(`
+      SELECT ${runtimeLogListSelectColumns('rl')}
+      FROM runtime_logs rl
+      ${filters.clause}
+      ORDER BY rl.time DESC, rl.id DESC
+      LIMIT ? OFFSET ?
+    `)
+    .all(...filters.params, pageSize + 1, offset) as RuntimeLogRow[]
 
   const pageRows = takePageRows(rows, pageSize)
   const items = pageRows.rows.map(runtimeLogFromRow)
   return {
     items,
-    total: compatiblePagedTotal(page, pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(page, pageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page,
     pageSize
@@ -212,7 +174,7 @@ export function listRuntimeLogs(options: RuntimeLogListOptions = {}): RuntimeLog
 }
 
 export function getRuntimeLogDetail(id: string): RuntimeLogDetail | undefined {
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare(`
       SELECT ${runtimeLogDetailSelectColumns('rl')}
       FROM runtime_logs rl
@@ -224,7 +186,7 @@ export function getRuntimeLogDetail(id: string): RuntimeLogDetail | undefined {
 }
 
 export function getRuntimeLogFacets(): RuntimeLogFacets {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const range = database
     .prepare('SELECT earliest_time, latest_time, total_count FROM runtime_log_facet_summary WHERE bucket_key = ?')
     .get(runtimeLogFacetBucketKey) as RuntimeLogRow | undefined
@@ -256,7 +218,7 @@ export function getRuntimeLogFacets(): RuntimeLogFacets {
 }
 
 export function refreshRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso()): void {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const timestamp = nowIso()
   const transactionStarted = beginDatabaseTransaction(database)
   try {
@@ -339,7 +301,7 @@ export function refreshRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso()
 }
 
 export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso()): void {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const summary = database
     .prepare('SELECT bucket_key FROM runtime_log_facet_summary WHERE bucket_key = ? LIMIT 1')
     .get(runtimeLogFacetBucketKey) as RuntimeLogRow | undefined
@@ -352,7 +314,7 @@ export function ensureRuntimeLogFacetSnapshots(cutoffIso = retentionCutoffIso())
 }
 
 export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit = 10000): number {
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const rows = database
     .prepare('SELECT id, time, level, event FROM runtime_logs WHERE time < ? ORDER BY time ASC, id ASC LIMIT ?')
     .all(cutoffIso, Math.max(1, Math.trunc(limit))) as RuntimeLogRow[]
@@ -364,7 +326,6 @@ export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit =
     let deleted = 0
     for (const chunk of chunkValues(ids, 900)) {
       const placeholders = sqlPlaceholders(chunk.length)
-      deleteRuntimeLogSearchByIds(database, chunk)
       const result = database.prepare(`DELETE FROM runtime_logs WHERE id IN (${placeholders})`).run(...chunk)
       deleted += Number(result.changes ?? 0)
     }
@@ -386,98 +347,23 @@ export function cleanupRuntimeLogIndex(cutoffIso = retentionCutoffIso(), limit =
   }
 }
 
-export function backfillRuntimeLogSearchIndex(limit = 1000): RuntimeLogSearchBackfillResult {
-  const database = getRecordDatabase()
-  const batchLimit = positiveRuntimeLogSearchBackfillLimit(limit)
-  const state = runtimeLogSearchBackfillState(database)
-  const completedCursor = runtimeLogSearchBackfillCompletedCursor(database)
-  if (completedCursor) {
-    updateRuntimeLogSearchBackfillState(database, {
-      cursorCreatedAt: completedCursor.cursorCreatedAt,
-      cursorId: completedCursor.cursorId,
-      lastSuccessAt: nowIso()
-    })
-    return {
-      processed: 0,
-      hasMore: false,
-      cursorCreatedAt: completedCursor.cursorCreatedAt,
-      cursorId: completedCursor.cursorId
-    }
-  }
-  const rows = database
-    .prepare(`
-      SELECT id, trace_id, event, message, error_message, raw_json, created_at
-      FROM runtime_logs
-      WHERE created_at > ? OR (created_at = ? AND id > ?)
-      ORDER BY created_at ASC, id ASC
+export function cleanupRuntimeLogFileCursorsBefore(cutoffIso: string, limit = 10000): number {
+  const database = getDatasetDatabase()
+  const result = database.prepare(`
+    DELETE FROM runtime_log_file_cursors
+    WHERE rowid IN (
+      SELECT rowid
+      FROM runtime_log_file_cursors
+      WHERE updated_at < ?
+      ORDER BY updated_at ASC, rowid ASC
       LIMIT ?
-    `)
-    .all(state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, batchLimit + 1) as RuntimeLogRow[]
-  const batchRows = rows.slice(0, batchLimit)
-  const hasMore = rows.length > batchLimit
-  if (batchRows.length === 0) {
-    updateRuntimeLogSearchBackfillState(database, {
-      cursorCreatedAt: state.cursorCreatedAt || undefined,
-      cursorId: state.cursorId || undefined,
-      lastSuccessAt: nowIso()
-    })
-    return {
-      processed: 0,
-      hasMore: false,
-      cursorCreatedAt: state.cursorCreatedAt || undefined,
-      cursorId: state.cursorId || undefined
-    }
-  }
-
-  const ids = batchRows.map((row) => String(row.id)).filter(Boolean)
-  const insertSearch = database.prepare(`
-    INSERT INTO runtime_log_search (
-      log_id, trace_id, event, message, error_message, raw_json
-    ) VALUES (?, ?, ?, ?, ?, ?)
-  `)
-  const updatedAt = nowIso()
-  const last = batchRows[batchRows.length - 1]
-  const cursorCreatedAt = String(last.created_at)
-  const cursorId = String(last.id)
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    deleteRuntimeLogSearchByIds(database, ids)
-    for (const row of batchRows) {
-      insertSearch.run(
-        String(row.id),
-        optionalString(row.trace_id) ?? '',
-        optionalString(row.event) ?? '',
-        optionalString(row.message) ?? '',
-        optionalString(row.error_message) ?? '',
-        truncateRuntimeLogRawJson(optionalString(row.raw_json) ?? '')
-      )
-    }
-    updateRuntimeLogSearchBackfillState(database, {
-      cursorCreatedAt,
-      cursorId,
-      lastSuccessAt: updatedAt,
-      ...(hasMore ? { lagSeconds: searchBackfillLagSeconds(cursorCreatedAt) } : {})
-    })
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    try {
-      rollbackDatabaseTransaction(database, transactionStarted)
-    } catch {
-    }
-    markRuntimeLogSearchBackfillFailed(database, error)
-    throw error
-  }
-
-  return {
-    processed: batchRows.length,
-    hasMore,
-    cursorCreatedAt,
-    cursorId
-  }
+    )
+  `).run(cutoffIso, Math.max(1, Math.trunc(limit)))
+  return Number(result.changes ?? 0)
 }
 
 export function getRuntimeLogFileCursor(logFile: string): RuntimeLogFileCursor | undefined {
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare('SELECT * FROM runtime_log_file_cursors WHERE log_file = ?')
     .get(logFile) as RuntimeLogRow | undefined
   return row ? runtimeLogFileCursorFromRow(row) : undefined
@@ -485,7 +371,7 @@ export function getRuntimeLogFileCursor(logFile: string): RuntimeLogFileCursor |
 
 export function upsertRuntimeLogFileCursor(input: RuntimeLogFileCursorInput): void {
   const now = nowIso()
-  getRecordDatabase()
+  getDatasetDatabase()
     .prepare(`
       INSERT INTO runtime_log_file_cursors (
         log_file, file_identity, cursor_offset, line_number, file_size, file_mtime_ms,
@@ -540,16 +426,12 @@ function buildRuntimeLogFilters(options: RuntimeLogListOptions): { clause: strin
     params.push(endAt)
   }
 
+  pushMessageKeywordFilter(clauses, params, options.keyword)
+
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params
   }
-}
-
-function buildRuntimeLogKeywordWhereClause(filterClause: string, keywordClause: string): string {
-  return filterClause
-    ? `${filterClause} AND ${keywordClause}`
-    : `WHERE ${keywordClause}`
 }
 
 function pushExactTextFilter(clauses: string[], params: RuntimeLogFilterValue[], column: string, value?: string): void {
@@ -566,115 +448,15 @@ function pushPrefixTextFilter(clauses: string[], params: RuntimeLogFilterValue[]
   params.push(text, `${text}\uffff`)
 }
 
-function buildRuntimeLogKeywordFilter(value?: string): { clause: string; params: string[] } | undefined {
+function pushMessageKeywordFilter(clauses: string[], params: RuntimeLogFilterValue[], value?: string): void {
   const text = value?.trim()
-  if (!text) return undefined
-  const terms = splitKeywordTerms(text)
-  if (!terms.length) return undefined
-  if (terms.some((term) => [...term].length < runtimeLogMinKeywordLength)) {
-    return {
-      clause: '0 = 1',
-      params: []
-    }
-  }
-  return {
-    clause: 'runtime_log_search MATCH ?',
-    params: [terms.map(quoteFts5Term).join(' AND ')]
-  }
+  if (!text) return
+  clauses.push("rl.message LIKE ? ESCAPE '\\'")
+  params.push(`%${escapeSqlLikePattern(text)}%`)
 }
 
-function splitKeywordTerms(value: string): string[] {
-  const seen = new Set<string>()
-  const terms: string[] = []
-  for (const part of value.split(/[\s,;，；]+/)) {
-    const term = part.trim()
-    if (!term) continue
-    const key = term.toLowerCase()
-    if (seen.has(key)) continue
-    seen.add(key)
-    terms.push(term)
-  }
-  return terms
-}
-
-function quoteFts5Term(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`
-}
-
-function deleteRuntimeLogSearchByIds(database: ReturnType<typeof getRecordDatabase>, ids: string[]): void {
-  for (const chunk of chunkValues(ids, 900)) {
-    if (chunk.length === 0) continue
-    database.prepare(`DELETE FROM runtime_log_search WHERE log_id IN (${sqlPlaceholders(chunk.length)})`).run(...chunk)
-  }
-}
-
-function runtimeLogSearchBackfillState(database: ReturnType<typeof getRecordDatabase>): { cursorCreatedAt: string; cursorId: string } {
-  const row = database
-    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
-    .get(runtimeLogSearchBackfillJobName) as RuntimeLogRow | undefined
-  return {
-    cursorCreatedAt: optionalString(row?.cursor_created_at) ?? '',
-    cursorId: optionalString(row?.cursor_id) ?? ''
-  }
-}
-
-function runtimeLogSearchBackfillCompletedCursor(database: ReturnType<typeof getRecordDatabase>): { cursorCreatedAt?: string; cursorId?: string } | undefined {
-  const runtimeLogs = database.prepare('SELECT COUNT(*) AS count FROM runtime_logs').get() as { count?: number } | undefined
-  const searchLogs = database.prepare('SELECT COUNT(*) AS count FROM runtime_log_search').get() as { count?: number } | undefined
-  if (Number(runtimeLogs?.count ?? 0) !== Number(searchLogs?.count ?? 0)) {
-    return undefined
-  }
-  const latest = database
-    .prepare('SELECT id, created_at FROM runtime_logs ORDER BY created_at DESC, id DESC LIMIT 1')
-    .get() as RuntimeLogRow | undefined
-  return {
-    cursorCreatedAt: optionalString(latest?.created_at),
-    cursorId: optionalString(latest?.id)
-  }
-}
-
-function updateRuntimeLogSearchBackfillState(
-  database: ReturnType<typeof getRecordDatabase>,
-  input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }
-): void {
-  const updatedAt = nowIso()
-  database.prepare(`
-    INSERT INTO stats_job_state (
-      scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at
-    ) VALUES ('global', '', ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
-      cursor_created_at = COALESCE(excluded.cursor_created_at, stats_job_state.cursor_created_at),
-      cursor_id = COALESCE(excluded.cursor_id, stats_job_state.cursor_id),
-      last_success_at = COALESCE(excluded.last_success_at, stats_job_state.last_success_at),
-      last_error_message = excluded.last_error_message,
-      lag_seconds = excluded.lag_seconds,
-      updated_at = excluded.updated_at
-  `).run(
-    runtimeLogSearchBackfillJobName,
-    input.cursorCreatedAt ?? null,
-    input.cursorId ?? null,
-    input.lastSuccessAt ?? null,
-    input.lastErrorMessage ?? null,
-    input.lagSeconds ?? null,
-    updatedAt
-  )
-}
-
-function markRuntimeLogSearchBackfillFailed(database: ReturnType<typeof getRecordDatabase>, error: unknown): void {
-  updateRuntimeLogSearchBackfillState(database, {
-    lastErrorMessage: error instanceof Error ? error.message : '运行日志搜索索引回填失败'
-  })
-}
-
-function positiveRuntimeLogSearchBackfillLimit(value: number): number {
-  return Number.isFinite(value)
-    ? Math.min(runtimeLogSearchBackfillMaxBatchSize, Math.max(1, Math.trunc(value)))
-    : 1000
-}
-
-function searchBackfillLagSeconds(cursorTime: string): number {
-  const cursorMs = Date.parse(cursorTime)
-  return Number.isFinite(cursorMs) ? Math.max(0, Math.floor((Date.now() - cursorMs) / 1000)) : 0
+function escapeSqlLikePattern(value: string): string {
+  return value.replace(/[\\%_]/g, (char) => `\\${char}`)
 }
 
 function truncateRuntimeLogRawJson(value: string): string {
@@ -748,7 +530,7 @@ function runtimeLogFileCursorFromRow(row: RuntimeLogRow): RuntimeLogFileCursor {
   }
 }
 
-function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getRecordDatabase>, rows: RuntimeLogFacetInput[]): void {
+function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatasetDatabase>, rows: RuntimeLogFacetInput[]): void {
   const cutoff = retentionCutoffIso()
   const retainedRows = rows.filter((row) => row.time >= cutoff)
   if (retainedRows.length === 0) return
@@ -822,7 +604,7 @@ function incrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getRecord
   }
 }
 
-function decrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getRecordDatabase>, rows: RuntimeLogFacetInput[], cutoffIso: string): void {
+function decrementRuntimeLogFacetSnapshots(database: ReturnType<typeof getDatasetDatabase>, rows: RuntimeLogFacetInput[], cutoffIso: string): void {
   if (rows.length === 0) return
 
   const timestamp = nowIso()

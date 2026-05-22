@@ -84,23 +84,6 @@ export function mapSystemMetricsHourly(row: Record<string, unknown>): SystemMetr
   }
 }
 
-export function mapProcessEventLoopLatestRows(rows: Array<Record<string, unknown>>): SystemMetricsOverview['processEventLoopLatest'] {
-  const latestByRole = new Map<ProcessRole, SystemMetricsOverview['processEventLoopLatest'][number]>()
-  for (const row of rows) {
-    const processRole = processRoleFromUnknown(row.process_role)
-    if (!processRole || latestByRole.has(processRole)) {
-      continue
-    }
-    latestByRole.set(processRole, {
-      processRole,
-      processPid: numberFromUnknown(row.process_pid),
-      sampledAt: String(row.sampled_at ?? ''),
-      eventLoopLagMs: numberFromUnknown(row.event_loop_lag_ms)
-    })
-  }
-  return [...latestByRole.values()].sort((left, right) => processRoleSort(left.processRole) - processRoleSort(right.processRole))
-}
-
 export function mapProcessEventLoopHourly(row: Record<string, unknown>): SystemMetricsOverview['processEventLoopTrend'][number] {
   const processRole = processRoleFromUnknown(row.process_role)
   const statBucket = String(row.stat_minute ?? row.stat_hour)
@@ -121,8 +104,3 @@ function processRoleFromUnknown(value: unknown): ProcessRole | undefined {
   return undefined
 }
 
-function processRoleSort(role: ProcessRole): number {
-  if (role === 'server') return 0
-  if (role === 'worker') return 1
-  return 2
-}

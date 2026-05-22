@@ -1,6 +1,6 @@
 import type { AccountOAuthUsageSnapshot, AccountOAuthUsageWindow } from '../domain/types.js'
 import { buildSystemAccountScopeClause, type AccessScope } from './access-scope.js'
-import { getRecordDatabase } from './database.js'
+import { getStatsDatabase } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
 import { numberFromUnknown } from './usage-stats-helpers.js'
 import { optionalString, parseOptionalJsonObject } from './value-utils.js'
@@ -25,7 +25,7 @@ function uniqueIds(values: string[]): string[] {
 
 export function loadOpenAICodexUsageSnapshots(access?: AccessScope): Map<string, AccountOAuthUsageSnapshot> {
   const scope = buildSystemAccountScopeClause(access)
-  const rows = getRecordDatabase().prepare(`
+  const rows = getStatsDatabase().prepare(`
     SELECT
       account_id, kind, source, snapshot_json, refresh_status,
       last_attempt_at, last_success_at, next_refresh_after, last_error_message, updated_at
@@ -39,7 +39,7 @@ export function loadOpenAICodexUsageSnapshotsByAccountIds(accountIds: string[]):
   const ids = uniqueIds(accountIds)
   if (!ids.length) return new Map()
   const rows: AccountUsageSnapshotRow[] = []
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   for (const chunk of chunkValues(ids, 900)) {
     rows.push(...database.prepare(`
       SELECT

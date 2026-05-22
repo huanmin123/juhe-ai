@@ -86,6 +86,13 @@ interface SystemMetricsResponse {
     sampledAt: string | null
     eventLoopLagMs: number | null
   }>
+  processEventLoopPeakStatus: Array<{
+    processRole: string
+    sampleAvailable: boolean
+    processPid: number | null
+    sampledAt: string | null
+    eventLoopLagMs: number | null
+  }>
 }
 
 interface AccountListResponse {
@@ -167,19 +174,30 @@ try {
     assert.equal(item.sampledAt, null, `${item.processRole} 无最新采样时采样时间不能伪装成默认值`)
     assert.equal(item.eventLoopLagMs, null, `${item.processRole} 无最新采样时事件循环延迟不能伪装成 0`)
   }
+  assert.deepEqual(
+    systemMetrics.processEventLoopPeakStatus.map((item) => item.processRole),
+    ['server', 'worker', 'db-service'],
+    '系统指标应固定返回所有进程角色的 24 小时峰值可用性'
+  )
+  for (const item of systemMetrics.processEventLoopPeakStatus) {
+    assert.equal(item.sampleAvailable, false, `${item.processRole} 无最近 24 小时峰值采样时应显式标记不可用`)
+    assert.equal(item.processPid, null, `${item.processRole} 无最近 24 小时峰值采样时 PID 不能伪装成 0`)
+    assert.equal(item.sampledAt, null, `${item.processRole} 无最近 24 小时峰值采样时采样时间不能伪装成默认值`)
+    assert.equal(item.eventLoopLagMs, null, `${item.processRole} 无最近 24 小时峰值采样时事件循环延迟不能伪装成 0`)
+  }
 
   const accountPage = await getEnvelope<AccountListResponse>(baseUrl, '/__aisys__/api/accounts?page=1&pageSize=20', seed.adminCookie)
   assert.equal(accountPage.runtimeSnapshot.accountConcurrencyAvailable, false, '账户分页应标记实时并发快照不可用')
   const account = accountPage.items.find((item) => item.id === seed.accountId)
   assert(account, '测试账户应出现在账户列表')
-  assert.equal(account.currentConcurrency, 0, '兼容旧字段时 currentConcurrency 可保留仓库默认值')
+  assert.equal(account.currentConcurrency, 0, '快照不可用时 currentConcurrency 保留仓库默认值')
   assert.equal(account.currentConcurrencyAvailable, false, '实时并发快照不可用时账户不应展示 currentConcurrency 为真实值')
 
   const groupPage = await getEnvelope<GroupListResponse>(baseUrl, '/__aisys__/api/groups?page=1&pageSize=20', seed.adminCookie)
   assert.equal(groupPage.runtimeSnapshot.accountConcurrencyAvailable, false, '分组分页应标记实时并发快照不可用')
   const group = groupPage.items.find((item) => item.id === seed.groupId)
   assert(group, '测试分组应出现在分组列表')
-  assert.equal(group.accountStats.currentConcurrency, 0, '兼容旧字段时分组 currentConcurrency 可保留仓库默认值')
+  assert.equal(group.accountStats.currentConcurrency, 0, '快照不可用时分组 currentConcurrency 保留仓库默认值')
   assert.equal(group.accountStats.currentConcurrencyAvailable, false, '实时并发快照不可用时分组不应展示 currentConcurrency 为真实值')
 
   console.log('运行态快照不可用契约回归通过：API 不再把 unknown 伪装成 0、false、[] 或默认天数')

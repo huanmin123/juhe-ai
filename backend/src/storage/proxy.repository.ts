@@ -1,7 +1,7 @@
 import { decryptJson, encryptJson } from './crypto.js'
 import { getDatabase, newId, nowIso } from './database.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
 
 interface ProxyRow {
@@ -123,7 +123,7 @@ function queryProxies(options: ProxyProfileListOptions = {}, paged = false): Pro
   const items = pageRows.rows.map(proxySummaryFromRow)
   return {
     items,
-    total: paged ? compatiblePagedTotal(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
+    total: paged ? pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
     hasMore: pageRows.hasMore,
     page: normalized.page,
     pageSize: normalized.pageSize

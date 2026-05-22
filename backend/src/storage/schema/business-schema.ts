@@ -392,47 +392,4 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     DROP INDEX IF EXISTS idx_proxy_profiles_host_lookup;
     DROP INDEX IF EXISTS idx_proxy_profiles_type_lookup;
   `)
-  ensureAccountsCooldownRetestColumns(database)
-  ensureGroupsSchedulingColumns(database)
-  ensureGroupAccountsSchedulingColumns(database)
-
-}
-
-function ensureAccountsCooldownRetestColumns(database: DatabaseSync): void {
-  ensureTableColumns(database, 'accounts', [
-    { name: 'cooldown_retest_failure_count', definition: 'INTEGER NOT NULL DEFAULT 0' },
-    { name: 'cooldown_retest_last_at', definition: 'TEXT' },
-    { name: 'cooldown_retest_last_status_code', definition: 'INTEGER' }
-  ])
-}
-
-function ensureGroupsSchedulingColumns(database: DatabaseSync): void {
-  ensureTableColumns(database, 'groups', [
-    { name: 'group_type', definition: "TEXT NOT NULL DEFAULT 'personal'" },
-    { name: 'scheduling_policy_json', definition: 'TEXT' }
-  ])
-}
-
-function ensureGroupAccountsSchedulingColumns(database: DatabaseSync): void {
-  ensureTableColumns(database, 'group_accounts', [
-    { name: 'soft_concurrency_limit', definition: 'INTEGER' }
-  ])
-}
-
-function ensureTableColumns(database: DatabaseSync, tableName: string, columns: Array<{ name: string; definition: string }>): void {
-  const existing = new Set(tableColumns(database, tableName).map((column) => column.name).filter(Boolean))
-  for (const column of columns) {
-    if (existing.has(column.name)) {
-      continue
-    }
-    database.exec(`ALTER TABLE ${quoteIdentifier(tableName)} ADD COLUMN ${quoteIdentifier(column.name)} ${column.definition};`)
-  }
-}
-
-function tableColumns(database: DatabaseSync, tableName: string): Array<{ name?: string }> {
-  return database.prepare(`PRAGMA table_info(${quoteIdentifier(tableName)})`).all() as Array<{ name?: string }>
-}
-
-function quoteIdentifier(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`
 }

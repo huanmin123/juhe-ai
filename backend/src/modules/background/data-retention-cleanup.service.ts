@@ -4,12 +4,13 @@ import { cleanupAuditLogsByRetention } from '../../storage/audit-logs.repository
 import { cleanupOperationLogsBefore } from '../../storage/operation-logs.repository.js'
 import {
   cleanupExpiredSystemSessions,
+  cleanupModelCheckRunsBefore,
   cleanupProcessedUsageRecordsBeforeWithResult,
   cleanupSystemMetricsBefore,
   cleanupUsageStatsBucketsBefore
 } from '../../storage/data-retention.repository.js'
 import { getSettings } from '../../storage/settings.repository.js'
-import { cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
+import { cleanupRuntimeLogFileCursorsBefore, cleanupRuntimeLogIndex, runtimeLogIndexRetentionDays } from '../../storage/runtime-logs.repository.js'
 import { cleanupTableStorageSnapshotsBefore, tableMonitorSampleRetentionDays } from '../../storage/table-monitor.repository.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from '../../storage/usage-stats-helpers.js'
 import { getDatabase } from '../../storage/database.js'
@@ -28,6 +29,7 @@ const systemMetricsRawRetentionMaxDays = 7
 const statsRetentionMaxDays = 30
 const snapshotRetentionMaxDays = 30
 const operationLogRetentionMaxDays = 3650
+const modelCheckRetentionMaxDays = 365
 const defaultCleanupBatchSize = 10000
 const defaultCleanupMaxBatchesPerRun = 10
 
@@ -37,6 +39,9 @@ export interface DataRetentionCleanupResult {
   operationLogs: number
   auditLogs: number
   runtimeLogs: number
+  runtimeLogFileCursors: number
+  modelCheckRuns: number
+  modelCheckItems: number
   usageRecords: number
   accountQualityMinuteStats: number
   usageStatsMinute: number
@@ -103,6 +108,7 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       auditErrorGroupDays: readAuditLogSettings().errorGroupRetentionDays,
       operationLogDays: settingNumber(settings, 'operationLogRetentionDays', 365, 1, operationLogRetentionMaxDays),
       runtimeLogDays: runtimeLogIndexRetentionDays,
+      modelCheckDays: settingNumber(settings, 'modelCheckRetentionDays', 30, 1, modelCheckRetentionMaxDays),
       usageRecordDays: settingNumber(settings, 'usageRecordRetentionDays', 7, 1, usageRecordRetentionMaxDays),
       statsMinuteHours: settingNumber(settings, 'usageStatsMinuteRetentionHours', 48, 1, statsMinuteRetentionMaxHours),
       statsHourlyDays: settingNumber(settings, 'usageStatsHourlyRetentionDays', 60, 1, statsHourlyRetentionMaxDays),
@@ -126,6 +132,16 @@ export function cleanupExpiredRetainedData(): DataRetentionCleanupResult {
       limit: batchSize
     }), batchSize, maxBatches)
     result.runtimeLogs = cleanupInBatches(() => cleanupRuntimeLogIndex(cutoffIso(now, retention.runtimeLogDays), batchSize), batchSize, maxBatches)
+    result.runtimeLogFileCursors = cleanupInBatches(
+      () => cleanupRuntimeLogFileCursorsBefore(cutoffIso(now, retention.runtimeLogDays), batchSize),
+      batchSize,
+      maxBatches
+    )
+    cleanupRetentionInBatches(
+      result,
+      () => cleanupModelCheckRunsBefore(cutoffIso(now, retention.modelCheckDays), batchSize),
+      maxBatches
+    )
     const usageRecordCleanup = cleanupProcessedUsageRecordsInBatches(cutoffIso(now, retention.usageRecordDays), batchSize, maxBatches)
     result.usageRecords = usageRecordCleanup.deletedRows
     if (usageRecordCleanup.blockedReason) {
@@ -287,6 +303,9 @@ function emptyCleanupResult(): DataRetentionCleanupResult {
     operationLogs: 0,
     auditLogs: 0,
     runtimeLogs: 0,
+    runtimeLogFileCursors: 0,
+    modelCheckRuns: 0,
+    modelCheckItems: 0,
     usageRecords: 0,
     accountQualityMinuteStats: 0,
     usageStatsMinute: 0,

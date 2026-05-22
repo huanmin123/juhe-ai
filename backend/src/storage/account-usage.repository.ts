@@ -8,8 +8,8 @@ import type {
 } from '../domain/types.js'
 import { runtimeConfig } from '../config/runtime.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { getDatabase, getRecordDatabase, nowIso } from './database.js'
-import { chunkValues, compatiblePagedTotal, sqlPlaceholders, takePageRows } from './query-utils.js'
+import { getDatabase, getStatsDatabase, nowIso } from './database.js'
+import { chunkValues, pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { latestUsageStatsLagSeconds } from './usage-stats.repository.js'
 import { emptyAccountUsageSummary, usageSummaryFromAggregate } from './usage-stats-helpers.js'
 import { GLOBAL_STATS_SCOPE_ID, GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from './usage-stats-types.js'
@@ -105,7 +105,7 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
   const page = Math.max(1, Math.trunc(input.page))
   const pageSize = Math.max(1, Math.min(Math.trunc(input.pageSize), 200))
   const usageScope = accountUsageListScope(input.access)
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const filter = accountUsageFilterPredicate(input, usageScope.scopeType, database)
   const rows = database.prepare(`
     SELECT
@@ -189,7 +189,7 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
     summary: loadAccountUsageOverviewSummary(input.access, input.range),
     rows: overviewRows,
     defaultTrendAccountIds: input.defaultTrendAccountIds ?? [],
-    total: Math.max(compatiblePagedTotal(page, pageSize, pageRows.rows.length, pageRows.hasMore), (page - 1) * pageSize + overviewRows.length),
+    total: Math.max(pagedTotalUpperBound(page, pageSize, pageRows.rows.length, pageRows.hasMore), (page - 1) * pageSize + overviewRows.length),
     hasMore: pageRows.hasMore,
     page,
     pageSize,
@@ -198,7 +198,7 @@ export function getAccountUsageStatsOverviewPageFromWindows(input: AccountUsageS
 }
 
 function loadSelectedAccountUsageRows(input: {
-  database: ReturnType<typeof getRecordDatabase>
+  database: ReturnType<typeof getStatsDatabase>
   excludeAccountIds: string[]
   input: AccountUsageStatsPageOptions
   usageScope: { systemAccountId: string; scopeType: AccountUsageScopeType }
@@ -260,7 +260,7 @@ function emptyAccountUsageStatsOverview(input: AccountUsageStatsPageOptions, pag
 
 function loadAccountUsageOverviewSummary(access: AccessScope | undefined, range: Pick<AccountUsageStatsRange, 'startDate' | 'endDate'>) {
   const scope = accountUsageOverviewSummaryScope(access)
-  const row = getRecordDatabase().prepare(`
+  const row = getStatsDatabase().prepare(`
     SELECT request_count, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd AS cache_read_cost, total_cost_usd AS total_cost, last_used_at
     FROM usage_scope_range_windows
     WHERE system_account_id = ?
@@ -333,7 +333,7 @@ function accountUsageListScope(access?: AccessScope): { systemAccountId: string;
 function accountUsageFilterPredicate(
   input: Pick<AccountUsageStatsPageOptions, 'keyword' | 'type' | 'access'>,
   scopeType: AccountUsageScopeType,
-  database: ReturnType<typeof getRecordDatabase>
+  database: ReturnType<typeof getStatsDatabase>
 ): { sql: string; params: string[] } {
   const type = input.type?.trim()
   const normalizedType = type && type !== 'all' ? type : undefined
@@ -484,7 +484,7 @@ function buildAccountUsageScopeIdFilter(accountIds: string[]): { sql: string; pa
   }
 }
 
-function ensureAccountUsageBusinessDatabaseAttached(database: ReturnType<typeof getRecordDatabase>): void {
+function ensureAccountUsageBusinessDatabaseAttached(database: ReturnType<typeof getStatsDatabase>): void {
   const rows = database.prepare('PRAGMA database_list').all() as unknown as Array<{ name?: string }>
   if (rows.some((row) => row.name === accountUsageBusinessDatabaseAlias)) return
   database.prepare(`ATTACH DATABASE ? AS ${accountUsageBusinessDatabaseAlias}`).run(runtimeConfig.databasePath)

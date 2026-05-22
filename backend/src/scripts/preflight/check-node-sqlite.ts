@@ -7,9 +7,12 @@ const { DatabaseSync } = await import('node:sqlite')
 const database = new DatabaseSync(':memory:')
 
 try {
-  database.exec("CREATE VIRTUAL TABLE __juhe_ai_fts5_check USING fts5(content, tokenize = 'trigram')")
-  database.exec("INSERT INTO __juhe_ai_fts5_check(content) VALUES ('juhe sqlite fts5')")
-  database.prepare("SELECT rowid FROM __juhe_ai_fts5_check WHERE __juhe_ai_fts5_check MATCH 'sqlite'").get()
+  database.exec("CREATE TABLE __juhe_ai_sqlite_check(id TEXT PRIMARY KEY, content TEXT NOT NULL)")
+  database.exec("INSERT INTO __juhe_ai_sqlite_check(id, content) VALUES ('runtime', 'node sqlite')")
+  const row = database.prepare("SELECT content FROM __juhe_ai_sqlite_check WHERE id = ?").get('runtime')
+  if (!row || row.content !== 'node sqlite') {
+    throw new Error('node:sqlite query check failed')
+  }
 } finally {
   database.close()
 }
@@ -57,7 +60,7 @@ const checkResult = spawnSync(process.execPath, [
 
 if (checkResult.status !== 0 || checkResult.error) {
   exitWithRuntimeError(
-    '[juhe-ai] 当前 Node.js 的内置 SQLite 不完整，后端需要 node:sqlite 且必须支持 FTS5 / trigram tokenizer。',
+    '[juhe-ai] 当前 Node.js 的内置 SQLite 不完整，后端需要可用的 node:sqlite。',
     [`原始错误：${formatCheckError(checkResult)}`]
   )
 }

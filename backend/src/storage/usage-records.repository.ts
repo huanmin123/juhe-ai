@@ -1,6 +1,6 @@
 import { buildSystemAccountScopeClause, includeSystemAccountFields, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getRecordDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { compatiblePagedTotal, takePageRows } from './query-utils.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, getDatasetDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { buildUsageAccessLookupContext, systemAccountIdForUsage, usageAccessMetadata, usageApiKeyExists } from './usage-record-access-metadata.js'
 import { buildUsageRecordFilters, buildUsageRecordOrderClause, normalizeUsageRecordListOptions } from './usage-record-list-query.js'
@@ -123,7 +123,7 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   const listOptions = normalizeUsageRecordListOptions(options)
   const orderClause = buildUsageRecordOrderClause(listOptions)
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const offset = (listOptions.page - 1) * listOptions.pageSize
   const rows = database
     .prepare(`
@@ -167,7 +167,7 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
   const items = rowsWithNames.map((row) => usageRecordSummaryFromRow(row, shouldIncludeSystemAccountFields, accountNames))
   return {
     items,
-    total: compatiblePagedTotal(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
+    total: pagedTotalUpperBound(listOptions.page, listOptions.pageSize, items.length, pageRows.hasMore),
     hasMore: pageRows.hasMore,
     page: listOptions.page,
     pageSize: listOptions.pageSize
@@ -179,7 +179,7 @@ export function getUsageRecordDetail(id: string, access?: AccessScope): UsageRec
   if (!recordId) return undefined
   const scope = buildSystemAccountScopeClause(access, 'ur.system_account_id')
   const shouldIncludeSystemAccountFields = includeSystemAccountFields(access)
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare(`
       SELECT
         ur.*
@@ -217,7 +217,7 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
   }
   if (clauses.length === 0) return undefined
   const endpointFilter = recentOpenAIEndpointFilter()
-  const row = getRecordDatabase()
+  const row = getDatasetDatabase()
     .prepare(`
       SELECT endpoint, model, stream, created_at
       FROM usage_records
@@ -268,7 +268,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     return
   }
 
-  const database = getRecordDatabase()
+  const database = getDatasetDatabase()
   const businessDatabase = getDatabase()
   const insertStatement = database.prepare(`
     INSERT INTO usage_records (

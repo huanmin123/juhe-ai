@@ -1,12 +1,11 @@
 import type { AccountUsageStatsRange, AccountUsageSummary } from '../domain/types.js'
-import { runtimeConfig } from '../config/runtime.js'
 import { manageableSystemAccountId, userVisibleSystemAccountId, canAccessAll, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, buildAccountListOrderClause, type NormalizedAccountListOptions } from './account-list-options.js'
 import { loadSupportedModelsByAccountIds } from './account-supported-models.repository.js'
 import { decryptJson } from './crypto.js'
-import { getDatabase, getRecordDatabase, nowIso } from './database.js'
+import { getDatabase, getStatsDatabase, nowIso, statsDatabasePath } from './database.js'
 import type { AccountListRow } from './repository-row-types.js'
-import { compatiblePagedTotal, takePageRows } from './query-utils.js'
+import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { loadAuthorizationUsageRangeSummariesForScopes, loadAuthorizationUsageSummariesForScopes, type UsageSummaryScopeRequest } from './usage-summary-loaders.js'
 
 export interface AccountRowsPage {
@@ -72,7 +71,7 @@ function queryAccountRowsForAccess(
     const pageRows = takePageRows(rows, pagination.limit - 1)
     return {
       rows: pageRows.rows,
-      total: compatiblePagedTotal(options.page, options.pageSize, pageRows.rows.length, pageRows.hasMore)
+      total: pagedTotalUpperBound(options.page, options.pageSize, pageRows.rows.length, pageRows.hasMore)
     }
   }
   if (!ownerSystemAccountId && canAccessAll(access)) {
@@ -144,10 +143,10 @@ function hasAccountQualityScoreSort(options: Pick<NormalizedAccountListOptions, 
 }
 
 function ensureAccountQualityDatabaseAttached(database: ReturnType<typeof getDatabase>): void {
-  getRecordDatabase()
+  getStatsDatabase()
   const rows = database.prepare('PRAGMA database_list').all() as unknown as Array<{ name?: string }>
   if (rows.some((row) => row.name === accountQualityDatabaseAlias)) return
-  database.prepare(`ATTACH DATABASE ? AS ${accountQualityDatabaseAlias}`).run(runtimeConfig.recordDatabasePath)
+  database.prepare(`ATTACH DATABASE ? AS ${accountQualityDatabaseAlias}`).run(statsDatabasePath())
 }
 
 function accountQualitySelectColumns(includeQualityInQuery: boolean): string {
@@ -256,7 +255,7 @@ export function hydrateAccountRowsFromRecordDatabase(rows: AccountListRow[]): Ac
   const ids = [...new Set(rows.map((row) => row.id).filter(Boolean))]
   if (ids.length === 0) return rows
   const supportedModelsByAccountId = loadSupportedModelsByAccountIds(ids)
-  const qualityRows = getRecordDatabase()
+  const qualityRows = getStatsDatabase()
     .prepare(`
       SELECT account_id, quality_score, quality_state, ewma_first_token_ms, recent_avg_first_token_ms,
         recent_request_count, success_rate, updated_at

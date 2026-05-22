@@ -392,7 +392,8 @@ function processEventLoopBuckets(trend: SystemMetricsOverview['processEventLoopT
 }
 
 function processEventLoopValue(trend: SystemMetricsOverview['processEventLoopTrend'], bucketKey: string, processRole: string) {
-  return trend.find((item) => processEventLoopBucketKey(item) === bucketKey && item.processRole === processRole)?.eventLoopLagMsAvg ?? null
+  const row = trend.find((item) => processEventLoopBucketKey(item) === bucketKey && item.processRole === processRole)
+  return row?.eventLoopLagMsMax ?? row?.eventLoopLagMsAvg ?? null
 }
 
 function processEventLoopBucketKey(row: SystemMetricsOverview['processEventLoopTrend'][number]) {

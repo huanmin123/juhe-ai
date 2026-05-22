@@ -39,9 +39,11 @@ try {
   assert.equal(normal.items[0]?.event, 'normal_runtime_log_event', '普通日志应提取结构字段')
 
   const large = runtimeLogsRepository.listRuntimeLogs({ keyword: '超长日志', pageSize: 10 })
-  assert.equal(large.items.length, 1, '超长日志应保留截断 rawJson 并可搜索')
-  assert.equal(large.items[0]?.event, undefined, '超长日志不应同步解析整行 JSON 提取字段')
-  const largeDetail = runtimeLogsRepository.getRuntimeLogDetail(large.items[0]?.id ?? '')
+  assert.equal(large.items.length, 0, '运行日志 keyword 只查 message 列，超长 fallback 原文不参与搜索')
+  const indexedLogs = runtimeLogsRepository.listRuntimeLogs({ pageSize: 10 })
+  const largeSummary = indexedLogs.items.find((item) => item.event === undefined)
+  assert(largeSummary, '超长日志仍应保留截断 rawJson 详情')
+  const largeDetail = runtimeLogsRepository.getRuntimeLogDetail(largeSummary.id)
   assert(largeDetail?.rawJson.includes('[truncated]'), '超长日志 rawJson 应带截断标记')
   assert((largeDetail?.rawJson.length ?? 0) < 140 * 1024, '超长日志 rawJson 应在索引前截断')
 
@@ -57,7 +59,7 @@ try {
   assert.equal(facetsAfterCleanup.levels.length, 0, '运行日志清理应删除空 level facet')
   assert.equal(facetsAfterCleanup.events.length, 0, '运行日志清理应删除空 event facet')
 
-  console.log('运行日志索引超长行回归通过：超长日志不再同步完整解析，仍保留截断原文搜索')
+  console.log('运行日志索引超长行回归通过：超长日志不再同步完整解析，rawJson 只进详情不参与 keyword')
 } finally {
   try {
     databaseModule.getDatabase().close()

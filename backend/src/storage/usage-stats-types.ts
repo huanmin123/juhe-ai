@@ -208,13 +208,14 @@ export interface SystemMetricsOverview {
     dbFileBytesMax?: number
     statsLagSecondsMax?: number
   }>
-  processEventLoopLatest: Array<{
-    processRole: ProcessRole
-    processPid?: number
-    sampledAt: string
-    eventLoopLagMs?: number
-  }>
   processEventLoopLatestStatus: Array<{
+    processRole: ProcessRole
+    sampleAvailable: boolean
+    processPid: number | null
+    sampledAt: string | null
+    eventLoopLagMs: number | null
+  }>
+  processEventLoopPeakStatus: Array<{
     processRole: ProcessRole
     sampleAvailable: boolean
     processPid: number | null

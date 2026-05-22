@@ -9,6 +9,7 @@ export interface SystemSettings {
   streamIdleTimeoutSeconds?: number
   streamFailureThresholdCount?: number
   streamFailureThresholdWindowMinutes?: number
+  modelCheckRetentionDays?: number
   cooldownAccountRetestMaxBackoffHours?: number
   [key: string]: unknown
 }

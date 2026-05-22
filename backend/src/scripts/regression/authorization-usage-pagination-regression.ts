@@ -154,13 +154,13 @@ try {
   assert.equal(teamPageOne.teamCount, 2, '团队消耗团队数应来自窗口表 distinct 统计')
   assert.equal(teamPageOne.page, 1, '团队消耗第一页页码应稳定返回')
   assert.equal(teamPageOne.pageSize, 1, '团队消耗第一页 pageSize 应稳定返回')
-  assert.equal(teamPageOne.total, 2, '团队消耗第一页兼容 total 应覆盖当前页和下一页')
+  assert.equal(teamPageOne.total, 2, '团队消耗第一页分页上界 total 应覆盖当前页和下一页')
   assert.equal(teamPageOne.hasMore, true, '团队消耗第一页应标记还有下一页')
 
   const teamPageTwo = authorizationUsageRepository.getAuthorizationTeamUsageOverview({}, ownerAccess, range, { page: 2, pageSize: 1 })
   assert.equal(teamPageTwo.rows.length, 1, '团队消耗第二页应只返回当前页窗口')
   assert.equal(teamPageTwo.rows[0]?.teamId, teamB.id, '团队消耗第二页应返回下一行')
-  assert.equal(teamPageTwo.total, 2, '团队消耗第二页兼容 total 应保持已知总量')
+  assert.equal(teamPageTwo.total, 2, '团队消耗第二页分页上界 total 应保持已知总量')
   assert.equal(teamPageTwo.hasMore, false, '团队消耗第二页应标记没有更多')
 
   const adminTeamPage = authorizationUsageRepository.getAuthorizationTeamUsageOverview({}, adminOwnerAccess, range, { page: 1, pageSize: 1 })
@@ -174,13 +174,13 @@ try {
   assert.equal(userPageOne.userCount, 2, '用户消耗用户数应来自窗口表 distinct 统计')
   assert.equal(userPageOne.page, 1, '用户消耗第一页页码应稳定返回')
   assert.equal(userPageOne.pageSize, 1, '用户消耗第一页 pageSize 应稳定返回')
-  assert.equal(userPageOne.total, 2, '用户消耗第一页兼容 total 应覆盖当前页和下一页')
+  assert.equal(userPageOne.total, 2, '用户消耗第一页分页上界 total 应覆盖当前页和下一页')
   assert.equal(userPageOne.hasMore, true, '用户消耗第一页应标记还有下一页')
 
   const userPageTwo = authorizationUsageRepository.getAuthorizationUserUsageOverview({}, ownerAccess, range, { page: 2, pageSize: 1 })
   assert.equal(userPageTwo.rows.length, 1, '用户消耗第二页应只返回当前页窗口')
   assert.equal(userPageTwo.rows[0]?.systemAccountId, granteeB.id, '用户消耗第二页应返回下一行')
-  assert.equal(userPageTwo.total, 2, '用户消耗第二页兼容 total 应保持已知总量')
+  assert.equal(userPageTwo.total, 2, '用户消耗第二页分页上界 total 应保持已知总量')
   assert.equal(userPageTwo.hasMore, false, '用户消耗第二页应标记没有更多')
 
   console.log('授权消耗分页回归通过：团队/用户明细按窗口分页返回，前端无需全量渲染')

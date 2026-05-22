@@ -4,7 +4,7 @@
     search-placeholder="账户名称"
     filter-title="筛选账户"
     :active-filter-count="activeFilterCount"
-    :mobile-action-count="1"
+    :mobile-action-count="isManagementView ? 2 : 1"
     :refresh-loading="refreshLoading"
     @update:keyword="emit('update:keyword', $event)"
     @search="emit('search')"
@@ -53,6 +53,12 @@
       />
     </template>
     <template #actions>
+      <a-button v-if="isManagementView" @click="emit('import')">
+        <template #icon>
+          <UploadOutlined />
+        </template>
+        导入账户
+      </a-button>
       <a-button type="primary" @click="emit('create')">添加账户</a-button>
     </template>
     <template #filters>
@@ -108,6 +114,7 @@
 </template>
 
 <script setup lang="ts">
+import { UploadOutlined } from '@ant-design/icons-vue'
 import { computed } from 'vue'
 
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
@@ -139,6 +146,7 @@ const emit = defineEmits<{
   (event: 'create'): void
   (event: 'group-dropdown', open: boolean): void
   (event: 'group-search', value: string): void
+  (event: 'import'): void
   (event: 'refresh'): void
   (event: 'reset'): void
   (event: 'search'): void

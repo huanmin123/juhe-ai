@@ -8,7 +8,7 @@ import { apiKeySummariesFromRows, type ApiKeyRow } from './api-key-mappers.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { defaultOpenAIGroupIdForSystemAccount } from './default-group.repository.js'
 import { invalidateGatewayApiKeyCacheById } from './gateway-api-key.repository.js'
-import { compatiblePagedTotal, takePageRows } from './query-utils.js'
+import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
 import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './repository-lookups.js'
 import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimitsJson } from './request-quota-limits.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
@@ -65,7 +65,7 @@ function queryApiKeys(access?: AccessScope, options?: ApiKeyListOptions, paged =
   const items = apiKeySummariesFromRows(pageRows.rows, access, { includeSecret: true })
   return {
     items,
-    total: paged ? compatiblePagedTotal(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
+    total: paged ? pagedTotalUpperBound(normalized.page, normalized.pageSize, items.length, pageRows.hasMore) : items.length,
     hasMore: pageRows.hasMore,
     page: normalized.page,
     pageSize: normalized.pageSize

@@ -40,20 +40,20 @@ try {
   await assert.rejects(
     () => runModelCheck({
       targetType: 'group',
-      targetId: 'grp_legacy_target',
+      targetId: 'grp_invalid_target',
       model: 'gpt-5.5',
       profile: 'full',
       trustedComparison: false
     } as never, access),
     (error: unknown) => {
-      assert(error instanceof ModelCheckRequestError, '旧目标类型应返回模型检测请求错误')
+      assert(error instanceof ModelCheckRequestError, '无效目标类型应返回模型检测请求错误')
       assert.equal(error.statusCode, 400)
       assert.match(error.message, /AI 账户/)
       return true
     }
   )
   const afterInvalidTargetRuns = repositories.listModelCheckRuns(access, { page: 1, pageSize: 10 }).items.length
-  assert.equal(afterInvalidTargetRuns, beforeInvalidTargetRuns, '旧目标类型被拒绝时不应创建模型检测报告')
+  assert.equal(afterInvalidTargetRuns, beforeInvalidTargetRuns, '无效目标类型被拒绝时不应创建模型检测报告')
 
   const unboundAccount = repositories.createAccount({
     providerCode: 'openai',
@@ -155,7 +155,7 @@ try {
   assert(proxyDependentChecks.every((item) => item.evidenceSummary.success !== true), '代理失败不应记录上游响应成功证据')
   assert(!JSON.stringify(proxyRun).includes('sk-mockdata'), '代理失败报告不应泄露上游 API Key')
 
-  console.log('模型检测异常边界回归通过：旧目标类型被拒绝，账户不可检测不建报告，上游失败和代理失败只落 unavailable')
+  console.log('模型检测异常边界回归通过：无效目标类型被拒绝，账户不可检测不建报告，上游失败和代理失败只落 unavailable')
 } finally {
   await stopGatewayJsonParseWorker?.()
   await closeServer(upstream)

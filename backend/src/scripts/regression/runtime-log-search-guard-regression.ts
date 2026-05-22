@@ -48,13 +48,13 @@ try {
       level: 'info',
       traceId: 'trace-runtime-guard-short',
       event: 'short_keyword_guard_event',
-      message: 'e',
+      message: '单字消息 x',
       rawJson: JSON.stringify({
         time: now,
         level: 'info',
         traceId: 'trace-runtime-guard-short',
         event: 'short_keyword_guard_event',
-        msg: 'e',
+        msg: '单字消息 x',
         body: 'x'.repeat(150 * 1024)
       }),
       createdAt: now
@@ -65,7 +65,7 @@ try {
       level: 'info',
       traceId: 'trace-runtime-guard-long',
       event: 'long_keyword_guard_event',
-      message: 'guardneedle',
+      message: '前缀 guardneedle 后缀',
       rawJson: JSON.stringify({
         time: now,
         level: 'info',
@@ -74,20 +74,41 @@ try {
         msg: 'guardneedle'
       }),
       createdAt: now
+    },
+    {
+      id: 'rtlog_raw_json_keyword_guard',
+      time: now,
+      level: 'info',
+      traceId: 'trace-runtime-guard-raw-json',
+      event: 'raw_json_keyword_guard_event',
+      message: '普通消息',
+      rawJson: JSON.stringify({
+        time: now,
+        level: 'info',
+        traceId: 'trace-runtime-guard-raw-json',
+        event: 'raw_json_keyword_guard_event',
+        msg: '普通消息',
+        body: 'rawjsonneedle'
+      }),
+      createdAt: now
     }
   ])
 
-  const shortKeyword = runtimeLogsRepository.listRuntimeLogs({ keyword: 'e', pageSize: 10 })
-  assert.equal(shortKeyword.items.length, 0, '索引查询不应为短关键词退回 raw_json LIKE 扫描')
+  const shortKeyword = runtimeLogsRepository.listRuntimeLogs({ keyword: 'x', pageSize: 10 })
+  assert.equal(shortKeyword.items.length, 1, '运行日志 keyword 应直接在 message 列做模糊匹配，短关键词也允许')
+  assert.equal(shortKeyword.items[0]?.id, 'rtlog_short_keyword_guard')
 
   const longKeyword = runtimeLogsRepository.listRuntimeLogs({ keyword: 'guardneedle', pageSize: 10 })
-  assert.equal(longKeyword.items.length, 1, '足够长的关键词仍应走 FTS 搜索')
+  assert.equal(longKeyword.items.length, 1, '运行日志 keyword 应命中 message 中间内容')
   assert.equal(longKeyword.items[0]?.event, 'long_keyword_guard_event')
+
+  const rawJsonKeyword = runtimeLogsRepository.listRuntimeLogs({ keyword: 'rawjsonneedle', pageSize: 10 })
+  assert.equal(rawJsonKeyword.items.length, 0, '运行日志 keyword 不应检索 raw_json 正文')
 
   const tracePrefix = runtimeLogsRepository.listRuntimeLogs({ traceId: 'trace-runtime-guard', pageSize: 10 })
   assert.deepEqual(
     tracePrefix.items.map((item) => item.traceId).sort(),
-    ['trace-runtime-guard-long', 'trace-runtime-guard-short'],
+    ['trace-runtime-guard-long', 'trace-runtime-guard-raw-json', 'trace-runtime-guard-short'],
     '运行日志 traceId 筛选应支持右侧前缀定位，与审计/操作日志契约一致'
   )
 
@@ -151,7 +172,7 @@ try {
   assert.equal(longGrep.items[0]?.event, 'long_grep_keyword_event')
   assert(!longGrep.items.some((item) => item.event === 'large_grep_keyword_event'), 'grep 不应把超长命中行输出到 Node 侧解析')
 
-  console.log('运行日志搜索保护回归通过：短关键词不扫描，大行不输出，rawJson 入库有兜底截断')
+  console.log('运行日志搜索保护回归通过：索引模式仅模糊匹配 message，rawJson 不检索')
 } finally {
   try {
     databaseModule.getDatabase().close()

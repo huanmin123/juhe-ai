@@ -1,7 +1,9 @@
-import { getDatabase, getRecordDatabase, nowIso, runInDatabaseTransaction } from './database.js'
-import { sqlPlaceholders } from './query-utils.js'
+import { getDatabase, getDatasetDatabase, getStatsDatabase, nowIso, runInDatabaseTransaction } from './database.js'
+import { chunkValues, sqlPlaceholders } from './query-utils.js'
 
 type CleanupRow = Record<string, unknown>
+type DatasetDatabase = ReturnType<typeof getDatasetDatabase>
+type StatsDatabase = ReturnType<typeof getStatsDatabase>
 
 export interface UsageRecordsCleanupCursor {
   cursorCreatedAt?: string
@@ -85,13 +87,18 @@ export interface SystemMetricsRetentionCleanupResult {
   processEventLoopTrendWindows: number
 }
 
+export interface ModelCheckRetentionCleanupResult {
+  modelCheckRuns: number
+  modelCheckItems: number
+}
+
 export function cleanupProcessedUsageRecordsBefore(cutoffCreatedAt: string, limit = 10000): number {
   return cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt, limit).deletedRows
 }
 
 export function inspectUsageRecordsCleanupBefore(cutoffCreatedAt: string, limit = 10000): UsageRecordsCleanupPreviewResult {
   const batchLimit = positiveLimit(limit)
-  const rows = selectUsageRecordCleanupRows(getRecordDatabase(), cutoffCreatedAt, batchLimit + 1)
+  const rows = selectUsageRecordCleanupRows(getDatasetDatabase(), cutoffCreatedAt, batchLimit + 1)
   return {
     cutoffCreatedAt,
     eligibleRows: Math.min(rows.length, batchLimit),
@@ -101,17 +108,18 @@ export function inspectUsageRecordsCleanupBefore(cutoffCreatedAt: string, limit 
 
 function cleanupUsageRecordsBeforeWithResult(cutoffCreatedAt: string, limit = 10000): UsageRecordsCleanupBatchResult {
   const batchLimit = positiveLimit(limit)
-  const rows = selectUsageRecordCleanupRows(getRecordDatabase(), cutoffCreatedAt, batchLimit + 1)
+  const database = getDatasetDatabase()
+  const rows = selectUsageRecordCleanupRows(database, cutoffCreatedAt, batchLimit + 1)
   return {
     cutoffCreatedAt,
-    deletedRows: deleteRowsById('usage_records', rows.slice(0, batchLimit)),
+    deletedRows: deleteRowsById(database, 'usage_records', rows.slice(0, batchLimit)),
     hasMore: rows.length > batchLimit
   }
 }
 
 export function inspectProcessedUsageRecordsCleanupBefore(cutoffCreatedAt: string, limit = 10000): ProcessedUsageRecordsCleanupPreviewResult {
-  const database = getRecordDatabase()
-  const cursor = usageRecordsCleanupCursor(database)
+  const database = getDatasetDatabase()
+  const cursor = usageRecordsCleanupCursor(getStatsDatabase())
   const cursorCreatedAt = cursor?.cursorCreatedAt
   const cursorId = cursor?.cursorId
   if (!cursorCreatedAt || !cursorId) {
@@ -142,8 +150,8 @@ export function inspectProcessedUsageRecordsCleanupBefore(cutoffCreatedAt: strin
 }
 
 export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: string, limit = 10000): ProcessedUsageRecordsCleanupBatchResult {
-  const database = getRecordDatabase()
-  const cursor = usageRecordsCleanupCursor(database)
+  const database = getDatasetDatabase()
+  const cursor = usageRecordsCleanupCursor(getStatsDatabase())
   const cursorCreatedAt = cursor?.cursorCreatedAt
   const cursorId = cursor?.cursorId
   if (!cursorCreatedAt || !cursorId) {
@@ -174,7 +182,7 @@ export function cleanupProcessedUsageRecordsBeforeWithResult(cutoffCreatedAt: st
 }
 
 function selectProcessedUsageRecordCleanupRows(
-  database: ReturnType<typeof getRecordDatabase>,
+  database: DatasetDatabase,
   cutoffCreatedAt: string,
   cursorCreatedAt: string,
   cursorId: string,
@@ -193,7 +201,7 @@ function selectProcessedUsageRecordCleanupRows(
 }
 
 function selectUsageRecordCleanupRows(
-  database: ReturnType<typeof getRecordDatabase>,
+  database: DatasetDatabase,
   cutoffCreatedAt: string,
   limit: number
 ): CleanupRow[] {
@@ -208,69 +216,34 @@ function selectUsageRecordCleanupRows(
     .all(cutoffCreatedAt, positiveLimit(limit)) as CleanupRow[]
 }
 
-function hasUsageRecordsBefore(database: ReturnType<typeof getRecordDatabase>, cutoffCreatedAt: string): boolean {
+function hasUsageRecordsBefore(database: DatasetDatabase, cutoffCreatedAt: string): boolean {
   const row = database
     .prepare('SELECT id FROM usage_records WHERE created_at < ? LIMIT 1')
     .get(cutoffCreatedAt) as unknown as { id?: string } | undefined
   return Boolean(row?.id)
 }
 
-export function usageRecordsCleanupCursor(database: ReturnType<typeof getRecordDatabase>): UsageRecordsCleanupCursor {
+export function usageRecordsCleanupCursor(database: StatsDatabase): UsageRecordsCleanupCursor {
   const aggregationCursor = requiredJobCursor(database, 'usage_stats_aggregation')
   if (!aggregationCursor) {
     return {
       blockedReason: '统计聚合游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试'
     }
   }
-
-  const dependentJobs = [
-    { name: 'caller_account_usage_stats_backfill', label: '调用账号统计回填', required: true },
-    { name: 'account_quality_minute_stats_backfill', label: '账号质量统计回填', required: true },
-    { name: 'usage_stats_extended_buckets_migration', label: '用量统计扩展桶迁移', required: false },
-    { name: 'usage_model_error_extended_buckets_migration', label: '模型与错误统计扩展桶迁移', required: false },
-    { name: 'usage_latency_buckets_migration', label: '延迟统计桶迁移', required: false }
-  ]
-  let cleanupCursor = aggregationCursor
-  for (const job of dependentJobs) {
-    const state = jobState(database, job.name)
-    if (!state && !job.required) {
-      continue
-    }
-    if (!state?.last_success_at) {
-      const backfillCursor = state?.cursor_created_at && state.cursor_id
-        ? { cursorCreatedAt: state.cursor_created_at, cursorId: state.cursor_id }
-        : undefined
-      if (!backfillCursor) {
-        return {
-          blockedReason: `${job.label}游标尚未建立，暂不清理使用记录，避免破坏统计聚合；请确认后台 worker 正常运行后稍后重试`
-        }
-      }
-      cleanupCursor = earlierCursor(cleanupCursor, backfillCursor)
-    }
-  }
-  return cleanupCursor
+  return aggregationCursor
 }
 
-function requiredJobCursor(database: ReturnType<typeof getRecordDatabase>, jobName: string): { cursorCreatedAt: string; cursorId: string } | undefined {
+function requiredJobCursor(database: StatsDatabase, jobName: string): { cursorCreatedAt: string; cursorId: string } | undefined {
   const state = jobState(database, jobName)
   const cursorCreatedAt = state?.cursor_created_at?.trim()
   const cursorId = state?.cursor_id?.trim()
   return cursorCreatedAt && cursorId ? { cursorCreatedAt, cursorId } : undefined
 }
 
-function jobState(database: ReturnType<typeof getRecordDatabase>, jobName: string): { cursor_created_at?: string | null; cursor_id?: string | null; last_success_at?: string | null } | undefined {
+function jobState(database: StatsDatabase, jobName: string): { cursor_created_at?: string | null; cursor_id?: string | null } | undefined {
   return database
-    .prepare("SELECT cursor_created_at, cursor_id, last_success_at FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
-    .get(jobName) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null; last_success_at?: string | null } | undefined
-}
-
-function earlierCursor(
-  left: { cursorCreatedAt: string; cursorId: string },
-  right: { cursorCreatedAt: string; cursorId: string }
-): { cursorCreatedAt: string; cursorId: string } {
-  if (left.cursorCreatedAt < right.cursorCreatedAt) return left
-  if (left.cursorCreatedAt > right.cursorCreatedAt) return right
-  return left.cursorId <= right.cursorId ? left : right
+    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = ?")
+    .get(jobName) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
 }
 
 export function cleanupUsageStatsBucketsBefore(input: {
@@ -285,7 +258,7 @@ export function cleanupUsageStatsBucketsBefore(input: {
   windowCutoffIso: string
   limit?: number
 }): UsageStatsRetentionCleanupResult {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const limit = positiveLimit(input.limit)
   return runInDatabaseTransaction(() => ({
     accountQualityMinuteStats: deleteRowsBeforeByRowid(database, 'account_quality_minute_stats', 'stat_minute', input.accountQualityMinuteCutoffMinute, limit),
@@ -326,7 +299,7 @@ export function cleanupUsageStatsBucketsBefore(input: {
 }
 
 export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; hourlyCutoffHour: string; trendWindowCutoffDate: string; limit?: number }): SystemMetricsRetentionCleanupResult {
-  const database = getRecordDatabase()
+  const database = getStatsDatabase()
   const limit = positiveLimit(input.limit)
   return runInDatabaseTransaction(() => ({
     systemMetricsSamples: deleteRowsBeforeByRowid(database, 'system_metrics_samples', 'sampled_at', input.samplesCutoffIso, limit),
@@ -338,24 +311,58 @@ export function cleanupSystemMetricsBefore(input: { samplesCutoffIso: string; ho
   }), database)
 }
 
+export function cleanupModelCheckRunsBefore(cutoffCreatedAt: string, limit = 10000): ModelCheckRetentionCleanupResult {
+  const database = getDatasetDatabase()
+  const batchLimit = positiveLimit(limit)
+  const rows = database
+    .prepare(`
+      SELECT id
+      FROM model_check_runs
+      WHERE created_at < ?
+      ORDER BY created_at ASC, id ASC
+      LIMIT ?
+    `)
+    .all(cutoffCreatedAt, batchLimit) as CleanupRow[]
+  const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
+  if (ids.length === 0) {
+    return {
+      modelCheckRuns: 0,
+      modelCheckItems: 0
+    }
+  }
+
+  return runInDatabaseTransaction(() => {
+    let modelCheckItems = 0
+    let modelCheckRuns = 0
+    for (const chunk of chunkValues(ids, 900)) {
+      const placeholders = sqlPlaceholders(chunk.length)
+      modelCheckItems += changed(database.prepare(`DELETE FROM model_check_items WHERE run_id IN (${placeholders})`).run(...chunk))
+      modelCheckRuns += changed(database.prepare(`DELETE FROM model_check_runs WHERE id IN (${placeholders})`).run(...chunk))
+    }
+    return {
+      modelCheckRuns,
+      modelCheckItems
+    }
+  }, database)
+}
+
 export function cleanupExpiredSystemSessions(expiredBefore = nowIso()): number {
   return changed(getDatabase().prepare('DELETE FROM system_sessions WHERE expires_at < ?').run(expiredBefore))
 }
 
-function deleteRowsById(tableName: 'usage_records', rows: CleanupRow[]): number {
+function deleteRowsById(database: DatasetDatabase, tableName: 'usage_records', rows: CleanupRow[]): number {
   const ids = rows.map((row) => String(row.id ?? '')).filter(Boolean)
   if (ids.length === 0) {
     return 0
   }
 
-  const database = getRecordDatabase()
   const placeholders = sqlPlaceholders(ids.length)
   const result = database.prepare(`DELETE FROM ${tableName} WHERE id IN (${placeholders})`).run(...ids)
   return changed(result)
 }
 
 function deleteRowsBeforeByRowid(
-  database: ReturnType<typeof getRecordDatabase>,
+  database: StatsDatabase,
   tableName: string,
   timeColumnName: string,
   cutoffValue: string,
