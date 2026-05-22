@@ -125,7 +125,10 @@ export async function handleOpenAIGatewayRequest(
   if (!preflight) {
     return
   }
-  const { activeGatewaySettings, usageContext: gatewayUsageContext, accounts, sessionAffinityKey, clientStrategy } = preflight
+  const { activeGatewaySettings, usageContext: gatewayUsageContext, accounts, sessionAffinityKey, clientStrategy, releaseClientIpConcurrency } = preflight
+  const releaseClientIpSlot = once(releaseClientIpConcurrency)
+  res.once('finish', releaseClientIpSlot)
+  res.once('close', releaseClientIpSlot)
 
   try {
     const upstreamResult = await fetchFirstAvailableUpstream(
@@ -230,5 +233,16 @@ export async function handleOpenAIGatewayRequest(
       recordUsage: !lastAttempt,
       usageErrorMessage: message
     })
+  } finally {
+    releaseClientIpSlot()
+  }
+}
+
+function once(callback: () => void): () => void {
+  let called = false
+  return () => {
+    if (called) return
+    called = true
+    callback()
   }
 }

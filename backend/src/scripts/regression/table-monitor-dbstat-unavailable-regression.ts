@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-table-monitor-dbstat-unavailable-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'table-monitor-dbstat-unavailable-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -41,7 +42,7 @@ try {
   })
   assert(result.tableSnapshots > 0, '表监控采样应写入本轮快照')
 
-  const databaseRows = databaseModule.getRecordDatabase()
+  const databaseRows = databaseModule.getStatsDatabase()
     .prepare(`
       SELECT table_name, table_bytes, index_bytes, total_bytes, page_count
       FROM table_storage_snapshots
@@ -75,7 +76,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

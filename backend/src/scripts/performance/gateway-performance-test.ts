@@ -103,7 +103,8 @@ interface UpstreamRuntime {
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-perf-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'perf.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'perf-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'juhe-ai-performance-test-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -639,11 +640,15 @@ function buildSummary(config: PerfConfig, results: ScenarioResult[], seeded: See
       totalRequests: upstreamRuntime.totalRequests,
       pathCounts: objectFromCounts(upstreamRuntime.pathCounts)
     },
-    recordDatabase: {
+    datasetDatabase: {
       usageRecords: countRows('usage_records'),
       auditLogs: countRows('audit_logs'),
-      bytes: fileBytes(runtimeConfig.recordDatabasePath),
-      walBytes: fileBytes(`${runtimeConfig.recordDatabasePath}-wal`)
+      bytes: fileBytes(runtimeConfig.datasetDatabasePath),
+      walBytes: fileBytes(`${runtimeConfig.datasetDatabasePath}-wal`)
+    },
+    statsDatabase: {
+      bytes: fileBytes(runtimeConfig.statsDatabasePath),
+      walBytes: fileBytes(`${runtimeConfig.statsDatabasePath}-wal`)
     }
   }
 }
@@ -721,7 +726,7 @@ function countRows(tableName: string): number {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) {
     throw new Error(`非法表名：${tableName}`)
   }
-  const row = databaseModule.getRecordDatabase().prepare(`SELECT COUNT(*) AS total FROM ${tableName}`).get() as { total?: number } | undefined
+  const row = databaseModule.getDatasetDatabase().prepare(`SELECT COUNT(*) AS total FROM ${tableName}`).get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
@@ -824,7 +829,7 @@ function closeDatabases(): void {
   } catch {
   }
   try {
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
 }

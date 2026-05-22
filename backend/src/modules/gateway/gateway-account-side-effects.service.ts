@@ -102,6 +102,10 @@ export function getGatewayAccountSideEffectState(): GatewayAccountSideEffectStat
 }
 
 export async function flushGatewayAccountSideEffectsForTest(): Promise<void> {
+  await flushGatewayAccountSideEffects()
+}
+
+export async function flushGatewayAccountSideEffects(): Promise<void> {
   if (drainTimer) {
     clearTimeout(drainTimer)
     drainTimer = undefined

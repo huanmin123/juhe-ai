@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-priority-contract-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'account-priority-contract.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'account-priority-contract-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'account-priority-contract-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -58,7 +59,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

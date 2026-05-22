@@ -58,7 +58,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
       } else if (isAuthorizedAccount(account)) {
         message.warning(authorizedAccountUnavailableText(account) ?? '当前授权账户不能测试')
       } else {
-        message.warning(account.status === 'disabled' ? '停用账户不能测试，请先手动启用账户' : '当前账户不能测试')
+        message.warning('当前账户不能测试')
       }
       return
     }

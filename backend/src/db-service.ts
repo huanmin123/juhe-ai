@@ -55,7 +55,6 @@ async function startDbService(): Promise<void> {
     pid: process.pid,
     processRole: runtimeConfig.processRole,
     databasePath: runtimeConfig.databasePath,
-    recordDatabasePath: runtimeConfig.recordDatabasePath,
     datasetDatabasePath: datasetDatabasePath(),
     statsDatabasePath: statsDatabasePath(),
     httpHost: httpEndpoint.host,

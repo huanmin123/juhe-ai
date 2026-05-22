@@ -7,7 +7,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-oauth-token-refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'oauth-token-refresh.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'oauth-token-refresh-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'oauth-token-refresh-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -141,7 +142,7 @@ async function main(): Promise<void> {
     oauthRefreshService.setOpenAIOAuthTokenRefresherForTest()
     try {
       databaseModule.getDatabase().close()
-      databaseModule.getRecordDatabase().close()
+      databaseModule.closeStorageDatabases()
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })

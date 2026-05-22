@@ -9,7 +9,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-record-list-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'usage-record-list-query-guard-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -103,7 +104,7 @@ try {
   const accountLookupCalls: Array<{ sql: string; params: unknown[] }> = []
   businessDatabase.prepare = ((sql: string) => {
     const statement = originalBusinessPrepare(sql)
-    if (/^\s*SELECT\s+id\s+FROM\s+accounts\b/i.test(sql)) {
+    if (/^\s*SELECT\s+(?:accounts\.)?id\s+FROM\s+accounts\b/i.test(sql)) {
       const originalAll = statement.all.bind(statement) as typeof statement.all
       statement.all = ((...params: SQLInputValue[]) => {
         accountLookupCalls.push({ sql, params })
@@ -113,7 +114,7 @@ try {
     return statement
   }) as typeof businessDatabase.prepare
 
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getDatasetDatabase()
   const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
   const usageRecordListCalls: Array<{ sql: string; params: unknown[] }> = []
   recordDatabase.prepare = ((sql: string) => {
@@ -136,7 +137,7 @@ try {
     assert.deepEqual(accountNamePrefix.items.map((item) => item.id), ['usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '账号名称关键字应按前缀匹配，不应命中中间包含名称')
 
     const accountPrefix = repositories.listUsageRecords(access, { accountKeyword: uniquePrefix(account.id, middleNameAccount.id), page: 1, pageSize: 10 })
-    assert.equal(accountPrefix.items.length, 2, '账号关键字仍应支持账号 ID 前缀定位使用记录')
+    assert.equal(accountPrefix.items.length, 0, '账号名称关键字不应支持账号 ID 前缀定位使用记录')
   } finally {
     recordDatabase.prepare = originalPrepare
     businessDatabase.prepare = originalBusinessPrepare
@@ -145,11 +146,13 @@ try {
   assert(accountLookupCalls.length >= 2, '回归应捕获账号关键词预解析 SQL')
   for (const call of accountLookupCalls) {
     assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账号关键词预解析应显式转义 LIKE 通配符')
+    assert(!/\bWHERE[\s\S]*\bid\s+(?:=|LIKE)\s+\?/i.test(call.sql), '账号关键词预解析不应把账号 ID 放进名称搜索 WHERE')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号关键词预解析不应传入前导通配符参数')
   }
   assert(usageRecordListCalls.length >= 2, '回归应捕获使用记录列表 SQL')
   for (const call of usageRecordListCalls) {
     assert(!/\bur\.model\s+LIKE\s+\?/i.test(call.sql), 'model 筛选不应在 usage_records 上使用 LIKE')
+    assert(!/\bur\.account_id\s+(?:=|LIKE)\s+\?/i.test(call.sql), '使用记录账号名称搜索不应直接按 account_id 精确或前缀匹配')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '使用记录列表不应向大表筛选传入前导通配符参数')
   }
   assertQueryPlanUsesIndex(`
@@ -225,15 +228,14 @@ try {
   console.log('使用记录列表查询防护回归通过：model 精确匹配，accountKeyword 和最近请求形态都不再对 usage_records 做前导通配符扫描')
 } finally {
   try {
-    databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
-  const details = databaseModule.getRecordDatabase()
+  const details = databaseModule.getDatasetDatabase()
     .prepare(`EXPLAIN QUERY PLAN ${sql}`)
     .all(...params)
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))

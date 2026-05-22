@@ -296,8 +296,8 @@ const createResourceSelectDisabled = computed(() => {
 })
 const createResourcePlaceholder = computed(() => {
   if (isManagementView.value && !createForm.ownerSystemAccountId) return '请先选择授权人'
-  if (createForm.resourceType === 'account') return '输入名称 / ID 前缀搜索 AI 账户'
-  return '输入名称 / ID 前缀搜索分组'
+  if (createForm.resourceType === 'account') return '输入 AI 账户名称搜索'
+  return '输入分组名称搜索'
 })
 
 const createExcludedGranteeIds = computed(() => createForm.ownerSystemAccountId ? [createForm.ownerSystemAccountId] : [])

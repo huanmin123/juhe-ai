@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-data-retention-sql-guards-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'data-retention-sql-guards-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -22,17 +23,34 @@ const [databaseModule, dataRetention, runtimeLogsRepository] = await Promise.all
   import('../../storage/runtime-logs.repository.js')
 ])
 
+const statsTableNames = new Set([
+  'account_quality_minute_stats',
+  'authorization_team_usage_range_windows',
+  'authorization_user_usage_range_windows',
+  'usage_stats_minute',
+  'usage_overview_summary_windows',
+  'usage_overview_trend_windows',
+  'usage_model_rank_windows',
+  'usage_error_rank_windows',
+  'ai_performance_summary_windows',
+  'usage_quota_hourly_windows',
+  'usage_scope_range_windows',
+  'account_usage_snapshots',
+  'system_metrics_trend_windows',
+  'process_event_loop_trend_windows'
+])
+
 try {
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const statsDatabase = databaseModule.getStatsDatabase()
   seedUsageStatsRows()
 
-  const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
-  recordDatabase.prepare = ((sql: string) => {
+  const originalPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
+  statsDatabase.prepare = ((sql: string) => {
     if (/^\s*DELETE\s+FROM\s+usage_stats_minute\b/i.test(sql)) {
       throw new Error('模拟 usage_stats_minute 清理失败')
     }
     return originalPrepare(sql)
-  }) as typeof recordDatabase.prepare
+  }) as typeof statsDatabase.prepare
 
   try {
     assert.throws(() => dataRetention.cleanupUsageStatsBucketsBefore({
@@ -48,7 +66,7 @@ try {
       limit: 100
     }), /模拟 usage_stats_minute 清理失败/, '预聚合清理中途失败应向上抛出错误')
   } finally {
-    recordDatabase.prepare = originalPrepare
+    statsDatabase.prepare = originalPrepare
   }
 
   assert.equal(tableCount('account_quality_minute_stats'), 1, '预聚合清理失败时，已执行的前序表删除应随事务回滚')
@@ -94,38 +112,38 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function seedUsageStatsRows(): void {
-  const recordDatabase = databaseModule.getRecordDatabase()
-  recordDatabase.prepare(`
+  const statsDatabase = databaseModule.getStatsDatabase()
+  statsDatabase.prepare(`
     INSERT INTO account_quality_minute_stats (account_id, system_account_id, provider_code, stat_minute, updated_at)
     VALUES ('acct_retention_txn', 'sys_admin', 'openai', '2000-01-01T00:00', '2000-01-01T00:00:00.000Z')
   `).run()
-  recordDatabase.prepare(`
+  statsDatabase.prepare(`
     INSERT INTO usage_stats_minute (system_account_id, scope_type, scope_id, stat_minute, updated_at)
     VALUES ('sys_admin', 'global', '', '2000-01-01T00:00', '2000-01-01T00:00:00.000Z')
   `).run()
 }
 
 function seedModelCheckHistory(): void {
-  const recordDatabase = databaseModule.getRecordDatabase()
-  recordDatabase.prepare(`
+  const datasetDatabase = databaseModule.getDatasetDatabase()
+  datasetDatabase.prepare(`
     INSERT INTO model_check_runs (id, target_type, target_id, model, started_at, created_at, updated_at)
     VALUES ('mcr_retention_old', 'account', 'acct_retention_old', 'gpt-5.5', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
   `).run()
-  recordDatabase.prepare(`
+  datasetDatabase.prepare(`
     INSERT INTO model_check_items (id, run_id, item_key, item_type, status, created_at, updated_at)
     VALUES ('mci_retention_old', 'mcr_retention_old', 'json_schema', 'capability', 'passed', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
   `).run()
 }
 
 function seedRuntimeLogFileCursor(): void {
-  databaseModule.getRecordDatabase()
+  databaseModule.getDatasetDatabase()
     .prepare(`
       INSERT INTO runtime_log_file_cursors (log_file, created_at, updated_at)
       VALUES ('logs/old-runtime.log', '2000-01-01T00:00:00.000Z', '2000-01-01T00:00:00.000Z')
@@ -134,14 +152,14 @@ function seedRuntimeLogFileCursor(): void {
 }
 
 function tableCount(tableName: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseForTable(tableName)
     .prepare(`SELECT COUNT(*) AS total FROM ${tableName}`)
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function assertQueryUsesIndex(tableName: string, columnName: string, indexName: string): void {
-  const details = databaseModule.getRecordDatabase()
+  const details = databaseForTable(tableName)
     .prepare(`
       EXPLAIN QUERY PLAN
       SELECT rowid
@@ -157,7 +175,7 @@ function assertQueryUsesIndex(tableName: string, columnName: string, indexName: 
 }
 
 function assertModelCheckRunCleanupUsesIndex(): void {
-  const details = databaseModule.getRecordDatabase()
+  const details = databaseModule.getDatasetDatabase()
     .prepare(`
       EXPLAIN QUERY PLAN
       SELECT id
@@ -171,4 +189,8 @@ function assertModelCheckRunCleanupUsesIndex(): void {
     .join('\n')
   assert(details.includes('idx_model_check_runs_created'), `model_check_runs.created_at 清理查询应使用 idx_model_check_runs_created，实际计划：${details}`)
   assert(!/USE TEMP B-TREE/i.test(details), `model_check_runs.created_at 清理查询不应使用临时排序，实际计划：${details}`)
+}
+
+function databaseForTable(tableName: string): ReturnType<typeof databaseModule.getDatasetDatabase> {
+  return statsTableNames.has(tableName) ? databaseModule.getStatsDatabase() : databaseModule.getDatasetDatabase()
 }

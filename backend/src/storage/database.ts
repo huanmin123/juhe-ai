@@ -1,13 +1,12 @@
 import { mkdirSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { dirname, normalize } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
-import { applyBusinessSchema, applyDatasetSchema, applyRecordSchema, applyStatsSchema, seedDefaults } from './schema.js'
+import { applyBusinessSchema, applyDatasetSchema, applyStatsSchema, seedDefaults } from './schema.js'
 
 let businessDatabase: DatabaseSync | undefined
-let recordDatabase: DatabaseSync | undefined
 let datasetDatabase: DatabaseSync | undefined
 let statsDatabase: DatabaseSync | undefined
 const sqliteBusyTimeoutMs = 5000
@@ -19,6 +18,7 @@ export function getDatabase(): DatabaseSync {
 }
 
 export function getBusinessDatabase(): DatabaseSync {
+  assertDistinctStoragePaths()
   if (businessDatabase) {
     return businessDatabase
   }
@@ -33,25 +33,9 @@ export function getBusinessDatabase(): DatabaseSync {
   return businessDatabase
 }
 
-export function getRecordDatabase(): DatabaseSync {
-  if (recordDatabase) {
-    return recordDatabase
-  }
-
-  recordDatabase = openRecordStyleDatabase(runtimeConfig.recordDatabasePath)
-  return recordDatabase
-}
-
 export function getDatasetDatabase(): DatabaseSync {
+  assertDistinctStoragePaths()
   const databasePath = datasetDatabasePath()
-  if (databasePath === runtimeConfig.recordDatabasePath) {
-    return getRecordDatabase()
-  }
-  if (databasePath === statsDatabasePath() && statsDatabase) {
-    applyDatasetSchema(statsDatabase)
-    datasetDatabase = statsDatabase
-    return datasetDatabase
-  }
   if (datasetDatabase) {
     return datasetDatabase
   }
@@ -60,16 +44,8 @@ export function getDatasetDatabase(): DatabaseSync {
 }
 
 export function getStatsDatabase(): DatabaseSync {
+  assertDistinctStoragePaths()
   const databasePath = statsDatabasePath()
-  if (databasePath === runtimeConfig.recordDatabasePath) {
-    return getRecordDatabase()
-  }
-  if (databasePath === datasetDatabasePath()) {
-    const database = getDatasetDatabase()
-    applyStatsSchema(database)
-    statsDatabase = database
-    return statsDatabase
-  }
   if (statsDatabase) {
     return statsDatabase
   }
@@ -77,20 +53,21 @@ export function getStatsDatabase(): DatabaseSync {
   return statsDatabase
 }
 
+export function closeStorageDatabases(): void {
+  closeDatabaseHandle(businessDatabase)
+  closeDatabaseHandle(datasetDatabase)
+  closeDatabaseHandle(statsDatabase)
+  businessDatabase = undefined
+  datasetDatabase = undefined
+  statsDatabase = undefined
+}
+
 export function datasetDatabasePath(): string {
-  return runtimeConfig.datasetDatabasePath ?? runtimeConfig.recordDatabasePath
+  return runtimeConfig.datasetDatabasePath
 }
 
 export function statsDatabasePath(): string {
-  return runtimeConfig.statsDatabasePath ?? runtimeConfig.recordDatabasePath
-}
-
-function openRecordStyleDatabase(databasePath: string): DatabaseSync {
-  mkdirSync(dirname(databasePath), { recursive: true })
-  const database = new DatabaseSync(databasePath)
-  configureDatabase(database)
-  applyRecordSchema(database)
-  return database
+  return runtimeConfig.statsDatabasePath
 }
 
 function openDatasetDatabase(databasePath: string): DatabaseSync {
@@ -158,6 +135,33 @@ function configureDatabase(database: DatabaseSync): void {
   database.exec(`
     PRAGMA busy_timeout = ${sqliteBusyTimeoutMs};
   `)
+}
+
+function closeDatabaseHandle(database: DatabaseSync | undefined): void {
+  if (!database) {
+    return
+  }
+  try {
+    database.close()
+  } catch {
+  }
+}
+
+function assertDistinctStoragePaths(): void {
+  const targets = [
+    { role: '业务库', path: runtimeConfig.databasePath },
+    { role: '统计数据集库', path: datasetDatabasePath() },
+    { role: '统计结果库', path: statsDatabasePath() }
+  ]
+  const seen = new Map<string, string>()
+  for (const target of targets) {
+    const key = normalize(target.path).toLowerCase()
+    const existingRole = seen.get(key)
+    if (existingRole) {
+      throw new Error(`${target.role} 与 ${existingRole} 指向同一个 SQLite 文件，请分别配置 JUHE_AI_DATABASE_PATH、JUHE_AI_DATASET_DATABASE_PATH 和 JUHE_AI_STATS_DATABASE_PATH`)
+    }
+    seen.set(key, target.role)
+  }
 }
 
 export function nowIso(): string {

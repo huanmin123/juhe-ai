@@ -105,7 +105,7 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
       lines.push(`后台复测连续失败：${formatNumber(account.cooldownRetestFailureCount)} 次`)
     }
   } else if (account.status === 'disabled' && !accountExpired) {
-    lines.push('停用账户不会被测试或后台任务自动恢复')
+    lines.push('停用账户可手动测试诊断，但不会被测试结果或后台任务自动恢复')
   } else if (account.status === 'error') {
     lines.push(`异常类型：${accountErrorCodeText(account.lastErrorCode)}`)
     if (account.cooldownRetestFailureCount) {

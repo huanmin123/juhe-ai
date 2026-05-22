@@ -10,7 +10,8 @@ import { createSystemApiApp } from '../../modules/system-api/system-api-app.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-system-api-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'system-api.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'system-api-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'system-api-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -39,7 +40,7 @@ try {
   await closeServer(server)
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-stats-lag-unavailable-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'usage-stats-lag-unavailable-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -22,7 +23,7 @@ const [databaseModule, usageStatsHelpers] = await Promise.all([
 ])
 
 try {
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getStatsDatabase()
   assert.equal(usageStatsHelpers.latestUsageStatsLagSeconds(), undefined, '缺少 job state 时应返回未知，而不是 0')
 
   const now = new Date().toISOString()
@@ -54,7 +55,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

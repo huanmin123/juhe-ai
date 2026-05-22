@@ -11,9 +11,8 @@ export interface RuntimeConfig {
   dbServiceHttpHost: string
   dbServiceHttpPort: number
   databasePath: string
-  recordDatabasePath: string
-  datasetDatabasePath?: string
-  statsDatabasePath?: string
+  datasetDatabasePath: string
+  statsDatabasePath: string
   secret: string
   oauthProxyUrl?: string
   log: {
@@ -51,9 +50,8 @@ export const runtimeConfig: RuntimeConfig = {
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
   databasePath: pathConfig('JUHE_AI_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai.sqlite3')),
-  recordDatabasePath: pathConfig('JUHE_AI_RECORD_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai-records.sqlite3')),
-  datasetDatabasePath: optionalPathConfig('JUHE_AI_DATASET_DATABASE_PATH'),
-  statsDatabasePath: optionalPathConfig('JUHE_AI_STATS_DATABASE_PATH'),
+  datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')),
+  statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')),
   secret: stringConfig('JUHE_AI_SECRET', 'juhe-ai-dev-secret-change-me'),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   log: {
@@ -123,12 +121,6 @@ function numberConfig(name: string, fallback: number, min: number, max: number):
 
 function pathConfig(name: string, fallback: string): string {
   const value = stringConfig(name, fallback)
-  return isAbsolute(value) ? value : resolve(backendRoot, value)
-}
-
-function optionalPathConfig(name: string): string | undefined {
-  const value = optionalStringConfig(name)
-  if (!value) return undefined
   return isAbsolute(value) ? value : resolve(backendRoot, value)
 }
 

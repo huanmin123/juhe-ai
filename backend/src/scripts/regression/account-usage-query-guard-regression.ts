@@ -10,7 +10,8 @@ import { GLOBAL_STATS_SYSTEM_ACCOUNT_ID } from '../../storage/usage-stats-types.
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-usage-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'account-usage-query-guard-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -98,7 +99,7 @@ try {
     return statement
   }) as typeof businessDatabase.prepare
 
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getStatsDatabase()
   const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   recordDatabase.prepare = ((sql: string) => {
@@ -223,7 +224,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -231,7 +232,7 @@ try {
 
 function seedUsageScopeRangeWindow(systemAccountId: string, scopeType: string, scopeId: string, requestCount: number): void {
   const updatedAt = '2026-02-28T23:59:59.000Z'
-  databaseModule.getRecordDatabase()
+  databaseModule.getStatsDatabase()
     .prepare(`
       INSERT INTO usage_scope_range_windows (
         system_account_id, scope_type, scope_id, start_date, end_date,
@@ -251,7 +252,7 @@ function uniquePrefix(value: string, otherValue: string): string {
 }
 
 function assertQueryPlanUsesIndex(sql: string, params: SQLInputValue[], indexName: string): void {
-  const details = databaseModule.getRecordDatabase()
+  const details = databaseModule.getStatsDatabase()
     .prepare(`EXPLAIN QUERY PLAN ${sql}`)
     .all(...params)
     .map((row) => String((row as { detail?: unknown }).detail ?? ''))

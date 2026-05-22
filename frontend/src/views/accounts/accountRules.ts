@@ -147,8 +147,13 @@ export function canUseBoundAuthorizedAccount(account: AccountSummary): boolean {
 }
 
 export function canTestAccount(account: AccountSummary): boolean {
-  if (isAuthorizedAccount(account)) return canUseBoundAuthorizedAccount(account)
-  return account.status !== 'disabled' && account.permissions?.canUse !== false
+  if (isAuthorizedAccount(account)) {
+    if (!account.boundGroupId || account.permissions?.canUse === false) return false
+    if (isAuthorizationExpired(account) || isAuthorizationBindingUnavailable(account) || isAccountPackageExpiredStatus(account)) return false
+    if (account.authorizationQuotaExceeded || account.status === 'error' || isTemporaryAccountStatus(account)) return false
+    return account.schedulable || account.status === 'disabled'
+  }
+  return account.permissions?.canUse !== false
 }
 
 export function canManageGroupAccounts(group: { accessType?: string; permissions?: Pick<ResourcePermissions, 'canManageAccounts'> }): boolean {

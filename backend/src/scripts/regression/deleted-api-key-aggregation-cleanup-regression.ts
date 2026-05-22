@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-deleted-api-key-aggregation-cleanup-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'deleted-api-key-aggregation-cleanup-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -163,14 +164,14 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function seedUsageRecord(id: string, apiKeyIdInput: string, createdAtInput: string): void {
-  databaseModule.getRecordDatabase()
+  databaseModule.getDatasetDatabase()
     .prepare(`
       INSERT INTO usage_records (
         id, system_account_id, trace_id, api_key_id, endpoint, provider_code, model,
@@ -181,7 +182,7 @@ function seedUsageRecord(id: string, apiKeyIdInput: string, createdAtInput: stri
 }
 
 function seedAuthorizationUsageRangeWindow(systemAccountId: string): void {
-  databaseModule.getRecordDatabase()
+  databaseModule.getStatsDatabase()
     .prepare(`
       INSERT INTO authorization_user_usage_range_windows (
         system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id,
@@ -193,7 +194,7 @@ function seedAuthorizationUsageRangeWindow(systemAccountId: string): void {
 }
 
 function seedAuditLog(id: string, apiKeyIdInput: string, createdAtInput: string): void {
-  databaseModule.getRecordDatabase()
+  databaseModule.getDatasetDatabase()
     .prepare(`
       INSERT INTO audit_logs (
         id, trace_id, system_account_id, api_key_id, method, path, audit_outcome,
@@ -204,7 +205,7 @@ function seedAuditLog(id: string, apiKeyIdInput: string, createdAtInput: string)
 }
 
 function seedAuditErrorGroup(id: string, apiKeyIdInput: string, createdAtInput: string): void {
-  databaseModule.getRecordDatabase()
+  databaseModule.getDatasetDatabase()
     .prepare(`
       INSERT INTO audit_error_groups (
         id, fingerprint, window_started_at, window_ended_at, system_account_id, api_key_id,
@@ -215,7 +216,7 @@ function seedAuditErrorGroup(id: string, apiKeyIdInput: string, createdAtInput: 
 }
 
 function usageStatsTotal(systemAccountId: string, scopeType: string, scopeId: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getStatsDatabase()
     .prepare(`
       SELECT request_count
       FROM usage_stats_totals
@@ -226,7 +227,7 @@ function usageStatsTotal(systemAccountId: string, scopeType: string, scopeId: st
 }
 
 function usageOverviewSummaryRequestCount(systemAccountId: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getStatsDatabase()
     .prepare(`
       SELECT COALESCE(MAX(request_count), 0) AS request_count
       FROM usage_overview_summary_windows
@@ -237,7 +238,7 @@ function usageOverviewSummaryRequestCount(systemAccountId: string): number {
 }
 
 function usageScopeRangeWindowRequestCount(systemAccountId: string, scopeType: string, scopeId: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getStatsDatabase()
     .prepare(`
       SELECT COALESCE(MAX(request_count), 0) AS request_count
       FROM usage_scope_range_windows
@@ -248,7 +249,7 @@ function usageScopeRangeWindowRequestCount(systemAccountId: string, scopeType: s
 }
 
 function usageQuotaHourlyWindowCost(systemAccountId: string, scopeType: string, scopeId: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getStatsDatabase()
     .prepare(`
       SELECT COALESCE(MAX(total_cost_usd), 0) AS total_cost_usd
       FROM usage_quota_hourly_windows
@@ -259,7 +260,7 @@ function usageQuotaHourlyWindowCost(systemAccountId: string, scopeType: string, 
 }
 
 function usageRankSnapshotMetric(systemAccountId: string, scopeType: string, scopeId: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getStatsDatabase()
     .prepare(`
       SELECT COALESCE(MAX(metric_value), 0) AS metric_value
       FROM usage_rank_snapshots
@@ -270,7 +271,7 @@ function usageRankSnapshotMetric(systemAccountId: string, scopeType: string, sco
 }
 
 function authorizationUserUsageRangeWindowRequestCount(systemAccountId: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getStatsDatabase()
     .prepare(`
       SELECT COALESCE(MAX(request_count), 0) AS request_count
       FROM authorization_user_usage_range_windows
@@ -281,28 +282,28 @@ function authorizationUserUsageRangeWindowRequestCount(systemAccountId: string):
 }
 
 function usageRecordExists(id: string): boolean {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT id FROM usage_records WHERE id = ?')
     .get(id) as { id?: string } | undefined
   return Boolean(row?.id)
 }
 
 function auditLogExists(id: string): boolean {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT id FROM audit_logs WHERE id = ?')
     .get(id) as { id?: string } | undefined
   return Boolean(row?.id)
 }
 
 function auditErrorGroupExists(id: string): boolean {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT id FROM audit_error_groups WHERE id = ?')
     .get(id) as { id?: string } | undefined
   return Boolean(row?.id)
 }
 
 function cleanupTargetExists(apiKeyIdInput: string): boolean {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT api_key_id FROM api_key_record_cleanup_targets WHERE api_key_id = ?')
     .get(apiKeyIdInput) as { api_key_id?: string } | undefined
   return Boolean(row?.api_key_id)

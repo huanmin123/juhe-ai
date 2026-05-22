@@ -9,7 +9,8 @@ import type { OperationLogInput } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-operation-log-queue-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 mkdirSync(tempRoot, { recursive: true })
@@ -56,7 +57,7 @@ try {
     viewers: operationLogViewerCount()
   }
   const prepareCounts = { logs: 0, targets: 0, viewers: 0 }
-  const database = databaseModule.getRecordDatabase()
+  const database = databaseModule.getDatasetDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   database.prepare = ((sql: string) => {
     if (/^\s*INSERT\s+INTO\s+operation_logs\b/i.test(sql)) {
@@ -119,7 +120,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -191,28 +192,28 @@ function buildRichOperationLog(index: number): OperationLogInput {
 }
 
 function operationLogCount(): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM operation_logs')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function operationLogTargetCount(): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM operation_log_targets')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function operationLogViewerCount(): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM operation_log_viewers')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function operationLogExists(action: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM operation_logs WHERE action = ?')
     .get(action) as { total?: number } | undefined
   return Number(row?.total ?? 0)

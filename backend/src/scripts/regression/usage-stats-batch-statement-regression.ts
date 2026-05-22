@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-stats-batch-statement-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'usage-stats-batch-statement.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'usage-stats-batch-statement-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'usage-stats-batch-statement-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -119,7 +120,7 @@ try {
     }
   ])
 
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getStatsDatabase()
   const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
   const prepareCounts = new Map<string, number>()
   recordDatabase.prepare = ((sql: string) => {
@@ -167,7 +168,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -179,7 +180,7 @@ function usageStatsUpsertTableName(sql: string): string | undefined {
 }
 
 function usageStatsTotal(
-  recordDatabase: ReturnType<typeof databaseModule.getRecordDatabase>,
+  recordDatabase: ReturnType<typeof databaseModule.getStatsDatabase>,
   scopeType: string,
   scopeId: string
 ): { request_count?: number; input_tokens?: number; output_tokens?: number } | undefined {

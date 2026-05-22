@@ -493,9 +493,17 @@ function accountDispatchUnavailableMessage(account: AccountSummary, options: { r
 }
 
 export function accountTestUnavailableMessage(account: AccountSummary): string | undefined {
-  if (account.status === 'disabled') return '账户已停用，不能执行测试；请先手动启用账户'
   if (account.accessType !== 'authorized') return undefined
-  return accountDispatchUnavailableMessage(account, { requireAuthorizedBinding: true })
+  if (account.permissions?.canUse === false) return '当前账户无可用权限'
+  if (!account.boundGroupId) return '授权账户需要先绑定到你的分组'
+  if (account.groupBindStatus === 'authorization_unavailable') return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
+  if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
+  if (isAccountExpired(account.accountExpiresAt) || account.lastErrorCode === 'account_expired') return '账户已到期，当前不可用'
+  if (account.status === 'error') return '账户处于异常状态，当前不可用'
+  if (isCoolingAccountStatus(account.status) || (!account.schedulable && account.status !== 'disabled') || isLaterIso(account.cooldownUntil, nowIso())) {
+    return '账户暂时不可调用，恢复前不会参与调度'
+  }
+  return undefined
 }
 
 function disableExpiredAccounts(access?: AccessScope): void {
@@ -889,14 +897,10 @@ function buildAccountOptionFilters(
   if (keyword) {
     const keywordPrefix = `${escapeLikePrefix(keyword)}%`
     clauses.push(`(
-      accounts.id = ?
-      OR accounts.id LIKE ? ESCAPE '\\'
-      OR accounts.name COLLATE NOCASE = ?
+      accounts.name COLLATE NOCASE = ?
       OR accounts.name LIKE ? ESCAPE '\\'
     )`)
     params.push(
-      keyword,
-      keywordPrefix,
       keyword,
       keywordPrefix
     )
@@ -1987,6 +1991,56 @@ function boundedInteger(value: unknown, fallback: number, min: number, max: numb
   const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(Math.max(Math.trunc(parsed), min), max)
+}
+
+export function markAccountTestTemporaryUnavailable(
+  account: AccountSummary,
+  reason: string,
+  access?: AccessScope
+): AccountSummary | undefined {
+  const current = findAccountSummary(account.id, access)
+  if (!current || current.status !== 'active' || !current.schedulable) {
+    return undefined
+  }
+  const cooldownUntil = new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+  const message = reason.slice(0, 1000)
+  if (current.accessType === 'authorized') {
+    return markAuthorizedAccountBindingTemporaryUnavailable(current, cooldownUntil, message, access)
+  }
+  return markAccountCooldown(current.id, cooldownUntil, message, 'temporary_unavailable')
+}
+
+function markAuthorizedAccountBindingTemporaryUnavailable(
+  account: AccountSummary,
+  cooldownUntil: string,
+  reason: string,
+  access?: AccessScope
+): AccountSummary | undefined {
+  if (!account.boundGroupId) {
+    return undefined
+  }
+  const systemAccountId = authorizedBindingSystemAccountId(access)
+  const now = nowIso()
+  const result = getDatabase()
+    .prepare(`
+      UPDATE group_accounts
+      SET local_status = 'temporary_unavailable',
+          local_cooldown_until = ?,
+          local_last_error_message = ?,
+          updated_at = ?
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND group_id = ?
+        AND enabled = 1
+        AND account_authorization_id IS NOT NULL
+    `)
+    .run(cooldownUntil, reason || null, now, account.id, systemAccountId, account.boundGroupId)
+  if (Number(result.changes ?? 0) <= 0) {
+    return undefined
+  }
+  refreshGroupAccountStatsAfterWrite({ groupIds: [account.boundGroupId], reason: 'account_test_cooldown' })
+  invalidateGatewayRuntimeAfterBusinessWrite('account_test_cooldown')
+  return findAccountSummary(account.id, access)
 }
 
 export function markAccountCooldown(id: string, until: string, reason: string, status: AccountStatus = 'temporary_unavailable'): AccountSummary | undefined {

@@ -8,7 +8,8 @@ import { runtimeConfig } from '../../config/runtime.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-storage-sanitizer-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'model-check-storage-sanitizer-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -165,7 +166,7 @@ repositories.finishModelCheckRun(otherRun.id, {
   resultSummary: {}
 })
 
-const recordDatabase = databaseModule.getRecordDatabase()
+const recordDatabase = databaseModule.getDatasetDatabase()
 const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
 const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
 recordDatabase.prepare = ((sql: string) => {
@@ -219,7 +220,7 @@ for (const indexName of [
 console.log('模型检测存储脱敏回归通过：报告摘要不会泄露 API Key、token、代理密码或原始体')
 
 function assertRecordIndexExists(indexName: string): void {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name = ?")
     .get(indexName) as unknown as { name?: string } | undefined
   assert.equal(row?.name, indexName, `记录库应创建索引 ${indexName}`)

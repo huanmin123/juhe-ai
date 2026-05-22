@@ -10,7 +10,8 @@ import { minuteKey, usageStatsTimezone } from '../../storage/usage-stats-helpers
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-quality-refresh-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'account-quality-refresh.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'account-quality-refresh-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'account-quality-refresh-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -27,7 +28,7 @@ const [databaseModule, repositories, accountQualityRepository] = await Promise.a
 const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getStatsDatabase()
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '质量刷新回归账户',
@@ -132,7 +133,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

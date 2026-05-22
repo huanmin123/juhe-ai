@@ -10,6 +10,7 @@ type NumericPolicyKey =
   | 'maxQueueWaitMs'
   | 'maxQueueSize'
   | 'perApiKeyQueueLimit'
+  | 'clientIpConcurrencyLimit'
 
 type BooleanPolicyKey =
   | 'weightAffectsSoftConcurrency'
@@ -31,7 +32,9 @@ export const DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY: Required<GroupSch
   recentTimeoutPenaltyThreshold: 2,
   maxQueueWaitMs: 60_000,
   maxQueueSize: 1_000,
-  perApiKeyQueueLimit: 1_000
+  perApiKeyQueueLimit: 1_000,
+  clientIpConcurrencyLimit: 0,
+  clientIpConcurrencyOverflowMode: 'reject'
 }
 
 export function normalizeGroupType(value: unknown): GroupType {
@@ -58,7 +61,9 @@ export function resolveGroupSchedulingPolicy(groupType: GroupType, value: unknow
     recentTimeoutPenaltyThreshold: numericPolicy(input.recentTimeoutPenaltyThreshold, 'recentTimeoutPenaltyThreshold'),
     maxQueueWaitMs: numericPolicy(input.maxQueueWaitMs, 'maxQueueWaitMs'),
     maxQueueSize,
-    perApiKeyQueueLimit: resolvePerApiKeyQueueLimit(input.perApiKeyQueueLimit, maxQueueSize)
+    perApiKeyQueueLimit: resolvePerApiKeyQueueLimit(input.perApiKeyQueueLimit, maxQueueSize),
+    clientIpConcurrencyLimit: numericPolicy(input.clientIpConcurrencyLimit, 'clientIpConcurrencyLimit'),
+    clientIpConcurrencyOverflowMode: clientIpConcurrencyOverflowMode(input.clientIpConcurrencyOverflowMode)
   }
 }
 
@@ -110,18 +115,25 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function numericPolicy(value: unknown, key: NumericPolicyKey): number {
   const max = key === 'maxQueueWaitMs' ? 3_600_000 : 1_000_000
-  return boundedInteger(value, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY[key], key === 'breakAffinityOnQueueWaitMs' ? 0 : 1, max)
+  const min = key === 'breakAffinityOnQueueWaitMs' || key === 'clientIpConcurrencyLimit' ? 0 : 1
+  return boundedInteger(value, DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY[key], min, max)
 }
 
 function booleanPolicy(value: unknown, key: BooleanPolicyKey): boolean {
   return typeof value === 'boolean' ? value : DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY[key]
 }
 
+function clientIpConcurrencyOverflowMode(value: unknown): 'reject' | 'queue' {
+  return value === 'queue' ? 'queue' : 'reject'
+}
+
 function resolvePersistedGroupSchedulingPolicy(groupType: GroupType, value: unknown): GroupSchedulingPolicy | undefined {
   const input = objectValue(value)
   return resolveGroupSchedulingPolicy(groupType, {
     defaultSoftConcurrency: input.defaultSoftConcurrency,
-    maxQueueWaitMs: input.maxQueueWaitMs
+    maxQueueWaitMs: input.maxQueueWaitMs,
+    clientIpConcurrencyLimit: input.clientIpConcurrencyLimit,
+    clientIpConcurrencyOverflowMode: input.clientIpConcurrencyOverflowMode
   })
 }
 

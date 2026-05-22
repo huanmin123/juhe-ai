@@ -11,7 +11,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-admin-dispatch-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorized-account-admin-dispatch.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'authorized-account-admin-dispatch-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'authorized-account-admin-dispatch-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -216,10 +217,7 @@ try {
   try {
     flushAllUsageRecordQueue()
     flushAllOperationLogQueue()
-    const database = databaseModule.getDatabase()
-    const recordDatabase = databaseModule.getRecordDatabase()
-    database.close()
-    recordDatabase.close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   try {

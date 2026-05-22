@@ -10,14 +10,17 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-account-options-lightweight-${Date.now()}-${Math.random().toString(16).slice(2)}`)
-const blockedRecordDatabasePath = join(tempRoot, 'records-as-directory.sqlite3')
+const blockedDatasetDatabasePath = join(tempRoot, 'dataset-as-directory.sqlite3')
+const blockedStatsDatabasePath = join(tempRoot, 'stats-as-directory.sqlite3')
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = blockedRecordDatabasePath
+runtimeConfig.datasetDatabasePath = blockedDatasetDatabasePath
+runtimeConfig.statsDatabasePath = blockedStatsDatabasePath
 runtimeConfig.secret = 'account-options-lightweight-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
-mkdirSync(blockedRecordDatabasePath, { recursive: true })
+mkdirSync(blockedDatasetDatabasePath, { recursive: true })
+mkdirSync(blockedStatsDatabasePath, { recursive: true })
 logger.level = 'silent'
 
 const [
@@ -145,9 +148,6 @@ try {
     assert(!keywordIds.includes(seed.middleAccountId), '账户选项关键词不应命中账户名称中间包含值')
     assert.equal(keywordOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '账户选项关键词查询不应混入其他用户账户')
 
-    const idPrefixOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent(seed.matchedAccountId.slice(0, 18))}&limit=20`, seed.adminCookie)
-    assert(idPrefixOptions.some((account) => account.id === seed.matchedAccountId), '账户选项关键词应支持账户 ID 前缀定位')
-
     const groupKeywordOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&keyword=${encodeURIComponent('账户选项绑定分组')}&limit=20`, seed.adminCookie)
     assert(!groupKeywordOptions.some((account) => account.id === seed.groupMatchedAccountId), '账户选项关键词不应通过绑定分组名称命中')
 
@@ -176,6 +176,7 @@ try {
     assert(!/\baccount_rows\b/i.test(call.sql), '账户 options SQL 不应复用完整账户列表 account_rows 大查询')
     assert(!/\baccount_quality_scores\b/i.test(call.sql), '账户 options SQL 不应接入质量分记录库')
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账户 options 关键词不应通过 COALESCE 扫描字段')
+    assert(!/\baccounts\.id\s+(?:=|LIKE)\s+\?/i.test(call.sql), '账户 options 关键词不应把账户 ID 放进 WHERE')
     assert(!/\baccounts\.provider_code\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账户 options 关键词不应把供应商编码放进 WHERE')
     assert(!/\baccounts\.type\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账户 options 关键词不应把账户类型放进 WHERE')
     assert(!/\boption_groups\.name\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账户 options 关键词不应把分组名称放进 WHERE')
@@ -184,15 +185,13 @@ try {
       assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账户 options 前缀搜索应显式转义 LIKE 通配符')
     }
   }
-  assert(capturedCalls.some((call) => /\baccounts\.id\s+=\s+\?/i.test(call.sql)), '账户 options 关键词应支持账户 ID 精确定位')
-  assert(capturedCalls.some((call) => /\baccounts\.id\s+LIKE\s+\?/i.test(call.sql)), '账户 options 关键词应支持账户 ID 前缀定位')
   assertBusinessIndexExists('idx_accounts_system_account_name_lookup')
   assertBusinessIndexExists('idx_accounts_system_account_provider_lookup')
   assertBusinessIndexExists('idx_accounts_system_account_type_lookup')
   assertBusinessIndexExists('idx_group_accounts_account_scope_enabled')
   assertBusinessIndexExists('idx_groups_system_account_name_lookup')
 
-  console.log('账户选项轻量回归通过：options 接口不读取记录库统计，不返回完整账户摘要字段，关键词按账户名称 / ID 前缀匹配，分组使用独立筛选')
+  console.log('账户选项轻量回归通过：options 接口不读取记录库统计，不返回完整账户摘要字段，关键词仅按账户名称匹配，分组使用独立筛选')
 } finally {
   await closeServer(server)
   try {

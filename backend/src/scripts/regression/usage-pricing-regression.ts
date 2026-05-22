@@ -431,7 +431,8 @@ assert.doesNotMatch(accountQualityRepositorySource, /last_probe_at/)
 const schemaSource = [
   readSource('storage/schema.ts'),
   readSource('storage/schema/business-schema.ts'),
-  readSource('storage/schema/record-schema.ts'),
+  readSource('storage/schema/dataset-schema.ts'),
+  readSource('storage/schema/stats-schema.ts'),
   readSource('storage/schema/seed-defaults.ts')
 ].join('\n')
 assert.doesNotMatch(schemaSource, /last_probe_at/)

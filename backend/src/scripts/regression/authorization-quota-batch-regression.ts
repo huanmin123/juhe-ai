@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorization-quota-batch-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorization-quota-batch.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'authorization-quota-batch-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'authorization-quota-batch-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -110,7 +111,7 @@ try {
   }
 
   const exceededAuthorizationId = accountAuthorizationIds[accountAuthorizationIds.length - 1]
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getStatsDatabase()
   const now = new Date()
   const statDate = now.toISOString().slice(0, 10)
   insertUsageTotal(recordDatabase, owner.id, 'account_authorization', exceededAuthorizationId, 5)
@@ -232,13 +233,13 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
-function insertUsageTotal(database: ReturnType<typeof databaseModule.getRecordDatabase>, systemAccountId: string, scopeType: string, scopeId: string, totalCost: number) {
+function insertUsageTotal(database: ReturnType<typeof databaseModule.getStatsDatabase>, systemAccountId: string, scopeType: string, scopeId: string, totalCost: number) {
   database.prepare(`
     INSERT INTO usage_stats_totals (
       system_account_id, scope_type, scope_id, total_cost_usd, updated_at
@@ -246,7 +247,7 @@ function insertUsageTotal(database: ReturnType<typeof databaseModule.getRecordDa
   `).run(systemAccountId, scopeType, scopeId, totalCost, new Date().toISOString())
 }
 
-function insertUsageDaily(database: ReturnType<typeof databaseModule.getRecordDatabase>, systemAccountId: string, scopeType: string, scopeId: string, statDate: string, totalCost: number) {
+function insertUsageDaily(database: ReturnType<typeof databaseModule.getStatsDatabase>, systemAccountId: string, scopeType: string, scopeId: string, statDate: string, totalCost: number) {
   database.prepare(`
     INSERT INTO usage_stats_daily (
       system_account_id, scope_type, scope_id, stat_date, total_cost_usd, updated_at
@@ -254,7 +255,7 @@ function insertUsageDaily(database: ReturnType<typeof databaseModule.getRecordDa
   `).run(systemAccountId, scopeType, scopeId, statDate, totalCost, new Date().toISOString())
 }
 
-function insertUsageHourlyWindow(database: ReturnType<typeof databaseModule.getRecordDatabase>, systemAccountId: string, scopeType: string, scopeId: string, windowHours: number, totalCost: number) {
+function insertUsageHourlyWindow(database: ReturnType<typeof databaseModule.getStatsDatabase>, systemAccountId: string, scopeType: string, scopeId: string, windowHours: number, totalCost: number) {
   database.prepare(`
     INSERT INTO usage_quota_hourly_windows (
       system_account_id, scope_type, scope_id, window_hours, total_cost_usd, updated_at

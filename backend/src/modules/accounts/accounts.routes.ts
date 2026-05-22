@@ -4,7 +4,7 @@ import { z } from 'zod'
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
 import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -675,10 +675,6 @@ accountsRouter.post('/:id/test', async (req, res) => {
     res.status(400).json({ message: '当前仅支持测试 OpenAI 账户' })
     return
   }
-  if (account.status === 'disabled') {
-    res.status(400).json({ message: '账户已停用，不能执行测试；请先手动启用账户' })
-    return
-  }
   const unavailableMessage = accountTestUnavailableMessage(account)
   if (unavailableMessage) {
     res.status(400).json({ message: unavailableMessage })
@@ -694,12 +690,23 @@ accountsRouter.post('/:id/test', async (req, res) => {
   })
   try {
     const diagnostics = requestAccess?.role === 'admin' || account.accessType !== 'authorized' ? 'full' : 'limited'
-    const result = await testOpenAIAccount(account, { ...(parsed.data ?? {}), signal: abortController.signal, diagnostics })
+    let result = await testOpenAIAccount(account, { ...(parsed.data ?? {}), signal: abortController.signal, diagnostics })
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }
+    if (shouldMarkAccountTestFailureAsTemporaryUnavailable(account, result)) {
+      const updatedAccount = markAccountTestTemporaryUnavailable(account, accountTestFailureCooldownReason(result), requestAccess)
+      if (updatedAccount && updatedAccount.status !== result.accountStatus) {
+        result = {
+          ...result,
+          accountStatusChanged: updatedAccount.status !== account.status,
+          accountStatus: updatedAccount.status
+        }
+      }
+    }
     if (result.accountStatusChanged) {
-      const ownerSystemAccountId = resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
+      const ownerSystemAccountId = authorizedLocalOperationOwner(account, requestAccess)
+        ?? resolveOperationOwner(account as unknown as Record<string, unknown>, requestAccess)
       recordOperationLog({
         operationScopeSystemAccountId: ownerSystemAccountId,
         mode: operationMode(requestAccess),
@@ -722,6 +729,46 @@ accountsRouter.post('/:id/test', async (req, res) => {
     throw error
   }
 })
+
+function shouldMarkAccountTestFailureAsTemporaryUnavailable(account: AccountSummary, result: { success: boolean; statusCode?: number; message?: string; accountStatusChanged?: boolean; accountStatus?: string }): boolean {
+  if (result.success) return false
+  if (result.accountStatusChanged) return false
+  if (account.status !== 'active') return false
+  if (!account.schedulable) return false
+  const observedStatus = result.accountStatus ?? account.status
+  if (observedStatus !== 'active') return false
+  if (isAccountTestConfigurationFailure(result.message)) return false
+  if (typeof result.statusCode !== 'number') return true
+  if (result.statusCode >= 200 && result.statusCode < 300) return true
+  return result.statusCode === 401
+    || result.statusCode === 403
+    || result.statusCode === 407
+    || result.statusCode === 408
+    || result.statusCode === 429
+    || result.statusCode >= 500
+}
+
+function isAccountTestConfigurationFailure(message: string | undefined): boolean {
+  if (!message) return false
+  return message.includes('未绑定可用分组')
+    || message.includes('不在当前分组')
+    || message.includes('凭据不可用')
+    || message.includes('账户测试已取消')
+}
+
+function accountTestFailureCooldownReason(result: { statusCode?: number; errorCode?: string; message?: string }): string {
+  const parts = ['账户测试失败，已自动标记为临时不可调用']
+  if (typeof result.statusCode === 'number') {
+    parts.push(`HTTP ${Math.trunc(result.statusCode)}`)
+  }
+  if (result.errorCode) {
+    parts.push(result.errorCode)
+  }
+  if (result.message) {
+    parts.push(result.message)
+  }
+  return parts.join('；')
+}
 
 accountsRouter.delete('/:id', (req, res) => {
   const scopeQuery = parseRequestScopeQuery(req.query)

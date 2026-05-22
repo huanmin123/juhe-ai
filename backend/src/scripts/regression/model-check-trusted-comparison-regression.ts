@@ -7,7 +7,8 @@ import { runtimeConfig } from '../../config/runtime.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-trusted-comparison-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'model-check-trusted-comparison-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -15,7 +16,7 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 
 const [
-  { getRecordDatabase },
+  { getDatasetDatabase },
   { getModelCheckOptions, ModelCheckRequestError, runModelCheck }
 ] = await Promise.all([
   import('../../storage/database.js'),
@@ -44,7 +45,7 @@ await assert.rejects(
   '显式开启可信对比但未选择对比账户时必须失败'
 )
 
-const row = getRecordDatabase()
+const row = getDatasetDatabase()
   .prepare('SELECT COUNT(*) AS count FROM model_check_runs')
   .get() as { count: number }
 assert.equal(row.count, 0, '可信对比开启失败时不应创建成功或失败检测报告')

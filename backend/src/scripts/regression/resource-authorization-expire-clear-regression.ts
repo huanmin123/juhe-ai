@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-resource-authorization-expire-clear-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'resource-authorization-expire-clear-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -160,7 +161,7 @@ try {
   assert.equal(authorizedAccount?.authorizationLimits?.total?.limit, 30, '被授权账户列表应返回总限额')
   assert.equal(authorizedAccount?.authorizationQuotaExceeded, false, '未超限时被授权账户列表不应标记额度用完')
 
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getStatsDatabase()
   const statDate = usageStatsHelpers.todayDateKey(usageStatsHelpers.usageStatsTimezone())
   const runtimeAccountAuthorizationId = runtimeAuthorizationId('account', account.id, grantee.id)
   assert(runtimeAccountAuthorizationId, '账号授权运行时记录不存在')
@@ -231,7 +232,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -258,7 +259,7 @@ function runtimeAuthorizationId(resourceType: string, resourceId: string, grante
   return row?.id
 }
 
-function insertUsageTotal(database: ReturnType<typeof databaseModule.getRecordDatabase>, systemAccountId: string, scopeType: string, scopeId: string, totalCost: number) {
+function insertUsageTotal(database: ReturnType<typeof databaseModule.getStatsDatabase>, systemAccountId: string, scopeType: string, scopeId: string, totalCost: number) {
   database.prepare(`
     INSERT INTO usage_stats_totals (
       system_account_id, scope_type, scope_id, total_cost_usd, updated_at
@@ -266,7 +267,7 @@ function insertUsageTotal(database: ReturnType<typeof databaseModule.getRecordDa
   `).run(systemAccountId, scopeType, scopeId, totalCost, new Date().toISOString())
 }
 
-function insertUsageDaily(database: ReturnType<typeof databaseModule.getRecordDatabase>, systemAccountId: string, scopeType: string, scopeId: string, statDate: string, totalCost: number) {
+function insertUsageDaily(database: ReturnType<typeof databaseModule.getStatsDatabase>, systemAccountId: string, scopeType: string, scopeId: string, statDate: string, totalCost: number) {
   database.prepare(`
     INSERT INTO usage_stats_daily (
       system_account_id, scope_type, scope_id, stat_date, total_cost_usd, updated_at

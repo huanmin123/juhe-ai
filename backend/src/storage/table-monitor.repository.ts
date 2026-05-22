@@ -3,7 +3,7 @@ import { basename } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 
 import { runtimeConfig } from '../config/runtime.js'
-import { beginDatabaseTransaction, commitDatabaseTransaction, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, commitDatabaseTransaction, datasetDatabasePath, getBusinessDatabase, getDatasetDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction, statsDatabasePath } from './database.js'
 import { sqlPlaceholders } from './query-utils.js'
 
 export type MonitoredDatabaseRole = 'business' | 'dataset' | 'stats'
@@ -257,8 +257,8 @@ export function cleanupTableStorageSnapshotsBefore(cutoffIso: string, limit = 10
 function monitoredDatabaseTargets(): MonitoredDatabaseTarget[] {
   return [
     { role: 'business', path: runtimeConfig.databasePath, database: getBusinessDatabase() },
-    { role: 'dataset', path: runtimeConfig.datasetDatabasePath ?? runtimeConfig.recordDatabasePath, database: getDatasetDatabase() },
-    { role: 'stats', path: runtimeConfig.statsDatabasePath ?? runtimeConfig.recordDatabasePath, database: getStatsDatabase() }
+    { role: 'dataset', path: datasetDatabasePath(), database: getDatasetDatabase() },
+    { role: 'stats', path: statsDatabasePath(), database: getStatsDatabase() }
   ]
 }
 

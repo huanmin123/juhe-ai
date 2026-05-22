@@ -10,7 +10,8 @@ import type { AuditLogInput, OperationLogInput } from '../../storage/repositorie
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-log-list-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'log-list-query-guard-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -97,7 +98,7 @@ try {
     })
   ])
 
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getDatasetDatabase()
   const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
   const capturedCalls: Array<{ sql: string; params: unknown[] }> = []
   recordDatabase.prepare = ((sql: string) => {
@@ -165,7 +166,7 @@ try {
     && /\bal\.client_ip\s+<\s+\?/i.test(call.sql)), '审计 clientIp 前缀检索应使用范围条件而不是 LIKE')
 
   const boundedCalls: Array<{ sql: string; params: unknown[] }> = []
-  const boundedRecordDatabase = databaseModule.getRecordDatabase()
+  const boundedRecordDatabase = databaseModule.getDatasetDatabase()
   const boundedOriginalPrepare = boundedRecordDatabase.prepare.bind(boundedRecordDatabase) as typeof boundedRecordDatabase.prepare
   boundedRecordDatabase.prepare = ((sql: string) => {
     const statement = boundedOriginalPrepare(sql)
@@ -216,7 +217,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

@@ -88,7 +88,7 @@
             mode="multiple"
             class="team-member-selector"
             :disabled="selectedTeam?.status !== 'active'"
-            placeholder="输入用户名称 / 账号 / ID 前缀搜索"
+            placeholder="输入用户名称搜索"
             @dropdown-visible-change="handleMemberOptionsDropdown"
             @search="handleMemberOptionsSearch"
           />

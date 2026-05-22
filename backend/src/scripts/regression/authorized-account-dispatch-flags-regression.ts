@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorized-account-dispatch-flags-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'authorized-account-dispatch-flags.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'authorized-account-dispatch-flags-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'authorized-account-dispatch-flags-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -176,7 +177,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-      databaseModule.getRecordDatabase().close()
+      databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

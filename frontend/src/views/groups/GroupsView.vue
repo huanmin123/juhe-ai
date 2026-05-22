@@ -160,6 +160,18 @@
             <a-input-number :value="formMaxQueueWaitSeconds" :min="1" :max="3600" @update:value="setFormMaxQueueWaitSeconds" />
             <div class="form-help">所有账户硬并发都满时，请求最多在分组短队列等待这么久；超时后返回 429。</div>
           </a-form-item>
+          <a-form-item class="scheduling-policy-wide" label="限制单 IP 并发">
+            <a-switch v-model:checked="clientIpLimitEnabled" checked-children="开启" un-checked-children="关闭" />
+            <div class="form-help">默认关闭；开启后限制同一 IP 在当前分组和 API Key 下同时占用的请求数。</div>
+          </a-form-item>
+          <a-form-item label="单 IP 并发上限">
+            <a-input-number :value="formClientIpConcurrencyLimit" :min="1" :max="1000000" :disabled="!clientIpLimitEnabled" @update:value="setFormClientIpConcurrencyLimit" />
+            <div class="form-help">开启限制时默认 5 个并发；关闭后不限制。</div>
+          </a-form-item>
+          <a-form-item label="超过限制时">
+            <a-segmented v-model:value="form.schedulingPolicy.clientIpConcurrencyOverflowMode" :options="clientIpOverflowModeOptions" :disabled="!clientIpLimitEnabled" block />
+            <div class="form-help">立即拒绝会返回 429；排队等待会先等同 IP 请求释放，再进入分组调度。</div>
+          </a-form-item>
         </div>
         <a-form-item label="说明">
           <a-textarea v-model:value="form.description" :rows="3" />
@@ -228,8 +240,15 @@ const defaultHighConcurrencySchedulingPolicy: Required<GroupSchedulingPolicy> = 
   recentTimeoutPenaltyThreshold: 2,
   maxQueueWaitMs: 60000,
   maxQueueSize: 1000,
-  perApiKeyQueueLimit: 1000
+  perApiKeyQueueLimit: 1000,
+  clientIpConcurrencyLimit: 0,
+  clientIpConcurrencyOverflowMode: 'reject'
 }
+const defaultClientIpConcurrencyLimit = 5
+const clientIpOverflowModeOptions = [
+  { label: '立即拒绝', value: 'reject' },
+  { label: '排队等待', value: 'queue' }
+]
 type GroupsPageState = {
   pagination?: { current: number; pageSize: number }
   systemAccountFilter: string
@@ -250,6 +269,16 @@ const form = reactive({
   schedulingPolicy: cloneHighConcurrencySchedulingPolicy()
 })
 const formMaxQueueWaitSeconds = computed(() => Math.max(1, Math.round((form.schedulingPolicy.maxQueueWaitMs ?? defaultHighConcurrencySchedulingPolicy.maxQueueWaitMs) / 1000)))
+const clientIpLimitEnabled = computed({
+  get: () => normalizeClientIpConcurrencyLimit(form.schedulingPolicy.clientIpConcurrencyLimit) > 0,
+  set: (enabled: boolean) => {
+    form.schedulingPolicy.clientIpConcurrencyLimit = enabled
+      ? normalizeClientIpConcurrencyLimit(form.schedulingPolicy.clientIpConcurrencyLimit) || defaultClientIpConcurrencyLimit
+      : 0
+    form.schedulingPolicy.clientIpConcurrencyOverflowMode = form.schedulingPolicy.clientIpConcurrencyOverflowMode === 'queue' ? 'queue' : 'reject'
+  }
+})
+const formClientIpConcurrencyLimit = computed(() => normalizeClientIpConcurrencyLimit(form.schedulingPolicy.clientIpConcurrencyLimit) || defaultClientIpConcurrencyLimit)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const groupsApi = useScopedGroupsApi(isManagementView)
 const {
@@ -359,7 +388,10 @@ function groupPolicySummary(group: GroupSummary): string {
     return '个人分组保持稳定调度'
   }
   const policy = cloneHighConcurrencySchedulingPolicy(group.schedulingPolicy)
-  return `最大单账户排队 ${policy.defaultSoftConcurrency}，最大等待 ${Math.round(policy.maxQueueWaitMs / 1000)} 秒，队列上限 ${policy.maxQueueSize}，快速优先、亲和打破、慢请求分流默认开启`
+  const clientIpSummary = policy.clientIpConcurrencyLimit > 0
+    ? `单 IP ${policy.clientIpConcurrencyLimit} 并发，超过后${policy.clientIpConcurrencyOverflowMode === 'queue' ? '排队等待' : '立即拒绝'}`
+    : '单 IP 不限制'
+  return `最大单账户排队 ${policy.defaultSoftConcurrency}，最大等待 ${Math.round(policy.maxQueueWaitMs / 1000)} 秒，${clientIpSummary}，队列上限 ${policy.maxQueueSize}`
 }
 
 function setFormMaxQueueWaitSeconds(value: unknown) {
@@ -367,6 +399,15 @@ function setFormMaxQueueWaitSeconds(value: unknown) {
     ? Math.trunc(value)
     : Math.round(defaultHighConcurrencySchedulingPolicy.maxQueueWaitMs / 1000)
   form.schedulingPolicy.maxQueueWaitMs = Math.min(3600, Math.max(1, seconds)) * 1000
+}
+
+function setFormClientIpConcurrencyLimit(value: unknown) {
+  form.schedulingPolicy.clientIpConcurrencyLimit = normalizeClientIpConcurrencyLimit(value) || defaultClientIpConcurrencyLimit
+}
+
+function normalizeClientIpConcurrencyLimit(value: unknown): number {
+  const numeric = typeof value === 'number' ? value : Number(value)
+  return Number.isFinite(numeric) ? Math.max(0, Math.trunc(numeric)) : 0
 }
 
 function groupConcurrencyAvailable(group: GroupSummary): boolean {
@@ -575,7 +616,11 @@ function groupFormPayload(): Record<string, unknown> {
     schedulingPolicy: form.groupType === 'high_concurrency'
       ? {
           defaultSoftConcurrency: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).defaultSoftConcurrency,
-          maxQueueWaitMs: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).maxQueueWaitMs
+          maxQueueWaitMs: cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).maxQueueWaitMs,
+          clientIpConcurrencyLimit: clientIpLimitEnabled.value ? formClientIpConcurrencyLimit.value : 0,
+          clientIpConcurrencyOverflowMode: clientIpLimitEnabled.value
+            ? cloneHighConcurrencySchedulingPolicy(form.schedulingPolicy).clientIpConcurrencyOverflowMode
+            : 'reject'
         }
       : undefined
   }
@@ -647,6 +692,10 @@ onMounted(() => {
 
 .scheduling-policy-grid :deep(.ant-input-number) {
   width: 100%;
+}
+
+.scheduling-policy-wide {
+  grid-column: 1 / -1;
 }
 
 .groups-table :deep(.ant-table-cell) {

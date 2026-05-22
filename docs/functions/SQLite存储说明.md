@@ -6,11 +6,10 @@
 
 ## 默认位置
 
-后端运行时按三个职责打开 SQLite。为了兼容旧本地库，`JUHE_AI_DATASET_DATABASE_PATH` 和 `JUHE_AI_STATS_DATABASE_PATH` 未配置时会回退到旧记录库路径；新部署或完成迁移后推荐显式配置三库：
+后端运行时按三个职责打开 SQLite，不再保留旧记录库运行时兼容入口。未配置统计数据集库或统计结果库路径时，会使用各自默认文件，不会回退到旧记录库：
 
 ```text
 业务库：backend/data/juhe-ai.sqlite3
-旧记录库兼容路径：backend/data/juhe-ai-records.sqlite3
 统计数据集库：backend/data/juhe-ai-dataset.sqlite3
 统计结果库：backend/data/juhe-ai-stats.sqlite3
 ```
@@ -19,12 +18,11 @@
 
 ```dotenv
 JUHE_AI_DATABASE_PATH=./data/juhe-ai.sqlite3
-JUHE_AI_RECORD_DATABASE_PATH=./data/juhe-ai-records.sqlite3
 JUHE_AI_DATASET_DATABASE_PATH=./data/juhe-ai-dataset.sqlite3
 JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 ```
 
-相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-dataset.sqlite3` 和 `./data/juhe-ai-stats.sqlite3` 这类项目内相对路径；如果需要兼容旧记录库，也继续保留 `./data/juhe-ai-records.sqlite3`。如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
+相对路径按 `backend/` 目录解析。为了保持可移植部署，推荐使用 `./data/juhe-ai.sqlite3`、`./data/juhe-ai-dataset.sqlite3` 和 `./data/juhe-ai-stats.sqlite3` 这类项目内相对路径。三个路径必须指向不同 SQLite 文件；如果确实要把数据放到项目外，也可以填写当前操作系统支持的绝对路径。
 
 迁移到其他电脑或服务器时，保留 `backend/.env` 和 `backend/data/` 即可带走配置与数据。
 
@@ -68,7 +66,7 @@ JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 - 统计数据集库：保存 `usage_records`、原始审计、操作日志、运行日志索引、模型检测明细和记录清理目标等高增长事实数据。
 - 统计结果库：保存 `usage_stats_*`、`usage_model_*`、`usage_error_*`、`usage_latency_*`、额度窗口、范围窗口、排行快照、授权消耗窗口、账号质量结果、分组统计、系统监控采样、监控趋势和 `stats_job_state` 等紧凑结果。
 
-页面统计、列表用量和网关额度只读统计结果库；明细排障只读统计数据集库；后台 worker 从数据集库按游标读取事实，并在统计结果库事务中写入结果和推进水位。未配置新路径时，两个新入口会回退到旧 `JUHE_AI_RECORD_DATABASE_PATH`，用于平滑兼容旧本地库和回归脚本。
+页面统计、列表用量和网关额度只读统计结果库；明细排障只读统计数据集库；后台 worker 从数据集库按游标读取事实，并在统计结果库事务中写入结果和推进水位。旧 `juhe-ai-records.sqlite3` 不再作为运行时回退目标；如需保留旧历史明细，只能停服务后用一次性迁移脚本复制到数据集库。
 
 ## 当前实现
 
@@ -79,7 +77,7 @@ JUHE_AI_STATS_DATABASE_PATH=./data/juhe-ai-stats.sqlite3
 - 每个 SQLite 连接必须设置短暂写锁等待时间，避免 DB service、background worker 和管理面低频写操作短事务重叠时立即返回 `database is locked`
 - 通过 `backend/src/storage/repositories.ts` 统一访问数据
 - 系统管理 API、登录态校验、管理面 CRUD、客户请求链路中的高频 SQLite 读写、公开设置读取、运行日志索引查询、账号错误状态副作用、OAuth Access Token 刷新持久化和 OAuth Codex 额度快照写入，都通过独立本地 DB service 进程完成；主 Web 进程只代理 `/__aisys__/api/*`，不解析管理 API JSON body，不直接导入管理路由或 repository。DB service 不改变 SQLite 单写者模型，DB service 不可用时请求返回可读错误，不能回退到主 Web 进程本地同步执行。
-- 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；统计数据集库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开，未配置时回退到 `JUHE_AI_RECORD_DATABASE_PATH`；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开，未配置时同样回退到 `JUHE_AI_RECORD_DATABASE_PATH`。三类入口都使用 WAL。
+- 业务库通过 `JUHE_AI_DATABASE_PATH` 打开；统计数据集库通过 `JUHE_AI_DATASET_DATABASE_PATH` 打开；统计结果库通过 `JUHE_AI_STATS_DATABASE_PATH` 打开。三类入口都使用 WAL，并且三个路径必须互不相同。
 - 使用记录按每次上游尝试写入统计数据集库；server 角色只把使用记录投递给 background worker IPC 队列，不在 worker 未就绪时回落到主进程本地队列或同步写库。失败记录保存 `request_snapshot_json` / `response_snapshot_json`，用于前端查看请求与返回日志
 - 操作日志使用独立表保存已成功提交的业务状态变更，用于追溯系统账户对资源的增删改、启停、绑定、授权和配置变更；查询请求不写操作日志。
 - 管理端写操作需要按 [幂等与唯一约束设计](幂等与唯一约束设计.md) 接入防重复提交和业务唯一约束：前端重复点击或网络重试不应创建多条业务数据，重复提交拦截不写第二条操作日志。

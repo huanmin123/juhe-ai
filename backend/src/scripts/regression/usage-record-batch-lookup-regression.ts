@@ -9,7 +9,8 @@ import type { UsageRecordInput } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-record-batch-lookup-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'usage-record-batch-lookup-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -82,7 +83,7 @@ try {
   assert.equal(detail.groupId, group.id, '使用记录应保留分组')
   assert.equal(detail.accountId, account.id, '使用记录应保留账户')
 
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getDatasetDatabase()
   const originalRecordPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
   let failedInsertPrepares = 0
   const failuresBefore = usageRecordQueue.getUsageRecordQueueRuntime().flushFailureCount
@@ -116,7 +117,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -144,14 +145,14 @@ function buildUsageRecord(index: number, apiKeyId: string, groupId: string, acco
 }
 
 function usageRecordCount(): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM usage_records')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function usageRecordExists(id: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM usage_records WHERE id = ?')
     .get(id) as { total?: number } | undefined
   return Number(row?.total ?? 0)

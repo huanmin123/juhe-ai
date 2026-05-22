@@ -189,7 +189,7 @@
             :filter-option="false"
             :loading="groupOptionsLoading"
             :options="groupOptions"
-            placeholder="输入分组名称 / ID 前缀搜索"
+            placeholder="输入分组名称搜索"
             @dropdown-visible-change="handleGroupOptionsDropdown"
             @search="handleGroupOptionsSearch"
           />

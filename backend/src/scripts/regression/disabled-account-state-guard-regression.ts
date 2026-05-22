@@ -12,7 +12,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-disabled-account-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'disabled-account-guard.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'disabled-account-guard-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'disabled-account-guard-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -81,6 +82,10 @@ async function main(): Promise<void> {
     const adminCookie = await login(baseUrl)
 
     const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+    repositories.updateSettings({
+      temporaryUnschedulableRetryAttempts: 0,
+      temporaryUnschedulableRetryIntervalSeconds: 0
+    })
     const account = repositories.createAccount({
       providerCode: 'openai',
       name: '停用账户状态保护回归',
@@ -112,15 +117,18 @@ async function main(): Promise<void> {
       body: JSON.stringify({ model: 'gpt-4o-mini', prompt: 'hi' })
     })
     const apiTestText = await apiTestResponse.text()
-    assert(apiTestResponse.status === 400, `停用账户测试接口应拒绝，实际 HTTP ${apiTestResponse.status}: ${apiTestText}`)
-    assert(apiTestText.includes('账户已停用'), `停用账户测试接口错误信息异常：${apiTestText}`)
+    assert(apiTestResponse.ok, `停用账户测试接口应允许诊断，实际 HTTP ${apiTestResponse.status}: ${apiTestText}`)
+    const apiTestResult = (JSON.parse(apiTestText) as ApiEnvelope<AccountTestResult>).data
+    assert(apiTestResult.success === false, '停用账户测试接口应返回测试失败结果')
+    assert(!apiTestResult.message.includes('账户已停用'), `停用账户测试不应被停用状态短路：${apiTestResult.message}`)
     assertAccountStatus(account.id, 'disabled', false, '测试接口不应改变停用状态')
     assertAccountDispatchFlags(account.id, true, false, '测试接口不应清理停用账户调度标记')
 
     const latestDisabled = repositories.findAccountForTest(account.id, access)
     assert(latestDisabled, '停用测试账户不存在')
     const serviceTest = await testOpenAIAccount(latestDisabled, { groupId: group.id })
-    assert(serviceTest.success === false && serviceTest.message.includes('账户已停用'), `测试服务应拒绝停用账户：${serviceTest.message}`)
+    assert(serviceTest.success === false, '测试服务应允许停用账户进入真实测试并返回失败结果')
+    assert(!serviceTest.message.includes('账户已停用'), `测试服务不应被停用状态短路：${serviceTest.message}`)
     assertAccountStatus(account.id, 'disabled', false, '测试服务不应改变停用状态')
 
     const cooldownResult = repositories.markAccountCooldown(account.id, new Date(Date.now() + 60_000).toISOString(), '模拟冷却')
@@ -314,7 +322,7 @@ async function main(): Promise<void> {
     await closeServer(appServer)
     try {
       databaseModule.getDatabase().close()
-      databaseModule.getRecordDatabase().close()
+      databaseModule.closeStorageDatabases()
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })

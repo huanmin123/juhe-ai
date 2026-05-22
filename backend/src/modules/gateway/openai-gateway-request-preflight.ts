@@ -27,6 +27,7 @@ import {
   resolveOpenAIGatewayClientStrategy,
   type OpenAIGatewayClientStrategyContext
 } from './openai-gateway-client-strategy.js'
+import { acquireHighConcurrencyClientIpSlot, type ClientIpConcurrencyDecision } from './openai-gateway-client-ip-concurrency.service.js'
 import { waitForHighConcurrencyGroupCapacity } from './openai-gateway-high-concurrency-queue.service.js'
 import { finalizeGatewayAuthFailureAudit, sendOpenAIModelsGatewayResponse } from './openai-gateway-fixed-responses.js'
 import { sendGatewayFailureResponse, sendQuotaExceededResponse } from './openai-gateway-failure-response.js'
@@ -77,6 +78,7 @@ export interface OpenAIGatewayDispatchContext {
   accounts: UpstreamAccount[]
   sessionAffinityKey?: string
   clientStrategy: OpenAIGatewayClientStrategyContext
+  releaseClientIpConcurrency: () => void
 }
 
 export async function prepareOpenAIGatewayDispatchContext(
@@ -277,6 +279,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     groupType: groupAccess.groupType,
     schedulingPolicy: groupAccess.schedulingPolicy
   }
+  let releaseClientIpConcurrency = noop
   const modelFilter = filterGatewayAccountsByRequestedModel(rawCandidateAccounts, requestModel(req))
   if (modelFilter.skippedCount > 0) {
     auditCapture.addGatewayMetadata({
@@ -392,6 +395,51 @@ export async function prepareOpenAIGatewayDispatchContext(
     return undefined
   }
 
+  if (dispatchOrderingOptions.groupType === 'high_concurrency') {
+    const clientIpConcurrency = await acquireHighConcurrencyClientIpSlot({
+      systemAccountId,
+      groupId,
+      apiKeyId,
+      clientIp,
+      policy: groupAccess.schedulingPolicy,
+      signal
+    })
+    if (clientIpConcurrency.enabled) {
+      auditCapture.addGatewayMetadata({
+        label: 'high_concurrency_client_ip',
+        metadata: clientIpConcurrencyAuditMetadata(clientIpConcurrency)
+      })
+    }
+    if (!clientIpConcurrency.acquired) {
+      if (signal?.aborted || res.writableEnded) {
+        return undefined
+      }
+      const statusCode = 429
+      const responsePayload = gatewayErrorPayload(clientIpConcurrencyFailureMessage(clientIpConcurrency), 'rate_limit_exceeded')
+      sendGatewayFailureResponse({
+        req,
+        res,
+        auditCapture,
+        usageContext,
+        startedAt,
+        statusCode,
+        responsePayload,
+        audit: {
+          outcome: 'gateway_failed',
+          errorPhase: 'dispatch',
+          errorCode: 'rate_limit_exceeded',
+          errorMessage: responsePayload.error.message
+        }
+      })
+      return undefined
+    }
+    releaseClientIpConcurrency = clientIpConcurrency.release
+    if (signal?.aborted || res.writableEnded) {
+      releaseClientIpConcurrency()
+      return undefined
+    }
+  }
+
   if (areOpenAIHighConcurrencyAccountsHardBusy(accounts, dispatchOrderingOptions)) {
     accounts = orderOpenAIAccountsBySessionAffinity(
       refreshGatewayAccountCurrentConcurrency(accounts),
@@ -414,6 +462,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       metadata: queueWait
     })
     if (signal?.aborted || res.writableEnded) {
+      releaseClientIpConcurrency()
       return undefined
     }
     accounts = orderOpenAIAccountsBySessionAffinity(
@@ -426,6 +475,7 @@ export async function prepareOpenAIGatewayDispatchContext(
   if (areOpenAIHighConcurrencyAccountsHardBusy(accounts, dispatchOrderingOptions)) {
     const statusCode = 429
     const responsePayload = gatewayErrorPayload('分组繁忙，请稍后重试', 'rate_limit_exceeded')
+    releaseClientIpConcurrency()
     sendGatewayFailureResponse({
       req,
       res,
@@ -449,7 +499,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     usageContext,
     accounts,
     sessionAffinityKey,
-    clientStrategy
+    clientStrategy,
+    releaseClientIpConcurrency
   }
 }
 
@@ -475,6 +526,39 @@ function mergeGatewaySettings(base: GatewaySettings, override?: Partial<GatewayS
   }
 }
 
+function clientIpConcurrencyAuditMetadata(decision: ClientIpConcurrencyDecision): Record<string, unknown> {
+  if (!decision.enabled) {
+    return { enabled: false }
+  }
+  if (decision.acquired) {
+    return {
+      enabled: true,
+      acquired: true,
+      current: decision.current,
+      limit: decision.limit,
+      waitedMs: decision.waitedMs,
+      queued: decision.queued,
+      queueSizeBeforeAcquire: decision.queueSizeBeforeAcquire
+    }
+  }
+  return {
+    enabled: true,
+    acquired: false,
+    reason: decision.reason,
+    current: decision.current,
+    limit: decision.limit,
+    waitedMs: decision.waitedMs,
+    queueSize: decision.queueSize
+  }
+}
+
+function clientIpConcurrencyFailureMessage(decision: ClientIpConcurrencyDecision): string {
+  if (decision.enabled && !decision.acquired && decision.reason === 'timeout') {
+    return '当前 IP 并发排队等待超时，请稍后重试'
+  }
+  return '当前 IP 并发已达到分组限制，请稍后重试'
+}
+
 function buildGatewayUsageContext(input: {
   traceId: string
   clientIp?: string
@@ -495,3 +579,5 @@ function buildGatewayUsageContext(input: {
     requestSnapshot
   }
 }
+
+function noop(): void {}

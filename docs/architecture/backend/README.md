@@ -30,7 +30,7 @@
 - 运行时：官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`，且内置 `node:sqlite` 必须可用。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
-- 存储：Node 内置 `node:sqlite`，默认保留业务库 `backend/data/juhe-ai.sqlite3` 和旧记录库回退路径；可通过 `JUHE_AI_DATASET_DATABASE_PATH` / `JUHE_AI_STATS_DATABASE_PATH` 拆为业务库、统计数据集库和统计结果库。
+- 存储：Node 内置 `node:sqlite`，默认按业务库 `backend/data/juhe-ai.sqlite3`、统计数据集库 `backend/data/juhe-ai-dataset.sqlite3` 和统计结果库 `backend/data/juhe-ai-stats.sqlite3` 三个 SQLite 文件运行，不再保留旧记录库回退路径。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
 - 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口，当前只启用 OpenAI 供应商适配。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
@@ -133,7 +133,7 @@ flowchart LR
 - `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
 - 日志、审计 payload、导入导出文件和所有可能频繁读取的大文件都必须按 offset / cursor / stream / 分块窗口读取；禁止在运行路径中把完整文件读入内存后再切割、搜索、分页或追增量。
 - 持续追新增内容的文件读取必须持久化游标和文件标识，worker 重启后从游标继续；按行处理时只在完整行落地后推进 offset，轮转、截断或文件标识变化时显式重置。
-- 启动时通过 `applyBusinessSchema()`、`applyDatasetSchema()` 和 `applyStatsSchema()` 创建当前版本需要的表和索引；旧 `applyRecordSchema()` 只作为兼容旧记录库回退路径，不承载一次性旧库修复逻辑。
+- 启动时通过 `applyBusinessSchema()`、`applyDatasetSchema()` 和 `applyStatsSchema()` 创建当前版本需要的表和索引；旧 `applyRecordSchema()` 已删除。
 - 启动时通过 `seedDefaults()` 写入默认管理员、OpenAI 供应商、默认 OpenAI 分组、全局设置和系统设置。
 - 新字段必须明确默认值、可空性、展示边界、数据清洗策略和是否需要索引。
 - 当前项目未正式上线，本地 SQLite 可以备份后直接清洗或重建；源码只保留当前完整 schema、repository 和 API 逻辑。
@@ -220,9 +220,8 @@ erDiagram
 - `JUHE_AI_HOST`：后端监听地址，默认 `127.0.0.1`。
 - `JUHE_AI_PORT`：后端监听端口，默认 `3000`。
 - `JUHE_AI_DATABASE_PATH`：SQLite 业务库路径，默认 `./data/juhe-ai.sqlite3`。
-- `JUHE_AI_RECORD_DATABASE_PATH`：旧 SQLite 记录库兼容路径，默认 `./data/juhe-ai-records.sqlite3`。
-- `JUHE_AI_DATASET_DATABASE_PATH`：可选统计数据集库路径，未配置时回退到旧记录库路径。
-- `JUHE_AI_STATS_DATABASE_PATH`：可选统计结果库路径，未配置时回退到旧记录库路径。
+- `JUHE_AI_DATASET_DATABASE_PATH`：统计数据集库路径，默认 `./data/juhe-ai-dataset.sqlite3`。
+- `JUHE_AI_STATS_DATABASE_PATH`：统计结果库路径，默认 `./data/juhe-ai-stats.sqlite3`。
 - `JUHE_AI_SECRET`：本地敏感数据加密和签名相关密钥，复用旧数据库时必须保持稳定。
 - `JUHE_AI_OAUTH_PROXY_URL`：OpenAI OAuth 相关请求可选代理。
 - `JUHE_AI_BACKEND_URL`、`JUHE_AI_SMOKE_ACCOUNT_NAME`、`JUHE_AI_SMOKE_MODEL`、`JUHE_AI_SMOKE_PROMPT`：烟测配置。

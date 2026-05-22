@@ -9,7 +9,8 @@ import type { AuditLogInput } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-audit-log-batch-existing-lookup-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'audit-log-batch-existing-lookup-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -25,7 +26,7 @@ const [databaseModule, repositories] = await Promise.all([
 try {
   repositories.createAuditLogsBatch([auditLog('audit_existing_lookup_0', 'trace-audit-existing-lookup-0')])
 
-  const database = databaseModule.getRecordDatabase()
+  const database = databaseModule.getDatasetDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
   let existingLookupSelects = 0
   const blobPrepareCounts = {
@@ -91,7 +92,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -150,35 +151,35 @@ function auditLog(id: string, traceId: string): AuditLogInput {
 }
 
 function auditLogCount(): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM audit_logs')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function auditAttemptCount(): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM audit_log_attempts')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function auditPayloadRefCount(): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM audit_payload_refs')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function auditErrorGroupCount(): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM audit_error_groups')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function auditErrorGroupEventCount(): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT SUM(count) AS total FROM audit_error_groups')
     .get() as { total?: number } | undefined
   return Number(row?.total ?? 0)

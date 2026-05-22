@@ -10,7 +10,8 @@ const logDir = join(tempRoot, 'logs')
 mkdirSync(logDir)
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.processRole = 'worker'
 runtimeConfig.log.directory = logDir
 runtimeConfig.log.fileEnabled = true
@@ -30,7 +31,7 @@ const [databaseModule, runtimeLogIndexQueue, runtimeLogFileImport, runtimeLogsRe
 ])
 
 try {
-  const database = databaseModule.getRecordDatabase()
+  const database = databaseModule.getDatasetDatabase()
   const now = new Date().toISOString()
   const repeatedLine = JSON.stringify({
     time: now,
@@ -192,7 +193,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

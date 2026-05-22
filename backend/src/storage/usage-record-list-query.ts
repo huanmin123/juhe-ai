@@ -53,13 +53,12 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
   }
   const accountKeyword = options?.accountKeyword?.trim()
   if (accountKeyword) {
-    const matchedAccountIds = accountIdsForKeyword(accountKeyword)
+    const matchedAccountIds = accountIdsForKeyword(accountKeyword, access)
     if (matchedAccountIds.length > 0) {
-      clauses.push(`(ur.account_id = ? OR ur.account_id LIKE ? ESCAPE '\\' OR ur.account_id IN (${matchedAccountIds.map(() => '?').join(', ')}))`)
-      params.push(accountKeyword, `${escapeLikePrefix(accountKeyword)}%`, ...matchedAccountIds)
+      clauses.push(`ur.account_id IN (${matchedAccountIds.map(() => '?').join(', ')})`)
+      params.push(...matchedAccountIds)
     } else {
-      clauses.push("(ur.account_id = ? OR ur.account_id LIKE ? ESCAPE '\\')")
-      params.push(accountKeyword, `${escapeLikePrefix(accountKeyword)}%`)
+      clauses.push('1 = 0')
     }
   }
   if (options?.result === 'success') {
@@ -92,11 +91,18 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
   }
 }
 
-function accountIdsForKeyword(keyword: string): string[] {
+function accountIdsForKeyword(keyword: string, access?: AccessScope): string[] {
   const pattern = `${escapeLikePrefix(keyword)}%`
+  const scope = buildSystemAccountScopeClause(access, 'accounts.system_account_id')
   const rows = getDatabase()
-    .prepare("SELECT id FROM accounts WHERE (name COLLATE NOCASE = ? OR name LIKE ? ESCAPE '\\' OR id = ? OR id LIKE ? ESCAPE '\\') LIMIT 200")
-    .all(keyword, pattern, keyword, pattern) as unknown as Array<{ id?: string }>
+    .prepare(`
+      SELECT accounts.id
+      FROM accounts
+      WHERE (accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\')${scope.clause}
+      ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
+      LIMIT 200
+    `)
+    .all(keyword, pattern, ...scope.params) as unknown as Array<{ id?: string }>
   return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
 }
 

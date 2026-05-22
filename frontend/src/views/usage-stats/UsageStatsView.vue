@@ -42,7 +42,7 @@
             :loading="accountOptionsLoading"
             :max-tag-count="0"
             :options="accountOptions"
-            placeholder="输入名称 / ID 前缀添加账户"
+            placeholder="输入账户名称添加账户"
             @dropdown-visible-change="handleAccountOptionsDropdown"
             @search="handleAccountOptionsSearch"
             @select="handleAccountSelect"

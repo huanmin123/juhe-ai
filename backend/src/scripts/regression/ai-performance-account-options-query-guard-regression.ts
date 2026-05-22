@@ -9,7 +9,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-ai-performance-account-options-query-guard-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'ai-performance-account-options-query-guard-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -111,13 +112,13 @@ try {
       keyword: uniquePrefix(matchedAccount.id, otherOwnerAccount.id),
       limit: 10
     })
-    assert.deepEqual(idPrefix.map((account) => account.id), [matchedAccount.id], 'AI 性能账号选项应支持账号 ID 前缀搜索')
+    assert.deepEqual(idPrefix.map((account) => account.id), [], 'AI 性能账号选项名称搜索不应支持账号 ID 前缀搜索')
 
     const ownerKeyword = usageStatsRepository.listAiPerformanceAccountOptions(adminAccess, {
       keyword: owner.displayName,
       limit: 10
     })
-    assert(ownerKeyword.some((account) => account.id === matchedAccount.id), '管理员全局视图应支持按系统账号名前缀定位账号')
+    assert(!ownerKeyword.some((account) => account.id === matchedAccount.id), 'AI 性能账号选项名称搜索不应通过系统用户名称命中账号')
 
     const wildcardKeyword = usageStatsRepository.listAiPerformanceAccountOptions(adminAccess, {
       keyword: 'perf%',
@@ -144,18 +145,18 @@ try {
     }
   }
   for (const call of accountOptionCalls) {
+    assert(!/\bWHERE[\s\S]*\baccounts\.id\s+(?:=|LIKE)\s+\?/i.test(call.sql), 'AI 性能账号选项名称搜索不应把账号 ID 放进 WHERE')
+    assert(!/\baccounts\.provider_code\s+(?:=|LIKE)\s+\?/i.test(call.sql), 'AI 性能账号选项名称搜索不应把供应商编码放进 WHERE')
     assert(!/\bLEFT\s+JOIN\s+system_accounts\b/i.test(call.sql), 'AI 性能账号选项关键词查询不应为 owner 名称挂系统账号表')
     assert(!/\bCOALESCE\s*\(\s*system_accounts\./i.test(call.sql), 'AI 性能账号选项关键词查询不应在账号查询中扫描系统账号展示字段')
   }
   assertBusinessIndexExists('idx_accounts_name_lookup')
   assertBusinessIndexExists('idx_accounts_system_account_name_lookup')
-  assertBusinessIndexExists('idx_system_accounts_display_name_lookup')
 
-  console.log('AI 性能账号选项查询防护回归通过：关键词使用精确/前缀条件，owner 名称先解析 ID，不再传入前导通配符')
+  console.log('AI 性能账号选项查询防护回归通过：关键词仅按账号名称精确/前缀匹配，显式账号 ID 仅用于已选项回填')
 } finally {
   try {
-    databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

@@ -12,7 +12,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-proxy-negative-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'proxy-negative.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'proxy-negative-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'proxy-negative-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -107,6 +108,8 @@ interface AccountTestResult {
   success: boolean
   message: string
   proxyUrl?: string
+  accountStatusChanged?: boolean
+  accountStatus?: string
 }
 
 interface UsageRecordListResult {
@@ -178,6 +181,12 @@ async function main(): Promise<void> {
     assert(testResult.success === false, '账户测试在代理停用后不应成功')
     assert(testResult.proxyUrl === '[configured]', '账户测试失败结果应保留代理已配置标记')
     assert(testResult.message.includes('代理不存在或已停用'), `账户测试错误信息异常：${testResult.message}`)
+    assert(testResult.accountStatusChanged === true, '账户测试确认账号不可用后应返回状态已变更')
+    assert(testResult.accountStatus === 'temporary_unavailable', `账户测试失败后应标记临时不可调用，实际 ${testResult.accountStatus}`)
+    const cooledAccount = repositories.findAccountSummary(account.id)
+    assert(cooledAccount?.status === 'temporary_unavailable', `账户测试失败后数据库状态应为临时不可调用，实际 ${cooledAccount?.status}`)
+    assert(Boolean(cooledAccount?.cooldownUntil), '账户测试失败后应写入冷却结束时间')
+    assert(cooledAccount?.lastErrorMessage?.includes('账户测试失败'), `账户测试失败后应写入最近错误，实际 ${cooledAccount?.lastErrorMessage}`)
     await patchEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/accounts/${account.id}`, adminCookie, {
       status: 'active',
       schedulable: true,
@@ -214,7 +223,7 @@ async function main(): Promise<void> {
     await closeServer(upstreamServer)
     try {
       databaseModule.getDatabase().close()
-      databaseModule.getRecordDatabase().close()
+      databaseModule.closeStorageDatabases()
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })

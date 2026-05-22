@@ -9,14 +9,17 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-system-account-options-lightweight-${Date.now()}-${Math.random().toString(16).slice(2)}`)
-const blockedRecordDatabasePath = join(tempRoot, 'records-as-directory.sqlite3')
+const blockedDatasetDatabasePath = join(tempRoot, 'dataset-as-directory.sqlite3')
+const blockedStatsDatabasePath = join(tempRoot, 'stats-as-directory.sqlite3')
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = blockedRecordDatabasePath
+runtimeConfig.datasetDatabasePath = blockedDatasetDatabasePath
+runtimeConfig.statsDatabasePath = blockedStatsDatabasePath
 runtimeConfig.secret = 'system-account-options-lightweight-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 runtimeConfig.processRole = 'worker'
-mkdirSync(blockedRecordDatabasePath, { recursive: true })
+mkdirSync(blockedDatasetDatabasePath, { recursive: true })
+mkdirSync(blockedStatsDatabasePath, { recursive: true })
 logger.level = 'silent'
 
 const [

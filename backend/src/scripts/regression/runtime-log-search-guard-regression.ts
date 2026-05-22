@@ -10,7 +10,8 @@ const logDir = join(tempRoot, 'logs')
 mkdirSync(logDir)
 
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.processRole = 'worker'
 runtimeConfig.log.directory = logDir
 runtimeConfig.log.fileEnabled = true
@@ -112,7 +113,7 @@ try {
     '运行日志 traceId 筛选应支持右侧前缀定位，与审计/操作日志契约一致'
   )
 
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getDatasetDatabase()
   const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
   const facetMaintenanceSql: string[] = []
   recordDatabase.prepare = ((sql: string) => {
@@ -176,7 +177,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

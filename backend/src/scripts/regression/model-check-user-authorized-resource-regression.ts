@@ -11,7 +11,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-model-check-user-authorized-resource-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'model-check-user-authorized-resource.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'model-check-user-authorized-resource-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'model-check-user-authorized-resource-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -165,7 +166,7 @@ try {
     usageRecordQueue.flushAllUsageRecordQueue()
     await gatewayJsonParser.stopGatewayJsonParseWorker?.()
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -330,7 +331,7 @@ function outputForProbe(body: Record<string, unknown>): string {
 function listUsageRowsByTraceIds(traceIds: string[]): Array<Record<string, string | null>> {
   assert(traceIds.length > 0, '模型检测应返回检测项 traceId')
   const placeholders = traceIds.map(() => '?').join(',')
-  return databaseModule.getRecordDatabase()
+  return databaseModule.getDatasetDatabase()
     .prepare(`
       SELECT trace_id, system_account_id, account_id, account_owner_system_account_id, account_access_type, account_authorization_id
       FROM usage_records

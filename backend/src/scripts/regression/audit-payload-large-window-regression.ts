@@ -9,7 +9,8 @@ import type { AuditLogInput } from '../../storage/repositories.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-audit-payload-large-window-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'audit-payload-large-window-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -29,7 +30,7 @@ const largeBodyBytes = Buffer.byteLength(largeBody, 'utf8')
 try {
   repositories.createAuditLogsBatch([auditLog('audit_large_plain_window', 'trace-audit-large-window', largeBody)])
 
-  const bodyBlob = databaseModule.getRecordDatabase()
+  const bodyBlob = databaseModule.getDatasetDatabase()
     .prepare('SELECT id, raw_size_bytes, compressed_size_bytes, compression, storage_key FROM audit_payload_blobs WHERE raw_size_bytes = ? LIMIT 1')
     .get(largeBodyBytes) as { id: string; raw_size_bytes: number; compressed_size_bytes: number; compression: string; storage_key: string } | undefined
   assert(bodyBlob, '超大审计正文应写入 payload blob')
@@ -54,7 +55,7 @@ try {
   cleanupTemporaryAuditBlobs()
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -117,7 +118,7 @@ function auditLog(id: string, traceId: string, body: string): AuditLogInput {
 
 function cleanupTemporaryAuditBlobs(): void {
   try {
-    const rows = databaseModule.getRecordDatabase()
+    const rows = databaseModule.getDatasetDatabase()
       .prepare('SELECT storage_key FROM audit_payload_blobs')
       .all() as Array<{ storage_key?: string }>
     for (const row of rows) {

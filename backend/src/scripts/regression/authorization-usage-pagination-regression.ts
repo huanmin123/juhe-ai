@@ -9,7 +9,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-authorization-usage-pagination-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'authorization-usage-pagination-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -187,7 +188,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -204,7 +205,7 @@ function seedTeamWindow(input: {
   totalCost: number
   lastUsedAt?: string
 }): void {
-  databaseModule.getRecordDatabase()
+  databaseModule.getStatsDatabase()
     .prepare(`
       INSERT INTO authorization_team_usage_range_windows (
         system_account_id, start_date, end_date, team_filter_id, resource_filter_type, resource_filter_id,
@@ -240,7 +241,7 @@ function seedUserWindow(input: {
   totalCost: number
   lastUsedAt?: string
 }): void {
-  databaseModule.getRecordDatabase()
+  databaseModule.getStatsDatabase()
     .prepare(`
       INSERT INTO authorization_user_usage_range_windows (
         system_account_id, start_date, end_date, team_filter_id, grantee_filter_system_account_id, resource_filter_type, resource_filter_id,

@@ -41,7 +41,7 @@
             :loading="accountsLoading"
             :disabled="loading"
             :filter-option="false"
-            placeholder="输入名称 / ID 前缀添加账户"
+            placeholder="输入账户名称添加账户"
             @select="handleAccountSelect"
             @search="handleAccountSearch"
             @dropdown-visible-change="handleAccountDropdownVisibleChange"

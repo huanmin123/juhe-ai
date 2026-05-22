@@ -10,7 +10,8 @@ import { rangeWindowKey } from '../../storage/usage-stats-window-helpers.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-usage-overview-window-atomic-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'usage-overview-window-atomic.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'usage-overview-window-atomic-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'usage-overview-window-atomic-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -26,7 +27,7 @@ const [databaseModule, usageStatsRepository] = await Promise.all([
 const adminAccess = { systemAccountId: 'sys_admin', role: 'admin' as const }
 
 try {
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getStatsDatabase()
   const range = usageStatsRepository.normalizeDefaultUsageStatsRange()
   const windowKey = rangeWindowKey(range)
   seedOldOverviewWindows(GLOBAL_STATS_SYSTEM_ACCOUNT_ID, windowKey, range.startDate, range.endDate)
@@ -92,14 +93,14 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function seedOldOverviewWindows(systemAccountId: string, windowKey: string, startDate: string, endDate: string): void {
-  const database = databaseModule.getRecordDatabase()
+  const database = databaseModule.getStatsDatabase()
   const updatedAt = '2000-01-01T00:00:00.000Z'
   database.prepare(`
     INSERT INTO usage_overview_summary_windows (
@@ -130,7 +131,7 @@ function seedOldOverviewWindows(systemAccountId: string, windowKey: string, star
 }
 
 function seedNewUsageSources(statDate: string): void {
-  const database = databaseModule.getRecordDatabase()
+  const database = databaseModule.getStatsDatabase()
   const updatedAt = '2000-01-02T00:00:00.000Z'
   for (const scope of ['sys_admin', GLOBAL_STATS_SYSTEM_ACCOUNT_ID]) {
     database.prepare(`
@@ -182,7 +183,7 @@ function assertOverviewWindowTables(input: {
   modelRequests: number
   errorCount: number
 }): void {
-  const database = databaseModule.getRecordDatabase()
+  const database = databaseModule.getStatsDatabase()
   const summary = database.prepare(`
     SELECT COUNT(*) AS rows, COALESCE(SUM(request_count), 0) AS requests
     FROM usage_overview_summary_windows

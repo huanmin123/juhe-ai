@@ -7,7 +7,8 @@ import { runtimeConfig } from '../../config/runtime.js'
 
 const tempRoot = mkdtempSync(join(tmpdir(), 'juhe-ai-runtime-log-keyword-only-sql-'))
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.processRole = 'worker'
 
 const [databaseModule, runtimeLogsRepository] = await Promise.all([
@@ -65,7 +66,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

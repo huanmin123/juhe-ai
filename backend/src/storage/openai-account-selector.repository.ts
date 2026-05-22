@@ -133,9 +133,7 @@ export function findOpenAIAccountForGroup(
   }
 
   const availabilityClause = forceAvailability
-    ? `
-          AND status <> 'disabled'
-    `
+    ? ''
     : options.includeUnavailable
     ? `
           AND schedulable = 1

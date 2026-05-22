@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-record-maintenance-queue-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
 mkdirSync(tempRoot, { recursive: true })
@@ -86,9 +87,9 @@ try {
     seedAccount(`acct_codex_snapshot_batch_${index}`, 'sys_admin')
   }
   const businessDatabase = databaseModule.getDatabase()
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const statsDatabase = databaseModule.getStatsDatabase()
   const originalBusinessPrepare = businessDatabase.prepare.bind(businessDatabase) as typeof businessDatabase.prepare
-  const originalRecordPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
+  const originalStatsPrepare = statsDatabase.prepare.bind(statsDatabase) as typeof statsDatabase.prepare
   let accountOwnerBatchSelects = 0
   let accountUsageSnapshotUpsertPrepares = 0
   businessDatabase.prepare = ((sql: string) => {
@@ -100,12 +101,12 @@ try {
     }
     return originalBusinessPrepare(sql)
   }) as typeof businessDatabase.prepare
-  recordDatabase.prepare = ((sql: string) => {
+  statsDatabase.prepare = ((sql: string) => {
     if (/^\s*INSERT\s+INTO\s+account_usage_snapshots\b/i.test(sql)) {
       accountUsageSnapshotUpsertPrepares += 1
     }
-    return originalRecordPrepare(sql)
-  }) as typeof recordDatabase.prepare
+    return originalStatsPrepare(sql)
+  }) as typeof statsDatabase.prepare
 
   try {
     recordMaintenanceQueue.enqueueRecordMaintenanceJobsLocal(Array.from({ length: 5 }, (_, index) => ({
@@ -123,7 +124,7 @@ try {
     recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   } finally {
     businessDatabase.prepare = originalBusinessPrepare
-    recordDatabase.prepare = originalRecordPrepare
+    statsDatabase.prepare = originalStatsPrepare
   }
   assert.equal(accountOwnerBatchSelects, 1, '连续账号用量快照 job 应批量读取账号归属')
   assert.equal(accountUsageSnapshotUpsertPrepares, 1, '连续账号用量快照 job 应复用 upsert statement')
@@ -136,15 +137,15 @@ try {
   seedUsageRecord('usage_cleanup_retry_guard', '2000-01-01T00:00:00.000Z')
   seedUsageStatsCleanupCursors('2000-01-01T00:00:00.000Z', 'usage_cleanup_retry_guard')
   let failedSnapshotUpsertPrepares = 0
-  recordDatabase.prepare = ((sql: string) => {
+  statsDatabase.prepare = ((sql: string) => {
     if (/^\s*INSERT\s+INTO\s+account_usage_snapshots\b/i.test(sql)) {
       failedSnapshotUpsertPrepares += 1
       if (failedSnapshotUpsertPrepares === 1) {
         throw new Error('模拟账号用量快照批量写入失败')
       }
     }
-    return originalRecordPrepare(sql)
-  }) as typeof recordDatabase.prepare
+    return originalStatsPrepare(sql)
+  }) as typeof statsDatabase.prepare
   const failuresBefore = recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().flushFailureCount
   try {
     recordMaintenanceQueue.enqueueRecordMaintenanceJobsLocal([
@@ -169,7 +170,7 @@ try {
     assert.equal(accountUsageSnapshotCount('acct_codex_snapshot_retry_1'), 0, '失败事务不应写入批量快照中的后续账号')
     assert.equal(usageRecordCount('usage_cleanup_retry_guard'), 1, '失败后不应越过失败任务执行后续清理')
   } finally {
-    recordDatabase.prepare = originalRecordPrepare
+    statsDatabase.prepare = originalStatsPrepare
   }
   recordMaintenanceQueue.flushAllRecordMaintenanceQueue()
   assert.equal(recordMaintenanceQueue.getRecordMaintenanceQueueRuntime().queueLength, 0, '恢复后保留任务应可继续 flush 完成')
@@ -209,7 +210,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
@@ -265,7 +266,7 @@ function seedAccount(accountId: string, systemAccountId: string): void {
 }
 
 function seedUsageRecord(id: string, createdAt: string): void {
-  databaseModule.getRecordDatabase()
+  databaseModule.getDatasetDatabase()
     .prepare(`
       INSERT INTO usage_records (id, system_account_id, trace_id, stream, success, created_at)
       VALUES (?, 'sys_admin', ?, 0, 1, ?)
@@ -274,7 +275,7 @@ function seedUsageRecord(id: string, createdAt: string): void {
 }
 
 function seedUsageStatsCleanupCursors(cursorCreatedAt: string, cursorId: string): void {
-  const database = databaseModule.getRecordDatabase()
+  const database = databaseModule.getStatsDatabase()
   const statement = database.prepare(`
     INSERT INTO stats_job_state (
       scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
@@ -289,14 +290,14 @@ function seedUsageStatsCleanupCursors(cursorCreatedAt: string, cursorId: string)
 }
 
 function usageRecordCount(id: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare('SELECT COUNT(*) AS total FROM usage_records WHERE id = ?')
     .get(id) as { total?: number } | undefined
   return Number(row?.total ?? 0)
 }
 
 function accountUsageSnapshotCount(accountId: string): number {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getStatsDatabase()
     .prepare('SELECT COUNT(*) AS total FROM account_usage_snapshots WHERE account_id = ?')
     .get(accountId) as { total?: number } | undefined
   return Number(row?.total ?? 0)

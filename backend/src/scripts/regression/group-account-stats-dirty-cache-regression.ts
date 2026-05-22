@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-group-account-stats-dirty-cache-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'group-account-stats-dirty-cache-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -91,21 +92,21 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
 }
 
 function dirtyRows(): DirtyRow[] {
-  const rows = databaseModule.getRecordDatabase()
+  const rows = databaseModule.getStatsDatabase()
     .prepare('SELECT group_id, reason FROM group_account_stats_dirty ORDER BY group_id')
     .all() as unknown as DirtyRow[]
   return rows.map((row) => ({ group_id: row.group_id, reason: row.reason }))
 }
 
 function groupStatsRow(groupId: string): { total: number } | undefined {
-  return databaseModule.getRecordDatabase()
+  return databaseModule.getStatsDatabase()
     .prepare('SELECT total FROM group_account_stats WHERE group_id = ?')
     .get(groupId) as unknown as { total: number } | undefined
 }

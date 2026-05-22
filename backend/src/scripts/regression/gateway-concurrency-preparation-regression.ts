@@ -15,7 +15,8 @@ import type { UpstreamAccount } from '../../modules/gateway/openai-gateway-route
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-gateway-concurrency-preparation-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'gateway-concurrency-preparation-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -121,7 +122,7 @@ try {
   )
 
   usageRecordQueue.flushAllUsageRecordQueue()
-  const usage = databaseModule.getRecordDatabase()
+  const usage = databaseModule.getDatasetDatabase()
     .prepare('SELECT account_id, success, error_message FROM usage_records WHERE account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1')
     .get(saturatedAccount.id) as { account_id?: string; success?: number; error_message?: string } | undefined
   assert.equal(usage?.account_id, saturatedAccount.id, '账号并发满也应写入失败使用记录')
@@ -136,7 +137,7 @@ try {
   holdAndReleaseServer?.close()
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

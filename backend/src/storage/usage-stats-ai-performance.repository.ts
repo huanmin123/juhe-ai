@@ -292,57 +292,20 @@ function loadAiPerformanceAccountOptionRows(
   }
 
   const keywordPrefix = `${escapeLikePrefix(keyword)}%`
-  const ownerIds = loadAiPerformanceAccountOptionOwnerIds(systemAccountId, keyword, options.limit)
-  const keywordClauses = [
-    'accounts.id = ?',
-    "accounts.id LIKE ? ESCAPE '\\'",
-    'accounts.name COLLATE NOCASE = ?',
-    "accounts.name LIKE ? ESCAPE '\\'",
-    'accounts.provider_code = ?',
-    "accounts.provider_code LIKE ? ESCAPE '\\'"
-  ]
-  const keywordParams: string[] = [keyword, keywordPrefix, keyword, keywordPrefix, keyword, keywordPrefix]
-  if (ownerIds.length) {
-    keywordClauses.push(`accounts.system_account_id IN (${sqlPlaceholders(ownerIds.length)})`)
-    keywordParams.push(...ownerIds)
-  }
   const systemAccountWhere = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? '' : 'AND accounts.system_account_id = ?'
   const systemAccountParams = systemAccountId === GLOBAL_STATS_SYSTEM_ACCOUNT_ID ? [] : [systemAccountId]
   const accountRows = getDatabase().prepare(`
     SELECT accounts.id
     FROM accounts
-    WHERE (${keywordClauses.join(' OR ')})
+    WHERE (accounts.name COLLATE NOCASE = ? OR accounts.name LIKE ? ESCAPE '\\')
       ${systemAccountWhere}
     ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
     LIMIT ?
-  `).all(...keywordParams, ...systemAccountParams, options.limit) as unknown as Array<{ id: string }>
+  `).all(keyword, keywordPrefix, ...systemAccountParams, options.limit) as unknown as Array<{ id: string }>
   const accountIds = accountRows.map((row) => row.id)
   return accountIds.length
     ? loadSelectedAiPerformanceAccounts(database, systemAccountId, activeSinceHour, accountIds)
     : []
-}
-
-function loadAiPerformanceAccountOptionOwnerIds(systemAccountId: string, keyword: string, limit: number): string[] {
-  const keywordPrefix = `${escapeLikePrefix(keyword)}%`
-  const database = getDatabase()
-  if (systemAccountId !== GLOBAL_STATS_SYSTEM_ACCOUNT_ID) {
-    const row = database.prepare(`
-      SELECT id
-      FROM system_accounts
-      WHERE id = ?
-        AND (username = ? OR username LIKE ? ESCAPE '\\' OR display_name COLLATE NOCASE = ? OR display_name LIKE ? ESCAPE '\\')
-      LIMIT 1
-    `).get(systemAccountId, keyword, keywordPrefix, keyword, keywordPrefix) as unknown as { id?: string } | undefined
-    return row?.id ? [row.id] : []
-  }
-  const rows = database.prepare(`
-    SELECT id
-    FROM system_accounts
-    WHERE username = ? OR username LIKE ? ESCAPE '\\' OR display_name COLLATE NOCASE = ? OR display_name LIKE ? ESCAPE '\\'
-    ORDER BY display_name COLLATE NOCASE ASC, id ASC
-    LIMIT ?
-  `).all(keyword, keywordPrefix, keyword, keywordPrefix, limit) as unknown as Array<{ id?: string }>
-  return rows.map((row) => row.id).filter((id): id is string => Boolean(id))
 }
 
 function escapeLikePrefix(value: string): string {

@@ -17,7 +17,7 @@
           :filter-option="false"
           :loading="groupOptionsLoading"
           :options="groupOptions"
-          placeholder="输入分组名称或 ID 前缀"
+          placeholder="输入分组名称"
           @dropdown-visible-change="$emit('group-options-dropdown', $event)"
           @search="$emit('group-options-search', $event)"
         />

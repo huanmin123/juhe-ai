@@ -7,6 +7,7 @@ import { BoundedBufferCollector } from '../../shared/bounded-buffer.js'
 import { logger } from '../../shared/logger.js'
 import { createTraceId, withRequestContext, type RequestContext } from '../../shared/request-context.js'
 import {
+  findAccountForTest,
   findOpenAIAccountForGroup,
   type RecentOpenAIRequestShape,
   resolveAccountSystemAccountId,
@@ -15,6 +16,7 @@ import {
 import { getRequestAuthContext, withRequestAuthContext } from '../auth/request-context.js'
 import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
 import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
+import { flushGatewayAccountSideEffects } from '../gateway/gateway-account-side-effects.service.js'
 import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
 
 const defaultTestModel = 'gpt-5.5'
@@ -33,21 +35,6 @@ export async function testOpenAIAccount(
   const prompt = stringValue(input.prompt) || defaultTestPrompt
   const startedAt = Date.now()
   const limitedDiagnostics = input.diagnostics === 'limited'
-  if (account.status === 'disabled') {
-    return {
-      accountId: account.id,
-      accountName: account.name,
-      providerCode: account.providerCode,
-      type: account.type,
-      success: false,
-      message: '账户已停用，不能执行测试；请先手动启用账户',
-      model,
-      responseText: '账户已停用，不能执行测试；请先手动启用账户',
-      durationMs: Date.now() - startedAt,
-      accountStatusChanged: false,
-      accountStatus: account.status
-    }
-  }
   const testRequest = createOpenAITestRequest({
     fallbackModel: model,
     prompt,
@@ -89,8 +76,14 @@ export async function testOpenAIAccount(
     if (input.signal?.aborted) {
       throw new Error(accountTestAbortMessage(input.signal))
     }
+    await flushGatewayAccountSideEffects()
+    if (input.signal?.aborted) {
+      throw new Error(accountTestAbortMessage(input.signal))
+    }
 
     const finalAccount = findOpenAIAccountForGroup(resolved.groupId, account.id, resolved.systemAccountId, { ignoreAvailability: true }) ?? resolved.account
+    const finalSummary = findAccountForTest(account.id, { systemAccountId: resolved.systemAccountId, role: 'user' })
+    const finalAccountStatus = finalSummary?.status ?? finalAccount.status
     const responseText = response.bodyText()
     const upstreamMessage = parseUpstreamMessage(responseText)
     const upstreamErrorCode = parseUpstreamErrorCode(responseText)
@@ -123,8 +116,8 @@ export async function testOpenAIAccount(
       tokenRefreshed: didRefreshToken(account, finalAccount),
       durationMs: Date.now() - startedAt,
       firstTokenMs: response.firstTokenMs(),
-      accountStatusChanged: finalAccount.status !== account.status,
-      accountStatus: finalAccount.status
+      accountStatusChanged: finalAccountStatus !== account.status,
+      accountStatus: finalAccountStatus
     }, limitedDiagnostics)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'OpenAI Responses 测试失败'

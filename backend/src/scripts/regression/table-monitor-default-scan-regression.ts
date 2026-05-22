@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-table-monitor-default-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'business.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'table-monitor-default-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -34,17 +35,17 @@ try {
   assert(result.tableSnapshots > 0, '表监控默认采样应写入本轮 cursor 表快照')
   assert(result.tableSnapshots < 16, `默认 cursor 采样不应一次采完业务库和记录库所有表，实际 ${result.tableSnapshots}`)
 
-  const sampledRows = databaseModule.getRecordDatabase()
+  const sampledRows = databaseModule.getStatsDatabase()
     .prepare('SELECT row_count FROM table_storage_snapshots')
     .all() as Array<{ row_count?: number | null }>
   assert(sampledRows.length === result.tableSnapshots, '采样结果数量应与表快照记录数一致')
   assert(sampledRows.every((row) => row.row_count === null || row.row_count === undefined), '默认采样不应写入行数，避免 COUNT(*) 扫描大表')
-  const jobState = databaseModule.getRecordDatabase()
+  const jobState = databaseModule.getStatsDatabase()
     .prepare("SELECT lag_seconds FROM stats_job_state WHERE scope_type = 'table_monitor' AND scope_id = 'business' AND job_name = 'table_storage_snapshots'")
     .get() as { lag_seconds?: number | null } | undefined
   assert.equal(jobState?.lag_seconds, null, '表监控游标状态不应伪装成 0')
 
-  const recordDatabase = databaseModule.getRecordDatabase()
+  const recordDatabase = databaseModule.getStatsDatabase()
   const capturedSql: string[] = []
   const originalPrepare = recordDatabase.prepare.bind(recordDatabase)
   recordDatabase.prepare = ((sql: string) => {
@@ -67,7 +68,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

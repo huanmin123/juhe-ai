@@ -8,7 +8,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-group-scheduling-policy-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'group-scheduling-policy.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'group-scheduling-policy-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'group-scheduling-policy-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -40,6 +41,8 @@ try {
       maxQueueWaitMs: 45000,
       maxQueueSize: 50,
       perApiKeyQueueLimit: 10,
+      clientIpConcurrencyLimit: 4,
+      clientIpConcurrencyOverflowMode: 'queue',
       breakAffinityOnSoftLimit: false,
       fastFirstEnabled: false
     }
@@ -53,6 +56,8 @@ try {
   assert.equal(highConcurrencyGroup.schedulingPolicy?.maxQueueWaitMs, 45000, '短队列最大等待时间应允许按分组配置')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.maxQueueSize, 1000, '分组队列上限应使用内置默认值，不允许被请求体调小')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.perApiKeyQueueLimit, 1000, '单 Key 队列上限默认应跟随分组队列上限')
+  assert.equal(highConcurrencyGroup.schedulingPolicy?.clientIpConcurrencyLimit, 4, '单 IP 并发上限应允许按分组配置')
+  assert.equal(highConcurrencyGroup.schedulingPolicy?.clientIpConcurrencyOverflowMode, 'queue', '单 IP 超限模式应允许切换为排队等待')
 
   const stored = database
     .prepare('SELECT group_type, scheduling_policy_json FROM groups WHERE id = ?')
@@ -64,6 +69,8 @@ try {
   assert.equal(storedPolicy.maxQueueSize, 1000, '队列上限应按内置默认值写入')
   assert.equal(storedPolicy.perApiKeyQueueLimit, 1000, '单 Key 队列上限应跟随分组队列上限写入')
   assert.equal(storedPolicy.fastFirstEnabled, true, '默认开启策略不应按请求关闭')
+  assert.equal(storedPolicy.clientIpConcurrencyLimit, 4, '单 IP 并发上限应写入 JSON 配置')
+  assert.equal(storedPolicy.clientIpConcurrencyOverflowMode, 'queue', '单 IP 超限模式应写入 JSON 配置')
 
   const runtimeAccess = repositories.resolveGroupUsageAccessMetadata(highConcurrencyGroup.id, 'sys_admin')
   assert.equal(runtimeAccess?.groupType, 'high_concurrency')
@@ -71,6 +78,8 @@ try {
   assert.equal(runtimeAccess?.schedulingPolicy?.maxQueueWaitMs, 45000)
   assert.equal(runtimeAccess?.schedulingPolicy?.maxQueueSize, 1000)
   assert.equal(runtimeAccess?.schedulingPolicy?.perApiKeyQueueLimit, 1000)
+  assert.equal(runtimeAccess?.schedulingPolicy?.clientIpConcurrencyLimit, 4)
+  assert.equal(runtimeAccess?.schedulingPolicy?.clientIpConcurrencyOverflowMode, 'queue')
 
   const options = repositories.listGroupOptions(access, { keyword: highConcurrencyGroup.name })
   assert.equal(options[0]?.groupType, 'high_concurrency', '分组选项应携带分组类型')
@@ -110,7 +119,7 @@ try {
 } finally {
   try {
     databaseModule.getDatabase().close()
-    databaseModule.getRecordDatabase().close()
+    databaseModule.closeStorageDatabases()
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })

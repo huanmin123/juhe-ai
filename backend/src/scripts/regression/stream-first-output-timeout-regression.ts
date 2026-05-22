@@ -12,7 +12,8 @@ import { logger } from '../../shared/logger.js'
 
 const tempRoot = resolve(tmpdir(), `juhe-ai-stream-first-output-${Date.now()}-${Math.random().toString(16).slice(2)}`)
 runtimeConfig.databasePath = join(tempRoot, 'stream-first-output.sqlite3')
-runtimeConfig.recordDatabasePath = join(tempRoot, 'stream-first-output-records.sqlite3')
+runtimeConfig.datasetDatabasePath = join(tempRoot, 'dataset.sqlite3')
+runtimeConfig.statsDatabasePath = join(tempRoot, 'stats.sqlite3')
 runtimeConfig.secret = 'stream-first-output-secret'
 runtimeConfig.log.consoleEnabled = false
 runtimeConfig.log.fileEnabled = false
@@ -308,7 +309,7 @@ async function main(): Promise<void> {
     await closeServer(upstreamServer)
     try {
       databaseModule.getDatabase().close()
-      databaseModule.getRecordDatabase().close()
+      databaseModule.closeStorageDatabases()
     } catch {
     }
     rmSync(tempRoot, { recursive: true, force: true })
@@ -857,7 +858,7 @@ function assertSuccessfulUsageRecord(accountId: string): void {
 }
 
 function assertNoClientAbortedAuditLogForAccount(accountId: string): void {
-  const row = databaseModule.getRecordDatabase()
+  const row = databaseModule.getDatasetDatabase()
     .prepare(`
       SELECT COUNT(*) AS count
       FROM audit_logs audit_logs

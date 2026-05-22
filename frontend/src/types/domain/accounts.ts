@@ -273,6 +273,8 @@ export interface GroupSchedulingPolicy {
   maxQueueWaitMs?: number
   maxQueueSize?: number
   perApiKeyQueueLimit?: number
+  clientIpConcurrencyLimit?: number
+  clientIpConcurrencyOverflowMode?: 'reject' | 'queue'
 }
 
 export interface GroupSummary {
