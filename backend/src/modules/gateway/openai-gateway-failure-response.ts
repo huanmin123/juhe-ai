@@ -17,7 +17,7 @@ interface SendGatewayFailureResponseInput {
   responsePayload: GatewayErrorPayload
   audit: {
     outcome: 'gateway_failed' | 'upstream_failed'
-    errorPhase: 'authorization' | 'quota' | 'dispatch' | 'request_validation'
+    errorPhase: 'authorization' | 'quota' | 'dispatch' | 'request_validation' | 'security'
     errorCode?: string
     errorMessage?: string
   }

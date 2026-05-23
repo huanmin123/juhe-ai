@@ -32,6 +32,7 @@
     "test:group-scheduling-policy": "tsx src/scripts/regression/group-scheduling-policy-regression.ts",
     "test:high-concurrency-queue": "tsx src/scripts/regression/high-concurrency-queue-regression.ts",
     "test:client-ip-concurrency": "tsx src/scripts/regression/client-ip-concurrency-regression.ts",
+    "test:client-ip-error-circuit": "tsx src/scripts/regression/client-ip-error-circuit-regression.ts",
     "test:authorization-options-query-guard": "tsx src/scripts/regression/authorization-options-query-guard-regression.ts",
     "test:team-proxy-list-pagination": "tsx src/scripts/regression/team-proxy-list-pagination-regression.ts",
     "test:system-account-list-query-guard": "tsx src/scripts/regression/system-account-list-query-guard-regression.ts",

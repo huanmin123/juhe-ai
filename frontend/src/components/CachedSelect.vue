@@ -32,6 +32,7 @@ const props = withDefaults(defineProps<{
   options?: SelectOption[]
   selectedIds?: Array<string | undefined>
   selectedOptions?: Array<SelectOption | undefined>
+  hiddenOptionValues?: Array<string | undefined>
   cacheKey?: string
   allowClear?: boolean
   disabled?: boolean
@@ -43,6 +44,7 @@ const props = withDefaults(defineProps<{
   options: () => [],
   selectedIds: () => [],
   selectedOptions: () => [],
+  hiddenOptionValues: () => [],
   cacheKey: 'default',
   allowClear: false,
   disabled: false,
@@ -61,14 +63,20 @@ const normalizedSelectedIds = computed(() => [
   ...selectedValues(props.value),
   ...props.selectedIds
 ])
-const selectOptions = computed(() => mergeSelectedSelectOptions(
+const hiddenValueSet = computed(() => new Set(props.hiddenOptionValues.map((value) => value?.trim()).filter(Boolean)))
+const mergedOptions = computed(() => mergeSelectedSelectOptions(
   props.cacheKey,
   props.options,
   normalizedSelectedIds.value,
   props.selectedOptions
 ))
+const selectOptions = computed(() => mergedOptions.value.map((option) => (
+  hiddenValueSet.value.has(option.value)
+    ? { ...option, style: { ...option.style, display: 'none' } }
+    : option
+)))
 const displayValue = computed(() => {
-  const knownValues = new Set(selectOptions.value.map((option) => option.value))
+  const knownValues = new Set(mergedOptions.value.map((option) => option.value))
   if (Array.isArray(props.value)) {
     return props.value.filter((item) => knownValues.has(item))
   }

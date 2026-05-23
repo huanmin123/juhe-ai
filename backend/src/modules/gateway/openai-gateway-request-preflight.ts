@@ -33,6 +33,12 @@ import {
   type OpenAIGatewayClientStrategyContext
 } from './openai-gateway-client-strategy.js'
 import { acquireHighConcurrencyClientIpSlot, type ClientIpConcurrencyDecision } from './openai-gateway-client-ip-concurrency.service.js'
+import {
+  inspectClientIpErrorCircuit,
+  recordClientIpErrorCircuitSample,
+  recordClientIpErrorCircuitSuccess,
+  type GatewayClientIpErrorCircuitReason
+} from './openai-gateway-client-ip-error-circuit.service.js'
 import { waitForHighConcurrencyGroupCapacity } from './openai-gateway-high-concurrency-queue.service.js'
 import { finalizeGatewayAuthFailureAudit, sendOpenAIModelsGatewayResponse } from './openai-gateway-fixed-responses.js'
 import { sendGatewayFailureResponse, sendQuotaExceededResponse } from './openai-gateway-failure-response.js'
@@ -143,6 +149,55 @@ export async function prepareOpenAIGatewayDispatchContext(
     endpoint,
     requestSnapshot
   })
+  const clientIpErrorCircuit = inspectClientIpErrorCircuit({
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    clientIp,
+    endpoint
+  })
+  if (clientIpErrorCircuit.blocked) {
+    const statusCode = 429
+    const responsePayload = gatewayErrorPayload('当前来源短时间错误过多，请稍后重试', 'rate_limit_exceeded', 'client_ip_error_circuit_open')
+    if (clientIpErrorCircuit.retryAfterSeconds && !res.headersSent) {
+      res.setHeader('Retry-After', String(clientIpErrorCircuit.retryAfterSeconds))
+    }
+    logger.warn({
+      event: 'gateway_client_ip_error_circuit_blocked',
+      reason: clientIpErrorCircuit.reason,
+      retryAfterSeconds: clientIpErrorCircuit.retryAfterSeconds,
+      failureCount: clientIpErrorCircuit.failureCount,
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      clientIp
+    }, '客户端 IP 级错误熔断已短路请求')
+    auditCapture.addGatewayMetadata({
+      label: 'client_ip_error_circuit',
+      metadata: {
+        blocked: true,
+        reason: clientIpErrorCircuit.reason,
+        retryAfterSeconds: clientIpErrorCircuit.retryAfterSeconds,
+        failureCount: clientIpErrorCircuit.failureCount
+      }
+    })
+    sendGatewayFailureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext: baseUsageContext,
+      startedAt,
+      statusCode,
+      responsePayload,
+      audit: {
+        outcome: 'gateway_failed',
+        errorPhase: 'security',
+        errorCode: 'client_ip_error_circuit_open',
+        errorMessage: responsePayload.error.message
+      }
+    })
+    return undefined
+  }
   const clientStrategy = resolveOpenAIGatewayClientStrategy(req, {
     systemAccountId,
     apiKeyId,
@@ -217,6 +272,16 @@ export async function prepareOpenAIGatewayDispatchContext(
   if (bodyState?.jsonParseStatus === 'invalid_json') {
     const statusCode = 400
     const responsePayload = gatewayErrorPayload('请求体不是合法 JSON', 'invalid_request_error')
+    recordClientIpRequestErrorSample({
+      auditCapture,
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      clientIp,
+      endpoint,
+      reason: 'invalid_json',
+      signature: 'invalid_json'
+    })
     sendGatewayFailureResponse({
       req,
       res,
@@ -271,6 +336,13 @@ export async function prepareOpenAIGatewayDispatchContext(
   }
 
   if (isOpenAIModelsRequest(req)) {
+    recordClientIpErrorCircuitSuccess({
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      clientIp,
+      endpoint
+    })
     sendOpenAIModelsGatewayResponse({
       res,
       auditCapture,
@@ -309,6 +381,16 @@ export async function prepareOpenAIGatewayDispatchContext(
     const statusCode = 400
     const message = gatewayModelFilterFailureMessage(modelFilter)
     const responsePayload = gatewayErrorPayload(message, 'invalid_request_error')
+    recordClientIpRequestErrorSample({
+      auditCapture,
+      systemAccountId,
+      apiKeyId,
+      groupId,
+      clientIp,
+      endpoint,
+      reason: 'unsupported_model',
+      signature: modelFilter.reason ?? modelFilter.requestedModel ?? 'unsupported_model'
+    })
     sendGatewayFailureResponse({
       req,
       res,
@@ -601,6 +683,41 @@ function clientIpConcurrencyFailureMessage(decision: ClientIpConcurrencyDecision
     return '当前 IP 并发排队等待超时，请稍后重试'
   }
   return '当前 IP 并发已达到分组限制，请稍后重试'
+}
+
+function recordClientIpRequestErrorSample(input: {
+  auditCapture: AuditCaptureContext
+  systemAccountId: string
+  apiKeyId?: string
+  groupId: string
+  clientIp?: string
+  endpoint: string
+  reason: GatewayClientIpErrorCircuitReason
+  signature?: string
+}): void {
+  const result = recordClientIpErrorCircuitSample(input)
+  if (!result.blocked) {
+    return
+  }
+  logger.warn({
+    event: 'gateway_client_ip_error_circuit_opened',
+    reason: input.reason,
+    retryAfterSeconds: result.retryAfterSeconds,
+    failureCount: result.failureCount,
+    systemAccountId: input.systemAccountId,
+    apiKeyId: input.apiKeyId,
+    groupId: input.groupId,
+    clientIp: input.clientIp
+  }, '客户端 IP 级错误熔断已打开')
+  input.auditCapture.addGatewayMetadata({
+    label: 'client_ip_error_circuit',
+    metadata: {
+      opened: true,
+      reason: input.reason,
+      retryAfterSeconds: result.retryAfterSeconds,
+      failureCount: result.failureCount
+    }
+  })
 }
 
 function buildGatewayUsageContext(input: {

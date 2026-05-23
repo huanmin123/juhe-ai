@@ -32,22 +32,19 @@
             @open-change="handleDateRangeOpenChange"
           />
           <a-segmented v-model:value="selectedMetric" class="usage-stats-metric-segmented" :disabled="loading" :options="metricOptions" @change="handleMetricChange" />
-          <AccountSelect
-            :value="accountPickerValue"
+          <AccountAppendSelect
+            v-model:value="addedTrendAccountIds"
             :accounts="accountOptionRows"
             :selected-accounts="addedTrendAccountSelections"
-            allow-clear
             class="usage-stats-account-select"
-            mode="multiple"
-            show-search
             :disabled="loading"
-            :filter-option="false"
+            :hidden-account-ids="accountPickerHiddenValues"
             :loading="accountOptionsLoading"
-            :max-tag-count="0"
+            :max="maxAddedTrendAccounts"
             placeholder="输入账户名称添加账户"
+            @change="handleAddedTrendAccountsChange"
             @dropdown-visible-change="handleAccountOptionsDropdown"
             @search="handleAccountOptionsSearch"
-            @select="handleAccountSelect"
           />
         </div>
         <div class="page-toolbar-actions">
@@ -61,17 +58,31 @@
         </div>
       </div>
       <div v-if="accountFilterItems.length" class="usage-stats-account-list" aria-label="趋势账户筛选">
-        <button
+        <span
           v-for="item in accountFilterItems"
           :key="item.account.id"
-          class="usage-stats-account-filter-item"
+          class="usage-stats-account-filter-entry"
           :class="{ active: item.selected, muted: hasSelectedTrendAccounts && !item.selected }"
-          type="button"
-          @click="toggleTrendAccount(item.account.id)"
         >
-          <span class="usage-stats-legend-dot" :style="{ backgroundColor: item.color }" />
-          <span class="usage-stats-legend-name">{{ item.label }}</span>
-        </button>
+          <button
+            class="usage-stats-account-filter-item"
+            type="button"
+            @click="toggleTrendAccount(item.account.id)"
+          >
+            <span class="usage-stats-legend-dot" :style="{ backgroundColor: item.color }" />
+            <span class="usage-stats-legend-name">{{ item.label }}</span>
+          </button>
+          <a-tooltip v-if="item.removable" title="移除">
+            <button
+              class="usage-stats-account-filter-remove"
+              type="button"
+              :aria-label="`移除${item.label}`"
+              @click.stop="removeAddedTrendAccount(item.account.id)"
+            >
+              <CloseOutlined />
+            </button>
+          </a-tooltip>
+        </span>
       </div>
     </a-card>
 
@@ -212,12 +223,12 @@
 
 <script setup lang="ts">
 import { message } from '@/lib/antd'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import { CloseOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import type { Dayjs } from 'dayjs'
 import { computed, reactive, ref, shallowRef, watch } from 'vue'
 
 import { api } from '@/api/client'
-import AccountSelect from '@/components/AccountSelect.vue'
+import AccountAppendSelect from '@/components/AccountAppendSelect.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
@@ -308,7 +319,6 @@ const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedTrendAccountIds = ref<string[]>([])
 const addedTrendAccountIds = ref<string[]>([])
 const addedTrendAccountSelections = ref<AccountSelection[]>([])
-const accountPickerValue = ref<string[]>([])
 const accountOptionRows = ref<AccountOptionSummary[]>([])
 const accountOptionsLoading = ref(false)
 const accountOptionsKeyword = ref('')
@@ -380,16 +390,23 @@ const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const rangeLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
 const rowsById = computed(() => new Map(rows.value.map((row) => [row.id, row])))
+const accountOptionById = computed(() => new Map(accountOptionRows.value.map((account) => [account.id, account])))
+const addedTrendSelectionById = computed(() => new Map(addedTrendAccountSelections.value.map((account) => [account.id, account])))
 const defaultTrendRows = computed(() => (overview.value?.defaultTrendAccountIds ?? [])
   .map((id) => rowsById.value.get(id))
   .filter((row): row is AccountUsageStatsRow => Boolean(row)))
-const defaultTrendAccountIdSet = computed(() => new Set(defaultTrendRows.value.map((account) => account.id)))
+const defaultTrendAccountIdSet = computed(() => new Set(overview.value?.defaultTrendAccountIds ?? defaultTrendRows.value.map((account) => account.id)))
+const addedTrendAccountIdSet = computed(() => new Set(addedTrendAccountIds.value))
 const addedTrendRows = computed(() => {
   return addedTrendAccountIds.value
-    .map((id) => rowsById.value.get(id))
+    .map((id) => rowsById.value.get(id) ?? placeholderTrendRow(id))
     .filter((row): row is AccountUsageStatsRow => Boolean(row))
 })
 const trendAccountRows = computed(() => dedupeRowsById([...defaultTrendRows.value, ...addedTrendRows.value]))
+const accountPickerHiddenValues = computed(() => [
+  ...trendAccountRows.value.map((account) => account.id),
+  ...addedTrendAccountIds.value
+])
 const selectedTrendRows = computed(() => {
   const selectedIds = new Set(selectedTrendAccountIds.value)
   return trendAccountRows.value.filter((row) => selectedIds.has(row.id))
@@ -426,7 +443,8 @@ const accountFilterItems = computed(() => {
     account,
     label: trendAccountLabel(account),
     color: chartColors[index % chartColors.length],
-    selected: selectedIds.has(account.id)
+    selected: selectedIds.has(account.id),
+    removable: addedTrendAccountIdSet.value.has(account.id) && !defaultTrendAccountIdSet.value.has(account.id)
   }))
 })
 const summaryCards = computed(() => {
@@ -482,7 +500,6 @@ function resetFilters() {
   selectedTrendAccountIds.value = []
   addedTrendAccountIds.value = []
   addedTrendAccountSelections.value = []
-  accountPickerValue.value = []
   accountOptionRows.value = []
   accountOptionsKeyword.value = ''
   clearAccountOptionsSearchTimer()
@@ -558,25 +575,33 @@ function toggleTrendAccount(id: string) {
   renderChart()
 }
 
-function handleAccountSelect(value: unknown) {
-  accountPickerValue.value = []
-  const id = String(value ?? '').trim()
+function handleAddedTrendAccountsChange(value: string[], previousValue: string[]) {
   accountOptionsKeyword.value = ''
-  if (!id) return
-  rememberAddedTrendAccountSelection(id)
-  if (!defaultTrendAccountIdSet.value.has(id) && !addedTrendAccountIds.value.includes(id)) {
-    if (addedTrendAccountIds.value.length >= maxAddedTrendAccounts) {
-      message.warning(`趋势图最多添加 ${maxAddedTrendAccounts} 个账户`)
-      return
-    }
-    addedTrendAccountIds.value = [...addedTrendAccountIds.value, id]
-    syncAddedTrendAccountSelections()
+  const previousIds = new Set(previousValue)
+  const acceptedIds = value.filter((id) => !defaultTrendAccountIdSet.value.has(id))
+  for (const id of acceptedIds) {
+    rememberAddedTrendAccountSelection(id)
   }
-  if (selectedTrendAccountIds.value.length && !selectedTrendAccountIds.value.includes(id)) {
-    selectedTrendAccountIds.value = [...selectedTrendAccountIds.value, id]
-  }
+  addedTrendAccountIds.value = acceptedIds
+  syncAddedTrendAccountSelections()
+  const newlyAddedIds = acceptedIds.filter((id) => !previousIds.has(id))
+  const visibleIds = new Set([...defaultTrendAccountIdSet.value, ...acceptedIds])
+  const nextSelectedIds = selectedTrendAccountIds.value.filter((id) => visibleIds.has(id))
+  selectedTrendAccountIds.value = selectedTrendAccountIds.value.length
+    ? [...new Set([...nextSelectedIds, ...newlyAddedIds])]
+    : nextSelectedIds
   void loadAccountOptions()
   void loadData({ quiet: true })
+}
+
+function removeAddedTrendAccount(id: string) {
+  if (!addedTrendAccountIdSet.value.has(id)) return
+  addedTrendAccountIds.value = addedTrendAccountIds.value.filter((accountId) => accountId !== id)
+  addedTrendAccountSelections.value = addedTrendAccountSelections.value.filter((selection) => selection.id !== id)
+  selectedTrendAccountIds.value = selectedTrendAccountIds.value.filter((accountId) => accountId !== id)
+  void loadAccountOptions()
+  void loadData({ quiet: true })
+  renderChart()
 }
 
 async function loadAccountOptions(keyword = accountOptionsKeyword.value, force = false): Promise<void> {
@@ -668,7 +693,6 @@ function clearTrendAccountState() {
   selectedTrendAccountIds.value = []
   addedTrendAccountIds.value = []
   addedTrendAccountSelections.value = []
-  accountPickerValue.value = []
   accountOptionRows.value = []
   accountOptionsKeyword.value = ''
   clearAccountOptionsSearchTimer()
@@ -746,6 +770,54 @@ function metricValue(point: { requestCount: number; totalTokens: number; totalCo
   return point.requestCount
 }
 
+function zeroUsageSummary(): AccountUsageSummary {
+  return {
+    requestCount: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheReadCost: 0,
+    totalTokens: 0,
+    totalCost: 0
+  }
+}
+
+function trendDateKeys(): string[] {
+  const [startDate, endDate] = selectedRange.value
+  const start = parseDateKey(startDate)
+  const end = parseDateKey(endDate)
+  if (!start || !end || start.isAfter(end, 'day')) return []
+  const keys: string[] = []
+  for (let current = start.startOf('day'); current.isSame(end, 'day') || current.isBefore(end, 'day'); current = current.add(1, 'day')) {
+    keys.push(formatDateKey(current))
+  }
+  return keys
+}
+
+function placeholderTrendRow(id: string): AccountUsageStatsRow | undefined {
+  const option = accountOptionById.value.get(id)
+  const selection = addedTrendSelectionById.value.get(id)
+  const name = option?.name?.trim() || selection?.name?.trim()
+  if (!name) return undefined
+  return {
+    id,
+    systemAccountId: option?.systemAccountId,
+    systemAccountName: option?.systemAccountName,
+    ownerSystemAccountId: option?.ownerSystemAccountId ?? option?.systemAccountId ?? '',
+    ownerSystemAccountName: option?.ownerSystemAccountName,
+    providerCode: option?.providerCode ?? 'openai',
+    name,
+    type: option?.type ?? 'api_key',
+    status: option?.status ?? 'active',
+    accessType: option?.accessType,
+    rangeUsage: zeroUsageSummary(),
+    dailyUsage: trendDateKeys().map((statDate) => ({ ...zeroUsageSummary(), statDate })),
+    authorizationUsageAvailable: false,
+    authorizationCount: 0,
+    authorizationTeamCount: 0
+  }
+}
+
 function dedupeRowsById(items: AccountUsageStatsRow[]): AccountUsageStatsRow[] {
   const seen = new Set<string>()
   const result: AccountUsageStatsRow[] = []
@@ -767,7 +839,6 @@ function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[])
 
 function pruneSelectedTrendAccounts(currentRows: AccountUsageStatsRow[]) {
   const currentIds = new Set(currentRows.map((row) => row.id))
-  addedTrendAccountIds.value = addedTrendAccountIds.value.filter((id) => currentIds.has(id))
   syncAddedTrendAccountSelections()
   const defaultIds = new Set((overview.value?.defaultTrendAccountIds ?? []).filter((id) => currentIds.has(id)))
   const visibleIds = new Set([...defaultIds, ...addedTrendAccountIds.value])
@@ -832,9 +903,10 @@ watch(addedTrendAccountSelections, (selections) => rememberAccountSelections(sel
 }
 
 .usage-stats-account-select {
-  flex: 1 1 360px;
-  min-width: 320px;
-  max-width: 560px;
+  flex: 0 1 300px;
+  width: 300px;
+  min-width: 260px;
+  max-width: 320px;
 }
 
 .usage-stats-account-list {
@@ -844,30 +916,59 @@ watch(addedTrendAccountSelections, (selections) => rememberAccountSelections(sel
   margin-top: 12px;
 }
 
-.usage-stats-account-filter-item {
+.usage-stats-account-filter-entry {
   display: inline-flex;
   align-items: center;
   max-width: min(360px, 100%);
-  gap: 6px;
-  padding: 2px 8px;
   border: 1px solid transparent;
   border-radius: 6px;
+  transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
+}
+
+.usage-stats-account-filter-entry:hover,
+.usage-stats-account-filter-entry.active {
+  border-color: #91caff;
+  background: #e6f4ff;
+}
+
+.usage-stats-account-filter-entry.muted {
+  opacity: 0.46;
+}
+
+.usage-stats-account-filter-item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 0;
   color: #334155;
   background: transparent;
   font-size: 13px;
   line-height: 20px;
   cursor: pointer;
-  transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
 }
 
-.usage-stats-account-filter-item:hover,
-.usage-stats-account-filter-item.active {
-  border-color: #91caff;
-  background: #e6f4ff;
+.usage-stats-account-filter-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: #64748b;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
 }
 
-.usage-stats-account-filter-item.muted {
-  opacity: 0.46;
+.usage-stats-account-filter-remove:hover {
+  color: #cf1322;
+  background: #fff1f0;
 }
 
 .usage-stats-legend-dot {

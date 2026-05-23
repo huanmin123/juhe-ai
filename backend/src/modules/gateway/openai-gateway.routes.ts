@@ -41,7 +41,11 @@ import {
   fetchFirstAvailableUpstream,
   UpstreamAttemptError
 } from './openai-gateway-upstream-dispatch.js'
+import { UpstreamRejectedRequestError } from './openai-gateway-failure-dispatch.js'
 import type { GatewaySettings } from './account-error-policy.service.js'
+import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
+import { recordClientIpErrorCircuitSample } from './openai-gateway-client-ip-error-circuit.service.js'
+import type { GatewayFailureUsageContext } from './openai-gateway-usage-records.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -213,6 +217,7 @@ export async function handleOpenAIGatewayRequest(
       releaseConcurrency()
     }
   } catch (error) {
+    recordKnownClientIpRequestError(error, gatewayUsageContext, auditCapture)
     if (handleGatewayRequestKnownErrorResponse({
       res,
       auditCapture,
@@ -257,4 +262,72 @@ function once(callback: () => void): () => void {
     called = true
     callback()
   }
+}
+
+function recordKnownClientIpRequestError(
+  error: unknown,
+  usageContext: GatewayFailureUsageContext,
+  auditCapture: ReturnType<typeof createAuditCapture>
+): void {
+  const sample = clientIpRequestErrorSample(error)
+  if (!sample) {
+    return
+  }
+  const result = recordClientIpErrorCircuitSample({
+    systemAccountId: usageContext.systemAccountId,
+    apiKeyId: usageContext.apiKeyId,
+    groupId: usageContext.groupId,
+    clientIp: usageContext.clientIp,
+    endpoint: usageContext.endpoint,
+    reason: sample.reason,
+    signature: sample.signature
+  })
+  if (!result.blocked) {
+    return
+  }
+  getRequestLogger().warn({
+    event: 'gateway_client_ip_error_circuit_opened',
+    reason: sample.reason,
+    retryAfterSeconds: result.retryAfterSeconds,
+    failureCount: result.failureCount,
+    systemAccountId: usageContext.systemAccountId,
+    apiKeyId: usageContext.apiKeyId,
+    groupId: usageContext.groupId,
+    clientIp: usageContext.clientIp
+  }, '客户端 IP 级错误熔断已打开')
+  auditCapture.addGatewayMetadata({
+    label: 'client_ip_error_circuit',
+    metadata: {
+      opened: true,
+      reason: sample.reason,
+      retryAfterSeconds: result.retryAfterSeconds,
+      failureCount: result.failureCount
+    }
+  })
+}
+
+function clientIpRequestErrorSample(error: unknown): { reason: 'adapter_request_validation' | 'upstream_error_feature' | 'request_failure_signature'; signature: string } | undefined {
+  if (error instanceof OpenAIOAuthCodexAdapterError) {
+    return {
+      reason: 'adapter_request_validation',
+      signature: [error.type, error.code].filter(Boolean).join('|') || error.message
+    }
+  }
+  if (error instanceof UpstreamRejectedRequestError) {
+    if (error.upstreamErrorFeature) {
+      return {
+        reason: 'upstream_error_feature',
+        signature: [
+          error.upstreamErrorFeature.ruleId,
+          error.upstreamErrorFeature.upstreamErrorType,
+          error.upstreamErrorFeature.upstreamErrorCode
+        ].filter(Boolean).join('|')
+      }
+    }
+    return {
+      reason: 'request_failure_signature',
+      signature: error.message
+    }
+  }
+  return undefined
 }

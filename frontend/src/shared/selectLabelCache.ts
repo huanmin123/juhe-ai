@@ -2,6 +2,7 @@ export interface SelectOption {
   label: string
   value: string
   disabled?: boolean
+  style?: Record<string, string>
 }
 
 const caches = new Map<string, Map<string, string>>()

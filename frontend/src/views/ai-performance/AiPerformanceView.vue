@@ -31,21 +31,17 @@
             @change="handleDateRangeChange"
             @open-change="handleDateRangeOpenChange"
           />
-          <AccountSelect
-            :value="accountPickerValue"
+          <AccountAppendSelect
+            v-model:value="addedAccountIds"
             :accounts="accounts"
             :selected-accounts="addedAccountSelections"
             class="ai-performance-account-select"
-            mode="multiple"
-            allow-clear
-            show-search
-            :max-tag-count="0"
-            :options="accountOptions"
+            :hidden-account-ids="accountPickerHiddenValues"
             :loading="accountsLoading"
             :disabled="loading"
-            :filter-option="false"
+            :max="20"
             placeholder="输入账户名称添加账户"
-            @select="handleAccountSelect"
+            @change="handleAddedAccountsChange"
             @search="handleAccountSearch"
             @dropdown-visible-change="handleAccountDropdownVisibleChange"
           />
@@ -61,18 +57,32 @@
         </div>
       </div>
       <div v-if="accountFilterItems.length" class="ai-performance-account-list" aria-label="性能账户筛选">
-        <button
+        <span
           v-for="item in accountFilterItems"
           :key="item.account.id"
-          class="ai-performance-account-filter-item"
+          class="ai-performance-account-filter-entry"
           :class="{ active: item.selected, muted: hasActiveAccountFilter && !item.selected }"
-          type="button"
-          :aria-pressed="item.selected"
-          @click="toggleAccountFilter(item.account.id)"
         >
-          <span class="ai-performance-legend-dot" :style="{ backgroundColor: item.color }" />
-          <span class="ai-performance-legend-name">{{ item.label }}</span>
-        </button>
+          <button
+            class="ai-performance-account-filter-item"
+            type="button"
+            :aria-pressed="item.selected"
+            @click="toggleAccountFilter(item.account.id)"
+          >
+            <span class="ai-performance-legend-dot" :style="{ backgroundColor: item.color }" />
+            <span class="ai-performance-legend-name">{{ item.label }}</span>
+          </button>
+          <a-tooltip v-if="item.removable" title="移除">
+            <button
+              class="ai-performance-account-filter-remove"
+              type="button"
+              :aria-label="`移除${item.label}`"
+              @click.stop="removeAddedAccount(item.account.id)"
+            >
+              <CloseOutlined />
+            </button>
+          </a-tooltip>
+        </span>
       </div>
     </a-card>
 
@@ -91,12 +101,12 @@
 <script setup lang="ts">
 import { computed, ref, shallowRef, watch } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
-import { ReloadOutlined } from '@ant-design/icons-vue'
+import { CloseOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
-import AccountSelect from '@/components/AccountSelect.vue'
+import AccountAppendSelect from '@/components/AccountAppendSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -114,6 +124,8 @@ import { buildAiPerformanceOption, chartColors, orderedAiPerformanceSeries, type
 
 const MAX_RANGE_DAYS = 31
 const DEFAULT_RANGE_DAYS = 3
+type AiPerformanceAccountRow = AiPerformanceOverview['accounts'][number]
+type AiPerformanceSeriesRow = AiPerformanceOverview['hourlySeries'][number]
 const defaultDateRange = (): [Dayjs, Dayjs] => {
   const today = dayjs().startOf('day')
   return [today.subtract(DEFAULT_RANGE_DAYS - 1, 'day'), today]
@@ -124,7 +136,6 @@ const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const addedAccountIds = ref<string[]>([])
 const addedAccountSelections = ref<AccountSelection[]>([])
 const activeAccountIds = ref<string[]>([])
-const accountPickerValue = ref<string[]>([])
 const overview = ref<AiPerformanceOverview>()
 const accounts = ref<AiPerformanceAccountOption[]>([])
 const selectedSystemAccountId = ref(allSystemAccountsValue)
@@ -175,7 +186,41 @@ const initialLoading = computed(() => loading.value && !hasOverview.value)
 const selectedRange = computed(() => normalizedDateRange(dateRange.value))
 const displayRange = computed(() => [formatDateKey(dateRange.value[0]), formatDateKey(dateRange.value[1])] as const)
 const currentWindowLabel = computed(() => `${formatDateLabel(displayRange.value[0])} 至 ${formatDateLabel(displayRange.value[1])}`)
-const overviewAccounts = computed(() => overview.value?.accounts ?? [])
+const responseAccounts = computed(() => overview.value?.accounts ?? [])
+const responseAccountById = computed(() => new Map(responseAccounts.value.map((account) => [account.id, account])))
+const accountOptionById = computed(() => new Map(accounts.value.map((account) => [account.id, account])))
+const addedAccountSelectionById = computed(() => new Map(addedAccountSelections.value.map((account) => [account.id, account])))
+const defaultAccountIdSet = computed(() => new Set([
+  ...(overview.value?.defaultAccounts ?? []).map((account) => account.id),
+  ...responseAccounts.value.filter((account) => account.defaultVisible).map((account) => account.id)
+]))
+const overviewAccounts = computed(() => dedupePerformanceAccounts([
+  ...responseAccounts.value,
+  ...addedAccountIds.value
+    .map((id) => placeholderPerformanceAccount(id))
+    .filter((account): account is AiPerformanceAccountRow => Boolean(account))
+]))
+const overviewHourlySeries = computed(() => {
+  const responseSeries = overview.value?.hourlySeries ?? []
+  const responseSeriesIds = new Set(responseSeries.map((series) => series.accountId))
+  const placeholderSeries = addedAccountIds.value
+    .filter((id) => !responseSeriesIds.has(id))
+    .map((id) => placeholderPerformanceSeries(id))
+    .filter((series): series is AiPerformanceSeriesRow => Boolean(series))
+  return [...responseSeries, ...placeholderSeries]
+})
+const displayOverview = computed<AiPerformanceOverview | undefined>(() => {
+  const currentOverview = overview.value
+  if (!currentOverview) return undefined
+  const accountIds = new Set(overviewAccounts.value.map((account) => account.id))
+  return {
+    ...currentOverview,
+    accounts: overviewAccounts.value,
+    defaultAccounts: currentOverview.defaultAccounts.filter((account) => accountIds.has(account.id)),
+    selectedAccounts: overviewAccounts.value.filter((account) => account.selected && accountIds.has(account.id)),
+    hourlySeries: overviewHourlySeries.value
+  }
+})
 const activeAccountIdSet = computed(() => new Set(activeAccountIds.value))
 const hasActiveAccountFilter = computed(() => activeAccountIds.value.length > 0)
 const visibleAccounts = computed(() => {
@@ -183,9 +228,9 @@ const visibleAccounts = computed(() => {
   return overviewAccounts.value.filter((account) => activeAccountIdSet.value.has(account.id))
 })
 const visibleAccountIdSet = computed(() => new Set(visibleAccounts.value.map((account) => account.id)))
-const visibleHourlySeries = computed(() => (overview.value?.hourlySeries ?? []).filter((series) => visibleAccountIdSet.value.has(series.accountId)))
+const visibleHourlySeries = computed(() => overviewHourlySeries.value.filter((series) => visibleAccountIdSet.value.has(series.accountId)))
 const visibleOverview = computed<AiPerformanceOverview | undefined>(() => {
-  const currentOverview = overview.value
+  const currentOverview = displayOverview.value
   if (!currentOverview) return undefined
   const visibleIds = visibleAccountIdSet.value
   return {
@@ -204,14 +249,14 @@ const hasMaxDurationData = computed(() => hasMetricData('maxDurationMs'))
 const firstTokenEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无首 token 样本` : '最近 7 天暂无活跃 AI 账户')
 const durationEmptyDescription = computed(() => hasAccounts.value ? `${currentWindowLabel.value}暂无总耗时样本` : '最近 7 天暂无活跃 AI 账户')
 
-const accountOptions = computed(() => accounts.value
-  .map((account) => ({
-    label: accountOptionLabel(account),
-    value: account.id
-  })))
+const accountPickerHiddenValues = computed(() => [
+  ...overviewAccounts.value.map((account) => account.id),
+  ...addedAccountIds.value
+])
+const addedAccountIdSet = computed(() => new Set(addedAccountIds.value))
 
 const accountFilterItems = computed(() => {
-  const currentOverview = overview.value
+  const currentOverview = displayOverview.value
   if (!currentOverview) return []
   const nameCounts = currentOverview.accounts.reduce((counts, account) => {
     counts.set(account.name, (counts.get(account.name) ?? 0) + 1)
@@ -240,7 +285,8 @@ const accountFilterItems = computed(() => {
       },
       label,
       color: chartColors[index % chartColors.length],
-      selected: activeIds.has(series.accountId)
+      selected: activeIds.has(series.accountId),
+      removable: addedAccountIdSet.value.has(series.accountId) && !defaultAccountIdSet.value.has(series.accountId)
     }
   })
 })
@@ -429,32 +475,37 @@ function handleDateRangeOpenChange(open: boolean) {
   }
 }
 
-function handleAccountSelect(value: unknown) {
-  accountPickerValue.value = []
-  const id = String(value ?? '').trim()
+function handleAddedAccountsChange(value: string[], previousValue: string[]) {
   accountSearchKeyword.value = ''
-  if (!id) return
-  rememberAddedAccountSelection(id)
-  const currentAccountIds = new Set(overviewAccounts.value.map((account) => account.id))
-  const needsBackendAppend = !currentAccountIds.has(id) && !addedAccountIds.value.includes(id)
-  if (needsBackendAppend) {
-    const ids = [...addedAccountIds.value, id]
-    if (ids.length > 20) {
-      message.warning('添加账户最多 20 个')
-      return
-    }
-    addedAccountIds.value = ids
-    syncAddedAccountSelections()
+  const previousIds = new Set(previousValue)
+  const acceptedIds = value.filter((id) => !defaultAccountIdSet.value.has(id))
+  for (const id of acceptedIds) {
+    rememberAddedAccountSelection(id)
   }
-  if (hasActiveAccountFilter.value && !activeAccountIds.value.includes(id)) {
-    activeAccountIds.value = [...activeAccountIds.value, id]
-  }
+  addedAccountIds.value = acceptedIds
+  syncAddedAccountSelections()
+  const newlyAddedIds = acceptedIds.filter((id) => !previousIds.has(id))
+  const visibleIds = new Set([...overviewAccounts.value.map((account) => account.id), ...acceptedIds])
+  const nextActiveIds = activeAccountIds.value.filter((id) => visibleIds.has(id))
+  activeAccountIds.value = hasActiveAccountFilter.value
+    ? [...new Set([...nextActiveIds, ...newlyAddedIds])]
+    : nextActiveIds
   void loadAccounts()
-  if (needsBackendAppend) {
+  if (newlyAddedIds.length || acceptedIds.length !== previousValue.length) {
     void loadPerformance()
   } else {
     renderCharts()
   }
+}
+
+function removeAddedAccount(id: string) {
+  if (!addedAccountIdSet.value.has(id)) return
+  addedAccountIds.value = addedAccountIds.value.filter((accountId) => accountId !== id)
+  addedAccountSelections.value = addedAccountSelections.value.filter((selection) => selection.id !== id)
+  activeAccountIds.value = activeAccountIds.value.filter((accountId) => accountId !== id)
+  void loadAccounts()
+  void loadPerformance()
+  renderCharts()
 }
 
 function handleAccountSearch(value: string) {
@@ -488,7 +539,6 @@ function clearAccountState() {
   addedAccountIds.value = []
   addedAccountSelections.value = []
   activeAccountIds.value = []
-  accountPickerValue.value = []
   accountSearchKeyword.value = ''
 }
 
@@ -566,23 +616,6 @@ function metricElementRef(metric: AiPerformanceMetric): Ref<HTMLDivElement | und
   }
 }
 
-function accountOptionLabel(account: AiPerformanceAccountOption) {
-  const statusText = account.status === 'active' ? '' : `（${accountStatusText(account.status)}）`
-  const ownerText = isManagementView.value && account.systemAccountName ? ` · ${account.systemAccountName}` : ''
-  return `${account.name}${statusText}${ownerText} · 近7天 ${formatInteger(account.requestCountLast7d)} 次`
-}
-
-function accountStatusText(status: AccountStatus) {
-  const labels: Record<AccountStatus, string> = {
-    active: '正常',
-    disabled: '已停用',
-    error: '异常',
-    rate_limited: '限流',
-    temporary_unavailable: '临时不可用'
-  }
-  return labels[status] ?? status
-}
-
 function disabledDate(current: Dayjs) {
   return isRecentWindowDateDisabled(current, calendarRange.value, MAX_RANGE_DAYS)
 }
@@ -602,18 +635,58 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
   return normalizeDateRangeKeys(value, { defaultRange: defaultDateRange, maxDays: MAX_RANGE_DAYS })
 }
 
+function dedupePerformanceAccounts(items: AiPerformanceAccountRow[]): AiPerformanceAccountRow[] {
+  const seen = new Set<string>()
+  const result: AiPerformanceAccountRow[] = []
+  for (const item of items) {
+    if (seen.has(item.id)) continue
+    seen.add(item.id)
+    result.push(item)
+  }
+  return result
+}
+
+function placeholderPerformanceAccount(id: string): AiPerformanceAccountRow | undefined {
+  const responseAccount = responseAccountById.value.get(id)
+  if (responseAccount) return responseAccount
+  const option = accountOptionById.value.get(id)
+  const selection = addedAccountSelectionById.value.get(id)
+  const name = option?.name?.trim() || selection?.name?.trim()
+  if (!name) return undefined
+  return {
+    id,
+    name,
+    status: option?.status ?? 'active',
+    providerCode: option?.providerCode ?? 'openai',
+    systemAccountId: option?.systemAccountId ?? selectedPerformanceSystemAccountId() ?? '',
+    systemAccountName: option?.systemAccountName,
+    requestCountLast7d: option?.requestCountLast7d ?? 0,
+    selected: true,
+    defaultVisible: false
+  }
+}
+
+function placeholderPerformanceSeries(id: string): AiPerformanceSeriesRow | undefined {
+  const account = responseAccountById.value.get(id) ?? placeholderPerformanceAccount(id)
+  if (!account) return undefined
+  return {
+    accountId: id,
+    accountName: account.name,
+    systemAccountId: account.systemAccountId,
+    points: []
+  }
+}
+
 function pruneAccountState() {
   const currentOverview = overview.value
   if (!currentOverview) return
-  const currentIds = new Set(currentOverview.accounts.map((account) => account.id))
-  const backendAddedIds = new Set(currentOverview.selectedAccounts.map((account) => account.id))
-  addedAccountIds.value = addedAccountIds.value.filter((id) => backendAddedIds.has(id))
   syncAddedAccountSelections()
-  activeAccountIds.value = activeAccountIds.value.filter((id) => currentIds.has(id))
+  const visibleIds = new Set([...overviewAccounts.value.map((account) => account.id), ...addedAccountIds.value])
+  activeAccountIds.value = activeAccountIds.value.filter((id) => visibleIds.has(id))
 }
 
 function rememberAddedAccountSelection(id: string) {
-  const selection = accountSelectionForId(id, [...accounts.value, ...overviewAccounts.value], accountOptions.value)
+  const selection = accountSelectionForId(id, [...accounts.value, ...overviewAccounts.value])
   rememberAccountSelection(selection)
   if (!selection || addedAccountSelections.value.some((item) => item.id === selection.id)) return
   addedAccountSelections.value = [...addedAccountSelections.value, selection]
@@ -622,7 +695,7 @@ function rememberAddedAccountSelection(id: string) {
 function syncAddedAccountSelections() {
   const existing = new Map(addedAccountSelections.value.map((selection) => [selection.id, selection]))
   addedAccountSelections.value = addedAccountIds.value
-    .map((id) => accountSelectionForId(id, [...accounts.value, ...overviewAccounts.value], accountOptions.value) ?? existing.get(id))
+    .map((id) => accountSelectionForId(id, [...accounts.value, ...overviewAccounts.value]) ?? existing.get(id))
     .filter((selection): selection is AccountSelection => Boolean(selection))
   rememberAccountSelections(addedAccountSelections.value)
 }
@@ -664,9 +737,10 @@ watch(addedAccountSelections, (selections) => rememberAccountSelections(selectio
 }
 
 .ai-performance-account-select {
-  flex: 1 1 360px;
-  min-width: 320px;
-  max-width: 560px;
+  flex: 0 1 300px;
+  width: 300px;
+  min-width: 260px;
+  max-width: 320px;
 }
 
 .ai-performance-account-list {
@@ -676,30 +750,59 @@ watch(addedAccountSelections, (selections) => rememberAccountSelections(selectio
   margin-top: 12px;
 }
 
-.ai-performance-account-filter-item {
+.ai-performance-account-filter-entry {
   display: inline-flex;
   align-items: center;
   max-width: min(360px, 100%);
-  gap: 6px;
-  padding: 2px 8px;
   border: 1px solid transparent;
   border-radius: 6px;
+  transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
+}
+
+.ai-performance-account-filter-entry:hover,
+.ai-performance-account-filter-entry.active {
+  border-color: #91caff;
+  background: #e6f4ff;
+}
+
+.ai-performance-account-filter-entry.muted {
+  opacity: 0.46;
+}
+
+.ai-performance-account-filter-item {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: 6px;
+  padding: 2px 8px;
+  border: 0;
   color: #334155;
   background: transparent;
   font-size: 13px;
   line-height: 20px;
   cursor: pointer;
-  transition: background-color 0.16s ease, border-color 0.16s ease, opacity 0.16s ease;
 }
 
-.ai-performance-account-filter-item:hover,
-.ai-performance-account-filter-item.active {
-  border-color: #91caff;
-  background: #e6f4ff;
+.ai-performance-account-filter-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  margin-left: -4px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  color: #64748b;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background-color 0.16s ease, color 0.16s ease;
 }
 
-.ai-performance-account-filter-item.muted {
-  opacity: 0.46;
+.ai-performance-account-filter-remove:hover {
+  color: #cf1322;
+  background: #fff1f0;
 }
 
 .ai-performance-legend-dot {

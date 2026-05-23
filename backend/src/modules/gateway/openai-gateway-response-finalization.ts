@@ -15,6 +15,7 @@ import {
   confirmClientIpAccountAvoidanceAfterSuccess,
   type ClientIpAccountAvoidanceTracker
 } from './openai-gateway-client-ip-account-avoidance.service.js'
+import { recordClientIpErrorCircuitSuccess } from './openai-gateway-client-ip-error-circuit.service.js'
 import {
   pipeNonStreamUpstreamResponse,
   readUpstreamBodyLimited
@@ -458,6 +459,29 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
       success: true,
       settings
     })
+    const clearedClientIpErrorCircuit = recordClientIpErrorCircuitSuccess({
+      systemAccountId: usageContext.systemAccountId,
+      apiKeyId: usageContext.apiKeyId,
+      groupId: usageContext.groupId,
+      clientIp: usageContext.clientIp,
+      endpoint: usageContext.endpoint
+    })
+    if (clearedClientIpErrorCircuit) {
+      getRequestLogger().info({
+        event: 'gateway_client_ip_error_circuit_recovered',
+        accountId: account.id,
+        systemAccountId: usageContext.systemAccountId,
+        apiKeyId: usageContext.apiKeyId,
+        groupId: usageContext.groupId,
+        clientIp: usageContext.clientIp
+      }, '客户端 IP 级错误熔断状态已按成功响应恢复')
+      auditCapture.addGatewayMetadata({
+        label: 'client_ip_error_circuit',
+        metadata: {
+          recovered: true
+        }
+      })
+    }
     const clientIpAvoidanceResult = confirmClientIpAccountAvoidanceAfterSuccess(
       clientIpAccountAvoidanceTracker,
       account.id,

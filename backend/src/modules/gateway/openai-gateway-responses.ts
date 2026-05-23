@@ -5,11 +5,12 @@ export interface GatewayErrorPayload {
   error: {
     message: string
     type: string
+    code?: string
   }
 }
 
-export function gatewayErrorPayload(message: string, type: string): GatewayErrorPayload {
-  return { error: { message, type } }
+export function gatewayErrorPayload(message: string, type: string, code?: string): GatewayErrorPayload {
+  return { error: { message, type, ...(code ? { code } : {}) } }
 }
 
 export function sendGatewayJsonError(res: Response, statusCode: number, payload: GatewayErrorPayload): void {

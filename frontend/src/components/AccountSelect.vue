@@ -6,6 +6,7 @@
     :loading="loading"
     :mode="mode"
     :options="selectOptions"
+    :hidden-option-values="hiddenOptionValues"
     :placeholder="placeholder"
     :cache-key="cacheKey"
     v-bind="$attrs"
@@ -43,6 +44,7 @@ const props = withDefaults(defineProps<{
   selectedAccount?: AccountSelection
   selectedAccounts?: Array<AccountSelection | undefined>
   selectedIds?: Array<string | undefined>
+  hiddenOptionValues?: Array<string | undefined>
   cacheKey?: string
   allowClear?: boolean
   disabled?: boolean
@@ -55,6 +57,7 @@ const props = withDefaults(defineProps<{
   selectedAccount: undefined,
   selectedAccounts: () => [],
   selectedIds: () => [],
+  hiddenOptionValues: () => [],
   cacheKey: 'accounts',
   allowClear: false,
   disabled: false,
