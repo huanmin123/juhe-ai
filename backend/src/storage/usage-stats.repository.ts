@@ -80,6 +80,7 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
         SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
         FROM usage_records
         WHERE created_at <= ?
+          AND COALESCE(traffic_source, 'gateway') <> 'cooldown_retest'
           AND (created_at > ? OR (created_at = ? AND id > ?))
         ORDER BY created_at ASC, id ASC
         LIMIT ?
@@ -87,9 +88,17 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
       .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, batchLimit) as unknown as UsageStatsRecordRow[]
 
     if (!rows.length) {
+      const ignoredCursor = latestIgnoredUsageRecordCursor(datasetDatabase, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
       updateStatsJobState(database, {
+        cursorCreatedAt: ignoredCursor?.created_at,
+        cursorId: ignoredCursor?.id,
         lastSuccessAt: nowIso(),
-        lagSeconds: latestUsageRecordLagSeconds(datasetDatabase, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
+        lagSeconds: latestUsageRecordLagSeconds(
+          datasetDatabase,
+          safeCreatedBefore,
+          ignoredCursor?.created_at ?? state.cursorCreatedAt,
+          ignoredCursor?.id ?? state.cursorId
+        )
       })
       commitDatabaseTransaction(database, transactionStarted)
       return 0
@@ -1499,12 +1508,28 @@ function usageStatsSafeCreatedBefore(): string {
   return new Date(Date.now() - USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS * 1000).toISOString()
 }
 
+function latestIgnoredUsageRecordCursor(database: DatabaseSync, safeCreatedBefore: string, cursorCreatedAt: string, cursorId: string): { created_at: string; id: string } | undefined {
+  const latest = database
+    .prepare(`
+      SELECT created_at, id
+      FROM usage_records
+      WHERE created_at <= ?
+        AND COALESCE(traffic_source, 'gateway') = 'cooldown_retest'
+        AND (created_at > ? OR (created_at = ? AND id > ?))
+      ORDER BY created_at DESC, id DESC
+      LIMIT 1
+    `)
+    .get(safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorId) as unknown as { created_at?: string; id?: string } | undefined
+  return latest?.created_at && latest.id ? { created_at: latest.created_at, id: latest.id } : undefined
+}
+
 function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: string, cursorCreatedAt: string, cursorId: string): number {
   const latest = database
     .prepare(`
       SELECT created_at
       FROM usage_records
       WHERE created_at <= ?
+        AND COALESCE(traffic_source, 'gateway') <> 'cooldown_retest'
         AND (created_at > ? OR (created_at = ? AND id > ?))
       ORDER BY created_at DESC, id DESC
       LIMIT 1

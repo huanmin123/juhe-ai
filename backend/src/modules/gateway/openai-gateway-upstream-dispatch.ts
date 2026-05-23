@@ -77,6 +77,7 @@ export async function fetchFirstAvailableUpstream(
   let concurrencyRetryWaitBudgetMs = accountConcurrencyRetryBudgetMs
   const failedProxyDispatchKeys = new Map<string, string>()
   const deferredAccountFailures: DeferredAccountFailure[] = []
+  const requestFailureSignatureConfirmationThreshold = Math.min(3, Math.max(2, accounts.length))
 
   for (const originalAccount of accounts) {
     throwIfRequestAborted(signal)
@@ -229,6 +230,7 @@ export async function fetchFirstAvailableUpstream(
               signal,
               lastAttempt,
               deferredAccountFailures,
+              requestFailureSignatureConfirmationThreshold,
               clientIpAccountAvoidanceTracker
             })
             lastAttempt = failedResponseResult.lastAttempt

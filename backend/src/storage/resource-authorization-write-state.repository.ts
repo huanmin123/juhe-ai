@@ -24,6 +24,11 @@ import type {
 import { markAllGroupAccountStatsDirty } from './usage-stats.repository.js'
 import { jsonObjectOrNull, parseOptionalJsonObject } from './value-utils.js'
 
+interface RefreshEffectiveSourceOptions {
+  noActiveSourceReason?: string
+  preserveExpiredWhenNoActiveSource?: boolean
+}
+
 export function expireDueResourceAuthorizations(): number {
   const now = nowIso()
   const database = getDatabase()
@@ -133,7 +138,56 @@ export function upsertResourceAuthorizationForUser(input: { resourceType: Resour
   refreshResourceAuthorizationEffectiveSource(authorizationId, input.actor, input.now, input.database)
   const row = input.database.prepare('SELECT * FROM resource_authorizations WHERE id = ?').get(authorizationId) as unknown as ResourceAuthorizationRow | undefined
   if (!row) throw new Error('创建资源授权失败')
+  bindActiveAccountAuthorizationToGranteeDefaultGroup(input.database, row, input.now)
   return row
+}
+
+function bindActiveAccountAuthorizationToGranteeDefaultGroup(database: DatabaseSync, authorization: ResourceAuthorizationRow, now: string): void {
+  if (authorization.resource_type !== 'account') return
+  if (authorization.status !== 'active' || isResourceAuthorizationExpired(authorization.expires_at, Date.parse(now))) return
+  const account = database
+    .prepare('SELECT provider_code, system_account_id FROM accounts WHERE id = ?')
+    .get(authorization.resource_id) as unknown as { provider_code?: string; system_account_id?: string } | undefined
+  if (!account?.provider_code || account.system_account_id === authorization.grantee_system_account_id) return
+  const existingBinding = database
+    .prepare(`
+      SELECT group_id
+      FROM group_accounts
+      WHERE account_id = ?
+        AND system_account_id = ?
+        AND enabled = 1
+      ORDER BY updated_at DESC, group_id ASC, account_id ASC
+      LIMIT 1
+    `)
+    .get(authorization.resource_id, authorization.grantee_system_account_id) as unknown as { group_id?: string } | undefined
+  if (existingBinding?.group_id) return
+  const defaultGroupId = defaultGroupIdForAuthorizationBinding(database, account.provider_code, authorization.grantee_system_account_id, now)
+  if (!defaultGroupId) return
+  database
+    .prepare(`
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(group_id, account_id) DO UPDATE SET
+        system_account_id = excluded.system_account_id,
+        account_authorization_id = excluded.account_authorization_id,
+        enabled = 1,
+        updated_at = excluded.updated_at
+    `)
+    .run(authorization.grantee_system_account_id, defaultGroupId, authorization.resource_id, authorization.id, now, now)
+  invalidateGroupAccountIdsCache(defaultGroupId)
+}
+
+function defaultGroupIdForAuthorizationBinding(database: DatabaseSync, providerCode: string, systemAccountId: string, now: string): string | undefined {
+  const existing = database
+    .prepare('SELECT id FROM groups WHERE system_account_id = ? AND provider_code = ? ORDER BY is_default DESC, updated_at DESC, id ASC LIMIT 1')
+    .get(systemAccountId, providerCode) as unknown as { id?: string } | undefined
+  if (existing?.id) return existing.id
+  if (providerCode !== 'openai') return undefined
+  const id = newId('grp')
+  database
+    .prepare('INSERT INTO groups (id, system_account_id, name, provider_code, description, enabled, is_default, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, 1, ?, ?)')
+    .run(id, systemAccountId, '默认 OpenAI 分组', 'openai', '', now, now)
+  return id
 }
 
 function hasActiveTeamAuthorizationSource(database: DatabaseSync, authorizationId: string): boolean {
@@ -205,7 +259,13 @@ function upsertResourceAuthorizationSource(database: DatabaseSync, authorization
   `).run(newId('rauthsrc'), authorizationId, sourceType, sourceTeamId ?? null, requestedStatus, now, requestedStatus === 'active' ? null : now, requestedStatus === 'superseded' ? 'covered_by_team' : null, actor, now, now)
 }
 
-function refreshResourceAuthorizationEffectiveSource(authorizationId: string, actor: string, now: string, database = getDatabase()): void {
+function refreshResourceAuthorizationEffectiveSource(
+  authorizationId: string,
+  actor: string,
+  now: string,
+  database = getDatabase(),
+  options: RefreshEffectiveSourceOptions = {}
+): void {
   invalidateAuthorizationLookupCaches()
   const activeTeamSource = database.prepare(`
     SELECT ras.source_team_id
@@ -310,18 +370,40 @@ function refreshResourceAuthorizationEffectiveSource(authorizationId: string, ac
     return
   }
 
+  const preserveExpiredWhenNoActiveSource = options.preserveExpiredWhenNoActiveSource === false ? 0 : 1
+  const noActiveSourceReason = options.noActiveSourceReason ?? null
   database.prepare(`
     UPDATE resource_authorizations
-    SET status = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'expired' ELSE 'revoked' END,
+    SET status = CASE WHEN ? = 1 AND expires_at IS NOT NULL AND expires_at <= ? THEN 'expired' ELSE 'revoked' END,
         effective_source_type = NULL,
         effective_source_team_id = NULL,
-        revoked_by = COALESCE(revoked_by, ?),
-        revoked_at = COALESCE(revoked_at, ?),
-        revoked_reason = CASE WHEN expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired' ELSE COALESCE(revoked_reason, 'no_active_source') END,
+        revoked_by = CASE WHEN ? IS NOT NULL THEN ? ELSE COALESCE(revoked_by, ?) END,
+        revoked_at = CASE WHEN ? IS NOT NULL THEN ? ELSE COALESCE(revoked_at, ?) END,
+        revoked_reason = CASE
+          WHEN ? = 1 AND expires_at IS NOT NULL AND expires_at <= ? THEN 'authorization_expired'
+          WHEN ? IS NOT NULL THEN ?
+          ELSE COALESCE(revoked_reason, 'no_active_source')
+        END,
         last_source_changed_at = ?,
         updated_at = ?
     WHERE id = ?
-  `).run(now, actor, now, now, now, now, authorizationId)
+  `).run(
+    preserveExpiredWhenNoActiveSource,
+    now,
+    noActiveSourceReason,
+    actor,
+    actor,
+    noActiveSourceReason,
+    now,
+    now,
+    preserveExpiredWhenNoActiveSource,
+    now,
+    noActiveSourceReason,
+    noActiveSourceReason,
+    now,
+    now,
+    authorizationId
+  )
   cleanupInactiveAuthorizationBindings(database, [authorizationId])
 }
 
@@ -458,7 +540,15 @@ function syncUserGrantRuntime(grant: ResourceAuthorizationGrantRow, actor: strin
         updated_at = ?
     WHERE authorization_id = ? AND source_type = 'manual' AND status IN ('active', 'superseded')
   `).run(now, grant.status === 'expired' ? 'authorization_expired' : grant.status === 'paused' ? 'authorization_paused' : 'authorization_revoked', actor, now, now, runtime.id)
-  refreshResourceAuthorizationEffectiveSource(runtime.id, actor, now, database)
+  refreshResourceAuthorizationEffectiveSource(
+    runtime.id,
+    actor,
+    now,
+    database,
+    grant.status === 'revoked'
+      ? { noActiveSourceReason: 'authorization_revoked', preserveExpiredWhenNoActiveSource: false }
+      : undefined
+  )
 }
 
 function syncTeamGrantMemberAuthorizations(grant: ResourceAuthorizationGrantRow, actor: string, database: DatabaseSync, now: string): void {
@@ -567,7 +657,10 @@ function revokeTeamGrantSources(resourceType: ResourceAuthorizationResourceType,
   const rows = database.prepare("SELECT ras.authorization_id FROM resource_authorization_sources ras INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id WHERE ras.source_type = 'team' AND ras.source_team_id = ? AND ras.status = 'active' AND ra.resource_type = ? AND ra.resource_id = ?").all(teamId, resourceType, resourceId) as unknown as Array<{ authorization_id: string }>
   for (const row of rows) {
     database.prepare("UPDATE resource_authorization_sources SET status = 'revoked', ended_at = COALESCE(ended_at, ?), ended_reason = COALESCE(ended_reason, 'team_revoked'), revoked_by = ?, revoked_at = ?, updated_at = ? WHERE authorization_id = ? AND source_type = 'team' AND source_team_id = ? AND status = 'active'").run(now, actor, now, now, row.authorization_id, teamId)
-    refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database)
+    refreshResourceAuthorizationEffectiveSource(row.authorization_id, actor, now, database, {
+      noActiveSourceReason: 'authorization_revoked',
+      preserveExpiredWhenNoActiveSource: false
+    })
   }
 }
 

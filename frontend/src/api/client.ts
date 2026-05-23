@@ -22,6 +22,7 @@ import type {
   AuditLogRuntime,
   AuditLogSummary,
   AuditOutcome,
+  AuditTrafficSource,
   AuthorizationResourceType,
   AuthorizationTeamUsageOverview,
   AuthorizationUserUsageOverview,
@@ -52,7 +53,6 @@ import type {
   RuntimeLogLevel,
   RuntimeLogSummary,
   RuntimeLogSearchResult,
-  UpstreamErrorFeatureRuleCatalogItem,
   ResourceAuthorizationListResult,
   SystemTeamMemberSummary,
   SystemTeamListResult,
@@ -75,7 +75,8 @@ import type {
   UsageRecordsCleanupResult,
   UsageStatsOverview,
   UsageRecordListResult,
-  UsageRecordSummary
+  UsageRecordSummary,
+  UsageRecordTrafficSource
 } from '@/types/domain'
 
 interface ApiResponse<T> {
@@ -200,6 +201,7 @@ export interface UsageRecordListParams extends ListParams {
   statusCode?: number
   groupId?: string
   model?: string
+  trafficSource?: UsageRecordTrafficSource
   startDate?: string
   endDate?: string
   sortBy?: 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
@@ -218,6 +220,7 @@ export interface AuditLogListParams extends ListParams {
   groupId?: string
   accountId?: string
   errorGroupId?: string
+  trafficSource?: AuditTrafficSource
   limit?: number
 }
 
@@ -527,7 +530,7 @@ export const api = {
     importConfirm: (payload: { data: unknown; options?: AccountImportOptions }, params?: ListParams) => unwrap<AccountImportResult>(http.post('/accounts/import/confirm', payload, { params })),
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/accounts', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
-    updateAuthorizedDispatch: (id: string, payload: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
+    updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
     bindGroup: (id: string, payload: { groupId: string }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
     test: (id: string, payload?: { model?: string; prompt?: string }, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, timeout: 130000, signal: options?.signal })),
@@ -539,7 +542,7 @@ export const api = {
     detail: (id: string) => unwrap<AccountSummary>(http.get(`/my-accounts/${id}`)),
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
-    updateAuthorizedDispatch: (id: string, payload: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
+    updateAuthorizedDispatch: (id: string, payload: { status?: 'active' | 'disabled'; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
     bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
     test: (id: string, payload?: { model?: string; prompt?: string }, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { timeout: 130000, signal: options?.signal })),
@@ -707,9 +710,6 @@ export const api = {
     accountUsage: (params?: AccountUsageStatsParams) => unwrap<AccountUsageStatsOverview>(http.get('/my-stats/account-usage', { params: accountUsageStatsParams(params, false) })),
     aiPerformanceAccounts: (params?: AiPerformanceAccountOptionsParams) => unwrap<AiPerformanceAccountOption[]>(http.get('/my-stats/ai-performance/accounts', { params: aiPerformanceAccountOptionsParams(params, false) })),
     aiPerformance: (params?: AiPerformanceParams) => unwrap<AiPerformanceOverview>(http.get('/my-stats/ai-performance', { params: aiPerformanceParams(params, false) }))
-  },
-  featureRules: {
-    upstreamErrorFeatureRules: () => unwrap<UpstreamErrorFeatureRuleCatalogItem[]>(http.get('/feature-rules/upstream-error-feature-rules'))
   },
   settings: {
     public: () => unwrap<GlobalSettings>(http.get('/settings/public')),

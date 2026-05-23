@@ -96,6 +96,29 @@ try {
   assert.equal(runtimeExpiresAt('group', teamGroup.id, teamMember.id), null, '团队授权展开到成员的 runtime 表应同步清空 expires_at')
   assert.equal(authorizationHelpers.activeGroupAuthorization(teamGroup.id, teamMember.id)?.id, runtimeAuthorizationId('group', teamGroup.id, teamMember.id), '清空有效期后团队成员授权应仍可用于运行态调度')
 
+  const expiredRevokeGroup = repositories.createGroup({
+    name: '授权到期后回收分组',
+    providerCode: 'openai',
+    enabled: true
+  }, ownerAccess)
+  const expiredRevokeAuthorization = repositories.createResourceAuthorization({
+    resourceType: 'group',
+    resourceId: expiredRevokeGroup.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    expiresAt: futureExpiresAt
+  }, ownerAccess)
+  const alreadyExpiredAt = new Date(Date.now() - 60_000).toISOString()
+  databaseModule.getDatabase()
+    .prepare('UPDATE resource_authorization_grants SET expires_at = ?, updated_at = ? WHERE id = ?')
+    .run(alreadyExpiredAt, alreadyExpiredAt, expiredRevokeAuthorization.id)
+  const expiredListItem = repositories.listResourceAuthorizations({ status: 'expired' }, ownerAccess).find((authorization) => authorization.id === expiredRevokeAuthorization.id)
+  assert.equal(expiredListItem?.status, 'expired', '到期扫描后授权应进入过期状态')
+  const revokedExpiredAuthorization = repositories.revokeResourceAuthorization(expiredRevokeAuthorization.id, {}, ownerAccess)
+  assert.equal(revokedExpiredAuthorization?.status, 'revoked', '到期授权仍应允许显式回收')
+  assert.equal(runtimeStatus('group', expiredRevokeGroup.id, grantee.id), 'revoked', '到期授权显式回收后运行态也应标记已收回')
+  assert.equal(repositories.listResourceAuthorizations({}, ownerAccess).some((authorization) => authorization.id === expiredRevokeAuthorization.id), false, '到期授权回收后默认列表不应继续展示')
+
   const accountExpiresAt = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString()
   const validAuthorizationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
   const account = repositories.createAccount({
@@ -257,6 +280,13 @@ function runtimeAuthorizationId(resourceType: string, resourceId: string, grante
     .prepare('SELECT id FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?')
     .get(resourceType, resourceId, granteeSystemAccountId) as { id?: string } | undefined
   return row?.id
+}
+
+function runtimeStatus(resourceType: string, resourceId: string, granteeSystemAccountId: string): string | undefined {
+  const row = databaseModule.getDatabase()
+    .prepare('SELECT status FROM resource_authorizations WHERE resource_type = ? AND resource_id = ? AND grantee_system_account_id = ?')
+    .get(resourceType, resourceId, granteeSystemAccountId) as { status?: string } | undefined
+  return row?.status
 }
 
 function insertUsageTotal(database: ReturnType<typeof databaseModule.getStatsDatabase>, systemAccountId: string, scopeType: string, scopeId: string, totalCost: number) {

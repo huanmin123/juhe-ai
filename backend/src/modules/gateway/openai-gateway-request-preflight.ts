@@ -16,7 +16,7 @@ import {
   checkGatewayAuthorizationQuotaAsync,
   checkGatewayAuthorizationQuotaBatchAsync
 } from './authorization-quota.service.js'
-import { type AuditCaptureContext } from './audit-capture.service.js'
+import { responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import { filterLocallySuppressedGatewayAccounts } from './gateway-account-side-effects.service.js'
 import {
   createClientIpAccountAvoidanceTracker,
@@ -39,6 +39,17 @@ import {
   recordClientIpErrorCircuitSuccess,
   type GatewayClientIpErrorCircuitReason
 } from './openai-gateway-client-ip-error-circuit.service.js'
+import {
+  inspectRequestErrorSignatureCache,
+  type RequestErrorSignatureCacheHit
+} from './openai-gateway-request-error-signature-cache.service.js'
+import {
+  orderOpenAIAccountsByGatewayProxyHealth
+} from './openai-gateway-proxy-health.service.js'
+import {
+  parseClientVisibleUpstreamErrorForAudit,
+  sendRawUpstreamErrorResponse
+} from './openai-gateway-error-helpers.js'
 import { waitForHighConcurrencyGroupCapacity } from './openai-gateway-high-concurrency-queue.service.js'
 import { finalizeGatewayAuthFailureAudit, sendOpenAIModelsGatewayResponse } from './openai-gateway-fixed-responses.js'
 import { sendGatewayFailureResponse, sendQuotaExceededResponse } from './openai-gateway-failure-response.js'
@@ -54,8 +65,10 @@ import {
 import { requestModel, type UsageRequestSnapshot } from './openai-gateway-usage.js'
 import {
   groupUsageMetadata,
+  recordGatewayFailure,
   type GatewayFailureUsageContext
 } from './openai-gateway-usage-records.js'
+import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 
 export interface OpenAIGatewayRequestIdentity {
   systemAccountId: string
@@ -67,6 +80,7 @@ interface OpenAIGatewayRequestPreflightOptions {
   identity?: OpenAIGatewayRequestIdentity
   candidateAccounts?: UpstreamAccount[]
   disableSessionAffinity?: boolean
+  trafficSource?: OpenAIGatewayTrafficSource
   settingsOverride?: Partial<GatewaySettings>
 }
 
@@ -126,6 +140,8 @@ export async function prepareOpenAIGatewayDispatchContext(
     gatewaySettings ?? await readCachedGatewaySettingsAsync(),
     options.settingsOverride
   )
+  const trafficSource = options.trafficSource ?? 'gateway'
+  const gatewayClientIp = trafficSource === 'gateway' ? clientIp : undefined
   const { systemAccountId, apiKeyId, groupId } = identity
   apiKeyRecord = apiKeyRecord ?? (apiKeyId ? findActiveGatewayApiKeyById(apiKeyId) : undefined)
   const apiKeyUnavailable = Boolean(apiKeyId && !apiKeyRecord)
@@ -133,12 +149,14 @@ export async function prepareOpenAIGatewayDispatchContext(
     systemAccountId,
     apiKeyId,
     groupId,
-    providerCode: 'openai'
+    providerCode: 'openai',
+    trafficSource
   })
   bindRequestContextFields({
     systemAccountId,
     apiKeyId,
-    groupId
+    groupId,
+    trafficSource
   })
 
   const groupAccess = runtimeGroupAccess ?? await resolveCachedGroupUsageAccessMetadataAsync(groupId, systemAccountId)
@@ -146,6 +164,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     traceId,
     clientIp,
     identity,
+    trafficSource,
     endpoint,
     requestSnapshot
   })
@@ -153,7 +172,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     systemAccountId,
     apiKeyId,
     groupId,
-    clientIp,
+    clientIp: gatewayClientIp,
     endpoint
   })
   if (clientIpErrorCircuit.blocked) {
@@ -170,7 +189,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       systemAccountId,
       apiKeyId,
       groupId,
-      clientIp
+      clientIp: gatewayClientIp
     }, '客户端 IP 级错误熔断已短路请求')
     auditCapture.addGatewayMetadata({
       label: 'client_ip_error_circuit',
@@ -208,7 +227,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     systemAccountId,
     apiKeyId,
     groupId,
-    clientIp
+    clientIp: gatewayClientIp
   })
   if (clientStrategy.clientProfile === 'codex') {
     auditCapture.addGatewayMetadata({
@@ -263,6 +282,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     traceId,
     clientIp,
     identity,
+    trafficSource,
     groupUsageFields,
     endpoint,
     requestSnapshot
@@ -277,7 +297,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       systemAccountId,
       apiKeyId,
       groupId,
-      clientIp,
+      clientIp: gatewayClientIp,
       endpoint,
       reason: 'invalid_json',
       signature: 'invalid_json'
@@ -340,7 +360,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       systemAccountId,
       apiKeyId,
       groupId,
-      clientIp,
+      clientIp: gatewayClientIp,
       endpoint
     })
     sendOpenAIModelsGatewayResponse({
@@ -386,7 +406,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       systemAccountId,
       apiKeyId,
       groupId,
-      clientIp,
+      clientIp: gatewayClientIp,
       endpoint,
       reason: 'unsupported_model',
       signature: modelFilter.reason ?? modelFilter.requestedModel ?? 'unsupported_model'
@@ -408,6 +428,26 @@ export async function prepareOpenAIGatewayDispatchContext(
     })
     return undefined
   }
+
+  const cachedRequestError = inspectRequestErrorSignatureCache(req, {
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    clientIp: gatewayClientIp,
+    endpoint
+  })
+  if (cachedRequestError) {
+    sendCachedRequestErrorSignatureResponse({
+      req,
+      res,
+      auditCapture,
+      usageContext,
+      startedAt,
+      hit: cachedRequestError
+    })
+    return undefined
+  }
+
   const orderedCandidateAccounts = orderOpenAIAccountsBySessionAffinity(
     modelFilter.accounts,
     sessionAffinityKey,
@@ -424,11 +464,38 @@ export async function prepareOpenAIGatewayDispatchContext(
     }, '网关本地短期屏蔽账号已应用到候选列表')
   }
 
-  const clientIpAccountAvoidance = orderOpenAIAccountsByClientIpAccountAvoidance(localSuppressionFilter.accounts, {
+  const proxyHealthOrder = orderOpenAIAccountsByGatewayProxyHealth(localSuppressionFilter.accounts)
+  if (proxyHealthOrder.applied || proxyHealthOrder.bypassedAllAvoided) {
+    logger.warn({
+      event: proxyHealthOrder.applied
+        ? 'gateway_proxy_health_avoidance_applied'
+        : 'gateway_proxy_health_avoidance_bypassed',
+      applied: proxyHealthOrder.applied,
+      avoidedProxyKeys: proxyHealthOrder.avoidedProxyKeys,
+      avoidedAccountIds: proxyHealthOrder.avoidedAccountIds,
+      bypassedAllAvoided: proxyHealthOrder.bypassedAllAvoided,
+      groupId,
+      systemAccountId,
+      apiKeyId
+    }, proxyHealthOrder.applied
+      ? '代理运行态避让已应用到候选列表'
+      : '代理运行态避让无可用备选，保持原候选列表')
+    auditCapture.addGatewayMetadata({
+      label: 'proxy_health_avoidance',
+      metadata: {
+        applied: proxyHealthOrder.applied,
+        avoidedProxyKeys: proxyHealthOrder.avoidedProxyKeys,
+        avoidedAccountIds: proxyHealthOrder.avoidedAccountIds,
+        bypassedAllAvoided: proxyHealthOrder.bypassedAllAvoided
+      }
+    })
+  }
+
+  const clientIpAccountAvoidance = orderOpenAIAccountsByClientIpAccountAvoidance(proxyHealthOrder.accounts, {
     systemAccountId,
     apiKeyId,
     groupId,
-    clientIp
+    clientIp: gatewayClientIp
   })
   if (clientIpAccountAvoidance.applied || clientIpAccountAvoidance.bypassedAllAvoided) {
     logger.warn({
@@ -441,7 +508,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       groupId,
       systemAccountId,
       apiKeyId,
-      clientIp
+      clientIp: gatewayClientIp
     }, clientIpAccountAvoidance.applied
       ? '客户端 IP 级账号回避已应用到候选列表'
       : '客户端 IP 级账号回避无可用备选，保持原候选列表')
@@ -525,7 +592,7 @@ export async function prepareOpenAIGatewayDispatchContext(
       systemAccountId,
       groupId,
       apiKeyId,
-      clientIp,
+      clientIp: gatewayClientIp,
       policy: groupAccess.schedulingPolicy,
       signal
     })
@@ -720,17 +787,75 @@ function recordClientIpRequestErrorSample(input: {
   })
 }
 
+function sendCachedRequestErrorSignatureResponse(input: {
+  req: Request
+  res: Response
+  auditCapture: AuditCaptureContext
+  usageContext: GatewayFailureUsageContext
+  startedAt: number
+  hit: RequestErrorSignatureCacheHit
+}): void {
+  const auditError = parseClientVisibleUpstreamErrorForAudit(
+    input.hit.response,
+    '多个上游账号返回一致错误，已按请求级错误短路'
+  )
+  logger.warn({
+    event: 'gateway_request_error_signature_cache_hit',
+    statusCode: input.hit.response.statusCode,
+    failureSignature: input.hit.failureSignatureLabel,
+    confirmedAccountIds: input.hit.confirmedAccountIds,
+    cachedAt: input.hit.cachedAt,
+    systemAccountId: input.usageContext.systemAccountId,
+    apiKeyId: input.usageContext.apiKeyId,
+    groupId: input.usageContext.groupId,
+    clientIp: input.usageContext.clientIp,
+    endpoint: input.usageContext.endpoint
+  }, '已命中请求级错误签名短路缓存，直接返回最近确认的上游错误')
+  input.auditCapture.addGatewayMetadata({
+    label: 'request_error_signature_cache',
+    metadata: {
+      hit: true,
+      failureSignature: input.hit.failureSignatureLabel,
+      confirmedAccountIds: input.hit.confirmedAccountIds,
+      cachedAt: input.hit.cachedAt
+    }
+  })
+  recordGatewayFailure(input.req, input.usageContext, {
+    statusCode: input.hit.response.statusCode,
+    startedAt: input.startedAt,
+    responsePayload: gatewayErrorPayload(
+      auditError.errorMessage,
+      auditError.errorCode ?? 'upstream_request_error'
+    ),
+    errorMessage: auditError.errorMessage
+  })
+  sendRawUpstreamErrorResponse(input.res, input.hit.response)
+  input.auditCapture.finalize({
+    outcome: 'upstream_failed',
+    success: false,
+    statusCode: input.hit.response.statusCode,
+    responseHeaders: responseHeadersToObject(input.res),
+    responseBody: input.hit.response.bodyText,
+    responsePartType: 'gateway_error',
+    errorPhase: 'upstream_response',
+    errorCode: auditError.errorCode,
+    errorMessage: auditError.errorMessage
+  })
+}
+
 function buildGatewayUsageContext(input: {
   traceId: string
   clientIp?: string
   identity: OpenAIGatewayRequestIdentity
+  trafficSource: OpenAIGatewayTrafficSource
   groupUsageFields?: ReturnType<typeof groupUsageMetadata>
   endpoint: string
   requestSnapshot: UsageRequestSnapshot
 }): GatewayFailureUsageContext {
-  const { traceId, clientIp, identity, groupUsageFields, endpoint, requestSnapshot } = input
+  const { traceId, clientIp, identity, trafficSource, groupUsageFields, endpoint, requestSnapshot } = input
   return {
     traceId,
+    trafficSource,
     clientIp,
     systemAccountId: identity.systemAccountId,
     apiKeyId: identity.apiKeyId,

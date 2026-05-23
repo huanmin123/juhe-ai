@@ -46,6 +46,13 @@ import type { GatewaySettings } from './account-error-policy.service.js'
 import { OpenAIOAuthCodexAdapterError } from './openai-oauth-codex-adapter.js'
 import { recordClientIpErrorCircuitSample } from './openai-gateway-client-ip-error-circuit.service.js'
 import type { GatewayFailureUsageContext } from './openai-gateway-usage-records.js'
+import {
+  normalizeOpenAIGatewayTrafficSource,
+  type OpenAIGatewayTrafficSource
+} from './openai-gateway-traffic-source.js'
+import {
+  rememberRequestErrorSignatureCache
+} from './openai-gateway-request-error-signature-cache.service.js'
 
 export const openAIGatewayRouter = Router()
 
@@ -56,6 +63,7 @@ export interface OpenAIGatewayHandleOptions {
   candidateAccounts?: UpstreamAccount[]
   disableSessionAffinity?: boolean
   exposeUpstreamDiagnostics?: boolean
+  trafficSource?: OpenAIGatewayTrafficSource
   settingsOverride?: Partial<GatewaySettings>
 }
 
@@ -101,8 +109,16 @@ export async function handleOpenAIGatewayRequest(
   const traceId = getTraceId() ?? createTraceId()
   const clientIp = extractClientIp(req)
   const endpoint = requestEndpoint(req)
+  const trafficSource = normalizeOpenAIGatewayTrafficSource(options.trafficSource)
   const requestSnapshot = buildUsageRequestSnapshot(req, traceId, clientIp)
-  const auditCapture = createAuditCapture({ req, traceId, clientIp, startedAtMs: startedAt })
+  const auditCapture = createAuditCapture({
+    req,
+    traceId,
+    clientIp,
+    startedAtMs: startedAt,
+    trafficSource,
+    captureMode: trafficSource === 'cooldown_retest' ? 'metadata_only' : 'default'
+  })
   req.once('aborted', () => {
     auditCapture.markClientAborted()
     abortController.abort()
@@ -118,7 +134,7 @@ export async function handleOpenAIGatewayRequest(
     req,
     res,
     auditCapture,
-    options,
+    options: { ...options, trafficSource },
     startedAt,
     traceId,
     clientIp,
@@ -218,6 +234,7 @@ export async function handleOpenAIGatewayRequest(
     }
   } catch (error) {
     recordKnownClientIpRequestError(error, gatewayUsageContext, auditCapture)
+    rememberKnownRequestErrorSignature(req, error, gatewayUsageContext, auditCapture)
     if (handleGatewayRequestKnownErrorResponse({
       res,
       auditCapture,
@@ -253,6 +270,52 @@ export async function handleOpenAIGatewayRequest(
   } finally {
     releaseClientIpSlot()
   }
+}
+
+function rememberKnownRequestErrorSignature(
+  req: Request,
+  error: unknown,
+  usageContext: GatewayFailureUsageContext,
+  auditCapture: ReturnType<typeof createAuditCapture>
+): void {
+  if (!(error instanceof UpstreamRejectedRequestError) || !error.failureSignature) {
+    return
+  }
+  const cached = rememberRequestErrorSignatureCache({
+    req,
+    scope: {
+      systemAccountId: usageContext.systemAccountId,
+      apiKeyId: usageContext.apiKeyId,
+      groupId: usageContext.groupId,
+      clientIp: usageContext.clientIp,
+      endpoint: usageContext.endpoint
+    },
+    signature: error.failureSignature,
+    confirmedAccountIds: error.confirmedAccountIds,
+    response: error.response
+  })
+  if (!cached) {
+    return
+  }
+  getRequestLogger().warn({
+    event: 'gateway_request_error_signature_cache_stored',
+    statusCode: error.response.statusCode,
+    failureSignature: error.failureSignature.label,
+    confirmedAccountIds: error.confirmedAccountIds,
+    systemAccountId: usageContext.systemAccountId,
+    apiKeyId: usageContext.apiKeyId,
+    groupId: usageContext.groupId,
+    clientIp: usageContext.clientIp,
+    endpoint: usageContext.endpoint
+  }, '请求级同签名错误已写入短 TTL 缓存')
+  auditCapture.addGatewayMetadata({
+    label: 'request_error_signature_cache',
+    metadata: {
+      stored: true,
+      failureSignature: error.failureSignature.label,
+      confirmedAccountIds: error.confirmedAccountIds
+    }
+  })
 }
 
 function once(callback: () => void): () => void {
@@ -306,27 +369,11 @@ function recordKnownClientIpRequestError(
   })
 }
 
-function clientIpRequestErrorSample(error: unknown): { reason: 'adapter_request_validation' | 'upstream_error_feature' | 'request_failure_signature'; signature: string } | undefined {
+function clientIpRequestErrorSample(error: unknown): { reason: 'adapter_request_validation'; signature: string } | undefined {
   if (error instanceof OpenAIOAuthCodexAdapterError) {
     return {
       reason: 'adapter_request_validation',
       signature: [error.type, error.code].filter(Boolean).join('|') || error.message
-    }
-  }
-  if (error instanceof UpstreamRejectedRequestError) {
-    if (error.upstreamErrorFeature) {
-      return {
-        reason: 'upstream_error_feature',
-        signature: [
-          error.upstreamErrorFeature.ruleId,
-          error.upstreamErrorFeature.upstreamErrorType,
-          error.upstreamErrorFeature.upstreamErrorCode
-        ].filter(Boolean).join('|')
-      }
-    }
-    return {
-      reason: 'request_failure_signature',
-      signature: error.message
     }
   }
   return undefined

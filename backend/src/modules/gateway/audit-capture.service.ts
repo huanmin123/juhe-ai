@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import type { Request, Response } from 'express'
 
 import { nowIso } from '../../storage/database.js'
+import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import type {
   AuditLogAttemptInput,
   AuditLogInput,
@@ -12,7 +13,17 @@ import type {
 } from '../../storage/repositories.js'
 import { enqueueAuditLog } from '../audit-logs/audit-log-queue.service.js'
 import { readAuditLogSettings } from '../audit-logs/audit-log-settings.js'
-import { headersToObject, requestModel, requestStream } from './openai-gateway-usage.js'
+import {
+  headersToSafeObject,
+  requestModel,
+  requestStream,
+  sanitizeHeaderRecord,
+  sanitizeHeaderValue
+} from './openai-gateway-usage.js'
+import {
+  normalizeOpenAIGatewayTrafficSource,
+  type OpenAIGatewayTrafficSource
+} from './openai-gateway-traffic-source.js'
 
 type RawBodyRequest = Request & { rawBody?: Buffer }
 
@@ -21,6 +32,8 @@ interface AuditCaptureContextInput {
   traceId: string
   clientIp?: string
   startedAtMs: number
+  trafficSource?: OpenAIGatewayTrafficSource
+  captureMode?: 'default' | 'metadata_only'
 }
 
 interface AuditGatewayContext {
@@ -29,6 +42,7 @@ interface AuditGatewayContext {
   groupId?: string
   accountId?: string
   providerCode?: string
+  trafficSource?: OpenAIGatewayTrafficSource
 }
 
 interface FinalizeAuditInput {
@@ -84,6 +98,8 @@ export class AuditCaptureContext {
   private readonly clientIp?: string
   private readonly startedAtMs: number
   private readonly startedAtIso: string
+  private readonly trafficSource: OpenAIGatewayTrafficSource
+  private readonly metadataOnly: boolean
   private readonly enabled: boolean
   private readonly successSampleRate: number
   private readonly activeCaptureMaxBytes: number
@@ -103,20 +119,30 @@ export class AuditCaptureContext {
     this.enabled = settings.enabled
     this.successSampleRate = settings.successSampleRate
     this.activeCaptureMaxBytes = settings.activeCaptureMaxBytes
-    if (!this.enabled) {
-      this.req = input.req
-      this.traceId = input.traceId
-      this.clientIp = input.clientIp
-      this.startedAtMs = input.startedAtMs
-      this.startedAtIso = new Date(input.startedAtMs).toISOString()
-      return
-    }
-    activeAuditCaptureCount += 1
     this.req = input.req
     this.traceId = input.traceId
     this.clientIp = input.clientIp
     this.startedAtMs = input.startedAtMs
     this.startedAtIso = new Date(input.startedAtMs).toISOString()
+    this.trafficSource = normalizeOpenAIGatewayTrafficSource(input.trafficSource)
+    this.metadataOnly = input.captureMode === 'metadata_only'
+    if (!this.enabled) {
+      return
+    }
+    activeAuditCaptureCount += 1
+    this.gatewayContext.trafficSource = this.trafficSource
+    if (this.metadataOnly) {
+      this.addPayload({
+        partType: 'gateway_metadata',
+        body: JSON.stringify({
+          type: 'gateway_metadata',
+          label: 'traffic_source',
+          metadata: { trafficSource: this.trafficSource, captureMode: 'metadata_only' }
+        }),
+        contentType: 'application/json; audit=gateway-metadata'
+      })
+      return
+    }
     this.addPayload({
       partType: 'client_request',
       headers: requestHeadersToObject(input.req),
@@ -169,14 +195,16 @@ export class AuditCaptureContext {
     }
     this.attempts.push(attempt)
     this.activeAttemptByTempId.set(tempId, { tempId, attempt, startedAtMs, completed: false })
-    this.addPayload({
-      attemptTempId: tempId,
-      partType: 'upstream_request',
-      headers: headersToObject(input.headers),
-      body: input.body,
-      contentType: input.headers.get('content-type') ?? undefined,
-      contentEncoding: input.headers.get('content-encoding') ?? undefined
-    })
+    if (!this.metadataOnly) {
+      this.addPayload({
+        attemptTempId: tempId,
+        partType: 'upstream_request',
+        headers: headersToSafeObject(input.headers),
+        body: input.body,
+        contentType: input.headers.get('content-type') ?? undefined,
+        contentEncoding: input.headers.get('content-encoding') ?? undefined
+      })
+    }
     return tempId
   }
 
@@ -197,11 +225,11 @@ export class AuditCaptureContext {
     if (!input.success) {
       this.hadFailedAttempt = true
     }
-    if (input.responseHeaders || input.responseBody !== undefined) {
+    if (!this.metadataOnly && (input.responseHeaders || input.responseBody !== undefined)) {
       this.addPayload({
         attemptTempId: tempId,
         partType: 'upstream_response',
-        headers: input.responseHeaders ? headersToObject(input.responseHeaders) : undefined,
+        headers: input.responseHeaders ? headersToSafeObject(input.responseHeaders) : undefined,
         body: input.responseBody,
         contentType: input.responseHeaders?.get('content-type') ?? undefined,
         contentEncoding: input.responseHeaders?.get('content-encoding') ?? undefined
@@ -224,7 +252,7 @@ export class AuditCaptureContext {
         : input.outcome
     const success = input.success && outcome !== 'client_aborted'
     const sampleBucket = sampleBucketForTraceId(this.traceId)
-    const shouldCapture = outcome !== 'success' || sampleBucket < Math.round(this.successSampleRate * 10000)
+    const shouldCapture = this.metadataOnly || outcome !== 'success' || sampleBucket < Math.round(this.successSampleRate * 10000)
     if (!shouldCapture) {
       return
     }
@@ -232,24 +260,26 @@ export class AuditCaptureContext {
     if (input.accountId) {
       this.bindContext({ accountId: input.accountId })
     }
-    if (input.responseBody !== undefined || input.responseHeaders) {
+    if (!this.metadataOnly && (input.responseBody !== undefined || input.responseHeaders)) {
       this.addPayload({
         partType: input.responsePartType ?? (input.success ? 'gateway_response' : 'gateway_error'),
-        headers: input.responseHeaders ? normalizeHeaders(input.responseHeaders) : undefined,
+        headers: input.responseHeaders ? normalizeSafeHeaders(input.responseHeaders) : undefined,
         body: input.responseBody,
         contentType: headerValue(input.responseHeaders, 'content-type'),
         contentEncoding: headerValue(input.responseHeaders, 'content-encoding')
       })
     }
+    const sanitizedOriginalUrl = sanitizeUrlForLog(this.req.originalUrl)
     const auditLog: AuditLogInput = {
       id: `audit_${Date.now()}_${randomUUID()}`,
       traceId: this.traceId,
       ...this.gatewayContext,
       accountId: input.accountId ?? this.gatewayContext.accountId,
       providerCode: this.gatewayContext.providerCode ?? 'openai',
+      trafficSource: this.gatewayContext.trafficSource ?? this.trafficSource,
       method: this.req.method.toUpperCase(),
-      path: this.req.originalUrl.split('?')[0] || this.req.path,
-      queryString: this.req.originalUrl.includes('?') ? this.req.originalUrl.split('?').slice(1).join('?') : undefined,
+      path: sanitizedOriginalUrl.split('?')[0] || this.req.path,
+      queryString: sanitizedOriginalUrl.includes('?') ? sanitizedOriginalUrl.split('?').slice(1).join('?') : undefined,
       model: requestModel(this.req),
       stream: requestStream(this.req),
       clientIp: this.clientIp,
@@ -261,7 +291,7 @@ export class AuditCaptureContext {
       errorCode: input.errorCode,
       errorMessage: clientAborted ? input.errorMessage ?? 'Client aborted request' : input.errorMessage,
       sampleBucket,
-      sampleReason: outcome === 'success' ? `success_sample_${this.successSampleRate}` : 'full_capture',
+      sampleReason: this.metadataOnly ? `${this.trafficSource}_metadata_only` : outcome === 'success' ? `success_sample_${this.successSampleRate}` : 'full_capture',
       captureStatus: this.overflowed ? 'overflow' : 'complete',
       startedAt: this.startedAtIso,
       endedAt: new Date(endedAtMs).toISOString(),
@@ -319,13 +349,16 @@ function requestHeadersToObject(req: Request): Record<string, string | string[]>
   const output: Record<string, string | string[]> = {}
   for (const [name, value] of Object.entries(req.headers)) {
     if (value === undefined) continue
-    output[name] = Array.isArray(value) ? value : String(value)
+    output[name] = sanitizeHeaderValue(name, Array.isArray(value) ? value : String(value))
   }
   return output
 }
 
-function normalizeHeaders(headers: Record<string, string | string[]> | Headers): Record<string, string | string[]> {
-  return headers instanceof Headers ? headersToObject(headers) : headers
+function normalizeSafeHeaders(headers: Record<string, string | string[]> | Headers): Record<string, string | string[]> {
+  if (headers instanceof Headers) {
+    return headersToSafeObject(headers)
+  }
+  return sanitizeHeaderRecord(headers)
 }
 
 function headerValue(headers: Record<string, string | string[]> | Headers | undefined, name: string): string | undefined {

@@ -5,6 +5,7 @@ import { api } from '@/api/client'
 import type { AccountSummary, OpenAIAuthURLResult } from '@/types/domain'
 import type { AccountOAuthAuthorizeForm } from './accountFormTypes'
 import { authUrl, buildReauthorizePayload, validateReauthorizeForm } from './accountOAuthPayload'
+import { accountOperationScopeParams } from './accountOperationScope'
 import { canManageOpenAIOAuth } from './accountRules'
 
 interface UseAccountReauthorizeOptions {
@@ -81,13 +82,13 @@ export function useAccountReauthorize(options: UseAccountReauthorizeOptions) {
       })
       if (reauthorizeForm.oauthMode === 'manual') {
         if (options.isManagementView.value) {
-          await api.openaiOAuth.reauthorizeFromCode(account.id, payload, options.accountScopeParams.value)
+          await api.openaiOAuth.reauthorizeFromCode(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
         } else {
           await api.myOpenaiOAuth.reauthorizeFromCode(account.id, payload)
         }
       } else {
         if (options.isManagementView.value) {
-          await api.openaiOAuth.reauthorizeFromRefreshToken(account.id, payload, options.accountScopeParams.value)
+          await api.openaiOAuth.reauthorizeFromRefreshToken(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
         } else {
           await api.myOpenaiOAuth.reauthorizeFromRefreshToken(account.id, payload)
         }

@@ -54,6 +54,14 @@ class FakeServerParent extends EventEmitter {
 
 try {
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
+  const grantee = repositories.createSystemAccount({
+    username: 'concurrency_snapshot_grantee',
+    displayName: '实时并发快照被授权人',
+    password: 'password',
+    role: 'user',
+    status: 'active',
+    mustChangePassword: false
+  })
   const accountA = repositories.createAccount({
     providerCode: 'openai',
     name: '实时并发快照账号 A',
@@ -84,6 +92,13 @@ try {
   }, access)
   repositories.setAccountGroup(accountA.id, group.id, access)
   repositories.setAccountGroup(accountB.id, group.id, access)
+  repositories.createResourceAuthorization({
+    resourceType: 'account',
+    resourceId: accountA.id,
+    granteeType: 'system_account',
+    granteeId: grantee.id,
+    remark: '实时并发快照授权账户回归'
+  }, access)
 
   serverConcurrency = {
     [accountA.id]: 2,
@@ -107,12 +122,21 @@ try {
     assert.equal(findAccount(accountPageWithRuntime.items, accountB.id).currentConcurrency, 1, '账户列表应合并 server 当前并发 B')
     assert.equal(accountPageWithRuntime.runtimeSnapshot.accountConcurrencyAvailable, true, '账户分页结果应标记 server 并发快照可用')
 
+    const granteeAccountPage = repositories.listAccountsPage({ systemAccountId: grantee.id, role: 'user' as const }, { limit: 20 })
+    const authorizedAccountPageWithRuntime = await runtimeSnapshot.applyServerAccountConcurrencyToAccountList(granteeAccountPage)
+    const authorizedAccount = findAccount(authorizedAccountPageWithRuntime.items, accountA.id)
+    assert.equal(authorizedAccount.accessType, 'authorized', '被授权用户账户列表应返回授权账户视角')
+    assert.equal(authorizedAccount.concurrencyLimit, 10, '授权账户应展示物理账号并发上限')
+    assert.equal(authorizedAccount.currentConcurrency, 2, '授权账户应合并 server 当前并发')
+    assert.equal(authorizedAccount.currentConcurrencyAvailable, true, '授权账户应标记 server 并发快照可用')
+    assert.equal(authorizedAccountPageWithRuntime.runtimeSnapshot.accountConcurrencyAvailable, true, '仅包含授权账户时也应标记 server 并发快照可用')
+
     const groups = await runtimeSnapshot.applyServerAccountConcurrencyToGroups(repositories.listGroups(access))
     const targetGroup = groups.find((item) => item.id === group.id)
     assert(targetGroup, '测试分组应存在')
     assert.equal(targetGroup.accountStats.currentConcurrency, 3, '分组列表应汇总 server 当前并发')
     assert.equal(targetGroup.accountStats.currentConcurrencyAvailable, true, '分组列表应标记 server 并发快照可用')
-    assert.equal(requestedScopes.length, 2, '账户列表和分组列表应各请求一次 server 并发快照')
+    assert.equal(requestedScopes.length, 3, '管理账户列表、授权账户列表和分组列表应各请求一次 server 并发快照')
     assert(requestedScopes.every((scope) => scope === 'account_concurrency'), '系统 API 应只请求轻量并发快照')
   } finally {
     runtimeConfig.processRole = previousProcessRole

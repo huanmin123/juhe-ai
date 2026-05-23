@@ -62,6 +62,7 @@ interface AccountSummary {
   ownerSystemAccountId?: string
   superPriorityEnabled: boolean
   fallbackEnabled: boolean
+  localStatus?: string
 }
 
 interface AccountListResult {
@@ -136,6 +137,24 @@ try {
   assert.equal(authorizedAccount.accessType, 'authorized', '授权账户在被授权用户作用域下应保持 authorized 视角')
   assert.equal(authorizedAccount.boundGroupId, seed.granteeGroupId, '授权账户应返回被授权用户自己的绑定分组')
   assert.equal(authorizedAccount.bindingSystemAccountId, seed.granteeId, '授权账户应返回本地绑定所属系统账户，供管理侧代操作写入同一作用域')
+
+  const locallyDisabled = await patchEnvelope<AccountSummary>(
+    baseUrl,
+    `/__aisys__/api/my-accounts/${seed.ownerAccountId}/authorized-dispatch`,
+    seed.granteeCookie,
+    { status: 'disabled' }
+  )
+  assert.equal(locallyDisabled.status, 'disabled', '被授权用户应能在自己的分组内停用授权账户')
+  assert.equal(locallyDisabled.localStatus, 'disabled', '授权账户停用应只写入本地绑定状态')
+  assert.equal(repositories.listAccounts({ systemAccountId: seed.ownerId, role: 'user' as const }).find((account) => account.id === seed.ownerAccountId)?.status, 'active', '本地停用授权账户不应修改账户所有者原账户状态')
+  const locallyEnabled = await patchEnvelope<AccountSummary>(
+    baseUrl,
+    `/__aisys__/api/my-accounts/${seed.ownerAccountId}/authorized-dispatch`,
+    seed.granteeCookie,
+    { status: 'active' }
+  )
+  assert.equal(locallyEnabled.status, 'active', '被授权用户应能重新启用自己的授权账户绑定')
+  assert.equal(locallyEnabled.localStatus, 'active', '本地启用应恢复本地绑定状态')
 
   const updated = await patchEnvelope<AccountSummary>(
     baseUrl,
@@ -290,6 +309,8 @@ function seedData(mockBaseUrl: string): SeedState {
   })
   const ownerAccess = { systemAccountId: owner.id, role: 'user' as const }
   const granteeAccess = { systemAccountId: grantee.id, role: 'user' as const }
+  const granteeDefaultGroup = repositories.listGroups(granteeAccess).find((group) => group.providerCode === 'openai' && group.isDefault)
+  assert(granteeDefaultGroup, '被授权用户默认 OpenAI 分组不存在')
   const ownerAccount = repositories.createAccount({
     providerCode: 'openai',
     name: '管理员代操作授权账户',
@@ -315,6 +336,9 @@ function seedData(mockBaseUrl: string): SeedState {
     granteeId: grantee.id,
     remark: '管理员代操作调度回归'
   }, ownerAccess)
+  const defaultBoundAccount = repositories.findAccountSummary(ownerAccount.id, granteeAccess)
+  assert.equal(defaultBoundAccount?.boundGroupId, granteeDefaultGroup.id, '授权账户生效后应默认绑定到被授权用户自己的默认分组')
+  assert.equal(defaultBoundAccount?.bindingSystemAccountId, grantee.id, '授权账户默认绑定应归属被授权用户本地作用域')
   repositories.createResourceAuthorization({
     resourceType: 'account',
     resourceId: ownerErrorAccount.id,

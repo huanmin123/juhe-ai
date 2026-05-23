@@ -30,7 +30,7 @@
 - 运行时：官方 Node.js LTS，当前支持 `22.x >= 22.13.0` 或 `24.x >= 24.11.0`，且内置 `node:sqlite` 必须可用。
 - 语言：`TypeScript`，ESM 模块。
 - Web 框架：`Express`。
-- 存储：Node 内置 `node:sqlite`，默认按业务库 `backend/data/juhe-ai.sqlite3`、统计数据集库 `backend/data/juhe-ai-dataset.sqlite3` 和统计结果库 `backend/data/juhe-ai-stats.sqlite3` 三个 SQLite 文件运行，不再保留旧记录库回退路径。
+- 存储：Node 内置 `node:sqlite`，默认按业务库 `backend/data/juhe-ai.sqlite3`、统计数据集库 `backend/data/juhe-ai-dataset.sqlite3` 和统计结果库 `backend/data/juhe-ai-stats.sqlite3` 三个 SQLite 文件运行，不再保留旧记录库回退路径。`usage_records` 分片写入是下一阶段存储边界，启用后数据集库会扩展为目录库加多个 usage shard 文件。
 - 配置：后端进程环境变量优先，`backend/.env` 兜底；相对路径按 `backend/` 目录解析。
 - 网关协议：对外兼容 OpenAI 根路径和 `/v1/*` 入口，当前只启用 OpenAI 供应商适配。
 - 校验：写接口和关键业务入口必须在后端做参数校验；前端表单校验只改善体验。
@@ -96,6 +96,8 @@ flowchart LR
 - 未登录只允许访问登录、公开设置和健康检查等明确入口。
 - `/__aisys__/api/*` 由主 Web 进程流式代理到 DB service 内部系统 API；主进程不解析管理 API JSON body，不直接导入管理路由或 repository。
 - DB service 内部系统 API 默认先经过 `requireAuth`；供应商、代理、统计和需要管理员权限的接口再叠加 `requireAdmin`。
+- 同一 router 如果同时承载管理列表和登录用户可用的轻量辅助接口，不要把 `requireAdmin` 直接挂在整段 mount 上，应把管理员校验下沉到具体管理路由。例如供应商列表需要管理员权限，但供应商模型目录用于普通用户账户表单，必须允许登录用户读取。
+- 新增普通用户可见页面调用的接口时，必须在 `backend/src/scripts/regression/scope-boundary-regression.ts` 补普通用户可访问断言；新增 `my-*` 命名空间下仍属于管理员能力的例外时，也要补普通用户 403 断言，避免前端误暴露后才发现。
 - routes 层负责解析参数、返回统一响应和 HTTP 状态；业务规则和副作用放到 service 或 repository。
 - repository 必须根据当前登录态或显式访问作用域过滤数据，避免普通用户读写其他系统账户资源。
 - 管理 API 响应、分页筛选、错误语义和权限摘要见 [接口契约与权限矩阵](../../functions/接口契约与权限矩阵.md)。
@@ -129,7 +131,7 @@ flowchart LR
 
 - SQLite 是当前唯一持久化存储；不引入 Redis、ClickHouse 或独立任务队列。
 - 运行时必须明确区分业务库、统计数据集库和统计结果库：业务库保存系统账户、AI 账户、分组、API Key、授权、设置和公告等可恢复业务数据；统计数据集库保存使用记录、审计、操作日志、运行日志索引和模型检测等事实数据；统计结果库保存统计缓存、额度窗口、账号质量缓存、系统监控、表监控历史和 `stats_job_state`。
-- `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。
+- `usage_records` 是请求计量事实源；统计表只做读优化和图表缓存，不替代事实记录。分片落地后，后端仍从统一 repository 入口读写使用记录，routes 和前端不感知 shard 文件。
 - `audit_logs`、`audit_log_attempts`、`audit_payload_refs`、`audit_payload_blobs` 和 `audit_error_groups` 是原始审计日志存储，不参与用量统计；写入必须经过内存队列和后台批量落库。
 - 日志、审计 payload、导入导出文件和所有可能频繁读取的大文件都必须按 offset / cursor / stream / 分块窗口读取；禁止在运行路径中把完整文件读入内存后再切割、搜索、分页或追增量。
 - 持续追新增内容的文件读取必须持久化游标和文件标识，worker 重启后从游标继续；按行处理时只在完整行落地后推进 offset，轮转、截断或文件标识变化时显式重置。
@@ -201,6 +203,7 @@ erDiagram
 
 - 高频列表查询按 `system_account_id` 建索引，保证普通用户数据隔离查询不全表扫描。
 - 使用记录按 `created_at`、`system_account_id + created_at` 和排序字段建索引，支撑分页、详情和统计游标。
+- usage shard 启用后，热写索引只保留明细页、统计游标和常用筛选必需的组合；TopN、趋势、摘要和业务报表必须继续走统计结果库，不能通过给每个 shard 添加大量排序索引解决。
 - 授权表按资源、所有者和被授权者建索引，支撑授权列表、撤销和网关调度过滤。
 - 统计表按 `system_account_id + scope_type + scope_id + 时间桶` 查询，避免列表页实时扫描 `usage_records`。
 - 业务统计、额度、趋势、TopN、摘要和授权报表只能读取 worker 写好的 staged / window / summary 行；如果需要新维度，先补后台增量 job 和索引，不在 API 请求里临时 `SUM/GROUP BY`。
@@ -222,6 +225,8 @@ erDiagram
 - `JUHE_AI_DATABASE_PATH`：SQLite 业务库路径，默认 `./data/juhe-ai.sqlite3`。
 - `JUHE_AI_DATASET_DATABASE_PATH`：统计数据集库路径，默认 `./data/juhe-ai-dataset.sqlite3`。
 - `JUHE_AI_STATS_DATABASE_PATH`：统计结果库路径，默认 `./data/juhe-ai-stats.sqlite3`。
+- `JUHE_AI_USAGE_SHARD_ROOT`：usage shard 根目录，分片启用后使用，默认建议 `./data/dataset/usage`。
+- `JUHE_AI_USAGE_SHARD_COUNT`：usage shard 数量，分片启用后使用，生产启用后不能直接改小。
 - `JUHE_AI_SECRET`：本地敏感数据加密和签名相关密钥，复用旧数据库时必须保持稳定。
 - `JUHE_AI_OAUTH_PROXY_URL`：OpenAI OAuth 相关请求可选代理。
 - `JUHE_AI_BACKEND_URL`、`JUHE_AI_SMOKE_ACCOUNT_NAME`、`JUHE_AI_SMOKE_MODEL`、`JUHE_AI_SMOKE_PROMPT`：烟测配置。

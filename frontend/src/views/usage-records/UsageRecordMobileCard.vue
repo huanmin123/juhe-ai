@@ -5,6 +5,7 @@
       <div class="mobile-list-card-tags">
         <a-tag v-if="record.model" color="blue">{{ record.model }}</a-tag>
         <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
+        <a-tag :color="trafficSourceColor(record)">{{ trafficSourceText(record) }}</a-tag>
         <a-tag :color="record.success ? 'green' : 'red'">{{ record.success ? '成功' : '失败' }}</a-tag>
         <a-tag v-if="typeof record.statusCode === 'number'" :color="statusCodeColor(record)">状态码 {{ statusCodeText(record) }}</a-tag>
       </div>
@@ -17,6 +18,10 @@
       <div class="mobile-list-meta-item">
         <span>接口</span>
         <strong class="mono-cell">{{ formatEndpoint(record.endpoint) }}</strong>
+      </div>
+      <div class="mobile-list-meta-item">
+        <span>来源</span>
+        <strong>{{ trafficSourceText(record) }}</strong>
       </div>
       <div class="mobile-list-meta-item">
         <span>成本</span>
@@ -78,6 +83,8 @@ import {
   formatRecordTokens,
   statusCodeColor,
   statusCodeText,
+  trafficSourceColor,
+  trafficSourceText,
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
 

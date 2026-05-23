@@ -1,6 +1,6 @@
 import { createAppCache } from '../shared/cache.js'
 import { hashSecret } from './crypto.js'
-import { getDatabase, nowIso } from './database.js'
+import { getDatabase } from './database.js'
 
 export interface GatewayApiKeyRow {
   id: string
@@ -40,18 +40,13 @@ export function validateGatewayApiKey(key: string): GatewayApiKeyRow | undefined
     SELECT api_keys.id, api_keys.system_account_id, api_keys.group_id, api_keys.status, api_keys.expires_at, api_keys.quota_limits_json
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
-    LEFT JOIN resource_authorizations group_authorizations
-      ON group_authorizations.id = api_keys.group_authorization_id
+    INNER JOIN groups
+      ON groups.id = api_keys.group_id
+      AND groups.system_account_id = api_keys.system_account_id
     WHERE api_keys.key_hash = ?
       AND system_accounts.status = 'active'
-      AND (
-        api_keys.group_authorization_id IS NULL
-        OR (
-          group_authorizations.status = 'active'
-          AND (group_authorizations.expires_at IS NULL OR group_authorizations.expires_at > ?)
-        )
-      )
-  `).get(keyHash, nowIso()) as unknown as GatewayApiKeyRow | undefined
+      AND api_keys.group_authorization_id IS NULL
+  `).get(keyHash) as unknown as GatewayApiKeyRow | undefined
   if (!row || row.status !== 'active') {
     gatewayApiKeyCache.delete(keyHash)
     return undefined
@@ -74,19 +69,14 @@ export function findActiveGatewayApiKeyById(id: string): GatewayApiKeyRow | unde
     SELECT api_keys.id, api_keys.system_account_id, api_keys.group_id, api_keys.status, api_keys.expires_at, api_keys.quota_limits_json
     FROM api_keys
     INNER JOIN system_accounts ON system_accounts.id = api_keys.system_account_id
-    LEFT JOIN resource_authorizations group_authorizations
-      ON group_authorizations.id = api_keys.group_authorization_id
+    INNER JOIN groups
+      ON groups.id = api_keys.group_id
+      AND groups.system_account_id = api_keys.system_account_id
     WHERE api_keys.id = ?
       AND system_accounts.status = 'active'
-      AND (
-        api_keys.group_authorization_id IS NULL
-        OR (
-          group_authorizations.status = 'active'
-          AND (group_authorizations.expires_at IS NULL OR group_authorizations.expires_at > ?)
-        )
-      )
+      AND api_keys.group_authorization_id IS NULL
     LIMIT 1
-  `).get(apiKeyId, nowIso()) as unknown as GatewayApiKeyRow | undefined
+  `).get(apiKeyId) as unknown as GatewayApiKeyRow | undefined
   if (!row || row.status !== 'active') {
     return undefined
   }

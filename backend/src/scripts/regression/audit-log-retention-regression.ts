@@ -47,6 +47,84 @@ try {
   auditQueue.flushAllAuditLogQueue()
   assert.equal(repositories.listAuditLogs({ traceId: sampledTraceId }).total, 1, '命中 10% 稳定采样的成功请求应写入 audit_logs')
 
+  const sensitiveHeaderTraceId = 'trace-sensitive-header-redaction'
+  finalizeSensitiveHeaderAudit(sensitiveHeaderTraceId)
+  auditQueue.flushAllAuditLogQueue()
+  const sensitiveHeaderAuditId = repositories.listAuditLogs({ traceId: sensitiveHeaderTraceId }).items[0]?.id ?? ''
+  const sensitiveHeaderDetail = repositories.getAuditLogDetail(sensitiveHeaderAuditId)
+  assert(sensitiveHeaderDetail, '敏感 header 脱敏审计事件应写入详情')
+  assert.equal(sensitiveHeaderDetail.queryString?.includes('audit-query-token'), false, '审计主记录 queryString 不应保留敏感查询参数')
+  assert(sensitiveHeaderDetail.queryString?.includes('token=%5Bredacted%5D'), '审计主记录 queryString 应保留查询参数脱敏占位')
+  const sensitiveHeaderPayloads = await Promise.all(sensitiveHeaderDetail.payloads.map((payload) => repositories.getAuditLogPayload(sensitiveHeaderAuditId, payload.id)))
+  const sensitiveHeaderSerialized = JSON.stringify(sensitiveHeaderPayloads)
+  assert.equal(sensitiveHeaderSerialized.includes('Bearer client-secret-token'), false, '客户端 Authorization 不应进入审计 payload')
+  assert.equal(sensitiveHeaderSerialized.includes('Bearer upstream-secret-token'), false, '上游 Authorization 不应进入审计 payload')
+  assert.equal(sensitiveHeaderSerialized.includes('session-secret-cookie'), false, 'Cookie 不应进入审计 payload')
+  assert.equal(sensitiveHeaderSerialized.includes('upstream-set-cookie-secret'), false, 'Set-Cookie 不应进入审计 payload')
+  assert.equal(sensitiveHeaderSerialized.includes('gateway-set-cookie-secret'), false, '网关 Set-Cookie 不应进入审计 payload')
+  assert.equal(sensitiveHeaderSerialized.includes('upstream-x-api-key-secret'), false, 'X-API-Key 不应进入审计 payload')
+  assert.equal(sensitiveHeaderSerialized.includes('sk-account-secret'), false, '账号 API Key 不应进入审计 payload')
+  assert(sensitiveHeaderSerialized.includes('[redacted]'), '审计 payload 中的敏感 header 应保留脱敏占位')
+
+  usageRecordQueue.enqueueUsageRecord({
+    id: 'usage_sensitive_headers',
+    traceId: 'trace-usage-sensitive-headers',
+    systemAccountId: 'sys_admin',
+    groupId: 'group_default',
+    endpoint: '/v1/responses',
+    providerCode: 'openai',
+    success: false,
+    statusCode: 502,
+    requestSnapshot: {
+      method: 'POST',
+      path: '/v1/responses',
+      originalUrl: '/v1/responses?token=usage-query-token&safe=ok',
+      traceId: 'trace-usage-sensitive-headers',
+      headers: {
+        authorization: 'Bearer usage-client-token',
+        'api-key': 'usage-api-key-secret',
+        'openai-api-key': 'usage-openai-api-key-secret',
+        'content-type': 'application/json'
+      }
+    },
+    responseSnapshot: {
+      upstreamUrl: 'https://api.openai.com/v1/responses',
+      statusCode: 502,
+      headers: {
+        'set-cookie': 'usage-response-cookie',
+        'x-api-key': 'usage-response-key',
+        'content-type': 'application/json'
+      },
+      lastUpstreamAttempt: {
+        accountId: 'account_sensitive_header',
+        accountName: 'Sensitive Header Account',
+        upstreamUrl: 'https://api.openai.com/v1/responses?api_key=usage-upstream-query-key',
+        statusCode: 502,
+        headers: {
+          authorization: 'Bearer usage-last-upstream-token',
+          'proxy-authorization': 'Basic usage-proxy-token',
+          'content-type': 'application/json'
+        }
+      }
+    }
+  })
+  usageRecordQueue.flushAllUsageRecordQueue()
+  const sensitiveUsageRecord = repositories.getUsageRecordDetail('usage_sensitive_headers')
+  const sensitiveUsageSerialized = JSON.stringify({
+    requestSnapshot: sensitiveUsageRecord?.requestSnapshot,
+    responseSnapshot: sensitiveUsageRecord?.responseSnapshot
+  })
+  assert.equal(sensitiveUsageSerialized.includes('usage-client-token'), false, '使用记录请求 snapshot 不应保留 Authorization')
+  assert.equal(sensitiveUsageSerialized.includes('usage-api-key-secret'), false, '使用记录请求 snapshot 不应保留 API-Key')
+  assert.equal(sensitiveUsageSerialized.includes('usage-openai-api-key-secret'), false, '使用记录请求 snapshot 不应保留 OpenAI-API-Key')
+  assert.equal(sensitiveUsageSerialized.includes('usage-response-cookie'), false, '使用记录响应 snapshot 不应保留 Set-Cookie')
+  assert.equal(sensitiveUsageSerialized.includes('usage-response-key'), false, '使用记录响应 snapshot 不应保留 X-API-Key')
+  assert.equal(sensitiveUsageSerialized.includes('usage-last-upstream-token'), false, '使用记录 lastUpstreamAttempt 不应保留 Authorization')
+  assert.equal(sensitiveUsageSerialized.includes('usage-proxy-token'), false, '使用记录 lastUpstreamAttempt 不应保留 Proxy-Authorization')
+  assert.equal(sensitiveUsageSerialized.includes('usage-query-token'), false, '使用记录请求 snapshot 不应保留敏感查询参数')
+  assert.equal(sensitiveUsageSerialized.includes('usage-upstream-query-key'), false, '使用记录响应 snapshot 不应保留上游 URL 敏感查询参数')
+  assert(sensitiveUsageSerialized.includes('[redacted]'), '使用记录 snapshot 中的敏感 header 应保留脱敏占位')
+
   const overflowTraceId = 'trace-overflow-retained'
   finalizeOverflowFailedRequest(overflowTraceId)
   auditQueue.flushAllAuditLogQueue()
@@ -304,11 +382,80 @@ function finalizeOverflowFailedRequest(traceId: string): void {
   })
 }
 
-function auditRequest(rawBody = Buffer.from(JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }), 'utf8')): Request & { rawBody?: Buffer } {
-  const headers: Record<string, string> = { 'content-type': 'application/json' }
+function finalizeSensitiveHeaderAudit(traceId: string): void {
+  const capture = auditCapture.createAuditCapture({
+    req: auditRequest(
+      undefined,
+      {
+        authorization: 'Bearer client-secret-token',
+        cookie: 'session=session-secret-cookie',
+        'content-type': 'application/json'
+      },
+      '/v1/responses?token=audit-query-token&safe=ok'
+    ),
+    traceId,
+    clientIp: '127.0.0.1',
+    startedAtMs: Date.parse(now)
+  })
+  const attemptId = capture.startAttempt({
+    account: {
+      id: 'account_sensitive_header',
+      systemAccountId: 'sys_admin',
+      accountOwnerSystemAccountId: 'sys_admin',
+      groupOwnerSystemAccountId: 'sys_admin',
+      accountAccessType: 'owner',
+      groupAccessType: 'owner',
+      name: 'Sensitive Header Account',
+      type: 'api_key',
+      status: 'active',
+      concurrencyLimit: 1,
+      priority: 0,
+      superPriorityEnabled: false,
+      fallbackEnabled: false,
+      baseUrl: 'https://api.openai.com',
+      apiKey: 'sk-account-secret'
+    } as Parameters<typeof capture.startAttempt>[0]['account'],
+    attemptIndex: 0,
+    upstreamUrl: 'https://api.openai.com/v1/responses',
+    method: 'POST',
+    headers: new Headers({
+      authorization: 'Bearer upstream-secret-token',
+      'x-api-key': 'upstream-x-api-key-secret',
+      'content-type': 'application/json'
+    }),
+    body: JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' })
+  })
+  capture.completeAttempt(attemptId, {
+    success: false,
+    statusCode: 502,
+    responseHeaders: new Headers({
+      'set-cookie': 'upstream-set-cookie-secret',
+      'content-type': 'application/json'
+    }),
+    responseBody: JSON.stringify({ error: 'upstream failed' }),
+    errorPhase: 'upstream_response',
+    errorMessage: '上游失败'
+  })
+  capture.finalize({
+    outcome: 'gateway_failed',
+    success: false,
+    statusCode: 502,
+    responseHeaders: { 'set-cookie': 'gateway-set-cookie-secret', 'content-type': 'application/json' },
+    responseBody: JSON.stringify({ error: 'gateway failed' }),
+    errorPhase: 'upstream_response',
+    errorMessage: '上游失败'
+  })
+}
+
+function auditRequest(
+  rawBody = Buffer.from(JSON.stringify({ model: 'gpt-5.4-mini', input: 'hello' }), 'utf8'),
+  headerOverrides: Record<string, string> = {},
+  originalUrl = '/v1/responses'
+): Request & { rawBody?: Buffer } {
+  const headers: Record<string, string> = { 'content-type': 'application/json', ...headerOverrides }
   return {
     method: 'POST',
-    originalUrl: '/v1/responses',
+    originalUrl,
     path: '/v1/responses',
     body: { model: 'gpt-5.4-mini', input: 'hello' },
     rawBody,

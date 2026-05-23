@@ -5,6 +5,7 @@ import type { RecordMaintenanceJob } from '../record-maintenance/record-maintena
 import type { ApiKeyQuotaDecision } from '../gateway/api-key-quota.service.js'
 import type { AccountErrorHandlingResult, GatewaySettings } from '../gateway/account-error-policy.service.js'
 import type { AuthorizationQuotaDecision } from '../gateway/authorization-quota.service.js'
+import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
 import type { ProcessEventLoopSample } from '../../shared/process-event-loop-monitor.js'
 
 export interface DbServiceRuntimeSnapshot {
@@ -185,6 +186,7 @@ export type DbServiceOperation =
       bodyText?: string
       errorMessage?: string
       settings?: GatewaySettings
+      trafficSource?: OpenAIGatewayTrafficSource
     }
   }
   | {

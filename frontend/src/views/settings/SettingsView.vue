@@ -58,7 +58,7 @@
           </div>
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="临时不可调用暂停时长（分钟）" extra="命中账号错误策略或流熔断后使用这个默认时长；未知异常不会默认冷却账号。">
+              <a-form-item label="临时不可调用最大暂停时间（分钟）" extra="账号进入临时不可调用后先走快速恢复通道：3 秒起步，失败后翻倍；单次等待不会超过这个最大暂停时间。">
                 <a-input-number v-model:value="systemForm.defaultTemporaryUnschedulableMinutes" :min="1" :max="1440" style="width: 100%" />
               </a-form-item>
             </div>
@@ -79,17 +79,17 @@
           <div class="section-heading">
             <div>
               <h3>冷却账户复测</h3>
-              <p>仅复测临时不可调用账户；连续失败会延长下次复测时间，超过上限后转为异常。</p>
+              <p>仅复测临时不可调用账户；先快速恢复，再退化到慢速恢复，超过最长观察后转为异常。</p>
             </div>
           </div>
 
           <a-alert class="setting-alert section-alert" type="info" show-icon>
-            <template #message>后台复测只处理“临时不可调用”状态。连续失败前 3 次先按 3 秒、10 秒、30 秒短重试确认，第 4 次失败开始从默认暂停时长退避并每次翻倍；下一次退避超过最大上限时，账户会转为异常并保留最后一次测试错误。</template>
+            <template #message>后台复测只处理“临时不可调用”状态。账号先进入快速恢复通道，按 3 秒起步、失败翻倍；超过快速阈值后进入慢速恢复通道，单次等待不超过最大暂停时间；超过最长自动恢复观察后转为异常并保留最后一次测试错误。</template>
           </a-alert>
 
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="复测最大退避（小时）" extra="默认 24 小时；达到上限后仍无法恢复的临时不可调用账户会转为异常，停止自动复测。">
+              <a-form-item label="最长自动恢复观察（小时）" extra="默认 24 小时；慢速恢复持续失败超过该观察时间后，账户会转为异常并停止自动复测。">
                 <a-input-number v-model:value="systemForm.cooldownAccountRetestMaxBackoffHours" :min="1" :max="720" style="width: 100%" />
               </a-form-item>
             </div>

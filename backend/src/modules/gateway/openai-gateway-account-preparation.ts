@@ -20,6 +20,7 @@ import {
   recordFailedUpstreamAttempt,
   type GatewayUsageContext
 } from './openai-gateway-usage-records.js'
+import { recordGatewayProxyFailure } from './openai-gateway-proxy-health.service.js'
 
 export interface PreparedUpstreamRequestParts {
   headers: Headers
@@ -66,6 +67,7 @@ export function handleUnavailableProxyProfile(
     errorMessage: message
   })
   applyAccountErrorHandlingWithCacheInvalidation(account, { success: false, errorMessage: message, settings })
+  recordGatewayProxyFailure(account, message)
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
   return lastAttempt
 }

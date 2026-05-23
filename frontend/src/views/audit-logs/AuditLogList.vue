@@ -1,11 +1,11 @@
 <template>
   <ResponsiveDataList
     table-class="page-table audit-table"
-    :columns="columns"
+    :columns="tableColumns"
     :data-source="records"
     row-key="id"
     :loading="loading"
-    :scroll-x="1480"
+    :scroll-x="1580"
     :pagination="pagination"
     mobile-pagination
     :mobile-has-more="mobileHasMore"
@@ -28,6 +28,9 @@
       </template>
       <template v-else-if="column.key === 'status'">
         <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ record.finalStatusCode ?? '-' }}</a-tag>
+      </template>
+      <template v-else-if="column.key === 'trafficSource'">
+        <a-tag :color="trafficSourceColor(record.trafficSource)">{{ trafficSourceText(record.trafficSource) }}</a-tag>
       </template>
       <template v-else-if="column.key === 'endpoint'">
         <span class="endpoint-cell">{{ record.method }} {{ record.path }}</span>
@@ -68,6 +71,7 @@
           <div class="mobile-list-card-tags">
             <a-tag :color="outcomeColor(record.auditOutcome)">{{ outcomeText(record.auditOutcome) }}</a-tag>
             <a-tag :color="statusColor(record.finalStatusCode, record.success)">{{ record.finalStatusCode ?? '-' }}</a-tag>
+            <a-tag :color="trafficSourceColor(record.trafficSource)">{{ trafficSourceText(record.trafficSource) }}</a-tag>
             <a-tag :color="record.stream ? 'purple' : 'default'">{{ record.stream ? '流式' : '非流式' }}</a-tag>
           </div>
         </div>
@@ -98,6 +102,8 @@
 </template>
 
 <script setup lang="ts">
+import { computed } from 'vue'
+
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
@@ -109,17 +115,22 @@ import {
   formatDuration,
   outcomeColor,
   outcomeText,
-  statusColor
+  statusColor,
+  trafficSourceColor,
+  trafficSourceText
 } from './auditLogFormatters'
 import { auditLogColumns } from './auditLogTableColumns'
 
-defineProps<{
+const props = withDefaults(defineProps<{
+  columns?: Array<Record<string, unknown>>
   loading: boolean
   loadingMore: boolean
   mobileHasMore: boolean
   pagination: Record<string, unknown>
   records: AuditLogSummary[]
-}>()
+}>(), {
+  columns: () => auditLogColumns
+})
 
 const emit = defineEmits<{
   (event: 'change', paginationInfo: unknown): void
@@ -128,7 +139,7 @@ const emit = defineEmits<{
   (event: 'mobile-refresh'): void
 }>()
 
-const columns = auditLogColumns
+const tableColumns = computed(() => props.columns)
 const detailActions: RowActionItem[] = [
   { key: 'detail', label: '详情', icon: 'detail', tone: 'info' }
 ]

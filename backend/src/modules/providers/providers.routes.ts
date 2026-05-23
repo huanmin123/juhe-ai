@@ -2,11 +2,12 @@ import { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
 import { listProviders } from '../../storage/repositories.js'
+import { requireAdmin } from '../auth/auth.middleware.js'
 import { listProviderModelPricing } from '../model-pricing/model-pricing.service.js'
 
 export const providersRouter = Router()
 
-providersRouter.get('/', (_req, res) => {
+providersRouter.get('/', requireAdmin, (_req, res) => {
   res.json(ok(listProviders()))
 })
 

@@ -36,7 +36,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     const hide = message.loading(`${account.name}: 正在刷新令牌...`, 0)
     try {
       if (options.isManagementView.value) {
-        await api.openaiOAuth.refreshToken(account.id, options.accountScopeParams.value)
+        await api.openaiOAuth.refreshToken(account.id, accountOperationScopeParams(account, options.accountScopeParams.value))
       } else {
         await api.myOpenaiOAuth.refreshToken(account.id)
       }
@@ -73,7 +73,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
     }
     try {
       if (options.isManagementView.value) {
-        await api.accounts.update(account.id, payload, options.accountScopeParams.value)
+        await api.accounts.update(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
       } else {
         await api.myAccounts.update(account.id, payload)
       }
@@ -116,7 +116,7 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
           message.warning(account.status === 'error' ? '异常账户除编辑、删除外，只支持测试、恢复异常和取消调度标记' : '授权账户仅可使用，不能执行管理操作')
           return
         }
-      } else if (!['restore-normal', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic'].includes(key)) {
+      } else if (!['restore-normal', 'toggle-status', 'super-priority-on', 'super-priority-off', 'fallback-on', 'fallback-off', 'migrate-traffic'].includes(key)) {
         message.warning('授权账户仅支持使用侧调度操作')
         return
       }
@@ -131,6 +131,15 @@ export function useAccountMenuActions(options: UseAccountMenuActionsOptions) {
       return
     }
     if (key === 'toggle-status') {
+      if (isAuthorizedAccount(account)) {
+        if (!account.boundGroupId) {
+          message.warning('请先把授权账户绑定到你的分组')
+          return
+        }
+        const nextStatus = account.localStatus === 'disabled' ? 'active' : 'disabled'
+        await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
+        return
+      }
       const nextStatus = account.status === 'disabled' ? 'active' : 'disabled'
       await updateAccountState(account, { status: nextStatus }, nextStatus === 'active' ? '账户已启用' : '账户已停用')
       return

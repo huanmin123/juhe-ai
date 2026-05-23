@@ -26,6 +26,12 @@
         :options="resultOptions"
         @update:value="handleResultUpdate"
       />
+      <a-select
+        :value="trafficSource"
+        class="filter-select toolbar-select responsive-list-inline-filter"
+        :options="trafficSourceOptions"
+        @update:value="handleTrafficSourceUpdate"
+      />
     </template>
     <template #advanced-filters>
       <a-form layout="vertical" class="advanced-filter-form">
@@ -47,6 +53,9 @@
         </a-form-item>
         <a-form-item label="状态码">
           <a-input :value="statusCode" allow-clear placeholder="状态码" @update:value="handleStatusCodeUpdate" @press-enter="emit('search')" />
+        </a-form-item>
+        <a-form-item label="来源">
+          <a-select :value="trafficSource" :options="trafficSourceOptions" @update:value="handleTrafficSourceUpdate" />
         </a-form-item>
         <a-form-item v-if="isManagementView" label="系统账户">
           <SystemPrincipalSelect
@@ -81,6 +90,10 @@
       <label class="mobile-filter-field">
         <span>请求结果</span>
         <a-select :value="result" :options="resultOptions" @update:value="handleResultUpdate" />
+      </label>
+      <label class="mobile-filter-field">
+        <span>来源</span>
+        <a-select :value="trafficSource" :options="trafficSourceOptions" @update:value="handleTrafficSourceUpdate" />
       </label>
       <label class="mobile-filter-field">
         <span>分组</span>
@@ -121,6 +134,9 @@
         />
       </label>
     </template>
+    <template #actions>
+      <slot name="actions" />
+    </template>
   </ResponsiveListToolbar>
 </template>
 
@@ -136,6 +152,7 @@ import type { GroupSelection } from '@/shared/groupLabelCache'
 import type { PrincipalSelection } from '@/shared/principalLabelCache'
 
 type ResultFilter = 'all' | 'success' | 'failed'
+type TrafficSourceFilter = 'all' | 'gateway' | 'manual_account_test' | 'cooldown_retest'
 type FilterOption<T extends string> = {
   label: string
   value: T
@@ -161,6 +178,8 @@ defineProps<{
   systemAccountSelection?: PrincipalSelection
   systemAccounts: SystemAccountPrincipalSummary[]
   systemAccountsLoading?: boolean
+  trafficSource: TrafficSourceFilter
+  trafficSourceOptions: Array<FilterOption<TrafficSourceFilter>>
 }>()
 
 const emit = defineEmits<{
@@ -181,10 +200,16 @@ const emit = defineEmits<{
   (event: 'update:statusCode', value: string): void
   (event: 'update:systemAccountId', value: string): void
   (event: 'update:systemAccountSelection', value?: PrincipalSelection): void
+  (event: 'update:trafficSource', value: TrafficSourceFilter): void
 }>()
 
 function handleResultUpdate(value: ResultFilter) {
   emit('update:result', value)
+  emit('search')
+}
+
+function handleTrafficSourceUpdate(value: TrafficSourceFilter) {
+  emit('update:trafficSource', value)
   emit('search')
 }
 

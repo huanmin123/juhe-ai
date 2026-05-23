@@ -44,6 +44,13 @@
           </a-form>
         </template>
         <template #actions>
+          <TableColumnManager
+            :columns="runtimeLogColumns"
+            :settings="indexColumnSettings"
+            :required-keys="['message']"
+            @reset="resetIndexColumnSettings"
+            @update:settings="updateIndexColumnSettings"
+          />
           <a-segmented v-model:value="viewMode" class="log-mode-segmented" :options="viewModeOptions" @change="handleModeChange" />
         </template>
         <template #filters>
@@ -80,6 +87,7 @@
 
       <RuntimeLogDataList
         table-class="page-table runtime-log-table"
+        :columns="indexManagedColumns"
         :records="records"
         :loading="loading"
         :pagination="tablePagination"
@@ -120,6 +128,13 @@
           />
         </template>
         <template #actions>
+          <TableColumnManager
+            :columns="runtimeLogColumns"
+            :settings="grepColumnSettings"
+            :required-keys="['message']"
+            @reset="resetGrepColumnSettings"
+            @update:settings="updateGrepColumnSettings"
+          />
           <a-segmented v-model:value="viewMode" class="log-mode-segmented" :options="viewModeOptions" @change="handleModeChange" />
         </template>
         <template #filters>
@@ -156,6 +171,7 @@
 
       <RuntimeLogDataList
         table-class="page-table grep-table"
+        :columns="grepManagedColumns"
         :records="grepRecords"
         :loading="loading"
         :empty-description="grepKeywordFilter.trim() ? '没有匹配的日志行。' : '输入任意关键字后搜索文件日志。'"
@@ -212,6 +228,8 @@ import type { RuntimeLogFacets, RuntimeLogGrepItem, RuntimeLogGrepResult, Runtim
 import { formatDateTime } from '@/shared/formatters'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
+import TableColumnManager from '@/components/TableColumnManager.vue'
+import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import {
@@ -223,6 +241,7 @@ import {
   splitGrepKeywords
 } from './runtimeLogFormatters'
 import {
+  runtimeLogColumns,
   runtimeLogLevelOptions,
   runtimeLogViewModeOptions
 } from './runtimeLogTableColumns'
@@ -335,6 +354,24 @@ const {
 
 const viewModeOptions = runtimeLogViewModeOptions
 const levelOptions = runtimeLogLevelOptions
+const {
+  managedColumns: indexManagedColumns,
+  columnSettings: indexColumnSettings,
+  updateColumnSettings: updateIndexColumnSettings,
+  resetColumnSettings: resetIndexColumnSettings
+} = useTableColumnSettings('runtime-logs:index', runtimeLogColumns, {
+  requiredKeys: ['message'],
+  minVisible: 1
+})
+const {
+  managedColumns: grepManagedColumns,
+  columnSettings: grepColumnSettings,
+  updateColumnSettings: updateGrepColumnSettings,
+  resetColumnSettings: resetGrepColumnSettings
+} = useTableColumnSettings('runtime-logs:grep', runtimeLogColumns, {
+  requiredKeys: ['message'],
+  minVisible: 1
+})
 
 const eventOptions = computed(() => (facets.value?.events ?? []).map((event) => ({ label: eventText(event), value: event, rawEvent: event })))
 const grepRuntime = computed(() => facets.value?.grep)

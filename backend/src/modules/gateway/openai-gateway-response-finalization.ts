@@ -48,6 +48,7 @@ import {
   type ParsedUsage
 } from './openai-gateway-usage.js'
 import { applyOpenAIStreamUsageFallback } from './openai-gateway-stream-inspection.js'
+import { recordGatewayProxySuccess } from './openai-gateway-proxy-health.service.js'
 import {
   recordClientAbortedUpstreamAttempt,
   recordCompletedUpstreamAttempt,
@@ -455,9 +456,24 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
     clientIpAccountAvoidanceTracker
   } = input
   if (upstreamResponse.ok) {
+    const clearedProxyFailure = recordGatewayProxySuccess(account)
+    if (clearedProxyFailure) {
+      getRequestLogger().info({
+        event: 'gateway_proxy_failure_bucket_recovered',
+        accountId: account.id,
+        accountName: account.name
+      }, '代理运行态失败桶已按成功响应恢复')
+      auditCapture.addGatewayMetadata({
+        label: 'proxy_health',
+        metadata: {
+          recovered: true
+        }
+      })
+    }
     applyAccountErrorHandlingWithCacheInvalidation(account, {
       success: true,
-      settings
+      settings,
+      trafficSource: usageContext.trafficSource
     })
     const clearedClientIpErrorCircuit = recordClientIpErrorCircuitSuccess({
       systemAccountId: usageContext.systemAccountId,

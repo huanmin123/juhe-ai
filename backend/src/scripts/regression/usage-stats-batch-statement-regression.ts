@@ -79,6 +79,24 @@ try {
       createdAt: new Date(createdAtBase + index).toISOString()
     })),
     {
+      id: 'usage_stats_cooldown_retest_ignored',
+      traceId: 'trace-usage-stats-cooldown-retest-ignored',
+      trafficSource: 'cooldown_retest',
+      systemAccountId: 'sys_admin',
+      apiKeyId: apiKey.id,
+      groupId: group.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.1',
+      success: false,
+      statusCode: 503,
+      durationMs: 300,
+      inputTokens: 999,
+      outputTokens: 999,
+      costUsd: 9,
+      createdAt: new Date(createdAtBase + 10).toISOString()
+    },
+    {
       id: 'usage_stats_mixed_oauth_account',
       traceId: 'trace-usage-stats-mixed-oauth-account',
       systemAccountId: 'sys_admin',
@@ -133,7 +151,7 @@ try {
 
   try {
     const processed = usageStatsRepository.aggregateUsageStatsBatch(100)
-    assert.equal(processed, 10, '统计聚合应处理本批使用记录')
+    assert.equal(processed, 10, '统计聚合应处理本批业务使用记录')
   } finally {
     recordDatabase.prepare = originalPrepare
   }
@@ -148,6 +166,10 @@ try {
   assert.equal(total?.request_count, 8, 'API Key 总量聚合应累计请求数')
   assert.equal(total?.input_tokens, 828, 'API Key 总量聚合应累计输入 token')
   assert.equal(total?.output_tokens, 188, 'API Key 总量聚合应累计输出 token')
+  const jobState = recordDatabase
+    .prepare("SELECT cursor_id, lag_seconds FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
+    .get() as { cursor_id?: string; lag_seconds?: number } | undefined
+  assert.notEqual(jobState?.cursor_id, 'usage_stats_cooldown_retest_ignored', '存在业务记录时恢复探活不应占用统计聚合批次')
 
   const mixedApiKeyTotal = usageStatsTotal(recordDatabase, 'api_key', mixedApiKey.id)
   assert.equal(mixedApiKeyTotal?.request_count, 2, '同一本地 API Key 下 OAuth/API Key 账号命中应合并统计请求数')
@@ -163,6 +185,30 @@ try {
     .prepare("SELECT COUNT(*) AS total FROM usage_stats_totals WHERE scope_type IN ('oauth', 'account_type')")
     .get() as { total?: number } | undefined
   assert.equal(accountTypeScopeCount?.total, 0, '统计聚合不应新增 OAuth/API Key 账户类型分片')
+
+  repositories.createUsageRecordsBatch([{
+    id: 'usage_stats_cooldown_retest_tail',
+    traceId: 'trace-usage-stats-cooldown-retest-tail',
+    trafficSource: 'cooldown_retest',
+    systemAccountId: 'sys_admin',
+    apiKeyId: apiKey.id,
+    groupId: group.id,
+    endpoint: '/v1/responses',
+    providerCode: 'openai',
+    model: 'gpt-5.1',
+    success: false,
+    statusCode: 503,
+    durationMs: 300,
+    inputTokens: 999,
+    outputTokens: 999,
+    costUsd: 9,
+    createdAt: new Date(createdAtBase + 40).toISOString()
+  }])
+  assert.equal(usageStatsRepository.aggregateUsageStatsBatch(100), 0, '仅剩恢复探活时不应写入业务统计')
+  const ignoredOnlyJobState = recordDatabase
+    .prepare("SELECT cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
+    .get() as { cursor_id?: string } | undefined
+  assert.equal(ignoredOnlyJobState?.cursor_id, 'usage_stats_cooldown_retest_tail', '仅剩恢复探活时应推进统计安全游标，避免阻塞明细清理')
 
   console.log('用量统计批量 statement 回归通过：基础统计 upsert statement 在 batch 内复用，OAuth/API Key 账号命中按本地 API Key 和分组合并')
 } finally {

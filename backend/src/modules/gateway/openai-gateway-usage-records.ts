@@ -22,6 +22,7 @@ import {
   type UsageRequestSnapshot
 } from './openai-gateway-usage.js'
 import type { GatewayErrorPayload } from './openai-gateway-responses.js'
+import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 
 type UpstreamAccount = OpenAIAccountSecret
 
@@ -40,6 +41,7 @@ export type UsageAccessFields = Pick<OpenAIAccountSecret,
 
 export interface GatewayUsageContext {
   traceId: string
+  trafficSource: OpenAIGatewayTrafficSource
   clientIp?: string
   systemAccountId: string
   apiKeyId?: string
@@ -101,7 +103,7 @@ export function recordFailedUpstreamAttempt(
     ?? (typeof errorPayload.message === 'string' ? errorPayload.message : undefined)
     ?? (typeof input.statusCode === 'number' ? `上游返回 HTTP ${input.statusCode}` : '上游请求失败')
 
-  getRequestLogger().warn({
+  logGatewayAttemptFailure(usageContext, {
     event: 'gateway_upstream_attempt_failed',
     upstreamUrl: input.upstreamUrl,
     accountId: account.id,
@@ -117,6 +119,7 @@ export function recordFailedUpstreamAttempt(
 
   enqueueUsageRecord({
     traceId: usageContext.traceId,
+    trafficSource: usageContext.trafficSource,
     clientIp: usageContext.clientIp,
     systemAccountId: usageContext.systemAccountId,
     apiKeyId: usageContext.apiKeyId,
@@ -132,14 +135,14 @@ export function recordFailedUpstreamAttempt(
     durationMs: Date.now() - input.startedAt,
     errorCode: typeof errorPayload.code === 'string' ? errorPayload.code : undefined,
     errorMessage,
-    requestSnapshot: usageContext.requestSnapshot,
-    responseSnapshot: buildUsageResponseSnapshot({
+    requestSnapshot: usageRecordSnapshot(usageContext, usageContext.requestSnapshot),
+    responseSnapshot: usageRecordSnapshot(usageContext, buildUsageResponseSnapshot({
       upstreamUrl: input.upstreamUrl,
       statusCode: input.statusCode,
       headers: input.headers,
       bodyText: input.bodyText,
       errorMessage
-    })
+    }))
   })
 }
 
@@ -147,6 +150,7 @@ export function recordCompletedUpstreamAttempt(
   req: Request,
   input: {
     traceId: string
+    trafficSource: OpenAIGatewayTrafficSource
     clientIp?: string
     systemAccountId: string
     apiKeyId?: string
@@ -168,6 +172,7 @@ export function recordCompletedUpstreamAttempt(
   const model = requestModel(req)
   enqueueUsageRecord({
     traceId: input.traceId,
+    trafficSource: input.trafficSource,
     clientIp: input.clientIp,
     systemAccountId: input.systemAccountId,
     apiKeyId: input.apiKeyId,
@@ -203,8 +208,8 @@ export function recordCompletedUpstreamAttempt(
     }),
     errorCode: input.errorCode,
     errorMessage: input.errorMessage,
-    requestSnapshot: input.requestSnapshot,
-    responseSnapshot: input.responseSnapshot
+    requestSnapshot: usageRecordSnapshot(input, input.requestSnapshot),
+    responseSnapshot: usageRecordSnapshot(input, input.responseSnapshot)
   })
 }
 
@@ -212,6 +217,7 @@ export function recordClientAbortedUpstreamAttempt(
   req: Request,
   input: {
     traceId: string
+    trafficSource: OpenAIGatewayTrafficSource
     clientIp?: string
     systemAccountId: string
     apiKeyId?: string
@@ -245,7 +251,7 @@ export function recordGatewayFailure(
     errorMessage?: string
   }
 ): void {
-  getRequestLogger().warn({
+  logGatewayAttemptFailure(usageContext, {
     event: 'gateway_request_failed',
     statusCode: input.statusCode,
     durationMs: Date.now() - input.startedAt,
@@ -257,6 +263,7 @@ export function recordGatewayFailure(
 
   enqueueUsageRecord({
     traceId: usageContext.traceId,
+    trafficSource: usageContext.trafficSource,
     clientIp: usageContext.clientIp,
     systemAccountId: usageContext.systemAccountId,
     apiKeyId: usageContext.apiKeyId,
@@ -274,7 +281,31 @@ export function recordGatewayFailure(
     success: false,
     durationMs: Date.now() - input.startedAt,
     errorMessage: input.errorMessage ?? input.responsePayload.error.message,
-    requestSnapshot: usageContext.requestSnapshot,
-    responseSnapshot: buildGatewayErrorResponseSnapshot(input.statusCode, input.responsePayload)
+    requestSnapshot: usageRecordSnapshot(usageContext, usageContext.requestSnapshot),
+    responseSnapshot: usageRecordSnapshot(usageContext, buildGatewayErrorResponseSnapshot(input.statusCode, input.responsePayload))
   })
+}
+
+function usageRecordSnapshot(
+  usageContext: Pick<GatewayUsageContext, 'trafficSource'>,
+  snapshot: unknown
+): unknown {
+  return usageContext.trafficSource === 'cooldown_retest' ? undefined : snapshot
+}
+
+function logGatewayAttemptFailure(
+  usageContext: GatewayUsageContext,
+  fields: Record<string, unknown>,
+  message: string
+): void {
+  const logger = getRequestLogger()
+  const enrichedFields = {
+    ...fields,
+    trafficSource: usageContext.trafficSource
+  }
+  if (usageContext.trafficSource === 'cooldown_retest') {
+    logger.debug(enrichedFields, message)
+    return
+  }
+  logger.warn(enrichedFields, message)
 }

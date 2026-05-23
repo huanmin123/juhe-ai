@@ -13,6 +13,7 @@
     >
       <template #inline-filters>
         <a-select v-model:value="outcomeFilter" class="toolbar-select audit-outcome-filter responsive-list-inline-filter" :options="outcomeOptions" @change="applyFilters" />
+        <a-select v-model:value="trafficSourceFilter" class="toolbar-select audit-source-filter responsive-list-inline-filter" :options="trafficSourceOptions" @change="applyFilters" />
         <SystemPrincipalSelect
           v-model:value="systemAccountFilter"
           :accounts="systemAccounts"
@@ -37,12 +38,27 @@
           <a-form-item label="状态码">
             <a-input v-model:value="statusCodeFilter" allow-clear placeholder="401 / 503" @press-enter="applyFilters" />
           </a-form-item>
+          <a-form-item label="来源">
+            <a-select v-model:value="trafficSourceFilter" :options="trafficSourceOptions" @change="applyFilters" />
+          </a-form-item>
         </a-form>
+      </template>
+      <template #actions>
+        <TableColumnManager
+          :columns="auditLogColumns"
+          :settings="columnSettings"
+          :required-keys="['traceId']"
+          @reset="resetColumnSettings"
+          @update:settings="updateColumnSettings"
+        />
       </template>
       <template #filters>
         <a-form layout="vertical">
           <a-form-item label="结果">
             <a-select v-model:value="outcomeFilter" :options="outcomeOptions" />
+          </a-form-item>
+          <a-form-item label="来源">
+            <a-select v-model:value="trafficSourceFilter" :options="trafficSourceOptions" />
           </a-form-item>
           <a-form-item label="用户">
             <SystemPrincipalSelect
@@ -76,6 +92,7 @@
     />
 
     <AuditLogList
+      :columns="managedColumns"
       :records="records"
       :loading="loading"
       :pagination="tablePagination"
@@ -93,6 +110,7 @@
           <a-descriptions bordered size="small" :column="2" class="detail-descriptions">
             <a-descriptions-item label="traceId">{{ detail.traceId }}</a-descriptions-item>
             <a-descriptions-item label="结果">{{ outcomeText(detail.auditOutcome) }}</a-descriptions-item>
+            <a-descriptions-item label="来源">{{ trafficSourceText(detail.trafficSource) }}</a-descriptions-item>
             <a-descriptions-item label="接口">{{ detail.method }} {{ detail.path }}</a-descriptions-item>
             <a-descriptions-item label="状态码">{{ detail.finalStatusCode ?? '-' }}</a-descriptions-item>
             <a-descriptions-item label="账号">{{ displayName(detail.accountName, detail.accountId) }}</a-descriptions-item>
@@ -271,14 +289,16 @@ import { useRoute, useRouter } from 'vue-router'
 import { message } from '@/lib/antd'
 
 import { api } from '@/api/client'
-import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime } from '@/types/domain'
+import type { AuditLogDetail, AuditLogPayloadDetail, AuditLogSummary, AuditOutcome, AuditLogRuntime, AuditTrafficSource } from '@/types/domain'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import ReadonlyCodeViewer from '@/components/ReadonlyCodeViewer.vue'
 import RowActions from '@/components/RowActions.vue'
 import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import TableColumnManager from '@/components/TableColumnManager.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import { rememberGroupLabel } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
@@ -299,10 +319,12 @@ import {
   outcomeText,
   payloadPartText,
   prettyJson,
-  statusColor
+  statusColor,
+  trafficSourceText
 } from './auditLogFormatters'
 import {
   auditAttemptColumns,
+  auditLogColumns,
   auditOutcomeOptions,
   auditPayloadColumns
 } from './auditLogTableColumns'
@@ -336,6 +358,7 @@ type AuditLogsPageState = {
   systemAccountFilter: string
   systemAccountSelection?: PrincipalSelection
   traceIdFilter: string
+  trafficSourceFilter: AuditTrafficSource | 'all'
 }
 const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   outcomeFilter: 'all',
@@ -344,9 +367,10 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   statusCodeFilter: '',
   systemAccountFilter: allSystemAccountsValue,
   systemAccountSelection: undefined,
-  traceIdFilter: ''
+  traceIdFilter: '',
+  trafficSourceFilter: 'all'
 })
-const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 4 })
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 5 })
 const initialPageState = pageStateCache.read()
 const route = useRoute()
 const router = useRouter()
@@ -361,6 +385,7 @@ const pathFilter = ref(effectiveInitialPageState.pathFilter)
 const statusCodeFilter = ref(effectiveInitialPageState.statusCodeFilter)
 const systemAccountFilter = ref(effectiveInitialPageState.systemAccountFilter)
 const systemAccountSelection = ref<PrincipalSelection | undefined>(effectiveInitialPageState.systemAccountSelection)
+const trafficSourceFilter = ref<AuditTrafficSource | 'all'>(effectiveInitialPageState.trafficSourceFilter)
 const {
   items: records,
   loading,
@@ -397,8 +422,23 @@ const {
 })
 
 const outcomeOptions = auditOutcomeOptions
+const trafficSourceOptions = [
+  { label: '全部来源', value: 'all' },
+  { label: '网关请求', value: 'gateway' },
+  { label: '账号测试', value: 'manual_account_test' },
+  { label: '恢复探活', value: 'cooldown_retest' }
+] satisfies Array<{ label: string; value: AuditTrafficSource | 'all' }>
 const attemptColumns = auditAttemptColumns
 const payloadColumns = auditPayloadColumns
+const {
+  managedColumns,
+  columnSettings,
+  updateColumnSettings,
+  resetColumnSettings
+} = useTableColumnSettings('audit-logs', auditLogColumns, {
+  requiredKeys: ['traceId'],
+  minVisible: 1
+})
 const activeFilterCount = computed(() => {
   let count = 0
   if (traceIdFilter.value.trim()) count += 1
@@ -406,12 +446,14 @@ const activeFilterCount = computed(() => {
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
   if (pathFilter.value.trim()) count += 1
   if (statusCodeFilter.value.trim()) count += 1
+  if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
 const advancedFilterCount = computed(() => {
   let count = 0
   if (pathFilter.value.trim()) count += 1
   if (statusCodeFilter.value.trim()) count += 1
+  if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
 const auditRuntimeAlertVisible = computed(() => Boolean(runtime.value && (
@@ -479,6 +521,7 @@ function applyPageState(state: AuditLogsPageState): void {
   statusCodeFilter.value = state.statusCodeFilter
   systemAccountFilter.value = state.systemAccountFilter
   systemAccountSelection.value = state.systemAccountSelection
+  trafficSourceFilter.value = state.trafficSourceFilter
   pagination.current = state.pagination.current
   pagination.pageSize = state.pagination.pageSize
   resetSystemAccountOptionsSearch()
@@ -509,6 +552,7 @@ function resetFilters(): void {
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountSelection.value = defaults.systemAccountSelection
+  trafficSourceFilter.value = defaults.trafficSourceFilter
   resetSystemAccountOptionsSearch()
   resetPagination()
   pageStateCache.clear()
@@ -524,7 +568,8 @@ function fetchRecords(pageState: { current: number; pageSize: number }) {
     outcome: outcomeFilter.value,
     path: pathFilter.value || undefined,
     statusCode: normalizedStatusCode(statusCodeFilter.value),
-    systemAccountId
+    systemAccountId,
+    trafficSource: trafficSourceFilter.value === 'all' ? undefined : trafficSourceFilter.value
   })
 }
 
@@ -654,7 +699,8 @@ function snapshotPageState(): AuditLogsPageState {
     statusCodeFilter: statusCodeFilter.value,
     systemAccountFilter: systemAccountFilter.value,
     systemAccountSelection: systemAccountSelection.value,
-    traceIdFilter: traceIdFilter.value
+    traceIdFilter: traceIdFilter.value,
+    trafficSourceFilter: trafficSourceFilter.value
   }
 }
 

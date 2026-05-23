@@ -18,6 +18,7 @@ import { handleOpenAIGatewayRequest } from '../gateway/openai-gateway.routes.js'
 import type { GatewaySettings } from '../gateway/account-error-policy.service.js'
 import { flushGatewayAccountSideEffects } from '../gateway/gateway-account-side-effects.service.js'
 import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
+import type { OpenAIGatewayTrafficSource } from '../gateway/openai-gateway-traffic-source.js'
 
 const defaultTestModel = 'gpt-5.5'
 const defaultTestPrompt = '只输出 OK'
@@ -29,7 +30,7 @@ const maxAccountTestResponseBytes = 1024 * 1024
 
 export async function testOpenAIAccount(
   account: AccountSummary,
-  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; gatewaySettingsOverride?: Partial<GatewaySettings> } = {}
+  input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; trafficSource?: OpenAIGatewayTrafficSource; gatewaySettingsOverride?: Partial<GatewaySettings> } = {}
 ): Promise<AccountTestResult> {
   const explicitModel = stringValue(input.model)
   const model = explicitModel || defaultAccountTestModel(account)
@@ -73,6 +74,7 @@ export async function testOpenAIAccount(
       candidateAccounts: [resolved.account],
       disableSessionAffinity: true,
       exposeUpstreamDiagnostics: !limitedDiagnostics,
+      trafficSource: input.trafficSource ?? 'manual_account_test',
       settingsOverride: input.gatewaySettingsOverride
     })))
     if (input.signal?.aborted) {

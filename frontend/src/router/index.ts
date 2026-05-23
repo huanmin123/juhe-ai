@@ -370,18 +370,6 @@ export const menuRoutes: RouteRecordRaw[] = [
     }
   },
   {
-    path: '/feature-rules',
-    component: () => import('@/views/feature-rules/FeatureRulesView.vue'),
-    meta: {
-      title: '特征规则',
-      description: '只读查看网关内置上游错误响应特征规则，用于排障和审计解释。',
-      menuGroup: 'log-management',
-      menuGroupTitle: '日志管理',
-      viewScope: 'admin',
-      roles: ['admin']
-    }
-  },
-  {
     path: '/table-monitor',
     component: () => import('@/views/table-monitor/TableMonitorView.vue'),
     meta: {

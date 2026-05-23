@@ -16,6 +16,7 @@ export interface RequestContext {
   role?: 'admin' | 'user'
   apiKeyId?: string
   groupId?: string
+  trafficSource?: string
   logger: Logger
 }
 
@@ -24,6 +25,7 @@ export interface RequestContextFields {
   role?: 'admin' | 'user'
   apiKeyId?: string
   groupId?: string
+  trafficSource?: string
 }
 
 const requestContextStorage = new AsyncLocalStorage<RequestContext>()
@@ -111,6 +113,7 @@ function logRequestFinished(req: Request, res: Response, context: RequestContext
     role: context.role,
     apiKeyId: context.apiKeyId,
     groupId: context.groupId,
+    trafficSource: context.trafficSource,
     userAgent: req.header('user-agent')
   }
 
@@ -141,6 +144,7 @@ function logRequestClosed(req: Request, res: Response, context: RequestContext):
     role: context.role,
     apiKeyId: context.apiKeyId,
     groupId: context.groupId,
+    trafficSource: context.trafficSource,
     userAgent: req.header('user-agent')
   }, 'HTTP 请求在完成前关闭')
 }

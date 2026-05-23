@@ -2,7 +2,7 @@ import { Router } from 'express'
 
 import { ok, sendNotFound } from '../../shared/http.js'
 import { finiteNumberQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { getUsageRecordDetail, listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary } from '../../storage/repositories.js'
+import { getUsageRecordDetail, listUsageRecords, type UsageRecordListOptions, type UsageRecordSortField, type UsageRecordSummary, type UsageRecordTrafficSource } from '../../storage/repositories.js'
 import { startOfZonedDateKeyIso, usageStatsTimezone } from '../../storage/usage-stats-helpers.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { buildProviderCostBreakdown } from '../model-pricing/model-pricing.service.js'
@@ -27,6 +27,7 @@ usageRecordsRouter.get('/:id', (req, res) => {
 })
 
 const usageRecordSortFields = new Set<UsageRecordSortField>(['createdAt', 'firstTokenMs', 'durationMs', 'costUsd'])
+const usageRecordTrafficSources = new Set<UsageRecordTrafficSource>(['gateway', 'manual_account_test', 'cooldown_retest'])
 
 function withCostBreakdown(record: UsageRecordSummary) {
   return {
@@ -68,6 +69,7 @@ function parseListOptions(query: Record<string, unknown>): UsageRecordListOption
     statusCode: isHttpStatusCode(rawStatusCode) ? rawStatusCode : undefined,
     groupId: optionalQueryText(query.groupId),
     model: optionalQueryText(query.model),
+    trafficSource: usageRecordTrafficSourceQueryValue(query.trafficSource),
     startAt: createdAtRange.startAt,
     endAt: createdAtRange.endAt
   }
@@ -75,6 +77,12 @@ function parseListOptions(query: Record<string, unknown>): UsageRecordListOption
 
 function isHttpStatusCode(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
+}
+
+function usageRecordTrafficSourceQueryValue(value: unknown): UsageRecordTrafficSource | undefined {
+  return typeof value === 'string' && usageRecordTrafficSources.has(value as UsageRecordTrafficSource)
+    ? value as UsageRecordTrafficSource
+    : undefined
 }
 
 function dateRangeQueryValue(startValue: unknown, endValue: unknown): { startAt?: string; endAt?: string } {

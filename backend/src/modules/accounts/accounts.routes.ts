@@ -52,6 +52,7 @@ const accountTrafficMigrationSchema = z.object({
 })
 
 const authorizedAccountDispatchSchema = z.object({
+  status: z.enum(['active', 'disabled']).optional(),
   superPriorityEnabled: z.boolean().optional(),
   fallbackEnabled: z.boolean().optional(),
   clearFailureState: z.boolean().optional()
@@ -530,6 +531,7 @@ accountsRouter.patch('/:id/authorized-dispatch', (req, res) => {
           resourceName: account.name,
           summary: `调整授权账户使用设置：${account.name}`,
           changes: [
+            ...(Object.prototype.hasOwnProperty.call(parsed.data, 'status') ? [safeChange('localStatus', '本地状态', undefined, parsed.data.status)] : []),
             ...(Object.prototype.hasOwnProperty.call(parsed.data, 'superPriorityEnabled') ? [safeChange('localSuperPriorityEnabled', '本地超级优先', undefined, parsed.data.superPriorityEnabled)] : []),
             ...(Object.prototype.hasOwnProperty.call(parsed.data, 'fallbackEnabled') ? [safeChange('localFallbackEnabled', '本地降级备用', undefined, parsed.data.fallbackEnabled)] : []),
             ...(parsed.data.clearFailureState === true ? [safeChange('clearLocalFailureState', '恢复本地异常状态', false, true)] : [])

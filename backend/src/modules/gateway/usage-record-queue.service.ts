@@ -4,8 +4,10 @@ import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
 import { createUsageRecordsBatch, type UsageRecordInput } from '../../storage/repositories.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
+import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { sendUsageRecordsToWorker } from '../background/background-ipc.js'
+import { isSensitiveHeaderName } from './openai-gateway-usage.js'
 
 const usageRecordFlushIntervalMs = 100
 const usageRecordRetryPolicy = fixedRetryPolicy('usage_record_queue_flush', 1000)
@@ -169,6 +171,7 @@ function recordUsageRecordDispatchFailure(error: unknown, input: UsageRecordInpu
     event: 'usage_record_queue_dispatch_failed',
     usageRecordId: input.id,
     traceId: input.traceId,
+    trafficSource: input.trafficSource,
     systemAccountId: input.systemAccountId,
     endpoint: input.endpoint,
     statusCode: input.statusCode,
@@ -257,7 +260,7 @@ function sanitizeSnapshotValue(value: unknown, context: SnapshotSanitizeContext)
     const [key, item] = entries[index]
     context.bytes += Buffer.byteLength(key, 'utf8') + 4
     context.depth += 1
-    output[key] = sanitizeSnapshotValue(item, context)
+    output[key] = sanitizeSnapshotValue(sanitizeSnapshotField(key, item), context)
     context.depth -= 1
     if (context.bytes >= usageSnapshotMaxBytes) break
   }
@@ -282,6 +285,48 @@ function sanitizeSnapshotString(value: string, context: SnapshotSanitizeContext)
   context.bytes += Buffer.byteLength(truncated, 'utf8') + Buffer.byteLength(suffix, 'utf8')
   return `${truncated}${suffix}`
 }
+
+function sanitizeSnapshotField(key: string, value: unknown): unknown {
+  if (isSensitiveHeaderName(key) || isSensitiveSnapshotFieldName(key)) {
+    return redactedSnapshotSensitiveValue(value)
+  }
+  if (isUrlSnapshotFieldName(key) && typeof value === 'string') {
+    return sanitizeUrlForLog(value)
+  }
+  return value
+}
+
+function isSensitiveSnapshotFieldName(name: string): boolean {
+  const compact = name.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  return sensitiveSnapshotFieldNames.has(compact)
+}
+
+function isUrlSnapshotFieldName(name: string): boolean {
+  const compact = name.trim().toLowerCase().replace(/[\s_-]+/g, '')
+  return compact === 'originalurl' || compact === 'upstreamurl' || compact === 'url'
+}
+
+function redactedSnapshotSensitiveValue(value: unknown): string | string[] {
+  if (Array.isArray(value)) {
+    return value.map(() => '[redacted]')
+  }
+  return '[redacted]'
+}
+
+const sensitiveSnapshotFieldNames = new Set([
+  'authorization',
+  'proxyauthorization',
+  'cookie',
+  'setcookie',
+  'apikey',
+  'openaiapikey',
+  'password',
+  'secret',
+  'token',
+  'accesstoken',
+  'refreshtoken',
+  'session'
+])
 
 interface SnapshotSanitizeContext {
   depth: number

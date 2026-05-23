@@ -2,6 +2,7 @@ import type { AccountStatus } from '../../domain/types.js'
 import { runtimeConfig } from '../../config/runtime.js'
 import { clearAccountFailureStateResult, getSettings, markAccountCooldown, markAccountDisabledByFailure } from '../../storage/repositories.js'
 import { calculateOpenAICodexRateLimitResetAt } from './openai-codex-usage.service.js'
+import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 
 export type CooldownAccountStatus = 'rate_limited' | 'temporary_unavailable'
 
@@ -61,6 +62,7 @@ export function applyAccountErrorHandling(
     bodyText?: string
     errorMessage?: string
     settings?: GatewaySettings
+    trafficSource?: OpenAIGatewayTrafficSource
   }
 ): AccountErrorHandlingResult {
   assertLocalGatewayDatabaseAccess('applyAccountErrorHandling')
@@ -69,6 +71,9 @@ export function applyAccountErrorHandling(
   }
 
   if (input.success) {
+    if (account.status === 'rate_limited' && input.trafficSource !== 'manual_account_test') {
+      return { action: 'none', changed: false, accountStatus: account.status }
+    }
     const shouldClear = (account.status !== undefined && account.status !== 'active') || Boolean(account.cooldownUntil) || Boolean(account.lastErrorMessage)
     if (!shouldClear) {
       return { action: 'none', changed: false, accountStatus: account.status }

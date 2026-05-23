@@ -42,7 +42,7 @@ export const DEFAULT_SYSTEM_SETTINGS = [
   ['tableMonitorMaxTablesPerRun', 4],
   ['accountQualityRefreshIntervalSeconds', 600],
   ['accountQualityWindowMinutes', 10],
-  ['cooldownAccountRetestIntervalSeconds', 60],
+  ['cooldownAccountRetestIntervalSeconds', 3],
   ['cooldownAccountRetestBatchSize', 10],
   ['cooldownAccountRetestModel', 'gpt-5.5'],
   ['cooldownAccountRetestMaxBackoffHours', 24],

@@ -1,7 +1,7 @@
 import type { ApiKeySummary } from '../domain/types.js'
 import { notifyApiKeyQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, buildSystemAccountWhereClause, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, type AccessScope } from './access-scope.js'
-import { apiKeyGroupAuthorization, apiKeyGroupOwnerAndProvider, apiKeySystemAccountId, canManageApiKeyOwner, canUseApiKeyGroup } from './api-key-access.js'
+import { apiKeyGroupOwnerAndProvider, apiKeySystemAccountId, canBindApiKeyGroup, canManageApiKeyOwner } from './api-key-access.js'
 import { createApiKey, encryptJson, hashSecret } from './crypto.js'
 import { buildApiKeyFilters, normalizeApiKeyListOptions } from './api-key-list-query.js'
 import { apiKeySummariesFromRows, type ApiKeyRow } from './api-key-mappers.js'
@@ -13,6 +13,8 @@ import { invalidateApiKeyLookupCache, loadSystemAccountNameMapByIds } from './re
 import { emptyRequestQuotaLimits, normalizeRequestQuotaLimits, requestQuotaLimitsJson } from './request-quota-limits.js'
 import { emptyAccountUsageSummary } from './usage-stats-helpers.js'
 import { optionalNullableString, optionalServerDateTimeIso, optionalString } from './value-utils.js'
+
+const API_KEY_GROUP_BOUNDARY_ERROR = 'API Key 只能绑定自己的分组'
 
 export interface ApiKeyListOptions {
   page?: number
@@ -105,12 +107,8 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
   if (group && !scopedOwnerId && canManageApiKeyOwner(group.systemAccountId, access)) {
     systemAccountId = group.systemAccountId
   }
-  if (!group || !canUseApiKeyGroup(groupId, systemAccountId)) {
-    throw new Error('API Key 分组无效')
-  }
-  const groupAuthorization = apiKeyGroupAuthorization(group.systemAccountId, groupId, systemAccountId)
-  if (group.systemAccountId !== systemAccountId && !groupAuthorization) {
-    throw new Error('API Key 分组无效')
+  if (!group || !canBindApiKeyGroup(groupId, systemAccountId)) {
+    throw new Error(API_KEY_GROUP_BOUNDARY_ERROR)
   }
   const quotaLimits = normalizeRequestQuotaLimits(input.quotaLimits)
   const record: ApiKeySummary & { key: string } = {
@@ -134,7 +132,7 @@ export function createApiKeyRecord(input: Record<string, unknown>, access?: Acce
         INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
-      .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, groupAuthorization?.id ?? null, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
+      .run(record.id, systemAccountId, record.name, record.description ?? null, hashSecret(key), record.keyPrefix, encryptJson({ key }), record.status, record.groupId, null, record.expiresAt ?? null, requestQuotaLimitsJson(record.quotaLimits), JSON.stringify(input.scopes ?? []), now, now)
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
       throw new Error(`API Key 名称已存在：${record.name}`)
@@ -161,12 +159,8 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   }
   const nextGroupId = typeof input.groupId === 'string' ? input.groupId : typeof input.group_id === 'string' ? input.group_id : current.groupId
   const nextGroup = apiKeyGroupOwnerAndProvider(nextGroupId)
-  if (!nextGroup || !canUseApiKeyGroup(nextGroupId, systemAccountId)) {
-    return undefined
-  }
-  const nextGroupAuthorization = apiKeyGroupAuthorization(nextGroup.systemAccountId, nextGroupId, systemAccountId)
-  if (nextGroup.systemAccountId !== systemAccountId && !nextGroupAuthorization) {
-    return undefined
+  if (!nextGroup || !canBindApiKeyGroup(nextGroupId, systemAccountId)) {
+    throw new Error(API_KEY_GROUP_BOUNDARY_ERROR)
   }
   const next: ApiKeySummary = {
     ...current,
@@ -181,7 +175,7 @@ export function updateApiKey(id: string, input: Record<string, unknown>, access?
   try {
     getDatabase()
       .prepare('UPDATE api_keys SET name = ?, description = ?, status = ?, group_id = ?, group_authorization_id = ?, expires_at = ?, quota_limits_json = ?, updated_at = ? WHERE id = ? AND system_account_id = ?')
-      .run(next.name, next.description ?? null, next.status, next.groupId, nextGroupAuthorization?.id ?? null, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), nowIso(), id, systemAccountId)
+      .run(next.name, next.description ?? null, next.status, next.groupId, null, next.expiresAt ?? null, requestQuotaLimitsJson(next.quotaLimits), nowIso(), id, systemAccountId)
   } catch (error) {
     if (isDuplicateApiKeyNameError(error)) {
       throw new Error(`API Key 名称已存在：${next.name}`)

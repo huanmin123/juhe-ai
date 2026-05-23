@@ -81,6 +81,15 @@
           </template>
         </a-form>
       </template>
+      <template #actions>
+        <TableColumnManager
+          :columns="rawColumns"
+          :settings="columnSettings"
+          :required-keys="['summary']"
+          @reset="resetColumnSettings"
+          @update:settings="updateColumnSettings"
+        />
+      </template>
       <template #filters>
         <a-form layout="vertical">
           <a-form-item label="模块">
@@ -159,7 +168,7 @@
 
     <ResponsiveDataList
       table-class="page-table operation-log-table"
-      :columns="columns"
+      :columns="managedColumns"
       :data-source="records"
       :mobile-data-source="records"
       row-key="id"
@@ -325,7 +334,9 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import TableColumnManager from '@/components/TableColumnManager.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -521,7 +532,7 @@ const advancedFilterCount = computed(() => {
   if (isManagementView.value && operationScopeSystemAccountFilter.value !== allSystemAccountsValue) count += 1
   return count
 })
-const columns = computed(() => {
+const rawColumns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '模块', key: 'module', width: 120 },
     { title: '动作', key: 'action', width: 110 },
@@ -537,6 +548,16 @@ const columns = computed(() => {
     { title: '操作', key: 'actions', width: 90, fixed: 'right' }
   )
   return baseColumns
+})
+const columnStorageKey = computed(() => (isManagementView.value ? 'operation-logs:management' : 'operation-logs:self'))
+const {
+  managedColumns,
+  columnSettings,
+  updateColumnSettings,
+  resetColumnSettings
+} = useTableColumnSettings(columnStorageKey, rawColumns, {
+  requiredKeys: ['summary'],
+  minVisible: 1
 })
 const changeColumns = [
   { title: '字段', key: 'field', dataIndex: 'field', width: 160 },

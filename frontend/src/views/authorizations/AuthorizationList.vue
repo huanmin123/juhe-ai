@@ -98,11 +98,12 @@ import AuthorizationActions from './AuthorizationActions.vue'
 import AuthorizationSourceTag from './AuthorizationSourceTag.vue'
 import AuthorizationStatusTag from './AuthorizationStatusTag.vue'
 import { authorizationColumns, type AuthorizationDirectionFilter } from './authorizationTableColumns'
-import { activeTeamSources, authorizationDirectionColor, authorizationDirectionText, formatDateTime, granteeTargetName, hasManualSource } from './authorizationFormatters'
+import { authorizationDirectionColor, authorizationDirectionText, authorizationRevokeActionCount, formatDateTime, granteeTargetName } from './authorizationFormatters'
 import type { AuthorizationResourceType } from '@/types/domain'
 
 const props = defineProps<{
   authorizations: ResourceAuthorizationSummary[]
+  columns?: Array<Record<string, unknown>>
   currentSystemAccountId?: string
   emptyDescription: string
   direction: AuthorizationDirectionFilter
@@ -129,7 +130,7 @@ const actionColumnWidth = computed(() => {
   }, 0)
   return Math.max(84, 24 + maxActionCount * 30)
 })
-const columns = computed(() => authorizationColumns.filter((column) => {
+const defaultColumns = computed(() => authorizationColumns.filter((column) => {
   if (props.isManagementView && column.key === 'direction') return false
   if (['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
   if (!showActions.value && column.key === 'actions') return false
@@ -138,6 +139,7 @@ const columns = computed(() => authorizationColumns.filter((column) => {
   if (column.key === 'actions') return { ...column, width: actionColumnWidth.value }
   return column
 }))
+const columns = computed(() => props.columns ?? defaultColumns.value)
 const tableScrollX = computed(() => props.isManagementView ? 1240 : 1320)
 
 function canManageAuthorization(authorization: ResourceAuthorizationSummary): boolean {
@@ -147,9 +149,7 @@ function canManageAuthorization(authorization: ResourceAuthorizationSummary): bo
 function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
   let count = 1
   if (authorization.status === 'active' || authorization.status === 'paused') count += 1
-  if (authorization.granteeType === 'team') return count + 1
-  if (authorization.status === 'active' && hasManualSource(authorization)) count += 1
-  count += activeTeamSources(authorization).length
+  count += authorizationRevokeActionCount(authorization)
   return count
 }
 

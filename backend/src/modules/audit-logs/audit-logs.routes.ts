@@ -10,7 +10,8 @@ import {
   type AuditErrorGroupListOptions,
   listAuditLogs,
   type AuditLogListOptions,
-  type AuditOutcome
+  type AuditOutcome,
+  type AuditTrafficSource
 } from '../../storage/repositories.js'
 import { readAuditLogSettings } from './audit-log-settings.js'
 import { requestServerRuntimeSnapshot } from '../db-service/db-service-ipc.js'
@@ -103,6 +104,7 @@ const auditOutcomes = new Set<AuditOutcome | 'all'>([
   'stream_failed',
   'client_aborted'
 ])
+const auditTrafficSources = new Set<AuditTrafficSource>(['gateway', 'manual_account_test', 'cooldown_retest'])
 
 function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListOptions {
   const rawPage = finiteNumberQueryValue(query.page)
@@ -124,7 +126,8 @@ function parseAuditLogListOptions(query: Record<string, unknown>): AuditLogListO
     apiKeyId: optionalQueryText(query.apiKeyId),
     groupId: optionalQueryText(query.groupId),
     accountId: optionalQueryText(query.accountId),
-    clientIp: optionalQueryText(query.clientIp)
+    clientIp: optionalQueryText(query.clientIp),
+    trafficSource: auditTrafficSourceQueryValue(query.trafficSource)
   }
 }
 
@@ -149,6 +152,12 @@ function parseAuditErrorGroupListOptions(query: Record<string, unknown>): AuditE
 
 function isHttpStatusCode(value: unknown): value is number {
   return Number.isInteger(value) && Number(value) >= 100 && Number(value) <= 599
+}
+
+function auditTrafficSourceQueryValue(value: unknown): AuditTrafficSource | undefined {
+  return typeof value === 'string' && auditTrafficSources.has(value as AuditTrafficSource)
+    ? value as AuditTrafficSource
+    : undefined
 }
 
 function auditLogRuntimeUnavailableReason(

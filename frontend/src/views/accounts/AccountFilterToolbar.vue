@@ -5,7 +5,6 @@
     filter-title="筛选账户"
     :active-filter-count="activeFilterCount"
     :advanced-filter-count="advancedFilterCount"
-    :mobile-action-count="isManagementView ? 2 : 1"
     :refresh-loading="refreshLoading"
     @update:keyword="emit('update:keyword', $event)"
     @search="emit('search')"
@@ -76,6 +75,7 @@
       </a-form>
     </template>
     <template #actions>
+      <slot name="actions" />
       <a-button v-if="isManagementView" @click="emit('import')">
         <template #icon>
           <UploadOutlined />

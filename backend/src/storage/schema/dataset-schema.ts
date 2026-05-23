@@ -10,6 +10,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           id TEXT PRIMARY KEY,
           system_account_id TEXT NOT NULL DEFAULT 'sys_admin',
           trace_id TEXT NOT NULL,
+          traffic_source TEXT NOT NULL DEFAULT 'gateway',
           client_ip TEXT,
           api_key_id TEXT,
           group_id TEXT,
@@ -101,6 +102,7 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS audit_logs (
           id TEXT PRIMARY KEY,
           trace_id TEXT NOT NULL,
+          traffic_source TEXT NOT NULL DEFAULT 'gateway',
           system_account_id TEXT,
           api_key_id TEXT,
           group_id TEXT,
@@ -507,4 +509,18 @@ export function applyDatasetSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_api_key_record_cleanup_targets_attempt ON api_key_record_cleanup_targets(COALESCE(last_attempt_at, created_at), created_at, api_key_id);
   `)
+  addColumnIfMissing(database, 'usage_records', 'traffic_source', "TEXT NOT NULL DEFAULT 'gateway'")
+  addColumnIfMissing(database, 'audit_logs', 'traffic_source', "TEXT NOT NULL DEFAULT 'gateway'")
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_usage_records_traffic_source_created ON usage_records(traffic_source, created_at, id);
+    CREATE INDEX IF NOT EXISTS idx_audit_logs_traffic_source_created ON audit_logs(traffic_source, created_at, id);
+  `)
+}
+
+function addColumnIfMissing(database: DatabaseSync, tableName: string, columnName: string, definition: string): void {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
+  if (columns.some((column) => column.name === columnName)) {
+    return
+  }
+  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
 }

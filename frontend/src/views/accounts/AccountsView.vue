@@ -30,7 +30,17 @@
       @update:system-account-id="filters.systemAccountId = $event"
       @update:system-account-selection="filters.systemAccount = $event"
       @update:type="handleAccountTypeFilterChange"
-    />
+    >
+      <template #actions>
+        <TableColumnManager
+          :columns="rawColumns"
+          :settings="columnSettings"
+          :required-keys="['name']"
+          @reset="resetColumnSettings"
+          @update:settings="updateColumnSettings"
+        />
+      </template>
+    </AccountFilterToolbar>
 
     <AccountBatchToolbar
       :selected-count="selectedAccounts.length"
@@ -53,7 +63,8 @@
       :authorized-tooltip="authorizedAccountTooltip"
       :can-delete="canDeleteAccount"
       :can-edit="canEditAccount"
-      :columns="columns"
+      :can-select="canBatchManageAccount"
+      :columns="managedColumns"
       :group-name="groupNameForAccount"
       :is-management-view="isManagementView"
       :is-selected="isAccountSelected"
@@ -184,6 +195,8 @@ import { message } from '@/lib/antd'
 import { computed, defineAsyncComponent, onMounted, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
+import TableColumnManager from '@/components/TableColumnManager.vue'
+import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
@@ -221,6 +234,7 @@ import { useAccountEditForm } from './useAccountEditForm'
 import { useAccountGroupOptions } from './useAccountGroupOptions'
 import { useAccountListData } from './useAccountListData'
 import { useAccountMenuActions } from './useAccountMenuActions'
+import { accountOperationSystemAccountId } from './accountOperationScope'
 import { useAccountReauthorize } from './useAccountReauthorize'
 import { useAccountTestModal } from './useAccountTestModal'
 import { useAccountTrafficMigration } from './useAccountTrafficMigration'
@@ -300,7 +314,17 @@ async function loadData(options?: { append?: boolean; quiet?: boolean; forceOpti
   await loadAccountListData(options)
 }
 
-const columns = computed(() => buildAccountTableColumns(isManagementView.value, (field) => resolveAccountColumnSortOrder(accountSorts.value, field)))
+const rawColumns = computed(() => buildAccountTableColumns(isManagementView.value, (field) => resolveAccountColumnSortOrder(accountSorts.value, field)))
+const columnStorageKey = computed(() => (isManagementView.value ? 'accounts:management' : 'accounts:self'))
+const {
+  managedColumns,
+  columnSettings,
+  updateColumnSettings,
+  resetColumnSettings
+} = useTableColumnSettings(columnStorageKey, rawColumns, {
+  requiredKeys: ['name'],
+  minVisible: 1
+})
 const tableScrollX = computed(() => accountTableScrollX(isManagementView.value))
 const tableScrollY = computed(accountTableScrollY)
 
@@ -319,6 +343,7 @@ const accountById = computed(() => accountByIdMap(accounts.value))
 const selectedAccountIdSet = computed(() => new Set(selectedAccountIds.value))
 const selectedAccounts = computed(() => accounts.value.filter((account) => selectedAccountIdSet.value.has(account.id)))
 const groupOptionProviderCode = ref('')
+const groupOptionSystemAccountId = ref('')
 const selectedGroupIds = ref<Array<string | undefined>>([])
 const {
   groups,
@@ -331,7 +356,7 @@ const {
   isManagementView: () => isManagementView.value,
   scope: () => ({
     providerCode: groupOptionProviderCode.value,
-    systemAccountId: isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined,
+    systemAccountId: isManagementView.value ? groupOptionSystemAccountId.value || accountScopeParams.value?.systemAccountId : undefined,
     selectedIds: selectedGroupIds.value
   })
 })
@@ -453,14 +478,31 @@ const {
   loadData
 })
 watch(
-  [() => form.providerCode, () => form.groupId, () => bindGroupModalOpen.value, () => bindingAccount.value?.providerCode, () => bindingAccount.value?.id, () => bindGroupForm.groupId],
+  [
+    () => form.providerCode,
+    () => form.groupId,
+    () => editingId.value,
+    () => bindGroupModalOpen.value,
+    () => bindingAccount.value?.providerCode,
+    () => bindingAccount.value?.id,
+    () => bindGroupForm.groupId,
+    () => accountScopeParams.value?.systemAccountId
+  ],
   () => {
+    const activeAccount = bindGroupModalOpen.value
+      ? bindingAccount.value
+      : editingId.value
+        ? accountById.value.get(editingId.value)
+        : undefined
     groupOptionProviderCode.value = bindGroupModalOpen.value ? bindingAccount.value?.providerCode ?? '' : form.providerCode
+    groupOptionSystemAccountId.value = isManagementView.value
+      ? accountOperationSystemAccountId(activeAccount, accountScopeParams.value) ?? ''
+      : ''
     selectedGroupIds.value = [form.groupId, bindGroupForm.groupId]
   },
   { immediate: true }
 )
-watch(groupOptionProviderCode, () => {
+watch([groupOptionProviderCode, groupOptionSystemAccountId], () => {
   resetGroupOptionsSearch()
 })
 const {

@@ -1,7 +1,7 @@
 <template>
   <ResponsiveDataList
     :table-class="tableClass"
-    :columns="columns"
+    :columns="tableColumns"
     :data-source="records"
     row-key="id"
     :loading="loading"
@@ -88,6 +88,7 @@ type RuntimeLogListRecord = RuntimeLogSummary | RuntimeLogGrepItem
 
 const props = withDefaults(defineProps<{
   actionLabel?: string
+  columns?: Array<Record<string, unknown>>
   emptyDescription: string
   loading: boolean
   loadingMore?: boolean
@@ -100,6 +101,7 @@ const props = withDefaults(defineProps<{
   tableClass: string
 }>(), {
   actionLabel: '详情',
+  columns: () => runtimeLogColumns,
   loadingMore: false,
   messageMode: 'index',
   mobileHasMore: false,
@@ -116,7 +118,7 @@ const emit = defineEmits<{
   (event: 'trace', traceId?: string): void
 }>()
 
-const columns = runtimeLogColumns
+const tableColumns = computed(() => props.columns)
 const detailActions = computed<RowActionItem[]>(() => [
   { key: 'detail', label: props.actionLabel, icon: 'detail', tone: 'info' }
 ])

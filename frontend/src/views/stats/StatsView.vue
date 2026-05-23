@@ -580,7 +580,7 @@ function formatRetryQueueNextRunAt(value?: string) {
 
 function backgroundJobDurationNote(row: NonNullable<SystemMetricsOverview['backgroundJobs']>[number]) {
   if (row.name !== 'cooldown-account-retest') return undefined
-  return '该任务会在冷却到期后按真实网关链路复测账号；失败后的复活重试会进入异步队列，按 3 秒、10 秒、30 秒唤醒执行，不会让本轮后台任务一直等待。'
+  return '该任务会在冷却到期后按真实网关链路复测账号；失败后由 cooldown_until 推进下一次复测，先 3 秒起步并翻倍，达到最大暂停时间后进入慢速恢复。'
 }
 
 function snapshotPageState(): StatsPageState {

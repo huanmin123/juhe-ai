@@ -11,6 +11,8 @@ import { parseOpenAICodexUsageHeaders } from './openai-codex-usage.service.js'
 import { type UpstreamAccount } from './openai-gateway-route-helpers.js'
 import { type StreamFailureContext } from './openai-gateway-stream.js'
 import { headersToObject } from './openai-gateway-usage.js'
+import { recordGatewayProxyFailure } from './openai-gateway-proxy-health.service.js'
+import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 
 export function applyAccountErrorHandlingWithCacheInvalidation(
   account: UpstreamAccount,
@@ -21,6 +23,7 @@ export function applyAccountErrorHandlingWithCacheInvalidation(
     bodyText?: string
     errorMessage?: string
     settings?: GatewaySettings
+    trafficSource?: OpenAIGatewayTrafficSource
   }
 ): void {
   const normalizedInput = {
@@ -53,6 +56,21 @@ export function handleStreamFailure(
       reason,
       downstreamBytesWritten: context.downstreamBytesWritten
     }, '流式失败发生在可见输出前，暂不累计账号流失败计数')
+    return
+  }
+
+  const proxyFailure = recordGatewayProxyFailure(account, reason)
+  if (proxyFailure.suspected) {
+    getRequestLogger().warn({
+      event: 'gateway_stream_failure_proxy_bucket_absorbed',
+      accountId: account.id,
+      accountName: account.name,
+      proxyKey: proxyFailure.proxyKey,
+      distinctAccountCount: proxyFailure.distinctAccountCount,
+      errorCode,
+      reason,
+      downstreamBytesWritten: context.downstreamBytesWritten
+    }, '可见输出后流失败已被同代理多账号失败桶吸收，暂不累计账号流失败')
     return
   }
 

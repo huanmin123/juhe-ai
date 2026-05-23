@@ -17,6 +17,7 @@ export interface UsageRecordSummary {
   systemAccountId?: string
   systemAccountName?: string
   traceId: string
+  trafficSource: UsageRecordTrafficSource
   clientIp?: string
   apiKeyId?: string
   apiKeyName?: string
@@ -46,6 +47,7 @@ export interface UsageRecordSummary {
   createdAt: string
 }
 
+export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest'
 export type UsageRecordSortField = 'createdAt' | 'firstTokenMs' | 'durationMs' | 'costUsd'
 export type UsageRecordSortDirection = 'asc' | 'desc'
 
@@ -60,6 +62,7 @@ export interface UsageRecordListOptions {
   statusCode?: number
   groupId?: string
   model?: string
+  trafficSource?: UsageRecordTrafficSource
   startAt?: string
   endAt?: string
 }
@@ -83,6 +86,7 @@ export interface UsageRecordInput {
   id?: string
   systemAccountId?: string
   traceId: string
+  trafficSource?: UsageRecordTrafficSource
   clientIp?: string
   apiKeyId?: string
   groupId?: string
@@ -132,6 +136,7 @@ export function listUsageRecords(access?: AccessScope, options?: UsageRecordList
         ur.id,
         ur.system_account_id,
         ur.trace_id,
+        ur.traffic_source,
         ur.client_ip,
         ur.api_key_id,
         ur.group_id,
@@ -224,6 +229,7 @@ function findRecentOpenAIRequestShape(input: { accountId?: string; groupId?: str
       FROM usage_records
       WHERE ${clauses.join(' AND ')}
         AND api_key_id IS NOT NULL
+        AND COALESCE(traffic_source, 'gateway') = 'gateway'
         AND provider_code = 'openai'
         AND endpoint IS NOT NULL
         AND TRIM(endpoint) <> ''
@@ -273,14 +279,14 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
   const businessDatabase = getDatabase()
   const insertStatement = database.prepare(`
     INSERT INTO usage_records (
-      id, system_account_id, trace_id, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
+      id, system_account_id, trace_id, traffic_source, client_ip, api_key_id, group_id, account_id, endpoint, provider_code, model, stream,
       status_code, success, first_token_ms, duration_ms, input_tokens, output_tokens, cache_read_tokens, cache_read_cost_usd, input_image_tokens, output_image_tokens, cost_usd, error_code, error_message,
       request_snapshot_json, response_snapshot_json,
       account_owner_system_account_id, group_owner_system_account_id, account_access_type, group_access_type,
       account_authorization_id, account_authorization_source_type, account_authorization_source_team_id,
       group_authorization_id, group_authorization_source_type, group_authorization_source_team_id,
       created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const updateAccountStatement = businessDatabase.prepare('UPDATE accounts SET last_used_at = ?, updated_at = ? WHERE id = ?')
@@ -300,6 +306,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
         input.id ?? newId('usage'),
         systemAccountId,
         input.traceId,
+        normalizeUsageRecordTrafficSource(input.trafficSource),
         input.clientIp ?? null,
         input.apiKeyId ?? null,
         input.groupId ?? null,
@@ -340,7 +347,7 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
         continue
       }
 
-      if (input.accountId) {
+      if (input.accountId && normalizeUsageRecordTrafficSource(input.trafficSource) !== 'cooldown_retest') {
         const previous = accountLastUsedAt.get(input.accountId)
         if (!previous || now > previous) {
           accountLastUsedAt.set(input.accountId, now)
@@ -360,5 +367,9 @@ export function createUsageRecordsBatch(inputs: UsageRecordInput[]): void {
     }
     throw error
   }
+}
+
+function normalizeUsageRecordTrafficSource(value: unknown): UsageRecordTrafficSource {
+  return value === 'manual_account_test' || value === 'cooldown_retest' ? value : 'gateway'
 }
 

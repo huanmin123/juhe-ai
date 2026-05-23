@@ -936,16 +936,16 @@ function createApiKeys(adminAccess: AccessScope, groups: MockGroups, users: Mock
 
   const devGroupAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}研发授权调用 Key`,
-    description: 'Mockdata 研发用户使用 admin 授权分组的 Key',
-    groupId: groups.main.id,
+    description: 'Mockdata 研发用户使用被授权账户的 Key，绑定研发用户自己的默认分组',
+    groupId: groups.devDefault.id,
     status: 'active',
     quotaLimits: quotaLimits(8, 50, 180)
   }, { systemAccountId: users.dev.id, role: 'user' })
 
   const testerTeamAuthorized = repositories.createApiKeyRecord({
     name: `${namePrefix}团队授权调用 Key`,
-    description: 'Mockdata 测试用户通过团队授权使用 admin 备用分组的 Key',
-    groupId: groups.backup.id,
+    description: 'Mockdata 测试用户通过团队账号授权使用自己的默认分组',
+    groupId: groups.testerDefault.id,
     status: 'active',
     quotaLimits: quotaLimits(6, 40, 150)
   }, { systemAccountId: users.tester.id, role: 'user' })
@@ -1111,17 +1111,17 @@ function createUsageMockdata(created: CreatedMockdata, options: MockdataOptions)
     {
       key: created.apiKeys.devGroupAuthorized,
       owner: created.users.dev,
-      group: created.groups.main,
-      accounts: [created.accounts.primary, created.accounts.proxied],
-      label: 'dev-group-auth',
+      group: created.groups.devDefault,
+      accounts: [created.accounts.primary],
+      label: 'dev-account-auth',
       clientIpBase: '10.20.1.'
     },
     {
       key: created.apiKeys.testerTeamAuthorized,
       owner: created.users.tester,
-      group: created.groups.backup,
-      accounts: [created.accounts.fallback, created.accounts.rateLimited],
-      label: 'tester-team-auth',
+      group: created.groups.testerDefault,
+      accounts: [created.accounts.primary],
+      label: 'tester-team-account-auth',
       clientIpBase: '10.20.2.'
     },
     {
@@ -1528,9 +1528,9 @@ function createRuntimeLogMockdata(usageRecords: UsageRecordSeed[]): void {
 function createModelCheckMockdata(created: CreatedMockdata, options: MockdataOptions): ModelCheckMockdataCounts {
   const targets = [
     { account: created.accounts.primary, group: created.groups.main, apiKey: created.apiKeys.adminMain, actor: created.users.admin },
-    { account: created.accounts.proxied, group: created.groups.main, apiKey: created.apiKeys.devGroupAuthorized, actor: created.users.dev },
+    { account: created.accounts.primary, group: created.groups.devDefault, apiKey: created.apiKeys.devGroupAuthorized, actor: created.users.dev },
     { account: created.accounts.normal, group: created.groups.main, apiKey: created.apiKeys.adminHighFrequency, actor: created.users.admin },
-    { account: created.accounts.fallback, group: created.groups.backup, apiKey: created.apiKeys.testerTeamAuthorized, actor: created.users.tester },
+    { account: created.accounts.primary, group: created.groups.testerDefault, apiKey: created.apiKeys.testerTeamAuthorized, actor: created.users.tester },
     { account: created.accounts.oauth, group: created.groups.oauth, apiKey: created.apiKeys.adminOAuth, actor: created.users.admin },
     { account: created.accounts.oauthBackup, group: created.groups.oauth, apiKey: created.apiKeys.adminOAuth, actor: created.users.admin },
     { account: created.accounts.rateLimited, group: created.groups.backup, apiKey: created.apiKeys.adminBackup, actor: created.users.admin },

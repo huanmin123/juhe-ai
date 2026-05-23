@@ -19,6 +19,7 @@ export interface UsageStatsRecordRow {
   id: string
   system_account_id: string
   trace_id: string
+  traffic_source: string | null
   client_ip: string | null
   api_key_id: string | null
   group_id: string | null
@@ -54,6 +55,7 @@ export const USAGE_STATS_RECORD_SELECT_COLUMNS = `
   id,
   system_account_id,
   trace_id,
+  traffic_source,
   client_ip,
   api_key_id,
   group_id,

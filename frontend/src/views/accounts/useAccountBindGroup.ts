@@ -21,7 +21,7 @@ interface UseAccountBindGroupOptions {
   groupIdForAccount: (accountId: string) => string | undefined
   groups: ReadonlyValue<GroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
-  loadGroupOptions: (keyword?: string, force?: boolean) => Promise<void>
+  loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: { providerCode?: string; systemAccountId?: string; selectedIds?: Array<string | undefined> }) => Promise<void>
   loadData: () => Promise<void>
 }
 
@@ -50,7 +50,12 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     setBindGroup(selectedGroup)
     bindGroupModalOpen.value = true
     await nextTick()
-    await options.loadGroupOptions('', true)
+    const scopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
+    await options.loadGroupOptions('', true, {
+      providerCode: account.providerCode,
+      systemAccountId: scopeParams?.systemAccountId,
+      selectedIds: [bindGroupForm.groupId]
+    })
     if (bindingAccount.value?.id !== account.id || bindGroupForm.groupId) return
     setBindGroup(defaultGroupSelectionForProvider(account.providerCode))
   }

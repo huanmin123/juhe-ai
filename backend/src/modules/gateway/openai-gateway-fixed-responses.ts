@@ -5,10 +5,12 @@ import { responseHeadersToObject, type AuditCaptureContext } from './audit-captu
 import { gatewayErrorPayload } from './openai-gateway-responses.js'
 import { buildOpenAIModelsResponse } from './openai-gateway-route-helpers.js'
 import { extractBearerToken } from './openai-gateway-usage.js'
+import type { OpenAIGatewayTrafficSource } from './openai-gateway-traffic-source.js'
 import { enqueueUsageRecord } from './usage-record-queue.service.js'
 
 interface OpenAIModelsResponseUsageContext {
   traceId: string
+  trafficSource: OpenAIGatewayTrafficSource
   clientIp?: string
   systemAccountId: string
   apiKeyId?: string

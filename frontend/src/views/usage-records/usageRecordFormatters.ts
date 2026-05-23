@@ -65,6 +65,20 @@ export function statusCodeText(record: UsageRecordSummary): string {
   return '-'
 }
 
+export function trafficSourceText(record: UsageRecordSummary): string {
+  return {
+    gateway: '网关请求',
+    manual_account_test: '账号测试',
+    cooldown_retest: '恢复探活'
+  }[record.trafficSource] ?? '网关请求'
+}
+
+export function trafficSourceColor(record: UsageRecordSummary): string {
+  if (record.trafficSource === 'cooldown_retest') return 'gold'
+  if (record.trafficSource === 'manual_account_test') return 'cyan'
+  return 'default'
+}
+
 export function errorText(record: UsageRecordSummary): string {
   if (record.errorMessage) return record.errorMessage
   if (record.responseSnapshot) return JSON.stringify(record.responseSnapshot, null, 2)

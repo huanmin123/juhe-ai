@@ -58,7 +58,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'proxy-latency-refresh', intervalMs: proxyLatencyRefreshIntervalSeconds * 1000, task: runProxyLatencyRefresh })
   scheduler.schedule({ name: 'account-quality-refresh', intervalMs: settingsNumber('accountQualityRefreshIntervalSeconds', 600, 60, 3600) * 1000, task: runAccountQualityRefresh })
   scheduler.schedule({ name: 'openai-oauth-access-token-refresh', intervalMs: settingsNumber('oauthAccessTokenRefreshIntervalSeconds', 60, 10, 3600) * 1000, task: runOpenAIOAuthAccessTokenRefresh })
-  scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 60, 10, 3600) * 1000, task: runCooldownAccountRetest })
+  scheduler.schedule({ name: 'cooldown-account-retest', intervalMs: settingsNumber('cooldownAccountRetestIntervalSeconds', 3, 1, 3600) * 1000, task: runCooldownAccountRetest })
   scheduler.schedule({ name: 'runtime-log-index-maintenance', intervalMs: 60 * 60 * 1000, task: runRuntimeLogIndexMaintenance })
   scheduler.schedule({ name: 'data-retention-cleanup', intervalMs: dailyIntervalMs, task: runDataRetentionCleanup })
 }
@@ -303,14 +303,14 @@ async function runAccountQualityRefresh(): Promise<void> {
 async function runCooldownAccountRetest(): Promise<void> {
   const batchSize = settingsNumber('cooldownAccountRetestBatchSize', 10, 1, 100)
   const model = settingsString('cooldownAccountRetestModel', 'gpt-5.5')
-  const initialBackoffMinutes = settingsNumber('defaultTemporaryUnschedulableMinutes', 5, 1, 1440)
-  const maxBackoffHours = settingsNumber('cooldownAccountRetestMaxBackoffHours', 24, 1, 24 * 30)
+  const maxPauseMinutes = settingsNumber('defaultTemporaryUnschedulableMinutes', 5, 1, 1440)
+  const maxRecoveryHours = settingsNumber('cooldownAccountRetestMaxBackoffHours', 24, 1, 24 * 30)
   const candidates = listAccountsDueForCooldownRetest(batchSize)
   const startedAtMs = Date.now()
   let enqueuedCount = 0
   let skippedQueuedCount = 0
   for (const account of candidates) {
-    if (enqueueCooldownAccountRetest(account, model, { initialBackoffMinutes, maxBackoffHours })) {
+    if (enqueueCooldownAccountRetest(account, model, { maxPauseMinutes, maxRecoveryHours })) {
       enqueuedCount += 1
     } else {
       skippedQueuedCount += 1

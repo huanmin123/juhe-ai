@@ -35,8 +35,7 @@ export function usageStatsEntries(row: UsageStatsRecordRow): UsageStatsEntry[] {
 }
 
 export function shouldAggregateUsageStatsRecord(row: UsageStatsRecordRow): boolean {
-  void row
-  return true
+  return (row.traffic_source ?? 'gateway') !== 'cooldown_retest'
 }
 
 export function usageStatsAccumulatorFromRecord(row: UsageStatsRecordRow): UsageStatsAccumulator {

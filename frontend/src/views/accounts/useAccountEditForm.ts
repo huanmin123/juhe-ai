@@ -36,6 +36,7 @@ import {
 import type { AccountFormModel } from './accountFormTypes'
 import { FALLBACK_PROVIDER } from './accountOptions'
 import { authUrl, buildOAuthCreatePayload } from './accountOAuthPayload'
+import { accountOperationScopeParams, type AccountScopeParams } from './accountOperationScope'
 import { buildAccountSavePayload, buildOAuthCreateCommonPayload, validateAccountSaveForm } from './accountSavePayload'
 
 type ReadonlyValue<T> = {
@@ -55,7 +56,7 @@ interface UseAccountEditFormOptions {
   groups: ReadonlyValue<GroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
   loadAccountOptions: (systemAccountId?: string, force?: boolean) => Promise<void>
-  loadGroupOptions: (keyword?: string, force?: boolean) => Promise<void>
+  loadGroupOptions: (keyword?: string, force?: boolean, scopeOverride?: { providerCode?: string; systemAccountId?: string; selectedIds?: Array<string | undefined> }) => Promise<void>
   loadData: () => Promise<void>
   focusCreatedAccount?: (account: AccountSummary) => void
   providers: ReadonlyValue<ProviderDefinition[]>
@@ -163,7 +164,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     editingId.value = undefined
     void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
     resetForm('', '')
-    void options.loadGroupOptions('', true)
+    void options.loadGroupOptions('', true, { systemAccountId: options.accountScopeParams.value?.systemAccountId })
     modalOpen.value = true
   }
 
@@ -208,6 +209,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   }
 
   function openEdit(account: AccountSummary) {
+    const editScopeParams = accountOperationScopeParams(account, options.accountScopeParams.value)
     editingId.value = account.id
     editingAccountDetail.value = account
     void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
@@ -234,9 +236,13 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     accountErrorPolicyRules.value = loadAccountErrorPolicyRules(account.credentials)
     authResult.value = undefined
     modalOpen.value = true
-    void options.loadGroupOptions('', true)
+    void options.loadGroupOptions('', true, {
+      providerCode: account.providerCode,
+      systemAccountId: editScopeParams?.systemAccountId,
+      selectedIds: [form.groupId]
+    })
     void loadProviderModelOptions(account.providerCode)
-    void loadEditingAccountDetail(account.id)
+    void loadEditingAccountDetail(account.id, editScopeParams)
   }
 
   async function loadProviderModelOptions(providerCode: string): Promise<void> {
@@ -274,10 +280,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     ensureDefaultGroupSelected(providerCode)
   }
 
-  async function loadEditingAccountDetail(accountId: string): Promise<void> {
+  async function loadEditingAccountDetail(accountId: string, scopeParams?: AccountScopeParams): Promise<void> {
     try {
       const detail = options.isManagementView.value
-        ? await api.accounts.detail(accountId, options.accountScopeParams.value)
+        ? await api.accounts.detail(accountId, scopeParams)
         : await api.myAccounts.detail(accountId)
       if (editingId.value !== accountId) return
       editingAccountDetail.value = detail
@@ -321,7 +327,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     try {
       if (editingId.value) {
         if (options.isManagementView.value) {
-          await api.accounts.update(editingId.value, payload, options.accountScopeParams.value)
+          await api.accounts.update(editingId.value, payload, editingAccountScopeParams())
         } else {
           await api.myAccounts.update(editingId.value, payload)
         }
@@ -452,5 +458,11 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     if (group) {
       form.group = group
     }
+  }
+
+  function editingAccountScopeParams(): AccountScopeParams {
+    if (!editingId.value) return options.accountScopeParams.value
+    const account = editingAccountDetail.value ?? options.accounts.value.find((item) => item.id === editingId.value)
+    return account ? accountOperationScopeParams(account, options.accountScopeParams.value) : options.accountScopeParams.value
   }
 }

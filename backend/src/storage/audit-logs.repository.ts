@@ -30,6 +30,7 @@ export { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.
 export type AuditOutcome = 'success' | 'success_after_retry' | 'gateway_failed' | 'upstream_failed' | 'stream_failed' | 'client_aborted'
 export type AuditPayloadPartType = 'client_request' | 'upstream_request' | 'upstream_response' | 'gateway_response' | 'gateway_error' | 'gateway_metadata'
 export type AuditPayloadCaptureStatus = 'complete' | 'summary_only' | 'hash_only' | 'expired' | 'overflow' | 'dropped'
+export type AuditTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest'
 
 export interface AuditLogPayloadInput {
   id?: string
@@ -67,6 +68,7 @@ export interface AuditLogAttemptInput {
 export interface AuditLogInput {
   id?: string
   traceId: string
+  trafficSource?: AuditTrafficSource
   systemAccountId?: string
   apiKeyId?: string
   groupId?: string
@@ -100,6 +102,7 @@ export interface AuditLogInput {
 export interface AuditLogSummary {
   id: string
   traceId: string
+  trafficSource: AuditTrafficSource
   systemAccountId?: string
   systemAccountName?: string
   apiKeyId?: string
@@ -211,6 +214,7 @@ export interface AuditLogListOptions {
   accountId?: string
   clientIp?: string
   errorGroupId?: string
+  trafficSource?: AuditTrafficSource
 }
 
 export interface AuditLogPayloadReadOptions {
@@ -318,12 +322,12 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
   const database = getDatasetDatabase()
   const insertLog = database.prepare(`
     INSERT INTO audit_logs (
-      id, trace_id, system_account_id, api_key_id, group_id, account_id, provider_code, method, path, query_string,
+      id, trace_id, traffic_source, system_account_id, api_key_id, group_id, account_id, provider_code, method, path, query_string,
       model, stream, client_ip, user_agent, audit_outcome, success, final_status_code, error_phase, error_code,
       error_message, sample_bucket, sample_reason, attempt_count, payload_count, payload_bytes, raw_payload_bytes,
       compressed_payload_bytes, compression_saved_bytes, error_group_id, capture_status, started_at, ended_at,
       duration_ms, first_token_ms, created_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO NOTHING
   `)
   const insertAttempt = database.prepare(`
@@ -373,6 +377,7 @@ export function createAuditLogsBatch(inputs: AuditLogInput[]): void {
       const insertLogResult = insertLog.run(
         id,
         input.traceId,
+        normalizeAuditTrafficSource(input.trafficSource),
         input.systemAccountId ?? null,
         input.apiKeyId ?? null,
         input.groupId ?? null,
@@ -749,6 +754,7 @@ function upsertAuditErrorGroup(
     groupId: input.groupId ?? '',
     accountId: input.accountId ?? '',
     providerCode: input.providerCode ?? '',
+    trafficSource: normalizeAuditTrafficSource(input.trafficSource),
     path: input.path,
     model: input.model ?? '',
     statusCode: input.finalStatusCode ?? '',
@@ -815,6 +821,10 @@ function auditErrorFingerprint(input: AuditLogInput): string {
   }))
 }
 
+function normalizeAuditTrafficSource(value: unknown): AuditTrafficSource {
+  return value === 'manual_account_test' || value === 'cooldown_retest' ? value : 'gateway'
+}
+
 function normalizeErrorMessage(value: string): string {
   return value
     .slice(0, 500)
@@ -849,6 +859,10 @@ function buildAuditLogFilters(options: AuditLogListOptions): { clause: string; p
   if (isHttpStatusCode(options.statusCode)) {
     clauses.push('al.final_status_code = ?')
     params.push(options.statusCode)
+  }
+  if (options.trafficSource) {
+    clauses.push("COALESCE(al.traffic_source, 'gateway') = ?")
+    params.push(options.trafficSource)
   }
   for (const [column, value] of [
     ['al.system_account_id', options.systemAccountId],

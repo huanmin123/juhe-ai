@@ -6,7 +6,7 @@ import { rememberGroupLabels } from '@/shared/groupLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { GroupOptionSummary } from '@/types/domain'
 
-interface AccountGroupOptionsScope {
+export interface AccountGroupOptionsScope {
   providerCode?: string
   systemAccountId?: string
   selectedIds?: Array<string | undefined>
@@ -34,9 +34,9 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   let loadingPromise: Promise<void> | undefined
   let searchTimer: ReturnType<typeof window.setTimeout> | undefined
 
-  async function load(nextKeyword = keyword.value, force = false): Promise<void> {
+  async function load(nextKeyword = keyword.value, force = false, scopeOverride?: Partial<AccountGroupOptionsScope>): Promise<void> {
     keyword.value = nextKeyword
-    const scope = normalizedScope()
+    const scope = normalizedScope(scopeOverride)
     if ((config.isManagementView() && !scope.systemAccountId) || (!config.allowAllProviders && !scope.providerCode && !scope.selectedIds.length)) {
       requestId += 1
       groups.value = []
@@ -138,8 +138,13 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
     }
   }
 
-  function normalizedScope(): Required<AccountGroupOptionsScope> {
-    const scope = config.scope()
+  function normalizedScope(scopeOverride?: Partial<AccountGroupOptionsScope>): Required<AccountGroupOptionsScope> {
+    const configuredScope = config.scope()
+    const scope = {
+      ...configuredScope,
+      ...scopeOverride,
+      selectedIds: scopeOverride?.selectedIds ?? configuredScope.selectedIds
+    }
     return {
       providerCode: scope.providerCode?.trim() ?? '',
       systemAccountId: scope.systemAccountId?.trim() ?? '',

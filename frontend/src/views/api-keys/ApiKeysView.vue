@@ -36,6 +36,13 @@
         </a-form>
       </template>
       <template #actions>
+        <TableColumnManager
+          :columns="rawColumns"
+          :settings="columnSettings"
+          :required-keys="['name']"
+          @reset="resetColumnSettings"
+          @update:settings="updateColumnSettings"
+        />
         <a-button @click="helpOpen = true">
           <template #icon><question-circle-outlined /></template>
           接入帮助
@@ -80,7 +87,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table api-keys-table" :columns="columns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1800 : 1620" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
+    <ResponsiveDataList table-class="page-table api-keys-table" :columns="managedColumns" :data-source="filteredApiKeys" :mobile-data-source="mobileApiKeys" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1800 : 1620" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileApiKeys" @mobile-refresh="refreshMobileApiKeys">
       <template #emptyText>
         <a-empty class="page-empty-card" description="还没有 API Key。先新建一个并绑定分组；接入说明可点击右上角帮助查看。" />
       </template>
@@ -235,6 +242,8 @@ import { message } from '@/lib/antd'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
+import TableColumnManager from '@/components/TableColumnManager.vue'
+import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import GroupSelect from '@/components/GroupSelect.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
@@ -362,7 +371,7 @@ const {
   }
 })
 
-const columns = computed(() => {
+const rawColumns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
     { title: '密钥', key: 'key', width: 180 }
@@ -380,6 +389,16 @@ const columns = computed(() => {
     { title: '操作', key: 'actions', width: 90, fixed: 'right' }
   )
   return baseColumns
+})
+const columnStorageKey = computed(() => (isManagementView.value ? 'api-keys:management' : 'api-keys:self'))
+const {
+  managedColumns,
+  columnSettings,
+  updateColumnSettings,
+  resetColumnSettings
+} = useTableColumnSettings(columnStorageKey, rawColumns, {
+  requiredKeys: ['name'],
+  minVisible: 1
 })
 
 const statusOptions = [
@@ -516,7 +535,7 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
   groupOptionsLoadingKey = requestKey
   groupOptionsLoadingPromise = (async () => {
     try {
-      let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
+      let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50, manageableOnly: true, preferDefault: true })
       nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
       rememberGroupLabels(nextGroups)
       syncSelectedGroupSelections(nextGroups)
@@ -573,7 +592,7 @@ async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], syst
   if (!missingIds.length) return nextGroups
   const selectedGroups = await Promise.all(missingIds.map(async (id) => {
     try {
-      return await groupsApi.options({ systemAccountId, ids: [id], limit: 1 })
+      return await groupsApi.options({ systemAccountId, ids: [id], limit: 1, manageableOnly: true, preferDefault: true })
     } catch {
       return []
     }

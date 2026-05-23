@@ -26,10 +26,21 @@
       @team-search="handleFilterTeamSearch"
       @user-dropdown="handleFilterUserDropdown"
       @user-search="handleFilterUserSearch"
-    />
+    >
+      <template #actions>
+        <TableColumnManager
+          :columns="rawColumns"
+          :settings="columnSettings"
+          :required-keys="['resource']"
+          @reset="resetColumnSettings"
+          @update:settings="updateColumnSettings"
+        />
+      </template>
+    </AuthorizationFilterToolbar>
 
     <AuthorizationList
       :authorizations="authorizations"
+      :columns="managedColumns"
       :current-system-account-id="currentSystemAccountId"
       :direction="filters.direction"
       :empty-description="authorizationEmptyDescription"
@@ -97,6 +108,8 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import TableColumnManager from '@/components/TableColumnManager.vue'
+import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { accountSelectionForId, rememberAccountLabels, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
 import { mergeSelectedGroupOptions, rememberGroupLabels, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, systemAccountPrincipalName, type PrincipalSelection } from '@/shared/principalLabelCache'
@@ -119,11 +132,13 @@ import {
   type AuthorizationDirectionFilter,
   type AuthorizationFilterResourceType,
   type AuthorizationSourceFilter,
+  authorizationColumns,
   authorizationDirectionOptions,
   authorizationResourceTypeOptions,
   authorizationSourceOptions,
   createAuthorizationResourceTypeOptions
 } from './authorizationTableColumns'
+import { authorizationRevokeActionCount } from './authorizationFormatters'
 
 const pageSize = 50
 const { submitAction, submittingRef } = useSubmitAction('authorizations')
@@ -353,6 +368,31 @@ const authorizationScopeParams = computed(() => {
 })
 const createOwnedAccounts = computed(() => createAccounts.value.filter((account) => account.permissions?.canAuthorize !== false))
 const createOwnedGroups = computed(() => createGroups.value.filter((group) => group.permissions?.canAuthorize !== false))
+const rawColumns = computed(() => {
+  const showActions = isManagementView.value || filters.direction === 'outbound'
+  const actionColumnWidth = Math.max(84, 24 + authorizations.value.reduce((maxCount, authorization) => {
+    if (!canManageAuthorization(authorization)) return maxCount
+    return Math.max(maxCount, authorizationActionCount(authorization))
+  }, 0) * 30)
+  return authorizationColumns.filter((column) => {
+    if (isManagementView.value && column.key === 'direction') return false
+    if (['usageTotal', 'lastUsedAt', 'limits'].includes(String(column.key))) return false
+    if (!showActions && column.key === 'actions') return false
+    return true
+  }).map((column) => {
+    if (column.key === 'actions') return { ...column, width: actionColumnWidth }
+    return column
+  })
+})
+const {
+  managedColumns,
+  columnSettings,
+  updateColumnSettings,
+  resetColumnSettings
+} = useTableColumnSettings(() => `authorizations:${isManagementView.value ? 'management' : 'self'}:${filters.direction}`, rawColumns, {
+  requiredKeys: ['resource'],
+  minVisible: 1
+})
 
 function disabledAuthorizationExpireDate(date: Dayjs): boolean {
   return date.isBefore(dayjs().startOf('day'))
@@ -395,6 +435,17 @@ async function loadMetaData() {
   groups.value = []
   teams.value = []
   users.value = []
+}
+
+function canManageAuthorization(authorization: ResourceAuthorizationSummary): boolean {
+  return isManagementView.value || authorization.permissions?.canEdit === true
+}
+
+function authorizationActionCount(authorization: ResourceAuthorizationSummary): number {
+  let count = 1
+  if (authorization.status === 'active' || authorization.status === 'paused') count += 1
+  count += authorizationRevokeActionCount(authorization)
+  return count
 }
 
 function authorizationListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
@@ -1199,6 +1250,10 @@ function handleActionMenuClick(event: { key: string | number }, item: ResourceAu
   }
   if (key === 'resume') {
     void updateAuthorizationStatus(item, 'active')
+    return
+  }
+  if (key === 'revoke-authorization') {
+    void revokeAuthorization(item)
     return
   }
   if (key === 'revoke-manual') {

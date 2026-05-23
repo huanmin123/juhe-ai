@@ -91,6 +91,9 @@ import {
 const DEFAULT_ACCOUNT_CONCURRENCY_LIMIT = 20
 const manualTrafficMigrationReason = '手动迁移流量'
 const defaultResourceAuthorizationUsageDetailPageSize = 200
+const temporaryUnavailableInitialBackoffSeconds = 3
+const temporaryUnavailableFastThresholdSeconds = 60
+const temporaryUnavailableBackoffMultiplier = 2
 type AccountOptionFilterValue = string | number
 
 interface AccountOptionRow {
@@ -245,7 +248,8 @@ export {
   type UsageRecordLogSnapshot,
   type UsageRecordSortDirection,
   type UsageRecordSortField,
-  type UsageRecordSummary
+  type UsageRecordSummary,
+  type UsageRecordTrafficSource
 } from './usage-records.repository.js'
 export type {
   ApiKeyListOptions,
@@ -275,7 +279,8 @@ export {
   type AuditLogPayloadSummary,
   type AuditLogSummary,
   type AuditOutcome,
-  type AuditPayloadPartType
+  type AuditPayloadPartType,
+  type AuditTrafficSource
 } from './audit-logs.repository.js'
 export {
   cleanupOperationLogsBefore,
@@ -512,6 +517,7 @@ function disableExpiredAccounts(access?: AccessScope): void {
           last_error_code = NULL,
           last_error_message = ?,
           cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
           cooldown_retest_last_status_code = NULL,
           updated_at = ?
@@ -696,6 +702,28 @@ function defaultTemporaryUnschedulableMinutes(): number {
   const number = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN
   if (!Number.isFinite(number)) return 5
   return Math.min(Math.max(Math.trunc(number), 1), 1440)
+}
+
+function defaultTemporaryUnschedulableMaxPauseSeconds(): number {
+  return defaultTemporaryUnschedulableMinutes() * 60
+}
+
+function initialTemporaryUnavailableCooldownUntil(nowMs = Date.now()): string {
+  return new Date(nowMs + temporaryUnavailableInitialBackoffSeconds * 1000).toISOString()
+}
+
+function initialCooldownUntilForStatus(status: AccountStatus, nowMs = Date.now()): string | undefined {
+  if (status === 'temporary_unavailable') {
+    return initialTemporaryUnavailableCooldownUntil(nowMs)
+  }
+  if (status === 'rate_limited') {
+    return new Date(nowMs + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+  }
+  return undefined
+}
+
+function cooldownRetestObservationStartedAtForStatus(status: AccountStatus, nowMs = Date.now()): string | undefined {
+  return status === 'temporary_unavailable' ? new Date(nowMs).toISOString() : undefined
 }
 
 function refreshGroupAccountStatsAfterWrite(input: {
@@ -1000,8 +1028,8 @@ function accountSummariesFromRows(
       type: row.type,
       credentials: accountCredentialsForList(row, includeCredentials),
       status: effectiveAuthorizedStatus,
-      concurrencyLimit: isAuthorizedView ? 0 : row.concurrency_limit,
-      currentConcurrency: isAuthorizedView ? 0 : (currentConcurrencyByAccount.get(row.id) ?? 0),
+      concurrencyLimit: row.concurrency_limit,
+      currentConcurrency: currentConcurrencyByAccount.get(row.id) ?? 0,
       priority: isAuthorizedView ? 0 : row.priority,
       superPriorityEnabled: isAuthorizedView
         ? row.bound_group_local_super_priority_enabled === 1
@@ -1026,6 +1054,7 @@ function accountSummariesFromRows(
       lastErrorCode: isAuthorizedView ? (effectiveAuthorizedStatus === row.status ? row.last_error_code ?? undefined : undefined) : row.last_error_code ?? undefined,
       lastErrorMessage: isAuthorizedView ? row.bound_group_local_last_error_message ?? undefined : row.last_error_message ?? undefined,
       cooldownRetestFailureCount: isAuthorizedView ? 0 : Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
+      cooldownRetestObservationStartedAt: isAuthorizedView ? undefined : row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: isAuthorizedView ? undefined : row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: isAuthorizedView ? undefined : optionalNumber(row.cooldown_retest_last_status_code),
       streamFailureCount: isAuthorizedView ? 0 : Math.max(0, Number(row.stream_failure_count ?? 0)),
@@ -1286,6 +1315,7 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
       lastErrorCode: row.last_error_code ?? undefined,
       lastErrorMessage: row.last_error_message ?? undefined,
       cooldownRetestFailureCount: Math.max(0, Number(row.cooldown_retest_failure_count ?? 0)),
+      cooldownRetestObservationStartedAt: row.cooldown_retest_observation_started_at ?? undefined,
       cooldownRetestLastAt: row.cooldown_retest_last_at ?? undefined,
       cooldownRetestLastStatusCode: optionalNumber(row.cooldown_retest_last_status_code),
       lastUsedAt: row.last_used_at ?? undefined,
@@ -1302,7 +1332,8 @@ export function listAccountsDueForCooldownRetest(limit = 20): AccountSummary[] {
 }
 
 export function createAccount(input: Record<string, unknown>, access?: AccessScope): AccountSummary {
-  const now = nowIso()
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
   const id = newId('acc')
   const providerCode = String(input.providerCode ?? input.provider_code ?? 'openai').trim() || 'openai'
   const explicitGroupId = typeof input.groupId === 'string' && input.groupId ? input.groupId : typeof input.group_id === 'string' && input.group_id ? input.group_id : undefined
@@ -1325,9 +1356,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
   const initialStatus = normalizeAccountStatus(input.status, 'active')
   const expiredByPackage = isAccountExpired(accountExpiresAt)
   const nextStatus = expiredByPackage ? 'disabled' : initialStatus
-  const initialCooldownUntil = isCoolingAccountStatus(initialStatus)
-    ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
-    : undefined
+  const initialCooldownUntil = initialCooldownUntilForStatus(initialStatus, nowMs)
+  const initialObservationStartedAt = expiredByPackage ? undefined : cooldownRetestObservationStartedAtForStatus(initialStatus, nowMs)
   const groupId = explicitGroupId ?? defaultGroupIdForSystemAccount(providerCode, systemAccountId)
   if (!groupId) {
     throw new Error('账户分组不能为空')
@@ -1370,6 +1400,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
     lastErrorCode: undefined,
     lastErrorMessage: expiredByPackage ? '账户套餐已过期，已自动停用' : initialCooldownUntil ? '创建时设置为临时不可调用' : undefined,
     cooldownRetestFailureCount: 0,
+    cooldownRetestObservationStartedAt: initialObservationStartedAt,
     cooldownRetestLastAt: undefined,
     cooldownRetestLastStatusCode: undefined,
     lastUsedAt: undefined,
@@ -1389,8 +1420,9 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         INSERT INTO accounts (
           id, system_account_id, provider_code, name, type, status, credentials_encrypted, credential_fingerprint, credential_mask,
           proxy_profile_id, concurrency_limit, passthrough_enabled, error_policy_id,
-          priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          priority, super_priority_enabled, fallback_enabled, schedulable, notes, account_expires_at, cooldown_until, last_error_code, last_error_message,
+          cooldown_retest_observation_started_at, stream_failure_count, stream_failure_window_started_at, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `)
       .run(
         account.id,
@@ -1415,6 +1447,7 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         account.cooldownUntil ?? null,
         account.lastErrorCode ?? null,
         account.lastErrorMessage ?? null,
+        account.cooldownRetestObservationStartedAt ?? null,
         0,
         null,
         now,
@@ -1494,29 +1527,36 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
   let nextCooldownUntil = current.cooldownUntil
   let nextLastErrorCode = current.lastErrorCode
   let nextLastErrorMessage = current.lastErrorMessage
+  let nextCooldownRetestObservationStartedAt = current.cooldownRetestObservationStartedAt
   let clearCooldownRetestState = false
   if (hasStatusInput) {
     if (nextStatus === 'active') {
       nextCooldownUntil = undefined
       nextLastErrorCode = undefined
       nextLastErrorMessage = undefined
+      nextCooldownRetestObservationStartedAt = undefined
       clearCooldownRetestState = true
     } else if (nextStatus === 'disabled' || nextStatus === 'error') {
       nextCooldownUntil = undefined
+      nextCooldownRetestObservationStartedAt = undefined
       if (nextStatus === 'disabled') {
         nextLastErrorCode = undefined
         clearCooldownRetestState = true
       }
-    } else if (isCoolingAccountStatus(nextStatus) && !nextCooldownUntil) {
-      nextCooldownUntil = new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+    } else if (isCoolingAccountStatus(nextStatus) && (nextStatus !== current.status || !nextCooldownUntil)) {
+      const cooldownNowMs = Date.now()
+      nextCooldownUntil = initialCooldownUntilForStatus(nextStatus, cooldownNowMs)
+      nextCooldownRetestObservationStartedAt = cooldownRetestObservationStartedAtForStatus(nextStatus, cooldownNowMs)
       nextLastErrorCode = undefined
-      nextLastErrorMessage = nextLastErrorMessage ?? '手动设置为临时不可调用'
+      nextLastErrorMessage = nextStatus === 'temporary_unavailable' ? '手动设置为临时不可调用' : '手动设置为限流中'
+      clearCooldownRetestState = nextStatus === 'temporary_unavailable'
     }
   }
   if (expiredByPackage) {
     nextCooldownUntil = undefined
     nextLastErrorCode = undefined
     nextLastErrorMessage = '账户套餐已过期，已自动停用'
+    nextCooldownRetestObservationStartedAt = undefined
     clearCooldownRetestState = true
   }
   const hasSuperPriorityInput = Object.prototype.hasOwnProperty.call(input, 'superPriorityEnabled')
@@ -1577,6 +1617,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
     lastErrorCode: nextLastErrorCode,
     lastErrorMessage: nextLastErrorMessage,
     cooldownRetestFailureCount: clearCooldownRetestState ? 0 : current.cooldownRetestFailureCount,
+    cooldownRetestObservationStartedAt: nextCooldownRetestObservationStartedAt,
     cooldownRetestLastAt: clearCooldownRetestState ? undefined : current.cooldownRetestLastAt,
     cooldownRetestLastStatusCode: clearCooldownRetestState ? undefined : current.cooldownRetestLastStatusCode,
     lastUsedAt: current.lastUsedAt,
@@ -1593,7 +1634,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
       SET name = ?, notes = ?, status = ?, credentials_encrypted = ?, credential_fingerprint = ?, credential_mask = ?,
             proxy_profile_id = ?, concurrency_limit = ?, passthrough_enabled = ?,
             error_policy_id = ?, priority = ?, super_priority_enabled = ?, fallback_enabled = ?, schedulable = ?, account_expires_at = ?, cooldown_until = ?, last_error_code = ?, last_error_message = ?,
-            cooldown_retest_failure_count = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
+            cooldown_retest_failure_count = ?, cooldown_retest_observation_started_at = ?, cooldown_retest_last_at = ?, cooldown_retest_last_status_code = ?, updated_at = ?
         WHERE id = ? AND system_account_id = ?
       `)
       .run(
@@ -1616,6 +1657,7 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
         next.lastErrorCode ?? null,
         next.lastErrorMessage ?? null,
         next.cooldownRetestFailureCount ?? 0,
+        next.cooldownRetestObservationStartedAt ?? null,
         next.cooldownRetestLastAt ?? null,
         next.cooldownRetestLastStatusCode ?? null,
         nowIso(),
@@ -1704,6 +1746,7 @@ export function clearAccountFailureStateResult(
             last_error_code = NULL,
             last_error_message = ?,
             cooldown_retest_failure_count = 0,
+            cooldown_retest_observation_started_at = NULL,
             cooldown_retest_last_at = NULL,
             cooldown_retest_last_status_code = NULL,
             stream_failure_count = 0,
@@ -1729,6 +1772,7 @@ export function clearAccountFailureStateResult(
           last_error_code = NULL,
           last_error_message = NULL,
           cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
           cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
@@ -1744,6 +1788,7 @@ export function clearAccountFailureStateResult(
           OR last_error_code IS NOT NULL
           OR last_error_message IS NOT NULL
           OR cooldown_retest_failure_count > 0
+          OR cooldown_retest_observation_started_at IS NOT NULL
           OR cooldown_retest_last_at IS NOT NULL
           OR cooldown_retest_last_status_code IS NOT NULL
           OR stream_failure_count > 0
@@ -1797,10 +1842,11 @@ export interface CooldownAccountRetestFailureInput {
   statusCode?: number
   errorCode?: string
   errorMessage?: string
-  failureThreshold?: number
-  initialBackoffMinutes?: number
+  initialBackoffSeconds?: number
+  fastThresholdSeconds?: number
+  maxPauseMinutes?: number
+  maxRecoveryHours?: number
   backoffMultiplier?: number
-  maxBackoffHours?: number
 }
 
 export interface CooldownAccountRetestFailureResult {
@@ -1809,7 +1855,13 @@ export interface CooldownAccountRetestFailureResult {
   failureCount: number
   account?: AccountSummary
   cooldownUntil?: string
+  backoffSeconds?: number
   backoffMinutes?: number
+  recoveryStage?: 'fast' | 'slow' | 'error'
+  fastThresholdSeconds?: number
+  maxPauseSeconds?: number
+  maxRecoverySeconds?: number
+  maxedFailureCount?: number
   errorCode: string
   errorMessage: string
 }
@@ -1829,46 +1881,13 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
     }
   }
 
-  const now = nowIso()
+  const nowDate = new Date()
+  const now = nowDate.toISOString()
   const failureCount = Math.max(0, current.cooldownRetestFailureCount ?? 0) + 1
-  const failureThreshold = boundedInteger(input.failureThreshold, 3, 1, 10)
   const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
-  if (failureCount <= failureThreshold) {
-    const result = getDatabase()
-      .prepare(`
-        UPDATE accounts
-        SET cooldown_retest_failure_count = ?,
-            cooldown_retest_last_at = ?,
-            cooldown_retest_last_status_code = ?,
-            last_error_code = ?,
-            last_error_message = ?,
-            updated_at = ?
-        WHERE id = ?
-          AND status = 'temporary_unavailable'
-      `)
-      .run(failureCount, now, lastStatusCode, errorCode, testErrorMessage, now, id)
-    const changed = Number(result.changes ?? 0) > 0
-    if (changed) {
-      invalidateAccountLookupCache(id)
-      invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_failed')
-    }
-    return {
-      action: 'retry_immediately',
-      changed,
-      failureCount,
-      account: failureAccountSummary(id, current),
-      errorCode,
-      errorMessage: testErrorMessage
-    }
-  }
-
-  const initialBackoffMinutes = boundedInteger(input.initialBackoffMinutes, defaultTemporaryUnschedulableMinutes(), 1, 1440)
-  const maxBackoffMinutes = boundedInteger(input.maxBackoffHours, 24, 1, 24 * 30) * 60
-  const multiplier = boundedInteger(input.backoffMultiplier, 2, 2, 10)
-  const exponent = Math.max(0, Math.min(failureCount - failureThreshold - 1, 24))
-  const backoffMinutes = Math.min(Number.MAX_SAFE_INTEGER, initialBackoffMinutes * Math.pow(multiplier, exponent))
-  if (backoffMinutes > maxBackoffMinutes) {
-    const finalMessage = cooldownRetestExhaustedMessage(failureCount, backoffMinutes, maxBackoffMinutes, testErrorMessage)
+  const recovery = cooldownRetestRecoveryPlan(failureCount, input)
+  if (recovery.shouldMarkError) {
+    const finalMessage = cooldownRetestExhaustedMessage(failureCount, recovery.backoffSeconds, recovery.maxRecoverySeconds, testErrorMessage)
     const result = getDatabase()
       .prepare(`
         UPDATE accounts
@@ -1898,14 +1917,20 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
       changed,
       failureCount,
       account: failureAccountSummary(id, current),
-      backoffMinutes,
       errorCode,
-      errorMessage: finalMessage
+      errorMessage: finalMessage,
+      recoveryStage: 'error',
+      backoffSeconds: recovery.backoffSeconds,
+      backoffMinutes: secondsToCeilMinutes(recovery.backoffSeconds),
+      fastThresholdSeconds: recovery.fastThresholdSeconds,
+      maxPauseSeconds: recovery.maxPauseSeconds,
+      maxRecoverySeconds: recovery.maxRecoverySeconds,
+      maxedFailureCount: recovery.maxedFailureCount
     }
   }
 
-  const cooldownUntil = new Date(Date.parse(now) + backoffMinutes * 60_000).toISOString()
-  const cooldownMessage = cooldownRetestCooldownMessage(failureCount, backoffMinutes, testErrorMessage)
+  const cooldownUntil = new Date(nowDate.getTime() + recovery.backoffSeconds * 1000).toISOString()
+  const cooldownMessage = cooldownRetestCooldownMessage(failureCount, recovery.backoffSeconds, recovery.stage, testErrorMessage)
   const result = getDatabase()
     .prepare(`
       UPDATE accounts
@@ -1929,13 +1954,20 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
     invalidateAccountLookupCache(id)
     invalidateGatewayRuntimeAfterBusinessWrite('account_cooldown_retest_backoff')
   }
+  const action = recovery.stage === 'fast' ? 'retry_immediately' : 'cooldown'
   return {
-    action: 'cooldown',
+    action,
     changed,
     failureCount,
     account: failureAccountSummary(id, current),
     cooldownUntil,
-    backoffMinutes,
+    backoffSeconds: recovery.backoffSeconds,
+    backoffMinutes: secondsToCeilMinutes(recovery.backoffSeconds),
+    recoveryStage: recovery.stage,
+    fastThresholdSeconds: recovery.fastThresholdSeconds,
+    maxPauseSeconds: recovery.maxPauseSeconds,
+    maxRecoverySeconds: recovery.maxRecoverySeconds,
+    maxedFailureCount: recovery.maxedFailureCount,
     errorCode,
     errorMessage: cooldownMessage
   }
@@ -1967,19 +1999,71 @@ function normalizedCooldownRetestErrorMessage(input: CooldownAccountRetestFailur
   return parts.join('；').slice(0, 1000)
 }
 
-function cooldownRetestCooldownMessage(failureCount: number, backoffMinutes: number, lastError: string): string {
-  return `后台冷却复测连续失败 ${failureCount} 次，下次复测延后 ${formatDurationMinutes(backoffMinutes)}；最后错误：${lastError}`.slice(0, 1000)
+interface CooldownRetestRecoveryPlan {
+  stage: 'fast' | 'slow'
+  shouldMarkError: boolean
+  backoffSeconds: number
+  fastThresholdSeconds: number
+  maxPauseSeconds: number
+  maxRecoverySeconds: number
+  maxedFailureCount: number
 }
 
-function cooldownRetestExhaustedMessage(failureCount: number, backoffMinutes: number, maxBackoffMinutes: number, lastError: string): string {
-  return `后台冷却复测连续失败 ${failureCount} 次，下一次退避 ${formatDurationMinutes(backoffMinutes)} 已超过最大 ${formatDurationMinutes(maxBackoffMinutes)}，已转为异常；最后错误：${lastError}`.slice(0, 1000)
+function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccountRetestFailureInput): CooldownRetestRecoveryPlan {
+  const initialBackoffSeconds = boundedInteger(input.initialBackoffSeconds, temporaryUnavailableInitialBackoffSeconds, 1, 3600)
+  const fastThresholdSeconds = boundedInteger(input.fastThresholdSeconds, temporaryUnavailableFastThresholdSeconds, initialBackoffSeconds, 3600)
+  const maxPauseSeconds = boundedInteger(input.maxPauseMinutes, defaultTemporaryUnschedulableMinutes(), 1, 1440) * 60
+  const maxRecoverySeconds = boundedInteger(input.maxRecoveryHours, 24, 1, 24 * 30) * 60 * 60
+  const multiplier = boundedInteger(input.backoffMultiplier, temporaryUnavailableBackoffMultiplier, 2, 10)
+  const exponent = Math.max(0, Math.min(failureCount, 30))
+  const uncappedBackoffSeconds = Math.min(Number.MAX_SAFE_INTEGER, initialBackoffSeconds * Math.pow(multiplier, exponent))
+  const backoffSeconds = Math.min(uncappedBackoffSeconds, maxPauseSeconds)
+  const stage = backoffSeconds <= fastThresholdSeconds ? 'fast' : 'slow'
+  const firstMaxedFailureCount = firstCappedBackoffFailureCount(initialBackoffSeconds, multiplier, maxPauseSeconds)
+  const maxedFailureCount = failureCount >= firstMaxedFailureCount ? failureCount - firstMaxedFailureCount + 1 : 0
+  const allowedMaxedFailures = Math.max(1, Math.ceil(maxRecoverySeconds / Math.max(1, maxPauseSeconds)))
+  return {
+    stage,
+    shouldMarkError: maxedFailureCount > allowedMaxedFailures,
+    backoffSeconds,
+    fastThresholdSeconds,
+    maxPauseSeconds,
+    maxRecoverySeconds,
+    maxedFailureCount
+  }
 }
 
-function formatDurationMinutes(minutes: number): string {
-  const safeMinutes = Math.max(1, Math.trunc(minutes))
-  if (safeMinutes < 60) return `${safeMinutes} 分钟`
-  const hours = Math.floor(safeMinutes / 60)
-  const restMinutes = safeMinutes % 60
+function firstCappedBackoffFailureCount(initialBackoffSeconds: number, multiplier: number, maxPauseSeconds: number): number {
+  if (initialBackoffSeconds >= maxPauseSeconds) {
+    return 1
+  }
+  const raw = Math.ceil(Math.log(maxPauseSeconds / initialBackoffSeconds) / Math.log(multiplier))
+  return Math.max(1, raw)
+}
+
+function cooldownRetestCooldownMessage(failureCount: number, backoffSeconds: number, stage: 'fast' | 'slow', lastError: string): string {
+  const stageText = stage === 'fast' ? '快速恢复通道' : '慢速恢复通道'
+  return `后台冷却复测连续失败 ${failureCount} 次，${stageText}下次复测延后 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
+}
+
+function cooldownRetestExhaustedMessage(failureCount: number, backoffSeconds: number, maxRecoverySeconds: number, lastError: string): string {
+  return `后台冷却复测连续失败 ${failureCount} 次，已超过最长自动恢复观察 ${formatDurationSeconds(maxRecoverySeconds)}，转为异常；最后一次退避 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
+}
+
+function secondsToCeilMinutes(seconds: number): number {
+  return Math.max(1, Math.ceil(Math.max(1, seconds) / 60))
+}
+
+function formatDurationSeconds(seconds: number): string {
+  const safeSeconds = Math.max(1, Math.trunc(seconds))
+  if (safeSeconds < 60) return `${safeSeconds} 秒`
+  const minutes = Math.floor(safeSeconds / 60)
+  const restSeconds = safeSeconds % 60
+  if (minutes < 60) {
+    return restSeconds > 0 ? `${minutes} 分钟 ${restSeconds} 秒` : `${minutes} 分钟`
+  }
+  const hours = Math.floor(minutes / 60)
+  const restMinutes = minutes % 60
   return restMinutes > 0 ? `${hours} 小时 ${restMinutes} 分钟` : `${hours} 小时`
 }
 
@@ -1998,7 +2082,7 @@ export function markAccountTestTemporaryUnavailable(
   if (!current || current.status !== 'active' || !current.schedulable) {
     return undefined
   }
-  const cooldownUntil = new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+  const cooldownUntil = initialTemporaryUnavailableCooldownUntil()
   const message = reason.slice(0, 1000)
   if (current.accessType === 'authorized') {
     return markAuthorizedAccountBindingTemporaryUnavailable(current, cooldownUntil, message, access)
@@ -2059,6 +2143,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
             last_error_code = NULL,
             last_error_message = ?,
             cooldown_retest_failure_count = 0,
+            cooldown_retest_observation_started_at = NULL,
             cooldown_retest_last_at = NULL,
             cooldown_retest_last_status_code = NULL,
             stream_failure_count = 0,
@@ -2076,6 +2161,12 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
   }
 
   const cooldownStatus: AccountStatus = status === 'rate_limited' ? 'rate_limited' : 'temporary_unavailable'
+  const cooldownNowMs = Date.now()
+  const cooldownNow = new Date(cooldownNowMs).toISOString()
+  const cooldownUntil = cooldownStatus === 'temporary_unavailable'
+    ? initialTemporaryUnavailableCooldownUntil(cooldownNowMs)
+    : until
+  const cooldownObservationStartedAt = cooldownRetestObservationStartedAtForStatus(cooldownStatus, cooldownNowMs)
 
   const result = getDatabase()
     .prepare(`
@@ -2086,6 +2177,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
           last_error_code = NULL,
           last_error_message = ?,
           cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = ?,
           cooldown_retest_last_at = NULL,
           cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,
@@ -2093,7 +2185,7 @@ export function markAccountCooldown(id: string, until: string, reason: string, s
           updated_at = ?
       WHERE id = ?
     `)
-    .run(cooldownStatus, until, reason || null, nowIso(), id)
+    .run(cooldownStatus, cooldownUntil, reason || null, cooldownObservationStartedAt ?? null, cooldownNow, id)
   if (Number(result.changes ?? 0) > 0) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown' })
     invalidateAccountLookupCache(id)
@@ -2140,10 +2232,14 @@ export function migrateAccountTraffic(input: {
     throw new Error('目标账户当前不可调度，请选择正常可用的账户')
   }
 
-  const now = nowIso()
+  const nowMs = Date.now()
+  const now = new Date(nowMs).toISOString()
   const reason = manualTrafficMigrationReason
   const sourceCooldownUntil = input.sourceStatus === 'temporary_unavailable'
-    ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+    ? initialTemporaryUnavailableCooldownUntil(nowMs)
+    : null
+  const sourceObservationStartedAt = input.sourceStatus === 'temporary_unavailable'
+    ? cooldownRetestObservationStartedAtForStatus('temporary_unavailable', nowMs)
     : null
   const database = getDatabase()
   const transactionStarted = beginDatabaseTransaction(database)
@@ -2157,6 +2253,10 @@ export function migrateAccountTraffic(input: {
               cooldown_until = NULL,
               last_error_code = NULL,
               last_error_message = ?,
+              cooldown_retest_failure_count = 0,
+              cooldown_retest_observation_started_at = NULL,
+              cooldown_retest_last_at = NULL,
+              cooldown_retest_last_status_code = NULL,
               stream_failure_count = 0,
               stream_failure_window_started_at = NULL,
               updated_at = ?
@@ -2170,12 +2270,16 @@ export function migrateAccountTraffic(input: {
               cooldown_until = ?,
               last_error_code = NULL,
               last_error_message = ?,
+              cooldown_retest_failure_count = 0,
+              cooldown_retest_observation_started_at = ?,
+              cooldown_retest_last_at = NULL,
+              cooldown_retest_last_status_code = NULL,
               stream_failure_count = 0,
               stream_failure_window_started_at = NULL,
               updated_at = ?
           WHERE id = ? AND system_account_id = ?
         `)
-        .run(sourceCooldownUntil, reason, now, sourceRow.id, sourceRow.system_account_id)
+        .run(sourceCooldownUntil, reason, sourceObservationStartedAt, now, sourceRow.id, sourceRow.system_account_id)
     if (Number(updateResult.changes ?? 0) <= 0) {
       rollbackDatabaseTransaction(database, transactionStarted)
       return undefined
@@ -2199,7 +2303,7 @@ export function migrateAccountTraffic(input: {
 
 export function updateAuthorizedAccountBindingDispatch(
   accountId: string,
-  input: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean },
+  input: { status?: 'active' | 'disabled'; superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean },
   access?: AccessScope
 ): AccountSummary | undefined {
   const systemAccountId = authorizedBindingSystemAccountId(access)
@@ -2221,7 +2325,13 @@ export function updateAuthorizedAccountBindingDispatch(
   if (nextSuperPriority && nextFallback) {
     throw new Error('超级优先和降级备用不能同时开启')
   }
-  const clearFailureState = input.clearFailureState === true
+  const hasStatusInput = Object.prototype.hasOwnProperty.call(input, 'status')
+  const nextLocalStatus: AccountStatus = hasStatusInput
+    ? input.status === 'disabled' ? 'disabled' : 'active'
+    : input.clearFailureState === true
+      ? 'active'
+      : current.localStatus ?? 'active'
+  const shouldClearLocalFailureState = input.clearFailureState === true || hasStatusInput
   const now = nowIso()
   const result = getDatabase()
     .prepare(`
@@ -2238,9 +2348,9 @@ export function updateAuthorizedAccountBindingDispatch(
         AND account_authorization_id IS NOT NULL
     `)
     .run(
-      clearFailureState ? 'active' : current.localStatus ?? 'active',
-      clearFailureState ? null : current.localCooldownUntil ?? null,
-      clearFailureState ? null : current.localLastErrorMessage ?? null,
+      nextLocalStatus,
+      shouldClearLocalFailureState ? null : current.localCooldownUntil ?? null,
+      shouldClearLocalFailureState ? null : current.localLastErrorMessage ?? null,
       nextSuperPriority ? 1 : 0,
       nextFallback ? 1 : 0,
       now,
@@ -2284,7 +2394,7 @@ function migrateAuthorizedAccountBindingTraffic(input: {
     throw new Error(targetUnavailableMessage)
   }
   const sourceCooldownUntil = input.sourceStatus === 'temporary_unavailable'
-    ? new Date(Date.now() + defaultTemporaryUnschedulableMinutes() * 60_000).toISOString()
+    ? initialTemporaryUnavailableCooldownUntil()
     : null
   const now = nowIso()
   const sourceLocalStatus = input.sourceStatus === 'disabled' ? 'disabled' : 'temporary_unavailable'
@@ -2335,6 +2445,7 @@ export function markAccountException(
           last_error_code = ?,
           last_error_message = ?,
           cooldown_retest_failure_count = 0,
+          cooldown_retest_observation_started_at = NULL,
           cooldown_retest_last_at = NULL,
           cooldown_retest_last_status_code = NULL,
           stream_failure_count = 0,

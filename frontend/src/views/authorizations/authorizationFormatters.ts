@@ -103,9 +103,20 @@ export function hasManualSource(item: ResourceAuthorizationSummary): boolean {
   return item.authorizationSources?.some((source) => source.sourceType === 'manual' && source.status === 'active') ?? false
 }
 
+export function canRevokeAuthorization(item: ResourceAuthorizationSummary): boolean {
+  return item.status !== 'revoked'
+}
+
 export function activeTeamSources(item: ResourceAuthorizationSummary): AuthorizationSourceSummary[] {
   if (item.granteeType === 'team') return []
   return item.authorizationSources?.filter((source) => source.sourceType === 'team' && source.status === 'active' && source.sourceTeamId) ?? []
+}
+
+export function authorizationRevokeActionCount(item: ResourceAuthorizationSummary): number {
+  if (!canRevokeAuthorization(item)) return 0
+  if (item.granteeType === 'team') return 1
+  const sourceActionCount = (hasManualSource(item) ? 1 : 0) + activeTeamSources(item).length
+  return Math.max(1, sourceActionCount)
 }
 
 export function usageSummaryText(usage?: {

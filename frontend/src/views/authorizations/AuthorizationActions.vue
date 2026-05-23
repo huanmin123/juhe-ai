@@ -13,7 +13,7 @@ import { computed } from 'vue'
 import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { ResourceAuthorizationSummary } from '@/types/domain'
-import { activeTeamSources, hasManualSource } from './authorizationFormatters'
+import { activeTeamSources, canRevokeAuthorization, hasManualSource } from './authorizationFormatters'
 
 const emit = defineEmits<{
   (event: 'menu-click', menuEvent: { key: string | number }): void
@@ -37,12 +37,17 @@ const actions = computed<RowActionItem[]>(() => {
   if (props.authorization.status === 'paused') {
     items.push({ key: 'resume', label: '恢复授权', icon: 'resume', tone: 'success' })
   }
+  if (!canRevokeAuthorization(props.authorization)) {
+    return items
+  }
   if (props.authorization.granteeType === 'team') {
     items.push({ key: 'revoke-team-grant', label: '回收', icon: 'revoke', tone: 'danger' })
     return items
   }
-  if (props.authorization.status === 'active' && hasManualSource(props.authorization)) {
+  let hasSourceRevokeAction = false
+  if (hasManualSource(props.authorization)) {
     items.push({ key: 'revoke-manual', label: '回收', icon: 'revoke', tone: 'danger' })
+    hasSourceRevokeAction = true
   }
   const teamSources = activeTeamSources(props.authorization)
   for (const teamSource of teamSources) {
@@ -52,6 +57,10 @@ const actions = computed<RowActionItem[]>(() => {
       icon: 'revoke',
       tone: 'danger'
     })
+    hasSourceRevokeAction = true
+  }
+  if (!hasSourceRevokeAction) {
+    items.push({ key: 'revoke-authorization', label: '回收', icon: 'revoke', tone: 'danger' })
   }
   return items
 })

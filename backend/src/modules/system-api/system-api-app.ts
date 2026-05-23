@@ -9,7 +9,6 @@ import { authorizationsRouter } from '../authorizations/authorizations.routes.js
 import { forceSelfAccessScope, requireAdmin, requireAuth } from '../auth/auth.middleware.js'
 import { authRouter } from '../auth/auth.routes.js'
 import { errorPoliciesRouter } from '../error-policies/error-policies.routes.js'
-import { featureRulesRouter } from '../feature-rules/feature-rules.routes.js'
 import { groupsRouter } from '../groups/groups.routes.js'
 import { modelChecksRouter } from '../model-checks/model-checks.routes.js'
 import { myOperationLogsRouter, operationLogsRouter } from '../operation-logs/operation-logs.routes.js'
@@ -65,9 +64,8 @@ export function createSystemApiApp(options: SystemApiAppOptions): express.Expres
   app.use(`${systemApiPrefix}/my-model-checks`, forceSelfAccessScope, modelChecksRouter)
   app.use(`${systemApiPrefix}/my-stats`, forceSelfAccessScope, statsRouter)
   app.use(`${systemApiPrefix}/my-operation-logs`, forceSelfAccessScope, myOperationLogsRouter)
-  app.use(`${systemApiPrefix}/providers`, requireAdmin, providersRouter)
+  app.use(`${systemApiPrefix}/providers`, providersRouter)
   app.use(`${systemApiPrefix}/error-policies`, errorPoliciesRouter)
-  app.use(`${systemApiPrefix}/feature-rules`, requireAdmin, featureRulesRouter)
   app.use(`${systemApiPrefix}/accounts`, requireAdmin, accountsRouter)
   app.use(`${systemApiPrefix}/groups`, requireAdmin, groupsRouter)
   app.use(`${systemApiPrefix}/api-keys`, requireAdmin, apiKeysRouter)

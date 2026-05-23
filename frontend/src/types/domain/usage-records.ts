@@ -17,11 +17,14 @@ export interface UsageRecordCostBreakdown {
   multiplier: 1
 }
 
+export type UsageRecordTrafficSource = 'gateway' | 'manual_account_test' | 'cooldown_retest'
+
 export interface UsageRecordSummary {
   id: string
   systemAccountId?: string
   systemAccountName?: string
   traceId: string
+  trafficSource: UsageRecordTrafficSource
   clientIp?: string
   apiKeyId?: string
   apiKeyName?: string

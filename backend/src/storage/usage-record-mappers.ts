@@ -39,6 +39,7 @@ export function usageRecordSummaryFromRow(
     systemAccountId: shouldIncludeSystemAccountFields ? optionalString(row.system_account_id) : undefined,
     systemAccountName: shouldIncludeSystemAccountFields ? accountNames.get(String(row.system_account_id)) : undefined,
     traceId: String(row.trace_id),
+    trafficSource: usageRecordTrafficSource(row.traffic_source),
     clientIp: optionalString(row.client_ip),
     apiKeyId: optionalString(row.api_key_id),
     apiKeyName: optionalString(row.api_key_name),
@@ -67,6 +68,10 @@ export function usageRecordSummaryFromRow(
     responseSnapshot: includeSnapshots ? parseOptionalJsonObject(row.response_snapshot_json) : undefined,
     createdAt: String(row.created_at)
   }
+}
+
+function usageRecordTrafficSource(value: unknown): UsageRecordSummary['trafficSource'] {
+  return value === 'manual_account_test' || value === 'cooldown_retest' ? value : 'gateway'
 }
 
 function endpointFromSnapshot(snapshot?: Record<string, unknown>): string | undefined {

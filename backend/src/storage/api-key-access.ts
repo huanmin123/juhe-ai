@@ -1,16 +1,10 @@
 import { manageableSystemAccountId, type AccessScope } from './access-scope.js'
 import { getDatabase } from './database.js'
-import { activeGroupAuthorization, canManageResourceOwner, groupOwnerAndProvider } from './resource-authorization-helpers.js'
-import type { ResourceAuthorizationRow } from './repository-row-types.js'
+import { canManageResourceOwner, groupOwnerAndProvider } from './resource-authorization-helpers.js'
 
-export function canUseApiKeyGroup(groupId: string, systemAccountId: string): boolean {
+export function canBindApiKeyGroup(groupId: string, systemAccountId: string): boolean {
   const group = apiKeyGroupOwnerAndProvider(groupId)
-  if (group?.systemAccountId === systemAccountId) return true
-  return Boolean(activeGroupAuthorization(groupId, systemAccountId))
-}
-
-export function apiKeyGroupAuthorization(groupOwnerSystemAccountId: string, groupId: string, systemAccountId: string): ResourceAuthorizationRow | undefined {
-  return groupOwnerSystemAccountId !== systemAccountId ? activeGroupAuthorization(groupId, systemAccountId) : undefined
+  return group?.systemAccountId === systemAccountId
 }
 
 export function apiKeyGroupOwnerAndProvider(groupId: string): ReturnType<typeof groupOwnerAndProvider> {

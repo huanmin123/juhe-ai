@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { readFileSync } from 'node:fs'
 
 import {
   clearGatewayClientIpErrorCircuitForTest,
@@ -52,6 +53,9 @@ try {
     clientIp: tokenIp,
     authorization: 'Bearer sk-valid-user-token'
   }).blocked, false, '同出口 IP 的其他 Bearer token 不应被重复无效 token 熔断误伤')
+  const tokenSnapshotText = JSON.stringify(getGatewayClientIpSecuritySnapshotForTest())
+  assert.equal(tokenSnapshotText.includes('sk-invalid-repeated'), false, '认证前运行态 snapshot 不应保留原始无效 token')
+  assert.equal(tokenSnapshotText.includes('sk-valid-user-token'), false, '认证前运行态 snapshot 不应保留其他 Bearer 原文')
 
   clearGatewayClientIpErrorCircuitForTest()
 
@@ -83,17 +87,17 @@ try {
   for (let index = 0; index < 4; index += 1) {
     postAuthDecision = recordClientIpErrorCircuitSample({
       ...scope,
-      reason: 'upstream_error_feature',
-      signature: 'request_validation_signature'
+      reason: 'invalid_json',
+      signature: 'invalid_json'
     })
     assert.equal(postAuthDecision.blocked, false, '未达到同签名阈值前不应熔断认证后来源')
   }
   postAuthDecision = recordClientIpErrorCircuitSample({
     ...scope,
-    reason: 'upstream_error_feature',
-    signature: 'request_validation_signature'
+    reason: 'invalid_json',
+    signature: 'invalid_json'
   })
-  assert.equal(postAuthDecision.blocked, true, '同一认证后来源高频同签名请求级错误后应熔断')
+  assert.equal(postAuthDecision.blocked, true, '同一认证后来源高频本地请求校验错误后应熔断')
   assert.equal(inspectClientIpErrorCircuit(scope).blocked, true, '认证后来源处于熔断窗口时应被识别')
   assert.equal(inspectClientIpErrorCircuit({
     ...scope,
@@ -103,6 +107,14 @@ try {
     ...scope,
     apiKeyId: 'key_security_other'
   }).blocked, false, '不同 API Key 不应继承认证后错误熔断')
+  assert.equal(inspectClientIpErrorCircuit({
+    ...scope,
+    groupId: 'grp_security_other'
+  }).blocked, false, '不同分组不应继承认证后错误熔断')
+  assert.equal(inspectClientIpErrorCircuit({
+    ...scope,
+    systemAccountId: 'sys_security_other'
+  }).blocked, false, '不同系统账户不应继承认证后错误熔断')
 
   const cleared = recordClientIpErrorCircuitSuccess(scope)
   assert.equal(cleared, true, '成功请求应清理当前认证后来源错误态')
@@ -110,6 +122,8 @@ try {
 
   const snapshot = getGatewayClientIpSecuritySnapshotForTest()
   assert.equal(snapshot.clientIpErrors.length, 0, '成功恢复后认证后错误运行态应清空')
+  const gatewayRoutesSource = readFileSync(new URL('../../modules/gateway/openai-gateway.routes.ts', import.meta.url), 'utf8')
+  assert.equal(gatewayRoutesSource.includes('request_failure_signature'), false, '未知同签名上游失败不应作为来源错误熔断采样原因')
 
   console.log('IP 级错误熔断回归通过：认证前探测保护、认证后错误风暴熔断、来源隔离和成功恢复均符合预期')
 } finally {

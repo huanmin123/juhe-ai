@@ -18,6 +18,13 @@
         />
       </template>
       <template #actions>
+        <TableColumnManager
+          :columns="rawColumns"
+          :settings="columnSettings"
+          :required-keys="['name']"
+          @reset="resetColumnSettings"
+          @update:settings="updateColumnSettings"
+        />
         <a-button type="primary" @click="openCreate">新建分组</a-button>
       </template>
       <template #filters>
@@ -39,7 +46,7 @@
       </template>
     </ResponsiveListToolbar>
 
-    <ResponsiveDataList table-class="page-table groups-table" :columns="columns" :data-source="groups" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1610 : 1430" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileGroups" @mobile-refresh="refreshMobileGroups">
+    <ResponsiveDataList table-class="page-table groups-table" :columns="managedColumns" :data-source="groups" row-key="id" :loading="loading" :loading-more="mobileLoadingMore" :mobile-has-more="mobileHasMore" :pagination="tablePagination" :scroll-x="isManagementView ? 1610 : 1430" mobile-pagination pull-refresh-enabled :refreshing="loading" @change="handleTableChange" @mobile-load-more="loadMoreMobileGroups" @mobile-refresh="refreshMobileGroups">
       <template #emptyText>
         <a-empty class="page-empty-card" description="先创建一个分组，再到账户页把账户加入对应分组。" />
       </template>
@@ -197,7 +204,9 @@ import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import StatusTag from '@/components/StatusTag.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
+import TableColumnManager from '@/components/TableColumnManager.vue'
 import type { RowActionItem } from '@/components/rowActions'
+import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
@@ -324,7 +333,7 @@ const {
   }
 })
 
-const columns = computed(() => {
+const rawColumns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: '分组名称', dataIndex: 'name', key: 'name', width: 240 },
     { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 },
@@ -342,6 +351,16 @@ const columns = computed(() => {
     { title: '操作', key: 'actions', width: 100, fixed: 'right' }
   )
   return baseColumns
+})
+const columnStorageKey = computed(() => (isManagementView.value ? 'groups:management' : 'groups:self'))
+const {
+  managedColumns,
+  columnSettings,
+  updateColumnSettings,
+  resetColumnSettings
+} = useTableColumnSettings(columnStorageKey, rawColumns, {
+  requiredKeys: ['name'],
+  minVisible: 1
 })
 
 const availableProviders = computed(() => providers.value.length ? providers.value : [FALLBACK_PROVIDER])

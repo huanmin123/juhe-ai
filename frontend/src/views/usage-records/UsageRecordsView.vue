@@ -9,6 +9,7 @@
       v-model:status-code="statusCodeFilter"
       v-model:system-account-id="systemAccountFilter"
       v-model:system-account-selection="systemAccountFilterSelection"
+      v-model:traffic-source="trafficSourceFilter"
       :active-filter-count="activeFilterCount"
       :advanced-filter-count="advancedFilterCount"
       :group-options="groups"
@@ -18,6 +19,7 @@
       :result-options="resultOptions"
       :system-accounts="systemAccounts"
       :system-accounts-loading="systemAccountOptionsLoading"
+      :traffic-source-options="trafficSourceOptions"
       @group-change="handleGroupFilterChange"
       @group-dropdown="handleGroupOptionsDropdown"
       @group-search="handleGroupOptionsSearch"
@@ -27,11 +29,21 @@
       @system-account-change="handleSystemAccountFilterChange"
       @system-account-dropdown="handleSystemAccountOptionsDropdown"
       @system-account-search="handleSystemAccountOptionsSearch"
-    />
+    >
+      <template #actions>
+        <TableColumnManager
+          :columns="rawColumns"
+          :settings="columnSettings"
+          :required-keys="['account']"
+          @reset="resetColumnSettings"
+          @update:settings="updateColumnSettings"
+        />
+      </template>
+    </UsageRecordsFilterToolbar>
 
     <ResponsiveDataList
       table-class="page-table usage-table"
-      :columns="columns"
+      :columns="managedColumns"
       :data-source="filteredRecords"
       :mobile-data-source="mobileRecords"
       row-key="id"
@@ -39,7 +51,7 @@
       :loading-more="mobileLoadingMore"
       :mobile-has-more="mobileHasMore"
       :pagination="tablePagination"
-      :scroll-x="isManagementView ? 2360 : 2180"
+      :scroll-x="isManagementView ? 2460 : 2280"
       mobile-pagination
       pull-refresh-enabled
       :refreshing="loading"
@@ -111,6 +123,9 @@
         <template v-else-if="column.key === 'success'">
           <UsageRecordResultCell :record="record" />
         </template>
+        <template v-else-if="column.key === 'trafficSource'">
+          <a-tag :color="trafficSourceColor(record)">{{ trafficSourceText(record) }}</a-tag>
+        </template>
         <template v-else-if="column.key === 'tokens'">
           <div class="token-cell">
             <span>输入 {{ formatTokens(record.inputTokens) }}</span>
@@ -157,6 +172,8 @@ import { useRouter } from 'vue-router'
 
 import type { UsageRecordListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import TableColumnManager from '@/components/TableColumnManager.vue'
+import { useTableColumnSettings } from '@/components/tableColumnSettings'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -167,7 +184,7 @@ import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/d
 import { rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
 import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
-import type { GroupOptionSummary, UsageRecordSummary } from '@/types/domain'
+import type { GroupOptionSummary, UsageRecordSummary, UsageRecordTrafficSource } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
@@ -183,6 +200,8 @@ import {
   formatTokens,
   statusCodeColor,
   statusCodeText,
+  trafficSourceColor,
+  trafficSourceText,
   usageRecordSystemAccountText
 } from './usageRecordFormatters'
 
@@ -199,6 +218,7 @@ type UsageRecordsPageState = {
   statusCodeFilter: string
   systemAccountFilter: string
   systemAccountFilterSelection?: PrincipalSelection
+  trafficSourceFilter: UsageRecordTrafficSource | 'all'
 }
 
 const pageSize = 20
@@ -211,9 +231,10 @@ const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
   sortState: { field: 'createdAt', order: 'descend' },
   statusCodeFilter: '',
   systemAccountFilter: allSystemAccountsValue,
-  systemAccountFilterSelection: undefined
+  systemAccountFilterSelection: undefined,
+  trafficSourceFilter: 'all'
 })
-const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 5 })
+const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 6 })
 const initialPageState = pageStateCache.read()
 
 const accountNameFilter = ref(initialPageState.accountNameFilter)
@@ -223,6 +244,7 @@ const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFi
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
 const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
+const trafficSourceFilter = ref<UsageRecordTrafficSource | 'all'>(initialPageState.trafficSourceFilter)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const usageRecordsApi = useScopedUsageRecordsApi(isManagementView)
 const groupsApi = useScopedGroupsApi(isManagementView)
@@ -290,6 +312,12 @@ const resultOptions = [
   { label: '成功', value: 'success' },
   { label: '失败', value: 'failed' }
 ] satisfies Array<{ label: string; value: 'all' | 'success' | 'failed' }>
+const trafficSourceOptions = [
+  { label: '全部来源', value: 'all' },
+  { label: '网关请求', value: 'gateway' },
+  { label: '账号测试', value: 'manual_account_test' },
+  { label: '恢复探活', value: 'cooldown_retest' }
+] satisfies Array<{ label: string; value: UsageRecordTrafficSource | 'all' }>
 
 const activeFilterCount = computed(() => {
   let count = 0
@@ -299,6 +327,7 @@ const activeFilterCount = computed(() => {
   if (resultFilter.value !== 'all') count += 1
   if (statusCodeFilter.value) count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
+  if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
 const advancedFilterCount = computed(() => {
@@ -306,13 +335,14 @@ const advancedFilterCount = computed(() => {
   if (groupFilter.value) count += 1
   if (statusCodeFilter.value) count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
+  if (trafficSourceFilter.value !== 'all') count += 1
   return count
 })
 
 const filteredRecords = computed(() => records.value)
 const mobileRecords = computed(() => records.value)
 
-const columns = computed(() => {
+const rawColumns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
     { title: 'AI账户名称', dataIndex: 'accountName', key: 'account', width: 170 }
   ]
@@ -325,6 +355,7 @@ const columns = computed(() => {
     { title: '类型', key: 'stream', width: 90 },
     { title: '状态', key: 'success', width: 90 },
     { title: '状态码', dataIndex: 'statusCode', key: 'statusCode', width: 110 },
+    { title: '来源', key: 'trafficSource', width: 110 },
     { title: 'Tokens', key: 'tokens', width: 150 },
     { title: '成本', key: 'cost', width: 110, sorter: true, sortOrder: columnSortOrder('costUsd') },
     { title: '首 token', dataIndex: 'firstTokenMs', key: 'firstTokenMs', width: 100, sorter: true, sortOrder: columnSortOrder('firstTokenMs') },
@@ -336,6 +367,16 @@ const columns = computed(() => {
     { title: 'traceId', dataIndex: 'traceId', key: 'traceId', width: 300 }
   )
   return baseColumns
+})
+const columnStorageKey = computed(() => (isManagementView.value ? 'usage-records:management' : 'usage-records:self'))
+const {
+  managedColumns,
+  columnSettings,
+  updateColumnSettings,
+  resetColumnSettings
+} = useTableColumnSettings(columnStorageKey, rawColumns, {
+  requiredKeys: ['account'],
+  minVisible: 1
 })
 
 function selectedGroupSelection(id: string | undefined): GroupSelection | undefined {
@@ -476,6 +517,7 @@ function resetFilters(): void {
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
   systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
+  trafficSourceFilter.value = defaults.trafficSourceFilter
   sortState.value = defaults.sortState
   resetSystemAccountOptionsSearch()
   resetGroupOptionsSearch()
@@ -561,6 +603,7 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     result: resultFilter.value,
     statusCode: normalizedStatusCode(statusCodeFilter.value),
     systemAccountId,
+    trafficSource: trafficSourceFilter.value === 'all' ? undefined : trafficSourceFilter.value,
     sortBy: sortState.value.field,
     sortOrder
   }
@@ -608,7 +651,8 @@ function snapshotPageState(): UsageRecordsPageState {
     sortState: sortState.value,
     statusCodeFilter: statusCodeFilter.value,
     systemAccountFilter: systemAccountFilter.value,
-    systemAccountFilterSelection: systemAccountFilterSelection.value
+    systemAccountFilterSelection: systemAccountFilterSelection.value,
+    trafficSourceFilter: trafficSourceFilter.value
   }
 }
 

@@ -51,9 +51,6 @@ let droppedCount = 0
 let expiredCount = 0
 
 export function enqueueGatewayAccountErrorHandlingSideEffect(operation: AccountErrorHandlingOperation): void {
-  if (operation.input.success) {
-    clearLocalAccountSuppression(operation.account.id)
-  }
   enqueueAccountSideEffect(operation)
 }
 
@@ -218,6 +215,9 @@ async function drainSideEffectQueue(): Promise<void> {
 async function executeAccountSideEffect(operation: AccountSideEffectOperation): Promise<void> {
   if (operation.type === 'apply_account_error_handling') {
     const result = await requestDbService(operation)
+    if (operation.input.success && result.accountStatus === 'active') {
+      clearLocalAccountSuppression(operation.account.id)
+    }
     if (result.changed) {
       if (result.accountStatus === 'rate_limited' || result.accountStatus === 'temporary_unavailable') {
         suppressLocalAccount(operation.account.id, localSuppressionMs(operation.input.settings), result.reason ?? operation.input.errorMessage ?? '上游账号请求失败')

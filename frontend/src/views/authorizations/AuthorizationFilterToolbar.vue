@@ -158,6 +158,7 @@
       </label>
     </template>
     <template #actions>
+      <slot name="actions" />
       <a-button @click="$emit('help')">
         <template #icon><question-circle-outlined /></template>
         授权帮助

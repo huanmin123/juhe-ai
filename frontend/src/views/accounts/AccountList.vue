@@ -48,6 +48,7 @@
         :authorized-tooltip="authorizedTooltip(record)"
         :can-delete="canDelete(record)"
         :can-edit="canEdit(record)"
+        :can-select="canSelect(record)"
         :group-name="groupName(record.id)"
         :is-management-view="isManagementView"
         :menu-items="menuItems(record)"
@@ -79,6 +80,7 @@ defineProps<{
   authorizedTooltip: (account: AccountSummary) => string
   canDelete: (account: AccountSummary) => boolean
   canEdit: (account: AccountSummary) => boolean
+  canSelect: (account: AccountSummary) => boolean
   columns: Array<Record<string, unknown>>
   groupName: (accountId: string) => string | undefined
   isManagementView: boolean

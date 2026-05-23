@@ -13,35 +13,17 @@ interface CooldownAccountRetestQueueItem {
   accountId: string
   accountName: string
   model: string
-  initialBackoffMinutes: number
-  maxBackoffHours: number
+  maxPauseMinutes: number
+  maxRecoveryHours: number
 }
 
-const cooldownAccountRetestFailureThreshold = 3
-const cooldownAccountRetestBackoffMultiplier = 2
-
-const cooldownAccountRetestRetryPolicy = sequenceRetryPolicy('cooldown_account_retest_revival', [
-  3_000,
-  10_000,
-  30_000
-])
+const cooldownAccountRetestRetryPolicy = sequenceRetryPolicy('cooldown_account_retest_revival', [], 0)
 
 const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueItem>({
   name: 'cooldown-account-retest',
   policy: cooldownAccountRetestRetryPolicy,
   concurrency: 1,
   run: runCooldownAccountRetestQueueItem,
-  onRetryScheduled: (event) => {
-    logger.warn({
-      event: 'background_cooldown_account_retest_retry_scheduled',
-      accountId: event.item.accountId,
-      accountName: event.item.accountName,
-      retryNumber: event.retryNumber,
-      nextAttemptIndex: event.attemptIndex + 1,
-      retryDelayMs: event.delayMs,
-      retryAt: new Date(event.nextAttemptAtMs).toISOString()
-    }, '冷却账户复测未通过，已加入异步重试队列')
-  },
   onExhausted: (event) => {
     logger.warn({
       event: 'background_cooldown_account_retest_retry_exhausted',
@@ -55,14 +37,14 @@ const cooldownAccountRetestQueue = createRetryQueue<CooldownAccountRetestQueueIt
 export function enqueueCooldownAccountRetest(
   account: AccountSummary,
   model: string,
-  strategy: { initialBackoffMinutes: number; maxBackoffHours: number }
+  strategy: { maxPauseMinutes: number; maxRecoveryHours: number }
 ): boolean {
   return cooldownAccountRetestQueue.enqueue(account.id, {
     accountId: account.id,
     accountName: account.name,
     model,
-    initialBackoffMinutes: strategy.initialBackoffMinutes,
-    maxBackoffHours: strategy.maxBackoffHours
+    maxPauseMinutes: strategy.maxPauseMinutes,
+    maxRecoveryHours: strategy.maxRecoveryHours
   })
 }
 
@@ -93,7 +75,12 @@ async function runCooldownAccountRetestQueueItem(
     model: item.model,
     diagnostics: 'limited',
     groupId,
-    requestShape: findRecentOpenAIRequestShapeForAccount(account.id, groupId)
+    requestShape: findRecentOpenAIRequestShapeForAccount(account.id, groupId),
+    trafficSource: 'cooldown_retest',
+    gatewaySettingsOverride: {
+      temporaryUnschedulableRetryAttempts: 0,
+      temporaryUnschedulableRetryIntervalSeconds: 0
+    }
   })
   if (result.success) {
     logger.info({
@@ -113,13 +100,11 @@ async function runCooldownAccountRetestQueueItem(
     statusCode: result.statusCode,
     errorCode: result.errorCode,
     errorMessage: result.message,
-    failureThreshold: cooldownAccountRetestFailureThreshold,
-    initialBackoffMinutes: item.initialBackoffMinutes,
-    backoffMultiplier: cooldownAccountRetestBackoffMultiplier,
-    maxBackoffHours: item.maxBackoffHours
+    maxPauseMinutes: item.maxPauseMinutes,
+    maxRecoveryHours: item.maxRecoveryHours
   })
 
-  logger.warn({
+  const logFields = {
     event: 'background_cooldown_account_retest_failed',
     accountId: account.id,
     accountName: account.name,
@@ -131,14 +116,22 @@ async function runCooldownAccountRetestQueueItem(
     durationMs: result.durationMs,
     retestFailureCount: failure.failureCount,
     retestAction: failure.action,
+    recoveryStage: failure.recoveryStage,
     nextCooldownUntil: failure.cooldownUntil,
-    nextBackoffMinutes: failure.backoffMinutes,
+    nextBackoffSeconds: failure.backoffSeconds,
+    maxPauseSeconds: failure.maxPauseSeconds,
+    maxRecoverySeconds: failure.maxRecoverySeconds,
+    maxedFailureCount: failure.maxedFailureCount,
     message: result.message
-  }, '冷却账户复测未通过')
-  return {
-    success: failure.action !== 'retry_immediately',
-    retry: failure.action === 'retry_immediately'
   }
+  if (failure.action === 'error') {
+    logger.warn(logFields, '冷却账户复测超过最长自动恢复观察，账号已转为异常')
+  } else if (failure.recoveryStage === 'slow') {
+    logger.warn(logFields, '冷却账户复测未通过，已进入慢速恢复通道')
+  } else {
+    logger.debug(logFields, '冷却账户快速恢复通道复测未通过，已按短退避等待下次复测')
+  }
+  return true
 }
 
 function isAccountDueForCooldownRetest(account: AccountSummary): boolean {

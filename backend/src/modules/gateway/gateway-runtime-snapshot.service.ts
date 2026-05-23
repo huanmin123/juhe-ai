@@ -74,9 +74,6 @@ async function loadServerAccountConcurrencySnapshot(): Promise<AccountConcurrenc
 }
 
 function applyAccountConcurrency(account: AccountSummary, concurrency: AccountConcurrencySnapshot): AccountSummary {
-  if (account.accessType === 'authorized') {
-    return account
-  }
   return {
     ...account,
     currentConcurrency: concurrency[account.id] ?? 0,
@@ -85,9 +82,6 @@ function applyAccountConcurrency(account: AccountSummary, concurrency: AccountCo
 }
 
 function markAccountConcurrencyUnavailable(account: AccountSummary): AccountSummary {
-  if (account.accessType === 'authorized') {
-    return account
-  }
   return {
     ...account,
     currentConcurrencyAvailable: false
@@ -108,7 +102,7 @@ function markGroupConcurrencyUnavailable(group: GroupSummary): GroupSummary {
 }
 
 function accountsRequireServerConcurrencySnapshot(accounts: AccountSummary[]): boolean {
-  return accounts.some((account) => account.accessType !== 'authorized')
+  return accounts.length > 0
 }
 
 function groupsRequireServerConcurrencySnapshot(groups: GroupSummary[]): boolean {

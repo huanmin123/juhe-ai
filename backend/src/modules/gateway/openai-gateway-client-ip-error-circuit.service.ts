@@ -8,8 +8,6 @@ export type GatewayClientIpErrorCircuitReason =
   | 'invalid_json'
   | 'unsupported_model'
   | 'adapter_request_validation'
-  | 'upstream_error_feature'
-  | 'request_failure_signature'
 
 export interface GatewayClientIpCircuitScope {
   systemAccountId: string

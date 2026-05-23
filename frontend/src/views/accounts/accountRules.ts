@@ -34,7 +34,7 @@ export function authorizedAccountTooltip(account: AccountSummary): string {
   if (isAccountPackageExpiredStatus(account)) {
     lines.push('账户已到期，当前不可用。')
   } else if (isAuthorizedAccount(account) && account.status === 'disabled') {
-    lines.push(account.localStatus === 'disabled' ? '当前分组已停用该账户，当前不可用。' : '账户所有者已停用该账户，当前不可用。')
+    lines.push(account.localStatus === 'disabled' ? '账户已停用，当前不可用。' : '账户所有者已停用该账户，当前不可用。')
   } else if (isAuthorizedAccount(account) && account.status === 'error') {
     lines.push('账户处于异常状态，当前不可用。')
   } else if (isTemporaryAccountStatus(account) || (isAuthorizedAccount(account) && !account.schedulable)) {
@@ -118,6 +118,14 @@ export function canUseAccountActions(account: AccountSummary): boolean {
 }
 
 export function canBatchManageAccount(account: AccountSummary): boolean {
+  if (isAuthorizedAccount(account)) {
+    return Boolean(account.boundGroupId)
+      && account.permissions?.canUse !== false
+      && !isAuthorizationExpired(account)
+      && !isAuthorizationBindingUnavailable(account)
+      && !isAccountPackageExpiredStatus(account)
+      && account.status !== 'error'
+  }
   return canEditAccount(account) && account.status !== 'error'
 }
 
@@ -132,7 +140,7 @@ export function authorizedAccountUnavailableText(account: AccountSummary): strin
   if (isAuthorizationBindingUnavailable(account)) return '当前分组绑定的授权已失效，请重新绑定分组或联系授权人'
   if (isAccountPackageExpiredStatus(account)) return '账户已到期，当前不可用'
   if (account.authorizationQuotaExceeded) return '授权额度已用完，当前账户不能调用'
-  if (account.status === 'disabled') return account.localStatus === 'disabled' ? '当前分组已停用该账户，当前不可用' : '账户所有者已停用该账户，当前不可用'
+  if (account.status === 'disabled') return account.localStatus === 'disabled' ? '账户已停用，当前不可用' : '账户所有者已停用该账户，当前不可用'
   if (account.status === 'error') return '账户处于异常状态，当前不可用'
   if (isTemporaryAccountStatus(account) || !account.schedulable) return '账户暂时不可调用，恢复前不会参与调度'
   return undefined
@@ -185,12 +193,26 @@ export function accountMenuItems(account: AccountSummary): AccountMenuItem[] {
       pushDispatchFlagItems(items, account)
       return items.map(normalizeAccountMenuItem)
     }
-    if (account.boundGroupId && account.localStatus && account.localStatus !== 'active') {
+    if (account.boundGroupId && account.localStatus && account.localStatus !== 'active' && account.localStatus !== 'disabled') {
       items.push({ key: 'restore-normal', label: '恢复正常' })
     }
     pushDispatchFlagItems(items, account)
     if (canUseBoundAuthorizedAccount(account)) {
       items.push({ key: 'migrate-traffic', label: '迁移流量' })
+    }
+    if (canBatchManageAccount(account)) {
+      const localDisabled = account.localStatus === 'disabled'
+      items.push({
+        key: 'toggle-status',
+        label: localDisabled ? '启用账户' : '停用账户',
+        danger: !localDisabled,
+        icon: localDisabled ? 'enable' : 'pause',
+        tone: localDisabled ? 'success' : 'warning',
+        confirmTitle: localDisabled
+          ? `确认启用账户「${account.name}」？启用后这个账户在你这里恢复可用，不影响授权来源账户。`
+          : `确认停用账户「${account.name}」？停用后这个账户在你这里不可用，不影响授权来源账户。`,
+        confirmOkText: localDisabled ? '启用' : '停用'
+      })
     }
     return items.map(normalizeAccountMenuItem)
   }

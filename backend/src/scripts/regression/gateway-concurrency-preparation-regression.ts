@@ -42,6 +42,7 @@ const settings: GatewaySettings = {
 
 const usageContext: GatewayUsageContext = {
   traceId: 'trace_gateway_concurrency_preparation',
+  trafficSource: 'gateway',
   clientIp: '127.0.0.1',
   systemAccountId: 'sys_admin',
   groupId: 'grp_gateway_concurrency_preparation',

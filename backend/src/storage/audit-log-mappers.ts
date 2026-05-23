@@ -32,6 +32,7 @@ export function auditLogSummaryFromRow(row: AuditLogRow, systemAccountNames: Map
   return {
     id: String(row.id),
     traceId: String(row.trace_id),
+    trafficSource: auditTrafficSource(row.traffic_source),
     systemAccountId,
     systemAccountName: systemAccountId ? systemAccountNames.get(systemAccountId) : undefined,
     apiKeyId: optionalString(row.api_key_id),
@@ -70,6 +71,10 @@ export function auditLogSummaryFromRow(row: AuditLogRow, systemAccountNames: Map
     firstTokenMs: numberValue(row.first_token_ms),
     createdAt: String(row.created_at)
   }
+}
+
+function auditTrafficSource(value: unknown): AuditLogSummary['trafficSource'] {
+  return value === 'manual_account_test' || value === 'cooldown_retest' ? value : 'gateway'
 }
 
 export function auditErrorGroupFromRow(row: AuditLogRow, systemAccountNames: Map<string, string>): AuditErrorGroupSummary {

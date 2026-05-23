@@ -90,6 +90,11 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
     clauses.push('ur.model = ?')
     params.push(model)
   }
+  const trafficSource = options?.trafficSource
+  if (trafficSource) {
+    clauses.push("COALESCE(ur.traffic_source, 'gateway') = ?")
+    params.push(trafficSource)
+  }
   return {
     clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
     params

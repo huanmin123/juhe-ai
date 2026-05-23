@@ -104,6 +104,7 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       last_error_code TEXT,
       last_error_message TEXT,
       cooldown_retest_failure_count INTEGER NOT NULL DEFAULT 0,
+      cooldown_retest_observation_started_at TEXT,
       cooldown_retest_last_at TEXT,
       cooldown_retest_last_status_code INTEGER,
       stream_failure_count INTEGER NOT NULL DEFAULT 0,
@@ -390,8 +391,17 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     DROP INDEX IF EXISTS idx_proxy_profiles_host_lookup;
     DROP INDEX IF EXISTS idx_proxy_profiles_type_lookup;
   `)
+  addColumnIfMissing(database, 'accounts', 'cooldown_retest_observation_started_at', 'TEXT')
   dropColumnIfExists(database, 'group_accounts', 'weight')
   dropColumnIfExists(database, 'group_accounts', 'soft_concurrency_limit')
+}
+
+function addColumnIfMissing(database: DatabaseSync, tableName: string, columnName: string, definition: string): void {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
+  if (columns.some((column) => column.name === columnName)) {
+    return
+  }
+  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
 }
 
 function dropColumnIfExists(database: DatabaseSync, tableName: string, columnName: string): void {

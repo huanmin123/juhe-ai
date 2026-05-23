@@ -24,6 +24,8 @@ const [
   { authorizationOptionsRouter },
   { authorizationsRouter },
   { groupsRouter },
+  { providersRouter },
+  { proxiesRouter },
   { statsRouter },
   { myTeamsRouter, systemTeamsRouter },
   { usageRecordsRouter },
@@ -39,6 +41,8 @@ const [
   import('../../modules/authorization-options/authorization-options.routes.js'),
   import('../../modules/authorizations/authorizations.routes.js'),
   import('../../modules/groups/groups.routes.js'),
+  import('../../modules/providers/providers.routes.js'),
+  import('../../modules/proxies/proxies.routes.js'),
   import('../../modules/stats/stats.routes.js'),
   import('../../modules/system-teams/system-teams.routes.js'),
   import('../../modules/usage-records/usage-records.routes.js'),
@@ -69,6 +73,8 @@ app.use('/__aisys__/api/api-keys', requireAdmin, apiKeysRouter)
 app.use('/__aisys__/api/authorization-options', requireAdmin, authorizationOptionsRouter)
 app.use('/__aisys__/api/authorizations', requireAdmin, authorizationsRouter)
 app.use('/__aisys__/api/usage-records', requireAdmin, usageRecordsRouter)
+app.use('/__aisys__/api/providers', providersRouter)
+app.use('/__aisys__/api/proxies', proxiesRouter)
 app.use('/__aisys__/api/stats', requireAdmin, statsRouter)
 app.use('/__aisys__/api/system-teams', systemTeamsRouter)
 
@@ -101,6 +107,7 @@ interface GroupSummary {
   ownerSystemAccountId?: string
   systemAccountId?: string
   name: string
+  accessType?: string
 }
 
 interface GroupListResult {
@@ -279,6 +286,11 @@ async function main(): Promise<void> {
 
     await assertForbidden(`${baseUrl}/__aisys__/api/system-teams`, seed.userACookie, '普通用户不能访问系统团队管理接口')
     await assertForbidden(`${baseUrl}/__aisys__/api/authorizations`, seed.userACookie, '普通用户不能访问统一授权管理接口')
+    await assertForbidden(`${baseUrl}/__aisys__/api/providers`, seed.userACookie, '普通用户不能访问供应商管理接口')
+    const userProviderModels = await getEnvelope<Array<{ model: string }>>(baseUrl, '/__aisys__/api/providers/openai/models', seed.userACookie)
+    assert(userProviderModels.some((item) => item.model === 'gpt-5.5'), '普通用户应能查询 OpenAI 模型列表用于账户模型限制下拉')
+    const userProxyOptions = await getEnvelope<Array<{ id: string; enabled: boolean }>>(baseUrl, '/__aisys__/api/proxies/options?limit=50', seed.userACookie)
+    assert(userProxyOptions.some((proxy) => proxy.id === seed.userBProxyId && proxy.enabled === true), '普通用户应能查询已启用代理选项用于账户代理下拉')
     summary.push('仅管理员菜单接口拦截通过')
 
     const userAMyAccounts = await getAccountItems(baseUrl, '/__aisys__/api/my-accounts', seed.userACookie)
@@ -290,6 +302,22 @@ async function main(): Promise<void> {
     assertSameIds(userAMyAccounts, userAMyAccountsWithQuery, '用户 A 传 systemAccountId 后 my-accounts 结果发生变化')
     const userAOwnAccountDetail = await getEnvelope<AccountSummary>(baseUrl, `/__aisys__/api/my-accounts/${seed.userAAccountId}`, seed.userACookie)
     assert(userAOwnAccountDetail.credentials?.api_key === 'sk-scope-user-a', '用户 A 应能查看自有账户凭据详情')
+    await assertJsonStatus(
+      `${baseUrl}/__aisys__/api/my-accounts/import/preview`,
+      seed.userACookie,
+      'POST',
+      { data: [], options: {} },
+      403,
+      '账户导入虽然复用 my-accounts 路由命名空间，但仍是管理员能力，普通用户不可预览导入'
+    )
+    await assertJsonStatus(
+      `${baseUrl}/__aisys__/api/my-accounts/import/confirm`,
+      seed.userACookie,
+      'POST',
+      { data: [], options: {} },
+      403,
+      '账户导入虽然复用 my-accounts 路由命名空间，但仍是管理员能力，普通用户不可确认导入'
+    )
     await assertStatus(
       `${baseUrl}/__aisys__/api/my-accounts/${seed.userBAccountId}`,
       seed.userACookie,
@@ -312,6 +340,9 @@ async function main(): Promise<void> {
     assert(userBDisabledAccounts.total === 0, '管理账户状态筛选异常')
     const userAApiKeyAccounts = await getEnvelope<AccountListResult>(baseUrl, '/__aisys__/api/my-accounts?type=api_key&page=1&pageSize=10', seed.userACookie)
     assert(userAApiKeyAccounts.total === userAMyAccounts.length && userAApiKeyAccounts.items.every((account) => account.type === 'api_key'), '用户侧账户类型筛选异常')
+    const userAAccountOptions = await getEnvelope<AccountSummary[]>(baseUrl, '/__aisys__/api/my-accounts/options?limit=50', seed.userACookie)
+    assert(userAAccountOptions.some((account) => account.id === seed.userAAccountId), '普通用户应能查询自有账户选项用于用户侧下拉')
+    assert(userAAccountOptions.some((account) => account.id === seed.userBAccountId && account.accessType === 'authorized'), '普通用户应能查询授权账户选项用于授权资源下拉')
     summary.push('账户分页筛选检查通过')
 
     const createdGroup = await postEnvelope<GroupSummary>(baseUrl, `/__aisys__/api/groups?systemAccountId=${seed.userBId}`, seed.adminCookie, {
@@ -325,6 +356,8 @@ async function main(): Promise<void> {
     const userAMyGroupPage1 = await getEnvelope<GroupListResult>(baseUrl, '/__aisys__/api/my-groups?page=1&pageSize=1', seed.userACookie)
     assert(userAMyGroupPage1.items.length === 1 && userAMyGroupPage1.pageSize === 1, '用户侧分组分页第一页异常')
     assert(userAMyGroupPage1.hasMore === true, '用户侧分组分页应提示还有更多')
+    const userAGroupOptions = await getEnvelope<GroupSummary[]>(baseUrl, '/__aisys__/api/my-groups/options?limit=50', seed.userACookie)
+    assert(userAGroupOptions.length >= 1 && userAGroupOptions.every((group) => group.ownerSystemAccountId === seed.userAId || group.accessType === 'authorized'), '普通用户应能查询用户侧分组选项且不能混入不可见分组')
     summary.push('管理员代建分组归属检查通过')
 
     const createdApiKey = await postEnvelope<ApiKeySummary>(baseUrl, `/__aisys__/api/api-keys?systemAccountId=${seed.userBId}`, seed.adminCookie, {
@@ -425,6 +458,7 @@ async function main(): Promise<void> {
     const userBAiPerformance = await getEnvelope<AiPerformanceOverview>(baseUrl, `/__aisys__/api/my-stats/ai-performance?${aiPerformanceRangeQuery}`, seed.userBCookie)
     assert(userBAiPerformance.accounts.some((account) => account.id === seed.userBAccountId), 'AI性能监控拥有者应能看到自己的账户')
     assert(userBAiPerformance.summary.requestCount === 4, `AI性能监控应按账户整体统计包含被授权人调用，实际 ${userBAiPerformance.summary.requestCount}`)
+    await assertForbidden(`${baseUrl}/__aisys__/api/my-stats/system-metrics`, seed.userACookie, '用户侧统计命名空间里的系统指标仍是管理员能力，普通用户不可访问')
     summary.push('AI性能监控拥有者口径和授权账户隔离检查通过')
 
     const userATeamsPage = await getEnvelope<SystemTeamListResult>(baseUrl, '/__aisys__/api/my-teams', seed.userACookie)
@@ -587,6 +621,32 @@ function seedData(): SeedState {
     granteeId: teamShared.id,
     remark: '用户 B 授权给共享团队的分组'
   }, userBAccess)
+  let rejectedAuthorizedGroupApiKey = false
+  try {
+    repositories.createApiKeyRecord({
+      name: '用户 A 禁止绑定授权分组 Key',
+      groupId: userBGroup.id
+    }, userAAccess)
+  } catch (error) {
+    rejectedAuthorizedGroupApiKey = error instanceof Error && /API Key 只能绑定自己的分组/.test(error.message)
+  }
+  assert(rejectedAuthorizedGroupApiKey, 'API Key 不应允许绑定授权方的分组，调度范围必须停留在创建者自己的分组内')
+  const runtimeGroupAuthorization = databaseModule.getDatabase()
+    .prepare("SELECT id FROM resource_authorizations WHERE resource_type = 'group' AND resource_id = ? AND grantee_system_account_id = ? AND status = 'active' LIMIT 1")
+    .get(userBGroup.id, userA.id) as unknown as { id?: string } | undefined
+  assert(runtimeGroupAuthorization?.id, '共享团队分组授权应生成用户 A 的运行时授权')
+  const historicalAuthorizedGroupKeyId = 'key_scope_authorized_group_historical'
+  const now = new Date().toISOString()
+  databaseModule.getDatabase()
+    .prepare(`
+      INSERT INTO api_keys (id, system_account_id, name, description, key_hash, key_prefix, key_secret_encrypted, status, group_id, group_authorization_id, expires_at, quota_limits_json, scopes_json, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, ?, ?, NULL, 'active', ?, ?, NULL, NULL, '[]', ?, ?)
+    `)
+    .run(historicalAuthorizedGroupKeyId, userA.id, '用户 A 历史授权分组 Key', 'hash_scope_authorized_group_historical', 'sk-legacy', userBGroup.id, runtimeGroupAuthorization.id, now, now)
+  assert(
+    repositories.findActiveGatewayApiKeyById(historicalAuthorizedGroupKeyId) === undefined,
+    '历史上绑定授权方分组的 API Key 不应继续通过网关校验'
+  )
   repositories.createApiKeyRecord({
     name: '用户 A Key',
     groupId: repositories.listGroups(userAAccess).find((group) => group.ownerSystemAccountId === userA.id)?.id
@@ -740,6 +800,15 @@ async function assertForbidden(path: string, cookie: string, message: string): P
 
 async function assertStatus(path: string, cookie: string, expectedStatus: number, message: string): Promise<void> {
   const response = await fetchRegression(path, { headers: { cookie } })
+  assert(response.status === expectedStatus, `${message}，实际状态 ${response.status}: ${await response.text()}`)
+}
+
+async function assertJsonStatus(path: string, cookie: string, method: 'POST', body: unknown, expectedStatus: number, message: string): Promise<void> {
+  const response = await fetchRegression(path, {
+    method,
+    headers: { cookie, 'content-type': 'application/json' },
+    body: JSON.stringify(body)
+  })
   assert(response.status === expectedStatus, `${message}，实际状态 ${response.status}: ${await response.text()}`)
 }
 

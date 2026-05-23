@@ -1,4 +1,4 @@
-import type { AuditOutcome, AuditPayloadPartType } from '@/types/domain'
+import type { AuditOutcome, AuditPayloadPartType, AuditTrafficSource } from '@/types/domain'
 import { displayGroupName } from '@/shared/groupLabelCache'
 
 export function outcomeText(value: AuditOutcome): string {
@@ -28,6 +28,20 @@ export function payloadPartText(value: AuditPayloadPartType): string {
     gateway_error: '网关错误',
     gateway_metadata: '网关元信息'
   }[value]
+}
+
+export function trafficSourceText(value: AuditTrafficSource): string {
+  return {
+    gateway: '网关请求',
+    manual_account_test: '账号测试',
+    cooldown_retest: '恢复探活'
+  }[value] ?? '网关请求'
+}
+
+export function trafficSourceColor(value: AuditTrafficSource): string {
+  if (value === 'cooldown_retest') return 'gold'
+  if (value === 'manual_account_test') return 'cyan'
+  return 'default'
 }
 
 export function statusColor(statusCode: number | undefined, success: boolean): string {

@@ -77,7 +77,6 @@ export const runtimeLogEventTextMap: Record<string, string> = {
   gateway_stream_response_backpressure: '网关流式响应背压',
   gateway_upstream_attempt_failed: '网关上游尝试失败',
   gateway_upstream_error_body_truncated: '网关上游错误响应体截断',
-  gateway_upstream_error_feature_matched: '网关上游错误特征命中',
   gateway_upstream_request_failed: '网关上游请求失败',
   gateway_upstream_request_started: '网关上游请求开始',
   gateway_upstream_response_failed: '网关上游响应失败',

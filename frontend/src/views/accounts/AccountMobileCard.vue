@@ -1,7 +1,7 @@
 <template>
   <article class="account-mobile-card">
     <div class="account-mobile-card-head">
-      <a-checkbox :checked="selected" :disabled="!canEdit" @change="$emit('toggle-selection')" />
+      <a-checkbox :checked="selected" :disabled="!canSelect" @change="$emit('toggle-selection')" />
       <div class="account-mobile-card-title">
         <div class="account-mobile-name-row">
           <span class="account-mobile-name">{{ account.name }}</span>
@@ -100,6 +100,7 @@ const props = defineProps<{
   authorizedTooltip: string
   canDelete: boolean
   canEdit: boolean
+  canSelect: boolean
   groupName?: string
   isManagementView: boolean
   menuItems: AccountMenuItem[]
