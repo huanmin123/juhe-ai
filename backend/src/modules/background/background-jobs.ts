@@ -373,8 +373,7 @@ async function runTableStorageMonitor(): Promise<void> {
   try {
     collectTableStorageSnapshot(nowIso(), {
       tableScanMode: 'cursor',
-      maxTablesPerDatabase: settingsNumber('tableMonitorMaxTablesPerRun', 4, 0, 100),
-      rowCountMode: 'none'
+      maxTablesPerDatabase: settingsNumber('tableMonitorMaxTablesPerRun', 4, 0, 100)
     })
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_table_storage_monitor_failed' }), '表数据监控采样失败')

@@ -97,8 +97,8 @@ export function findProxy(id: string): ProxyProfileSummary | undefined {
 export function listProxyOptions(options: Pick<ProxyProfileListOptions, 'keyword' | 'limit'> = {}): ProxyProfileOptionSummary[] {
   const keywordFilter = buildProxyKeywordFilter(options.keyword)
   const safeLimit = typeof options.limit === 'number' && Number.isInteger(options.limit)
-    ? Math.min(500, Math.max(1, options.limit))
-    : 500
+    ? Math.min(50, Math.max(1, options.limit))
+    : 50
   const rows = getDatabase()
     .prepare(`SELECT id, name, type, enabled FROM proxy_profiles WHERE enabled = 1${keywordFilter.clause ? ` AND ${keywordFilter.clause}` : ''} ORDER BY name ASC, updated_at DESC, id ASC LIMIT ?`)
     .all(...keywordFilter.params, safeLimit) as unknown as Array<Pick<ProxyRow, 'id' | 'name' | 'type' | 'enabled'>>

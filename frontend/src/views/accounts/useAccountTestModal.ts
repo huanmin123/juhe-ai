@@ -13,7 +13,7 @@ import {
   stoppedAccountTestMessage,
   type AccountTestForm
 } from './accountTestFlow'
-import { buildTestModelOptions } from './accountDerivedState'
+import { buildTestModelOptions, preferredTestModelForAccount } from './accountDerivedState'
 import { isAuthorizedAccount } from './accountFormatters'
 import { accountOperationScopeParams } from './accountOperationScope'
 import { authorizedAccountUnavailableText, canTestAccount } from './accountRules'
@@ -31,8 +31,8 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   const testingAccount = ref<AccountSummary>()
   const testResult = ref<AccountTestResult>()
   const providerModels = ref<ProviderModelPricing[]>([])
-  const testForm = reactive<AccountTestForm>({ model: 'gpt-5.5', prompt: 'hi' })
-  const testModelOptions = computed(() => buildTestModelOptions(providerModels.value))
+  const testForm = reactive<AccountTestForm>({ model: 'gpt-5.5' })
+  const testModelOptions = computed(() => buildTestModelOptions(providerModels.value, testingAccount.value))
   const defaultTestModel = computed(() => testModelOptions.value[0]?.value || 'gpt-5.5')
 
   let accountTestAbortController: AbortController | undefined
@@ -42,7 +42,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     testModelsLoading.value = true
     try {
       providerModels.value = await api.providers.models('openai')
-      testForm.model = nextTestModel(testForm.model, providerModels.value, defaultTestModel.value)
+      testForm.model = nextTestModel(testForm.model, testModelOptions.value, defaultTestModel.value)
     } catch (error) {
       console.error(error)
       message.warning('测试模型列表加载失败，已使用默认模型')
@@ -64,7 +64,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     }
     testingAccount.value = account
     testResult.value = undefined
-    testForm.model = testForm.model || defaultTestModel.value
+    testForm.model = preferredTestModelForAccount(account, testForm.model, defaultTestModel.value)
     testModalOpen.value = true
     void loadTestModels()
   }
@@ -78,7 +78,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
     const startedAt = Date.now()
     const account = testingAccount.value
     try {
-      const payload = buildAccountTestPayload(testForm)
+      const payload = buildAccountSpecificTestPayload(account)
       const result = options.isManagementView.value
         ? await api.accounts.test(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value), { signal: controller.signal })
         : await api.myAccounts.test(account.id, payload, { signal: controller.signal })
@@ -120,7 +120,7 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
   async function testAccountSilently(account: AccountSummary) {
     if (!canTestAccount(account)) return undefined
     try {
-      const payload = buildAccountTestPayload(testForm)
+      const payload = buildAccountSpecificTestPayload(account)
       return options.isManagementView.value
         ? await api.accounts.test(account.id, payload, accountOperationScopeParams(account, options.accountScopeParams.value))
         : await api.myAccounts.test(account.id, payload)
@@ -132,6 +132,13 @@ export function useAccountTestModal(options: UseAccountTestModalOptions) {
 
   onDeactivated(stopAccountTest)
   onBeforeUnmount(stopAccountTest)
+
+  function buildAccountSpecificTestPayload(account: AccountSummary) {
+    return buildAccountTestPayload({
+      ...testForm,
+      model: preferredTestModelForAccount(account, testForm.model, defaultTestModel.value)
+    })
+  }
 
   return {
     closeTestModal,

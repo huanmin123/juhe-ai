@@ -116,6 +116,15 @@ try {
     username: '分页搜索代理用户',
     enabled: true
   })
+  for (let index = 0; index < 55; index += 1) {
+    repositories.createProxy({
+      name: `选项上限代理 ${String(index).padStart(2, '0')}`,
+      type: 'http',
+      host: `proxy-option-limit-${index}`,
+      port: 19_000 + index,
+      enabled: true
+    })
+  }
 
   const database = databaseModule.getDatabase()
   const originalPrepare = database.prepare.bind(database) as typeof database.prepare
@@ -186,6 +195,8 @@ try {
     const proxyOptionNames = repositories.listProxyOptions({ keyword: '分页搜索代理', limit: 20 }).map((proxy) => proxy.name)
     assert(proxyOptionNames.includes('分页搜索代理'), '代理选项搜索应返回已启用匹配代理')
     assert(!proxyOptionNames.includes('分页搜索代理停用'), '代理选项不应返回停用代理')
+    const proxyOptionLimitRows = repositories.listProxyOptions({ keyword: '选项上限代理', limit: 500 })
+    assert.equal(proxyOptionLimitRows.length, 50, '代理选项即使调用方传入 500 也最多返回 50 条')
   } finally {
     database.prepare = originalPrepare
   }

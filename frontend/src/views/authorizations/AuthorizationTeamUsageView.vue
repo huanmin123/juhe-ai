@@ -5,9 +5,11 @@
         :show-search="false"
         filter-title="筛选团队消耗"
         :active-filter-count="activeFilterCount"
+        :advanced-filter-count="advancedFilterCount"
         :refresh-loading="loading"
         @reset="resetFilters"
         @refresh="loadData"
+        @search="loadData"
       >
         <template #inline-filters>
           <a-range-picker
@@ -23,6 +25,7 @@
           />
           <SystemPrincipalSelect
             v-model:value="filters.teamId"
+            v-model:selected-principal="filters.team"
             :teams="teams"
             :active-only="false"
             :filter-option="false"
@@ -35,37 +38,61 @@
             @dropdown-visible-change="handleTeamOptionsDropdown"
             @search="handleTeamOptionsSearch"
           />
-          <a-select v-model:value="filters.resourceType" class="authorization-usage-select responsive-list-inline-filter" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
-          <SystemPrincipalSelect
-            v-if="isManagementView"
-            v-model:value="filters.resourceOwnerSystemAccountId"
-            :accounts="resourceOwners"
-            :active-only="false"
-            :filter-option="false"
-            :loading="resourceOwnerOptionsLoading"
-            include-all
-            all-label="全部资源归属用户"
-            class="authorization-usage-select responsive-list-inline-filter"
-            placeholder="筛选资源归属用户"
-            @change="handleResourceOwnerChange"
-            @dropdown-visible-change="handleResourceOwnerOptionsDropdown"
-            @search="handleResourceOwnerOptionsSearch"
-          />
-          <a-select
-            v-model:value="filters.resourceId"
-            show-search
-            allow-clear
-            option-filter-prop="label"
-            class="authorization-usage-resource responsive-list-inline-filter"
-            :options="resourceOptions"
-            :disabled="filters.resourceType === 'all'"
-            :filter-option="false"
-            :loading="resourceOptionsLoading"
-            :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
-            @change="handleResourceChange"
-            @dropdown-visible-change="handleResourceOptionsDropdown"
-            @search="handleResourceOptionsSearch"
-          />
+        </template>
+        <template #advanced-filters>
+          <a-form layout="vertical" class="advanced-filter-form">
+            <a-form-item label="授权内容">
+              <a-select v-model:value="filters.resourceType" :options="resourceTypeOptions" @change="handleResourceTypeChange" />
+            </a-form-item>
+            <a-form-item v-if="isManagementView" label="资源归属用户">
+              <SystemPrincipalSelect
+                v-model:value="filters.resourceOwnerSystemAccountId"
+                v-model:selected-principal="filters.resourceOwnerSystemAccount"
+                :accounts="resourceOwners"
+                :active-only="false"
+                :filter-option="false"
+                :loading="resourceOwnerOptionsLoading"
+                include-all
+                all-label="全部资源归属用户"
+                placeholder="筛选资源归属用户"
+                @change="handleResourceOwnerChange"
+                @dropdown-visible-change="handleResourceOwnerOptionsDropdown"
+                @search="handleResourceOwnerOptionsSearch"
+              />
+            </a-form-item>
+            <a-form-item label="授权资源">
+              <GroupSelect
+                v-if="filters.resourceType === 'group'"
+                v-model:value="filters.resourceId"
+                v-model:selected-group="filters.resourceGroup"
+                allow-clear
+                option-filter-prop="label"
+                :options="resourceOptions"
+                :filter-option="false"
+                :loading="resourceOptionsLoading"
+                placeholder="筛选授权资源"
+                @change="handleResourceChange"
+                @dropdown-visible-change="handleResourceOptionsDropdown"
+                @search="handleResourceOptionsSearch"
+              />
+              <AccountSelect
+                v-else
+                v-model:value="filters.resourceId"
+                v-model:selected-account="filters.resourceAccount"
+                allow-clear
+                cache-key="accounts"
+                option-filter-prop="label"
+                :options="resourceOptions"
+                :disabled="filters.resourceType === 'all'"
+                :filter-option="false"
+                :loading="resourceOptionsLoading"
+                :placeholder="filters.resourceType === 'all' ? '先选择授权内容' : '筛选授权资源'"
+                @change="handleResourceChange"
+                @dropdown-visible-change="handleResourceOptionsDropdown"
+                @search="handleResourceOptionsSearch"
+              />
+            </a-form-item>
+          </a-form>
         </template>
         <template #filters>
           <label class="mobile-filter-field">
@@ -85,6 +112,7 @@
             <span>授权团队</span>
             <SystemPrincipalSelect
               v-model:value="filters.teamId"
+              v-model:selected-principal="filters.team"
               :teams="teams"
               :active-only="false"
               :filter-option="false"
@@ -105,6 +133,7 @@
             <span>资源归属用户</span>
             <SystemPrincipalSelect
               v-model:value="filters.resourceOwnerSystemAccountId"
+              v-model:selected-principal="filters.resourceOwnerSystemAccount"
               :accounts="resourceOwners"
               :active-only="false"
               :filter-option="false"
@@ -119,10 +148,26 @@
           </label>
           <label class="mobile-filter-field">
             <span>授权资源</span>
-            <a-select
+            <GroupSelect
+              v-if="filters.resourceType === 'group'"
               v-model:value="filters.resourceId"
-              show-search
+              v-model:selected-group="filters.resourceGroup"
               allow-clear
+              option-filter-prop="label"
+              :options="resourceOptions"
+              :filter-option="false"
+              :loading="resourceOptionsLoading"
+              placeholder="筛选授权资源"
+              @change="handleResourceChange"
+              @dropdown-visible-change="handleResourceOptionsDropdown"
+              @search="handleResourceOptionsSearch"
+            />
+            <AccountSelect
+              v-else
+              v-model:value="filters.resourceId"
+              v-model:selected-account="filters.resourceAccount"
+              allow-clear
+              cache-key="accounts"
               option-filter-prop="label"
               :options="resourceOptions"
               :disabled="filters.resourceType === 'all'"
@@ -182,7 +227,7 @@
           </template>
           <template v-else-if="column.key === 'accountOwner'">
             <div class="authorization-usage-user-cell">
-              <span class="authorization-usage-name">{{ record.accountOwnerSystemAccountName || record.accountOwnerSystemAccountId || '-' }}</span>
+              <span class="authorization-usage-name">{{ record.accountOwnerSystemAccountName || '-' }}</span>
             </div>
           </template>
           <template v-else-if="column.key === 'lastUsedAt'">
@@ -211,7 +256,7 @@
               </div>
               <div class="mobile-list-meta-item">
                 <span>资源归属人</span>
-                <strong>{{ record.accountOwnerSystemAccountName || record.accountOwnerSystemAccountId || '-' }}</strong>
+                <strong>{{ record.accountOwnerSystemAccountName || '-' }}</strong>
               </div>
               <div class="mobile-list-meta-item mobile-list-meta-wide">
                 <span>最后使用</span>
@@ -232,6 +277,8 @@ import { computed, onMounted, reactive, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { api } from '@/api/client'
+import AccountSelect from '@/components/AccountSelect.vue'
+import GroupSelect from '@/components/GroupSelect.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
@@ -241,6 +288,9 @@ import UsageSummaryTags from '@/components/UsageSummaryTags.vue'
 import { useRemoteAuthorizationPrincipalOptions } from '@/composables/useRemoteAuthorizationPrincipalOptions'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList, type ResponsivePagedListLoadOptions } from '@/composables/useResponsivePagedList'
+import type { AccountSelection } from '@/shared/accountLabelCache'
+import type { GroupSelection } from '@/shared/groupLabelCache'
+import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { AuthorizationResourceType, AuthorizationTeamUsageOverview, AuthorizationTeamUsageRow, SystemTeamPrincipalSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsSummaryCards from '@/views/stats/StatsSummaryCards.vue'
@@ -257,9 +307,13 @@ import { useAuthorizationUsageResourceFilters } from './useAuthorizationUsageRes
 
 type TeamUsageFilters = {
   teamId?: string
+  team?: PrincipalSelection
   resourceOwnerSystemAccountId: string
+  resourceOwnerSystemAccount?: PrincipalSelection
   resourceType: AuthorizationFilterResourceType
   resourceId?: string
+  resourceAccount?: AccountSelection
+  resourceGroup?: GroupSelection
 }
 const router = useRouter()
 const authorizationUsagePageSize = 20
@@ -364,6 +418,13 @@ const activeFilterCount = computed(() => {
   if (dateRangeExplicit.value) count += 1
   return count
 })
+const advancedFilterCount = computed(() => {
+  let count = 0
+  if (selectedResourceOwnerSystemAccountId.value) count += 1
+  if (filters.resourceType !== 'all') count += 1
+  if (filters.resourceId) count += 1
+  return count
+})
 const totalUsage = computed(() => overview.value?.summary ?? emptyUsageSummary())
 const summaryCards = computed(() => [
   { key: 'teams', label: overview.value?.hasMore ? '已加载团队' : '授权团队', value: formatNumber(overview.value?.teamCount ?? 0), extra: overview.value?.hasMore ? '还有更多团队消耗' : `范围 ${rangeLabel.value}` },
@@ -422,10 +483,12 @@ async function fetchTeamUsagePage(loadPageOptions: ResponsivePagedListLoadOption
     pageSize: pageState.pageSize,
     ...rangeParams
   }
-  const [usageOverview] = await Promise.all([
-    isManagementView.value ? api.authorizations.teamUsage(params) : api.myAuthorizations.teamUsage(params),
-    loadOptions({ force: loadPageOptions.forceOptions === true })
-  ])
+  if (loadPageOptions.forceOptions === true) {
+    resetTeamOptionsSearch()
+    resetResourceOwnerOptionsSearch()
+    resetResourceOptionsSearch()
+  }
+  const usageOverview = isManagementView.value ? await api.authorizations.teamUsage(params) : await api.myAuthorizations.teamUsage(params)
   if (requestSeq === usageRequestSeq) {
     overview.value = usageOverview
     syncDateRangeFromResponse(usageOverview.range)
@@ -477,7 +540,7 @@ function resourceTypeTag(resourceType: AuthorizationResourceType) {
 }
 
 function resourceDisplayName(row: AuthorizationTeamUsageRow): string {
-  return row.resourceName || row.resourceId || row.accountName || row.accountId || '-'
+  return row.resourceName || row.accountName || '-'
 }
 
 function handleResourceTypeChange() {
@@ -505,8 +568,11 @@ function resetFilters() {
 function defaultFilters(): TeamUsageFilters {
   return {
     resourceOwnerSystemAccountId: allSystemAccountsValue,
+    resourceOwnerSystemAccount: undefined,
     resourceType: 'all',
     resourceId: undefined,
+    resourceAccount: undefined,
+    team: undefined,
     teamId: undefined
   }
 }
@@ -636,6 +702,10 @@ onMounted(loadData)
   color: #334155;
   font-size: 13px;
   font-weight: 600;
+}
+
+.advanced-filter-form :deep(.ant-select) {
+  width: 100%;
 }
 
 @media (max-width: 900px) {

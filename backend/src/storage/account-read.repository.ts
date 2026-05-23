@@ -316,8 +316,6 @@ function groupBindingSelectColumns(): string {
           group_bindings.group_id AS bound_group_id,
           bound_groups.name AS bound_group_name,
           group_bindings.account_authorization_id AS bound_group_account_authorization_id,
-          group_bindings.weight AS bound_group_weight,
-          group_bindings.soft_concurrency_limit AS bound_group_soft_concurrency_limit,
           group_bindings.local_status AS bound_group_local_status,
           group_bindings.local_cooldown_until AS bound_group_local_cooldown_until,
           group_bindings.local_last_error_message AS bound_group_local_last_error_message,
@@ -340,6 +338,10 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
     clauses.push('account_rows.id = ?')
     params.push(options.accountId)
   }
+  if (options.ids.length) {
+    clauses.push(`account_rows.id IN (${options.ids.map(() => '?').join(', ')})`)
+    params.push(...options.ids)
+  }
   const keyword = options.keyword?.trim()
   if (keyword) {
     const keywordPrefix = `${escapeLikePrefix(keyword)}%`
@@ -351,6 +353,10 @@ function buildAccountListFilters(options: AccountRowQueryOptions): { clause: str
       keyword,
       keywordPrefix
     )
+  }
+  if (options.providerCode && options.providerCode !== 'all') {
+    clauses.push('account_rows.provider_code = ?')
+    params.push(options.providerCode)
   }
   const groupId = options.groupId?.trim()
   if (groupId) {

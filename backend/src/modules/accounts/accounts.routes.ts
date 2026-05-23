@@ -3,8 +3,8 @@ import { z } from 'zod'
 
 import type { AccountSummary } from '../../domain/types.js'
 import { badRequest, ok } from '../../shared/http.js'
-import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
-import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
+import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
+import { DuplicateAccountCredentialError, ProxyProfileUnavailableError, accountTestUnavailableMessage, clearAccountFailureState, createAccount, deleteAccount, findAccountForTest, findAccountSummary, findGroupSummary, findRecentOpenAIRequestShapeForAccount, listAccountOptions, listAccountsPage, listProviders, markAccountTestTemporaryUnavailable, migrateAccountTraffic, setAccountGroup, updateAccount, updateAuthorizedAccountBindingDispatch, type AccountListOptions, type AccountListSchedulableFilter, type AccountListSortDirection, type AccountListSortField } from '../../storage/repositories.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { getRequestAccessScope, type RequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -43,10 +43,8 @@ const accountTestSchema = z.object({
 }).optional()
 
 const accountGroupSchema = z.object({
-  groupId: z.string().trim().min(1, '分组不能为空'),
-  dispatchWeight: z.number().int().min(1).max(1000).optional(),
-  softConcurrencyLimit: z.number().int().min(1).nullable().optional()
-})
+  groupId: z.string().trim().min(1, '分组不能为空')
+}).strict()
 
 const accountTrafficMigrationSchema = z.object({
   targetAccountId: z.string().trim().min(1, '目标账户不能为空'),
@@ -136,15 +134,21 @@ accountsRouter.get('/:id', (req, res) => {
 
 function parseAccountOptionsQuery(query: Record<string, unknown>): AccountListOptions {
   return {
+    ids: queryTextList(query.ids, 50),
     page: integerQueryValue(query.page),
     pageSize: integerQueryValue(query.pageSize),
-    limit: integerQueryValue(query.limit),
+    limit: optionLimitValue(integerQueryValue(query.limit)),
     keyword: optionalQueryText(query.keyword),
+    providerCode: optionalQueryText(query.providerCode),
     groupId: optionalQueryText(query.groupId),
     type: optionalQueryText(query.type),
     status: statusQueryValue(query.status),
     schedulable: schedulableQueryValue(query.schedulable)
   }
+}
+
+function optionLimitValue(value: number | undefined): number {
+  return typeof value === 'number' ? Math.min(50, Math.max(1, value)) : 50
 }
 
 function parseAccountListOptions(query: Record<string, unknown>): AccountListOptions {
@@ -161,6 +165,7 @@ function parseAccountListOptions(query: Record<string, unknown>): AccountListOpt
     pageSize: integerQueryValue(query.pageSize),
     limit: integerQueryValue(query.limit),
     keyword: optionalQueryText(query.keyword),
+    providerCode: optionalQueryText(query.providerCode),
     groupId: optionalQueryText(query.groupId),
     type: optionalQueryText(query.type),
     status: statusQueryValue(query.status),
@@ -368,17 +373,14 @@ accountsRouter.post('/:id/group', (req, res) => {
   const requestAccess = getRequestAccessScope(scopeQuery.data.systemAccountId)
   const parsed = accountGroupSchema.safeParse(req.body)
   if (!parsed.success) {
-    res.status(400).json(badRequest('请选择要绑定的分组'))
+    res.status(400).json(badRequest('绑定分组参数无效'))
     return
   }
 
   const before = findAccountForTest(req.params.id, requestAccess)
   try {
     const account = runLoggedOperation(() => {
-      const account = setAccountGroup(req.params.id, parsed.data.groupId, requestAccess, {
-        dispatchWeight: parsed.data.dispatchWeight,
-        softConcurrencyLimit: parsed.data.softConcurrencyLimit
-      })
+      const account = setAccountGroup(req.params.id, parsed.data.groupId, requestAccess)
       if (!account) {
         throw new Error('账户不存在、授权已失效或分组不可用')
       }
@@ -396,9 +398,7 @@ accountsRouter.post('/:id/group', (req, res) => {
           resourceName: account.name,
           summary: `绑定账户分组：${account.name}`,
           changes: [
-            safeChange('groupId', '绑定分组', before?.boundGroupId, account.boundGroupId),
-            safeChange('dispatchWeight', '绑定权重', before?.boundGroupDispatchWeight, account.boundGroupDispatchWeight),
-            safeChange('softConcurrencyLimit', '绑定软并发', before?.boundGroupSoftConcurrencyLimit, account.boundGroupSoftConcurrencyLimit)
+            safeChange('groupId', '绑定分组', before?.boundGroupId, account.boundGroupId)
           ],
           viewers: viewer(ownerSystemAccountId, 'resource_owner')
         }
@@ -690,7 +690,13 @@ accountsRouter.post('/:id/test', async (req, res) => {
   })
   try {
     const diagnostics = requestAccess?.role === 'admin' || account.accessType !== 'authorized' ? 'full' : 'limited'
-    let result = await testOpenAIAccount(account, { ...(parsed.data ?? {}), signal: abortController.signal, diagnostics })
+    const { prompt: _ignoredPrompt, ...testOptions } = parsed.data ?? {}
+    let result = await testOpenAIAccount(account, {
+      ...testOptions,
+      signal: abortController.signal,
+      diagnostics,
+      requestShape: findRecentOpenAIRequestShapeForAccount(account.id, account.boundGroupId)
+    })
     if (abortController.signal.aborted || res.writableEnded) {
       return
     }

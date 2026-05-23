@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { DefaultGroupReadonlyError, createGroup, deleteGroup, findGroupSummary, listAccountGroupOptions, listGroupOptions, listGroups, listGroupsPage, listProviders, updateGroup } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 import { parseRequestScopeQuery } from '../auth/request-scope-query.js'
@@ -64,13 +64,19 @@ groupsRouter.get('/account-options', (req, res, next) => {
 })
 
 function parseGroupOptionListOptions(query: Record<string, unknown>) {
+  const ids = queryTextList(query.ids, 50)
   return {
+    ids,
     keyword: optionalQueryText(query.keyword),
     providerCode: optionalQueryText(query.providerCode),
-    limit: integerQueryValue(query.limit),
+    limit: optionLimitValue(integerQueryValue(query.limit)),
     manageableOnly: booleanQueryValue(query.manageableOnly),
     preferDefault: booleanQueryValue(query.preferDefault)
   }
+}
+
+function optionLimitValue(value: number | undefined): number {
+  return typeof value === 'number' ? Math.min(50, Math.max(1, value)) : 50
 }
 
 function booleanQueryValue(value: unknown): boolean | undefined {

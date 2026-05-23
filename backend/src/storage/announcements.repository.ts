@@ -269,9 +269,9 @@ function announcementSummaries(rows: Array<AnnouncementRow | PublicAnnouncementR
     }
     if (includeActors) {
       summary.createdBy = row.created_by
-      summary.createdByName = createdBy?.displayName ?? createdBy?.username
+      summary.createdByName = createdBy?.displayName
       summary.updatedBy = row.updated_by ?? undefined
-      summary.updatedByName = updatedBy?.displayName ?? updatedBy?.username
+      summary.updatedByName = updatedBy?.displayName
     }
     return summary
   })

@@ -105,8 +105,6 @@ export interface AccountSummary {
   accountAuthorizationId?: string
   boundGroupId?: string
   boundGroupName?: string
-  boundGroupDispatchWeight?: number
-  boundGroupSoftConcurrencyLimit?: number
   groupBindStatus?: AccountGroupBindStatus
   bindingSystemAccountId?: string
   ownerSystemAccountId?: string
@@ -261,7 +259,6 @@ export interface ErrorPolicySummary {
 export interface GroupSchedulingPolicy {
   mode?: 'balanced_fast'
   defaultSoftConcurrency?: number
-  weightAffectsSoftConcurrency?: boolean
   fastFirstEnabled?: boolean
   fallbackOnQueueEnabled?: boolean
   breakAffinityOnSoftLimit?: boolean

@@ -11,6 +11,7 @@
             :disabled="loading"
             :filter-option="false"
             :loading="systemAccountOptionsLoading"
+            v-model:selected-principal="selectedSystemAccount"
             all-label="全部用户"
             class="ai-performance-system-account-select"
             include-all
@@ -30,8 +31,10 @@
             @change="handleDateRangeChange"
             @open-change="handleDateRangeOpenChange"
           />
-          <a-select
+          <AccountSelect
             :value="accountPickerValue"
+            :accounts="accounts"
+            :selected-accounts="addedAccountSelections"
             class="ai-performance-account-select"
             mode="multiple"
             allow-clear
@@ -86,18 +89,21 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref, shallowRef } from 'vue'
+import { computed, ref, shallowRef, watch } from 'vue'
 import type { Ref, ShallowRef } from 'vue'
 import { ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import dayjs, { type Dayjs } from 'dayjs'
 
 import { api } from '@/api/client'
+import AccountSelect from '@/components/AccountSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import { disposeChart, ensureChart, resizeEcharts, useEchartsPageLifecycle, type ECharts } from '@/composables/useEcharts'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys } from '@/shared/dateRange'
+import { accountSelectionForId, rememberAccountSelection, rememberAccountSelections, type AccountSelection } from '@/shared/accountLabelCache'
+import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountStatus, AiPerformanceAccountOption, AiPerformanceOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
@@ -116,11 +122,13 @@ const defaultDateRange = (): [Dayjs, Dayjs] => {
 const dateRange = ref<[Dayjs, Dayjs]>(defaultDateRange())
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const addedAccountIds = ref<string[]>([])
+const addedAccountSelections = ref<AccountSelection[]>([])
 const activeAccountIds = ref<string[]>([])
 const accountPickerValue = ref<string[]>([])
 const overview = ref<AiPerformanceOverview>()
 const accounts = ref<AiPerformanceAccountOption[]>([])
 const selectedSystemAccountId = ref(allSystemAccountsValue)
+const selectedSystemAccount = ref<PrincipalSelection | undefined>()
 const loading = ref(false)
 const accountsLoading = ref(false)
 const accountSearchKeyword = ref('')
@@ -135,7 +143,6 @@ const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
-  load: loadSystemAccounts,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -157,7 +164,6 @@ const { pageActive, requestRender: renderCharts } = useEchartsPageLifecycle({
   resizeCharts,
   disposeCharts,
   onMounted: () => {
-    void loadAccounts()
     void loadPerformance()
   },
   onDeactivate: clearAccountSearchTimer,
@@ -294,7 +300,6 @@ async function loadPerformance() {
   const requestSeq = ++performanceRequestSeq
   loading.value = true
   try {
-    await loadSystemAccounts()
     if (requestSeq !== performanceRequestSeq) return
     const systemAccountId = selectedPerformanceSystemAccountId()
     const rangeParams = selectedRangeParams()
@@ -323,7 +328,6 @@ async function loadPerformance() {
 }
 
 async function loadAccounts() {
-  await loadSystemAccounts()
   const request = currentAccountOptionsRequest()
   if (loadingAccountOptionsKey === request.key && loadingAccountOptionsPromise) {
     return loadingAccountOptionsPromise
@@ -352,7 +356,7 @@ async function loadAccounts() {
         systemAccountId: request.systemAccountId,
         keyword: request.keyword,
         accountIds: request.accountIds,
-        limit: 30
+        limit: 50
       }
       const nextAccounts = isManagementView.value
         ? await api.stats.aiPerformanceAccounts(accountParams)
@@ -408,8 +412,10 @@ function selectedPerformanceSystemAccountId(): string | undefined {
 }
 
 function handleSystemAccountChange() {
+  if (selectedSystemAccountId.value === allSystemAccountsValue) {
+    selectedSystemAccount.value = undefined
+  }
   clearAccountState()
-  void loadAccounts()
   void loadPerformance()
 }
 
@@ -428,6 +434,7 @@ function handleAccountSelect(value: unknown) {
   const id = String(value ?? '').trim()
   accountSearchKeyword.value = ''
   if (!id) return
+  rememberAddedAccountSelection(id)
   const currentAccountIds = new Set(overviewAccounts.value.map((account) => account.id))
   const needsBackendAppend = !currentAccountIds.has(id) && !addedAccountIds.value.includes(id)
   if (needsBackendAppend) {
@@ -437,6 +444,7 @@ function handleAccountSelect(value: unknown) {
       return
     }
     addedAccountIds.value = ids
+    syncAddedAccountSelections()
   }
   if (hasActiveAccountFilter.value && !activeAccountIds.value.includes(id)) {
     activeAccountIds.value = [...activeAccountIds.value, id]
@@ -469,15 +477,16 @@ function resetFilters() {
   dateRange.value = parseDateRange()
   calendarRange.value = [null, null]
   selectedSystemAccountId.value = allSystemAccountsValue
+  selectedSystemAccount.value = undefined
   resetSystemAccountOptionsSearch()
   clearAccountState()
-  void loadAccounts()
   void loadPerformance()
 }
 
 function clearAccountState() {
   clearAccountSearchTimer()
   addedAccountIds.value = []
+  addedAccountSelections.value = []
   activeAccountIds.value = []
   accountPickerValue.value = []
   accountSearchKeyword.value = ''
@@ -599,9 +608,27 @@ function pruneAccountState() {
   const currentIds = new Set(currentOverview.accounts.map((account) => account.id))
   const backendAddedIds = new Set(currentOverview.selectedAccounts.map((account) => account.id))
   addedAccountIds.value = addedAccountIds.value.filter((id) => backendAddedIds.has(id))
+  syncAddedAccountSelections()
   activeAccountIds.value = activeAccountIds.value.filter((id) => currentIds.has(id))
 }
 
+function rememberAddedAccountSelection(id: string) {
+  const selection = accountSelectionForId(id, [...accounts.value, ...overviewAccounts.value], accountOptions.value)
+  rememberAccountSelection(selection)
+  if (!selection || addedAccountSelections.value.some((item) => item.id === selection.id)) return
+  addedAccountSelections.value = [...addedAccountSelections.value, selection]
+}
+
+function syncAddedAccountSelections() {
+  const existing = new Map(addedAccountSelections.value.map((selection) => [selection.id, selection]))
+  addedAccountSelections.value = addedAccountIds.value
+    .map((id) => accountSelectionForId(id, [...accounts.value, ...overviewAccounts.value], accountOptions.value) ?? existing.get(id))
+    .filter((selection): selection is AccountSelection => Boolean(selection))
+  rememberAccountSelections(addedAccountSelections.value)
+}
+
+watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+watch(addedAccountSelections, (selections) => rememberAccountSelections(selections), { deep: true, immediate: true })
 </script>
 
 <style scoped>

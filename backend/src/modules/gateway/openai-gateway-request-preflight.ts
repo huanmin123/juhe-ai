@@ -18,6 +18,11 @@ import {
 } from './authorization-quota.service.js'
 import { type AuditCaptureContext } from './audit-capture.service.js'
 import { filterLocallySuppressedGatewayAccounts } from './gateway-account-side-effects.service.js'
+import {
+  createClientIpAccountAvoidanceTracker,
+  orderOpenAIAccountsByClientIpAccountAvoidance,
+  type ClientIpAccountAvoidanceTracker
+} from './openai-gateway-client-ip-account-avoidance.service.js'
 import { getGatewayRequestBodyState } from './openai-gateway-request-body.js'
 import {
   orderOpenAIAccountsByCodexTurnAvoidance
@@ -78,6 +83,7 @@ export interface OpenAIGatewayDispatchContext {
   accounts: UpstreamAccount[]
   sessionAffinityKey?: string
   clientStrategy: OpenAIGatewayClientStrategyContext
+  clientIpAccountAvoidanceTracker: ClientIpAccountAvoidanceTracker
   releaseClientIpConcurrency: () => void
 }
 
@@ -142,6 +148,12 @@ export async function prepareOpenAIGatewayDispatchContext(
     apiKeyId,
     groupId,
     endpoint
+  })
+  const clientIpAccountAvoidanceTracker = createClientIpAccountAvoidanceTracker({
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    clientIp
   })
   if (clientStrategy.clientProfile === 'codex') {
     auditCapture.addGatewayMetadata({
@@ -330,7 +342,38 @@ export async function prepareOpenAIGatewayDispatchContext(
     }, '网关本地短期屏蔽账号已应用到候选列表')
   }
 
-  const codexTurnAvoidance = orderOpenAIAccountsByCodexTurnAvoidance(localSuppressionFilter.accounts, clientStrategy)
+  const clientIpAccountAvoidance = orderOpenAIAccountsByClientIpAccountAvoidance(localSuppressionFilter.accounts, {
+    systemAccountId,
+    apiKeyId,
+    groupId,
+    clientIp
+  })
+  if (clientIpAccountAvoidance.applied || clientIpAccountAvoidance.bypassedAllAvoided) {
+    logger.warn({
+      event: clientIpAccountAvoidance.applied
+        ? 'gateway_client_ip_account_avoidance_applied'
+        : 'gateway_client_ip_account_avoidance_bypassed',
+      applied: clientIpAccountAvoidance.applied,
+      avoidedAccountIds: clientIpAccountAvoidance.avoidedAccountIds,
+      bypassedAllAvoided: clientIpAccountAvoidance.bypassedAllAvoided,
+      groupId,
+      systemAccountId,
+      apiKeyId,
+      clientIp
+    }, clientIpAccountAvoidance.applied
+      ? '客户端 IP 级账号回避已应用到候选列表'
+      : '客户端 IP 级账号回避无可用备选，保持原候选列表')
+    auditCapture.addGatewayMetadata({
+      label: 'client_ip_account_avoidance',
+      metadata: {
+        applied: clientIpAccountAvoidance.applied,
+        avoidedAccountIds: clientIpAccountAvoidance.avoidedAccountIds,
+        bypassedAllAvoided: clientIpAccountAvoidance.bypassedAllAvoided
+      }
+    })
+  }
+
+  const codexTurnAvoidance = orderOpenAIAccountsByCodexTurnAvoidance(clientIpAccountAvoidance.accounts, clientStrategy)
   if (codexTurnAvoidance.applied || codexTurnAvoidance.bypassedAllAvoided) {
     logger.warn({
       event: 'gateway_codex_turn_account_avoidance',
@@ -500,6 +543,7 @@ export async function prepareOpenAIGatewayDispatchContext(
     accounts,
     sessionAffinityKey,
     clientStrategy,
+    clientIpAccountAvoidanceTracker,
     releaseClientIpConcurrency
   }
 }

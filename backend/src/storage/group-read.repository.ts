@@ -9,6 +9,7 @@ export interface GroupListOptions {
   page?: number
   pageSize?: number
   limit?: number
+  ids?: string[]
   keyword?: string
   providerCode?: string
   manageableOnly?: boolean
@@ -24,6 +25,7 @@ export interface GroupRowsPage {
 }
 
 interface NormalizedGroupListOptions {
+  ids: string[]
   keyword?: string
   providerCode?: string
   manageableOnly: boolean
@@ -67,6 +69,7 @@ function normalizeGroupListOptions(options?: GroupListOptions): NormalizedGroupL
     ? Math.min(maxGroupListPageSize, Math.max(1, rawPageSize))
     : defaultGroupListPageSize
   return {
+    ids: normalizeTextList(options?.ids),
     keyword: normalizeTextFilter(options?.keyword),
     providerCode: normalizeTextFilter(options?.providerCode),
     manageableOnly: options?.manageableOnly === true,
@@ -76,7 +79,7 @@ function normalizeGroupListOptions(options?: GroupListOptions): NormalizedGroupL
   }
 }
 
-function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { manageableOnly: false, preferDefault: false }): { rows: GroupListRow[] } {
+function queryGroupRowsForAccess(access?: AccessScope, pagination?: { limit: number; offset: number }, options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode' | 'manageableOnly' | 'preferDefault'> = { ids: [], manageableOnly: false, preferDefault: false }): { rows: GroupListRow[] } {
   const viewerSystemAccountId = userVisibleSystemAccountId(access)
   const ownerSystemAccountId = manageableSystemAccountId(access)
   const pageClause = pagination ? ' LIMIT ? OFFSET ?' : ''
@@ -204,7 +207,7 @@ function groupOrderClause(preferDefault: boolean): string {
 
 function buildGroupFilter(
   alias: string | undefined,
-  options: Pick<NormalizedGroupListOptions, 'keyword' | 'providerCode'>,
+  options: Pick<NormalizedGroupListOptions, 'ids' | 'keyword' | 'providerCode'>,
   initialClauses: string[] = [],
   initialParams: string[] = []
 ): { clauses: string[]; params: string[] } {
@@ -212,6 +215,10 @@ function buildGroupFilter(
   const params = [...initialParams]
   const providerCode = options.providerCode?.trim()
   const column = (name: string) => alias ? `${alias}.${name}` : name
+  if (options.ids.length) {
+    clauses.push(`${column('id')} IN (${options.ids.map(() => '?').join(', ')})`)
+    params.push(...options.ids)
+  }
   if (providerCode) {
     clauses.push(`${column('provider_code')} COLLATE NOCASE = ?`)
     params.push(providerCode)
@@ -220,14 +227,12 @@ function buildGroupFilter(
   if (text) {
     const prefix = `${escapeLikePrefix(text)}%`
     clauses.push(`(
-      ${column('id')} = ?
-      OR ${column('id')} LIKE ? ESCAPE '\\'
-      OR ${column('name')} COLLATE NOCASE = ?
+      ${column('name')} COLLATE NOCASE = ?
       OR ${column('name')} LIKE ? ESCAPE '\\'
       OR ${column('provider_code')} COLLATE NOCASE = ?
       OR ${column('provider_code')} LIKE ? ESCAPE '\\'
     )`)
-    params.push(text, prefix, text, prefix, text, prefix)
+    params.push(text, prefix, text, prefix)
   }
   return { clauses, params }
 }
@@ -238,6 +243,13 @@ function whereClause(clauses: string[]): string {
 
 function normalizeTextFilter(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function normalizeTextList(values?: string[]): string[] {
+  if (!values?.length) return []
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+    .sort()
+    .slice(0, 500)
 }
 
 function escapeLikePrefix(value: string): string {

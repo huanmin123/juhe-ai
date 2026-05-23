@@ -5,8 +5,9 @@
         <div class="model-checks-control-panel">
           <div class="model-checks-fields">
             <a-form-item class="model-checks-account-field" required>
-              <a-select
+              <AccountSelect
                 :value="selectValueOrUndefined(form.targetId)"
+                v-model:selected-account="selectedTargetAccount"
                 show-search
                 allow-clear
                 :disabled="submitting"
@@ -30,8 +31,9 @@
               />
             </a-form-item>
             <a-form-item class="model-checks-comparison-field">
-              <a-select
+              <AccountSelect
                 v-model:value="form.trustedComparisonAccountId"
+                v-model:selected-account="selectedComparisonAccount"
                 show-search
                 allow-clear
                 :disabled="submitting"
@@ -96,8 +98,9 @@
           <a-select v-model:value="filters.model" allow-clear class="history-filter" :options="modelOptions" placeholder="全部模型" @change="reloadRuns" />
           <a-select v-model:value="filters.status" allow-clear class="history-filter" :options="statusOptions" placeholder="全部状态" @change="reloadRuns" />
           <a-select v-model:value="filters.level" allow-clear class="history-filter" :options="levelOptions" placeholder="全部级别" @change="reloadRuns" />
-          <a-select
+          <AccountSelect
             v-model:value="filters.targetId"
+            v-model:selected-account="selectedHistoryTargetAccount"
             show-search
             allow-clear
             class="history-target-filter"
@@ -268,10 +271,17 @@ import { computed, nextTick, onBeforeUnmount, onDeactivated, onMounted, reactive
 import { ExperimentOutlined, ReloadOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 
+import AccountSelect from '@/components/AccountSelect.vue'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedAccountsApi, useScopedModelChecksApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import {
+  accountLabelForId,
+  accountSelectionForId,
+  rememberAccountLabel,
+  type AccountSelection
+} from '@/shared/accountLabelCache'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatDateTime, formatNumber } from '@/shared/formatters'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
@@ -325,6 +335,7 @@ const columns = [
 ]
 const modelCheckPageSize = 20
 type AccountSelectOption = { label: string; value: string }
+type SelectValue = string | string[] | undefined
 
 const { isManagementView } = useScopedMenuView()
 const modelChecksApi = useScopedModelChecksApi(isManagementView)
@@ -348,6 +359,9 @@ const targetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ t
 const comparisonOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
 const historyTargetOptionsCache = createShortLivedQueryCache<AccountSelectOption[]>({ ttlMs: 10_000 })
 const currentRun = ref<ModelCheckRunDetail>()
+const selectedTargetAccount = ref<AccountSelection>()
+const selectedComparisonAccount = ref<AccountSelection>()
+const selectedHistoryTargetAccount = ref<AccountSelection>()
 const form = reactive<ModelCheckRunPayload>({
   targetType: 'account',
   targetId: '',
@@ -386,6 +400,9 @@ const {
     model: filters.model,
     level: filters.level,
     status: filters.status
+  }).then((page) => {
+    rememberRunAccountLabels(page.items)
+    return page
   }),
   onError: (error) => {
     console.error(error)
@@ -429,7 +446,7 @@ async function loadOptions() {
 
 async function loadTargetOptions(keyword = '') {
   const normalizedKeyword = keyword.trim()
-  const requestKey = JSON.stringify([normalizedKeyword, form.targetId])
+  const requestKey = JSON.stringify([normalizedKeyword])
   const requestId = ++targetOptionsRequestId
   const cachedOptions = targetOptionsCache.get(requestKey)
   if (cachedOptions) {
@@ -445,9 +462,10 @@ async function loadTargetOptions(keyword = '') {
       schedulable: 'enabled',
       limit: 50
     })
-    const nextOptions = keepSelectedTargetOption(accounts
+    const nextOptions = accounts
       .filter((account) => account.providerCode === 'openai')
-      .map(accountTargetOption))
+      .filter((account) => Boolean(account.name.trim()))
+      .map(accountTargetOption)
     targetOptionsCache.set(requestKey, nextOptions)
     if (requestId === targetOptionsRequestId) {
       targetOptions.value = nextOptions
@@ -464,7 +482,7 @@ async function loadTargetOptions(keyword = '') {
 
 async function loadComparisonOptions(keyword = '') {
   const normalizedKeyword = keyword.trim()
-  const requestKey = JSON.stringify([normalizedKeyword, form.trustedComparisonAccountId])
+  const requestKey = JSON.stringify([normalizedKeyword, form.targetId])
   const requestId = ++comparisonOptionsRequestId
   const cachedOptions = comparisonOptionsCache.get(requestKey)
   if (cachedOptions) {
@@ -480,9 +498,10 @@ async function loadComparisonOptions(keyword = '') {
       schedulable: 'enabled',
       limit: 50
     })
-    const nextOptions = keepSelectedComparisonOption(accounts
+    const nextOptions = accounts
       .filter((account) => account.providerCode === 'openai' && account.id !== form.targetId)
-      .map(accountTargetOption))
+      .filter((account) => Boolean(account.name.trim()))
+      .map(accountTargetOption)
     comparisonOptionsCache.set(requestKey, nextOptions)
     if (requestId === comparisonOptionsRequestId) {
       comparisonOptions.value = nextOptions
@@ -499,7 +518,7 @@ async function loadComparisonOptions(keyword = '') {
 
 async function loadHistoryTargetOptions(keyword = '') {
   const normalizedKeyword = keyword.trim()
-  const requestKey = JSON.stringify([normalizedKeyword, filters.targetId])
+  const requestKey = JSON.stringify([normalizedKeyword])
   const requestId = ++historyTargetOptionsRequestId
   const cachedOptions = historyTargetOptionsCache.get(requestKey)
   if (cachedOptions) {
@@ -513,9 +532,10 @@ async function loadHistoryTargetOptions(keyword = '') {
       keyword: normalizedKeyword || undefined,
       limit: 50
     })
-    const nextOptions = keepSelectedHistoryTargetOption(accounts
+    const nextOptions = accounts
       .filter((account) => account.providerCode === 'openai')
-      .map(accountTargetOption))
+      .filter((account) => Boolean(account.name.trim()))
+      .map(accountTargetOption)
     historyTargetOptionsCache.set(requestKey, nextOptions)
     if (requestId === historyTargetOptionsRequestId) {
       historyTargetOptions.value = nextOptions
@@ -600,6 +620,7 @@ async function loadRunDetail(id: string) {
   detailLoading.value = true
   try {
     currentRun.value = await modelChecksApi.detail(id)
+    rememberRunAccountLabels([currentRun.value])
   } catch (error) {
     console.error(error)
     message.error(extractApiErrorMessage(error, '加载模型检测详情失败'))
@@ -612,15 +633,17 @@ function handleTargetSearch(value: string) {
   void loadTargetOptions(value)
 }
 
-function handleTargetValueUpdate(value: string | undefined) {
-  form.targetId = value ?? ''
+function handleTargetValueUpdate(value: SelectValue) {
+  form.targetId = typeof value === 'string' ? value : ''
+  selectedTargetAccount.value = selectedAccountForId(form.targetId, targetOptions.value)
 }
 
 function handleTargetChange() {
   if (form.trustedComparisonAccountId && form.trustedComparisonAccountId === form.targetId) {
     form.trustedComparisonAccountId = undefined
+    selectedComparisonAccount.value = undefined
   }
-  void loadComparisonOptions()
+  comparisonOptions.value = comparisonOptions.value.filter((item) => item.value !== form.targetId)
 }
 
 function handleTargetDropdownVisibleChange(open: boolean) {
@@ -651,10 +674,12 @@ function handleHistoryTargetDropdownVisibleChange(open: boolean) {
 
 function resetRunForm() {
   form.targetId = ''
+  selectedTargetAccount.value = undefined
   form.model = options.value.defaultModel
   form.profile = options.value.defaultProfile
   form.trustedComparison = false
   form.trustedComparisonAccountId = undefined
+  selectedComparisonAccount.value = undefined
 }
 
 function resetTerminal() {
@@ -696,9 +721,11 @@ function scrollTerminalToBottom() {
 
 function handleModelCheckProgress(event: ModelCheckProgressEvent) {
   if (event.type === 'run_started') {
+    rememberAccountLabel(event.targetId, event.targetName)
+    rememberAccountLabel(event.trustedComparisonAccountId, event.trustedComparisonAccountName)
     const targetLabel = event.targetName?.trim() || targetOptionText(event.targetId)
     const comparisonText = event.trustedComparison
-      ? `，可信对比 ${event.trustedComparisonAccountName?.trim() || (event.trustedComparisonAccountId ? comparisonOptionText(event.trustedComparisonAccountId) : '已开启')}`
+      ? `，可信对比 ${event.trustedComparisonAccountName?.trim() || (event.trustedComparisonAccountId ? comparisonOptionText(event.trustedComparisonAccountId) : '未记录账户名称')}`
       : '，可信对比关闭'
     appendTerminalLine('info', `检测启动：目标 AI 账户 ${targetLabel}，模型 ${event.model}${comparisonText}`)
     return
@@ -728,40 +755,20 @@ function handleModelCheckProgress(event: ModelCheckProgressEvent) {
 }
 
 function accountTargetOption(account: AccountOptionSummary) {
+  rememberAccountLabel(account.id, account.name)
   return { label: account.name, value: account.id }
 }
 
-function keepSelectedTargetOption(nextOptions: AccountSelectOption[]) {
-  if (!form.targetId || nextOptions.some((item) => item.value === form.targetId)) {
-    return nextOptions
-  }
-  return [{ label: selectedAccountFallbackLabel(form.targetId), value: form.targetId }, ...nextOptions]
-}
-
 function targetOptionText(id: string) {
-  return targetOptions.value.find((item) => item.value === id)?.label ?? selectedAccountFallbackLabel(id)
-}
-
-function keepSelectedComparisonOption(nextOptions: AccountSelectOption[]) {
-  if (!form.trustedComparisonAccountId || nextOptions.some((item) => item.value === form.trustedComparisonAccountId)) {
-    return nextOptions
-  }
-  return [{ label: '已选可信对比账户', value: form.trustedComparisonAccountId }, ...nextOptions]
+  return selectedTargetAccount.value?.id === id
+    ? selectedTargetAccount.value.name
+    : accountNameForId(id, targetOptions.value) ?? '未记录账户名称'
 }
 
 function comparisonOptionText(id: string) {
-  return comparisonOptions.value.find((item) => item.value === id)?.label ?? '已选可信对比账户'
-}
-
-function keepSelectedHistoryTargetOption(nextOptions: AccountSelectOption[]) {
-  if (!filters.targetId || nextOptions.some((item) => item.value === filters.targetId)) {
-    return nextOptions
-  }
-  return [{ label: selectedAccountFallbackLabel(filters.targetId), value: filters.targetId }, ...nextOptions]
-}
-
-function selectedAccountFallbackLabel(id: string) {
-  return knownTargetName(id) ?? '已选账户'
+  return selectedComparisonAccount.value?.id === id
+    ? selectedComparisonAccount.value.name
+    : accountNameForId(id, comparisonOptions.value) ?? '未记录账户名称'
 }
 
 function knownTargetName(id: string) {
@@ -773,8 +780,23 @@ function knownTargetName(id: string) {
   return undefined
 }
 
+function selectedAccountForId(id: string | undefined, options: AccountSelectOption[]): AccountSelection | undefined {
+  return accountSelectionForId(id, [], options)
+}
+
+function accountNameForId(id: string, options: AccountSelectOption[]): string | undefined {
+  return selectedAccountForId(id, options)?.name || knownTargetName(id) || accountLabelForId(id)
+}
+
+function rememberRunAccountLabels(items: Array<Pick<ModelCheckRunSummary, 'targetId' | 'targetName'>>) {
+  for (const item of items) {
+    rememberAccountLabel(item.targetId, item.targetName)
+  }
+}
+
 function targetDisplayName(run: Pick<ModelCheckRunSummary, 'targetName' | 'targetId'>) {
-  return run.targetName?.trim() || knownTargetName(run.targetId) || '未记录账户名称'
+  const name = run.targetName?.trim() || knownTargetName(run.targetId) || accountLabelForId(run.targetId)
+  return name || '未记录账户名称'
 }
 
 function accountTypeText(value: string) {
@@ -904,7 +926,7 @@ function formatClockTime(value: Date) {
 }
 
 onMounted(async () => {
-  await Promise.all([loadOptions(), loadRuns(), loadTargetOptions(), loadComparisonOptions(), loadHistoryTargetOptions()])
+  await Promise.all([loadOptions(), loadRuns()])
 })
 
 onDeactivated(() => {

@@ -246,8 +246,6 @@ export function applyBusinessSchema(database: DatabaseSync): void {
       local_last_error_message TEXT,
       local_super_priority_enabled INTEGER NOT NULL DEFAULT 0,
       local_fallback_enabled INTEGER NOT NULL DEFAULT 0,
-      weight INTEGER NOT NULL DEFAULT 1,
-      soft_concurrency_limit INTEGER,
       enabled INTEGER NOT NULL DEFAULT 1,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
@@ -392,4 +390,14 @@ export function applyBusinessSchema(database: DatabaseSync): void {
     DROP INDEX IF EXISTS idx_proxy_profiles_host_lookup;
     DROP INDEX IF EXISTS idx_proxy_profiles_type_lookup;
   `)
+  dropColumnIfExists(database, 'group_accounts', 'weight')
+  dropColumnIfExists(database, 'group_accounts', 'soft_concurrency_limit')
+}
+
+function dropColumnIfExists(database: DatabaseSync, tableName: string, columnName: string): void {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
+  if (!columns.some((column) => column.name === columnName)) {
+    return
+  }
+  database.exec(`ALTER TABLE ${tableName} DROP COLUMN ${columnName}`)
 }

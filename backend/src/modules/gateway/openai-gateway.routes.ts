@@ -125,7 +125,15 @@ export async function handleOpenAIGatewayRequest(
   if (!preflight) {
     return
   }
-  const { activeGatewaySettings, usageContext: gatewayUsageContext, accounts, sessionAffinityKey, clientStrategy, releaseClientIpConcurrency } = preflight
+  const {
+    activeGatewaySettings,
+    usageContext: gatewayUsageContext,
+    accounts,
+    sessionAffinityKey,
+    clientStrategy,
+    clientIpAccountAvoidanceTracker,
+    releaseClientIpConcurrency
+  } = preflight
   const releaseClientIpSlot = once(releaseClientIpConcurrency)
   res.once('finish', releaseClientIpSlot)
   res.once('close', releaseClientIpSlot)
@@ -138,7 +146,8 @@ export async function handleOpenAIGatewayRequest(
       gatewayUsageContext,
       auditCapture,
       sessionAffinityKey,
-      abortController.signal
+      abortController.signal,
+      clientIpAccountAvoidanceTracker
     )
     const { account, response: upstreamResponse, upstreamUrl, auditAttemptId, releaseConcurrency, markFirstOutput } = upstreamResult
 
@@ -163,7 +172,8 @@ export async function handleOpenAIGatewayRequest(
           signal: abortController.signal,
           sessionAffinityKey,
           clientStrategy,
-          markFirstOutput
+          markFirstOutput,
+          clientIpAccountAvoidanceTracker
         })
         : await handleNonStreamUpstreamResponse({
           req,
@@ -178,7 +188,8 @@ export async function handleOpenAIGatewayRequest(
           startedAt,
           signal: abortController.signal,
           sessionAffinityKey,
-          markFirstOutput
+          markFirstOutput,
+          clientIpAccountAvoidanceTracker
         })
       if (handledResponse.alreadyFinalized) {
         return
@@ -195,7 +206,8 @@ export async function handleOpenAIGatewayRequest(
         usageContext: gatewayUsageContext,
         startedAt,
         signal: abortController.signal,
-        result: handledResponse
+        result: handledResponse,
+        clientIpAccountAvoidanceTracker
       })
     } finally {
       releaseConcurrency()

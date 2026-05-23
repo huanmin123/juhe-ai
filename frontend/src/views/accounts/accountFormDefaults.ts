@@ -14,6 +14,7 @@ export function defaultAccountForm(
     name: '',
     type,
     groupId: undefined,
+    group: undefined,
     apiKey: '',
     baseUrl: provider?.baseUrl ?? 'https://api.openai.com/v1',
     accessToken: '',

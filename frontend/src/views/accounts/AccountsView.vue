@@ -7,6 +7,7 @@
       :group-options="filterGroupOptions"
       :group-options-loading="filterGroupOptionsLoading"
       :is-management-view="isManagementView"
+      :providers="availableProviders"
       :refresh-loading="loading"
       :status-options="statusOptions"
       :system-accounts="systemAccounts"
@@ -22,9 +23,13 @@
       @system-account-dropdown="handleSystemAccountOptionsDropdown"
       @system-account-search="handleSystemAccountOptionsSearch"
       @update:group-id="filters.groupId = $event"
+      @update:group-selection="filters.group = $event"
       @update:keyword="filters.keyword = $event"
+      @update:provider-code="handleProviderFilterChange"
       @update:status="filters.status = $event"
       @update:system-account-id="filters.systemAccountId = $event"
+      @update:system-account-selection="filters.systemAccount = $event"
+      @update:type="handleAccountTypeFilterChange"
     />
 
     <AccountBatchToolbar
@@ -83,7 +88,7 @@
       :account="testingAccount"
       :model-options="testModelOptions"
       :models-loading="testModelsLoading"
-      :prompt="testForm.prompt"
+      :provider-name="providerName"
       :result="testResult"
       :running="testRunning"
       @close="closeTestModal"
@@ -134,13 +139,11 @@
       v-if="bindGroupModalOpen"
       v-model:open="bindGroupModalOpen"
       v-model:group-id="bindGroupForm.groupId"
-      v-model:dispatch-weight="bindGroupForm.dispatchWeight"
-      v-model:soft-concurrency-limit="bindGroupForm.softConcurrencyLimit"
+      v-model:group-selection="bindGroupForm.group"
       :account="bindingAccount"
       :group-options="bindGroupOptions"
       :group-options-loading="groupOptionsLoading"
       :saving="bindGroupSaving"
-      :soft-concurrency-visible="bindGroupSoftConcurrencyVisible"
       :tip="bindGroupTip"
       @group-options-dropdown="handleGroupOptionsDropdown"
       @group-options-search="handleGroupOptionsSearch"
@@ -152,6 +155,7 @@
       v-model:open="trafficMigrationModalOpen"
       v-model:source-status="trafficMigrationForm.sourceStatus"
       v-model:target-account-id="trafficMigrationForm.targetAccountId"
+      v-model:target-account="trafficMigrationForm.targetAccount"
       :saving="trafficMigrationSaving"
       :source-account="trafficMigrationSourceAccount"
       :target-options="trafficMigrationTargetOptions"
@@ -183,6 +187,7 @@ import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
+import { groupLabelForId, rememberGroupLabel } from '@/shared/groupLabelCache'
 import type { AccountSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import AccountBatchToolbar from './AccountBatchToolbar.vue'
@@ -251,6 +256,7 @@ const {
   handleSystemAccountOptionsSearch,
   loadMoreMobileAccounts,
   refreshMobileAccounts,
+  loadAccountOptions: loadAccountAuxiliaryOptions,
   loadData: loadAccountListData,
   refreshData,
   applyFilters,
@@ -273,8 +279,9 @@ const {
   allowAllProviders: true,
   errorMessage: '加载筛选分组选项失败',
   isManagementView: () => isManagementView.value,
-  limit: 100,
+  limit: 50,
   scope: () => ({
+    providerCode: filters.providerCode !== 'all' ? filters.providerCode : undefined,
     systemAccountId: isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined,
     selectedIds: [filters.groupId]
   })
@@ -282,6 +289,8 @@ const {
 
 function handleAccountListLoaded(selectableAccountIds: Set<string>) {
   selectedAccountIds.value = selectedAccountIds.value.filter((id) => selectableAccountIds.has(id))
+  rememberAccountGroupLabels(accounts.value)
+  syncFilterGroupSelection()
   if (modalOpen.value && !editingId.value) {
     ensureDefaultGroupSelected()
   }
@@ -365,9 +374,11 @@ const {
   groupIdForAccount,
   groups,
   isManagementView,
+  loadAccountOptions: loadAccountAuxiliaryOptions,
   loadGroupOptions,
   loadData,
   providers,
+  systemAccountSelection: computed(() => filters.systemAccount),
   systemAccounts
 })
 const {
@@ -393,7 +404,6 @@ const {
   bindGroupModalOpen,
   bindGroupOptions,
   bindGroupSaving,
-  bindGroupSoftConcurrencyVisible,
   bindGroupTip,
   bindingAccount,
   openBindGroup,
@@ -505,7 +515,52 @@ function groupIdForAccount(accountId: string) {
 }
 
 function groupNameForAccount(accountId: string) {
-  return accountById.value.get(accountId)?.boundGroupName
+  const account = accountById.value.get(accountId)
+  if (!account) return undefined
+  return account.boundGroupName ?? groupLabelForId(account.boundGroupId)
+}
+
+function rememberAccountGroupLabels(items: AccountSummary[]): void {
+  for (const account of items) {
+    rememberGroupLabel(account.boundGroupId, account.boundGroupName)
+  }
+}
+
+function syncFilterGroupSelection(): void {
+  if (!filters.groupId) {
+    filters.group = undefined
+    return
+  }
+  const group = filterGroupOptions.value.find((item) => item.id === filters.groupId)
+  if (group) {
+    filters.group = { id: group.id, name: group.name }
+    return
+  }
+  const account = accounts.value.find((item) => item.boundGroupId === filters.groupId && item.boundGroupName)
+  if (account?.boundGroupName) {
+    filters.group = { id: filters.groupId, name: account.boundGroupName }
+  }
+}
+
+function handleProviderFilterChange(value: string): void {
+  filters.providerCode = value || 'all'
+  if (filters.providerCode !== 'all') {
+    filters.groupId = ''
+    filters.group = undefined
+  }
+  const provider = filters.providerCode === 'all'
+    ? undefined
+    : availableProviders.value.find((item) => item.code === filters.providerCode)
+  if (provider && filters.type !== 'all' && !provider.accountTypes.includes(filters.type)) {
+    filters.type = 'all'
+  }
+  resetFilterGroupOptionsSearch()
+  applyFilters()
+}
+
+function handleAccountTypeFilterChange(value: string): void {
+  filters.type = value || 'all'
+  applyFilters()
 }
 
 function handleOpenBindGroup(account: AccountSummary): void {
@@ -526,6 +581,10 @@ function resetFilters() {
 function handleSystemAccountFilterChange() {
   selectedAccountIds.value = []
   filters.groupId = ''
+  filters.group = undefined
+  if (filters.systemAccountId === allSystemAccountsValue) {
+    filters.systemAccount = undefined
+  }
   resetGroupOptionsSearch()
   resetFilterGroupOptionsSearch()
   handleAccountListSystemAccountFilterChange()
@@ -563,7 +622,12 @@ async function removeAccount(id: string) {
   }
 }
 
-onMounted(loadData)
+onMounted(() => {
+  void loadData()
+  void loadAccountAuxiliaryOptions(accountScopeParams.value?.systemAccountId).catch((error) => {
+    console.error(error)
+  })
+})
 </script>
 
 <style scoped>

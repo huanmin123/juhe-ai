@@ -58,6 +58,7 @@ export interface UsageRecordListOptions {
   accountKeyword?: string
   result?: 'success' | 'failed' | 'all'
   statusCode?: number
+  groupId?: string
   model?: string
   startAt?: string
   endAt?: string

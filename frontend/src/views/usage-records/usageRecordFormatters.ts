@@ -1,9 +1,14 @@
 import type { UsageRecordSummary } from '@/types/domain'
+import { displayGroupName } from '@/shared/groupLabelCache'
 import { systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
 export function displayName(name?: string, id?: string): string {
   if (name) return name
   return id ? '已删除或未知' : '-'
+}
+
+export function displayUsageRecordGroupName(name?: string, id?: string): string {
+  return displayGroupName(name, id)
 }
 
 export function accountDisplayText(record: UsageRecordSummary): string {

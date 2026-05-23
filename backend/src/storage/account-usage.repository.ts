@@ -403,9 +403,7 @@ function loadAccountUsageKeywordAccountIds(input: {
   const viewerSystemAccountId = scopedSystemAccountId(input.access) ?? currentSystemAccountId(input.access)
   const prefixKeyword = `${escapeLikePrefix(keyword)}%`
   clauses.push(`(
-    accounts.id = ?
-    OR accounts.id LIKE ? ESCAPE '\\'
-    OR accounts.name COLLATE NOCASE = ?
+    accounts.name COLLATE NOCASE = ?
     OR accounts.name LIKE ? ESCAPE '\\'
     OR accounts.provider_code COLLATE NOCASE = ?
     OR accounts.provider_code LIKE ? ESCAPE '\\'
@@ -422,8 +420,6 @@ function loadAccountUsageKeywordAccountIds(input: {
     )
   )`)
   params.push(
-    keyword,
-    prefixKeyword,
     keyword,
     prefixKeyword,
     keyword,
@@ -461,7 +457,7 @@ function loadAccountUsageKeywordAccountIds(input: {
       ORDER BY accounts.name COLLATE NOCASE ASC, accounts.id ASC
       LIMIT ?
     `)
-    .all(...params, 500) as unknown as Array<{ id?: string }>
+    .all(...params, accountUsageSelectedAccountLimit) as unknown as Array<{ id?: string }>
   return [...new Set(rows.map((row) => row.id).filter((id): id is string => Boolean(id)))]
 }
 

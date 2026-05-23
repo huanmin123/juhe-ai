@@ -13,6 +13,7 @@
       :users="users"
       :user-loading="filterUserOptionsLoading"
       :active-filter-count="activeFilterCount"
+      :advanced-filter-count="advancedFilterCount"
       :loading="loading"
       @reset="resetFilters"
       @refresh="refreshData"
@@ -96,6 +97,9 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { accountSelectionForId, rememberAccountLabels, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
+import { mergeSelectedGroupOptions, rememberGroupLabels, type GroupSelection } from '@/shared/groupLabelCache'
+import { rememberPrincipalSelection, systemAccountPrincipalName, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary, ResourceAuthorizationSummary, SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import AuthorizationCreateModal from './AuthorizationCreateModal.vue'
@@ -177,8 +181,12 @@ type AuthorizationFilters = {
   sourceType: AuthorizationSourceFilter
   resourceType: AuthorizationFilterResourceType
   resourceId?: string
+  resourceAccount?: AccountSelection
+  resourceGroup?: GroupSelection
   teamId?: string
+  team?: PrincipalSelection
   granteeSystemAccountId?: string
+  granteeSystemAccount?: PrincipalSelection
 }
 type AuthorizationsPageState = {
   filters: AuthorizationFilters
@@ -190,13 +198,17 @@ const defaultAuthorizationsPageState = (): AuthorizationsPageState => ({
     sourceType: 'all',
     resourceType: 'all',
     resourceId: undefined,
+    resourceAccount: undefined,
+    resourceGroup: undefined,
     teamId: undefined,
-    granteeSystemAccountId: undefined
+    team: undefined,
+    granteeSystemAccountId: undefined,
+    granteeSystemAccount: undefined
   },
   pagination: { current: 1, pageSize }
 })
 const pageStateCache = usePageStateCache<AuthorizationsPageState>(undefined, defaultAuthorizationsPageState, {
-  version: 4,
+  version: 6,
   sanitize: (value, fallback) => {
     const state = value as Partial<AuthorizationsPageState>
     const filters = state.filters && typeof state.filters === 'object'
@@ -256,6 +268,8 @@ const createForm = reactive<AuthorizationCreateFormModel>({
   ownerSystemAccountId: undefined,
   resourceType: 'account' as 'account' | 'group',
   resourceId: '' as string,
+  resourceAccount: undefined,
+  resourceGroup: undefined,
   granteeType: 'system_account' as 'system_account' | 'team',
   granteeId: '' as string,
   remark: '',
@@ -281,14 +295,14 @@ const resourceOptions = computed(() => {
   if (filters.resourceType === 'account') {
     return accounts.value.map((account) => ({ label: account.name, value: account.id }))
   }
-  return groups.value.map((group) => ({ label: group.name, value: group.id }))
+  return mergeSelectedGroupOptions(groups.value.map((group) => ({ label: group.name, value: group.id })), [filters.resourceId], [filters.resourceGroup])
 })
 
 const createResourceOptions = computed(() => {
   if (createForm.resourceType === 'account') {
     return createOwnedAccounts.value.map((account) => ({ label: account.name, value: account.id }))
   }
-  return createOwnedGroups.value.map((group) => ({ label: group.name, value: group.id }))
+  return mergeSelectedGroupOptions(createOwnedGroups.value.map((group) => ({ label: group.name, value: group.id })), [createForm.resourceId], [createForm.resourceGroup])
 })
 const createResourceSelectDisabled = computed(() => {
   if (isManagementView.value && !createForm.ownerSystemAccountId) return true
@@ -314,6 +328,14 @@ const activeFilterCount = computed(() => {
   if (filters.resourceId) count += 1
   if (isManagementView.value && filters.teamId) count += 1
   if (isManagementView.value && filters.granteeSystemAccountId) count += 1
+  return count
+})
+const advancedFilterCount = computed(() => {
+  if (!isManagementView.value) return 0
+  let count = 0
+  if (filters.resourceId) count += 1
+  if (filters.teamId) count += 1
+  if (filters.granteeSystemAccountId) count += 1
   return count
 })
 const authorizationEmptyDescription = computed(() => {
@@ -361,24 +383,18 @@ watch(() => createForm.granteeType, () => {
 
 watch(() => createForm.resourceType, () => {
   createForm.resourceId = ''
+  createForm.resourceAccount = undefined
+  createForm.resourceGroup = undefined
   createResourceSearchKeyword.value = ''
   clearCreateResourceSearchTimer()
   void loadCreateResourceOptions()
 })
 
 async function loadMetaData() {
-  if (!isManagementView.value) {
-    accounts.value = []
-    groups.value = []
-    teams.value = []
-    users.value = []
-    return
-  }
-  await Promise.allSettled([
-    loadFilterResourceOptions(),
-    loadFilterTeamOptions(),
-    loadFilterUserOptions()
-  ])
+  accounts.value = []
+  groups.value = []
+  teams.value = []
+  users.value = []
 }
 
 function authorizationListParams(systemAccountId: string | undefined, pageState: { current: number; pageSize: number }) {
@@ -404,6 +420,8 @@ function openCreateModal() {
   createForm.ownerSystemAccountId = isManagementView.value ? authorizationScopeParams.value?.systemAccountId : currentSystemAccountId.value
   createForm.resourceType = filters.resourceType === 'group' ? 'group' : 'account'
   createForm.resourceId = ''
+  createForm.resourceAccount = undefined
+  createForm.resourceGroup = undefined
   createForm.granteeType = 'system_account'
   createForm.granteeId = ''
   createForm.remark = ''
@@ -418,6 +436,8 @@ function openCreateModal() {
 
 function handleCreateOwnerChange() {
   createForm.resourceId = ''
+  createForm.resourceAccount = undefined
+  createForm.resourceGroup = undefined
   createResourceSearchKeyword.value = ''
   createGranteeSearchKeyword.value = ''
   clearCreateResourceSearchTimer()
@@ -491,6 +511,8 @@ function handleFilterUserDropdown(open: boolean) {
 
 function handleResourceTypeChange() {
   filters.resourceId = undefined
+  filters.resourceAccount = undefined
+  filters.resourceGroup = undefined
   filterResourceSearchKeyword.value = ''
   clearFilterResourceSearchTimer()
   void loadFilterResourceOptions()
@@ -502,9 +524,6 @@ function resetFilters() {
   resetPagination()
   pageStateCache.clear()
   resetFilterOptionSearchState()
-  void loadFilterResourceOptions()
-  void loadFilterTeamOptions()
-  void loadFilterUserOptions()
   void loadData()
 }
 
@@ -555,6 +574,8 @@ async function loadCreateResourceOptions(keyword?: string): Promise<void> {
     if (cachedAccounts) {
       createOwnerResourceRequestId += 1
       createResourceOptionsLoading.value = false
+      rememberAccountLabels(cachedAccounts)
+      syncCreateResourceAccount(cachedAccounts)
       createAccounts.value = cachedAccounts
       createGroups.value = []
       return
@@ -564,6 +585,8 @@ async function loadCreateResourceOptions(keyword?: string): Promise<void> {
     if (cachedGroups) {
       createOwnerResourceRequestId += 1
       createResourceOptionsLoading.value = false
+      rememberGroupLabels(cachedGroups)
+      syncCreateResourceGroup(cachedGroups)
       createGroups.value = cachedGroups
       createAccounts.value = []
       return
@@ -577,6 +600,8 @@ async function loadCreateResourceOptions(keyword?: string): Promise<void> {
         ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
         : await api.myAccounts.options({ keyword: search, limit: remoteOptionLimit })
       nextAccounts = await ensureSelectedAccountOption(nextAccounts, createForm.resourceId, ownerSystemAccountId)
+      rememberAccountLabels(nextAccounts)
+      syncCreateResourceAccount(nextAccounts)
       authorizationAccountOptionCache.set(requestKey, nextAccounts)
       if (requestId !== createOwnerResourceRequestId) return
       createAccounts.value = nextAccounts
@@ -586,6 +611,8 @@ async function loadCreateResourceOptions(keyword?: string): Promise<void> {
         ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: search, limit: remoteOptionLimit })
         : await api.myGroups.options({ keyword: search, limit: remoteOptionLimit })
       nextGroups = await ensureSelectedGroupOption(nextGroups, createForm.resourceId, ownerSystemAccountId)
+      rememberGroupLabels(nextGroups)
+      syncCreateResourceGroup(nextGroups)
       authorizationGroupOptionCache.set(requestKey, nextGroups)
       if (requestId !== createOwnerResourceRequestId) return
       createGroups.value = nextGroups
@@ -678,6 +705,8 @@ async function loadFilterResourceOptions(keyword?: string): Promise<void> {
     if (cachedAccounts) {
       filterResourceRequestId += 1
       filterResourceOptionsLoading.value = false
+      rememberAccountLabels(cachedAccounts)
+      syncFilterResourceAccount(cachedAccounts)
       accounts.value = cachedAccounts
       groups.value = []
       return
@@ -687,6 +716,8 @@ async function loadFilterResourceOptions(keyword?: string): Promise<void> {
     if (cachedGroups) {
       filterResourceRequestId += 1
       filterResourceOptionsLoading.value = false
+      rememberGroupLabels(cachedGroups)
+      syncFilterResourceGroup(cachedGroups)
       groups.value = cachedGroups
       accounts.value = []
       return
@@ -698,6 +729,8 @@ async function loadFilterResourceOptions(keyword?: string): Promise<void> {
     if (filters.resourceType === 'account') {
       const nextAccounts = await api.accounts.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
       const mergedAccounts = await ensureSelectedAccountOption(nextAccounts, filters.resourceId, systemAccountId)
+      rememberAccountLabels(mergedAccounts)
+      syncFilterResourceAccount(mergedAccounts)
       authorizationAccountOptionCache.set(requestKey, mergedAccounts)
       if (requestId !== filterResourceRequestId) return
       accounts.value = mergedAccounts
@@ -706,6 +739,8 @@ async function loadFilterResourceOptions(keyword?: string): Promise<void> {
     }
     const nextGroups = await api.groups.options({ systemAccountId, keyword: requestKeyword, limit: remoteOptionLimit })
     const mergedGroups = await ensureSelectedGroupOption(nextGroups, filters.resourceId, systemAccountId)
+    rememberGroupLabels(mergedGroups)
+    syncFilterResourceGroup(mergedGroups)
     authorizationGroupOptionCache.set(requestKey, mergedGroups)
     if (requestId !== filterResourceRequestId) return
     groups.value = mergedGroups
@@ -732,6 +767,7 @@ async function loadFilterTeamOptions(keyword?: string): Promise<void> {
   if (cachedTeams) {
     filterTeamRequestId += 1
     filterTeamOptionsLoading.value = false
+    syncFilterTeamSelection(cachedTeams)
     teams.value = cachedTeams
     return
   }
@@ -742,6 +778,7 @@ async function loadFilterTeamOptions(keyword?: string): Promise<void> {
     const mergedTeams = await ensureSelectedTeamOption(nextTeams, filters.teamId)
     authorizationTeamOptionCache.set(requestKey, mergedTeams)
     if (requestId !== filterTeamRequestId) return
+    syncFilterTeamSelection(mergedTeams)
     teams.value = mergedTeams
   } catch (error) {
     if (requestId !== filterTeamRequestId) return
@@ -765,6 +802,7 @@ async function loadFilterUserOptions(keyword?: string): Promise<void> {
   if (cachedUsers) {
     filterUserRequestId += 1
     filterUserOptionsLoading.value = false
+    syncFilterUserSelection(cachedUsers)
     users.value = cachedUsers
     return
   }
@@ -775,6 +813,7 @@ async function loadFilterUserOptions(keyword?: string): Promise<void> {
     const mergedUsers = await ensureSelectedSystemAccountPrincipal(nextUsers, filters.granteeSystemAccountId)
     authorizationUserOptionCache.set(requestKey, mergedUsers)
     if (requestId !== filterUserRequestId) return
+    syncFilterUserSelection(mergedUsers)
     users.value = mergedUsers
   } catch (error) {
     if (requestId !== filterUserRequestId) return
@@ -892,6 +931,83 @@ function resetCreateOptionSearchState() {
   clearCreateGranteeSearchTimer()
 }
 
+function syncCreateResourceGroup(nextGroups = createGroups.value): void {
+  if (createForm.resourceType !== 'group') {
+    createForm.resourceGroup = undefined
+    return
+  }
+  createForm.resourceAccount = undefined
+  createForm.resourceGroup = selectedGroupFromOptions(createForm.resourceId, nextGroups, createForm.resourceGroup)
+}
+
+function syncFilterResourceGroup(nextGroups = groups.value): void {
+  if (filters.resourceType !== 'group') {
+    filters.resourceGroup = undefined
+    return
+  }
+  filters.resourceAccount = undefined
+  filters.resourceGroup = selectedGroupFromOptions(filters.resourceId, nextGroups, filters.resourceGroup)
+}
+
+function syncCreateResourceAccount(nextAccounts = createAccounts.value): void {
+  if (createForm.resourceType !== 'account') {
+    createForm.resourceAccount = undefined
+    return
+  }
+  createForm.resourceGroup = undefined
+  createForm.resourceAccount = selectedAccountFromOptions(createForm.resourceId, nextAccounts, createForm.resourceAccount)
+  rememberAccountSelection(createForm.resourceAccount)
+}
+
+function syncFilterResourceAccount(nextAccounts = accounts.value): void {
+  if (filters.resourceType !== 'account') {
+    filters.resourceAccount = undefined
+    return
+  }
+  filters.resourceGroup = undefined
+  filters.resourceAccount = selectedAccountFromOptions(filters.resourceId, nextAccounts, filters.resourceAccount)
+  rememberAccountSelection(filters.resourceAccount)
+}
+
+function syncFilterTeamSelection(nextTeams = teams.value): void {
+  filters.team = selectedTeamFromOptions(filters.teamId, nextTeams, filters.team)
+}
+
+function syncFilterUserSelection(nextUsers = users.value): void {
+  filters.granteeSystemAccount = selectedUserFromOptions(filters.granteeSystemAccountId, nextUsers, filters.granteeSystemAccount)
+}
+
+function selectedGroupFromOptions(id: string | undefined, nextGroups: GroupOptionSummary[], fallback?: GroupSelection): GroupSelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  const group = nextGroups.find((item) => item.id === normalizedId)
+  if (group) return { id: group.id, name: group.name }
+  return fallback?.id === normalizedId ? fallback : undefined
+}
+
+function selectedAccountFromOptions(id: string | undefined, nextAccounts: AccountOptionSummary[], fallback?: AccountSelection): AccountSelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  return accountSelectionForId(normalizedId, nextAccounts) ?? (fallback?.id === normalizedId ? fallback : undefined)
+}
+
+function selectedTeamFromOptions(id: string | undefined, nextTeams: SystemTeamPrincipalSummary[], fallback?: PrincipalSelection): PrincipalSelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  const team = nextTeams.find((item) => item.id === normalizedId)
+  if (team) return { id: team.id, name: team.name, kind: 'team' }
+  return fallback?.kind === 'team' && fallback.id === normalizedId ? fallback : undefined
+}
+
+function selectedUserFromOptions(id: string | undefined, nextUsers: SystemAccountPrincipalSummary[], fallback?: PrincipalSelection): PrincipalSelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  const user = nextUsers.find((item) => item.id === normalizedId)
+  const userName = user ? systemAccountPrincipalName(user).trim() : ''
+  if (user && userName) return { id: user.id, name: userName, kind: 'system_account' }
+  return fallback?.kind === 'system_account' && fallback.id === normalizedId ? fallback : undefined
+}
+
 function resetFilterOptionSearchState() {
   filterResourceSearchKeyword.value = ''
   filterTeamSearchKeyword.value = ''
@@ -911,8 +1027,8 @@ async function ensureSelectedAccountOption(options: AccountOptionSummary[], sele
   if (!id || options.some((item) => item.id === id)) return options
   try {
     const selected = isManagementView.value
-      ? await api.accounts.options({ systemAccountId, keyword: id, limit: 1 })
-      : await api.myAccounts.options({ keyword: id, limit: 1 })
+      ? await api.accounts.options({ systemAccountId, ids: [id], limit: 1 })
+      : await api.myAccounts.options({ ids: [id], limit: 1 })
     return mergeOptionsById(selected, options)
   } catch {
     return options
@@ -924,8 +1040,8 @@ async function ensureSelectedGroupOption(options: GroupOptionSummary[], selected
   if (!id || options.some((item) => item.id === id)) return options
   try {
     const selected = isManagementView.value
-      ? await api.groups.options({ systemAccountId, keyword: id, limit: 1 })
-      : await api.myGroups.options({ keyword: id, limit: 1 })
+      ? await api.groups.options({ systemAccountId, ids: [id], limit: 1 })
+      : await api.myGroups.options({ ids: [id], limit: 1 })
     return mergeOptionsById(selected, options)
   } catch {
     return options
@@ -937,8 +1053,8 @@ async function ensureSelectedSystemAccountPrincipal(options: SystemAccountPrinci
   if (!id || options.some((item) => item.id === id)) return options
   try {
     const selected = isManagementView.value
-      ? await api.authorizationOptions.granteeAccounts({ keyword: id, limit: 1 })
-      : await api.myAuthorizationOptions.granteeAccounts({ keyword: id, limit: 1 })
+      ? await api.authorizationOptions.granteeAccounts({ ids: [id], limit: 1 })
+      : await api.myAuthorizationOptions.granteeAccounts({ ids: [id], limit: 1 })
     return mergeOptionsById(selected, options)
   } catch {
     return options
@@ -950,8 +1066,8 @@ async function ensureSelectedTeamOption(options: SystemTeamPrincipalSummary[], s
   if (!id || options.some((item) => item.id === id)) return options
   try {
     const selected = isManagementView.value
-      ? await api.authorizationOptions.granteeTeams({ keyword: id, limit: 1 })
-      : await api.myAuthorizationOptions.granteeTeams({ keyword: id, limit: 1 })
+      ? await api.authorizationOptions.granteeTeams({ ids: [id], limit: 1 })
+      : await api.myAuthorizationOptions.granteeTeams({ ids: [id], limit: 1 })
     return mergeOptionsById(selected, options)
   } catch {
     return options
@@ -1172,8 +1288,11 @@ function applyRouteFilters() {
   if (!hasRouteFilters) return
   filters.resourceType = 'all'
   filters.resourceId = undefined
+  filters.resourceGroup = undefined
   filters.teamId = undefined
+  filters.team = undefined
   filters.granteeSystemAccountId = undefined
+  filters.granteeSystemAccount = undefined
   const resourceType = route.query.resourceType === 'group' ? 'group' : route.query.resourceType === 'account' ? 'account' : undefined
   const resourceId = typeof route.query.resourceId === 'string' ? route.query.resourceId : undefined
   const teamId = typeof route.query.teamId === 'string' ? route.query.teamId : undefined
@@ -1201,6 +1320,9 @@ function snapshotPageState(): AuthorizationsPageState {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(() => filters.resourceAccount, (selection) => rememberAccountSelection(selection), { deep: true, immediate: true })
+watch(() => filters.team, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+watch(() => filters.granteeSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
 </script>
 

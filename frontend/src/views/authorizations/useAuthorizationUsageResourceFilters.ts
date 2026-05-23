@@ -3,6 +3,8 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
+import { accountSelectionForId, rememberAccountLabels, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
+import { mergeSelectedGroupOptions, rememberGroupLabels, type GroupSelection } from '@/shared/groupLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountOptionSummary, GroupOptionSummary } from '@/types/domain'
 import type { AuthorizationFilterResourceType } from './authorizationTableColumns'
@@ -11,6 +13,8 @@ export type AuthorizationUsageResourceFilters = {
   resourceOwnerSystemAccountId: string
   resourceType: AuthorizationFilterResourceType
   resourceId?: string
+  resourceAccount?: AccountSelection
+  resourceGroup?: GroupSelection
 }
 
 export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsageResourceFilters) {
@@ -39,9 +43,9 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
         .filter((account) => matchesSelectedResourceOwner(account))
         .map((account) => ({ label: account.name, value: account.id }))
     }
-    return ownAuthorizableGroups.value
+    return mergeSelectedGroupOptions(ownAuthorizableGroups.value
       .filter((group) => matchesSelectedResourceOwner(group))
-      .map((group) => ({ label: group.name, value: group.id }))
+      .map((group) => ({ label: group.name, value: group.id })), [filters.resourceId], [filters.resourceGroup])
   })
 
   async function loadAuthorizableResourceOptions(keyword = searchKeyword) {
@@ -49,6 +53,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     if (filters.resourceType === 'all') {
       accounts.value = []
       groups.value = []
+      filters.resourceAccount = undefined
+      filters.resourceGroup = undefined
       loadingKey = undefined
       loadingPromise = undefined
       return
@@ -67,6 +73,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
         loadingPromise = undefined
         resourceOptionsLoading.value = false
         accounts.value = cachedAccounts
+        rememberAccountLabels(cachedAccounts)
+        syncResourceAccount(cachedAccounts)
         groups.value = []
         return
       }
@@ -76,6 +84,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
         loadingKey = undefined
         loadingPromise = undefined
         resourceOptionsLoading.value = false
+        rememberGroupLabels(cachedGroups)
+        syncResourceGroup(cachedGroups)
         groups.value = cachedGroups
         accounts.value = []
         return
@@ -90,6 +100,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
             ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
             : await api.myAccounts.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
           nextAccounts = await ensureSelectedAccountOption(nextAccounts, ownerSystemAccountId)
+          rememberAccountLabels(nextAccounts)
+          syncResourceAccount(nextAccounts)
           accountOptionCache.set(requestKey, nextAccounts)
           if (currentRequestId !== requestId) return
           accounts.value = nextAccounts
@@ -99,6 +111,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
             ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: normalizedKeyword, limit: resourceOptionLimit })
             : await api.myGroups.options({ keyword: normalizedKeyword, limit: resourceOptionLimit })
           nextGroups = await ensureSelectedGroupOption(nextGroups, ownerSystemAccountId)
+          rememberGroupLabels(nextGroups)
+          syncResourceGroup(nextGroups)
           groupOptionCache.set(requestKey, nextGroups)
           if (currentRequestId !== requestId) return
           groups.value = nextGroups
@@ -123,6 +137,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
 
   function resetResourceId() {
     filters.resourceId = undefined
+    filters.resourceAccount = undefined
+    filters.resourceGroup = undefined
   }
 
   function handleResourceOptionsDropdown(open: boolean) {
@@ -157,8 +173,8 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     if (!selectedId || nextAccounts.some((account) => account.id === selectedId)) return nextAccounts
     try {
       const selected = isManagementView.value
-        ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, keyword: selectedId, limit: 1 })
-        : await api.myAccounts.options({ keyword: selectedId, limit: 1 })
+        ? await api.accounts.options({ systemAccountId: ownerSystemAccountId, ids: [selectedId], limit: 1 })
+        : await api.myAccounts.options({ ids: [selectedId], limit: 1 })
       return mergeOptionsById(selected, nextAccounts)
     } catch {
       return nextAccounts
@@ -170,12 +186,45 @@ export function useAuthorizationUsageResourceFilters(filters: AuthorizationUsage
     if (!selectedId || nextGroups.some((group) => group.id === selectedId)) return nextGroups
     try {
       const selected = isManagementView.value
-        ? await api.groups.options({ systemAccountId: ownerSystemAccountId, keyword: selectedId, limit: 1 })
-        : await api.myGroups.options({ keyword: selectedId, limit: 1 })
+        ? await api.groups.options({ systemAccountId: ownerSystemAccountId, ids: [selectedId], limit: 1 })
+        : await api.myGroups.options({ ids: [selectedId], limit: 1 })
       return mergeOptionsById(selected, nextGroups)
     } catch {
       return nextGroups
     }
+  }
+
+  function syncResourceGroup(nextGroups = groups.value): void {
+    if (filters.resourceType !== 'group') {
+      filters.resourceGroup = undefined
+      return
+    }
+    filters.resourceAccount = undefined
+    filters.resourceGroup = selectedGroupFromOptions(filters.resourceId, nextGroups, filters.resourceGroup)
+  }
+
+  function syncResourceAccount(nextAccounts = accounts.value): void {
+    if (filters.resourceType !== 'account') {
+      filters.resourceAccount = undefined
+      return
+    }
+    filters.resourceGroup = undefined
+    filters.resourceAccount = selectedAccountFromOptions(filters.resourceId, nextAccounts, filters.resourceAccount)
+    rememberAccountSelection(filters.resourceAccount)
+  }
+
+  function selectedGroupFromOptions(id: string | undefined, nextGroups: GroupOptionSummary[], fallback?: GroupSelection): GroupSelection | undefined {
+    const normalizedId = id?.trim()
+    if (!normalizedId) return undefined
+    const group = nextGroups.find((item) => item.id === normalizedId)
+    if (group) return { id: group.id, name: group.name }
+    return fallback?.id === normalizedId ? fallback : undefined
+  }
+
+  function selectedAccountFromOptions(id: string | undefined, nextAccounts: AccountOptionSummary[], fallback?: AccountSelection): AccountSelection | undefined {
+    const normalizedId = id?.trim()
+    if (!normalizedId) return undefined
+    return accountSelectionForId(normalizedId, nextAccounts) ?? (fallback?.id === normalizedId ? fallback : undefined)
   }
 
   function matchesSelectedResourceOwner(resource: Pick<AccountOptionSummary | GroupOptionSummary, 'ownerSystemAccountId' | 'systemAccountId'>): boolean {

@@ -29,13 +29,20 @@
     </div>
     <div class="form-help strategy-help">优先级数字越小越优先。</div>
     <a-form-item class="strategy-proxy-field" label="代理">
-      <a-select v-model:value="form.proxyProfileId" allow-clear placeholder="不使用代理" :options="proxyOptions" />
+      <ProxySelect
+        v-model:value="form.proxyProfileId"
+        allow-clear
+        placeholder="不使用代理"
+        :options="proxyOptions"
+      />
       <div v-if="!isManagementView" class="form-help">代理配置由管理员统一维护；这里可以选择已启用的全局代理。</div>
     </a-form-item>
   </section>
 </template>
 
 <script setup lang="ts">
+import ProxySelect from '@/components/ProxySelect.vue'
+import type { SelectOption } from '@/shared/selectLabelCache'
 import type { AccountFormModel } from './accountFormTypes'
 
 defineProps<{
@@ -43,7 +50,7 @@ defineProps<{
   isManagementView: boolean
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
-  proxyOptions: Array<{ label: string; value: string }>
+  proxyOptions: SelectOption[]
 }>()
 </script>
 

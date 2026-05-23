@@ -17,5 +17,5 @@ export function matchesSystemAccountFilter(item: SystemAccountScopedItem, filter
 }
 
 export function systemAccountDisplayText(item: SystemAccountScopedItem): string {
-  return item.systemAccountName || item.systemAccountId || '-'
+  return item.systemAccountName || '-'
 }

@@ -3,19 +3,28 @@
     <UsageRecordsFilterToolbar
       v-model:keyword="accountNameFilter"
       v-model:date-range="dateRangeFilter"
+      v-model:group-id="groupFilter"
+      v-model:group-selection="groupFilterSelection"
       v-model:result="resultFilter"
       v-model:status-code="statusCodeFilter"
       v-model:system-account-id="systemAccountFilter"
+      v-model:system-account-selection="systemAccountFilterSelection"
       :active-filter-count="activeFilterCount"
+      :advanced-filter-count="advancedFilterCount"
+      :group-options="groups"
+      :group-options-loading="groupOptionsLoading"
       :is-management-view="isManagementView"
       :refresh-loading="loading"
       :result-options="resultOptions"
       :system-accounts="systemAccounts"
       :system-accounts-loading="systemAccountOptionsLoading"
+      @group-change="handleGroupFilterChange"
+      @group-dropdown="handleGroupOptionsDropdown"
+      @group-search="handleGroupOptionsSearch"
       @reset="resetFilters"
       @refresh="refreshRecords"
       @search="applyFilters"
-      @system-account-change="applyFilters"
+      @system-account-change="handleSystemAccountFilterChange"
       @system-account-dropdown="handleSystemAccountOptionsDropdown"
       @system-account-search="handleSystemAccountOptionsSearch"
     />
@@ -73,7 +82,7 @@
           <span :class="record.apiKeyName ? 'name-cell' : 'muted-cell'">{{ displayName(record.apiKeyName, record.apiKeyId) }}</span>
         </template>
         <template v-else-if="column.key === 'group'">
-          <span :class="record.groupName ? 'name-cell' : 'muted-cell'">{{ displayName(record.groupName, record.groupId) }}</span>
+          <span :class="record.groupName ? 'name-cell' : 'muted-cell'">{{ displayUsageRecordGroupName(record.groupName, record.groupId) }}</span>
         </template>
         <template v-else-if="column.key === 'account'">
           <span :class="record.accountName || record.accountId ? 'name-cell' : 'muted-cell'">{{ accountDisplayText(record) }}</span>
@@ -143,7 +152,7 @@
 import { CopyOutlined, FileSearchOutlined, ProfileOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import type { UsageRecordListParams } from '@/api/client'
@@ -151,11 +160,14 @@ import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
-import { useScopedUsageRecordsApi } from '@/composables/useScopedDomainApi'
+import { useScopedGroupsApi, useScopedUsageRecordsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatDateKey, normalizeDayjsDateRange, parseDateKey } from '@/shared/dateRange'
-import type { UsageRecordSummary } from '@/types/domain'
+import { rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
+import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
+import type { GroupOptionSummary, UsageRecordSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import UsageRecordCostCell from './UsageRecordCostCell.vue'
 import UsageRecordMobileCard from './UsageRecordMobileCard.vue'
@@ -164,6 +176,7 @@ import UsageRecordsFilterToolbar from './UsageRecordsFilterToolbar.vue'
 import {
   accountDisplayText,
   displayName,
+  displayUsageRecordGroupName,
   formatDateTime,
   formatDuration,
   formatEndpoint,
@@ -179,39 +192,53 @@ type TraceTarget = 'audit' | 'operation' | 'runtime'
 type UsageRecordsPageState = {
   accountNameFilter: string
   dateRangeFilter?: [string, string]
+  groupFilter?: GroupSelection
   pagination: { current: number; pageSize: number }
   resultFilter: 'all' | 'success' | 'failed'
   sortState: { field: UsageRecordSortField; order: TableSortOrder }
   statusCodeFilter: string
   systemAccountFilter: string
+  systemAccountFilterSelection?: PrincipalSelection
 }
 
 const pageSize = 20
 const defaultUsageRecordsPageState = (): UsageRecordsPageState => ({
   accountNameFilter: '',
   dateRangeFilter: undefined,
+  groupFilter: undefined,
   pagination: { current: 1, pageSize },
   resultFilter: 'all',
   sortState: { field: 'createdAt', order: 'descend' },
   statusCodeFilter: '',
-  systemAccountFilter: allSystemAccountsValue
+  systemAccountFilter: allSystemAccountsValue,
+  systemAccountFilterSelection: undefined
 })
-const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 3 })
+const pageStateCache = usePageStateCache<UsageRecordsPageState>(undefined, defaultUsageRecordsPageState, { version: 5 })
 const initialPageState = pageStateCache.read()
 
 const accountNameFilter = ref(initialPageState.accountNameFilter)
 const dateRangeFilter = ref<[Dayjs, Dayjs] | undefined>(parseDateRange(initialPageState.dateRangeFilter))
+const groupFilterSelection = ref<GroupSelection | undefined>(initialPageState.groupFilter)
 const resultFilter = ref<'all' | 'success' | 'failed'>(initialPageState.resultFilter)
 const statusCodeFilter = ref<string>(initialPageState.statusCodeFilter)
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
+const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const usageRecordsApi = useScopedUsageRecordsApi(isManagementView)
+const groupsApi = useScopedGroupsApi(isManagementView)
 const router = useRouter()
 const sortState = ref<{ field: UsageRecordSortField; order: TableSortOrder }>(initialPageState.sortState)
+const groupFilter = computed({
+  get: () => groupFilterSelection.value?.id,
+  set: (id: string | undefined) => {
+    groupFilterSelection.value = selectedGroupSelection(id)
+  }
+})
+const groups = ref<GroupOptionSummary[]>([])
+const groupOptionsLoading = ref(false)
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
-  load: loadSystemAccountOptions,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -219,6 +246,12 @@ const {
   enabled: () => isManagementView.value,
   selectedIds: () => [systemAccountFilter.value]
 })
+let groupOptionsRequestId = 0
+let groupOptionsLoadingKey: string | undefined
+let groupOptionsLoadingPromise: Promise<void> | undefined
+let groupOptionsKeyword = ''
+let groupOptionsSearchTimer: ReturnType<typeof window.setTimeout> | undefined
+const groupOptionsCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: 10_000 })
 const {
   items: records,
   loading,
@@ -239,10 +272,10 @@ const {
   fetchPage: async (options, pageState) => {
     if (options.forceOptions === true) {
       resetSystemAccountOptionsSearch()
+      resetGroupOptionsSearch()
     }
     const [result] = await Promise.all([
-      fetchRecords(pageState),
-      loadSystemAccountOptions()
+      fetchRecords(pageState)
     ])
     return result
   },
@@ -262,7 +295,15 @@ const activeFilterCount = computed(() => {
   let count = 0
   if (accountNameFilter.value.trim()) count += 1
   if (dateRangeFilter.value) count += 1
+  if (groupFilter.value) count += 1
   if (resultFilter.value !== 'all') count += 1
+  if (statusCodeFilter.value) count += 1
+  if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
+  return count
+})
+const advancedFilterCount = computed(() => {
+  let count = 0
+  if (groupFilter.value) count += 1
   if (statusCodeFilter.value) count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
   return count
@@ -297,18 +338,150 @@ const columns = computed(() => {
   return baseColumns
 })
 
+function selectedGroupSelection(id: string | undefined): GroupSelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  const group = groups.value.find((item) => item.id === normalizedId)
+  if (group) return { id: group.id, name: group.name }
+  if (groupFilterSelection.value?.id === normalizedId) return groupFilterSelection.value
+  return undefined
+}
+
+async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): Promise<void> {
+  groupOptionsKeyword = keyword
+  const systemAccountId = isManagementView.value ? scopedSystemAccountId(systemAccountFilter.value) : undefined
+  const requestKeyword = normalizeOptionKeyword(keyword)
+  const requestKey = JSON.stringify([
+    isManagementView.value ? `management:${systemAccountId ?? 'all'}` : 'self',
+    requestKeyword ?? '',
+    groupFilter.value ?? ''
+  ])
+  if (!force && groupOptionsLoadingKey === requestKey && groupOptionsLoadingPromise) {
+    return groupOptionsLoadingPromise
+  }
+  const requestId = ++groupOptionsRequestId
+  if (!force) {
+    const cachedGroups = groupOptionsCache.get(requestKey)
+    if (cachedGroups) {
+      groupOptionsLoadingKey = undefined
+      groupOptionsLoadingPromise = undefined
+      groupOptionsLoading.value = false
+      rememberGroupLabels(cachedGroups)
+      syncSelectedGroupSelection(cachedGroups)
+      groups.value = cachedGroups
+      return
+    }
+  }
+  groupOptionsLoading.value = true
+  groupOptionsLoadingKey = requestKey
+  groupOptionsLoadingPromise = (async () => {
+    try {
+      let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
+      nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
+      rememberGroupLabels(nextGroups)
+      syncSelectedGroupSelection(nextGroups)
+      groupOptionsCache.set(requestKey, nextGroups)
+      if (requestId !== groupOptionsRequestId) return
+      groups.value = nextGroups
+    } catch (error) {
+      if (requestId !== groupOptionsRequestId) return
+      console.error(error)
+      message.error('加载分组选项失败')
+    } finally {
+      if (groupOptionsLoadingKey === requestKey) {
+        groupOptionsLoadingKey = undefined
+        groupOptionsLoadingPromise = undefined
+      }
+      if (requestId === groupOptionsRequestId) {
+        groupOptionsLoading.value = false
+      }
+    }
+  })()
+  return groupOptionsLoadingPromise
+}
+
+function handleGroupOptionsDropdown(open: boolean): void {
+  if (open) {
+    void loadGroupOptions()
+  }
+}
+
+function handleGroupOptionsSearch(value: string): void {
+  groupOptionsKeyword = value
+  clearGroupOptionsSearchTimer()
+  groupOptionsSearchTimer = window.setTimeout(() => {
+    groupOptionsSearchTimer = undefined
+    void loadGroupOptions(groupOptionsKeyword)
+  }, 250)
+}
+
+function resetGroupOptionsSearch(): void {
+  groupOptionsKeyword = ''
+  clearGroupOptionsSearchTimer()
+}
+
+function clearGroupOptionsSearchTimer(): void {
+  if (groupOptionsSearchTimer && typeof window !== 'undefined') {
+    window.clearTimeout(groupOptionsSearchTimer)
+    groupOptionsSearchTimer = undefined
+  }
+}
+
+async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], systemAccountId: string | undefined): Promise<GroupOptionSummary[]> {
+  const selectedIds = [groupFilter.value].filter((id): id is string => Boolean(id))
+  const missingIds = [...new Set(selectedIds)].filter((id) => !nextGroups.some((group) => group.id === id))
+  if (!missingIds.length) return nextGroups
+  const selectedGroups = await Promise.all(missingIds.map(async (id) => {
+    try {
+      return await groupsApi.options({ systemAccountId, ids: [id], limit: 1 })
+    } catch {
+      return []
+    }
+  }))
+  return mergeOptionsById(selectedGroups.flat(), nextGroups)
+}
+
+function syncSelectedGroupSelection(nextGroups = groups.value): void {
+  if (!groupFilter.value) return
+  groupFilterSelection.value = selectedGroupFromOptions(groupFilter.value, nextGroups, groupFilterSelection.value)
+}
+
+function selectedGroupFromOptions(id: string | undefined, nextGroups: GroupOptionSummary[], fallback?: GroupSelection): GroupSelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  const group = nextGroups.find((item) => item.id === normalizedId)
+  if (group) return { id: group.id, name: group.name }
+  return fallback?.id === normalizedId ? fallback : undefined
+}
+
+function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
+  const merged = new Map<string, T>()
+  for (const item of [...leading, ...trailing]) {
+    merged.set(item.id, item)
+  }
+  return [...merged.values()]
+}
+
+function normalizeOptionKeyword(value?: string): string | undefined {
+  const keyword = value?.trim()
+  return keyword ? keyword : undefined
+}
+
 function resetFilters(): void {
   const defaults = defaultUsageRecordsPageState()
   accountNameFilter.value = defaults.accountNameFilter
   dateRangeFilter.value = parseDateRange(defaults.dateRangeFilter)
+  groupFilterSelection.value = defaults.groupFilter
   resultFilter.value = defaults.resultFilter
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
+  systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
   sortState.value = defaults.sortState
   resetSystemAccountOptionsSearch()
+  resetGroupOptionsSearch()
   resetPagination()
   pageStateCache.clear()
-  void loadData()
+  void loadData({ forceOptions: true })
 }
 
 async function handleTableChange(paginationInfo: unknown, _filters: unknown, sorter: unknown): Promise<void> {
@@ -352,6 +525,24 @@ function applyFilters(): void {
 }
 
 function refreshRecords(): void {
+  resetSystemAccountOptionsSearch()
+  resetGroupOptionsSearch()
+  resetPagination()
+  void loadData({ forceOptions: true })
+}
+
+function handleGroupFilterChange(): void {
+  resetGroupOptionsSearch()
+  applyFilters()
+}
+
+function handleSystemAccountFilterChange(): void {
+  groupFilterSelection.value = undefined
+  if (systemAccountFilter.value === allSystemAccountsValue) {
+    systemAccountFilterSelection.value = undefined
+  }
+  resetSystemAccountOptionsSearch()
+  resetGroupOptionsSearch()
   resetPagination()
   void loadData({ forceOptions: true })
 }
@@ -366,6 +557,7 @@ async function fetchRecords(pageState: { current: number; pageSize: number }) {
     accountKeyword: accountNameFilter.value.trim() || undefined,
     startDate: dateRange?.[0],
     endDate: dateRange?.[1],
+    groupId: groupFilter.value,
     result: resultFilter.value,
     statusCode: normalizedStatusCode(statusCodeFilter.value),
     systemAccountId,
@@ -410,11 +602,13 @@ function snapshotPageState(): UsageRecordsPageState {
   return {
     accountNameFilter: accountNameFilter.value,
     dateRangeFilter: dateRangeParam(dateRangeFilter.value),
+    groupFilter: groupFilterSelection.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     resultFilter: resultFilter.value,
     sortState: sortState.value,
     statusCodeFilter: statusCodeFilter.value,
-    systemAccountFilter: systemAccountFilter.value
+    systemAccountFilter: systemAccountFilter.value,
+    systemAccountFilterSelection: systemAccountFilterSelection.value
   }
 }
 
@@ -426,6 +620,17 @@ function parseDateRange(value?: [string, string]): [Dayjs, Dayjs] | undefined {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(records, (items) => {
+  for (const item of items) {
+    rememberGroupLabel(item.groupId, item.groupName)
+  }
+  rememberGroupSelection(groupFilterSelection.value)
+  rememberPrincipalSelection(systemAccountFilterSelection.value)
+  syncSelectedGroupSelection()
+}, { immediate: true })
+watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+
+onBeforeUnmount(clearGroupOptionsSearchTimer)
 
 onMounted(loadData)
 </script>

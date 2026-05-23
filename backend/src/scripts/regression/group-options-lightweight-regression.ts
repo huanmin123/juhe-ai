@@ -258,8 +258,8 @@ function seedData(): SeedState {
     .run(userAccountId, user.id, '分组选项账户种子', now, now)
   databaseModule.getDatabase()
     .prepare(`
-      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, weight, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, 1, 1, ?, ?)
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 1, ?, ?)
     `)
     .run(user.id, userGroup.id, userAccountId, now, now)
   return {

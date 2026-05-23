@@ -6,7 +6,7 @@ import { beginDatabaseTransaction, commitDatabaseTransaction, getDatabase, newId
 import { ensureDefaultOpenAIGroupForSystemAccount } from './default-group.repository.js'
 import { clearGatewayApiKeyValidationCache } from './gateway-api-key.repository.js'
 import { notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
-import { pagedTotalUpperBound, takePageRows } from './query-utils.js'
+import { pagedTotalUpperBound, sqlPlaceholders, takePageRows } from './query-utils.js'
 import { invalidateSystemAccountLookupCache } from './repository-lookups.js'
 import { systemAccountPrincipalSummaryFromRow, systemAccountSummaryFromRow, type SystemAccountRow } from './system-account-mappers.js'
 import { optionalNullableString, optionalString } from './value-utils.js'
@@ -21,11 +21,12 @@ interface SystemSessionRow {
 }
 
 const sessionTouchMinIntervalMs = 60 * 1000
-const defaultSystemAccountOptionLimit = 500
+const defaultSystemAccountOptionLimit = 50
 const defaultSystemAccountPageSize = 20
 const maxSystemAccountPageSize = 100
 
 export interface SystemAccountOptionListOptions {
+  ids?: string[]
   keyword?: string
   limit?: number
 }
@@ -87,17 +88,17 @@ export function listSystemAccountsPage(options: SystemAccountListOptions = {}): 
 }
 
 export function listSystemAccountOptions(options: SystemAccountOptionListOptions = {}): SystemAccountPrincipalSummary[] {
-  const keywordFilter = buildSystemAccountKeywordFilter(options.keyword)
+  const optionFilter = buildSystemAccountOptionFilter(options)
   const limitClause = systemAccountOptionLimitClause(options.limit)
   const rows = getDatabase()
     .prepare(`
       SELECT id, username, display_name, status
       FROM system_accounts
-      ${keywordFilter.clause}
+      ${optionFilter.clause}
       ORDER BY status ASC, display_name ASC, username ASC, id ASC
       ${limitClause.clause}
     `)
-    .all(...keywordFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
+    .all(...optionFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
   return rows.map(systemAccountPrincipalSummaryFromRow)
 }
 
@@ -120,15 +121,39 @@ function buildSystemAccountKeywordFilter(keyword?: string): { clause: string; pa
   const prefix = `${escapeLikePrefix(text)}%`
   return {
     clause: `WHERE (
-      id = ?
-      OR id LIKE ? ESCAPE '\\'
-      OR username COLLATE NOCASE = ?
+      username COLLATE NOCASE = ?
       OR username LIKE ? ESCAPE '\\'
       OR display_name COLLATE NOCASE = ?
       OR display_name LIKE ? ESCAPE '\\'
     )`,
-    params: [text, prefix, text, prefix, text, prefix]
+    params: [text, prefix, text, prefix]
   }
+}
+
+function buildSystemAccountOptionFilter(options: SystemAccountOptionListOptions): { clause: string; params: string[] } {
+  const clauses: string[] = []
+  const params: string[] = []
+  const ids = normalizeTextList(options.ids)
+  if (ids.length) {
+    clauses.push(`id IN (${sqlPlaceholders(ids.length)})`)
+    params.push(...ids)
+  }
+  const keyword = buildSystemAccountKeywordFilter(options.keyword)
+  if (keyword.clause) {
+    clauses.push(keyword.clause.replace(/^WHERE\s+/i, ''))
+    params.push(...keyword.params)
+  }
+  return {
+    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+    params
+  }
+}
+
+function normalizeTextList(values?: string[]): string[] {
+  if (!values?.length) return []
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+    .sort()
+    .slice(0, 50)
 }
 
 function normalizeSystemAccountListOptions(options: SystemAccountListOptions): Required<Pick<SystemAccountListOptions, 'page' | 'pageSize'>> & Pick<SystemAccountListOptions, 'keyword'> {
@@ -213,7 +238,7 @@ export function createSystemAccount(input: {
   const now = nowIso()
   const id = newId('sysacc')
   const username = input.username.trim()
-  const displayName = input.displayName.trim() || username
+  const displayName = input.displayName.trim()
   const database = getDatabase()
   ensureSystemAccountUsernameUnique(username, undefined, database)
   ensureSystemAccountDisplayNameUnique(displayName, undefined, database)

@@ -42,8 +42,12 @@ function parseProxyListOptions(query: Record<string, unknown>) {
 function parseProxyOptionListOptions(query: Record<string, unknown>) {
   return {
     keyword: optionalQueryText(query.keyword),
-    limit: integerQueryValue(query.limit)
+    limit: optionLimitValue(integerQueryValue(query.limit))
   }
+}
+
+function optionLimitValue(value: number | undefined): number {
+  return typeof value === 'number' ? Math.min(50, Math.max(1, value)) : 50
 }
 
 proxiesRouter.post('/', requireAdmin, mutationGuard({

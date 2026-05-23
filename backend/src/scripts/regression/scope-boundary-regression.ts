@@ -131,6 +131,7 @@ interface UsageRecordSummary {
   systemAccountId?: string
   accountId?: string
   accountName?: string
+  groupId?: string
   model?: string
   statusCode?: number
   success: boolean
@@ -364,6 +365,8 @@ async function main(): Promise<void> {
     assert(failedUserBUsage.total === 1 && failedUserBUsage.items[0]?.statusCode === 429 && failedUserBUsage.items[0]?.success === false, '管理使用记录失败状态码筛选异常')
     const modelFilteredUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/usage-records?systemAccountId=${seed.userBId}&model=${encodeURIComponent('scope-model-c')}&page=1&pageSize=10`, seed.adminCookie)
     assert(modelFilteredUsage.total === 1 && modelFilteredUsage.items[0]?.model === 'scope-model-c', '管理使用记录模型筛选异常')
+    const groupFilteredUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/usage-records?systemAccountId=${seed.userBId}&groupId=${seed.userBGroupId}&page=1&pageSize=10`, seed.adminCookie)
+    assert(groupFilteredUsage.total === 3 && groupFilteredUsage.items.every((record) => record.groupId === seed.userBGroupId), '管理使用记录分组筛选异常')
     const dateFilteredUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/usage-records?systemAccountId=${seed.userBId}&startDate=${seed.usageToday}&endDate=${seed.usageToday}&page=1&pageSize=10`, seed.adminCookie)
     assert(dateFilteredUsage.total === 3 && dateFilteredUsage.items.every((record) => record.systemAccountId === seed.userBId), '管理使用记录自然日范围筛选异常')
     const emptyDateFilteredUsage = await getEnvelope<UsageRecordListResult>(baseUrl, `/__aisys__/api/usage-records?systemAccountId=${seed.userBId}&startDate=${seed.usageYesterday}&endDate=${seed.usageYesterday}&page=1&pageSize=10`, seed.adminCookie)
@@ -594,9 +597,9 @@ function seedData(): SeedState {
     usageRecord('scope_usage_a_1', userA.id, userAAccount.id, 'GET /v1/models', 'scope-model-a', 200, true, usageAt(usageToday, 1)),
     usageRecord('scope_usage_a_2', userA.id, userAAccount.id, 'POST /v1/responses', 'scope-model-a', 500, false, usageAt(usageToday, 2)),
     usageRecord('scope_usage_a_authorized_b_1', userA.id, userBAccount.id, 'POST /v1/responses', 'scope-model-authorized', 200, true, usageAt(usageToday, 3)),
-    usageRecord('scope_usage_b_1', userB.id, userBAccount.id, 'GET /v1/models', 'scope-model-b', 200, true, usageAt(usageToday, 4)),
-    usageRecord('scope_usage_b_2', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-b', 429, false, usageAt(usageToday, 5)),
-    usageRecord('scope_usage_b_3', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-c', 200, true, usageAt(usageToday, 6))
+    usageRecord('scope_usage_b_1', userB.id, userBAccount.id, 'GET /v1/models', 'scope-model-b', 200, true, usageAt(usageToday, 4), userBGroup.id),
+    usageRecord('scope_usage_b_2', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-b', 429, false, usageAt(usageToday, 5), userBGroup.id),
+    usageRecord('scope_usage_b_3', userB.id, userBAccount.id, 'POST /v1/responses', 'scope-model-c', 200, true, usageAt(usageToday, 6), userBGroup.id)
   ])
   while (usageStatsRepository.aggregateUsageStatsBatch(1000) > 0) {}
   usageStatsRepository.refreshUsageRankSnapshots()
@@ -670,13 +673,15 @@ function usageRecord(
   model: string,
   statusCode: number,
   success: boolean,
-  createdAt: string
+  createdAt: string,
+  groupId?: string
 ) {
   return {
     id,
     systemAccountId,
     traceId: `${id}_trace`,
     clientIp: '127.0.0.1',
+    groupId,
     accountId,
     endpoint,
     providerCode: 'openai',

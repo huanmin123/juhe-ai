@@ -21,7 +21,7 @@ import {
 } from './usage-stats-window-helpers.js'
 
 const AI_PERFORMANCE_SELECTED_ACCOUNT_LIMIT = 20
-const AI_PERFORMANCE_ACCOUNT_OPTION_DEFAULT_LIMIT = 30
+const AI_PERFORMANCE_ACCOUNT_OPTION_DEFAULT_LIMIT = 50
 const AI_PERFORMANCE_ACCOUNT_OPTION_MAX_LIMIT = 50
 
 export function getAiPerformanceOverview(access?: AccessScope, range: AccountUsageStatsRange = normalizeDefaultUsageStatsRange(), accountIds: string[] = []): AiPerformanceOverview {

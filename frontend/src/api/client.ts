@@ -94,6 +94,7 @@ interface GroupListParams extends ListParams {
 }
 
 interface GroupOptionParams extends ListParams {
+  ids?: string[]
   keyword?: string
   providerCode?: string
   limit?: number
@@ -116,6 +117,7 @@ interface ProxyListParams extends ListParams {
 }
 
 interface SystemAccountOptionsParams {
+  ids?: string[]
   keyword?: string
   limit?: number
 }
@@ -169,9 +171,11 @@ export interface AccountListSortParam {
 
 export interface AccountListParams extends ListParams {
   sorts?: AccountListSortParam[]
+  ids?: string[]
   page?: number
   pageSize?: number
   keyword?: string
+  providerCode?: string
   groupId?: string
   type?: string
   status?: string | string[]
@@ -194,6 +198,7 @@ export interface UsageRecordListParams extends ListParams {
   accountKeyword?: string
   result?: 'success' | 'failed' | 'all'
   statusCode?: number
+  groupId?: string
   model?: string
   startDate?: string
   endDate?: string
@@ -309,6 +314,7 @@ export interface AuthorizationListParams extends ListParams {
 export type AuthorizationScopeParams = ListParams
 
 interface AuthorizationPrincipalOptionsParams {
+  ids?: string[]
   keyword?: string
   limit?: number
 }
@@ -522,7 +528,7 @@ export const api = {
     create: (payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.post('/accounts', payload, { params })),
     update: (id: string, payload: Record<string, unknown>, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}`, payload, { params })),
     updateAuthorizedDispatch: (id: string, payload: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }, params?: ListParams) => unwrap<AccountSummary>(http.patch(`/accounts/${id}/authorized-dispatch`, payload, { params })),
-    bindGroup: (id: string, payload: { groupId: string; dispatchWeight?: number; softConcurrencyLimit?: number | null }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
+    bindGroup: (id: string, payload: { groupId: string }, params?: ListParams) => unwrap<AccountSummary>(http.post(`/accounts/${id}/group`, payload, { params })),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }, params?: ListParams) => unwrap<AccountTrafficMigrationResult>(http.post(`/accounts/${id}/traffic-migration`, payload, { params })),
     test: (id: string, payload?: { model?: string; prompt?: string }, params?: ListParams, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/accounts/${id}/test`, payload ?? {}, { params, timeout: 130000, signal: options?.signal })),
     delete: (id: string, params?: ListParams) => http.delete(`/accounts/${id}`, { params })
@@ -534,7 +540,7 @@ export const api = {
     create: (payload: Record<string, unknown>) => unwrap<AccountSummary>(http.post('/my-accounts', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}`, payload)),
     updateAuthorizedDispatch: (id: string, payload: { superPriorityEnabled?: boolean; fallbackEnabled?: boolean; clearFailureState?: boolean }) => unwrap<AccountSummary>(http.patch(`/my-accounts/${id}/authorized-dispatch`, payload)),
-    bindGroup: (id: string, payload: { groupId: string; dispatchWeight?: number; softConcurrencyLimit?: number | null }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
+    bindGroup: (id: string, payload: { groupId: string }) => unwrap<AccountSummary>(http.post(`/my-accounts/${id}/group`, payload)),
     migrateTraffic: (id: string, payload: { targetAccountId: string; sourceStatus?: AccountTrafficMigrationSourceStatus }) => unwrap<AccountTrafficMigrationResult>(http.post(`/my-accounts/${id}/traffic-migration`, payload)),
     test: (id: string, payload?: { model?: string; prompt?: string }, options?: RequestControlOptions) => unwrap<AccountTestResult>(http.post(`/my-accounts/${id}/test`, payload ?? {}, { timeout: 130000, signal: options?.signal })),
     delete: (id: string) => http.delete(`/my-accounts/${id}`)
@@ -551,8 +557,8 @@ export const api = {
   myGroups: {
     list: () => unwrap<GroupSummary[]>(http.get('/my-groups')),
     listPage: (params?: GroupListParams) => unwrap<GroupListResult>(http.get('/my-groups', { params: groupListParams(params, false) })),
-    options: (params?: Pick<GroupOptionParams, 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<GroupOptionSummary[]>(http.get('/my-groups/options', { params: groupOptionParams(params, false) })),
-    accountOptions: (params?: Pick<GroupOptionParams, 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options', { params: groupOptionParams(params, false) })),
+    options: (params?: Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<GroupOptionSummary[]>(http.get('/my-groups/options', { params: groupOptionParams(params, false) })),
+    accountOptions: (params?: Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>) => unwrap<AccountGroupOptionSummary[]>(http.get('/my-groups/account-options', { params: groupOptionParams(params, false) })),
     create: (payload: Record<string, unknown>) => unwrap<GroupSummary>(http.post('/my-groups', payload)),
     update: (id: string, payload: Record<string, unknown>) => unwrap<GroupSummary>(http.patch(`/my-groups/${id}`, payload)),
     delete: (id: string) => http.delete(`/my-groups/${id}`)
@@ -737,7 +743,9 @@ function accountListParams(params?: AccountListParams, includeSystemAccount = tr
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
   if (params.limit) output.limit = params.limit
+  if (params.ids?.length) output.ids = params.ids.join(',')
   if (params.keyword) output.keyword = params.keyword
+  if (params.providerCode && params.providerCode !== 'all') output.providerCode = params.providerCode
   if (params.groupId) output.groupId = params.groupId
   if (params.type && params.type !== 'all') output.type = params.type
   const status = joinedListParam(params.status)
@@ -756,7 +764,9 @@ function accountOptionsParams(params?: AccountListParams, includeSystemAccount =
   if (params.page) output.page = params.page
   if (params.pageSize) output.pageSize = params.pageSize
   if (params.limit) output.limit = params.limit
+  if (params.ids?.length) output.ids = params.ids.join(',')
   if (params.keyword) output.keyword = params.keyword
+  if (params.providerCode && params.providerCode !== 'all') output.providerCode = params.providerCode
   if (params.groupId) output.groupId = params.groupId
   if (params.type && params.type !== 'all') output.type = params.type
   const status = joinedListParam(params.status)
@@ -784,10 +794,11 @@ function groupListParams(params?: GroupListParams, includeSystemAccount = true):
   return Object.keys(output).length ? output : undefined
 }
 
-function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>, includeSystemAccount = true): Record<string, unknown> | undefined {
+function groupOptionParams(params?: GroupOptionParams | Pick<GroupOptionParams, 'ids' | 'keyword' | 'providerCode' | 'limit' | 'manageableOnly' | 'preferDefault'>, includeSystemAccount = true): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
   if (includeSystemAccount && 'systemAccountId' in params && params.systemAccountId) output.systemAccountId = params.systemAccountId
+  if ('ids' in params && params.ids?.length) output.ids = params.ids.join(',')
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.providerCode?.trim()) output.providerCode = params.providerCode.trim()
   if (params.limit) output.limit = params.limit
@@ -810,6 +821,7 @@ function teamListParams(params?: TeamListParams | Omit<TeamListParams, 'systemAc
 function authorizationPrincipalOptionsParams(params?: AuthorizationPrincipalOptionsParams): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
+  if (params.ids?.length) output.ids = params.ids.join(',')
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.limit) output.limit = params.limit
   return Object.keys(output).length ? output : undefined
@@ -818,6 +830,7 @@ function authorizationPrincipalOptionsParams(params?: AuthorizationPrincipalOpti
 function systemAccountOptionsParams(params?: SystemAccountOptionsParams): Record<string, unknown> | undefined {
   if (!params) return undefined
   const output: Record<string, unknown> = {}
+  if (params.ids?.length) output.ids = params.ids.join(',')
   if (params.keyword?.trim()) output.keyword = params.keyword.trim()
   if (params.limit) output.limit = params.limit
   return Object.keys(output).length ? output : undefined

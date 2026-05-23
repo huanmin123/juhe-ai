@@ -36,8 +36,6 @@ export interface OpenAIAccountSecret {
   qualityScore?: number
   qualityState?: string
   qualityEwmaFirstTokenMs?: number
-  dispatchWeight?: number
-  softConcurrencyLimit?: number
   currentConcurrency?: number
   baseUrl: string
   apiKey: string
@@ -77,8 +75,6 @@ interface GroupAccountRow {
   local_last_error_message?: string | null
   local_super_priority_enabled?: number | null
   local_fallback_enabled?: number | null
-  weight?: number | null
-  soft_concurrency_limit?: number | null
 }
 
 type OpenAIGroupAccountSelectionRow = GroupAccountRow & OpenAIAccountRow
@@ -119,8 +115,7 @@ export function findOpenAIAccountForGroup(
     .prepare(`
       SELECT group_accounts.account_id, group_accounts.account_authorization_id,
         group_accounts.local_status, group_accounts.local_cooldown_until, group_accounts.local_last_error_message,
-        group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
-        group_accounts.weight, group_accounts.soft_concurrency_limit
+        group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled
       FROM group_accounts
       WHERE group_accounts.group_id = ?
         AND group_accounts.account_id = ?
@@ -211,7 +206,6 @@ export function listOpenAIAccountsForGroup(
       SELECT group_accounts.account_id, group_accounts.account_authorization_id,
         group_accounts.local_status, group_accounts.local_cooldown_until, group_accounts.local_last_error_message,
         group_accounts.local_super_priority_enabled, group_accounts.local_fallback_enabled,
-        group_accounts.weight, group_accounts.soft_concurrency_limit,
         accounts.id, accounts.system_account_id, accounts.name, accounts.type, accounts.status, accounts.concurrency_limit, accounts.priority, accounts.super_priority_enabled, accounts.fallback_enabled,
         accounts.credentials_encrypted, accounts.proxy_profile_id, accounts.passthrough_enabled, accounts.error_policy_id, accounts.cooldown_until, accounts.last_error_message, accounts.stream_failure_count, accounts.stream_failure_window_started_at,
         accounts.account_expires_at,
@@ -232,7 +226,6 @@ export function listOpenAIAccountsForGroup(
         CASE WHEN group_accounts.account_authorization_id IS NOT NULL THEN group_accounts.local_fallback_enabled ELSE accounts.fallback_enabled END ASC,
         CASE WHEN group_accounts.account_authorization_id IS NOT NULL THEN group_accounts.local_super_priority_enabled ELSE accounts.super_priority_enabled END DESC,
         CASE WHEN group_accounts.account_authorization_id IS NOT NULL THEN 0 ELSE accounts.priority END ASC,
-        group_accounts.weight DESC,
         group_accounts.created_at ASC,
         group_accounts.account_id ASC
     `)
@@ -339,10 +332,6 @@ function openAIAccountSecretFromRow(
     qualityScore: typeof row.quality_score === 'number' ? row.quality_score : undefined,
     qualityState: typeof row.quality_state === 'string' ? row.quality_state : undefined,
     qualityEwmaFirstTokenMs: typeof row.quality_ewma_first_token_ms === 'number' ? row.quality_ewma_first_token_ms : undefined,
-    dispatchWeight: Math.max(1, Number(groupAccount?.weight ?? 1)),
-    softConcurrencyLimit: typeof groupAccount?.soft_concurrency_limit === 'number' && groupAccount.soft_concurrency_limit > 0
-      ? Math.trunc(groupAccount.soft_concurrency_limit)
-      : undefined,
     baseUrl: typeof credentials.base_url === 'string' && credentials.base_url ? credentials.base_url : 'https://api.openai.com/v1',
     apiKey,
     refreshToken: typeof credentials.refresh_token === 'string' ? credentials.refresh_token : undefined,

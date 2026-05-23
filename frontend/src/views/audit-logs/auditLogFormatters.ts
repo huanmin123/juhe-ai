@@ -1,4 +1,5 @@
 import type { AuditOutcome, AuditPayloadPartType } from '@/types/domain'
+import { displayGroupName } from '@/shared/groupLabelCache'
 
 export function outcomeText(value: AuditOutcome): string {
   return {
@@ -35,8 +36,12 @@ export function statusColor(statusCode: number | undefined, success: boolean): s
   return statusCode >= 500 ? 'red' : 'orange'
 }
 
-export function displayName(name?: string, id?: string): string {
-  return name || id || '-'
+export function displayName(name?: string, _id?: string): string {
+  return name || '-'
+}
+
+export function displayAuditGroupName(name?: string, id?: string): string {
+  return displayGroupName(name, id)
 }
 
 export function formatDuration(value?: number): string {

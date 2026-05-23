@@ -455,9 +455,9 @@ function authorizationViewers(authorization: ReturnType<typeof listResourceAutho
 
 function authorizationGranteeName(authorization: ResourceAuthorizationSummary): string {
   if (authorization.granteeType === 'team') {
-    return authorization.granteeTeamName ?? authorization.granteeTeamId ?? '团队'
+    return authorization.granteeTeamName ?? '团队'
   }
-  return authorization.granteeSystemAccountName ?? authorization.granteeUsername ?? authorization.granteeSystemAccountId ?? '被授权用户'
+  return authorization.granteeSystemAccountName ?? '被授权用户'
 }
 
 function normalizeAuthorizationListUsageRange(input: { startDate?: string; endDate?: string }) {

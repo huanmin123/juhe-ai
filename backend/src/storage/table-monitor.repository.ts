@@ -49,7 +49,6 @@ export interface TableStorageOverview {
 export interface CollectTableStorageSnapshotOptions {
   tableScanMode?: 'full' | 'cursor' | 'none'
   maxTablesPerDatabase?: number
-  rowCountMode?: 'full' | 'none'
 }
 
 export interface CollectTableStorageSnapshotResult {
@@ -57,7 +56,6 @@ export interface CollectTableStorageSnapshotResult {
   databaseSnapshots: number
   tableSnapshots: number
   tableScanMode: 'full' | 'cursor' | 'none'
-  rowCountMode: 'full' | 'none'
 }
 
 interface MonitoredDatabaseTarget {
@@ -83,6 +81,7 @@ interface ObjectSizeRow {
   name: string
   bytes: number
   page_count: number
+  leaf_cell_count: number | null
 }
 
 interface TableInfoRow {
@@ -128,13 +127,12 @@ const defaultTableStorageHistoryLimit = 720
 
 export function collectTableStorageSnapshot(sampledAt = nowIso(), options: CollectTableStorageSnapshotOptions = {}): CollectTableStorageSnapshotResult {
   const tableScanMode = options.tableScanMode ?? 'cursor'
-  const rowCountMode = options.rowCountMode ?? 'none'
   const targets = monitoredDatabaseTargets()
   const preparedTargets: PreparedTableMonitorTarget[] = targets.map((target) => {
     const tables = listTargetTables(target.database)
     const indexesByTable = listIndexesByTable(target.database)
     const tableSelection = selectTableScan(getStatsDatabase(), target.role, tables, tableScanMode, options.maxTablesPerDatabase ?? 4)
-    const tableRows = collectTargetTableRows(target, sampledAt, tableSelection.tableNames, indexesByTable, rowCountMode)
+    const tableRows = collectTargetTableRows(target, sampledAt, tableSelection.tableNames, indexesByTable)
     return {
       target,
       tables,
@@ -162,8 +160,7 @@ export function collectTableStorageSnapshot(sampledAt = nowIso(), options: Colle
       sampledAt,
       databaseSnapshots: targets.length,
       tableSnapshots,
-      tableScanMode,
-      rowCountMode
+      tableScanMode
     }
   } catch (error) {
     rollbackDatabaseTransaction(statsDatabase, transactionStarted)
@@ -297,8 +294,7 @@ function collectTargetTableRows(
   target: MonitoredDatabaseTarget,
   sampledAt: string,
   tableNames: string[],
-  indexesByTable: Map<string, string[]>,
-  rowCountMode: 'full' | 'none'
+  indexesByTable: Map<string, string[]>
 ): TableStorageSnapshotSummary[] {
   const objectNames = new Set<string>()
   for (const tableName of tableNames) {
@@ -318,7 +314,7 @@ function collectTargetTableRows(
     const indexPages = dbstatSizes ? indexSizes.reduce((sum, row) => sum + Number(row.page_count ?? 0), 0) : undefined
     const totalBytes = tableBytes !== undefined && indexBytes !== undefined ? tableBytes + indexBytes : undefined
     const pageCount = tablePages !== undefined && indexPages !== undefined ? tablePages + indexPages : undefined
-    const rowCount = rowCountMode === 'full' ? countRows(target.database, tableName) : undefined
+    const rowCount = dbstatRowCount(tableName, tableSize)
     const previous1h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 60)
     const previous24h = findPreviousTableSnapshot(target.role, tableName, sampledAt, 24 * 60)
     return {
@@ -441,7 +437,11 @@ function loadDbstatObjectSizes(database: DatabaseSync, objectNames: string[]): M
     const placeholders = sqlPlaceholders(names.length)
     const rows = database
       .prepare(`
-        SELECT name, SUM(pgsize) AS bytes, COUNT(*) AS page_count
+        SELECT
+          name,
+          SUM(pgsize) AS bytes,
+          SUM(1) AS page_count,
+          SUM(CASE WHEN pagetype = 'leaf' THEN ncell ELSE 0 END) AS leaf_cell_count
         FROM dbstat
         WHERE name IN (${placeholders})
         GROUP BY name
@@ -529,16 +529,12 @@ function recordTableScanCursor(database: DatabaseSync, databaseRole: MonitoredDa
     .run(databaseRole, sampledAt, tableName, sampledAt, sampledAt)
 }
 
-function countRows(database: DatabaseSync, tableName: string): number | undefined {
-  if (isFtsShadowTable(tableName)) {
+function dbstatRowCount(tableName: string, tableSize: ObjectSizeRow | undefined): number | undefined {
+  if (!tableSize || isFtsShadowTable(tableName)) {
     return undefined
   }
-  try {
-    const row = database.prepare(`SELECT COUNT(*) AS count FROM "${escapeSqlIdentifier(tableName)}"`).get() as unknown as { count?: number } | undefined
-    return Number(row?.count ?? 0)
-  } catch {
-    return undefined
-  }
+  const value = Number(tableSize.leaf_cell_count ?? 0)
+  return Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : undefined
 }
 
 function isFtsShadowTable(tableName: string): boolean {
@@ -653,10 +649,6 @@ function deleteSnapshotRowsById(
   const placeholders = sqlPlaceholders(ids.length)
   const result = database.prepare(`DELETE FROM ${tableName} WHERE id IN (${placeholders})`).run(...ids)
   return Number(result.changes ?? 0)
-}
-
-function escapeSqlIdentifier(value: string): string {
-  return value.replace(/"/g, '""')
 }
 
 function databaseSnapshotFromRow(row: LatestDatabaseSnapshotRow): DatabaseStorageSnapshotSummary {

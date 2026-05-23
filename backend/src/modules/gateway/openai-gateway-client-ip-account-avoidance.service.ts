@@ -1,0 +1,272 @@
+import { createAppCache } from '../../shared/cache.js'
+import type { GatewaySettings } from './account-error-policy.service.js'
+import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
+
+export interface ClientIpAccountAvoidanceScopeInput {
+  systemAccountId: string
+  groupId: string
+  apiKeyId?: string
+  clientIp?: string
+}
+
+export interface ClientIpAccountAvoidanceTracker {
+  scope?: ClientIpAccountAvoidanceScope
+  pendingFailures: ClientIpAccountFailure[]
+}
+
+export interface ClientIpAccountAvoidanceOrderResult {
+  accounts: UpstreamAccount[]
+  applied: boolean
+  avoidedAccountIds: string[]
+  bypassedAllAvoided: boolean
+}
+
+export interface ClientIpAccountFailure {
+  accountId: string
+  accountName?: string
+  statusCode?: number
+  errorCode?: string
+  errorType?: string
+  errorPhase: 'upstream_response' | 'upstream_request'
+  errorMessage?: string
+  endpoint?: string
+}
+
+export interface ClientIpAccountAvoidanceConfirmResult {
+  confirmedAccountIds: string[]
+  clearedAccountId?: string
+  cleared: boolean
+}
+
+interface ClientIpAccountAvoidanceScope {
+  systemAccountId: string
+  groupId: string
+  apiKeyId: string
+  clientIp: string
+}
+
+interface ClientIpAccountAvoidanceEntry extends ClientIpAccountFailure {
+  entryKey: string
+  scopeKey: string
+  failureCount: number
+  firstFailedAtMs: number
+  lastFailedAtMs: number
+  avoidUntilMs: number
+}
+
+const clientIpAccountAvoidanceMaxEntries = 5_000
+const clientIpAccountAvoidanceMaxTtlMs = 10 * 60_000
+const clientIpAccountAvoidanceDefaultTtlMs = 5 * 60_000
+
+const clientIpAccountAvoidanceCache = createAppCache<string, ClientIpAccountAvoidanceEntry>({
+  name: 'gateway:client-ip-account-avoidance',
+  max: clientIpAccountAvoidanceMaxEntries,
+  ttlMs: clientIpAccountAvoidanceMaxTtlMs,
+  updateAgeOnGet: false
+})
+
+export function createClientIpAccountAvoidanceTracker(
+  input: ClientIpAccountAvoidanceScopeInput
+): ClientIpAccountAvoidanceTracker {
+  return {
+    scope: normalizeScope(input),
+    pendingFailures: []
+  }
+}
+
+export function orderOpenAIAccountsByClientIpAccountAvoidance(
+  accounts: UpstreamAccount[],
+  input: ClientIpAccountAvoidanceScopeInput
+): ClientIpAccountAvoidanceOrderResult {
+  const scope = normalizeScope(input)
+  if (!scope || accounts.length === 0) {
+    return {
+      accounts,
+      applied: false,
+      avoidedAccountIds: [],
+      bypassedAllAvoided: false
+    }
+  }
+
+  const freshAccounts: UpstreamAccount[] = []
+  const avoidedAccounts: UpstreamAccount[] = []
+  for (const account of accounts) {
+    const entry = clientIpAccountAvoidanceCache.get(entryKey(scope, account.id))
+    if (entry) {
+      avoidedAccounts.push(account)
+    } else {
+      freshAccounts.push(account)
+    }
+  }
+
+  if (avoidedAccounts.length === 0) {
+    return {
+      accounts,
+      applied: false,
+      avoidedAccountIds: [],
+      bypassedAllAvoided: false
+    }
+  }
+
+  if (freshAccounts.length === 0) {
+    return {
+      accounts,
+      applied: false,
+      avoidedAccountIds: avoidedAccounts.map((account) => account.id),
+      bypassedAllAvoided: true
+    }
+  }
+
+  return {
+    accounts: [...freshAccounts, ...avoidedAccounts],
+    applied: true,
+    avoidedAccountIds: avoidedAccounts.map((account) => account.id),
+    bypassedAllAvoided: false
+  }
+}
+
+export function rememberClientIpAccountPendingFailure(
+  tracker: ClientIpAccountAvoidanceTracker | undefined,
+  account: Pick<UpstreamAccount, 'id' | 'name'>,
+  input: Omit<ClientIpAccountFailure, 'accountId' | 'accountName'>
+): void {
+  if (!tracker?.scope) {
+    return
+  }
+  tracker.pendingFailures.push({
+    ...input,
+    accountId: account.id,
+    accountName: account.name
+  })
+}
+
+export function confirmClientIpAccountAvoidanceAfterSuccess(
+  tracker: ClientIpAccountAvoidanceTracker | undefined,
+  successAccountId: string,
+  settings?: GatewaySettings
+): ClientIpAccountAvoidanceConfirmResult {
+  if (!tracker?.scope) {
+    return { confirmedAccountIds: [], cleared: false }
+  }
+
+  const cleared = clearClientIpAccountAvoidanceForAccount(tracker, successAccountId)
+  const ttlMs = avoidanceTtlMs(settings)
+  const now = Date.now()
+  const confirmedAccountIds: string[] = []
+  for (const failure of tracker.pendingFailures) {
+    if (failure.accountId === successAccountId) {
+      continue
+    }
+    const key = entryKey(tracker.scope, failure.accountId)
+    const current = clientIpAccountAvoidanceCache.get(key)
+    const entry: ClientIpAccountAvoidanceEntry = {
+      ...failure,
+      entryKey: key,
+      scopeKey: scopeKey(tracker.scope),
+      failureCount: (current?.failureCount ?? 0) + 1,
+      firstFailedAtMs: current?.firstFailedAtMs ?? now,
+      lastFailedAtMs: now,
+      avoidUntilMs: now + ttlMs
+    }
+    clientIpAccountAvoidanceCache.set(key, entry, { ttlMs })
+    confirmedAccountIds.push(failure.accountId)
+  }
+  tracker.pendingFailures = []
+
+  return {
+    confirmedAccountIds: [...new Set(confirmedAccountIds)],
+    clearedAccountId: successAccountId,
+    cleared
+  }
+}
+
+export function clearClientIpAccountAvoidanceForAccount(
+  tracker: ClientIpAccountAvoidanceTracker | undefined,
+  accountId: string
+): boolean {
+  if (!tracker?.scope) {
+    return false
+  }
+  const key = entryKey(tracker.scope, accountId)
+  const existed = Boolean(clientIpAccountAvoidanceCache.get(key))
+  clientIpAccountAvoidanceCache.delete(key)
+  return existed
+}
+
+export function clearClientIpAccountAvoidanceForTest(): void {
+  clientIpAccountAvoidanceCache.clear()
+}
+
+export function getClientIpAccountAvoidanceSnapshotForTest(): Array<{
+  accountId: string
+  failureCount: number
+  clientIp: string
+  apiKeyId: string
+  groupId: string
+  systemAccountId: string
+}> {
+  return [...clientIpAccountAvoidanceCache.values()].map((entry) => {
+    const scope = parseScopeKey(entry.scopeKey)
+    return {
+      accountId: entry.accountId,
+      failureCount: entry.failureCount,
+      clientIp: scope.clientIp,
+      apiKeyId: scope.apiKeyId,
+      groupId: scope.groupId,
+      systemAccountId: scope.systemAccountId
+    }
+  })
+}
+
+function normalizeScope(input: ClientIpAccountAvoidanceScopeInput): ClientIpAccountAvoidanceScope | undefined {
+  const clientIp = input.clientIp?.trim()
+  if (!clientIp) {
+    return undefined
+  }
+  return {
+    systemAccountId: input.systemAccountId,
+    groupId: input.groupId,
+    apiKeyId: input.apiKeyId?.trim() || 'internal',
+    clientIp
+  }
+}
+
+function entryKey(scope: ClientIpAccountAvoidanceScope, accountId: string): string {
+  return `${scopeKey(scope)}:${accountId}`
+}
+
+function scopeKey(scope: ClientIpAccountAvoidanceScope): string {
+  return JSON.stringify({
+    systemAccountId: scope.systemAccountId,
+    apiKeyId: scope.apiKeyId,
+    groupId: scope.groupId,
+    clientIp: scope.clientIp
+  })
+}
+
+function parseScopeKey(value: string): ClientIpAccountAvoidanceScope {
+  try {
+    const parsed = JSON.parse(value) as ClientIpAccountAvoidanceScope
+    return {
+      systemAccountId: parsed.systemAccountId,
+      apiKeyId: parsed.apiKeyId,
+      groupId: parsed.groupId,
+      clientIp: parsed.clientIp
+    }
+  } catch {
+    return {
+      systemAccountId: '',
+      apiKeyId: '',
+      groupId: '',
+      clientIp: ''
+    }
+  }
+}
+
+function avoidanceTtlMs(settings?: GatewaySettings): number {
+  const minutes = settings?.defaultTemporaryUnschedulableMinutes
+  const numeric = typeof minutes === 'number' && Number.isFinite(minutes)
+    ? Math.max(1, Math.trunc(minutes))
+    : Math.trunc(clientIpAccountAvoidanceDefaultTtlMs / 60_000)
+  return Math.min(numeric * 60_000, clientIpAccountAvoidanceMaxTtlMs)
+}

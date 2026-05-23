@@ -12,15 +12,19 @@ export function filterAccounts(input: {
   return input.accounts.filter((account) => {
     const normalizedName = normalizeKeyword(account.name)
     const keywordMatched = !keyword || normalizedName === keyword || normalizedName.startsWith(keyword)
+    const providerMatched = !input.filters.providerCode || input.filters.providerCode === 'all' || account.providerCode === input.filters.providerCode
+    const typeMatched = !input.filters.type || input.filters.type === 'all' || account.type === input.filters.type
     const statusMatched = input.filters.status.length === 0 || input.filters.status.includes(account.status)
     const groupMatched = !input.filters.groupId || account.boundGroupId === input.filters.groupId
     const systemAccountMatched = matchesSystemAccountFilter(account, input.filters.systemAccountId, input.isManagementView)
-    return keywordMatched && statusMatched && groupMatched && systemAccountMatched
+    return keywordMatched && providerMatched && typeMatched && statusMatched && groupMatched && systemAccountMatched
   })
 }
 
 export function countActiveAccountFilters(filters: AccountFilters, isManagementView: boolean, allSystemAccountsValue: string): number {
   return [
+    Boolean(filters.providerCode && filters.providerCode !== 'all'),
+    Boolean(filters.type && filters.type !== 'all'),
     filters.status.length > 0,
     Boolean(filters.groupId),
     isManagementView && filters.systemAccountId !== allSystemAccountsValue

@@ -66,6 +66,7 @@ function parseListOptions(query: Record<string, unknown>): UsageRecordListOption
     accountKeyword: optionalQueryText(query.accountKeyword ?? query.keyword ?? query.accountName),
     result,
     statusCode: isHttpStatusCode(rawStatusCode) ? rawStatusCode : undefined,
+    groupId: optionalQueryText(query.groupId),
     model: optionalQueryText(query.model),
     startAt: createdAtRange.startAt,
     endAt: createdAtRange.endAt

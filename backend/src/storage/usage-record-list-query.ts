@@ -70,6 +70,11 @@ export function buildUsageRecordFilters(access?: AccessScope, options?: UsageRec
     clauses.push('ur.status_code = ?')
     params.push(options.statusCode)
   }
+  const groupId = options?.groupId?.trim()
+  if (groupId) {
+    clauses.push('ur.group_id = ?')
+    params.push(groupId)
+  }
   const startAt = options?.startAt?.trim()
   if (startAt) {
     clauses.push('ur.created_at >= ?')

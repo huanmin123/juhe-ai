@@ -116,7 +116,7 @@ const currentPageDescription = computed(() => route.meta.description || 'OpenAI 
 const currentUser = authState.currentUser
 const canSwitchMenuMode = computed(() => currentUser.value?.role === 'admin')
 const switchMenuModeLabel = computed(() => (appMenuMode.value === 'admin' ? '切换到用户模式' : '切换到管理模式'))
-const userDisplayName = computed(() => currentUser.value?.displayName || currentUser.value?.username || '用户')
+const userDisplayName = computed(() => currentUser.value?.displayName || '用户')
 const userRoleLabel = computed(() => {
   if (canSwitchMenuMode.value) {
     return appMenuMode.value === 'admin' ? '管理员 · 管理模式' : '管理员 · 用户模式'

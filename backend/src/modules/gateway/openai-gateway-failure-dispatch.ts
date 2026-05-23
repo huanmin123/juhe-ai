@@ -45,6 +45,10 @@ import {
   shouldRecordAbortedUpstreamAttempt,
   waitBeforeTemporaryUnschedulableRetry
 } from './openai-gateway-dispatch-helpers.js'
+import {
+  rememberClientIpAccountPendingFailure,
+  type ClientIpAccountAvoidanceTracker
+} from './openai-gateway-client-ip-account-avoidance.service.js'
 import type { UpstreamAccount } from './openai-gateway-route-helpers.js'
 
 export class UpstreamRejectedRequestError extends Error {
@@ -90,6 +94,7 @@ interface HandleFailedUpstreamResponseInput {
   signal?: AbortSignal
   lastAttempt?: UpstreamAttempt
   deferredAccountFailures: DeferredAccountFailure[]
+  clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
 }
 
 interface HandleUpstreamRequestErrorInput {
@@ -108,6 +113,7 @@ interface HandleUpstreamRequestErrorInput {
   lastAttempt?: UpstreamAttempt
   failedProxyDispatchKeys: Map<string, string>
   error: unknown
+  clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
 }
 
 export async function handleFailedUpstreamResponse(
@@ -128,7 +134,8 @@ export async function handleFailedUpstreamResponse(
     retryPolicy,
     sessionAffinityKey,
     signal,
-    deferredAccountFailures
+    deferredAccountFailures,
+    clientIpAccountAvoidanceTracker
   } = input
 
   const responseBodyRead = await readUpstreamBodyLimited(response.body, {
@@ -196,8 +203,9 @@ export async function handleFailedUpstreamResponse(
     bodyText: responseBodyText,
     settings
   }
+  let parsedError: Record<string, unknown> = {}
   if (!responseBodyRead.truncated) {
-    const parsedError = parseErrorPayload(responseBodyText, response.headers)
+    parsedError = parseErrorPayload(responseBodyText, response.headers)
     const featureDecision = matchUpstreamErrorFeatureRule(openAIUpstreamErrorFeatureRules, {
       provider: 'openai',
       endpoint: requestEndpoint(req),
@@ -276,6 +284,14 @@ export async function handleFailedUpstreamResponse(
       bodyText: responseBodyText
     }
   })
+  rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
+    statusCode: response.status,
+    errorCode: stringValue(parsedError.code) || undefined,
+    errorType: stringValue(parsedError.type) || undefined,
+    errorPhase: 'upstream_response',
+    errorMessage: stringValue(parsedError.message) || diagnosticResponseBodyText || undefined,
+    endpoint: requestEndpoint(req)
+  })
 
   return { action: 'skip_account', lastAttempt }
 }
@@ -297,7 +313,8 @@ export async function handleUpstreamRequestError(
     sessionAffinityKey,
     signal,
     failedProxyDispatchKeys,
-    error
+    error,
+    clientIpAccountAvoidanceTracker
   } = input
 
   if (isUpstreamRequestAbortedError(error) || signal?.aborted) {
@@ -358,6 +375,13 @@ export async function handleUpstreamRequestError(
   if (shouldRetryPolicyAttempt(attemptIndex, retryPolicy)) {
     await waitBeforeTemporaryUnschedulableRetry(retryPolicy, attemptIndex + 1)
     return { action: 'retry', lastAttempt }
+  }
+  if (isRealUpstreamUrl(upstreamUrl)) {
+    rememberClientIpAccountPendingFailure(clientIpAccountAvoidanceTracker, account, {
+      errorPhase: 'upstream_request',
+      errorMessage: message,
+      endpoint: requestEndpoint(req)
+    })
   }
   forgetOpenAIAccountForSession(sessionAffinityKey, account.id)
   rememberFailedProxyForDispatch(failedProxyDispatchKeys, account, message)
@@ -436,4 +460,8 @@ function objectStringProperty(value: unknown, key: string): string | undefined {
 
 function stringValue(value: unknown): string {
   return typeof value === 'string' && value.trim() ? value.trim() : ''
+}
+
+function isRealUpstreamUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value)
 }

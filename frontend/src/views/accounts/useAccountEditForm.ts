@@ -3,6 +3,8 @@ import { computed, nextTick, reactive, ref, watch, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
 import { useSubmitAction } from '@/composables/useSubmitAction'
+import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
+import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type {
   AccountSummary,
   AccountType,
@@ -14,7 +16,7 @@ import type {
 } from '@/types/domain'
 import {
   defaultGroupForProvider as selectDefaultGroupForProvider,
-  groupOptionsForProvider,
+  groupOptionsForProviderWithSelected,
   isManageableGroupForProvider,
   providerNameByCodeMap,
   targetSystemAccountLabel as buildTargetSystemAccountLabel
@@ -52,9 +54,12 @@ interface UseAccountEditFormOptions {
   groupIdForAccount: (accountId: string) => string | undefined
   groups: ReadonlyValue<GroupOptionSummary[]>
   isManagementView: ComputedRef<boolean>
+  loadAccountOptions: (systemAccountId?: string, force?: boolean) => Promise<void>
   loadGroupOptions: (keyword?: string, force?: boolean) => Promise<void>
   loadData: () => Promise<void>
+  focusCreatedAccount?: (account: AccountSummary) => void
   providers: ReadonlyValue<ProviderDefinition[]>
+  systemAccountSelection?: ReadonlyValue<PrincipalSelection | undefined>
   systemAccounts: ReadonlyValue<SystemAccountPrincipalSummary[]>
 }
 
@@ -75,10 +80,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   const targetSystemAccountLabel = computed(() => {
     if (!options.isManagementView.value) return undefined
     const systemAccountId = options.accountScopeParams.value?.systemAccountId
-    return buildTargetSystemAccountLabel(options.systemAccounts.value, systemAccountId)
+    return buildTargetSystemAccountLabel(options.systemAccounts.value, systemAccountId, options.systemAccountSelection?.value)
   })
 
-  const groupOptions = computed(() => groupOptionsForProvider(options.groups.value, form.providerCode))
+  const groupOptions = computed(() => groupOptionsForProviderWithSelected(options.groups.value, form.providerCode, [form.groupId]))
   const availableProviders = computed(() => options.providers.value.length ? options.providers.value : [FALLBACK_PROVIDER])
   const providerNameByCode = computed(() => providerNameByCodeMap(availableProviders.value))
   const selectedProvider = computed(() => availableProviders.value.find((provider) => provider.code === form.providerCode))
@@ -138,13 +143,16 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function ensureDefaultGroupSelected(providerCode = form.providerCode) {
     if (!providerCode) {
       form.groupId = undefined
+      form.group = undefined
       return
     }
     const currentGroup = options.groups.value.find((group) => group.id === form.groupId)
     if (currentGroup && isManageableGroupForProvider(currentGroup, providerCode)) {
+      form.group = { id: currentGroup.id, name: currentGroup.name }
       return
     }
-    form.groupId = defaultGroupForProvider(providerCode)?.id
+    const nextGroup = defaultGroupForProvider(providerCode)
+    setFormGroup(nextGroup ? { id: nextGroup.id, name: nextGroup.name } : undefined)
   }
 
   function openCreate() {
@@ -153,6 +161,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       return
     }
     editingId.value = undefined
+    void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
     resetForm('', '')
     void options.loadGroupOptions('', true)
     modalOpen.value = true
@@ -184,6 +193,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     Object.assign(form, {
       ...defaultForm(providerCode, type),
       groupId: form.groupId,
+      group: form.group,
       proxyProfileId: form.proxyProfileId,
       notes: form.notes,
       supportedModels: form.supportedModels,
@@ -200,6 +210,10 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   function openEdit(account: AccountSummary) {
     editingId.value = account.id
     editingAccountDetail.value = account
+    void options.loadAccountOptions(options.accountScopeParams.value?.systemAccountId)
+    const selectedGroup = account.boundGroupId
+      ? groupSelectionForId(account.boundGroupId, account.boundGroupName)
+      : undefined
     Object.assign(form, defaultForm(account.providerCode, account.type), {
       providerCode: account.providerCode,
       name: account.name,
@@ -208,7 +222,8 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
       priority: account.priority,
       proxyProfileId: account.proxyProfileId,
       accountExpiresAt: parseDatePickerValue(account.accountExpiresAt),
-      groupId: options.groupIdForAccount(account.id),
+      groupId: selectedGroup?.id ?? options.groupIdForAccount(account.id),
+      group: selectedGroup,
       apiKey: asString(account.credentials.api_key),
       baseUrl: asString(account.credentials.base_url) || 'https://api.openai.com/v1',
       accessToken: asString(account.credentials.access_token),
@@ -255,6 +270,7 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
   async function loadProviderGroupOptions(providerCode: string): Promise<void> {
     await nextTick()
     await options.loadGroupOptions('', true)
+    syncFormGroupFromOptions()
     ensureDefaultGroupSelected(providerCode)
   }
 
@@ -272,6 +288,9 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
         refreshToken: asString(detail.credentials.refresh_token),
         supportedModels: [...(detail.supportedModels ?? [])]
       })
+      if (detail.boundGroupId || detail.boundGroupName) {
+        setFormGroup(groupSelectionForId(detail.boundGroupId, detail.boundGroupName))
+      }
       accountErrorPolicyRules.value = loadAccountErrorPolicyRules(detail.credentials)
     } catch (error) {
       console.error(error)
@@ -407,5 +426,31 @@ export function useAccountEditForm(options: UseAccountEditFormOptions) {
     selectedProvider,
     selectProvider,
     targetSystemAccountLabel
+  }
+
+  function groupSelectionForId(id: string | undefined, name: string | undefined): GroupSelection | undefined {
+    const normalizedId = id?.trim()
+    if (!normalizedId) return undefined
+    const optionGroup = options.groups.value.find((group) => group.id === normalizedId)
+    const normalizedName = optionGroup?.name?.trim() || name?.trim()
+    if (!normalizedName) return form.group?.id === normalizedId ? form.group : undefined
+    rememberGroupLabel(normalizedId, normalizedName)
+    return { id: normalizedId, name: normalizedName }
+  }
+
+  function setFormGroup(group: GroupSelection | undefined): void {
+    form.groupId = group?.id
+    form.group = group
+  }
+
+  function syncFormGroupFromOptions(): void {
+    if (!form.groupId) {
+      form.group = undefined
+      return
+    }
+    const group = groupSelectionForId(form.groupId, form.group?.name)
+    if (group) {
+      form.group = group
+    }
   }
 }

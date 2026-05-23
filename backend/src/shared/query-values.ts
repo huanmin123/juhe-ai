@@ -7,6 +7,15 @@ export function optionalQueryText(value: unknown): string | undefined {
   return typeof text === 'string' && text.trim() ? text.trim() : undefined
 }
 
+export function queryTextList(value: unknown, maxItems = 500): string[] {
+  const values = Array.isArray(value) ? value : [value]
+  return [...new Set(values
+    .flatMap((item) => typeof item === 'string' ? item.split(',') : [])
+    .map((item) => item.trim())
+    .filter(Boolean))]
+    .slice(0, Math.max(1, maxItems))
+}
+
 export function integerQueryValue(value: unknown): number | undefined {
   const text = firstQueryValue(value)
   if (typeof text === 'string') {

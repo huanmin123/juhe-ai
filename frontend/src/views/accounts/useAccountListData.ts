@@ -7,6 +7,8 @@ import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { formatNumber } from '@/shared/formatters'
+import { rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
+import { rememberPrincipalSelection } from '@/shared/principalLabelCache'
 import type { AccountSummary, ProviderDefinition, ProxyProfileOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import type { AccountFilters } from './accountFormTypes'
@@ -28,14 +30,16 @@ interface UseAccountListDataOptions {
 }
 
 const defaultAccountsPageState = (): AccountsPageState => ({
-  filters: { keyword: '', groupId: '', status: [], systemAccountId: allSystemAccountsValue },
+  filters: { keyword: '', providerCode: 'all', type: 'all', groupId: '', group: undefined, status: [], systemAccountId: allSystemAccountsValue, systemAccount: undefined },
   pagination: { current: 1, pageSize: ACCOUNT_PAGE_SIZE },
   sorts: [{ field: 'priority', order: 'asc' }]
 })
 
 export function useAccountListData(options: UseAccountListDataOptions) {
-  const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 5 })
+  const pageStateCache = usePageStateCache<AccountsPageState>(undefined, defaultAccountsPageState, { version: 7 })
   const initialPageState = pageStateCache.read()
+  rememberGroupSelection(initialPageState.filters.group)
+  rememberPrincipalSelection(initialPageState.filters.systemAccount)
   const providers = ref<ProviderDefinition[]>([])
   const proxies = ref<ProxyProfileOptionSummary[]>([])
   const accountOptionsLoaded = ref(false)
@@ -46,7 +50,6 @@ export function useAccountListData(options: UseAccountListDataOptions) {
   const {
     handleDropdown: handleSystemAccountOptionsDropdown,
     handleSearch: handleSystemAccountOptionsSearch,
-    load: loadSystemAccountOptions,
     loading: systemAccountOptionsLoading,
     resetSearch: resetSystemAccountOptionsSearch,
     systemAccounts
@@ -79,12 +82,8 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     showTotal: (total, range, context) => context?.hasMore
       ? `已加载到第 ${formatNumber(range?.[1] ?? Math.max(0, total - 1))} 个账户，还有更多`
       : `共 ${formatNumber(total)} 个账户`,
-    fetchPage: async (loadOptions, pageState) => {
+    fetchPage: async (_loadOptions, pageState) => {
       const systemAccountId = options.isManagementView.value ? accountScopeParams.value?.systemAccountId : undefined
-      void loadAccountOptions(systemAccountId, loadOptions.forceOptions === true).catch((error) => {
-        console.error(error)
-        message.error('加载账户辅助信息失败')
-      })
       const accountList = await fetchAccountList(systemAccountId, pageState)
       return {
         items: accountList.items,
@@ -155,6 +154,16 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     resetAccountListPagination()
   }
 
+  function focusCreatedAccount(account: AccountSummary): void {
+    filters.keyword = account.name
+    filters.providerCode = 'all'
+    filters.type = 'all'
+    filters.groupId = ''
+    filters.group = undefined
+    filters.status = []
+    resetAccountPagination()
+  }
+
   function snapshotPageState(): AccountsPageState {
     return {
       filters: { ...filters, status: [...filters.status] },
@@ -180,8 +189,7 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     const request = (async () => {
       const [providerList, proxyList] = await Promise.all([
         options.isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-        api.proxies.options(),
-        loadSystemAccountOptions()
+        api.proxies.options({ limit: 50 })
       ])
       if (currentScopeKey() !== scopeKey || accountOptionsInFlight.get(scopeKey) !== requestRef.current) {
         return
@@ -207,12 +215,16 @@ export function useAccountListData(options: UseAccountListDataOptions) {
       page: pageState.current,
       pageSize: pageState.pageSize,
       keyword: filters.keyword.trim() || undefined,
+      providerCode: filters.providerCode && filters.providerCode !== 'all' ? filters.providerCode : undefined,
+      type: filters.type && filters.type !== 'all' ? filters.type : undefined,
       groupId: options.isManagementView.value && !systemAccountId ? undefined : filters.groupId || undefined,
       status: filters.status
     }
   }
 
   watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+  watch(() => filters.group, (group) => rememberGroupSelection(group), { deep: true, immediate: true })
+  watch(() => filters.systemAccount, (account) => rememberPrincipalSelection(account), { deep: true, immediate: true })
 
   return {
     loading,
@@ -237,11 +249,13 @@ export function useAccountListData(options: UseAccountListDataOptions) {
     loadMoreMobileAccounts,
     refreshMobileAccounts,
     loadData,
+    loadAccountOptions,
     refreshData,
     applyFilters,
     handleAccountTableChangeAndLoad,
     handleAccountSortChange,
     handleSystemAccountFilterChange,
+    focusCreatedAccount,
     resetAccountPagination,
     resetFilters
   }

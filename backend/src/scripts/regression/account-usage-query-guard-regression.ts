@@ -135,7 +135,7 @@ try {
       pageSize: 10,
       range
     })
-    assert.deepEqual(prefixResult.rows.map((row) => row.id), [matchedAccount.id], '账号用量关键词仍应支持账号 ID 前缀定位')
+    assert.equal(prefixResult.total, 0, '账号用量关键词不应通过账号 ID 前缀命中，ID 精确回填只能走 accountIds')
 
     const missResult = repositories.getAccountUsageStatsOverviewPage(access, {
       keyword: 'missing-keyword-needle',
@@ -188,9 +188,11 @@ try {
   assert(businessCalls.length >= 3, '回归应捕获账号用量关键词预解析 SQL')
   for (const call of businessCalls) {
     assert(!/\bCOALESCE\s*\(/i.test(call.sql), '账号用量关键词预解析不应通过 COALESCE 做包含扫描')
+    assert(!/\baccounts\.id\s*(?:=|LIKE)\s*\?/i.test(call.sql), '账号用量关键词预解析不应按账号 ID 搜索')
     assert(!/\baccounts\.notes\s+(?:COLLATE|LIKE)\b/i.test(call.sql), '账号用量关键词预解析不应把备注字段放进通用关键词 WHERE')
     assert(/\bESCAPE\s+'\\'/i.test(call.sql), '账号用量关键词预解析前缀搜索应显式转义 LIKE 通配符')
     assert(!call.params.some((param) => typeof param === 'string' && param.startsWith('%')), '账号用量关键词预解析不应接收前导通配符参数')
+    assert.equal(call.params[call.params.length - 1], 50, '账号用量关键词预解析最多只取 50 个候选账号')
   }
   assert(capturedCalls.length >= 4, '回归应捕获账号用量窗口查询 SQL')
   assert(capturedCalls.some((call) => /\busage_window\.scope_id\s+IN\s*\(/i.test(call.sql)), '账号用量关键词窗口查询应使用 scope_id 命中预解析账号')

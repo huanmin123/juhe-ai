@@ -142,8 +142,6 @@ function orderOpenAIHighConcurrencyAccounts(
     const hardLimit = accountHardConcurrencyLimit(account)
     const softLimit = effectiveSoftConcurrencyLimit({
       accountConcurrencyLimit: hardLimit,
-      dispatchWeight: account.dispatchWeight,
-      softConcurrencyLimit: account.softConcurrencyLimit,
       policy
     })
     const boundToSession = binding?.accountId === account.id

@@ -222,13 +222,13 @@ systemTeamsRouter.post('/:id/members', requireAdmin, mutationGuard({
           resourceId: team.id,
           resourceName: team.name,
           summary: `添加团队成员：${team.name}`,
-          changes: [safeChange('members', '新增成员', undefined, addedMembers.map((member) => member.systemAccountName ?? member.username ?? member.systemAccountId).join('、'))],
+          changes: [safeChange('members', '新增成员', undefined, addedMembers.map((member) => member.systemAccountName).filter(Boolean).join('、'))],
           targets: [
             ...teamMemberTargets(team),
             ...addedMembers.map((member) => ownerTarget({
               targetType: 'system_account',
               targetId: member.systemAccountId,
-              targetName: member.systemAccountName ?? member.username,
+              targetName: member.systemAccountName,
               ownerSystemAccountId: member.systemAccountId,
               relation: 'team_member'
             }))
@@ -278,13 +278,13 @@ systemTeamsRouter.delete('/:id/members/:memberId', requireAdmin, (req, res) => {
           resourceId: team.id,
           resourceName: team.name,
           summary: `移除团队成员：${team.name}`,
-          changes: [safeChange('member', '移除成员', removedMember?.systemAccountName ?? removedMember?.username ?? removedMember?.systemAccountId, undefined)],
+          changes: [safeChange('member', '移除成员', removedMember?.systemAccountName, undefined)],
           targets: [
             ...teamMemberTargets(team),
             ...(removedMember ? [ownerTarget({
               targetType: 'system_account',
               targetId: removedMember.systemAccountId,
-              targetName: removedMember.systemAccountName ?? removedMember.username,
+              targetName: removedMember.systemAccountName,
               ownerSystemAccountId: removedMember.systemAccountId,
               relation: 'team_member'
             })] : [])
@@ -307,7 +307,7 @@ function teamMemberTargets(team: ReturnType<typeof listSystemTeams>[number]) {
   return (team.members ?? []).map((member) => ownerTarget({
     targetType: 'system_account',
     targetId: member.systemAccountId,
-    targetName: member.systemAccountName ?? member.username,
+    targetName: member.systemAccountName,
     ownerSystemAccountId: member.systemAccountId,
     relation: 'team_member'
   }))

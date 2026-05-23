@@ -1,6 +1,6 @@
 <template>
   <a-card class="page-card groups-page-card responsive-page-card">
-    <ResponsiveListToolbar :show-search="false" :show-reset="isManagementView" :show-filters="isManagementView" filter-title="筛选分组" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshGroups">
+    <ResponsiveListToolbar :show-search="false" :show-reset="isManagementView" :show-filters="isManagementView" filter-title="筛选分组" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshGroups" @search="refreshGroups">
       <template #inline-filters>
         <SystemPrincipalSelect
           v-if="isManagementView"
@@ -9,6 +9,7 @@
           :active-only="false"
           :filter-option="false"
           :loading="systemAccountOptionsLoading"
+          v-model:selected-principal="systemAccountFilterSelection"
           include-all
           class="toolbar-select responsive-list-inline-filter"
           @change="handleSystemAccountFilterChange"
@@ -28,6 +29,7 @@
             :active-only="false"
             :filter-option="false"
             :loading="systemAccountOptionsLoading"
+            v-model:selected-principal="systemAccountFilterSelection"
             include-all
             @change="handleSystemAccountFilterChange"
             @dropdown-visible-change="handleSystemAccountOptionsDropdown"
@@ -205,6 +207,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatCompactUsageAmount, formatNumber, formatUsd } from '@/shared/formatters'
+import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { GroupSchedulingPolicy, GroupSummary, GroupType, ProviderDefinition } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
 
@@ -229,7 +232,6 @@ const groupOptionsScopeKey = ref('')
 const defaultHighConcurrencySchedulingPolicy: Required<GroupSchedulingPolicy> = {
   mode: 'balanced_fast',
   defaultSoftConcurrency: 5,
-  weightAffectsSoftConcurrency: true,
   fastFirstEnabled: true,
   fallbackOnQueueEnabled: true,
   breakAffinityOnSoftLimit: true,
@@ -252,14 +254,17 @@ const clientIpOverflowModeOptions = [
 type GroupsPageState = {
   pagination?: { current: number; pageSize: number }
   systemAccountFilter: string
+  systemAccountFilterSelection?: PrincipalSelection
 }
 const defaultGroupsPageState = (): GroupsPageState => ({
   pagination: { current: 1, pageSize },
-  systemAccountFilter: allSystemAccountsValue
+  systemAccountFilter: allSystemAccountsValue,
+  systemAccountFilterSelection: undefined
 })
 const pageStateCache = usePageStateCache<GroupsPageState>(undefined, defaultGroupsPageState)
 const initialPageState = pageStateCache.read()
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
+const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const form = reactive({
   name: '',
   providerCode: 'openai',
@@ -284,7 +289,6 @@ const groupsApi = useScopedGroupsApi(isManagementView)
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
-  load: loadSystemAccountOptions,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -310,13 +314,9 @@ const {
   showTotal: (total, range, context) => context?.hasMore
     ? `已加载到第 ${range?.[1] ?? total - 1} 个分组，还有更多`
     : `共 ${formatNumber(total)} 个分组`,
-  fetchPage: async (options, pageState) => {
+  fetchPage: async (_options, pageState) => {
     const systemAccountId = isManagementView.value ? groupScopeParams.value?.systemAccountId : undefined
-    const [groupPage] = await Promise.all([
-      groupsApi.listPage(groupListParams(systemAccountId, pageState)),
-      loadGroupOptions(options.forceOptions === true)
-    ])
-    return groupPage
+    return groupsApi.listPage(groupListParams(systemAccountId, pageState))
   },
   onError: (error) => {
     console.error(error)
@@ -360,7 +360,12 @@ const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
   const systemAccountId = groupScopeParams.value?.systemAccountId
   if (!systemAccountId) return '请选择系统账户后再创建'
-  return systemAccounts.value.find((account) => account.id === systemAccountId)?.displayName || systemAccounts.value.find((account) => account.id === systemAccountId)?.username || systemAccountId
+  if (systemAccountFilterSelection.value?.kind === 'system_account' && systemAccountFilterSelection.value.id === systemAccountId) {
+    return systemAccountFilterSelection.value.name
+  }
+  return systemAccounts.value.find((account) => account.id === systemAccountId)?.displayName
+    || principalLabelForId('system_account', systemAccountId)
+    || ''
 })
 
 function groupStats(group: GroupSummary) {
@@ -517,8 +522,7 @@ async function loadGroupOptions(force = false): Promise<void> {
   }
 
   const [providerList] = await Promise.all([
-    isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[]),
-    loadSystemAccountOptions()
+    isManagementView.value ? api.providers.list() : Promise.resolve([] as ProviderDefinition[])
   ])
   providers.value = providerList.length ? providerList : [FALLBACK_PROVIDER]
   groupOptionsLoaded.value = true
@@ -537,6 +541,9 @@ function refreshMobileGroups() {
 }
 
 function handleSystemAccountFilterChange() {
+  if (systemAccountFilter.value === allSystemAccountsValue) {
+    systemAccountFilterSelection.value = undefined
+  }
   resetSystemAccountOptionsSearch()
   resetPagination()
   void loadData()
@@ -544,6 +551,7 @@ function handleSystemAccountFilterChange() {
 
 function resetFilters() {
   systemAccountFilter.value = allSystemAccountsValue
+  systemAccountFilterSelection.value = undefined
   resetSystemAccountOptionsSearch()
   resetPagination()
   pageStateCache.clear()
@@ -556,6 +564,7 @@ function openCreate() {
     return
   }
   editingId.value = undefined
+  void loadGroupOptions()
   Object.assign(form, {
     name: '',
     providerCode: defaultProviderCode(),
@@ -573,6 +582,7 @@ function openEdit(group: GroupSummary) {
     return
   }
   editingId.value = group.id
+  void loadGroupOptions()
   Object.assign(form, {
     name: group.name,
     providerCode: group.providerCode,
@@ -649,11 +659,13 @@ async function removeGroup(id: string) {
 function snapshotPageState(): GroupsPageState {
   return {
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
-    systemAccountFilter: systemAccountFilter.value
+    systemAccountFilter: systemAccountFilter.value,
+    systemAccountFilterSelection: systemAccountFilterSelection.value
   }
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
 onMounted(() => {
   void loadData()

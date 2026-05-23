@@ -818,7 +818,7 @@ function findGroupOptionByName(providerCode: string, name: string, context: Impo
     providerCode,
     keyword: name,
     manageableOnly: true,
-    limit: 500
+    limit: 50
   }).find((item) => item.name.trim().toLowerCase() === normalized)
   context.groupLookup.set(key, group)
   return group
@@ -829,13 +829,13 @@ function findProxyOptionByName(name: string, context: ImportContext): ProxyProfi
   if (context.proxyLookup.has(key)) {
     return context.proxyLookup.get(key)
   }
-  const proxy = listProxyOptions({ keyword: name, limit: 500 }).find((item) => item.name.trim().toLowerCase() === key)
+  const proxy = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim().toLowerCase() === key)
   context.proxyLookup.set(key, proxy)
   return proxy
 }
 
 function findProxyByName(name: string): ProxyProfileSummary | undefined {
-  const option = listProxyOptions({ keyword: name, limit: 500 }).find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase())
+  const option = listProxyOptions({ keyword: name, limit: 50 }).find((item) => item.name.trim().toLowerCase() === name.trim().toLowerCase())
   return option ? findProxy(option.id) : undefined
 }
 

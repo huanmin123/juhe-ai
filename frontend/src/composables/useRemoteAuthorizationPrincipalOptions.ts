@@ -24,7 +24,7 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
   const options = shallowRef<T[]>([])
   const loading = ref(false)
   const keyword = ref('')
-  const limit = config.limit ?? 50
+  const limit = optionLimitValue(config.limit)
   const optionCache = createShortLivedQueryCache<T[]>({ ttlMs: config.cacheTtlMs ?? 10_000 })
   const searchDelayMs = config.searchDelayMs ?? 250
   let requestId = 0
@@ -57,7 +57,10 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
     loadingKey = requestKey
     loadingPromise = (async () => {
       try {
-        let nextOptions = await fetchOptions<T>(config.kind, config.isManagementView(), normalizeOptionKeyword(nextKeyword), limit)
+        let nextOptions = await fetchOptions<T>(config.kind, config.isManagementView(), {
+          keyword: normalizeOptionKeyword(nextKeyword),
+          limit
+        })
         nextOptions = await ensureSelectedOptions(nextOptions, selectedIds)
         optionCache.set(requestKey, nextOptions)
         if (currentRequestId !== requestId) return
@@ -109,14 +112,15 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
   async function ensureSelectedOptions(nextOptions: T[], selectedIds: string[]): Promise<T[]> {
     const missingSelectedIds = selectedIds.filter((id) => !nextOptions.some((option) => option.id === id))
     if (!missingSelectedIds.length) return nextOptions
-    const selectedOptions = await Promise.all(missingSelectedIds.map(async (id) => {
-      try {
-        return await fetchOptions<T>(config.kind, config.isManagementView(), id, 1)
-      } catch {
-        return []
-      }
-    }))
-    return mergeOptionsById(selectedOptions.flat(), nextOptions)
+    try {
+      const selectedOptions = await fetchOptions<T>(config.kind, config.isManagementView(), {
+        ids: missingSelectedIds,
+        limit: Math.min(50, Math.max(limit, missingSelectedIds.length))
+      })
+      return mergeOptionsById(selectedOptions, nextOptions)
+    } catch {
+      return nextOptions
+    }
   }
 
   function normalizedSelectedIds(): string[] {
@@ -139,8 +143,11 @@ export function useRemoteAuthorizationPrincipalOptions<T extends AuthorizationPr
   }
 }
 
-async function fetchOptions<T extends AuthorizationPrincipalOption>(kind: AuthorizationPrincipalKind, isManagementView: boolean, keyword: string | undefined, limit: number): Promise<T[]> {
-  const params = { keyword, limit }
+async function fetchOptions<T extends AuthorizationPrincipalOption>(
+  kind: AuthorizationPrincipalKind,
+  isManagementView: boolean,
+  params: { ids?: string[]; keyword?: string; limit: number }
+): Promise<T[]> {
   if (kind === 'team') {
     const options = isManagementView
       ? await api.authorizationOptions.granteeTeams(params)
@@ -164,4 +171,9 @@ function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[])
 function normalizeOptionKeyword(value?: string): string | undefined {
   const keyword = value?.trim()
   return keyword ? keyword : undefined
+}
+
+function optionLimitValue(value?: number): number {
+  const limit = Number(value ?? 50)
+  return Number.isFinite(limit) ? Math.min(50, Math.max(1, Math.trunc(limit))) : 50
 }

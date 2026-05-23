@@ -29,7 +29,8 @@ try {
   const database = databaseModule.getDatabase()
   assert(tableColumns('groups').includes('group_type'), 'groups 应包含 group_type 字段')
   assert(tableColumns('groups').includes('scheduling_policy_json'), 'groups 应包含 scheduling_policy_json 字段')
-  assert(tableColumns('group_accounts').includes('soft_concurrency_limit'), 'group_accounts 应包含 soft_concurrency_limit 字段')
+  assert(!tableColumns('group_accounts').includes('weight'), 'group_accounts 不应再包含绑定级权重字段')
+  assert(!tableColumns('group_accounts').includes('soft_concurrency_limit'), 'group_accounts 不应再包含绑定级单账户排队阈值字段')
 
   const access = { systemAccountId: 'sys_admin', role: 'admin' as const }
   const highConcurrencyGroup = repositories.createGroup({
@@ -50,7 +51,6 @@ try {
 
   assert.equal(highConcurrencyGroup.groupType, 'high_concurrency')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.defaultSoftConcurrency, 3)
-  assert.equal(highConcurrencyGroup.schedulingPolicy?.weightAffectsSoftConcurrency, true)
   assert.equal(highConcurrencyGroup.schedulingPolicy?.fastFirstEnabled, true, '高并发快速优先应默认开启，不允许分组配置关闭')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.breakAffinityOnSoftLimit, true, '达到阈值打破亲和应默认开启，不允许分组配置关闭')
   assert.equal(highConcurrencyGroup.schedulingPolicy?.maxQueueWaitMs, 45000, '短队列最大等待时间应允许按分组配置')
@@ -94,17 +94,12 @@ try {
     },
     concurrencyLimit: 10
   }, access)
-  const boundAccount = repositories.setAccountGroup(account.id, highConcurrencyGroup.id, access, {
-    dispatchWeight: 3,
-    softConcurrencyLimit: 2
-  })
-  assert.equal(boundAccount?.boundGroupDispatchWeight, 3, '账户绑定应返回绑定级权重')
-  assert.equal(boundAccount?.boundGroupSoftConcurrencyLimit, 2, '账户绑定应返回绑定级单账户排队阈值')
+  const boundAccount = repositories.setAccountGroup(account.id, highConcurrencyGroup.id, access)
+  assert.equal(boundAccount?.boundGroupId, highConcurrencyGroup.id, '账户绑定应只记录目标分组')
   const binding = database
-    .prepare('SELECT weight, soft_concurrency_limit FROM group_accounts WHERE group_id = ? AND account_id = ?')
-    .get(highConcurrencyGroup.id, account.id) as unknown as { weight?: number; soft_concurrency_limit?: number } | undefined
-  assert.equal(binding?.weight, 3, '账户绑定权重应写入 group_accounts')
-  assert.equal(binding?.soft_concurrency_limit, 2, '账户绑定单账户排队阈值应写入 group_accounts')
+    .prepare('SELECT group_id, account_id FROM group_accounts WHERE group_id = ? AND account_id = ?')
+    .get(highConcurrencyGroup.id, account.id) as unknown as { group_id?: string; account_id?: string } | undefined
+  assert.equal(binding?.group_id, highConcurrencyGroup.id, '账户绑定不应依赖绑定级调度参数')
 
   const personalGroup = repositories.updateGroup(highConcurrencyGroup.id, { groupType: 'personal' }, access)
   assert.equal(personalGroup?.groupType, 'personal')

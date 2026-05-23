@@ -20,7 +20,7 @@ import { flushGatewayAccountSideEffects } from '../gateway/gateway-account-side-
 import { OpenAIStreamInspector } from '../gateway/openai-gateway-stream-inspection.js'
 
 const defaultTestModel = 'gpt-5.5'
-const defaultTestPrompt = 'Return OK.'
+const defaultTestPrompt = '只输出 OK'
 const defaultOpenAITestInstructions = 'You are ChatGPT, a helpful assistant.'
 const gatewayTestPath = '/v1/responses'
 const gatewayChatCompletionsPath = '/v1/chat/completions'
@@ -31,11 +31,13 @@ export async function testOpenAIAccount(
   account: AccountSummary,
   input: { model?: string; prompt?: string; signal?: AbortSignal; groupId?: string; requestShape?: RecentOpenAIRequestShape; diagnostics?: 'full' | 'limited'; gatewaySettingsOverride?: Partial<GatewaySettings> } = {}
 ): Promise<AccountTestResult> {
-  const model = stringValue(input.model) || defaultTestModel
+  const explicitModel = stringValue(input.model)
+  const model = explicitModel || defaultAccountTestModel(account)
   const prompt = stringValue(input.prompt) || defaultTestPrompt
   const startedAt = Date.now()
   const limitedDiagnostics = input.diagnostics === 'limited'
   const testRequest = createOpenAITestRequest({
+    explicitModel,
     fallbackModel: model,
     prompt,
     isOAuth: account.type === 'oauth',
@@ -391,13 +393,14 @@ export class MemoryGatewayResponse extends EventEmitter {
 }
 
 function createOpenAITestRequest(input: {
+  explicitModel?: string
   fallbackModel: string
   prompt: string
   isOAuth: boolean
   requestShape?: RecentOpenAIRequestShape
 }): { path: string; body: Record<string, unknown>; model: string } {
-  const path = testPathFromRecentShape(input.requestShape)
-  const model = stringValue(input.requestShape?.model) || input.fallbackModel
+  const path = testPathFromRecentShape(input.requestShape, input.isOAuth)
+  const model = stringValue(input.explicitModel) || stringValue(input.requestShape?.model) || input.fallbackModel
   return {
     path,
     body: path === gatewayChatCompletionsPath
@@ -407,7 +410,14 @@ function createOpenAITestRequest(input: {
   }
 }
 
-function testPathFromRecentShape(shape?: RecentOpenAIRequestShape): string {
+function defaultAccountTestModel(account: AccountSummary): string {
+  return account.supportedModels?.map((model) => stringValue(model)).find(Boolean) || defaultTestModel
+}
+
+function testPathFromRecentShape(shape: RecentOpenAIRequestShape | undefined, isOAuth: boolean): string {
+  if (isOAuth) {
+    return gatewayTestPath
+  }
   const endpoint = stringValue(shape?.endpoint).toLowerCase()
   if (endpoint.includes('/v1/chat/completions')) {
     return gatewayChatCompletionsPath
@@ -430,10 +440,10 @@ function createOpenAIResponsesTestPayload(model: string, prompt: string, isOAuth
       }
     ],
     instructions: defaultOpenAITestInstructions,
-    max_output_tokens: 1,
     stream
   }
   if (isOAuth) {
+    payload.max_output_tokens = 1
     payload.store = false
   }
   return payload

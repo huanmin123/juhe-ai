@@ -21,13 +21,15 @@
         <a-input :value="sourceAccount?.name || '-'" readonly />
       </a-form-item>
       <a-form-item label="目标账户" required>
-        <a-select
+        <AccountSelect
           :value="targetAccountId"
+          :selected-account="targetAccount"
           :options="targetOptions"
           placeholder="请选择同供应商的可用账户"
           show-search
           :filter-option="filterOption"
-          @update:value="$emit('update:targetAccountId', String($event))"
+          @update:value="handleTargetAccountIdUpdate"
+          @update:selected-account="$emit('update:targetAccount', $event)"
         />
         <div class="form-help">{{ isAuthorizedSource ? '只显示你当前同一分组下处于正常状态且可调度的授权账户。' : '只显示同一系统账户、同一供应商、同一分组下处于正常状态且可调度的账户。' }}</div>
       </a-form-item>
@@ -45,6 +47,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 
+import AccountSelect from '@/components/AccountSelect.vue'
+import type { AccountSelection } from '@/shared/accountLabelCache'
 import type { AccountSummary, AccountTrafficMigrationSourceStatus } from '@/types/domain'
 
 const props = defineProps<{
@@ -52,6 +56,7 @@ const props = defineProps<{
   saving: boolean
   sourceAccount?: AccountSummary
   targetAccountId: string
+  targetAccount?: AccountSelection
   targetOptions: Array<{ label: string; value: string }>
   sourceStatus: AccountTrafficMigrationSourceStatus
 }>()
@@ -62,6 +67,7 @@ const emit = defineEmits<{
   (event: 'save'): void
   (event: 'update:open', value: boolean): void
   (event: 'update:targetAccountId', value: string): void
+  (event: 'update:targetAccount', value: AccountSelection | undefined): void
   (event: 'update:sourceStatus', value: AccountTrafficMigrationSourceStatus): void
 }>()
 
@@ -76,6 +82,10 @@ function handleSourceStatusChange(value: unknown) {
   if (value === 'temporary_unavailable' || value === 'disabled') {
     emit('update:sourceStatus', value)
   }
+}
+
+function handleTargetAccountIdUpdate(value: string | string[] | undefined) {
+  emit('update:targetAccountId', typeof value === 'string' ? value : '')
 }
 </script>
 

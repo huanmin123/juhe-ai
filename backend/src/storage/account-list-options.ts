@@ -10,10 +10,12 @@ export type AccountListSchedulableFilter = 'all' | 'enabled' | 'disabled' | 'coo
 
 export interface AccountListOptions {
   sorts?: AccountListSort[]
+  ids?: string[]
   page?: number
   pageSize?: number
   limit?: number
   keyword?: string
+  providerCode?: string
   groupId?: string
   type?: string
   status?: string
@@ -22,9 +24,11 @@ export interface AccountListOptions {
 
 export interface NormalizedAccountListOptions {
   sorts: AccountListSort[]
+  ids: string[]
   page: number
   pageSize: number
   keyword?: string
+  providerCode?: string
   groupId?: string
   type?: string
   status?: string
@@ -53,7 +57,7 @@ const accountListSortColumns: Record<AccountListSortField, string> = {
 const defaultAccountListSorts: AccountListSort[] = [{ field: 'priority', order: 'asc' }]
 const defaultAccountListPageSize = 50
 const maxAccountListPageSize = 200
-const maxAccountOptionPageSize = 500
+const maxAccountOptionPageSize = 50
 
 export function normalizeAccountListOptions(options?: AccountListOptions, normalizationOptions: AccountListNormalizationOptions = {}): NormalizedAccountListOptions {
   const seenFields = new Set<AccountListSortField>()
@@ -73,9 +77,11 @@ export function normalizeAccountListOptions(options?: AccountListOptions, normal
     : defaultAccountListPageSize
   return {
     sorts: sorts.length ? sorts : defaultAccountListSorts,
+    ids: normalizeTextList(options?.ids),
     page,
     pageSize,
     keyword: normalizeTextFilter(options?.keyword),
+    providerCode: normalizeTextFilter(options?.providerCode),
     groupId: normalizeTextFilter(options?.groupId),
     type: normalizeTextFilter(options?.type),
     status: normalizeTextFilter(options?.status),
@@ -109,6 +115,13 @@ export function buildAccountListOrderClause(options: Pick<NormalizedAccountListO
 
 function normalizeTextFilter(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
+}
+
+function normalizeTextList(values?: string[]): string[] {
+  if (!values?.length) return []
+  return [...new Set(values.map((value) => normalizeTextFilter(value)).filter((value): value is string => Boolean(value)))]
+    .sort()
+    .slice(0, 500)
 }
 
 function isSchedulableFilter(value: unknown): value is AccountListSchedulableFilter {

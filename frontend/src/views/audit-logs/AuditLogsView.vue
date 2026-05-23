@@ -5,6 +5,7 @@
       search-placeholder="搜索 traceId"
       filter-title="审计筛选"
       :active-filter-count="activeFilterCount"
+      :advanced-filter-count="advancedFilterCount"
       :refresh-loading="loading"
       @refresh="refreshRecords"
       @reset="resetFilters"
@@ -18,6 +19,7 @@
           :active-only="false"
           :filter-option="false"
           :loading="systemAccountOptionsLoading"
+          v-model:selected-principal="systemAccountSelection"
           include-all
           all-label="全部用户"
           class="toolbar-select audit-user-filter responsive-list-inline-filter"
@@ -26,8 +28,16 @@
           @dropdown-visible-change="handleSystemAccountOptionsDropdown"
           @search="handleSystemAccountOptionsSearch"
         />
-        <a-input v-model:value="pathFilter" allow-clear class="toolbar-select audit-path-filter responsive-list-inline-filter" placeholder="接口路径" @press-enter="applyFilters" />
-        <a-input v-model:value="statusCodeFilter" allow-clear class="toolbar-select audit-status-filter responsive-list-inline-filter" placeholder="状态码" @press-enter="applyFilters" />
+      </template>
+      <template #advanced-filters>
+        <a-form layout="vertical" class="advanced-filter-form">
+          <a-form-item label="接口路径">
+            <a-input v-model:value="pathFilter" allow-clear placeholder="/v1/responses" @press-enter="applyFilters" />
+          </a-form-item>
+          <a-form-item label="状态码">
+            <a-input v-model:value="statusCodeFilter" allow-clear placeholder="401 / 503" @press-enter="applyFilters" />
+          </a-form-item>
+        </a-form>
       </template>
       <template #filters>
         <a-form layout="vertical">
@@ -41,6 +51,7 @@
               :active-only="false"
               :filter-option="false"
               :loading="systemAccountOptionsLoading"
+              v-model:selected-principal="systemAccountSelection"
               include-all
               all-label="全部用户"
               placeholder="筛选用户"
@@ -86,7 +97,7 @@
             <a-descriptions-item label="状态码">{{ detail.finalStatusCode ?? '-' }}</a-descriptions-item>
             <a-descriptions-item label="账号">{{ displayName(detail.accountName, detail.accountId) }}</a-descriptions-item>
             <a-descriptions-item label="API Key">{{ displayName(detail.apiKeyName, detail.apiKeyId) }}</a-descriptions-item>
-            <a-descriptions-item label="分组">{{ displayName(detail.groupName, detail.groupId) }}</a-descriptions-item>
+            <a-descriptions-item label="分组">{{ displayAuditGroupName(detail.groupName, detail.groupId) }}</a-descriptions-item>
             <a-descriptions-item label="系统账户">{{ displayName(detail.systemAccountName, detail.systemAccountId) }}</a-descriptions-item>
             <a-descriptions-item label="耗时">{{ formatDuration(detail.durationMs) }}</a-descriptions-item>
             <a-descriptions-item label="采样">{{ detail.sampleReason }} / {{ detail.sampleBucket }}</a-descriptions-item>
@@ -269,6 +280,8 @@ import RuntimeAvailabilityAlert from '@/components/RuntimeAvailabilityAlert.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
+import { rememberGroupLabel } from '@/shared/groupLabelCache'
+import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
 import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
@@ -276,6 +289,7 @@ import { allSystemAccountsValue, selectedSystemAccountId } from '@/utils/systemA
 import AuditLogList from './AuditLogList.vue'
 import {
   captureStatusText,
+  displayAuditGroupName,
   displayName,
   formatBytes,
   formatDateTime,
@@ -306,7 +320,6 @@ let payloadRequestId = 0
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
-  load: loadSystemAccounts,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -321,6 +334,7 @@ type AuditLogsPageState = {
   pathFilter: string
   statusCodeFilter: string
   systemAccountFilter: string
+  systemAccountSelection?: PrincipalSelection
   traceIdFilter: string
 }
 const defaultAuditLogsPageState = (): AuditLogsPageState => ({
@@ -329,9 +343,10 @@ const defaultAuditLogsPageState = (): AuditLogsPageState => ({
   pathFilter: '',
   statusCodeFilter: '',
   systemAccountFilter: allSystemAccountsValue,
+  systemAccountSelection: undefined,
   traceIdFilter: ''
 })
-const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 3 })
+const pageStateCache = usePageStateCache<AuditLogsPageState>(undefined, defaultAuditLogsPageState, { version: 4 })
 const initialPageState = pageStateCache.read()
 const route = useRoute()
 const router = useRouter()
@@ -345,6 +360,7 @@ const outcomeFilter = ref<AuditOutcome | 'all'>(effectiveInitialPageState.outcom
 const pathFilter = ref(effectiveInitialPageState.pathFilter)
 const statusCodeFilter = ref(effectiveInitialPageState.statusCodeFilter)
 const systemAccountFilter = ref(effectiveInitialPageState.systemAccountFilter)
+const systemAccountSelection = ref<PrincipalSelection | undefined>(effectiveInitialPageState.systemAccountSelection)
 const {
   items: records,
   loading,
@@ -369,8 +385,7 @@ const {
     }
     const [listResult, runtimeInfo] = await Promise.all([
       fetchRecords(pageState),
-      api.auditLogs.runtime(),
-      loadSystemAccounts()
+      api.auditLogs.runtime()
     ])
     runtime.value = runtimeInfo
     return listResult
@@ -389,6 +404,12 @@ const activeFilterCount = computed(() => {
   if (traceIdFilter.value.trim()) count += 1
   if (outcomeFilter.value !== 'all') count += 1
   if (systemAccountFilter.value !== allSystemAccountsValue) count += 1
+  if (pathFilter.value.trim()) count += 1
+  if (statusCodeFilter.value.trim()) count += 1
+  return count
+})
+const advancedFilterCount = computed(() => {
+  let count = 0
   if (pathFilter.value.trim()) count += 1
   if (statusCodeFilter.value.trim()) count += 1
   return count
@@ -440,6 +461,11 @@ const selectedPayloadCanLoadMore = computed(() => Boolean(
   && selectedPayload.value.bodyNextOffset !== undefined
 ))
 
+watch(records, rememberAuditRecordGroupLabels, { immediate: true })
+watch(detail, (nextDetail) => {
+  rememberGroupLabel(nextDetail?.groupId, nextDetail?.groupName)
+})
+
 function applyFilters(): void {
   clearRouteTraceIdForManualState()
   resetPagination()
@@ -452,6 +478,7 @@ function applyPageState(state: AuditLogsPageState): void {
   pathFilter.value = state.pathFilter
   statusCodeFilter.value = state.statusCodeFilter
   systemAccountFilter.value = state.systemAccountFilter
+  systemAccountSelection.value = state.systemAccountSelection
   pagination.current = state.pagination.current
   pagination.pageSize = state.pagination.pageSize
   resetSystemAccountOptionsSearch()
@@ -481,6 +508,7 @@ function resetFilters(): void {
   pathFilter.value = defaults.pathFilter
   statusCodeFilter.value = defaults.statusCodeFilter
   systemAccountFilter.value = defaults.systemAccountFilter
+  systemAccountSelection.value = defaults.systemAccountSelection
   resetSystemAccountOptionsSearch()
   resetPagination()
   pageStateCache.clear()
@@ -498,6 +526,12 @@ function fetchRecords(pageState: { current: number; pageSize: number }) {
     statusCode: normalizedStatusCode(statusCodeFilter.value),
     systemAccountId
   })
+}
+
+function rememberAuditRecordGroupLabels(items: AuditLogSummary[]): void {
+  for (const item of items) {
+    rememberGroupLabel(item.groupId, item.groupName)
+  }
 }
 
 function routeTraceId(): string | undefined {
@@ -619,6 +653,7 @@ function snapshotPageState(): AuditLogsPageState {
     pathFilter: pathFilter.value,
     statusCodeFilter: statusCodeFilter.value,
     systemAccountFilter: systemAccountFilter.value,
+    systemAccountSelection: systemAccountSelection.value,
     traceIdFilter: traceIdFilter.value
   }
 }
@@ -630,6 +665,7 @@ watch(snapshotPageState, () => {
   }
   pageStateCache.scheduleWrite(snapshotPageState)
 }, { deep: true })
+watch(systemAccountSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(
   () => route.query.traceId,
   () => {
@@ -667,6 +703,10 @@ onDeactivated(closeTransientDetails)
 
 .audit-user-filter {
   width: 190px;
+}
+
+.advanced-filter-form :deep(.ant-input) {
+  width: 100%;
 }
 
 .attempt-account-cell,

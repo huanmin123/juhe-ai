@@ -11,9 +11,9 @@
         <a-input v-model:value="form.name" :placeholder="form.type === 'oauth' ? 'OAuth 可留空，默认使用授权信息' : '例如 openai-main'" />
       </a-form-item>
       <a-form-item label="加入分组" required>
-        <a-select
+        <GroupSelect
           v-model:value="form.groupId"
-          show-search
+          v-model:selected-group="form.group"
           :filter-option="false"
           :loading="groupOptionsLoading"
           :options="groupOptions"
@@ -35,6 +35,7 @@
 </template>
 
 <script setup lang="ts">
+import GroupSelect from '@/components/GroupSelect.vue'
 import type { AccountFormModel } from './accountFormTypes'
 
 defineProps<{

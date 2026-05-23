@@ -14,11 +14,12 @@
       <div class="test-account-card">
         <div class="test-account-main">
           <div class="test-account-icon">▶</div>
-          <div>
+          <div class="test-account-detail">
             <div class="test-account-name">{{ account.name }}</div>
             <div class="test-account-meta">
               <a-tag color="processing">{{ accountTypeText(account.type) }}</a-tag>
-              <span>账号</span>
+              <a-tag :color="proxyTagColor">{{ proxyTagText }}</a-tag>
+              <a-tag color="geekblue">{{ currentProviderName }}</a-tag>
             </div>
           </div>
         </div>
@@ -55,7 +56,6 @@
       <div class="test-modal-footer">
         <div class="test-footer-hint">
           <span>测试模型</span>
-          <span>提示词："{{ prompt }}"</span>
         </div>
         <a-space>
           <a-button :disabled="!result" @click="$emit('copy-result', resultJson)">复制完整结果</a-button>
@@ -93,7 +93,7 @@ const props = defineProps<{
   modelOptions: Array<{ label: string; value: string }>
   modelsLoading: boolean
   open: boolean
-  prompt: string
+  providerName?: (providerCode?: string) => string
   result?: AccountTestResult
   running: boolean
 }>()
@@ -108,18 +108,24 @@ const emit = defineEmits<{
 }>()
 
 const resultJson = computed(() => props.result ? JSON.stringify(props.result, null, 2) : '')
+const currentProviderName = computed(() => props.account ? providerLabel(props.account) : '')
+const proxyTagText = computed(() => props.account?.proxyProfileId ? '有代理' : '无代理')
+const proxyTagColor = computed(() => {
+  if (props.account?.proxyProfileUnavailable) return 'red'
+  return props.account?.proxyProfileId ? 'cyan' : 'default'
+})
 const outputLines = computed<TestOutputLine[]>(() => {
   const account = props.account
   if (!account || (!props.running && !props.result)) return []
   const lines: TestOutputLine[] = [
     { text: `开始测试账号：${account.name}`, tone: 'info' },
+    { text: `供应商：${providerLabel(account)}`, tone: 'muted' },
     { text: `账号类型：${accountTypeText(account.type)}`, tone: 'muted' }
   ]
 
   if (props.running) {
     lines.push({ text: '正在连接 OpenAI API...', tone: 'warning' })
     lines.push({ text: `使用模型：${props.model}`, tone: 'success' })
-    lines.push({ text: `发送测试消息："${props.prompt}"`, tone: 'muted' })
     return lines
   }
 
@@ -130,7 +136,6 @@ const outputLines = computed<TestOutputLine[]>(() => {
 
   lines.push({ text: props.result.statusCode && props.result.statusCode >= 200 && props.result.statusCode < 300 ? '已连接到 API' : 'API 返回错误', tone: props.result.success ? 'success' : 'error' })
   lines.push({ text: `使用模型：${props.result.model || props.model}`, tone: 'success' })
-  lines.push({ text: `发送测试消息："${props.prompt}"`, tone: 'muted' })
   lines.push({ text: '响应：', tone: 'label' })
   const outputText = formatTestTerminalResult(props.result)
   if (outputText) {
@@ -163,6 +168,10 @@ function handleOpenUpdate(value: boolean) {
     return
   }
   emit('update:open', value)
+}
+
+function providerLabel(account: AccountSummary): string {
+  return props.providerName?.(account.providerCode) ?? account.providerCode
 }
 </script>
 
@@ -210,6 +219,10 @@ function handleOpenUpdate(value: boolean) {
   font-weight: 700;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.test-account-detail {
+  min-width: 0;
 }
 
 .test-account-meta {

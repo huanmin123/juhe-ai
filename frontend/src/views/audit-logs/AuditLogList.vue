@@ -46,7 +46,7 @@
         <span>{{ displayName(record.apiKeyName, record.apiKeyId) }}</span>
       </template>
       <template v-else-if="column.key === 'group'">
-        <span>{{ displayName(record.groupName, record.groupId) }}</span>
+        <span>{{ displayAuditGroupName(record.groupName, record.groupId) }}</span>
       </template>
       <template v-else-if="column.key === 'systemAccount'">
         <span>{{ displayName(record.systemAccountName, record.systemAccountId) }}</span>
@@ -103,6 +103,7 @@ import RowActions from '@/components/RowActions.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import type { AuditLogSummary } from '@/types/domain'
 import {
+  displayAuditGroupName,
   displayName,
   formatDateTime,
   formatDuration,

@@ -5,6 +5,7 @@
       search-placeholder="摘要 / 资源 / 操作人"
       filter-title="操作日志筛选"
       :active-filter-count="activeFilterCount"
+      :advanced-filter-count="advancedFilterCount"
       :refresh-loading="loading"
       @refresh="refreshRecords"
       @reset="resetFilters"
@@ -22,20 +23,63 @@
           :placeholder="['创建开始时间', '创建结束时间']"
           @change="handleCreatedAtRangeChange"
         />
-        <a-input v-model:value="traceIdFilter" allow-clear class="toolbar-select trace-filter responsive-list-inline-filter" placeholder="traceId" @press-enter="applyFilters" />
-        <a-select
-          v-if="isManagementView"
-          v-model:value="affectedSystemAccountFilter"
-          show-search
-          class="toolbar-select account-filter responsive-list-inline-filter"
-          :options="affectedSystemAccountOptions"
-          :filter-option="false"
-          :loading="affectedSystemAccountOptionsLoading"
-          placeholder="筛选影响用户"
-          @change="handleAffectedSystemAccountChange"
-          @dropdown-visible-change="handleAffectedSystemAccountOptionsDropdown"
-          @search="handleAffectedSystemAccountOptionsSearch"
-        />
+      </template>
+      <template #advanced-filters>
+        <a-form layout="vertical" class="advanced-filter-form">
+          <a-form-item label="traceId">
+            <a-input v-model:value="traceIdFilter" allow-clear placeholder="输入 traceId" @press-enter="applyFilters" />
+          </a-form-item>
+          <template v-if="isManagementView">
+            <a-form-item label="操作人">
+              <SystemPrincipalSelect
+                v-model:value="actorSystemAccountFilter"
+                v-model:selected-principal="actorSystemAccountSelection"
+                :accounts="actorSystemAccounts"
+                :active-only="false"
+                :filter-option="false"
+                :loading="actorSystemAccountOptionsLoading"
+                include-all
+                all-label="全部用户"
+                placeholder="筛选操作人"
+                @change="handleActorSystemAccountChange"
+                @dropdown-visible-change="handleActorSystemAccountOptionsDropdown"
+                @search="handleActorSystemAccountOptionsSearch"
+              />
+            </a-form-item>
+            <a-form-item label="影响用户">
+              <SystemPrincipalSelect
+                v-model:value="affectedSystemAccountFilter"
+                v-model:selected-principal="affectedSystemAccountSelection"
+                :accounts="affectedSystemAccounts"
+                :active-only="false"
+                :filter-option="false"
+                :loading="affectedSystemAccountOptionsLoading"
+                include-all
+                all-label="全部用户"
+                placeholder="筛选影响用户"
+                @change="handleAffectedSystemAccountChange"
+                @dropdown-visible-change="handleAffectedSystemAccountOptionsDropdown"
+                @search="handleAffectedSystemAccountOptionsSearch"
+              />
+            </a-form-item>
+            <a-form-item label="业务归属">
+              <SystemPrincipalSelect
+                v-model:value="operationScopeSystemAccountFilter"
+                v-model:selected-principal="operationScopeSystemAccountSelection"
+                :accounts="operationScopeSystemAccounts"
+                :active-only="false"
+                :filter-option="false"
+                :loading="operationScopeSystemAccountOptionsLoading"
+                include-all
+                all-label="全部用户"
+                placeholder="筛选业务归属"
+                @change="handleOperationScopeSystemAccountChange"
+                @dropdown-visible-change="handleOperationScopeSystemAccountOptionsDropdown"
+                @search="handleOperationScopeSystemAccountOptionsSearch"
+              />
+            </a-form-item>
+          </template>
+        </a-form>
       </template>
       <template #filters>
         <a-form layout="vertical">
@@ -61,12 +105,15 @@
           </a-form-item>
           <template v-if="isManagementView">
             <a-form-item label="操作人">
-              <a-select
+              <SystemPrincipalSelect
                 v-model:value="actorSystemAccountFilter"
-                show-search
+                v-model:selected-principal="actorSystemAccountSelection"
+                :accounts="actorSystemAccounts"
+                :active-only="false"
                 :filter-option="false"
                 :loading="actorSystemAccountOptionsLoading"
-                :options="actorSystemAccountOptions"
+                include-all
+                all-label="全部用户"
                 placeholder="筛选操作人"
                 @change="handleActorSystemAccountChange"
                 @dropdown-visible-change="handleActorSystemAccountOptionsDropdown"
@@ -74,12 +121,15 @@
               />
             </a-form-item>
             <a-form-item label="影响用户">
-              <a-select
+              <SystemPrincipalSelect
                 v-model:value="affectedSystemAccountFilter"
-                show-search
+                v-model:selected-principal="affectedSystemAccountSelection"
+                :accounts="affectedSystemAccounts"
+                :active-only="false"
                 :filter-option="false"
                 :loading="affectedSystemAccountOptionsLoading"
-                :options="affectedSystemAccountOptions"
+                include-all
+                all-label="全部用户"
                 placeholder="筛选影响用户"
                 @change="handleAffectedSystemAccountChange"
                 @dropdown-visible-change="handleAffectedSystemAccountOptionsDropdown"
@@ -87,12 +137,15 @@
               />
             </a-form-item>
             <a-form-item label="业务归属">
-              <a-select
+              <SystemPrincipalSelect
                 v-model:value="operationScopeSystemAccountFilter"
-                show-search
+                v-model:selected-principal="operationScopeSystemAccountSelection"
+                :accounts="operationScopeSystemAccounts"
+                :active-only="false"
                 :filter-option="false"
                 :loading="operationScopeSystemAccountOptionsLoading"
-                :options="operationScopeSystemAccountOptions"
+                include-all
+                all-label="全部用户"
                 placeholder="筛选业务归属"
                 @change="handleOperationScopeSystemAccountChange"
                 @dropdown-visible-change="handleOperationScopeSystemAccountOptionsDropdown"
@@ -141,8 +194,8 @@
           <span class="name-cell">{{ actorText(record) }}</span>
         </template>
         <template v-else-if="column.key === 'scope'">
-          <span :class="record.operationScopeSystemAccountName || record.operationScopeSystemAccountId ? 'name-cell' : 'muted-cell'">
-            {{ displayName(record.operationScopeSystemAccountName, record.operationScopeSystemAccountId) }}
+          <span :class="record.operationScopeSystemAccountName ? 'name-cell' : 'muted-cell'">
+            {{ displayName(record.operationScopeSystemAccountName) }}
           </span>
         </template>
         <template v-else-if="column.key === 'traceId'">
@@ -271,6 +324,7 @@ import type { OperationLogListParams } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
+import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { RowActionItem } from '@/components/rowActions'
 import { usePageStateCache } from '@/composables/usePageStateCache'
 import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAccountOptions'
@@ -278,6 +332,7 @@ import { useResponsivePagedList } from '@/composables/useResponsivePagedList'
 import { useScopedOperationLogsApi } from '@/composables/useScopedDomainApi'
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateTime } from '@/shared/formatters'
+import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { removeRouteTraceIdQuery, trimmedRouteQueryValue } from '@/shared/routeQuery'
 import type { OperationLogChange, OperationLogDetail, OperationLogSummary } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
@@ -285,11 +340,14 @@ import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 type OperationLogsPageState = {
   actionFilter: string
   actorSystemAccountFilter: string
+  actorSystemAccountSelection?: PrincipalSelection
   affectedSystemAccountFilter: string
+  affectedSystemAccountSelection?: PrincipalSelection
   createdAtRange?: [string, string]
   keywordFilter: string
   moduleFilter: string
   operationScopeSystemAccountFilter: string
+  operationScopeSystemAccountSelection?: PrincipalSelection
   pagination: { current: number; pageSize: number }
   traceIdFilter: string
 }
@@ -299,16 +357,19 @@ const pageSize = 20
 const defaultOperationLogsPageState = (): OperationLogsPageState => ({
   actionFilter: 'all',
   actorSystemAccountFilter: allSystemAccountsValue,
+  actorSystemAccountSelection: undefined,
   affectedSystemAccountFilter: allSystemAccountsValue,
+  affectedSystemAccountSelection: undefined,
   createdAtRange: undefined,
   keywordFilter: '',
   moduleFilter: 'all',
   operationScopeSystemAccountFilter: allSystemAccountsValue,
+  operationScopeSystemAccountSelection: undefined,
   pagination: { current: 1, pageSize },
   traceIdFilter: ''
 })
 
-const pageStateCache = usePageStateCache<OperationLogsPageState>(undefined, defaultOperationLogsPageState, { version: 2 })
+const pageStateCache = usePageStateCache<OperationLogsPageState>(undefined, defaultOperationLogsPageState, { version: 3 })
 const initialPageState = pageStateCache.read()
 const { isManagementView } = useScopedMenuView()
 const operationLogsApi = useScopedOperationLogsApi(isManagementView)
@@ -330,12 +391,14 @@ const actionFilter = ref(effectiveInitialPageState.actionFilter)
 const createdAtRange = ref<CreatedAtRangeValue>(parseCreatedAtRange(effectiveInitialPageState.createdAtRange))
 const traceIdFilter = ref(effectiveInitialPageState.traceIdFilter)
 const actorSystemAccountFilter = ref(effectiveInitialPageState.actorSystemAccountFilter)
+const actorSystemAccountSelection = ref<PrincipalSelection | undefined>(effectiveInitialPageState.actorSystemAccountSelection)
 const affectedSystemAccountFilter = ref(effectiveInitialPageState.affectedSystemAccountFilter)
+const affectedSystemAccountSelection = ref<PrincipalSelection | undefined>(effectiveInitialPageState.affectedSystemAccountSelection)
 const operationScopeSystemAccountFilter = ref(effectiveInitialPageState.operationScopeSystemAccountFilter)
+const operationScopeSystemAccountSelection = ref<PrincipalSelection | undefined>(effectiveInitialPageState.operationScopeSystemAccountSelection)
 const {
   handleDropdown: handleActorSystemAccountOptionsDropdown,
   handleSearch: handleActorSystemAccountOptionsSearch,
-  load: loadActorSystemAccounts,
   loading: actorSystemAccountOptionsLoading,
   resetSearch: resetActorSystemAccountOptionsSearch,
   systemAccounts: actorSystemAccounts
@@ -346,7 +409,6 @@ const {
 const {
   handleDropdown: handleAffectedSystemAccountOptionsDropdown,
   handleSearch: handleAffectedSystemAccountOptionsSearch,
-  load: loadAffectedSystemAccounts,
   loading: affectedSystemAccountOptionsLoading,
   resetSearch: resetAffectedSystemAccountOptionsSearch,
   systemAccounts: affectedSystemAccounts
@@ -357,7 +419,6 @@ const {
 const {
   handleDropdown: handleOperationScopeSystemAccountOptionsDropdown,
   handleSearch: handleOperationScopeSystemAccountOptionsSearch,
-  load: loadOperationScopeSystemAccounts,
   loading: operationScopeSystemAccountOptionsLoading,
   resetSearch: resetOperationScopeSystemAccountOptionsSearch,
   systemAccounts: operationScopeSystemAccounts
@@ -389,13 +450,7 @@ const {
       resetAffectedSystemAccountOptionsSearch()
       resetOperationScopeSystemAccountOptionsSearch()
     }
-    const [result] = await Promise.all([
-      fetchRecords(pageState),
-      loadActorSystemAccounts(),
-      loadAffectedSystemAccounts(),
-      loadOperationScopeSystemAccounts()
-    ])
-    return result
+    return fetchRecords(pageState)
   },
   onError: (error) => {
     console.error(error)
@@ -446,15 +501,20 @@ const actionOptions = [
   { label: '清理使用记录', value: 'cleanup_usage_records' }
 ]
 
-const actorSystemAccountOptions = computed(() => systemAccountSelectOptions(actorSystemAccounts.value))
-const affectedSystemAccountOptions = computed(() => systemAccountSelectOptions(affectedSystemAccounts.value))
-const operationScopeSystemAccountOptions = computed(() => systemAccountSelectOptions(operationScopeSystemAccounts.value))
 const activeFilterCount = computed(() => {
   let count = 0
   if (keywordFilter.value.trim()) count += 1
   if (moduleFilter.value !== 'all') count += 1
   if (actionFilter.value !== 'all') count += 1
   if (normalizeCreatedAtRange(createdAtRange.value)) count += 1
+  if (traceIdFilter.value.trim()) count += 1
+  if (isManagementView.value && actorSystemAccountFilter.value !== allSystemAccountsValue) count += 1
+  if (isManagementView.value && affectedSystemAccountFilter.value !== allSystemAccountsValue) count += 1
+  if (isManagementView.value && operationScopeSystemAccountFilter.value !== allSystemAccountsValue) count += 1
+  return count
+})
+const advancedFilterCount = computed(() => {
+  let count = 0
   if (traceIdFilter.value.trim()) count += 1
   if (isManagementView.value && actorSystemAccountFilter.value !== allSystemAccountsValue) count += 1
   if (isManagementView.value && affectedSystemAccountFilter.value !== allSystemAccountsValue) count += 1
@@ -509,8 +569,11 @@ function applyPageState(state: OperationLogsPageState): void {
   createdAtRange.value = parseCreatedAtRange(state.createdAtRange)
   traceIdFilter.value = state.traceIdFilter
   actorSystemAccountFilter.value = state.actorSystemAccountFilter
+  actorSystemAccountSelection.value = state.actorSystemAccountSelection
   affectedSystemAccountFilter.value = state.affectedSystemAccountFilter
+  affectedSystemAccountSelection.value = state.affectedSystemAccountSelection
   operationScopeSystemAccountFilter.value = state.operationScopeSystemAccountFilter
+  operationScopeSystemAccountSelection.value = state.operationScopeSystemAccountSelection
   pagination.current = state.pagination.current
   pagination.pageSize = state.pagination.pageSize
   resetActorSystemAccountOptionsSearch()
@@ -544,8 +607,11 @@ function resetFilters(): void {
   createdAtRange.value = parseCreatedAtRange(defaults.createdAtRange)
   traceIdFilter.value = defaults.traceIdFilter
   actorSystemAccountFilter.value = defaults.actorSystemAccountFilter
+  actorSystemAccountSelection.value = defaults.actorSystemAccountSelection
   affectedSystemAccountFilter.value = defaults.affectedSystemAccountFilter
+  affectedSystemAccountSelection.value = defaults.affectedSystemAccountSelection
   operationScopeSystemAccountFilter.value = defaults.operationScopeSystemAccountFilter
+  operationScopeSystemAccountSelection.value = defaults.operationScopeSystemAccountSelection
   resetActorSystemAccountOptionsSearch()
   resetAffectedSystemAccountOptionsSearch()
   resetOperationScopeSystemAccountOptionsSearch()
@@ -555,16 +621,25 @@ function resetFilters(): void {
 }
 
 function handleActorSystemAccountChange(): void {
+  if (actorSystemAccountFilter.value === allSystemAccountsValue) {
+    actorSystemAccountSelection.value = undefined
+  }
   resetActorSystemAccountOptionsSearch()
   applyFilters()
 }
 
 function handleAffectedSystemAccountChange(): void {
+  if (affectedSystemAccountFilter.value === allSystemAccountsValue) {
+    affectedSystemAccountSelection.value = undefined
+  }
   resetAffectedSystemAccountOptionsSearch()
   applyFilters()
 }
 
 function handleOperationScopeSystemAccountChange(): void {
+  if (operationScopeSystemAccountFilter.value === allSystemAccountsValue) {
+    operationScopeSystemAccountSelection.value = undefined
+  }
   resetOperationScopeSystemAccountOptionsSearch()
   applyFilters()
 }
@@ -636,17 +711,6 @@ function clearRouteTraceIdForManualState(): void {
   })
 }
 
-function systemAccountSelectOptions(accounts: Array<{ id: string; displayName: string; username: string }>) {
-  return [
-    { label: '全部用户', value: allSystemAccountsValue },
-    ...accounts.map((account) => ({
-      label: `${account.displayName}（${account.username}）`,
-      value: account.id,
-      keywords: `${account.displayName} ${account.username} ${account.id}`
-    }))
-  ]
-}
-
 function moduleText(value: string): string {
   return moduleTextMap[value] ?? value
 }
@@ -664,15 +728,15 @@ function actionColor(value: string): string {
 }
 
 function actorText(record: OperationLogSummary): string {
-  return displayName(record.actorDisplayName ?? record.actorSystemAccountName ?? record.actorUsername, record.actorSystemAccountId)
+  return displayName(record.actorDisplayName ?? record.actorSystemAccountName)
 }
 
-function displayName(name?: string, id?: string): string {
-  return name || id || '-'
+function displayName(name?: string, _id?: string): string {
+  return name || '-'
 }
 
 function resourceText(record: Pick<OperationLogSummary, 'resourceType' | 'resourceName' | 'resourceId'>): string {
-  return `${resourceTypeText(record.resourceType)}：${displayName(record.resourceName, record.resourceId)}`
+  return `${resourceTypeText(record.resourceType)}：${displayName(record.resourceName)}`
 }
 
 function requestText(record: Pick<OperationLogSummary, 'method' | 'path'>): string {
@@ -713,11 +777,14 @@ function snapshotPageState(): OperationLogsPageState {
   return {
     actionFilter: actionFilter.value,
     actorSystemAccountFilter: actorSystemAccountFilter.value,
+    actorSystemAccountSelection: actorSystemAccountSelection.value,
     affectedSystemAccountFilter: affectedSystemAccountFilter.value,
+    affectedSystemAccountSelection: affectedSystemAccountSelection.value,
     createdAtRange: range ? [range[0].toISOString(), range[1].toISOString()] : undefined,
     keywordFilter: keywordFilter.value,
     moduleFilter: moduleFilter.value,
     operationScopeSystemAccountFilter: operationScopeSystemAccountFilter.value,
+    operationScopeSystemAccountSelection: operationScopeSystemAccountSelection.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     traceIdFilter: traceIdFilter.value
   }
@@ -818,6 +885,9 @@ watch(snapshotPageState, () => {
   }
   pageStateCache.scheduleWrite(snapshotPageState)
 }, { deep: true })
+watch(actorSystemAccountSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+watch(affectedSystemAccountSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
+watch(operationScopeSystemAccountSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(
   () => route.query.traceId,
   () => {
@@ -862,6 +932,11 @@ onDeactivated(closeTransientDetails)
 }
 
 .drawer-range-picker {
+  width: 100%;
+}
+
+.advanced-filter-form :deep(.ant-select),
+.advanced-filter-form :deep(.ant-input) {
   width: 100%;
 }
 

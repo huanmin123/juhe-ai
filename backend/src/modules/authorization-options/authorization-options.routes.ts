@@ -1,7 +1,7 @@
 import { Router } from 'express'
 
 import { ok } from '../../shared/http.js'
-import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { listAuthorizationGranteeAccounts, listAuthorizationGranteeTeams } from '../../storage/repositories.js'
 import { getRequestAccessScope } from '../auth/request-context.js'
 
@@ -17,7 +17,12 @@ authorizationOptionsRouter.get('/grantee-teams', (req, res) => {
 
 function parseAuthorizationOptionListOptions(query: Record<string, unknown>) {
   return {
+    ids: queryTextList(query.ids, 50),
     keyword: optionalQueryText(query.keyword),
-    limit: integerQueryValue(query.limit)
+    limit: optionLimitValue(integerQueryValue(query.limit))
   }
+}
+
+function optionLimitValue(value: number | undefined): number {
+  return typeof value === 'number' ? Math.min(50, Math.max(1, value)) : 50
 }

@@ -1,14 +1,12 @@
-import type { AccountSummary, AccountTestResult, ProviderModelPricing } from '@/types/domain'
+import type { AccountSummary, AccountTestResult } from '@/types/domain'
 
 export type AccountTestForm = {
   model: string
-  prompt: string
 }
 
-export function buildAccountTestPayload(form: AccountTestForm): { model: string; prompt: string } {
+export function buildAccountTestPayload(form: AccountTestForm): { model: string } {
   return {
-    model: form.model,
-    prompt: form.prompt
+    model: form.model
   }
 }
 
@@ -44,9 +42,9 @@ export function failedAccountTestResult(input: {
   }
 }
 
-export function nextTestModel(currentModel: string, providerModels: ProviderModelPricing[], defaultModel: string): string {
-  if (!providerModels.length) return currentModel
-  return providerModels.some((item) => item.model === currentModel) ? currentModel : defaultModel
+export function nextTestModel(currentModel: string, modelOptions: Array<{ value: string }>, defaultModel: string): string {
+  if (!modelOptions.length) return currentModel || defaultModel
+  return modelOptions.some((item) => item.value === currentModel) ? currentModel : defaultModel
 }
 
 export function batchTestSummary(total: number, successCount: number): { success: boolean; message: string } {

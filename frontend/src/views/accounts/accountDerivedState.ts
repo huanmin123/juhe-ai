@@ -1,4 +1,7 @@
 import type { AccountSummary, GroupOptionSummary, ProviderModelPricing, ProxyProfileOptionSummary, SystemAccountPrincipalSummary } from '@/types/domain'
+import { groupLabelForId } from '@/shared/groupLabelCache'
+import { principalLabelForId, type PrincipalSelection } from '@/shared/principalLabelCache'
+import { proxySelectOptionLabel } from '@/shared/proxyLabelCache'
 import { canManageGroupAccounts, canUseAsTrafficMigrationTarget, type AccountGroupIdResolver } from './accountRules'
 import { defaultTestModelOptions } from './accountOptions'
 
@@ -8,20 +11,37 @@ export type SelectOption = {
   disabled?: boolean
 }
 
-export function buildTestModelOptions(providerModels: ProviderModelPricing[]): SelectOption[] {
-  const models = providerModels.length ? providerModels.map((item) => item.model) : defaultTestModelOptions
+export function buildTestModelOptions(providerModels: ProviderModelPricing[], account?: AccountSummary): SelectOption[] {
+  const accountModels = normalizeAccountSupportedModels(account)
+  const providerModelValues = providerModels.length ? providerModels.map((item) => item.model) : defaultTestModelOptions
+  const models = [...accountModels, ...providerModelValues]
   return [...new Set(models)].map((model) => ({ label: model, value: model }))
 }
 
-export function targetSystemAccountLabel(systemAccounts: SystemAccountPrincipalSummary[], systemAccountId?: string): string {
+export function preferredTestModelForAccount(account: AccountSummary | undefined, currentModel: string, fallbackModel: string): string {
+  const accountModels = normalizeAccountSupportedModels(account)
+  if (accountModels.length) {
+    return accountModels.includes(currentModel) ? currentModel : accountModels[0]
+  }
+  return currentModel || fallbackModel
+}
+
+function normalizeAccountSupportedModels(account: AccountSummary | undefined): string[] {
+  return (account?.supportedModels ?? [])
+    .map((model) => model.trim())
+    .filter(Boolean)
+}
+
+export function targetSystemAccountLabel(systemAccounts: SystemAccountPrincipalSummary[], systemAccountId?: string, selected?: PrincipalSelection): string {
   if (!systemAccountId) return '请选择系统账户后再创建'
+  if (selected?.kind === 'system_account' && selected.id === systemAccountId && selected.name) return selected.name
   const account = systemAccounts.find((item) => item.id === systemAccountId)
-  return account?.displayName || account?.username || systemAccountId
+  return account?.displayName || principalLabelForId('system_account', systemAccountId) || ''
 }
 
 export function buildProxyOptions(proxies: ProxyProfileOptionSummary[]): SelectOption[] {
   return proxies.map((proxy) => ({
-    label: `${proxy.name}（${proxy.type}${proxy.enabled === false ? '，已停用' : ''}）`,
+    label: proxySelectOptionLabel(proxy),
     value: proxy.id,
     disabled: proxy.enabled === false
   }))
@@ -73,6 +93,20 @@ export function groupOptionsForProvider(groups: GroupOptionSummary[], providerCo
   return manageableGroupsForProvider(groups, providerCode).map((group) => ({ label: group.name, value: group.id }))
 }
 
+export function groupOptionsForProviderWithSelected(groups: GroupOptionSummary[], providerCode: string | undefined, selectedIds: Array<string | undefined>): SelectOption[] {
+  const options = groupOptionsForProvider(groups, providerCode)
+  const merged = new Map(options.map((option) => [option.value, option]))
+  for (const id of selectedIds) {
+    const normalizedId = id?.trim()
+    if (!normalizedId || merged.has(normalizedId)) continue
+    const label = groupLabelForId(normalizedId)
+    if (label) {
+      merged.set(normalizedId, { label, value: normalizedId })
+    }
+  }
+  return [...merged.values()]
+}
+
 export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCode: string): GroupOptionSummary | undefined {
   const candidates = manageableGroupsForProvider(groups, providerCode)
   return candidates.find((group) => group.isDefault) ?? candidates[0]
@@ -80,7 +114,7 @@ export function defaultGroupForProvider(groups: GroupOptionSummary[], providerCo
 
 export function bindGroupOptionsForAccount(groups: GroupOptionSummary[], account?: AccountSummary): SelectOption[] {
   if (!account) return []
-  return groupOptionsForProvider(groups, account.providerCode)
+  return groupOptionsForProviderWithSelected(groups, account.providerCode, [account.boundGroupId])
 }
 
 export function bindGroupTip(account?: AccountSummary): string {

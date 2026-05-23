@@ -1,5 +1,5 @@
 ﻿<template>
-  <div v-if="shouldRenderToolbar" class="responsive-list-toolbar">
+  <div v-if="shouldRenderToolbar" class="responsive-list-toolbar" :style="toolbarStyle">
     <div v-if="shouldRenderMain" class="responsive-list-toolbar-main" :class="{ 'without-search': !showSearch }">
       <a-input
         v-if="showSearch"
@@ -14,13 +14,13 @@
           <SearchOutlined class="responsive-list-search-icon" />
         </template>
       </a-input>
-      <a-badge v-if="shouldShowFilterButton" class="responsive-list-filter-badge" :count="activeFilterCount" :offset="[-2, 2]">
+      <slot name="inline-filters" />
+      <a-badge v-if="shouldShowFilterButton" class="responsive-list-filter-badge" :count="filterButtonBadgeCount" :offset="[-2, 2]">
         <a-button class="responsive-list-filter-button" @click="filtersOpen = true">
           <FilterOutlined />
-          筛选
+          {{ filterButtonText }}
         </a-button>
       </a-badge>
-      <slot name="inline-filters" />
       <a-button v-if="shouldShowTopRefresh" class="responsive-list-refresh" :loading="refreshLoading" @click="emit('refresh')">
         <template #icon>
           <ReloadOutlined />
@@ -38,12 +38,26 @@
     </div>
   </div>
 
-  <a-drawer v-if="showFilters && filterNodeCount > 0" v-model:open="filtersOpen" :title="filterTitle" placement="bottom" height="min(78vh, 520px)" class="responsive-list-filter-drawer" :body-style="{ padding: '14px 16px 16px' }">
+  <a-drawer
+    v-if="shouldRenderFilterDrawer"
+    v-model:open="filtersOpen"
+    :title="filterDrawerTitle"
+    :placement="filterDrawerPlacement"
+    :height="filterDrawerHeight"
+    :width="filterDrawerWidth"
+    class="responsive-list-filter-drawer"
+    :body-style="{ padding: '14px 16px 16px' }"
+  >
     <div class="responsive-list-filter-body">
-      <slot name="filters" />
+      <template v-if="isMobile">
+        <slot v-if="filterNodeCount > 0" name="filters" />
+        <slot v-else name="advanced-filters" />
+      </template>
+      <slot v-else name="advanced-filters" />
     </div>
-    <div v-if="showReset" class="responsive-list-filter-actions">
-      <a-button v-if="showReset" block @click="handleDrawerReset">重置</a-button>
+    <div v-if="showReset || showFilterSearch" class="responsive-list-filter-actions" :class="{ single: !showReset || !showFilterSearch }">
+      <a-button v-if="showReset" @click="handleDrawerReset">重置筛选</a-button>
+      <a-button v-if="showFilterSearch" type="primary" @click="handleDrawerSearch">查询</a-button>
     </div>
   </a-drawer>
 
@@ -61,12 +75,16 @@ import { Comment, Fragment, Text, computed, onActivated, onBeforeUnmount, onDeac
 const props = withDefaults(defineProps<{
   keyword?: string
   searchPlaceholder?: string
+  searchWidth?: string
   filterTitle?: string
+  advancedFilterTitle?: string
   activeFilterCount?: number
+  advancedFilterCount?: number
   mobileActionCount?: number
   mobileBreakpoint?: number
   showSearch?: boolean
   showReset?: boolean
+  showFilterSearch?: boolean
   showRefresh?: boolean
   showFilters?: boolean
   refreshLoading?: boolean
@@ -75,9 +93,11 @@ const props = withDefaults(defineProps<{
   searchPlaceholder: '搜索...',
   filterTitle: '筛选',
   activeFilterCount: 0,
+  advancedFilterCount: 0,
   mobileBreakpoint: 900,
   showSearch: true,
   showReset: true,
+  showFilterSearch: true,
   showRefresh: true,
   showFilters: true,
   refreshLoading: false
@@ -102,15 +122,25 @@ const mobileVisibleActionCount = computed(() => {
 })
 const inlineFilterNodeCount = computed(() => countActionNodes(slots.inlineFilters?.() ?? []))
 const filterNodeCount = computed(() => countActionNodes(slots.filters?.() ?? []))
+const advancedFilterNodeCount = computed(() => countActionNodes(slots['advanced-filters']?.() ?? []))
+const mobileFilterNodeCount = computed(() => filterNodeCount.value || advancedFilterNodeCount.value)
 const hasActions = computed(() => mobileVisibleActionCount.value > 0)
 const hasInlineFilters = computed(() => inlineFilterNodeCount.value > 0)
-const shouldShowFilterButton = computed(() => props.showFilters && filterNodeCount.value > 0)
+const shouldShowFilterButton = computed(() => props.showFilters && (isMobile.value ? mobileFilterNodeCount.value > 0 : advancedFilterNodeCount.value > 0))
 const shouldShowTopRefresh = computed(() => props.showRefresh && !isMobile.value)
 const shouldShowTopReset = computed(() => props.showReset && !isMobile.value)
 const shouldRenderMain = computed(() => props.showSearch || shouldShowTopRefresh.value || shouldShowTopReset.value || shouldShowFilterButton.value || hasInlineFilters.value)
 const shouldRenderToolbar = computed(() => shouldRenderMain.value || hasActions.value)
 const shouldCollapseActions = computed(() => isMobile.value && mobileVisibleActionCount.value > 2)
 const shouldShowInlineActions = computed(() => !shouldCollapseActions.value)
+const shouldRenderFilterDrawer = computed(() => props.showFilters && mobileFilterNodeCount.value > 0)
+const toolbarStyle = computed(() => props.searchWidth ? { '--responsive-list-search-width': props.searchWidth } : undefined)
+const filterButtonText = computed(() => (isMobile.value ? '筛选' : '更多'))
+const filterButtonBadgeCount = computed(() => (isMobile.value ? props.activeFilterCount : props.advancedFilterCount))
+const filterDrawerTitle = computed(() => (isMobile.value ? props.filterTitle : props.advancedFilterTitle || props.filterTitle))
+const filterDrawerPlacement = computed<'bottom' | 'right'>(() => (isMobile.value ? 'bottom' : 'right'))
+const filterDrawerHeight = computed(() => (isMobile.value ? 'min(78vh, 520px)' : undefined))
+const filterDrawerWidth = computed(() => (isMobile.value ? undefined : 'min(420px, 92vw)'))
 
 function emitKeywordUpdate(value: string) {
   emit('update:keyword', value)
@@ -120,9 +150,17 @@ function handleDrawerReset() {
   emit('reset')
 }
 
+function handleDrawerSearch() {
+  emit('search')
+  filtersOpen.value = false
+}
+
 function updateViewportState() {
   if (typeof window === 'undefined') return
   isMobile.value = window.innerWidth <= props.mobileBreakpoint
+  if (!shouldShowFilterButton.value) {
+    filtersOpen.value = false
+  }
   if (!shouldCollapseActions.value) {
     actionsOpen.value = false
   }
@@ -200,7 +238,7 @@ onBeforeUnmount(() => {
 }
 
 .responsive-list-search {
-  width: min(260px, 100%);
+  width: min(var(--responsive-list-search-width, 220px), 100%);
 }
 
 .responsive-list-search-icon {
@@ -215,17 +253,22 @@ onBeforeUnmount(() => {
   gap: 10px;
 }
 
-.responsive-list-filter-badge {
-  display: none;
-}
-
 .responsive-list-filter-body {
   display: grid;
   gap: 14px;
 }
 
 .responsive-list-filter-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
   margin-top: 18px;
+}
+
+.responsive-list-filter-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .responsive-list-actions-drawer-body {
@@ -267,6 +310,19 @@ onBeforeUnmount(() => {
   }
 
   .responsive-list-filter-badge :deep(.ant-badge) {
+    width: 100%;
+  }
+
+  .responsive-list-filter-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .responsive-list-filter-actions.single {
+    grid-template-columns: 1fr;
+  }
+
+  .responsive-list-filter-actions :deep(.ant-btn) {
     width: 100%;
   }
 

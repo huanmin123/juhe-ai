@@ -116,11 +116,11 @@ export function getAuthorizationTeamUsageOverview(filters: AuthorizationUsageFil
     return {
       id: [row.team_id, row.resource_filter_type, row.resource_filter_id].filter(Boolean).join(':'),
       teamId: row.team_id,
-      teamName: teams.get(row.team_id)?.name ?? row.team_id,
+      teamName: teams.get(row.team_id)?.name ?? '',
       status: teams.get(row.team_id)?.status ?? 'active',
       resourceType: row.resource_filter_type,
       resourceId: row.resource_filter_id,
-      resourceName: resource?.name ?? row.resource_filter_id,
+      resourceName: resource?.name ?? '',
       ...resourceOwnerFields(resource, resourceOwners),
       usage: usageSummaryFromAggregate(row),
       lastUsedAt: row.last_used_at ?? undefined
@@ -194,12 +194,12 @@ export function getAuthorizationUserUsageOverview(filters: AuthorizationUsageFil
     return {
       id: [row.grantee_system_account_id, row.resource_filter_type, row.resource_filter_id].filter(Boolean).join(':'),
       systemAccountId: row.grantee_system_account_id,
-      userName: user?.displayName ?? user?.username ?? row.grantee_system_account_id,
+      userName: user?.displayName ?? '',
       username: user?.username,
       teamNames: userUsageTeamNames(row, teams, teamMemberships),
       resourceType: row.resource_filter_type,
       resourceId: row.resource_filter_id,
-      resourceName: resource?.name ?? row.resource_filter_id,
+      resourceName: resource?.name ?? '',
       ...resourceOwnerFields(resource, resourceOwners),
       sourceLabels,
       usage: usageSummaryFromAggregate(row),
@@ -361,7 +361,7 @@ function userUsageTeamNames(
   memberships: ReturnType<typeof loadActiveSystemAccountTeamNameMapByIds>
 ): string[] {
   if (row.team_filter_id) {
-    return [teams.get(row.team_filter_id)?.name ?? row.team_filter_id]
+    return [teams.get(row.team_filter_id)?.name ?? '']
   }
   return memberships.get(row.grantee_system_account_id) ?? []
 }
@@ -391,7 +391,7 @@ function resourceOwnerFields(resource: AuthorizationResourceInfo | undefined, ow
   const ownerSystemAccountId = resource?.ownerSystemAccountId
   return {
     accountOwnerSystemAccountId: ownerSystemAccountId || undefined,
-    accountOwnerSystemAccountName: ownerSystemAccountId ? owners.get(ownerSystemAccountId) ?? ownerSystemAccountId : undefined
+    accountOwnerSystemAccountName: ownerSystemAccountId ? owners.get(ownerSystemAccountId) : undefined
   }
 }
 

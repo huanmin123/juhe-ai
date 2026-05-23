@@ -2,7 +2,7 @@ import { Router } from 'express'
 import { z } from 'zod'
 
 import { badRequest, ok } from '../../shared/http.js'
-import { integerQueryValue, optionalQueryText } from '../../shared/query-values.js'
+import { integerQueryValue, optionalQueryText, queryTextList } from '../../shared/query-values.js'
 import { requireAdmin } from '../auth/auth.middleware.js'
 import { createSystemAccount, findSystemAccountById, listSystemAccountOptions, listSystemAccounts, listSystemAccountsPage, revokeAllSessionsForAccount, updateSystemAccount } from '../../storage/repositories.js'
 import { bodyField, mutationGuard, normalizedText } from '../deduplication/mutation-guard.middleware.js'
@@ -43,9 +43,14 @@ systemAccountsRouter.get('/options', requireAdmin, (req, res) => {
 
 function parseSystemAccountOptionListOptions(query: Record<string, unknown>) {
   return {
+    ids: queryTextList(query.ids, 50),
     keyword: optionalQueryText(query.keyword),
-    limit: integerQueryValue(query.limit)
+    limit: optionLimitValue(integerQueryValue(query.limit))
   }
+}
+
+function optionLimitValue(value: number | undefined): number {
+  return typeof value === 'number' ? Math.min(50, Math.max(1, value)) : 50
 }
 
 function parseSystemAccountListOptions(query: Record<string, unknown>) {

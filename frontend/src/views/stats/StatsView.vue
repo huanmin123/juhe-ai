@@ -22,6 +22,7 @@
             :disabled="loading"
             :filter-option="false"
             :loading="systemAccountOptionsLoading"
+            v-model:selected-principal="selectedSystemAccount"
             all-label="全部用户"
             class="stats-system-account-select"
             include-all
@@ -255,6 +256,7 @@ import { useRemoteSystemAccountOptions } from '@/composables/useRemoteSystemAcco
 import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { formatDateKey, formatDateLabel, isRecentWindowDateDisabled, normalizeDateRangeKeys, parseDateKey, parseDateRangeKeys, todayDateRange } from '@/shared/dateRange'
 import { formatDateTime } from '@/shared/formatters'
+import { rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemMetricsOverview, UsageStatsOverview } from '@/types/domain'
 import { allSystemAccountsValue } from '@/utils/systemAccountFilter'
 import StatsChartCard from './StatsChartCard.vue'
@@ -269,14 +271,16 @@ type StatsPageState = {
     endDate: string
   }
   selectedSystemAccountId: string
+  selectedSystemAccount?: PrincipalSelection
 }
 const defaultDateRange = todayDateRange
 const defaultStatsPageState = (): StatsPageState => {
   return {
-    selectedSystemAccountId: allSystemAccountsValue
+    selectedSystemAccountId: allSystemAccountsValue,
+    selectedSystemAccount: undefined
   }
 }
-const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState, { version: 3 })
+const pageStateCache = usePageStateCache<StatsPageState>(undefined, defaultStatsPageState, { version: 4 })
 const initialPageState = pageStateCache.read()
 
 const loading = ref(false)
@@ -284,13 +288,13 @@ const dateRange = ref<[Dayjs, Dayjs]>(parseDateRange(initialPageState.range))
 const dateRangeExplicit = ref(Boolean(initialPageState.range?.startDate || initialPageState.range?.endDate))
 const calendarRange = ref<[Dayjs | null, Dayjs | null]>([null, null])
 const selectedSystemAccountId = ref(initialPageState.selectedSystemAccountId || allSystemAccountsValue)
+const selectedSystemAccount = ref<PrincipalSelection | undefined>(initialPageState.selectedSystemAccount)
 const usageOverview = ref<UsageStatsOverview>()
 const systemMetrics = ref<SystemMetricsOverview>()
 const { isManagementView, scopedSystemAccountId } = useScopedMenuView()
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
-  load: loadSystemAccounts,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -406,7 +410,6 @@ const summaryCards = computed(() => {
 async function loadData() {
   loading.value = true
   try {
-    await loadSystemAccounts()
     const systemAccountId = isManagementView.value ? scopedSystemAccountId(selectedSystemAccountId.value) : undefined
     const rangeParams = selectedRangeParams()
     const overview = isManagementView.value
@@ -448,6 +451,9 @@ function handleDateRangeOpenChange(open: boolean) {
 }
 
 function handleSystemAccountChange() {
+  if (selectedSystemAccountId.value === allSystemAccountsValue) {
+    selectedSystemAccount.value = undefined
+  }
   void loadData()
 }
 
@@ -464,6 +470,7 @@ function resetFilters() {
   dateRangeExplicit.value = false
   calendarRange.value = [null, null]
   selectedSystemAccountId.value = defaults.selectedSystemAccountId
+  selectedSystemAccount.value = defaults.selectedSystemAccount
   resetSystemAccountOptionsSearch()
   pageStateCache.clear()
   void loadData()
@@ -580,7 +587,8 @@ function snapshotPageState(): StatsPageState {
   const [startDate, endDate] = selectedRange.value
   return {
     range: dateRangeExplicit.value ? { startDate, endDate } : undefined,
-    selectedSystemAccountId: selectedSystemAccountId.value
+    selectedSystemAccountId: selectedSystemAccountId.value,
+    selectedSystemAccount: selectedSystemAccount.value
   }
 }
 
@@ -610,6 +618,7 @@ function normalizedDateRange(value: [Dayjs, Dayjs]): [string, string] {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(selectedSystemAccount, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 watch(() => backgroundJobRows.value.length, (total) => {
   const maxPage = Math.max(1, Math.ceil(total / backgroundJobPageSize))
   if (backgroundJobPage.value > maxPage) {

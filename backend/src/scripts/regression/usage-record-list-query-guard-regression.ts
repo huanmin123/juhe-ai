@@ -30,6 +30,11 @@ try {
     providerCode: 'openai',
     enabled: true
   }, access)
+  const otherGroup = repositories.createGroup({
+    name: '使用记录查询防护其他分组',
+    providerCode: 'openai',
+    enabled: true
+  }, access)
   const account = repositories.createAccount({
     providerCode: 'openai',
     name: '使用记录查询防护账户',
@@ -50,9 +55,23 @@ try {
     },
     groupId: group.id
   }, access)
+  const otherGroupAccount = repositories.createAccount({
+    providerCode: 'openai',
+    name: '其他分组账户',
+    type: 'api_key',
+    credentials: {
+      api_key: 'sk-usage-record-list-query-guard-other-group',
+      base_url: 'https://api.openai.com/v1'
+    },
+    groupId: otherGroup.id
+  }, access)
   const apiKey = repositories.createApiKeyRecord({
     name: '使用记录查询防护 Key',
     groupId: group.id
+  }, access)
+  const otherApiKey = repositories.createApiKeyRecord({
+    name: '使用记录查询防护其他 Key',
+    groupId: otherGroup.id
   }, access)
   repositories.createUsageRecordsBatch([
     {
@@ -96,6 +115,20 @@ try {
       statusCode: 200,
       success: true,
       createdAt: '2026-01-02T00:00:02.000Z'
+    },
+    {
+      id: 'usage_list_query_guard_other_group',
+      traceId: 'trace-usage-list-query-guard-other-group',
+      apiKeyId: otherApiKey.id,
+      groupId: otherGroup.id,
+      accountId: otherGroupAccount.id,
+      endpoint: '/v1/responses',
+      providerCode: 'openai',
+      model: 'gpt-5.5-other-group',
+      stream: false,
+      statusCode: 200,
+      success: true,
+      createdAt: '2026-01-02T00:00:03.000Z'
     }
   ])
 
@@ -138,6 +171,9 @@ try {
 
     const accountPrefix = repositories.listUsageRecords(access, { accountKeyword: uniquePrefix(account.id, middleNameAccount.id), page: 1, pageSize: 10 })
     assert.equal(accountPrefix.items.length, 0, '账号名称关键字不应支持账号 ID 前缀定位使用记录')
+
+    const groupFiltered = repositories.listUsageRecords(access, { groupId: group.id, page: 1, pageSize: 10 })
+    assert.deepEqual(groupFiltered.items.map((item) => item.id), ['usage_list_query_guard_middle_name', 'usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '分组筛选应只返回目标分组的使用记录')
   } finally {
     recordDatabase.prepare = originalPrepare
     businessDatabase.prepare = originalBusinessPrepare
@@ -169,6 +205,20 @@ try {
     ORDER BY ur.created_at DESC, ur.id DESC
     LIMIT ?
   `, ['sys_admin', 'gpt-5.5', 10], 'idx_usage_records_system_account_model_created_sort')
+  assertQueryPlanUsesIndex(`
+    SELECT id
+    FROM usage_records ur
+    WHERE ur.group_id = ?
+    ORDER BY ur.created_at DESC, ur.id DESC
+    LIMIT ?
+  `, [group.id, 10], 'idx_usage_records_group_created_sort')
+  assertQueryPlanUsesIndex(`
+    SELECT id
+    FROM usage_records ur
+    WHERE ur.system_account_id = ? AND ur.group_id = ?
+    ORDER BY ur.created_at DESC, ur.id DESC
+    LIMIT ?
+  `, ['sys_admin', group.id, 10], 'idx_usage_records_system_account_group_created_sort')
 
   repositories.createUsageRecordsBatch([
     {

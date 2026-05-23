@@ -403,14 +403,12 @@ function accountEnabledGroupId(accountId: string, systemAccountId: string): stri
   return row?.group_id
 }
 
-function accountGroupBinding(accountId: string, systemAccountId: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus; dispatchWeight?: number; softConcurrencyLimit?: number } | undefined {
+function accountGroupBinding(accountId: string, systemAccountId: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
   const row = getDatabase()
     .prepare(`
       SELECT
         group_accounts.group_id,
         group_accounts.account_authorization_id,
-        group_accounts.weight,
-        group_accounts.soft_concurrency_limit,
         groups.name AS group_name
       FROM group_accounts
       INNER JOIN groups ON groups.id = group_accounts.group_id
@@ -420,7 +418,7 @@ function accountGroupBinding(accountId: string, systemAccountId: string): { grou
       ORDER BY group_accounts.updated_at DESC, group_accounts.group_id ASC, group_accounts.account_id ASC
       LIMIT 1
     `)
-    .get(accountId, systemAccountId) as unknown as { group_id?: string; group_name?: string; account_authorization_id?: string | null; weight?: number | null; soft_concurrency_limit?: number | null } | undefined
+    .get(accountId, systemAccountId) as unknown as { group_id?: string; group_name?: string; account_authorization_id?: string | null } | undefined
   if (!row?.group_id) {
     return undefined
   }
@@ -428,14 +426,12 @@ function accountGroupBinding(accountId: string, systemAccountId: string): { grou
   const authorization = ownerId && ownerId !== systemAccountId ? activeAccountAuthorization(accountId, systemAccountId) : undefined
   return {
     groupId: row.group_id,
-    groupName: row.group_name ?? row.group_id,
-    groupBindStatus: row.account_authorization_id && authorization?.id !== row.account_authorization_id ? 'authorization_unavailable' : 'bound',
-    dispatchWeight: positiveOptionalInteger(row.weight),
-    softConcurrencyLimit: positiveOptionalInteger(row.soft_concurrency_limit)
+    groupName: row.group_name ?? '',
+    groupBindStatus: row.account_authorization_id && authorization?.id !== row.account_authorization_id ? 'authorization_unavailable' : 'bound'
   }
 }
 
-function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus; dispatchWeight?: number; softConcurrencyLimit?: number } | undefined {
+function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: string): { groupId: string; groupName: string; groupBindStatus: AccountGroupBindStatus } | undefined {
   if (!row.bound_group_id || row.binding_system_account_id !== systemAccountId) {
     return undefined
   }
@@ -445,10 +441,8 @@ function accountGroupBindingFromRow(row: AccountListRow, systemAccountId?: strin
     : undefined
   return {
     groupId: row.bound_group_id,
-    groupName: row.bound_group_name ?? row.bound_group_id,
-    groupBindStatus: row.bound_group_account_authorization_id && activeAuthorizationId !== row.bound_group_account_authorization_id ? 'authorization_unavailable' : 'bound',
-    dispatchWeight: positiveOptionalInteger(row.bound_group_weight),
-    softConcurrencyLimit: positiveOptionalInteger(row.bound_group_soft_concurrency_limit)
+    groupName: row.bound_group_name ?? '',
+    groupBindStatus: row.bound_group_account_authorization_id && activeAuthorizationId !== row.bound_group_account_authorization_id ? 'authorization_unavailable' : 'bound'
   }
 }
 
@@ -893,6 +887,10 @@ function buildAccountOptionFilters(
 ): { clause: string; params: AccountOptionFilterValue[] } {
   const clauses: string[] = []
   const params: AccountOptionFilterValue[] = []
+  if (options.ids.length) {
+    clauses.push(`accounts.id IN (${sqlPlaceholders(options.ids.length)})`)
+    params.push(...options.ids)
+  }
   const keyword = options.keyword?.trim()
   if (keyword) {
     const keywordPrefix = `${escapeLikePrefix(keyword)}%`
@@ -1043,8 +1041,6 @@ function accountSummariesFromRows(
       accountAuthorizationId: row.authorization_id ?? undefined,
       boundGroupId: groupBinding?.groupId,
       boundGroupName: groupBinding?.groupName,
-      boundGroupDispatchWeight: groupBinding?.dispatchWeight,
-      boundGroupSoftConcurrencyLimit: groupBinding?.softConcurrencyLimit,
       groupBindStatus: groupBinding?.groupBindStatus,
       bindingSystemAccountId: isAuthorizedView && groupBinding ? groupBindingSystemAccountId : undefined,
       authorizationStatus: row.authorization_status ?? undefined,
@@ -1425,8 +1421,8 @@ export function createAccount(input: Record<string, unknown>, access?: AccessSco
         now
       )
     database
-      .prepare('INSERT INTO group_accounts (system_account_id, group_id, account_id, weight, enabled, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)')
-      .run(systemAccountId, groupId, account.id, 1, now, now)
+      .prepare('INSERT INTO group_accounts (system_account_id, group_id, account_id, enabled, created_at, updated_at) VALUES (?, ?, ?, 1, ?, ?)')
+      .run(systemAccountId, groupId, account.id, now, now)
     replaceAccountSupportedModels(account.id, providerCode, supportedModels)
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -2666,8 +2662,7 @@ export function deleteGroup(id: string, access?: AccessScope): boolean {
 export function setAccountGroup(
   accountId: string,
   groupId: string | null,
-  access?: AccessScope,
-  options: { dispatchWeight?: number | null; softConcurrencyLimit?: number | null } = {}
+  access?: AccessScope
 ): AccountSummary | undefined {
   const database = getDatabase()
   if (!groupId) {
@@ -2698,20 +2693,16 @@ export function setAccountGroup(
   const previousGroupId = accountEnabledGroupId(accountId, group.systemAccountId)
   database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, group.systemAccountId)
   const now = nowIso()
-  const dispatchWeight = positiveOptionalInteger(options.dispatchWeight) ?? 1
-  const softConcurrencyLimit = positiveOptionalInteger(options.softConcurrencyLimit) ?? null
   database
     .prepare(`
-      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, weight, soft_concurrency_limit, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(group_id, account_id) DO UPDATE SET
         account_authorization_id = excluded.account_authorization_id,
-        weight = excluded.weight,
-        soft_concurrency_limit = excluded.soft_concurrency_limit,
         enabled = 1,
         updated_at = excluded.updated_at
     `)
-    .run(group.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, dispatchWeight, softConcurrencyLimit, now, now)
+    .run(group.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, now, now)
   refreshGroupAccountStatsAfterWrite({ groupIds: [previousGroupId, groupId], reason: 'group_account_binding' })
   if (previousGroupId && previousGroupId !== groupId) {
     invalidateGroupAccountIdsCache(previousGroupId)
@@ -2722,7 +2713,7 @@ export function setAccountGroup(
   return findAccountSummary(accountId, { systemAccountId: group.systemAccountId, role: 'user' })
 }
 
-export function addAccountToGroup(groupId: string, accountId: string, weight = 1): GroupSummary | undefined {
+export function addAccountToGroup(groupId: string, accountId: string): GroupSummary | undefined {
   const database = getDatabase()
   const current = groupOwnerAndProvider(groupId)
   if (!current) {
@@ -2746,11 +2737,11 @@ export function addAccountToGroup(groupId: string, accountId: string, weight = 1
   database.prepare('DELETE FROM group_accounts WHERE account_id = ? AND system_account_id = ?').run(accountId, current.systemAccountId)
   database
     .prepare(`
-      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, weight, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(group_id, account_id) DO UPDATE SET account_authorization_id = excluded.account_authorization_id, enabled = 1, updated_at = excluded.updated_at
     `)
-    .run(current.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, weight, now, now)
+    .run(current.systemAccountId, groupId, accountId, accountAuthorization?.id ?? null, now, now)
   refreshGroupAccountStatsAfterWrite({ groupIds: [previousGroupId, groupId], reason: 'group_account_binding' })
   if (previousGroupId && previousGroupId !== groupId) {
     invalidateGroupAccountIdsCache(previousGroupId)
@@ -2864,6 +2855,7 @@ export function findSystemTeamSummary(id: string, access?: AccessScope): SystemT
 }
 
 interface AuthorizationPrincipalOptionListOptions {
+  ids?: string[]
   keyword?: string
   limit?: number
 }
@@ -2871,31 +2863,68 @@ interface AuthorizationPrincipalOptionListOptions {
 export function listAuthorizationGranteeAccounts(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): SystemAccountPrincipalSummary[] {
   void access
   const database = getDatabase()
-  const keywordFilter = buildSystemAccountPrincipalKeywordFilter(options.keyword)
+  const principalFilter = buildSystemAccountPrincipalFilter(options)
   const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
   const rows = database.prepare(`
     SELECT id, username, display_name, status
     FROM system_accounts
-    ${keywordFilter.clause}
+    ${principalFilter.clause}
     ORDER BY status ASC, display_name ASC, username ASC, id ASC
     ${limitClause.clause}
-  `).all(...keywordFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
+  `).all(...principalFilter.params, ...limitClause.params) as unknown as Array<Pick<SystemAccountRow, 'id' | 'username' | 'display_name' | 'status'>>
   return rows.map(systemAccountPrincipalSummaryFromRow)
 }
 
 export function listAuthorizationGranteeTeams(access?: AccessScope, options: AuthorizationPrincipalOptionListOptions = {}): SystemTeamPrincipalSummary[] {
   void access
   const database = getDatabase()
-  const keywordFilter = buildSystemTeamPrincipalKeywordFilter(options.keyword)
+  const principalFilter = buildSystemTeamPrincipalFilter(options)
   const limitClause = authorizationPrincipalOptionLimitClause(options.limit)
   const rows = database.prepare(`
     SELECT id, name, status
     FROM system_teams
-    ${keywordFilter.clause}
+    ${principalFilter.clause}
     ORDER BY status ASC, name ASC, id ASC
     ${limitClause.clause}
-  `).all(...keywordFilter.params, ...limitClause.params) as unknown as SystemTeamRow[]
+  `).all(...principalFilter.params, ...limitClause.params) as unknown as SystemTeamRow[]
   return rows.map(systemTeamPrincipalSummaryFromRow)
+}
+
+function buildSystemAccountPrincipalFilter(options: AuthorizationPrincipalOptionListOptions): { clause: string; params: string[] } {
+  return buildPrincipalFilter(options, buildSystemAccountPrincipalKeywordFilter)
+}
+
+function buildSystemTeamPrincipalFilter(options: AuthorizationPrincipalOptionListOptions): { clause: string; params: string[] } {
+  return buildPrincipalFilter(options, buildSystemTeamPrincipalKeywordFilter)
+}
+
+function buildPrincipalFilter(
+  options: AuthorizationPrincipalOptionListOptions,
+  keywordFilterBuilder: (keyword?: string) => { clause: string; params: string[] }
+): { clause: string; params: string[] } {
+  const clauses: string[] = []
+  const params: string[] = []
+  const ids = normalizeTextList(options.ids)
+  if (ids.length) {
+    clauses.push(`id IN (${sqlPlaceholders(ids.length)})`)
+    params.push(...ids)
+  }
+  const keywordFilter = keywordFilterBuilder(options.keyword)
+  if (keywordFilter.clause) {
+    clauses.push(keywordFilter.clause.replace(/^WHERE\s+/i, ''))
+    params.push(...keywordFilter.params)
+  }
+  return {
+    clause: clauses.length ? `WHERE ${clauses.join(' AND ')}` : '',
+    params
+  }
+}
+
+function normalizeTextList(values?: string[]): string[] {
+  if (!values?.length) return []
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
+    .sort()
+    .slice(0, 50)
 }
 
 function buildSystemAccountPrincipalKeywordFilter(keyword?: string): { clause: string; params: string[] } {
@@ -2904,14 +2933,12 @@ function buildSystemAccountPrincipalKeywordFilter(keyword?: string): { clause: s
   const prefix = `${escapeLikePrefix(text)}%`
   return {
     clause: `WHERE (
-      id = ?
-      OR id LIKE ? ESCAPE '\\'
-      OR username COLLATE NOCASE = ?
+      username COLLATE NOCASE = ?
       OR username LIKE ? ESCAPE '\\'
       OR display_name COLLATE NOCASE = ?
       OR display_name LIKE ? ESCAPE '\\'
     )`,
-    params: [text, prefix, text, prefix, text, prefix]
+    params: [text, prefix, text, prefix]
   }
 }
 
@@ -2921,19 +2948,17 @@ function buildSystemTeamPrincipalKeywordFilter(keyword?: string): { clause: stri
   const prefix = `${escapeLikePrefix(text)}%`
   return {
     clause: `WHERE (
-      id = ?
-      OR id LIKE ? ESCAPE '\\'
-      OR name COLLATE NOCASE = ?
+      name COLLATE NOCASE = ?
       OR name LIKE ? ESCAPE '\\'
     )`,
-    params: [text, prefix, text, prefix]
+    params: [text, prefix]
   }
 }
 
 function authorizationPrincipalOptionLimitClause(limit?: number): { clause: string; params: number[] } {
   const safeLimit = typeof limit === 'number' && Number.isInteger(limit)
-    ? Math.min(500, Math.max(1, limit))
-    : 500
+    ? Math.min(50, Math.max(1, limit))
+    : 50
   return { clause: 'LIMIT ?', params: [safeLimit] }
 }
 
@@ -3344,7 +3369,7 @@ function loadResourceAuthorizationUsageDetail(
   const account = loadSystemAccountPrincipalMapByIds([granteeSystemAccountId]).get(granteeSystemAccountId)
   const usageBySystemAccount: ResourceAuthorizationUsageDetail[] = [{
     systemAccountId: granteeSystemAccountId,
-    systemAccountName: account?.displayName ?? account?.username ?? authorization.granteeSystemAccountName,
+    systemAccountName: account?.displayName ?? authorization.granteeSystemAccountName,
     username: account?.username ?? authorization.granteeUsername,
     ...rangeUsage,
     rangeUsage
@@ -3448,7 +3473,7 @@ function buildRuntimeAuthorizationUsageDetails(
     const rangeUsage = usageByAuthorization.get(row.id) ?? emptyAccountUsageSummary()
     return [{
       systemAccountId,
-      systemAccountName: account?.displayName ?? account?.username ?? systemAccountId,
+      systemAccountName: account?.displayName,
       username: account?.username,
       ...rangeUsage,
       rangeUsage

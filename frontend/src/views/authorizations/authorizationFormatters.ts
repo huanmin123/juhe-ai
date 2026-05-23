@@ -70,23 +70,17 @@ export function granteeSourceTagColor(item: ResourceAuthorizationSummary): strin
 export function granteeTargetName(item: ResourceAuthorizationSummary): string {
   if (item.granteeType === 'team') {
     return item.granteeTeamName
-      ?? item.granteeTeamId
       ?? item.effectiveSourceTeamName
-      ?? item.effectiveSourceTeamId
       ?? '团队'
   }
   if (item.effectiveSourceType === 'team') {
     const teamSource = item.authorizationSources?.find((source) => source.sourceType === 'team' && source.status === 'active')
     return item.effectiveSourceTeamName
       ?? teamSource?.sourceTeamName
-      ?? item.effectiveSourceTeamId
-      ?? teamSource?.sourceTeamId
       ?? item.granteeSystemAccountName
-      ?? item.granteeUsername
-      ?? item.granteeSystemAccountId
       ?? '-'
   }
-  return item.granteeSystemAccountName ?? item.granteeUsername ?? item.granteeSystemAccountId ?? '-'
+  return item.granteeSystemAccountName ?? '-'
 }
 
 export function authorizationDirection(item: ResourceAuthorizationSummary, currentSystemAccountId?: string): 'outbound' | 'inbound' {

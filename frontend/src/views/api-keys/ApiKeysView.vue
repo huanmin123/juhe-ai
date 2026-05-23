@@ -1,34 +1,39 @@
 <template>
   <a-card class="page-card api-keys-page-card responsive-page-card">
-    <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="API Key 名称" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
+    <ResponsiveListToolbar v-model:keyword="keywordFilter" search-placeholder="API Key 名称" filter-title="筛选 API Key" :active-filter-count="activeFilterCount" :advanced-filter-count="advancedFilterCount" :refresh-loading="loading" @reset="resetFilters" @refresh="refreshApiKeys" @search="applyFilters">
       <template #inline-filters>
         <a-select v-model:value="statusFilter" class="toolbar-select responsive-list-inline-filter" :options="listStatusOptions" @change="applyFilters" />
-        <a-select
+        <GroupSelect
           v-model:value="groupFilter"
+          v-model:selected-group="groupFilterSelection"
           allow-clear
-          show-search
           class="toolbar-select responsive-list-inline-filter"
           :filter-option="false"
+          :groups="groups"
           :loading="groupOptionsLoading"
-          :options="groupFilterOptions"
           placeholder="全部分组"
           @change="handleGroupFilterChange"
           @dropdown-visible-change="handleGroupOptionsDropdown"
           @search="handleGroupOptionsSearch"
         />
-        <SystemPrincipalSelect
-          v-if="isManagementView"
-          v-model:value="systemAccountFilter"
-          :accounts="systemAccounts"
-          :active-only="false"
-          :filter-option="false"
-          :loading="systemAccountOptionsLoading"
-          include-all
-          class="toolbar-select responsive-list-inline-filter"
-          @change="handleSystemAccountFilterChange"
-          @dropdown-visible-change="handleSystemAccountOptionsDropdown"
-          @search="handleSystemAccountOptionsSearch"
-        />
+      </template>
+      <template #advanced-filters>
+        <a-form v-if="isManagementView" layout="vertical" class="advanced-filter-form">
+          <a-form-item label="系统账户">
+            <SystemPrincipalSelect
+              v-model:value="systemAccountFilter"
+              v-model:selected-principal="systemAccountFilterSelection"
+              :accounts="systemAccounts"
+              :active-only="false"
+              :filter-option="false"
+              :loading="systemAccountOptionsLoading"
+              include-all
+              @change="handleSystemAccountFilterChange"
+              @dropdown-visible-change="handleSystemAccountOptionsDropdown"
+              @search="handleSystemAccountOptionsSearch"
+            />
+          </a-form-item>
+        </a-form>
       </template>
       <template #actions>
         <a-button @click="helpOpen = true">
@@ -44,13 +49,13 @@
         </label>
         <label class="mobile-filter-field">
           <span>分组</span>
-          <a-select
+          <GroupSelect
             v-model:value="groupFilter"
+            v-model:selected-group="groupFilterSelection"
             allow-clear
-            show-search
             :filter-option="false"
+            :groups="groups"
             :loading="groupOptionsLoading"
-            :options="groupFilterOptions"
             placeholder="全部分组"
             @change="handleGroupFilterChange"
             @dropdown-visible-change="handleGroupOptionsDropdown"
@@ -65,6 +70,7 @@
             :active-only="false"
             :filter-option="false"
             :loading="systemAccountOptionsLoading"
+            v-model:selected-principal="systemAccountFilterSelection"
             include-all
             @change="handleSystemAccountFilterChange"
             @dropdown-visible-change="handleSystemAccountOptionsDropdown"
@@ -183,12 +189,12 @@
           <a-input v-model:value="form.name" />
         </a-form-item>
         <a-form-item label="绑定分组" required>
-          <a-select
+          <GroupSelect
             v-model:value="form.groupId"
-            show-search
+            v-model:selected-group="form.group"
             :filter-option="false"
+            :groups="groups"
             :loading="groupOptionsLoading"
-            :options="groupOptions"
             placeholder="输入分组名称搜索"
             @dropdown-visible-change="handleGroupOptionsDropdown"
             @search="handleGroupOptionsSearch"
@@ -230,6 +236,7 @@ import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 
 import { api } from '@/api/client'
 import ResponsiveDataList from '@/components/ResponsiveDataList.vue'
+import GroupSelect from '@/components/GroupSelect.vue'
 import ResponsiveListToolbar from '@/components/ResponsiveListToolbar.vue'
 import RowActions from '@/components/RowActions.vue'
 import StatusTag from '@/components/StatusTag.vue'
@@ -245,6 +252,8 @@ import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { copyTextToClipboard } from '@/shared/clipboard'
 import { formatCompactUsageAmount, formatDateTime, formatNumber, formatServerDateTimeInput, formatUsd } from '@/shared/formatters'
+import { displayGroupName, rememberGroupLabel, rememberGroupLabels, rememberGroupSelection, type GroupSelection } from '@/shared/groupLabelCache'
+import { principalLabelForId, rememberPrincipalSelection, type PrincipalSelection } from '@/shared/principalLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { AccountUsageSummary, ApiKeyQuotaLimits, ApiKeySummary, GroupOptionSummary } from '@/types/domain'
 import { allSystemAccountsValue, systemAccountDisplayText } from '@/utils/systemAccountFilter'
@@ -262,32 +271,42 @@ const { submitAction, submittingRef } = useSubmitAction('api-keys')
 const apiKeySaving = submittingRef('api_keys.save')
 const pageSize = 50
 type ApiKeysPageState = {
-  groupFilter?: string
+  groupFilter?: GroupSelection
   keywordFilter: string
   pagination: { current: number; pageSize: number }
   statusFilter: 'all' | 'active' | 'disabled'
   systemAccountFilter: string
+  systemAccountFilterSelection?: PrincipalSelection
 }
 const defaultApiKeysPageState = (): ApiKeysPageState => ({
   groupFilter: undefined,
   keywordFilter: '',
   pagination: { current: 1, pageSize },
   statusFilter: 'all',
-  systemAccountFilter: allSystemAccountsValue
+  systemAccountFilter: allSystemAccountsValue,
+  systemAccountFilterSelection: undefined
 })
 const pageStateCache = usePageStateCache<ApiKeysPageState>(undefined, defaultApiKeysPageState)
 const initialPageState = pageStateCache.read()
 const keywordFilter = ref(initialPageState.keywordFilter)
 const statusFilter = ref<'all' | 'active' | 'disabled'>(initialPageState.statusFilter)
-const groupFilter = ref<string | undefined>(initialPageState.groupFilter)
+const groupFilterSelection = ref<GroupSelection | undefined>(initialPageState.groupFilter)
+const groupFilter = computed({
+  get: () => groupFilterSelection.value?.id,
+  set: (id: string | undefined) => {
+    groupFilterSelection.value = selectedGroupSelection(id)
+  }
+})
 const groups = ref<GroupOptionSummary[]>([])
 const groupOptionsLoading = ref(false)
 const apiKeyOptionsLoaded = ref(false)
 const apiKeyOptionsScopeKey = ref('')
 const systemAccountFilter = ref(initialPageState.systemAccountFilter)
+const systemAccountFilterSelection = ref<PrincipalSelection | undefined>(initialPageState.systemAccountFilterSelection)
 const form = reactive({
   name: '',
   groupId: '',
+  group: undefined as GroupSelection | undefined,
   status: 'active' as 'active' | 'disabled',
   expiresAt: undefined as Dayjs | undefined,
   description: '',
@@ -299,7 +318,6 @@ const groupsApi = useScopedGroupsApi(isManagementView)
 const {
   handleDropdown: handleSystemAccountOptionsDropdown,
   handleSearch: handleSystemAccountOptionsSearch,
-  load: loadSystemAccountOptions,
   loading: systemAccountOptionsLoading,
   resetSearch: resetSystemAccountOptionsSearch,
   systemAccounts
@@ -373,8 +391,6 @@ const listStatusOptions = [
   ...statusOptions
 ]
 
-const groupOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
-const groupFilterOptions = computed(() => groups.value.map((group) => ({ label: groupOptionLabel(group), value: group.id })))
 const filteredApiKeys = computed(() => apiKeys.value)
 const mobileApiKeys = computed(() => apiKeys.value)
 const apiKeyScopeParams = computed(() => {
@@ -387,24 +403,34 @@ const activeFilterCount = computed(() => [
   groupFilter.value,
   isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue
 ].filter(Boolean).length)
+const advancedFilterCount = computed(() => isManagementView.value && systemAccountFilter.value !== allSystemAccountsValue ? 1 : 0)
 const gatewayBaseUrl = computed(() => normalizeGatewayBaseUrl((import.meta.env.VITE_JUHE_AI_GATEWAY_BASE_URL as string | undefined) || inferGatewayBaseUrl()))
 const gatewayClientExample = computed(() => [`Base URL：${gatewayBaseUrl.value}`, 'API Key：填本页复制的密钥'].join('\n'))
 const targetSystemAccountLabel = computed(() => {
   if (!isManagementView.value) return undefined
   const systemAccountId = apiKeyScopeParams.value?.systemAccountId
   if (!systemAccountId) return '请选择系统账户后再创建'
-  return systemAccounts.value.find((account) => account.id === systemAccountId)?.displayName || systemAccounts.value.find((account) => account.id === systemAccountId)?.username || systemAccountId
+  if (systemAccountFilterSelection.value?.kind === 'system_account' && systemAccountFilterSelection.value.id === systemAccountId) {
+    return systemAccountFilterSelection.value.name
+  }
+  return systemAccounts.value.find((account) => account.id === systemAccountId)?.displayName
+    || principalLabelForId('system_account', systemAccountId)
+    || ''
 })
 
 function groupName(groupId: string) {
   const apiKey = apiKeys.value.find((item) => item.groupId === groupId)
-  if (apiKey?.groupName) return apiKey.groupName
-  return groupFilterOptions.value.find((item) => item.value === groupId)?.label ?? groupId
+  return displayGroupName(apiKey?.groupName, groupId)
 }
 
-function groupOptionLabel(group: GroupOptionSummary) {
-  if (group.accessType !== 'authorized') return group.name
-  return `${group.name}（来自 ${group.ownerSystemAccountName || '其他用户'} 授权）`
+function selectedGroupSelection(id: string | undefined): GroupSelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  const group = groups.value.find((item) => item.id === normalizedId)
+  if (group) return { id: group.id, name: group.name }
+  if (groupFilterSelection.value?.id === normalizedId) return groupFilterSelection.value
+  if (form.group?.id === normalizedId) return form.group
+  return undefined
 }
 
 function formatKeyPreview(apiKey: Pick<ApiKeySummary, 'key' | 'keyPrefix'>) {
@@ -461,7 +487,6 @@ async function loadApiKeyOptions(systemAccountId: string | undefined, force = fa
     return
   }
 
-  await Promise.all([loadGroupOptions(groupOptionsKeyword, force), loadSystemAccountOptions()])
   apiKeyOptionsLoaded.value = true
   apiKeyOptionsScopeKey.value = scopeKey
 }
@@ -481,6 +506,8 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
       groupOptionsLoadingKey = undefined
       groupOptionsLoadingPromise = undefined
       groupOptionsLoading.value = false
+      rememberGroupLabels(cachedGroups)
+      syncSelectedGroupSelections(cachedGroups)
       groups.value = cachedGroups
       return
     }
@@ -491,6 +518,8 @@ async function loadGroupOptions(keyword = groupOptionsKeyword, force = false): P
     try {
       let nextGroups = await groupsApi.options({ systemAccountId, keyword: requestKeyword, limit: 50 })
       nextGroups = await ensureSelectedGroupOptions(nextGroups, systemAccountId)
+      rememberGroupLabels(nextGroups)
+      syncSelectedGroupSelections(nextGroups)
       groupOptionsCache.set(requestKey, nextGroups)
       if (requestId !== groupOptionsRequestId) return
       groups.value = nextGroups
@@ -544,12 +573,29 @@ async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], syst
   if (!missingIds.length) return nextGroups
   const selectedGroups = await Promise.all(missingIds.map(async (id) => {
     try {
-      return await groupsApi.options({ systemAccountId, keyword: id, limit: 1 })
+      return await groupsApi.options({ systemAccountId, ids: [id], limit: 1 })
     } catch {
       return []
     }
   }))
   return mergeOptionsById(selectedGroups.flat(), nextGroups)
+}
+
+function syncSelectedGroupSelections(nextGroups = groups.value): void {
+  if (groupFilter.value) {
+    groupFilterSelection.value = selectedGroupFromOptions(groupFilter.value, nextGroups, groupFilterSelection.value)
+  }
+  if (form.groupId) {
+    form.group = selectedGroupFromOptions(form.groupId, nextGroups, form.group)
+  }
+}
+
+function selectedGroupFromOptions(id: string | undefined, nextGroups: GroupOptionSummary[], fallback?: GroupSelection): GroupSelection | undefined {
+  const normalizedId = id?.trim()
+  if (!normalizedId) return undefined
+  const group = nextGroups.find((item) => item.id === normalizedId)
+  if (group) return { id: group.id, name: group.name }
+  return fallback?.id === normalizedId ? fallback : undefined
 }
 
 function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[]): T[] {
@@ -569,8 +615,9 @@ function resetFilters() {
   const defaults = defaultApiKeysPageState()
   keywordFilter.value = defaults.keywordFilter
   statusFilter.value = defaults.statusFilter
-  groupFilter.value = defaults.groupFilter
+  groupFilterSelection.value = defaults.groupFilter
   systemAccountFilter.value = defaults.systemAccountFilter
+  systemAccountFilterSelection.value = defaults.systemAccountFilterSelection
   resetSystemAccountOptionsSearch()
   resetGroupOptionsSearch()
   resetPagination()
@@ -591,7 +638,10 @@ function refreshApiKeys() {
 }
 
 function handleSystemAccountFilterChange() {
-  groupFilter.value = undefined
+  groupFilterSelection.value = undefined
+  if (systemAccountFilter.value === allSystemAccountsValue) {
+    systemAccountFilterSelection.value = undefined
+  }
   resetSystemAccountOptionsSearch()
   resetGroupOptionsSearch()
   resetPagination()
@@ -612,11 +662,12 @@ function handleGroupFilterChange() {
 
 function snapshotPageState(): ApiKeysPageState {
   return {
-    groupFilter: groupFilter.value,
+    groupFilter: groupFilterSelection.value,
     keywordFilter: keywordFilter.value,
     pagination: { current: pagination.current, pageSize: pagination.pageSize },
     statusFilter: statusFilter.value,
-    systemAccountFilter: systemAccountFilter.value
+    systemAccountFilter: systemAccountFilter.value,
+    systemAccountFilterSelection: systemAccountFilterSelection.value
   }
 }
 
@@ -655,13 +706,15 @@ async function openCreate() {
   resetGroupOptionsSearch()
   await loadGroupOptions()
   editingId.value = undefined
-  Object.assign(form, { name: '', groupId: groups.value[0]?.id ?? '', status: 'active', expiresAt: undefined, description: '', quotaLimits: createQuotaLimitForm() })
+  const defaultGroup = groups.value[0]
+  Object.assign(form, { name: '', groupId: defaultGroup?.id ?? '', group: defaultGroup ? { id: defaultGroup.id, name: defaultGroup.name } : undefined, status: 'active', expiresAt: undefined, description: '', quotaLimits: createQuotaLimitForm() })
   modalOpen.value = true
 }
 
 async function openEdit(apiKey: ApiKeySummary) {
   editingId.value = apiKey.id
-  Object.assign(form, { name: apiKey.name, groupId: apiKey.groupId, status: apiKey.status, expiresAt: undefined, description: apiKey.description ?? '', quotaLimits: createQuotaLimitForm(apiKey.quotaLimits) })
+  rememberGroupLabel(apiKey.groupId, apiKey.groupName)
+  Object.assign(form, { name: apiKey.name, groupId: apiKey.groupId, group: apiKey.groupName ? { id: apiKey.groupId, name: apiKey.groupName } : undefined, status: apiKey.status, expiresAt: undefined, description: apiKey.description ?? '', quotaLimits: createQuotaLimitForm(apiKey.quotaLimits) })
   resetGroupOptionsSearch()
   await loadGroupOptions()
   modalOpen.value = true
@@ -773,6 +826,15 @@ async function removeApiKey(id: string) {
 }
 
 watch(snapshotPageState, () => pageStateCache.scheduleWrite(snapshotPageState), { deep: true })
+watch(apiKeys, (items) => {
+  for (const item of items) {
+    rememberGroupLabel(item.groupId, item.groupName)
+  }
+  rememberGroupSelection(groupFilterSelection.value)
+  rememberPrincipalSelection(systemAccountFilterSelection.value)
+  syncSelectedGroupSelections()
+}, { immediate: true })
+watch(systemAccountFilterSelection, (selection) => rememberPrincipalSelection(selection), { deep: true, immediate: true })
 
 onBeforeUnmount(clearGroupOptionsSearchTimer)
 
@@ -796,6 +858,10 @@ onMounted(loadData)
   color: #334155;
   font-size: 13px;
   font-weight: 600;
+}
+
+.advanced-filter-form :deep(.ant-select) {
+  width: 100%;
 }
 
 .gateway-help-content {

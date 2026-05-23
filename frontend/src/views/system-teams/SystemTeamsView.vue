@@ -81,6 +81,7 @@
         <div v-if="isManagementView" class="team-members-create-row">
           <SystemPrincipalSelect
             v-model:value="memberForm.systemAccountIds"
+            v-model:selected-principals="memberForm.systemAccounts"
             :accounts="systemAccounts"
             :excluded-ids="usedMemberIds"
             :filter-option="false"
@@ -156,6 +157,7 @@ import { useScopedMenuView } from '@/composables/useScopedMenuView'
 import { useSubmitAction } from '@/composables/useSubmitAction'
 import { extractApiErrorMessage } from '@/shared/apiError'
 import { formatNumber } from '@/shared/formatters'
+import type { PrincipalSelection } from '@/shared/principalLabelCache'
 import type { SystemTeamMemberSummary, SystemTeamSummary } from '@/types/domain'
 
 const pageSize = 20
@@ -191,7 +193,8 @@ const teamForm = reactive({
 })
 
 const memberForm = reactive({
-  systemAccountIds: [] as string[]
+  systemAccountIds: [] as string[],
+  systemAccounts: [] as PrincipalSelection[]
 })
 
 const {
@@ -272,7 +275,7 @@ function activeMembers(team: SystemTeamSummary): SystemTeamMemberSummary[] {
 }
 
 function memberDisplayName(member: SystemTeamMemberSummary): string {
-  return member.systemAccountName || member.username || member.systemAccountUsername || '未命名成员'
+  return member.systemAccountName || '未命名成员'
 }
 
 function formatDateTime(value?: string): string {
@@ -354,6 +357,7 @@ const saveTeam = submitAction('system_teams.save', async () => {
 function openMemberModal(team: SystemTeamSummary) {
   selectedTeamId.value = team.id
   memberForm.systemAccountIds = []
+  memberForm.systemAccounts = []
   resetMemberOptionSearch()
   memberModalOpen.value = true
   void loadMemberOptions()
@@ -389,6 +393,7 @@ const addMembers = submitAction('system_teams.add_members', async () => {
       systemAccountIds: memberForm.systemAccountIds
     })
     memberForm.systemAccountIds = []
+    memberForm.systemAccounts = []
     message.success('成员已添加')
     await loadData()
     await loadMemberOptions()

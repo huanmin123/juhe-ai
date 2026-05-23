@@ -331,8 +331,6 @@ function createAccount(
     type?: 'api_key' | 'oauth'
     currentConcurrency?: number
     concurrencyLimit?: number
-    dispatchWeight?: number
-    softConcurrencyLimit?: number
   }
 ): OpenAIAccountSecret {
   return {
@@ -352,8 +350,6 @@ function createAccount(
     superPriorityEnabled: options.superPriorityEnabled ?? false,
     fallbackEnabled: options.fallbackEnabled ?? false,
     qualityScore: options.qualityScore,
-    dispatchWeight: options.dispatchWeight,
-    softConcurrencyLimit: options.softConcurrencyLimit,
     baseUrl: 'https://api.openai.com/v1',
     apiKey: 'sk-test',
     passthroughEnabled: true,

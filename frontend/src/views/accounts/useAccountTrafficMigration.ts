@@ -2,6 +2,7 @@ import { message } from '@/lib/antd'
 import { computed, reactive, ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
+import { accountSelectionForId, rememberAccountSelection, type AccountSelection } from '@/shared/accountLabelCache'
 import type { AccountSummary, AccountTrafficMigrationSourceStatus } from '@/types/domain'
 import { trafficMigrationTargetOptions as buildTrafficMigrationTargetOptions } from './accountDerivedState'
 import { isAuthorizedAccount } from './accountFormatters'
@@ -34,6 +35,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
   const trafficMigrationSourceAccount = ref<AccountSummary>()
   const trafficMigrationForm = reactive({
     targetAccountId: '',
+    targetAccount: undefined as AccountSelection | undefined,
     sourceStatus: 'temporary_unavailable' as AccountTrafficMigrationSourceStatus
   })
 
@@ -73,6 +75,8 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
       canUseAsTrafficMigrationTarget(account, candidate, options.groupIdForAccount)
     ))
     trafficMigrationForm.targetAccountId = target?.id ?? ''
+    trafficMigrationForm.targetAccount = target ? accountSelectionForId(target.id, options.accounts.value, trafficMigrationTargetOptions.value) : undefined
+    rememberAccountSelection(trafficMigrationForm.targetAccount)
     trafficMigrationModalOpen.value = true
     if (!target) {
       message.warning('当前没有可迁移到的同供应商可用账户')
@@ -105,6 +109,7 @@ export function useAccountTrafficMigration(options: UseAccountTrafficMigrationOp
       message.success(`后续请求将在${scopeText}切到 ${result.targetAccount.name}，当前连接不中断；原账户已设为${statusText}，会话迁移 ${result.migratedSessionCount} 个`)
       trafficMigrationModalOpen.value = false
       trafficMigrationSourceAccount.value = undefined
+      trafficMigrationForm.targetAccount = undefined
       await options.loadData()
     } catch (error) {
       console.error(error)

@@ -2,6 +2,7 @@ import { message } from '@/lib/antd'
 import { computed, nextTick, reactive, ref, type ComputedRef } from 'vue'
 
 import { api } from '@/api/client'
+import { rememberGroupLabel, type GroupSelection } from '@/shared/groupLabelCache'
 import type { AccountSummary, GroupOptionSummary } from '@/types/domain'
 import {
   bindGroupOptionsForAccount,
@@ -28,16 +29,13 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
   const bindGroupModalOpen = ref(false)
   const bindGroupSaving = ref(false)
   const bindingAccount = ref<AccountSummary>()
-  const bindGroupForm = reactive<{ groupId: string; dispatchWeight: number; softConcurrencyLimit: number | null }>({
+  const bindGroupForm = reactive<{ groupId: string; group?: GroupSelection }>({
     groupId: '',
-    dispatchWeight: 1,
-    softConcurrencyLimit: null
+    group: undefined
   })
 
   const bindGroupOptions = computed(() => bindGroupOptionsForAccount(options.groups.value, bindingAccount.value))
   const bindGroupTip = computed(() => buildBindGroupTip(bindingAccount.value))
-  const bindGroupSelectedGroup = computed(() => options.groups.value.find((group) => group.id === bindGroupForm.groupId))
-  const bindGroupSoftConcurrencyVisible = computed(() => bindGroupSelectedGroup.value?.groupType === 'high_concurrency')
 
   async function openBindGroup(account: AccountSummary) {
     if (account.status === 'error') {
@@ -45,14 +43,16 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
       return
     }
     bindingAccount.value = account
-    bindGroupForm.groupId = options.groupIdForAccount(account.id) ?? defaultGroupForProvider(options.groups.value, account.providerCode)?.id ?? ''
-    bindGroupForm.dispatchWeight = account.boundGroupDispatchWeight ?? 1
-    bindGroupForm.softConcurrencyLimit = account.boundGroupSoftConcurrencyLimit ?? null
+    const selectedGroup = groupSelectionForId(
+      options.groupIdForAccount(account.id) ?? account.boundGroupId,
+      account.boundGroupName
+    ) ?? defaultGroupSelectionForProvider(account.providerCode)
+    setBindGroup(selectedGroup)
     bindGroupModalOpen.value = true
     await nextTick()
     await options.loadGroupOptions('', true)
     if (bindingAccount.value?.id !== account.id || bindGroupForm.groupId) return
-    bindGroupForm.groupId = defaultGroupForProvider(options.groups.value, account.providerCode)?.id ?? ''
+    setBindGroup(defaultGroupSelectionForProvider(account.providerCode))
   }
 
   async function saveBindGroup() {
@@ -64,9 +64,7 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     bindGroupSaving.value = true
     try {
       const payload = {
-        groupId: bindGroupForm.groupId,
-        dispatchWeight: bindGroupSoftConcurrencyVisible.value ? bindGroupForm.dispatchWeight : 1,
-        softConcurrencyLimit: bindGroupSoftConcurrencyVisible.value ? bindGroupForm.softConcurrencyLimit : null
+        groupId: bindGroupForm.groupId
       }
       if (options.isManagementView.value) {
         await api.accounts.bindGroup(bindingAccount.value.id, payload, accountOperationScopeParams(bindingAccount.value, options.accountScopeParams.value))
@@ -90,10 +88,29 @@ export function useAccountBindGroup(options: UseAccountBindGroupOptions) {
     bindGroupModalOpen,
     bindGroupOptions,
     bindGroupSaving,
-    bindGroupSoftConcurrencyVisible,
     bindGroupTip,
     bindingAccount,
     openBindGroup,
     saveBindGroup
+  }
+
+  function defaultGroupSelectionForProvider(providerCode: string): GroupSelection | undefined {
+    const group = defaultGroupForProvider(options.groups.value, providerCode)
+    return group ? { id: group.id, name: group.name } : undefined
+  }
+
+  function groupSelectionForId(id: string | undefined, name: string | undefined): GroupSelection | undefined {
+    const normalizedId = id?.trim()
+    if (!normalizedId) return undefined
+    const group = options.groups.value.find((item) => item.id === normalizedId)
+    const normalizedName = group?.name?.trim() || name?.trim()
+    if (!normalizedName) return bindGroupForm.group?.id === normalizedId ? bindGroupForm.group : undefined
+    rememberGroupLabel(normalizedId, normalizedName)
+    return { id: normalizedId, name: normalizedName }
+  }
+
+  function setBindGroup(group: GroupSelection | undefined): void {
+    bindGroupForm.groupId = group?.id ?? ''
+    bindGroupForm.group = group
   }
 }

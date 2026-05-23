@@ -22,7 +22,7 @@
     <template #bodyCell="{ column, record }">
       <template v-if="column.key === 'resource'">
         <div class="resource-cell">
-          <span class="resource-name">{{ record.resourceName || record.resourceId }}</span>
+          <span class="resource-name">{{ record.resourceName || '-' }}</span>
           <a-tag :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
         </div>
       </template>
@@ -32,7 +32,7 @@
         </a-tag>
       </template>
       <template v-else-if="column.key === 'owner'">
-        {{ record.resourceOwnerSystemAccountName || record.resourceOwnerSystemAccountId }}
+        {{ record.resourceOwnerSystemAccountName || '-' }}
       </template>
       <template v-else-if="column.key === 'grantee'">
         <div class="grantee-cell">
@@ -57,7 +57,7 @@
     <template #card="{ record }">
       <article class="mobile-list-card">
         <div class="mobile-list-card-head">
-          <div class="mobile-list-card-title">{{ record.resourceName || record.resourceId }}</div>
+          <div class="mobile-list-card-title">{{ record.resourceName || '-' }}</div>
           <div class="mobile-list-card-tags">
             <a-tag :color="resourceTypeTag(record.resourceType).color">{{ resourceTypeTag(record.resourceType).text }}</a-tag>
             <a-tag v-if="!isManagementView" :color="authorizationDirectionColor(record, currentSystemAccountId)">
@@ -69,7 +69,7 @@
         <div class="mobile-list-meta-grid">
           <div class="mobile-list-meta-item">
             <span>资源归属人</span>
-            <strong>{{ record.resourceOwnerSystemAccountName || record.resourceOwnerSystemAccountId }}</strong>
+            <strong>{{ record.resourceOwnerSystemAccountName || '-' }}</strong>
           </div>
           <div class="mobile-list-meta-item">
             <span>被授权的目标</span>

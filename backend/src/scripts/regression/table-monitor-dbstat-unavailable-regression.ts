@@ -37,8 +37,7 @@ try {
 
   const sampledAt = '2026-01-01T00:00:00.000Z'
   const result = tableMonitorRepository.collectTableStorageSnapshot(sampledAt, {
-    tableScanMode: 'full',
-    rowCountMode: 'none'
+    tableScanMode: 'full'
   })
   assert(result.tableSnapshots > 0, '表监控采样应写入本轮快照')
 

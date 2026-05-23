@@ -26,9 +26,23 @@
         <a-select v-model:value="form.resourceType" :options="resourceTypeOptions" />
       </a-form-item>
       <a-form-item label="授权资源" required>
-        <a-select
+        <GroupSelect
+          v-if="form.resourceType === 'group'"
           v-model:value="form.resourceId"
-          show-search
+          v-model:selected-group="form.resourceGroup"
+          :filter-option="false"
+          :loading="resourceLoading"
+          :options="resourceOptions"
+          :disabled="resourceSelectDisabled"
+          :placeholder="resourcePlaceholder"
+          @dropdown-visible-change="$emit('resource-dropdown', $event)"
+          @search="$emit('resource-search', $event)"
+        />
+        <AccountSelect
+          v-else
+          v-model:value="form.resourceId"
+          v-model:selected-account="form.resourceAccount"
+          cache-key="accounts"
           :filter-option="false"
           :loading="resourceLoading"
           :options="resourceOptions"
@@ -81,6 +95,8 @@
 <script setup lang="ts">
 import { computed } from 'vue'
 import type { Dayjs } from 'dayjs'
+import AccountSelect from '@/components/AccountSelect.vue'
+import GroupSelect from '@/components/GroupSelect.vue'
 import SystemPrincipalSelect from '@/components/SystemPrincipalSelect.vue'
 import type { SystemAccountPrincipalSummary, SystemTeamPrincipalSummary } from '@/types/domain'
 import RequestQuotaFields from '../shared/RequestQuotaFields.vue'

@@ -15,6 +15,7 @@ import {
   temporaryUnschedulableRetryPolicy,
   throwIfRequestAborted
 } from './openai-gateway-dispatch-helpers.js'
+import type { ClientIpAccountAvoidanceTracker } from './openai-gateway-client-ip-account-avoidance.service.js'
 import {
   flushDeferredAccountFailures,
   handleFailedUpstreamResponse,
@@ -66,7 +67,8 @@ export async function fetchFirstAvailableUpstream(
   usageContext: GatewayUsageContext,
   auditCapture: AuditCaptureContext,
   sessionAffinityKey?: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
 ): Promise<OpenAIUpstreamDispatchResult> {
   const retryPolicy = temporaryUnschedulableRetryPolicy(settings)
   const maxAttemptCount = retryAttemptCount(retryPolicy)
@@ -160,7 +162,8 @@ export async function fetchFirstAvailableUpstream(
           signal,
           lastAttempt,
           failedProxyDispatchKeys,
-          error
+          error,
+          clientIpAccountAvoidanceTracker
         })
         lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
         continue
@@ -225,7 +228,8 @@ export async function fetchFirstAvailableUpstream(
               sessionAffinityKey,
               signal,
               lastAttempt,
-              deferredAccountFailures
+              deferredAccountFailures,
+              clientIpAccountAvoidanceTracker
             })
             lastAttempt = failedResponseResult.lastAttempt
             if (failedResponseResult.action === 'retry') {
@@ -252,7 +256,8 @@ export async function fetchFirstAvailableUpstream(
               signal,
               lastAttempt,
               failedProxyDispatchKeys,
-              error
+              error,
+              clientIpAccountAvoidanceTracker
             })
             lastAttempt = requestErrorResult.lastAttempt ?? lastAttempt
             if (requestErrorResult.action === 'retry') {

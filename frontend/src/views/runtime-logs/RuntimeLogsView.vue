@@ -6,6 +6,7 @@
         search-placeholder="搜索 traceId"
         filter-title="日志筛选"
         :active-filter-count="activeFilterCount"
+        :advanced-filter-count="advancedFilterCount"
         :refresh-loading="loading"
         @refresh="refreshIndexLogs"
         @reset="resetFilters"
@@ -23,16 +24,24 @@
             :filter-option="filterEventOption"
             @change="applyIndexFilters"
           />
-          <a-input v-model:value="keywordFilter" allow-clear class="toolbar-select log-keyword-filter responsive-list-inline-filter" placeholder="消息关键字" @press-enter="applyIndexFilters" />
-          <a-range-picker
-            v-model:value="indexTimeRange"
-            allow-clear
-            class="toolbar-select index-time-range responsive-list-inline-filter"
-            show-time
-            :disabled-date="disabledIndexDate"
-            :placeholder="['索引开始时间', '索引结束时间']"
-            @change="handleIndexRangeChange"
-          />
+        </template>
+        <template #advanced-filters>
+          <a-form layout="vertical" class="advanced-filter-form">
+            <a-form-item label="关键字">
+              <a-input v-model:value="keywordFilter" allow-clear placeholder="模糊匹配消息列" @press-enter="applyIndexFilters" />
+            </a-form-item>
+            <a-form-item label="索引时间范围">
+              <a-range-picker
+                v-model:value="indexTimeRange"
+                allow-clear
+                show-time
+                class="drawer-range-picker"
+                :disabled-date="disabledIndexDate"
+                :placeholder="['索引开始时间', '索引结束时间']"
+                @change="handleIndexRangeChange"
+              />
+            </a-form-item>
+          </a-form>
         </template>
         <template #actions>
           <a-segmented v-model:value="viewMode" class="log-mode-segmented" :options="viewModeOptions" @change="handleModeChange" />
@@ -366,6 +375,12 @@ const activeFilterCount = computed(() => {
   if (traceIdFilter.value.trim()) count += 1
   if (levelFilter.value !== 'all') count += 1
   if (eventFilter.value) count += 1
+  if (keywordFilter.value.trim()) count += 1
+  if (normalizeOptionalTimeRange(indexTimeRange.value)) count += 1
+  return count
+})
+const advancedFilterCount = computed(() => {
+  let count = 0
   if (keywordFilter.value.trim()) count += 1
   if (normalizeOptionalTimeRange(indexTimeRange.value)) count += 1
   return count
@@ -733,6 +748,11 @@ onDeactivated(closeTransientDetails)
 }
 
 .drawer-range-picker {
+  width: 100%;
+}
+
+.advanced-filter-form :deep(.ant-input),
+.advanced-filter-form :deep(.ant-picker) {
   width: 100%;
 }
 

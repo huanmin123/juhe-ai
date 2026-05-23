@@ -44,7 +44,7 @@
       </div>
       <div class="mobile-list-meta-item">
         <span>分组</span>
-        <strong>{{ displayName(record.groupName, record.groupId) }}</strong>
+        <strong>{{ displayUsageRecordGroupName(record.groupName, record.groupId) }}</strong>
       </div>
       <div class="mobile-list-meta-item">
         <span>IP</span>
@@ -70,6 +70,7 @@ import type { UsageRecordSummary } from '@/types/domain'
 import {
   accountDisplayText,
   displayName,
+  displayUsageRecordGroupName,
   formatCost,
   formatDateTime,
   formatDuration,

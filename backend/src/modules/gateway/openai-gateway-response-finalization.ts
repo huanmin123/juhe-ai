@@ -1,6 +1,7 @@
 import type { Request, Response } from 'express'
 
 import { logger } from '../../shared/logger.js'
+import { getRequestLogger } from '../../shared/request-context.js'
 import { parseErrorPayload, type GatewaySettings } from './account-error-policy.service.js'
 import { responseHeadersToObject, type AuditCaptureContext } from './audit-capture.service.js'
 import {
@@ -10,6 +11,10 @@ import {
 } from './openai-gateway-account-effects.js'
 import { rememberCodexTurnStreamFailure } from './openai-gateway-codex-turn-retry.service.js'
 import type { OpenAIGatewayClientStrategyContext } from './openai-gateway-client-strategy.js'
+import {
+  confirmClientIpAccountAvoidanceAfterSuccess,
+  type ClientIpAccountAvoidanceTracker
+} from './openai-gateway-client-ip-account-avoidance.service.js'
 import {
   pipeNonStreamUpstreamResponse,
   readUpstreamBodyLimited
@@ -73,6 +78,7 @@ interface HandleUpstreamResponseInput {
   sessionAffinityKey?: string
   clientStrategy?: OpenAIGatewayClientStrategyContext
   markFirstOutput?: () => void
+  clientIpAccountAvoidanceTracker?: ClientIpAccountAvoidanceTracker
 }
 
 interface FinalizeHandledUpstreamResponseInput extends HandleUpstreamResponseInput {
@@ -444,13 +450,34 @@ export function finalizeHandledUpstreamResponse(input: FinalizeHandledUpstreamRe
     settings,
     usageContext,
     startedAt,
-    result
+    result,
+    clientIpAccountAvoidanceTracker
   } = input
   if (upstreamResponse.ok) {
     applyAccountErrorHandlingWithCacheInvalidation(account, {
       success: true,
       settings
     })
+    const clientIpAvoidanceResult = confirmClientIpAccountAvoidanceAfterSuccess(
+      clientIpAccountAvoidanceTracker,
+      account.id,
+      settings
+    )
+    if (clientIpAvoidanceResult.confirmedAccountIds.length > 0 || clientIpAvoidanceResult.cleared) {
+      getRequestLogger().info({
+        event: 'gateway_client_ip_account_failure_confirmed',
+        accountId: account.id,
+        confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
+        clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
+      }, '客户端 IP 级账号回避状态已按成功响应更新')
+      auditCapture.addGatewayMetadata({
+        label: 'client_ip_account_avoidance_update',
+        metadata: {
+          confirmedAccountIds: clientIpAvoidanceResult.confirmedAccountIds,
+          clearedAccountId: clientIpAvoidanceResult.cleared ? clientIpAvoidanceResult.clearedAccountId : undefined
+        }
+      })
+    }
     if (account.streamFailureCount > 0 || account.streamFailureWindowStartedAt || account.lastErrorMessage) {
       clearAccountStreamFailureStateWithCacheInvalidation(account.id)
     }

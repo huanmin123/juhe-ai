@@ -101,9 +101,9 @@ try {
   assertLightweightAccountOption(adminTargetOption)
 
   const expandedAdminOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&limit=500`, seed.adminCookie)
-  assert.equal(expandedAdminOptions.length, 500, '账户选项应允许调用方把 limit 提升到前端资源筛选需要的 500')
-  assert(expandedAdminOptions.some((account) => account.id === seed.maxLimitAccountId), '账户选项 limit 提升后应能返回普通列表上限 200 之后的账号')
-  assert.equal(expandedAdminOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '扩展 limit 后仍不应混入其他用户账户')
+  assert.equal(expandedAdminOptions.length, 50, '账户选项必须把调用方传入的超大 limit 压到 50')
+  assert.equal(expandedAdminOptions.some((account) => account.id === seed.maxLimitAccountId), false, '账户选项不应因为超大 limit 一次性返回远端候选')
+  assert.equal(expandedAdminOptions.every((account) => account.ownerSystemAccountId === seed.userId), true, '压缩超大 limit 后仍不应混入其他用户账户')
 
   const sortedAdminOptions = await getEnvelope<AccountOptionSummary[]>(baseUrl, `/__aisys__/api/accounts/options?systemAccountId=${seed.userId}&sorts=qualityScore:desc&limit=1`, seed.adminCookie)
   assert.equal(sortedAdminOptions.length, 1, '账户选项应忽略重型排序请求并继续遵守 limit')
@@ -259,8 +259,8 @@ function seedData(): SeedState {
     .run(groupId, user.id, '账户选项绑定分组', keywordCreatedAt, keywordCreatedAt)
   database
     .prepare(`
-      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, weight, enabled, created_at, updated_at)
-      VALUES (?, ?, ?, NULL, 1, 1, ?, ?)
+      INSERT INTO group_accounts (system_account_id, group_id, account_id, account_authorization_id, enabled, created_at, updated_at)
+      VALUES (?, ?, ?, NULL, 1, ?, ?)
     `)
     .run(user.id, groupId, groupMatchedAccountId, keywordCreatedAt, keywordCreatedAt)
   return {

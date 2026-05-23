@@ -2,6 +2,7 @@ import { onBeforeUnmount, ref } from 'vue'
 
 import { api } from '@/api/client'
 import { message } from '@/lib/antd'
+import { rememberGroupLabels } from '@/shared/groupLabelCache'
 import { createShortLivedQueryCache } from '@/shared/shortLivedQueryCache'
 import type { GroupOptionSummary } from '@/types/domain'
 
@@ -25,7 +26,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   const groups = ref<GroupOptionSummary[]>([])
   const keyword = ref('')
   const loading = ref(false)
-  const limit = config.limit ?? 50
+  const limit = optionLimitValue(config.limit)
   const optionCache = createShortLivedQueryCache<GroupOptionSummary[]>({ ttlMs: config.cacheTtlMs ?? 10_000 })
   const searchDelayMs = config.searchDelayMs ?? 250
   let requestId = 0
@@ -62,6 +63,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
         loadingKey = undefined
         loadingPromise = undefined
         loading.value = false
+        rememberGroupLabels(cachedGroups)
         groups.value = cachedGroups
         return
       }
@@ -75,6 +77,7 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
           ? await api.groups.options(groupOptionParams(scope, requestKeyword, limit))
           : await api.myGroups.options(groupOptionParams(scope, requestKeyword, limit))
         nextGroups = await ensureSelectedGroupOptions(nextGroups, scope)
+        rememberGroupLabels(nextGroups)
         optionCache.set(requestKey, nextGroups)
         if (currentRequestId !== requestId) return
         groups.value = nextGroups
@@ -123,18 +126,16 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   }
 
   async function ensureSelectedGroupOptions(nextGroups: GroupOptionSummary[], scope: Required<AccountGroupOptionsScope>): Promise<GroupOptionSummary[]> {
-    const missingIds = scope.selectedIds.filter((id) => !nextGroups.some((group) => group.id === id))
+    const missingIds = scope.selectedIds.filter((id): id is string => Boolean(id && !nextGroups.some((group) => group.id === id)))
     if (!missingIds.length) return nextGroups
-    const selectedGroups = await Promise.all(missingIds.map(async (id) => {
-      try {
-        return config.isManagementView()
-          ? await api.groups.options(groupOptionParams(scope, id, limit))
-          : await api.myGroups.options(groupOptionParams(scope, id, limit))
-      } catch {
-        return []
-      }
-    }))
-    return mergeOptionsById(selectedGroups.flat(), nextGroups)
+    try {
+      const selectedGroups = config.isManagementView()
+        ? await api.groups.options(groupOptionParams(scope, undefined, limit, missingIds))
+        : await api.myGroups.options(groupOptionParams(scope, undefined, limit, missingIds))
+      return mergeOptionsById(selectedGroups, nextGroups)
+    } catch {
+      return nextGroups
+    }
   }
 
   function normalizedScope(): Required<AccountGroupOptionsScope> {
@@ -162,10 +163,11 @@ export function useAccountGroupOptions(config: UseAccountGroupOptionsConfig) {
   }
 }
 
-function groupOptionParams(scope: Required<AccountGroupOptionsScope>, keyword: string | undefined, limit: number) {
+function groupOptionParams(scope: Required<AccountGroupOptionsScope>, keyword: string | undefined, limit: number, ids?: string[]) {
   return {
     systemAccountId: scope.systemAccountId || undefined,
     providerCode: scope.providerCode || undefined,
+    ids,
     keyword,
     limit,
     manageableOnly: true,
@@ -184,4 +186,9 @@ function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[])
 function normalizeOptionKeyword(value?: string): string | undefined {
   const keyword = value?.trim()
   return keyword ? keyword : undefined
+}
+
+function optionLimitValue(value?: number): number {
+  const limit = Number(value ?? 50)
+  return Number.isFinite(limit) ? Math.min(50, Math.max(1, Math.trunc(limit))) : 50
 }

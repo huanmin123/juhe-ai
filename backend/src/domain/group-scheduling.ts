@@ -13,7 +13,6 @@ type NumericPolicyKey =
   | 'clientIpConcurrencyLimit'
 
 type BooleanPolicyKey =
-  | 'weightAffectsSoftConcurrency'
   | 'fastFirstEnabled'
   | 'fallbackOnQueueEnabled'
   | 'breakAffinityOnSoftLimit'
@@ -21,7 +20,6 @@ type BooleanPolicyKey =
 export const DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY: Required<GroupSchedulingPolicy> = {
   mode: 'balanced_fast',
   defaultSoftConcurrency: 5,
-  weightAffectsSoftConcurrency: true,
   fastFirstEnabled: true,
   fallbackOnQueueEnabled: true,
   breakAffinityOnSoftLimit: true,
@@ -50,7 +48,6 @@ export function resolveGroupSchedulingPolicy(groupType: GroupType, value: unknow
   return {
     mode: 'balanced_fast',
     defaultSoftConcurrency: numericPolicy(input.defaultSoftConcurrency, 'defaultSoftConcurrency'),
-    weightAffectsSoftConcurrency: booleanPolicy(input.weightAffectsSoftConcurrency, 'weightAffectsSoftConcurrency'),
     fastFirstEnabled: booleanPolicy(input.fastFirstEnabled, 'fastFirstEnabled'),
     fallbackOnQueueEnabled: booleanPolicy(input.fallbackOnQueueEnabled, 'fallbackOnQueueEnabled'),
     breakAffinityOnSoftLimit: booleanPolicy(input.breakAffinityOnSoftLimit, 'breakAffinityOnSoftLimit'),
@@ -85,20 +82,12 @@ export function groupSchedulingPolicyJson(value: unknown, groupType: GroupType):
 
 export function effectiveSoftConcurrencyLimit(input: {
   accountConcurrencyLimit: number
-  dispatchWeight?: number
-  softConcurrencyLimit?: number
   policy?: GroupSchedulingPolicy
 }): number {
   const hardLimit = positiveInteger(input.accountConcurrencyLimit, 1, 1_000_000)
   const policy = resolveGroupSchedulingPolicy('high_concurrency', input.policy) ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY
   const base = policy.defaultSoftConcurrency ?? DEFAULT_HIGH_CONCURRENCY_GROUP_SCHEDULING_POLICY.defaultSoftConcurrency
-  const weight = policy.weightAffectsSoftConcurrency === false ? 1 : positiveInteger(input.dispatchWeight, 1, 1000)
-  const weightedSoftLimit = Math.max(1, base * weight)
-  const override = input.softConcurrencyLimit
-  const softLimit = typeof override === 'number' && Number.isFinite(override) && override > 0
-    ? Math.trunc(override)
-    : weightedSoftLimit
-  return Math.min(hardLimit, Math.max(1, Math.trunc(softLimit)))
+  return Math.min(hardLimit, Math.max(1, Math.trunc(base)))
 }
 
 function objectValue(value: unknown): Record<string, unknown> {

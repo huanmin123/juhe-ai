@@ -19,7 +19,7 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
   const systemAccounts = ref<SystemAccountPrincipalSummary[]>([])
   const loading = ref(false)
   const keyword = ref('')
-  const limit = config.limit ?? 50
+  const limit = optionLimitValue(config.limit)
   const optionCache = createShortLivedQueryCache<SystemAccountPrincipalSummary[]>({ ttlMs: config.cacheTtlMs ?? 10_000 })
   const searchDelayMs = config.searchDelayMs ?? 250
   let requestId = 0
@@ -107,14 +107,15 @@ export function useRemoteSystemAccountOptions(config: RemoteSystemAccountOptions
   async function ensureSelectedSystemAccountOptions(options: SystemAccountPrincipalSummary[], selectedIds: string[]): Promise<SystemAccountPrincipalSummary[]> {
     const missingSelectedIds = selectedIds.filter((id) => !options.some((account) => account.id === id))
     if (!missingSelectedIds.length) return options
-    const selectedOptions = await Promise.all(missingSelectedIds.map(async (id) => {
-      try {
-        return await api.systemAccounts.options({ keyword: id, limit: 1 })
-      } catch {
-        return []
-      }
-    }))
-    return mergeOptionsById(selectedOptions.flat(), options)
+    try {
+      const selectedOptions = await api.systemAccounts.options({
+        ids: missingSelectedIds,
+        limit: Math.min(50, Math.max(limit, missingSelectedIds.length))
+      })
+      return mergeOptionsById(selectedOptions, options)
+    } catch {
+      return options
+    }
   }
 
   function normalizedSelectedIds(): string[] {
@@ -148,4 +149,9 @@ function mergeOptionsById<T extends { id: string }>(leading: T[], trailing: T[])
 function normalizeOptionKeyword(value?: string): string | undefined {
   const keyword = value?.trim()
   return keyword ? keyword : undefined
+}
+
+function optionLimitValue(value?: number): number {
+  const limit = Number(value ?? 50)
+  return Number.isFinite(limit) ? Math.min(50, Math.max(1, Math.trunc(limit))) : 50
 }

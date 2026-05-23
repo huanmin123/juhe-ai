@@ -23,7 +23,7 @@
     <div class="account-mobile-meta-grid">
       <div v-if="isManagementView" class="account-mobile-meta-item">
         <span>系统账户</span>
-        <strong>{{ account.systemAccountName || account.systemAccountId || '-' }}</strong>
+        <strong>{{ account.systemAccountName || '-' }}</strong>
       </div>
       <div class="account-mobile-meta-item">
         <span>加入分组</span>
