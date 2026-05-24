@@ -425,14 +425,16 @@ const oauthRoutesSource = readSource('modules/openai-oauth/openai-oauth.routes.t
 assert.doesNotMatch(oauthRoutesSource, /refreshOpenAIOAuthUsageSnapshot/)
 
 const gatewayRoutesSource = readSource('modules/gateway/openai-gateway.routes.ts')
-assert.match(gatewayRoutesSource, /persistOpenAICodexHeadersIfNeeded\(account,\s*upstreamResponse\.headers,\s*'gateway'\)/)
-assert.match(gatewayFailureDispatchSource, /persistOpenAICodexHeadersIfNeeded\(account,\s*response\.headers,\s*'gateway_error'\)/)
+assert.match(gatewayRoutesSource, /persistOpenAICodexHeadersIfNeeded\(account,\s*upstreamResponse\.headers,\s*gatewayUsageContext\.trafficSource\)/)
+assert.match(gatewayFailureDispatchSource, /usageContext\.trafficSource === 'gateway' \? 'gateway_error' : usageContext\.trafficSource/)
 
 const repositoriesSource = readSource('storage/repositories.ts')
 const cooldownRetestRepositorySource = sourceFunctionBlock(repositoriesSource, 'export function listAccountsDueForCooldownRetest')
 assert.match(cooldownRetestRepositorySource, /status = 'temporary_unavailable'/)
 assert.doesNotMatch(cooldownRetestRepositorySource, /rate_limited/)
 assert.match(repositoriesSource, /recordCooldownAccountRetestFailure/)
+assert.match(repositoriesSource, /cooldownRetestObservationElapsedSeconds/)
+assert.match(repositoriesSource, /observationElapsedSeconds >= maxRecoverySeconds/)
 
 const accountQualityRepositorySource = readSource('storage/account-quality.repository.ts')
 assert.doesNotMatch(accountQualityRepositorySource, /recordAccountQualityProbe/)
@@ -447,6 +449,7 @@ const schemaSource = [
   readSource('storage/schema/seed-defaults.ts')
 ].join('\n')
 assert.doesNotMatch(schemaSource, /last_probe_at/)
+assert.match(schemaSource, /cooldown_retest_observation_started_at/)
 
 console.log('usage-pricing-regression passed')
 

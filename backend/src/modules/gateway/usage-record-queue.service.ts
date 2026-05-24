@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { runtimeConfig } from '../../config/runtime.js'
 import { nowIso } from '../../storage/database.js'
 import { createUsageRecordsBatch, type UsageRecordInput } from '../../storage/repositories.js'
+import { generateUsageRecordId } from '../../storage/usage-record-shards.js'
 import { errorLogFields, logger } from '../../shared/logger.js'
 import { sanitizeUrlForLog } from '../../shared/request-context.js'
 import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
@@ -181,12 +182,13 @@ function recordUsageRecordDispatchFailure(error: unknown, input: UsageRecordInpu
 }
 
 function normalizeUsageRecordInput(input: UsageRecordInput): UsageRecordInput {
+  const createdAt = input.createdAt ?? nowIso()
   return {
     ...input,
-    id: input.id ?? `usage_${Date.now()}_${randomUUID()}`,
+    id: input.id ?? generateUsageRecordId(createdAt, randomUUID()),
     requestSnapshot: sanitizeUsageRecordSnapshot(input.requestSnapshot),
     responseSnapshot: sanitizeUsageRecordSnapshot(input.responseSnapshot),
-    createdAt: input.createdAt ?? nowIso()
+    createdAt
   }
 }
 

@@ -5,8 +5,9 @@ import type {
   AccountUsageStatsRange,
 } from '../domain/types.js'
 import { canAccessAll, currentSystemAccountId, scopedSystemAccountId, type AccessScope } from './access-scope.js'
-import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getDatabase, getDatasetDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
+import { beginDatabaseTransaction, beginImmediateDatabaseTransaction, commitDatabaseTransaction, getDatabase, getStatsDatabase, newId, nowIso, rollbackDatabaseTransaction } from './database.js'
 import { chunkValues, sqlPlaceholders } from './query-utils.js'
+import { getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { averageFromSum, dateKey, hourKey, minuteKey, usageStatsTimezone } from './usage-stats-helpers.js'
 import { emptyStatsAggregateMathRow, mapSystemMetricsHourly, mapSystemMetricsLatest, usageSummaryWithMath } from './usage-stats-mappers.js'
 import { aggregateSystemMetricsRows, nullableNumber } from './usage-stats-metric-aggregates.js'
@@ -65,57 +66,108 @@ const USAGE_STATS_CURSOR_SAFETY_DELAY_SECONDS = 5
 const PROCESS_EVENT_LOOP_ROLES: ProcessRole[] = ['server', 'worker', 'db-service']
 const PROCESS_EVENT_LOOP_TREND_WINDOW_MS = 24 * 60 * 60 * 1000
 const GROUP_ACCOUNT_STATS_DIRTY_ALL = '__all__'
+let usageStatsShardScanOffset = 0
 
 export function aggregateUsageStatsBatch(limit = 2000): number {
   const database = getStatsDatabase()
-  const datasetDatabase = getDatasetDatabase()
+  const shardLocations = listUsageRecordShardLocations()
   const batchLimit = Math.max(1, limit)
   const safeCreatedBefore = usageStatsSafeCreatedBefore()
   const transactionStarted = beginImmediateDatabaseTransaction(database)
   let processedRows = 0
   try {
-    const state = usageStatsJobState(database)
-    const rows = datasetDatabase
-      .prepare(`
-        SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
-        FROM usage_records
-        WHERE created_at <= ?
-          AND COALESCE(traffic_source, 'gateway') <> 'cooldown_retest'
-          AND (created_at > ? OR (created_at = ? AND id > ?))
-        ORDER BY created_at ASC, id ASC
-        LIMIT ?
-      `)
-      .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, batchLimit) as unknown as UsageStatsRecordRow[]
-
-    if (!rows.length) {
-      const ignoredCursor = latestIgnoredUsageRecordCursor(datasetDatabase, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
+    const updatedAt = nowIso()
+    if (shardLocations.length === 0) {
       updateStatsJobState(database, {
-        cursorCreatedAt: ignoredCursor?.created_at,
-        cursorId: ignoredCursor?.id,
-        lastSuccessAt: nowIso(),
-        lagSeconds: latestUsageRecordLagSeconds(
-          datasetDatabase,
-          safeCreatedBefore,
-          ignoredCursor?.created_at ?? state.cursorCreatedAt,
-          ignoredCursor?.id ?? state.cursorId
-        )
+        lastSuccessAt: updatedAt,
+        lagSeconds: 0
       })
       commitDatabaseTransaction(database, transactionStarted)
       return 0
     }
 
-    const updatedAt = nowIso()
-    const aggregationContext = createUsageStatsAggregationContext(rows)
-    processedRows = rows.length
-    for (const row of rows) {
-      aggregateUsageStatsRecord(database, row, updatedAt, aggregationContext)
+    const orderedShardLocations = orderedUsageStatsShardLocations(shardLocations)
+    const perShardLimit = Math.max(1, Math.ceil(batchLimit / orderedShardLocations.length))
+    let globalCursor: { created_at: string; id: string } | undefined
+    let maxLagSeconds = 0
+    let aggregationContext: ReturnType<typeof createUsageStatsAggregationContext> | undefined
+    const shardsWithMoreRows: UsageRecordShardLocation[] = []
+    const processShard = (location: UsageRecordShardLocation, limitForShard: number, updateIgnoredCursor: boolean): boolean => {
+      if (processedRows >= batchLimit) return false
+      const state = usageStatsShardJobState(database, location.shardKey)
+      const shardDatabase = getUsageRecordShardDatabase(location)
+      const rowLimit = Math.max(1, Math.min(limitForShard, batchLimit - processedRows))
+      const rows = shardDatabase
+        .prepare(`
+          SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
+          FROM usage_records
+          WHERE created_at <= ?
+            AND COALESCE(traffic_source, 'gateway') <> 'cooldown_retest'
+            AND (created_at > ? OR (created_at = ? AND id > ?))
+          ORDER BY created_at ASC, id ASC
+          LIMIT ?
+        `)
+        .all(safeCreatedBefore, state.cursorCreatedAt, state.cursorCreatedAt, state.cursorId, rowLimit) as unknown as UsageStatsRecordRow[]
+
+      if (rows.length > 0) {
+        for (const row of rows) {
+          row.source_shard_key = location.shardKey
+        }
+        aggregationContext ??= createUsageStatsAggregationContext(rows)
+        for (const row of rows) {
+          aggregateUsageStatsRecord(database, row, updatedAt, aggregationContext)
+        }
+        processedRows += rows.length
+        const last = rows[rows.length - 1]
+        updateUsageStatsShardJobState(database, location, {
+          cursorCreatedAt: last.created_at,
+          cursorId: last.id,
+          lastSuccessAt: updatedAt,
+          lagSeconds: statsLagSecondsFromCursor(last.created_at)
+        })
+        globalCursor = latestCursor(globalCursor, { created_at: last.created_at, id: last.id })
+        maxLagSeconds = Math.max(maxLagSeconds, statsLagSecondsFromCursor(last.created_at))
+        return rows.length >= rowLimit
+      }
+
+      if (!updateIgnoredCursor) return false
+      const ignoredCursor = latestIgnoredUsageRecordCursor(shardDatabase, safeCreatedBefore, state.cursorCreatedAt, state.cursorId)
+      const cursorCreatedAt = ignoredCursor?.created_at ?? state.cursorCreatedAt
+      const cursorId = ignoredCursor?.id ?? state.cursorId
+      const lagSeconds = latestUsageRecordLagSeconds(shardDatabase, safeCreatedBefore, cursorCreatedAt, cursorId)
+      updateUsageStatsShardJobState(database, location, {
+        cursorCreatedAt: ignoredCursor?.created_at,
+        cursorId: ignoredCursor?.id,
+        lastSuccessAt: updatedAt,
+        lagSeconds
+      })
+      if (ignoredCursor) {
+        globalCursor = latestCursor(globalCursor, ignoredCursor)
+      }
+      maxLagSeconds = Math.max(maxLagSeconds, lagSeconds)
+      return false
     }
-    const last = rows[rows.length - 1]
+
+    for (const location of orderedShardLocations) {
+      if (processedRows >= batchLimit) break
+      if (processShard(location, perShardLimit, true)) {
+        shardsWithMoreRows.push(location)
+      }
+    }
+    while (processedRows < batchLimit && shardsWithMoreRows.length > 0) {
+      const candidates = shardsWithMoreRows.splice(0, shardsWithMoreRows.length)
+      for (const location of candidates) {
+        if (processedRows >= batchLimit) break
+        if (processShard(location, batchLimit - processedRows, false)) {
+          shardsWithMoreRows.push(location)
+        }
+      }
+    }
     updateStatsJobState(database, {
-      cursorCreatedAt: last.created_at,
-      cursorId: last.id,
+      cursorCreatedAt: globalCursor?.created_at,
+      cursorId: globalCursor?.id,
       lastSuccessAt: updatedAt,
-      lagSeconds: statsLagSecondsFromCursor(last.created_at)
+      lagSeconds: maxLagSeconds
     })
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -128,6 +180,13 @@ export function aggregateUsageStatsBatch(limit = 2000): number {
   }
 
   return processedRows
+}
+
+function orderedUsageStatsShardLocations(locations: UsageRecordShardLocation[]): UsageRecordShardLocation[] {
+  if (locations.length <= 1) return locations
+  const startIndex = usageStatsShardScanOffset % locations.length
+  usageStatsShardScanOffset = (startIndex + 1) % locations.length
+  return [...locations.slice(startIndex), ...locations.slice(0, startIndex)]
 }
 
 export function markGroupAccountStatsDirty(groupIds: Array<string | null | undefined> | string | null | undefined, reason = 'write'): void {
@@ -1497,10 +1556,10 @@ function usageOverviewStatsScope(access?: AccessScope): { systemAccountId: strin
   return { systemAccountId, scopeId: systemAccountId }
 }
 
-function usageStatsJobState(database: DatabaseSync): { cursorCreatedAt: string; cursorId: string } {
+function usageStatsShardJobState(database: DatabaseSync, shardKey: string): { cursorCreatedAt: string; cursorId: string } {
   const row = database
-    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
-    .get() as unknown as StatsJobStateRow | undefined
+    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'usage_shard' AND scope_id = ? AND job_name = 'usage_stats_aggregation'")
+    .get(shardKey) as unknown as StatsJobStateRow | undefined
   return { cursorCreatedAt: row?.cursor_created_at ?? '', cursorId: row?.cursor_id ?? '' }
 }
 
@@ -1536,6 +1595,16 @@ function latestUsageRecordLagSeconds(database: DatabaseSync, safeCreatedBefore: 
     `)
     .get(safeCreatedBefore, cursorCreatedAt, cursorCreatedAt, cursorId) as unknown as { created_at?: string } | undefined
   return latest?.created_at ? statsLagSecondsFromCursor(latest.created_at) : 0
+}
+
+function latestCursor(
+  current: { created_at: string; id: string } | undefined,
+  next: { created_at: string; id: string }
+): { created_at: string; id: string } {
+  if (!current) return next
+  if (next.created_at > current.created_at) return next
+  if (next.created_at === current.created_at && next.id > current.id) return next
+  return current
 }
 
 interface ConsistencyStatsRow {
@@ -1697,6 +1766,20 @@ function updateStatsJobState(database: DatabaseSync, input: { cursorCreatedAt?: 
       lag_seconds = excluded.lag_seconds,
       updated_at = excluded.updated_at
   `).run(input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
+}
+
+function updateUsageStatsShardJobState(database: DatabaseSync, location: UsageRecordShardLocation, input: { cursorCreatedAt?: string; cursorId?: string; lastSuccessAt?: string; lastErrorMessage?: string; lagSeconds?: number }): void {
+  database.prepare(`
+    INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
+    VALUES ('usage_shard', ?, 'usage_stats_aggregation', ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
+      cursor_created_at = COALESCE(excluded.cursor_created_at, stats_job_state.cursor_created_at),
+      cursor_id = COALESCE(excluded.cursor_id, stats_job_state.cursor_id),
+      last_success_at = COALESCE(excluded.last_success_at, stats_job_state.last_success_at),
+      last_error_message = excluded.last_error_message,
+      lag_seconds = excluded.lag_seconds,
+      updated_at = excluded.updated_at
+  `).run(location.shardKey, input.cursorCreatedAt ?? null, input.cursorId ?? null, input.lastSuccessAt ?? null, input.lastErrorMessage ?? null, input.lagSeconds ?? null, nowIso())
 }
 
 function statsLagSecondsFromCursor(cursorCreatedAt: string): number {

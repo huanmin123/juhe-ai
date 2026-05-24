@@ -13,6 +13,8 @@ export interface RuntimeConfig {
   databasePath: string
   datasetDatabasePath: string
   statsDatabasePath: string
+  usageShardRoot: string
+  usageShardCount: number
   secret: string
   oauthProxyUrl?: string
   log: {
@@ -40,6 +42,10 @@ export type ProcessRole = 'server' | 'worker' | 'db-service'
 
 export const backendRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
 export const localEnvPath = resolve(backendRoot, '.env')
+export const defaultDatabasePath = resolve(backendRoot, 'data', 'juhe-ai.sqlite3')
+export const defaultDatasetDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')
+export const defaultStatsDatabasePath = resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')
+export const defaultUsageShardRoot = resolve(backendRoot, 'data', 'dataset', 'usage')
 
 const localEnv = loadLocalEnv(localEnvPath)
 
@@ -49,9 +55,11 @@ export const runtimeConfig: RuntimeConfig = {
   port: numberConfig('JUHE_AI_PORT', 3000, 1, 65535),
   dbServiceHttpHost: stringConfig('JUHE_AI_DB_SERVICE_HTTP_HOST', '127.0.0.1'),
   dbServiceHttpPort: numberConfig('JUHE_AI_DB_SERVICE_HTTP_PORT', 0, 0, 65535),
-  databasePath: pathConfig('JUHE_AI_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai.sqlite3')),
-  datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai-dataset.sqlite3')),
-  statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', resolve(backendRoot, 'data', 'juhe-ai-stats.sqlite3')),
+  databasePath: pathConfig('JUHE_AI_DATABASE_PATH', defaultDatabasePath),
+  datasetDatabasePath: pathConfig('JUHE_AI_DATASET_DATABASE_PATH', defaultDatasetDatabasePath),
+  statsDatabasePath: pathConfig('JUHE_AI_STATS_DATABASE_PATH', defaultStatsDatabasePath),
+  usageShardRoot: pathConfig('JUHE_AI_USAGE_SHARD_ROOT', defaultUsageShardRoot),
+  usageShardCount: numberConfig('JUHE_AI_USAGE_SHARD_COUNT', 16, 1, 256),
   secret: stringConfig('JUHE_AI_SECRET', 'juhe-ai-dev-secret-change-me'),
   oauthProxyUrl: optionalStringConfig('JUHE_AI_OAUTH_PROXY_URL'),
   log: {

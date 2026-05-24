@@ -682,6 +682,22 @@ export function applyStatsSchema(database: DatabaseSync): void {
           PRIMARY KEY (scope_type, scope_id, job_name)
         );
 
+    CREATE TABLE IF NOT EXISTS usage_record_cleanup_deductions (
+          usage_id TEXT NOT NULL,
+          api_key_id TEXT NOT NULL,
+          system_account_id TEXT NOT NULL,
+          source_shard_key TEXT NOT NULL,
+          record_json TEXT NOT NULL,
+          stats_subtracted_at TEXT,
+          shard_deleted_at TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          PRIMARY KEY (usage_id, source_shard_key)
+        );
+
+    CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_target
+      ON usage_record_cleanup_deductions(api_key_id, system_account_id, shard_deleted_at);
+
     CREATE TABLE IF NOT EXISTS system_metrics_samples (
           id TEXT PRIMARY KEY,
           sampled_at TEXT NOT NULL,

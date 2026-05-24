@@ -69,7 +69,7 @@ function resetUsageStatsCache(database: ReturnType<typeof getStatsDatabase>): vo
     for (const tableName of usageStatsTables) {
       database.prepare(`DELETE FROM ${tableName}`).run()
     }
-    database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'").run()
+    database.prepare("DELETE FROM stats_job_state WHERE job_name = 'usage_stats_aggregation'").run()
     database.prepare(`
       INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
       VALUES ('global', '', 'usage_stats_aggregation', '', '', NULL, NULL, 0, ?)

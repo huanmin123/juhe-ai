@@ -84,12 +84,12 @@
           </div>
 
           <a-alert class="setting-alert section-alert" type="info" show-icon>
-            <template #message>后台复测只处理“临时不可调用”状态。账号先进入快速恢复通道，按 3 秒起步、失败翻倍；超过快速阈值后进入慢速恢复通道，单次等待不超过最大暂停时间；超过最长自动恢复观察后转为异常并保留最后一次测试错误。</template>
+            <template #message>后台复测只处理“临时不可调用”状态。账号先进入快速恢复通道，按 3 秒起步、失败翻倍；超过快速阈值后进入慢速恢复通道，单次等待不超过最大暂停时间；慢速恢复失败发生在最长自动恢复观察之后会转为异常并保留最后一次测试错误。</template>
           </a-alert>
 
           <div class="settings-grid">
             <div class="setting-item">
-              <a-form-item label="最长自动恢复观察（小时）" extra="默认 24 小时；慢速恢复持续失败超过该观察时间后，账户会转为异常并停止自动复测。">
+              <a-form-item label="最长自动恢复观察（小时）" extra="默认 24 小时；从进入临时不可调用开始计时，慢速恢复失败超过该观察时间后，账户会转为异常并停止自动复测。">
                 <a-input-number v-model:value="systemForm.cooldownAccountRetestMaxBackoffHours" :min="1" :max="720" style="width: 100%" />
               </a-form-item>
             </div>

@@ -72,6 +72,7 @@ export type AccountFailureInput = {
   headers: Headers | Record<string, string | string[]>
   bodyText: string
   settings: GatewaySettings
+  trafficSource?: GatewayUsageContext['trafficSource']
 }
 
 interface HandleFailedUpstreamResponseInput {
@@ -193,14 +194,19 @@ export async function handleFailedUpstreamResponse(
     headers: response.headers,
     bodyText: diagnosticResponseBodyText
   })
-  persistOpenAICodexHeadersIfNeeded(account, response.headers, 'gateway_error')
+  persistOpenAICodexHeadersIfNeeded(
+    account,
+    response.headers,
+    usageContext.trafficSource === 'gateway' ? 'gateway_error' : usageContext.trafficSource
+  )
 
   const failureInput: AccountFailureInput = {
     success: false,
     statusCode: response.status,
     headers: response.headers,
     bodyText: responseBodyText,
-    settings
+    settings,
+    trafficSource: usageContext.trafficSource
   }
   let parsedError: Record<string, unknown> = {}
   if (!responseBodyRead.truncated) {

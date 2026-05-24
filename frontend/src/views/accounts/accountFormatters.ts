@@ -117,6 +117,9 @@ export function accountStatusTooltipLines(account: AccountSummary): string[] {
     const suffix = account.cooldownRetestLastStatusCode ? `，HTTP ${account.cooldownRetestLastStatusCode}` : ''
     lines.push(`最近后台复测：${formatDateTime(account.cooldownRetestLastAt)}${suffix}`)
   }
+  if (account.cooldownRetestObservationStartedAt && account.status === 'temporary_unavailable') {
+    lines.push(`自动恢复观察开始：${formatDateTime(account.cooldownRetestObservationStartedAt)}`)
+  }
   if (account.lastErrorMessage) {
     lines.push(`原因：${account.lastErrorMessage}`)
   }

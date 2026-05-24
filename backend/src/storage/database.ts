@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { runtimeConfig } from '../config/runtime.js'
 import { errorLogFields, logger } from '../shared/logger.js'
 import { applyBusinessSchema, applyDatasetSchema, applyStatsSchema, seedDefaults } from './schema.js'
+import { closeUsageRecordShardDatabases } from './usage-record-shards.js'
 
 let businessDatabase: DatabaseSync | undefined
 let datasetDatabase: DatabaseSync | undefined
@@ -54,6 +55,7 @@ export function getStatsDatabase(): DatabaseSync {
 }
 
 export function closeStorageDatabases(): void {
+  closeUsageRecordShardDatabases()
   closeDatabaseHandle(businessDatabase)
   closeDatabaseHandle(datasetDatabase)
   closeDatabaseHandle(statsDatabase)

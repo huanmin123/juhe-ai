@@ -175,7 +175,7 @@ export async function handleOpenAIGatewayRequest(
       const contentType = upstreamResponse.headers.get('content-type') ?? ''
       const shouldHandleAsStream = isOpenAIStreamContentType(contentType) || isEffectiveOpenAIStreamRequest(req, account)
       prepareUpstreamResponseForDownstream(res, upstreamResponse, shouldHandleAsStream)
-      persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, 'gateway')
+      persistOpenAICodexHeadersIfNeeded(account, upstreamResponse.headers, gatewayUsageContext.trafficSource)
 
       const handledResponse = shouldHandleAsStream
         ? await handleStreamUpstreamResponse({

@@ -18,9 +18,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, repositories] = await Promise.all([
+const [databaseModule, repositories, usageRecordShards] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/usage-record-shards.js')
 ])
 
 try {
@@ -150,6 +151,7 @@ try {
   const recordDatabase = databaseModule.getDatasetDatabase()
   const originalPrepare = recordDatabase.prepare.bind(recordDatabase) as typeof recordDatabase.prepare
   const usageRecordListCalls: Array<{ sql: string; params: unknown[] }> = []
+  const shardPrepareRestorers: Array<() => void> = []
   recordDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
     if (/\bFROM\s+usage_records\s+ur\b/i.test(sql)) {
@@ -161,6 +163,24 @@ try {
     }
     return statement
   }) as typeof recordDatabase.prepare
+  for (const location of usageRecordShards.listUsageRecordShardLocations()) {
+    const shardDatabase = usageRecordShards.getUsageRecordShardDatabase(location)
+    const originalShardPrepare = shardDatabase.prepare.bind(shardDatabase) as typeof shardDatabase.prepare
+    shardPrepareRestorers.push(() => {
+      shardDatabase.prepare = originalShardPrepare
+    })
+    shardDatabase.prepare = ((sql: string) => {
+      const statement = originalShardPrepare(sql)
+      if (/\bFROM\s+usage_records\s+ur\b/i.test(sql)) {
+        const originalAll = statement.all.bind(statement) as typeof statement.all
+        statement.all = ((...params: SQLInputValue[]) => {
+          usageRecordListCalls.push({ sql, params })
+          return originalAll(...params)
+        }) as typeof statement.all
+      }
+      return statement
+    }) as typeof shardDatabase.prepare
+  }
 
   try {
     const exactModel = repositories.listUsageRecords(access, { model: 'gpt-5.5', page: 1, pageSize: 10 })
@@ -176,6 +196,7 @@ try {
     assert.deepEqual(groupFiltered.items.map((item) => item.id), ['usage_list_query_guard_middle_name', 'usage_list_query_guard_prefix_only', 'usage_list_query_guard_exact'], '分组筛选应只返回目标分组的使用记录')
   } finally {
     recordDatabase.prepare = originalPrepare
+    for (const restore of shardPrepareRestorers) restore()
     businessDatabase.prepare = originalBusinessPrepare
   }
 
@@ -252,9 +273,10 @@ try {
   ])
 
   const recentShapeCalls: Array<{ sql: string; params: unknown[] }> = []
+  const recentShapeShardPrepareRestorers: Array<() => void> = []
   recordDatabase.prepare = ((sql: string) => {
     const statement = originalPrepare(sql)
-    if (/\bSELECT\s+endpoint,\s+model,\s+stream,\s+created_at\b/i.test(sql) && /\bFROM\s+usage_records\b/i.test(sql)) {
+    if (/\bSELECT\s+id,\s+endpoint,\s+model,\s+stream,\s+created_at\b/i.test(sql) && /\bFROM\s+usage_records\b/i.test(sql)) {
       const originalGet = statement.get.bind(statement) as typeof statement.get
       statement.get = ((...params: SQLInputValue[]) => {
         recentShapeCalls.push({ sql, params })
@@ -263,11 +285,30 @@ try {
     }
     return statement
   }) as typeof recordDatabase.prepare
+  for (const location of usageRecordShards.listUsageRecordShardLocations()) {
+    const shardDatabase = usageRecordShards.getUsageRecordShardDatabase(location)
+    const originalShardPrepare = shardDatabase.prepare.bind(shardDatabase) as typeof shardDatabase.prepare
+    recentShapeShardPrepareRestorers.push(() => {
+      shardDatabase.prepare = originalShardPrepare
+    })
+    shardDatabase.prepare = ((sql: string) => {
+      const statement = originalShardPrepare(sql)
+      if (/\bSELECT\s+id,\s+endpoint,\s+model,\s+stream,\s+created_at\b/i.test(sql) && /\bFROM\s+usage_records\b/i.test(sql)) {
+        const originalGet = statement.get.bind(statement) as typeof statement.get
+        statement.get = ((...params: SQLInputValue[]) => {
+          recentShapeCalls.push({ sql, params })
+          return originalGet(...params)
+        }) as typeof statement.get
+      }
+      return statement
+    }) as typeof shardDatabase.prepare
+  }
   try {
     const shape = repositories.findRecentOpenAIRequestShapeForAccount(account.id, group.id)
     assert.equal(shape?.endpoint, 'POST /v1/responses/compact', '最近 OpenAI 请求形态应按 endpoint 精确或子路径前缀识别，不应命中中间包含路径')
   } finally {
     recordDatabase.prepare = originalPrepare
+    for (const restore of recentShapeShardPrepareRestorers) restore()
   }
   assert(recentShapeCalls.length >= 1, '回归应捕获最近请求形态 SQL')
   for (const call of recentShapeCalls) {

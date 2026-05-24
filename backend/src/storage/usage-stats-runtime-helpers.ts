@@ -14,7 +14,15 @@ export function normalizeDefaultUsageStatsRange(timezone = usageStatsTimezone())
 }
 
 export function latestUsageStatsLagSeconds(): number | undefined {
-  const row = getStatsDatabase()
+  const database = getStatsDatabase()
+  const shardRow = database
+    .prepare("SELECT MAX(lag_seconds) AS lag_seconds FROM stats_job_state WHERE scope_type = 'usage_shard' AND job_name = 'usage_stats_aggregation'")
+    .get() as unknown as { lag_seconds?: number | null } | undefined
+  const shardLag = numberOrUndefined(shardRow?.lag_seconds)
+  if (shardLag !== undefined) {
+    return shardLag
+  }
+  const row = database
     .prepare("SELECT lag_seconds FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'")
     .get() as unknown as { lag_seconds?: number | null } | undefined
   return numberOrUndefined(row?.lag_seconds)

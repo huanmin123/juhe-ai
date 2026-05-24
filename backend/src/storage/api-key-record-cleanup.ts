@@ -2,8 +2,8 @@ import type { DatabaseSync } from 'node:sqlite'
 
 import { cleanupUnreferencedAuditPayloadBlobs } from './audit-log-payload-blobs.js'
 import { beginDatabaseTransaction, commitDatabaseTransaction, getDatasetDatabase, getStatsDatabase, nowIso, rollbackDatabaseTransaction } from './database.js'
-import { usageRecordsCleanupCursor } from './data-retention.repository.js'
 import { sqlPlaceholders } from './query-utils.js'
+import { getUsageRecordShardDatabase, listUsageRecordShardLocations, type UsageRecordShardLocation } from './usage-record-shards.js'
 import { refreshUsageQuotaHourlyWindowsCache, refreshUsageRankSnapshots } from './usage-stats.repository.js'
 import { USAGE_STATS_RECORD_SELECT_COLUMNS, type UsageStatsRecordRow } from './usage-stats-types.js'
 import { subtractUsageStatsRecord } from './usage-stats-writers.js'
@@ -66,6 +66,21 @@ type DeletedApiKeyRecordCleanupQueueSummaryRow = {
   failed_targets?: number | null
   oldest_created_at?: string | null
   last_attempt_at?: string | null
+}
+
+type ApiKeyUsageShardRow = UsageStatsRecordRow & {
+  location: UsageRecordShardLocation
+  source_shard_key: string
+}
+
+type UsageRecordCleanupDeductionRow = {
+  stats_subtracted_at?: string | null
+}
+
+interface ApiKeyUsageShardBatch {
+  rows: ApiKeyUsageShardRow[]
+  hasMoreCoveredRows: boolean
+  hasUncoveredRows: boolean
 }
 
 const apiKeyScopeStatsTables = [
@@ -199,73 +214,33 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
   const statsDatabase = getStatsDatabase()
   const updatedAt = nowIso()
   upsertDeletedApiKeyRecordCleanupTarget(database, input, updatedAt)
-  const cursor = usageRecordsCleanupCursor(statsDatabase)
-  const cursorCreatedAt = cursor.cursorCreatedAt
-  const cursorId = cursor.cursorId
   let shouldRefreshDerivedWindows = false
-  if (!cursorCreatedAt || !cursorId) {
-    const transactionStarted = beginDatabaseTransaction(database)
-    try {
-      const deletedRows = deleteApiKeyAuditDataBatch(database, input, deletedApiKeyRecordCleanupBatchLimit)
-      const hasUsageMore = hasApiKeyUsageRecords(database, input)
-      const hasAuditMore = hasApiKeyAuditLogs(database, input)
-      const hasMore = hasUsageMore || hasAuditMore
-      const result: DeletedApiKeyRecordCleanupResult = {
-        ...input,
-        deletedRows,
-        hasMore,
-        blockedReason: hasMore
-          ? hasUsageMore
-            ? cursor.blockedReason ?? '统计安全游标尚未建立，暂不清理已删除 API Key 的使用记录'
-            : '仍有已删除 API Key 的原始审计记录待后续批次清理'
-          : undefined
-      }
-      if (hasMore) {
-        markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '仍有关联记录待后台重试', updatedAt)
-      } else {
-        deleteApiKeyScopeStats(statsDatabase, input)
-        clearDeletedApiKeyRecordCleanupTarget(database, input)
-        shouldRefreshDerivedWindows = true
-      }
-      commitDatabaseTransaction(database, transactionStarted)
-      refreshDeletedApiKeyDerivedWindowsIfNeeded(input, shouldRefreshDerivedWindows)
-      cleanupAuditPayloadBlobsBestEffort(deletedApiKeyRecordCleanupBatchLimit)
-      return result
-    } catch (error) {
-      rollbackDatabaseTransaction(database, transactionStarted)
-      markDeletedApiKeyRecordCleanupTargetError(database, input, errorMessage(error), nowIso())
-      throw error
-    }
-  }
-
   const batchLimit = deletedApiKeyRecordCleanupBatchLimit
   let deletedRows = 0
   let transactionStarted = false
   let statsTransactionStarted = false
   try {
     transactionStarted = beginDatabaseTransaction(database)
-    statsTransactionStarted = beginDatabaseTransaction(statsDatabase)
-    const usageRows = database.prepare(`
-        SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
-        FROM usage_records
-        WHERE api_key_id = ?
-          AND system_account_id = ?
-          AND (created_at < ? OR (created_at = ? AND id <= ?))
-        ORDER BY created_at ASC, id ASC
-        LIMIT ?
-      `).all(input.apiKeyId, input.systemAccountId, cursorCreatedAt, cursorCreatedAt, cursorId, batchLimit + 1) as unknown as UsageStatsRecordRow[]
-    const rowsToDelete = usageRows.slice(0, batchLimit)
-    const deleteUsageRecord = database.prepare('DELETE FROM usage_records WHERE id = ? AND api_key_id = ? AND system_account_id = ?')
-    for (const usageRow of rowsToDelete) {
-      subtractUsageStatsRecord(statsDatabase, usageRow, updatedAt)
-      deletedRows += changed(deleteUsageRecord.run(usageRow.id, input.apiKeyId, input.systemAccountId))
+    const usageBatch = selectApiKeyUsageRowsCoveredByShardCursors(statsDatabase, input, batchLimit)
+    const rowsToDelete = usageBatch.rows.slice(0, batchLimit)
+    const hasMoreCoveredRows = usageBatch.hasMoreCoveredRows
+    if (rowsToDelete.length > 0) {
+      subtractApiKeyUsageRowsOnce(statsDatabase, rowsToDelete, input, updatedAt)
     }
+    deletedRows += deleteApiKeyUsageRows(rowsToDelete, input)
+    markApiKeyUsageCleanupRowsDeleted(statsDatabase, rowsToDelete, input, updatedAt)
     deletedRows += deleteApiKeyAuditDataBatch(database, input, batchLimit)
 
-    const hasUsageMore = hasApiKeyUsageRecords(database, input)
+    const hasUsageMore = hasApiKeyUsageRecords(input)
     const hasAuditMore = hasApiKeyAuditLogs(database, input)
     const hasMore = hasUsageMore || hasAuditMore
-    const hasMoreCoveredRows = usageRows.length > batchLimit
+    if (!hasMore) {
+      if (!statsTransactionStarted) {
+        statsTransactionStarted = beginDatabaseTransaction(statsDatabase)
+      }
+      deleteApiKeyScopeStatsRows(statsDatabase, input)
+      deleteApiKeyUsageCleanupDeductions(statsDatabase, input)
+    }
     const result: DeletedApiKeyRecordCleanupResult = {
       ...input,
       deletedRows,
@@ -275,20 +250,21 @@ export function cleanupDeletedApiKeyRelatedRecordData(input: DeletedApiKeyRecord
           ? '仍有已删除 API Key 的原始审计记录待后续批次清理，已保留待后台重试'
           : hasMoreCoveredRows
           ? '仍有已被统计安全游标覆盖的使用记录待后续批次清理，已保留待后台重试'
+          : usageBatch.hasUncoveredRows
+          ? '仍有使用记录尚未被对应分片统计安全游标覆盖，已保留待后台重试清理'
           : '仍有使用记录尚未被统计安全游标覆盖，已保留待后台重试清理')
-        : undefined,
-      safetyCursorCreatedAt: cursorCreatedAt,
-      safetyCursorId: cursorId
+        : undefined
     }
     if (hasMore) {
       markDeletedApiKeyRecordCleanupTargetDeferred(database, input, result.blockedReason ?? '等待统计安全游标追平', updatedAt)
     } else {
-      deleteApiKeyScopeStats(statsDatabase, input)
       clearDeletedApiKeyRecordCleanupTarget(database, input)
       shouldRefreshDerivedWindows = true
     }
     commitDatabaseTransaction(statsDatabase, statsTransactionStarted)
+    statsTransactionStarted = false
     commitDatabaseTransaction(database, transactionStarted)
+    transactionStarted = false
     refreshDeletedApiKeyDerivedWindowsIfNeeded(input, shouldRefreshDerivedWindows)
     cleanupAuditPayloadBlobsBestEffort(batchLimit)
     return result
@@ -339,11 +315,186 @@ function clearDeletedApiKeyRecordCleanupTarget(database: DatabaseSync, input: De
     .run(input.apiKeyId, input.systemAccountId)
 }
 
-function hasApiKeyUsageRecords(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): boolean {
+function hasApiKeyUsageRecords(input: DeletedApiKeyRecordCleanupTarget): boolean {
+  for (const location of listUsageRecordShardLocations()) {
+    const row = getUsageRecordShardDatabase(location)
+      .prepare('SELECT id FROM usage_records WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
+      .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
+    if (row?.id) return true
+  }
+  return false
+}
+
+function selectApiKeyUsageRowsCoveredByShardCursors(
+  statsDatabase: DatabaseSync,
+  input: DeletedApiKeyRecordCleanupTarget,
+  limit: number
+): ApiKeyUsageShardBatch {
+  const batchLimit = Math.max(1, Math.trunc(limit))
+  const queryLimit = batchLimit + 1
+  const rows: ApiKeyUsageShardRow[] = []
+  let hasUncoveredRows = false
+  for (const location of listUsageRecordShardLocations()) {
+    const shardDatabase = getUsageRecordShardDatabase(location)
+    const anyUsage = shardDatabase
+      .prepare('SELECT id FROM usage_records WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
+      .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
+    if (!anyUsage?.id) continue
+    const cursor = usageStatsShardCursor(statsDatabase, location.shardKey)
+    if (!cursor) {
+      hasUncoveredRows = true
+      continue
+    }
+    const uncovered = shardDatabase
+      .prepare(`
+        SELECT id
+        FROM usage_records
+        WHERE api_key_id = ?
+          AND system_account_id = ?
+          AND (created_at > ? OR (created_at = ? AND id > ?))
+        LIMIT 1
+      `)
+      .get(input.apiKeyId, input.systemAccountId, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId) as unknown as { id?: string } | undefined
+    if (uncovered?.id) {
+      hasUncoveredRows = true
+    }
+    rows.push(...(shardDatabase.prepare(`
+        SELECT ${USAGE_STATS_RECORD_SELECT_COLUMNS}
+        FROM usage_records
+        WHERE api_key_id = ?
+          AND system_account_id = ?
+          AND (created_at < ? OR (created_at = ? AND id <= ?))
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+      `).all(input.apiKeyId, input.systemAccountId, cursor.cursorCreatedAt, cursor.cursorCreatedAt, cursor.cursorId, queryLimit) as unknown as UsageStatsRecordRow[])
+      .map((row) => ({
+        ...row,
+        location,
+        source_shard_key: location.shardKey
+      })))
+  }
+  const sortedRows = rows
+    .sort((left, right) => left.created_at.localeCompare(right.created_at) || left.id.localeCompare(right.id))
+  return {
+    rows: sortedRows.slice(0, queryLimit),
+    hasMoreCoveredRows: sortedRows.length > batchLimit,
+    hasUncoveredRows
+  }
+}
+
+function usageStatsShardCursor(database: DatabaseSync, shardKey: string): { cursorCreatedAt: string; cursorId: string } | undefined {
   const row = database
-    .prepare('SELECT id FROM usage_records WHERE api_key_id = ? AND system_account_id = ? LIMIT 1')
-    .get(input.apiKeyId, input.systemAccountId) as unknown as { id?: string } | undefined
-  return Boolean(row?.id)
+    .prepare("SELECT cursor_created_at, cursor_id FROM stats_job_state WHERE scope_type = 'usage_shard' AND scope_id = ? AND job_name = 'usage_stats_aggregation'")
+    .get(shardKey) as unknown as { cursor_created_at?: string | null; cursor_id?: string | null } | undefined
+  const cursorCreatedAt = row?.cursor_created_at?.trim()
+  const cursorId = row?.cursor_id?.trim()
+  return cursorCreatedAt && cursorId ? { cursorCreatedAt, cursorId } : undefined
+}
+
+function usageStatsRecordForCleanup(row: ApiKeyUsageShardRow): UsageStatsRecordRow {
+  const { location: _location, ...record } = row
+  return record
+}
+
+function subtractApiKeyUsageRowsOnce(
+  database: DatabaseSync,
+  rows: ApiKeyUsageShardRow[],
+  input: DeletedApiKeyRecordCleanupTarget,
+  updatedAt: string
+): void {
+  if (rows.length === 0) return
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    const insertDeductionStatement = database.prepare(`
+      INSERT INTO usage_record_cleanup_deductions (
+        usage_id, api_key_id, system_account_id, source_shard_key, record_json,
+        stats_subtracted_at, shard_deleted_at, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+      ON CONFLICT(usage_id, source_shard_key) DO NOTHING
+    `)
+    const findDeductionStatement = database.prepare(`
+      SELECT stats_subtracted_at
+      FROM usage_record_cleanup_deductions
+      WHERE usage_id = ? AND source_shard_key = ? AND api_key_id = ? AND system_account_id = ?
+      LIMIT 1
+    `)
+    const markSubtractedStatement = database.prepare(`
+      UPDATE usage_record_cleanup_deductions
+      SET stats_subtracted_at = COALESCE(stats_subtracted_at, ?),
+          updated_at = ?
+      WHERE usage_id = ? AND source_shard_key = ? AND api_key_id = ? AND system_account_id = ?
+    `)
+
+    for (const row of rows) {
+      insertDeductionStatement.run(
+        row.id,
+        input.apiKeyId,
+        input.systemAccountId,
+        row.source_shard_key,
+        JSON.stringify(usageStatsRecordForCleanup(row)),
+        updatedAt,
+        updatedAt
+      )
+      const deduction = findDeductionStatement.get(row.id, row.source_shard_key, input.apiKeyId, input.systemAccountId) as UsageRecordCleanupDeductionRow | undefined
+      if (deduction?.stats_subtracted_at) {
+        continue
+      }
+      subtractUsageStatsRecord(database, usageStatsRecordForCleanup(row), updatedAt)
+      markSubtractedStatement.run(updatedAt, updatedAt, row.id, row.source_shard_key, input.apiKeyId, input.systemAccountId)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+function deleteApiKeyUsageRows(rows: ApiKeyUsageShardRow[], input: DeletedApiKeyRecordCleanupTarget): number {
+  let deletedRows = 0
+  const rowsByShard = new Map<string, ApiKeyUsageShardRow[]>()
+  for (const row of rows) {
+    rowsByShard.set(row.location.shardKey, [...(rowsByShard.get(row.location.shardKey) ?? []), row])
+  }
+  for (const shardRows of rowsByShard.values()) {
+    const database = getUsageRecordShardDatabase(shardRows[0].location)
+    const transactionStarted = beginDatabaseTransaction(database)
+    try {
+      const deleteStatement = database.prepare('DELETE FROM usage_records WHERE id = ? AND api_key_id = ? AND system_account_id = ?')
+      for (const row of shardRows) {
+        deletedRows += changed(deleteStatement.run(row.id, input.apiKeyId, input.systemAccountId))
+      }
+      commitDatabaseTransaction(database, transactionStarted)
+    } catch (error) {
+      rollbackDatabaseTransaction(database, transactionStarted)
+      throw error
+    }
+  }
+  return deletedRows
+}
+
+function markApiKeyUsageCleanupRowsDeleted(
+  database: DatabaseSync,
+  rows: ApiKeyUsageShardRow[],
+  input: DeletedApiKeyRecordCleanupTarget,
+  updatedAt: string
+): void {
+  if (rows.length === 0) return
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    const statement = database.prepare(`
+      UPDATE usage_record_cleanup_deductions
+      SET shard_deleted_at = COALESCE(shard_deleted_at, ?),
+          updated_at = ?
+      WHERE usage_id = ? AND source_shard_key = ? AND api_key_id = ? AND system_account_id = ?
+    `)
+    for (const row of rows) {
+      statement.run(updatedAt, updatedAt, row.id, row.source_shard_key, input.apiKeyId, input.systemAccountId)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
 }
 
 function hasApiKeyAuditLogs(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): boolean {
@@ -378,17 +529,6 @@ function deleteApiKeyAuditDataBatch(database: DatabaseSync, input: DeletedApiKey
   return deletedRows
 }
 
-function deleteApiKeyScopeStats(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): void {
-  const transactionStarted = beginDatabaseTransaction(database)
-  try {
-    deleteApiKeyScopeStatsRows(database, input)
-    commitDatabaseTransaction(database, transactionStarted)
-  } catch (error) {
-    rollbackDatabaseTransaction(database, transactionStarted)
-    throw error
-  }
-}
-
 function deleteApiKeyScopeStatsRows(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): void {
   for (const tableName of apiKeyScopeStatsTables) {
     database.prepare(`DELETE FROM ${tableName} WHERE system_account_id = ? AND scope_type = 'api_key' AND scope_id = ?`)
@@ -396,6 +536,11 @@ function deleteApiKeyScopeStatsRows(database: DatabaseSync, input: DeletedApiKey
   }
   database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'api_key' AND scope_id = ?")
     .run(input.apiKeyId)
+}
+
+function deleteApiKeyUsageCleanupDeductions(database: DatabaseSync, input: DeletedApiKeyRecordCleanupTarget): void {
+  database.prepare('DELETE FROM usage_record_cleanup_deductions WHERE api_key_id = ? AND system_account_id = ?')
+    .run(input.apiKeyId, input.systemAccountId)
 }
 
 function refreshDeletedApiKeyDerivedWindowsIfNeeded(input: DeletedApiKeyRecordCleanupTarget, shouldRefresh: boolean): void {

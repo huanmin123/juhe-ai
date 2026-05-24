@@ -122,6 +122,8 @@ async function runCooldownAccountRetestQueueItem(
     maxPauseSeconds: failure.maxPauseSeconds,
     maxRecoverySeconds: failure.maxRecoverySeconds,
     maxedFailureCount: failure.maxedFailureCount,
+    observationStartedAt: failure.observationStartedAt,
+    observationElapsedSeconds: failure.observationElapsedSeconds,
     message: result.message
   }
   if (failure.action === 'error') {

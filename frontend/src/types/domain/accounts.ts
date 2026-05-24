@@ -92,6 +92,7 @@ export interface AccountSummary {
   lastErrorCode?: string
   lastErrorMessage?: string
   cooldownRetestFailureCount?: number
+  cooldownRetestObservationStartedAt?: string
   cooldownRetestLastAt?: string
   cooldownRetestLastStatusCode?: number
   localStatus?: AccountStatus

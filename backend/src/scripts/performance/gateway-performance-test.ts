@@ -120,7 +120,8 @@ const [
   mockdataFixtures,
   gatewayCache,
   usageRecordQueue,
-  auditLogQueue
+  auditLogQueue,
+  usageRecordShards
 ] = await Promise.all([
   import('../../modules/gateway/openai-gateway.routes.js'),
   import('../../modules/gateway/openai-gateway-request-body-middleware.js'),
@@ -129,7 +130,8 @@ const [
   import('../maintenance/mockdata-fixtures.js'),
   import('../../modules/gateway/gateway-runtime-cache.service.js'),
   import('../../modules/gateway/usage-record-queue.service.js'),
-  import('../../modules/audit-logs/audit-log-queue.service.js')
+  import('../../modules/audit-logs/audit-log-queue.service.js'),
+  import('../../storage/usage-record-shards.js')
 ])
 
 async function main(): Promise<void> {
@@ -725,6 +727,13 @@ function responseText(bytes: number): string {
 function countRows(tableName: string): number {
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(tableName)) {
     throw new Error(`非法表名：${tableName}`)
+  }
+  if (tableName === 'usage_records') {
+    return usageRecordShards.listUsageRecordShardLocations()
+      .reduce((total, location) => {
+        const row = usageRecordShards.getUsageRecordShardDatabase(location).prepare('SELECT COUNT(*) AS total FROM usage_records').get() as { total?: number } | undefined
+        return total + Number(row?.total ?? 0)
+      }, 0)
   }
   const row = databaseModule.getDatasetDatabase().prepare(`SELECT COUNT(*) AS total FROM ${tableName}`).get() as { total?: number } | undefined
   return Number(row?.total ?? 0)

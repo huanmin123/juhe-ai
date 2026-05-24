@@ -24,9 +24,10 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, usageRecordQueue] = await Promise.all([
+const [databaseModule, usageRecordQueue, usageRecordShards] = await Promise.all([
   import('../../storage/database.js'),
-  import('../../modules/gateway/usage-record-queue.service.js')
+  import('../../modules/gateway/usage-record-queue.service.js'),
+  import('../../storage/usage-record-shards.js')
 ])
 
 const settings: GatewaySettings = {
@@ -123,9 +124,7 @@ try {
   )
 
   usageRecordQueue.flushAllUsageRecordQueue()
-  const usage = databaseModule.getDatasetDatabase()
-    .prepare('SELECT account_id, success, error_message FROM usage_records WHERE account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1')
-    .get(saturatedAccount.id) as { account_id?: string; success?: number; error_message?: string } | undefined
+  const usage = latestUsageRecordForAccount(saturatedAccount.id)
   assert.equal(usage?.account_id, saturatedAccount.id, '账号并发满也应写入失败使用记录')
   assert.equal(usage?.success, 0, '账号并发满使用记录应标记失败')
   assert.match(usage?.error_message ?? '', /并发已达到上限/, '账号并发满使用记录应保留错误原因')
@@ -142,6 +141,15 @@ try {
   } catch {
   }
   rmSync(tempRoot, { recursive: true, force: true })
+}
+
+function latestUsageRecordForAccount(accountId: string): { account_id?: string; success?: number; error_message?: string; created_at?: string; id?: string } | undefined {
+  return usageRecordShards.listUsageRecordShardLocations()
+    .map((location) => usageRecordShards.getUsageRecordShardDatabase(location)
+      .prepare('SELECT account_id, success, error_message, created_at, id FROM usage_records WHERE account_id = ? ORDER BY created_at DESC, id DESC LIMIT 1')
+      .get(accountId) as { account_id?: string; success?: number; error_message?: string; created_at?: string; id?: string } | undefined)
+    .filter((row): row is { account_id?: string; success?: number; error_message?: string; created_at?: string; id?: string } => Boolean(row))
+    .sort((left, right) => String(right.created_at ?? '').localeCompare(String(left.created_at ?? '')) || String(right.id ?? '').localeCompare(String(left.id ?? '')))[0]
 }
 
 async function createHoldAndReleaseServer(): Promise<{ server: http.Server; baseUrl: string }> {

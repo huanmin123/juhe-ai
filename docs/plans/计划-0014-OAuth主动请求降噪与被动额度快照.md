@@ -61,7 +61,7 @@
 | 命令类验证 | usage/pricing 回归 | `pnpm --filter juhe-ai-backend test:usage-pricing` | 使用记录口径和被动快照断言通过 | 已通过 | 2026-05-08 通过 |
 | 命令类验证 | 后端类型检查 | `pnpm --filter juhe-ai-backend typecheck` | TypeScript 无错误 | 已通过 | 2026-05-08 通过 |
 | 命令类验证 | 全仓类型检查 | `pnpm typecheck` | 前后端类型检查通过或记录无关阻断 | 已通过 | 2026-05-08 通过 |
-| 功能主流程 | OAuth 真实请求被动快照 | 本地代码检查与回归脚本 | 网关收到 OAuth 上游响应头后仍调用 `persistOpenAICodexHeadersIfNeeded(..., 'gateway')` | 已通过 | `test:usage-pricing` 已断言 |
+| 功能主流程 | OAuth 真实请求被动快照 | 本地代码检查与回归脚本 | 网关收到 OAuth 上游响应头后仍调用 `persistOpenAICodexHeadersIfNeeded`；真实网关来源保留 `gateway`，恢复探活保留 `cooldown_retest` | 已通过 | `test:usage-pricing` 已断言 |
 | 异常与边界 | OAuth 建号 | 创建 OAuth 账户代码路径检查 | 建号成功不再发模型请求刷新额度快照，直接返回账户 | 已通过 | `test:usage-pricing` 已断言路由不引用主动刷新 |
 | 后台任务 | OAuth usage refresh | worker 调度入口检查 | 不再注册 `openai-oauth-usage-refresh` 任务 | 已通过 | `test:usage-pricing` 已断言 |
 | 后台任务 | 质量主动探测已删除 | 代码检查与回归脚本 | worker 只刷新真实请求质量缓存，不再包含主动探测候选、执行和设置项 | 已通过 | 回归脚本断言后台代码不再引用主动探测开关和候选函数 |

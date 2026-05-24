@@ -17,10 +17,13 @@ runtimeConfig.processRole = 'worker'
 mkdirSync(tempRoot, { recursive: true })
 logger.level = 'silent'
 
-const [databaseModule, usageStatsRepository, apiKeyRecordCleanup] = await Promise.all([
+const [databaseModule, usageStatsRepository, apiKeyRecordCleanup, usageRecordShards, usageStatsWriters, usageStatsTypes] = await Promise.all([
   import('../../storage/database.js'),
   import('../../storage/usage-stats.repository.js'),
-  import('../../storage/api-key-record-cleanup.js')
+  import('../../storage/api-key-record-cleanup.js'),
+  import('../../storage/usage-record-shards.js'),
+  import('../../storage/usage-stats-writers.js'),
+  import('../../storage/usage-stats-types.js')
 ])
 
 const apiKeyId = 'key_deleted_before_aggregation'
@@ -127,6 +130,24 @@ try {
   assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 0, '待重试清理完成后应反向扣减系统账户统计')
   assert.equal(usageStatsTotal('sys_admin', 'api_key', pendingApiKeyId), 0, '待重试清理完成后应反向扣减 API Key 维度统计')
 
+  const resumedApiKeyId = 'key_deleted_cleanup_resume_after_stats'
+  const resumedUsageRecordId = 'usage_deleted_key_resume_after_stats'
+  const resumedCreatedAt = new Date(baseCreatedAtMs + 150 * 60 * 1000).toISOString()
+  seedUsageRecord(resumedUsageRecordId, resumedApiKeyId, resumedCreatedAt)
+  assert.equal(usageStatsRepository.aggregateUsageStatsBatch(10), 1, '恢复场景使用记录应先进入统计游标')
+  assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 1, '恢复场景初始统计应存在')
+  simulateCleanupStatsSubtractedBeforeShardDelete(resumedUsageRecordId, resumedApiKeyId, resumedCreatedAt)
+  assert.equal(usageRecordExists(resumedUsageRecordId), true, '模拟中途失败时 usage shard 行仍未删除')
+  assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 0, '模拟中途失败时统计已先扣减')
+  apiKeyRecordCleanup.cleanupDeletedApiKeyRelatedRecordData({
+    apiKeyId: resumedApiKeyId,
+    systemAccountId: 'sys_admin'
+  })
+  assert.equal(usageRecordExists(resumedUsageRecordId), false, '恢复清理应补删已经扣减过的 shard 行')
+  assert.equal(usageStatsTotal('sys_admin', 'system_account', 'sys_admin'), 0, '恢复清理不应重复扣减系统账户统计')
+  assert.equal(usageStatsTotal('sys_admin', 'api_key', resumedApiKeyId), 0, '恢复清理不应重复扣减 API Key 统计')
+  assert.equal(cleanupDeductionCount(resumedApiKeyId), 0, '清理完成后应移除 stats 扣减账本')
+
   const largeApiKeyId = 'key_deleted_cleanup_large_batch'
   for (let index = 0; index < 1200; index += 1) {
     seedUsageRecord(
@@ -171,7 +192,8 @@ try {
 }
 
 function seedUsageRecord(id: string, apiKeyIdInput: string, createdAtInput: string): void {
-  databaseModule.getDatasetDatabase()
+  const location = usageRecordShards.usageRecordShardLocationForRecord(id, createdAtInput)
+  usageRecordShards.getUsageRecordShardDatabase(location)
     .prepare(`
       INSERT INTO usage_records (
         id, system_account_id, trace_id, api_key_id, endpoint, provider_code, model,
@@ -282,10 +304,56 @@ function authorizationUserUsageRangeWindowRequestCount(systemAccountId: string):
 }
 
 function usageRecordExists(id: string): boolean {
-  const row = databaseModule.getDatasetDatabase()
-    .prepare('SELECT id FROM usage_records WHERE id = ?')
-    .get(id) as { id?: string } | undefined
-  return Boolean(row?.id)
+  for (const location of usageRecordShards.listUsageRecordShardLocations()) {
+    const row = usageRecordShards.getUsageRecordShardDatabase(location)
+      .prepare('SELECT id FROM usage_records WHERE id = ?')
+      .get(id) as { id?: string } | undefined
+    if (row?.id) return true
+  }
+  return false
+}
+
+function simulateCleanupStatsSubtractedBeforeShardDelete(id: string, apiKeyIdInput: string, createdAtInput: string): void {
+  const location = usageRecordShards.usageRecordShardLocationForRecord(id, createdAtInput)
+  const row = usageRecordShards.getUsageRecordShardDatabase(location)
+    .prepare(`
+      SELECT ${usageStatsTypes.USAGE_STATS_RECORD_SELECT_COLUMNS}
+      FROM usage_records
+      WHERE id = ?
+      LIMIT 1
+    `)
+    .get(id) as Record<string, unknown> | undefined
+  assert.ok(row, '模拟恢复场景必须能读取待清理 usage 行')
+  const usageRow = {
+    ...row,
+    source_shard_key: location.shardKey
+  } as Parameters<typeof usageStatsWriters.subtractUsageStatsRecord>[1]
+  const database = databaseModule.getStatsDatabase()
+  const updatedAt = new Date().toISOString()
+  const transactionStarted = databaseModule.beginDatabaseTransaction(database)
+  try {
+    database.prepare(`
+      INSERT INTO usage_record_cleanup_deductions (
+        usage_id, api_key_id, system_account_id, source_shard_key, record_json,
+        stats_subtracted_at, shard_deleted_at, created_at, updated_at
+      ) VALUES (?, ?, 'sys_admin', ?, ?, ?, NULL, ?, ?)
+      ON CONFLICT(usage_id, source_shard_key) DO UPDATE SET
+        stats_subtracted_at = excluded.stats_subtracted_at,
+        updated_at = excluded.updated_at
+    `).run(id, apiKeyIdInput, location.shardKey, JSON.stringify(usageRow), updatedAt, updatedAt, updatedAt)
+    usageStatsWriters.subtractUsageStatsRecord(database, usageRow, updatedAt)
+    databaseModule.commitDatabaseTransaction(database, transactionStarted)
+  } catch (error) {
+    databaseModule.rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+function cleanupDeductionCount(apiKeyIdInput: string): number {
+  const row = databaseModule.getStatsDatabase()
+    .prepare('SELECT COUNT(*) AS total FROM usage_record_cleanup_deductions WHERE api_key_id = ?')
+    .get(apiKeyIdInput) as { total?: number } | undefined
+  return Number(row?.total ?? 0)
 }
 
 function auditLogExists(id: string): boolean {

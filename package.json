@@ -54,9 +54,12 @@
     "test:record-maintenance-index-guard": "pnpm --filter juhe-ai-backend test:record-maintenance-index-guard",
     "test:table-monitor-default-scan": "pnpm --filter juhe-ai-backend test:table-monitor-default-scan",
     "test:gateway-runtime-cache": "pnpm --filter juhe-ai-backend test:gateway-runtime-cache",
+    "test:cooldown-retest-recovery": "pnpm --filter juhe-ai-backend test:cooldown-retest-recovery",
     "test:gateway-concurrency-snapshot": "pnpm --filter juhe-ai-backend test:gateway-concurrency-snapshot",
     "test:gateway-proxy-health": "pnpm --filter juhe-ai-backend test:gateway-proxy-health",
     "test:session-affinity": "pnpm --filter juhe-ai-backend test:session-affinity",
+    "test:usage-record-shard-routing": "pnpm --filter juhe-ai-backend test:usage-record-shard-routing",
+    "test:usage-stats-rebuild-shard-cursor": "pnpm --filter juhe-ai-backend test:usage-stats-rebuild-shard-cursor",
     "test:usage-record-batch-lookup": "pnpm --filter juhe-ai-backend test:usage-record-batch-lookup",
     "test:usage-stats-batch-statement": "pnpm --filter juhe-ai-backend test:usage-stats-batch-statement",
     "test:authorization-quota-batch": "pnpm --filter juhe-ai-backend test:authorization-quota-batch"

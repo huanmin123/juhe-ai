@@ -1,9 +1,9 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import { estimateProviderCacheReadCostUsd } from '../modules/model-pricing/model-pricing.service.js'
-import { getDatasetDatabase } from './database.js'
 import { dateKey, hourKey, minuteKey, monthKey, usageStatsTimezone, weekKey } from './usage-stats-helpers.js'
 import { shouldAggregateUsageStatsRecord, usageStatsAccumulatorFromRecord, usageStatsEntries } from './usage-stats-aggregation.js'
+import { updateUsageRecordCacheReadCost } from './usage-record-shards.js'
 import {
   GLOBAL_STATS_SYSTEM_ACCOUNT_ID,
   type UsageStatsAccumulator,
@@ -164,7 +164,12 @@ function persistEstimatedCacheReadCost(row: UsageStatsRecordRow): void {
   if (cacheReadCostUsd <= 0) {
     return
   }
-  getDatasetDatabase().prepare('UPDATE usage_records SET cache_read_cost_usd = ? WHERE id = ?').run(cacheReadCostUsd, row.id)
+  updateUsageRecordCacheReadCost({
+    id: row.id,
+    createdAt: row.created_at,
+    sourceShardKey: row.source_shard_key ?? undefined,
+    cacheReadCostUsd
+  })
   row.cache_read_cost_usd = cacheReadCostUsd
 }
 

@@ -49,6 +49,7 @@ export interface UsageStatsRecordRow {
   group_authorization_source_type: string | null
   group_authorization_source_team_id: string | null
   created_at: string
+  source_shard_key?: string | null
 }
 
 export const USAGE_STATS_RECORD_SELECT_COLUMNS = `

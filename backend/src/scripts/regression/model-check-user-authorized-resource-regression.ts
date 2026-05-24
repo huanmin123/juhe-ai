@@ -27,7 +27,8 @@ const [
   usageRecordQueue,
   gatewayJsonParser,
   databaseModule,
-  repositories
+  repositories,
+  usageRecordShards
 ] = await Promise.all([
   import('../../modules/model-checks/model-checks.routes.js'),
   import('../../modules/auth/auth.middleware.js'),
@@ -35,7 +36,8 @@ const [
   import('../../modules/gateway/usage-record-queue.service.js'),
   import('../../modules/gateway/openai-gateway-json-parser.js'),
   import('../../storage/database.js'),
-  import('../../storage/repositories.js')
+  import('../../storage/repositories.js'),
+  import('../../storage/usage-record-shards.js')
 ])
 
 const app = express()
@@ -331,14 +333,16 @@ function outputForProbe(body: Record<string, unknown>): string {
 function listUsageRowsByTraceIds(traceIds: string[]): Array<Record<string, string | null>> {
   assert(traceIds.length > 0, '模型检测应返回检测项 traceId')
   const placeholders = traceIds.map(() => '?').join(',')
-  return databaseModule.getDatasetDatabase()
-    .prepare(`
-      SELECT trace_id, system_account_id, account_id, account_owner_system_account_id, account_access_type, account_authorization_id
-      FROM usage_records
-      WHERE trace_id IN (${placeholders})
-      ORDER BY created_at ASC, id ASC
-    `)
-    .all(...traceIds) as Array<Record<string, string | null>>
+  return usageRecordShards.listUsageRecordShardLocations()
+    .flatMap((location) => usageRecordShards.getUsageRecordShardDatabase(location)
+      .prepare(`
+        SELECT trace_id, system_account_id, account_id, account_owner_system_account_id, account_access_type, account_authorization_id, created_at, id
+        FROM usage_records
+        WHERE trace_id IN (${placeholders})
+        ORDER BY created_at ASC, id ASC
+      `)
+      .all(...traceIds) as Array<Record<string, string | null>>)
+    .sort((left, right) => String(left.created_at ?? '').localeCompare(String(right.created_at ?? '')) || String(left.id ?? '').localeCompare(String(right.id ?? '')))
 }
 
 function sessionCookie(systemAccountId: string): string {

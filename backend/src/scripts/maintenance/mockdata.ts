@@ -19,6 +19,7 @@ import type { AuditLogInput } from '../../storage/audit-logs.repository.js'
 import type { OperationLogInput } from '../../storage/operation-logs.repository.js'
 import type { RuntimeLogIndexInput } from '../../storage/runtime-logs.repository.js'
 import type { UsageRecordInput } from '../../storage/usage-records.repository.js'
+import { getUsageRecordShardDatabase, listUsageRecordShardLocations } from '../../storage/usage-record-shards.js'
 import {
   aggregateUsageStatsBatch,
   refreshGroupAccountStatsCache,
@@ -1992,7 +1993,7 @@ function resetUsageStatsCache(database: Database): void {
     for (const tableName of usageStatsTables) {
       database.prepare(`DELETE FROM ${tableName}`).run()
     }
-    database.prepare("DELETE FROM stats_job_state WHERE scope_type = 'global' AND scope_id = '' AND job_name = 'usage_stats_aggregation'").run()
+    database.prepare("DELETE FROM stats_job_state WHERE job_name = 'usage_stats_aggregation'").run()
     database.prepare(`
       INSERT INTO stats_job_state (scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, last_error_message, lag_seconds, updated_at)
       VALUES ('global', '', 'usage_stats_aggregation', '', '', NULL, NULL, 0, ?)
@@ -2063,7 +2064,7 @@ function cleanupBusinessMockdata(database: Database, adminId: string, mockUserId
 function cleanupDatasetMockdata(database: Database): void {
   database.exec('BEGIN')
   try {
-    database.prepare("DELETE FROM usage_records WHERE id LIKE ? OR trace_id LIKE ?").run(`${idPrefix}%`, `${tracePrefix}%`)
+    cleanupUsageRecordShardMockdata()
 
     database.prepare(`
       DELETE FROM audit_error_groups
@@ -2107,6 +2108,14 @@ function cleanupStatsMockdata(database: Database, mockAccountIds: string[]): voi
   } catch (error) {
     database.exec('ROLLBACK')
     throw error
+  }
+}
+
+function cleanupUsageRecordShardMockdata(): void {
+  for (const location of listUsageRecordShardLocations()) {
+    getUsageRecordShardDatabase(location)
+      .prepare("DELETE FROM usage_records WHERE id LIKE ? OR trace_id LIKE ?")
+      .run(`${idPrefix}%`, `${tracePrefix}%`)
   }
 }
 

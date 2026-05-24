@@ -1862,6 +1862,8 @@ export interface CooldownAccountRetestFailureResult {
   maxPauseSeconds?: number
   maxRecoverySeconds?: number
   maxedFailureCount?: number
+  observationStartedAt?: string
+  observationElapsedSeconds?: number
   errorCode: string
   errorMessage: string
 }
@@ -1885,9 +1887,10 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
   const now = nowDate.toISOString()
   const failureCount = Math.max(0, current.cooldownRetestFailureCount ?? 0) + 1
   const lastStatusCode = typeof input.statusCode === 'number' && Number.isFinite(input.statusCode) ? Math.trunc(input.statusCode) : null
-  const recovery = cooldownRetestRecoveryPlan(failureCount, input)
+  const observationStartedAt = current.cooldownRetestObservationStartedAt ?? now
+  const recovery = cooldownRetestRecoveryPlan(failureCount, input, nowDate, observationStartedAt)
   if (recovery.shouldMarkError) {
-    const finalMessage = cooldownRetestExhaustedMessage(failureCount, recovery.backoffSeconds, recovery.maxRecoverySeconds, testErrorMessage)
+    const finalMessage = cooldownRetestExhaustedMessage(failureCount, recovery.backoffSeconds, recovery.maxRecoverySeconds, recovery.observationElapsedSeconds, testErrorMessage)
     const result = getDatabase()
       .prepare(`
         UPDATE accounts
@@ -1897,6 +1900,7 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
             last_error_code = ?,
             last_error_message = ?,
             cooldown_retest_failure_count = ?,
+            cooldown_retest_observation_started_at = COALESCE(cooldown_retest_observation_started_at, ?),
             cooldown_retest_last_at = ?,
             cooldown_retest_last_status_code = ?,
             stream_failure_count = 0,
@@ -1905,7 +1909,7 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
         WHERE id = ?
           AND status = 'temporary_unavailable'
       `)
-      .run(errorCode, finalMessage, failureCount, now, lastStatusCode, now, id)
+      .run(errorCode, finalMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id)
     const changed = Number(result.changes ?? 0) > 0
     if (changed) {
       refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_exhausted' })
@@ -1925,7 +1929,9 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
       fastThresholdSeconds: recovery.fastThresholdSeconds,
       maxPauseSeconds: recovery.maxPauseSeconds,
       maxRecoverySeconds: recovery.maxRecoverySeconds,
-      maxedFailureCount: recovery.maxedFailureCount
+      maxedFailureCount: recovery.maxedFailureCount,
+      observationStartedAt: recovery.observationStartedAt,
+      observationElapsedSeconds: recovery.observationElapsedSeconds
     }
   }
 
@@ -1939,6 +1945,7 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
           last_error_code = ?,
           last_error_message = ?,
           cooldown_retest_failure_count = ?,
+          cooldown_retest_observation_started_at = COALESCE(cooldown_retest_observation_started_at, ?),
           cooldown_retest_last_at = ?,
           cooldown_retest_last_status_code = ?,
           stream_failure_count = 0,
@@ -1947,7 +1954,7 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
       WHERE id = ?
         AND status = 'temporary_unavailable'
     `)
-    .run(cooldownUntil, errorCode, cooldownMessage, failureCount, now, lastStatusCode, now, id)
+    .run(cooldownUntil, errorCode, cooldownMessage, failureCount, observationStartedAt, now, lastStatusCode, now, id)
   const changed = Number(result.changes ?? 0) > 0
   if (changed) {
     refreshGroupAccountStatsAfterWrite({ accountIds: [id], reason: 'account_cooldown_retest_backoff' })
@@ -1968,6 +1975,8 @@ export function recordCooldownAccountRetestFailure(id: string, input: CooldownAc
     maxPauseSeconds: recovery.maxPauseSeconds,
     maxRecoverySeconds: recovery.maxRecoverySeconds,
     maxedFailureCount: recovery.maxedFailureCount,
+    observationStartedAt: recovery.observationStartedAt,
+    observationElapsedSeconds: recovery.observationElapsedSeconds,
     errorCode,
     errorMessage: cooldownMessage
   }
@@ -2007,9 +2016,11 @@ interface CooldownRetestRecoveryPlan {
   maxPauseSeconds: number
   maxRecoverySeconds: number
   maxedFailureCount: number
+  observationStartedAt: string
+  observationElapsedSeconds: number
 }
 
-function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccountRetestFailureInput): CooldownRetestRecoveryPlan {
+function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccountRetestFailureInput, nowDate: Date, observationStartedAt: string): CooldownRetestRecoveryPlan {
   const initialBackoffSeconds = boundedInteger(input.initialBackoffSeconds, temporaryUnavailableInitialBackoffSeconds, 1, 3600)
   const fastThresholdSeconds = boundedInteger(input.fastThresholdSeconds, temporaryUnavailableFastThresholdSeconds, initialBackoffSeconds, 3600)
   const maxPauseSeconds = boundedInteger(input.maxPauseMinutes, defaultTemporaryUnschedulableMinutes(), 1, 1440) * 60
@@ -2021,16 +2032,26 @@ function cooldownRetestRecoveryPlan(failureCount: number, input: CooldownAccount
   const stage = backoffSeconds <= fastThresholdSeconds ? 'fast' : 'slow'
   const firstMaxedFailureCount = firstCappedBackoffFailureCount(initialBackoffSeconds, multiplier, maxPauseSeconds)
   const maxedFailureCount = failureCount >= firstMaxedFailureCount ? failureCount - firstMaxedFailureCount + 1 : 0
-  const allowedMaxedFailures = Math.max(1, Math.ceil(maxRecoverySeconds / Math.max(1, maxPauseSeconds)))
+  const observationElapsedSeconds = cooldownRetestObservationElapsedSeconds(observationStartedAt, nowDate)
   return {
     stage,
-    shouldMarkError: maxedFailureCount > allowedMaxedFailures,
+    shouldMarkError: stage === 'slow' && observationElapsedSeconds >= maxRecoverySeconds,
     backoffSeconds,
     fastThresholdSeconds,
     maxPauseSeconds,
     maxRecoverySeconds,
-    maxedFailureCount
+    maxedFailureCount,
+    observationStartedAt,
+    observationElapsedSeconds
   }
+}
+
+function cooldownRetestObservationElapsedSeconds(observationStartedAt: string, nowDate: Date): number {
+  const startedAtMs = Date.parse(observationStartedAt)
+  if (!Number.isFinite(startedAtMs)) {
+    return 0
+  }
+  return Math.max(0, Math.floor((nowDate.getTime() - startedAtMs) / 1000))
 }
 
 function firstCappedBackoffFailureCount(initialBackoffSeconds: number, multiplier: number, maxPauseSeconds: number): number {
@@ -2046,8 +2067,8 @@ function cooldownRetestCooldownMessage(failureCount: number, backoffSeconds: num
   return `后台冷却复测连续失败 ${failureCount} 次，${stageText}下次复测延后 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
 }
 
-function cooldownRetestExhaustedMessage(failureCount: number, backoffSeconds: number, maxRecoverySeconds: number, lastError: string): string {
-  return `后台冷却复测连续失败 ${failureCount} 次，已超过最长自动恢复观察 ${formatDurationSeconds(maxRecoverySeconds)}，转为异常；最后一次退避 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
+function cooldownRetestExhaustedMessage(failureCount: number, backoffSeconds: number, maxRecoverySeconds: number, observationElapsedSeconds: number, lastError: string): string {
+  return `后台冷却复测连续失败 ${failureCount} 次，已观察 ${formatDurationSeconds(observationElapsedSeconds)}，超过最长自动恢复观察 ${formatDurationSeconds(maxRecoverySeconds)}，转为异常；最后一次退避 ${formatDurationSeconds(backoffSeconds)}；最后错误：${lastError}`.slice(0, 1000)
 }
 
 function secondsToCeilMinutes(seconds: number): number {
@@ -2279,7 +2300,7 @@ export function migrateAccountTraffic(input: {
               updated_at = ?
           WHERE id = ? AND system_account_id = ?
         `)
-        .run(sourceCooldownUntil, reason, sourceObservationStartedAt, now, sourceRow.id, sourceRow.system_account_id)
+        .run(sourceCooldownUntil, reason, sourceObservationStartedAt ?? null, now, sourceRow.id, sourceRow.system_account_id)
     if (Number(updateResult.changes ?? 0) <= 0) {
       rollbackDatabaseTransaction(database, transactionStarted)
       return undefined

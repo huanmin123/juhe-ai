@@ -18,11 +18,13 @@ logger.level = 'silent'
 const [
   databaseModule,
   recordMaintenanceQueue,
-  backgroundIpc
+  backgroundIpc,
+  usageRecordShards
 ] = await Promise.all([
   import('../../storage/database.js'),
   import('../../modules/record-maintenance/record-maintenance-queue.service.js'),
-  import('../../modules/background/background-ipc.js')
+  import('../../modules/background/background-ipc.js'),
+  import('../../storage/usage-record-shards.js')
 ])
 
 try {
@@ -266,7 +268,8 @@ function seedAccount(accountId: string, systemAccountId: string): void {
 }
 
 function seedUsageRecord(id: string, createdAt: string): void {
-  databaseModule.getDatasetDatabase()
+  const location = usageRecordShards.usageRecordShardLocationForRecord(id, createdAt)
+  usageRecordShards.getUsageRecordShardDatabase(location)
     .prepare(`
       INSERT INTO usage_records (id, system_account_id, trace_id, stream, success, created_at)
       VALUES (?, 'sys_admin', ?, 0, 1, ?)
@@ -276,24 +279,28 @@ function seedUsageRecord(id: string, createdAt: string): void {
 
 function seedUsageStatsCleanupCursors(cursorCreatedAt: string, cursorId: string): void {
   const database = databaseModule.getStatsDatabase()
+  const location = usageRecordShards.usageRecordShardLocationForRecord(cursorId, cursorCreatedAt)
   const statement = database.prepare(`
     INSERT INTO stats_job_state (
       scope_type, scope_id, job_name, cursor_created_at, cursor_id, last_success_at, updated_at
-    ) VALUES ('global', '', ?, ?, ?, ?, ?)
+    ) VALUES ('usage_shard', ?, ?, ?, ?, ?, ?)
     ON CONFLICT(scope_type, scope_id, job_name) DO UPDATE SET
       cursor_created_at = excluded.cursor_created_at,
       cursor_id = excluded.cursor_id,
       last_success_at = excluded.last_success_at,
       updated_at = excluded.updated_at
   `)
-  statement.run('usage_stats_aggregation', cursorCreatedAt, cursorId, cursorCreatedAt, cursorCreatedAt)
+  statement.run(location.shardKey, 'usage_stats_aggregation', cursorCreatedAt, cursorId, cursorCreatedAt, cursorCreatedAt)
 }
 
 function usageRecordCount(id: string): number {
-  const row = databaseModule.getDatasetDatabase()
-    .prepare('SELECT COUNT(*) AS total FROM usage_records WHERE id = ?')
-    .get(id) as { total?: number } | undefined
-  return Number(row?.total ?? 0)
+  return usageRecordShards.listUsageRecordShardLocations()
+    .reduce((total, location) => {
+      const row = usageRecordShards.getUsageRecordShardDatabase(location)
+        .prepare('SELECT COUNT(*) AS total FROM usage_records WHERE id = ?')
+        .get(id) as { total?: number } | undefined
+      return total + Number(row?.total ?? 0)
+    }, 0)
 }
 
 function accountUsageSnapshotCount(accountId: string): number {

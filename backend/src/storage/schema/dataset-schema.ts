@@ -339,6 +339,20 @@ export function applyDatasetSchema(database: DatabaseSync): void {
           last_error_message TEXT
         );
 
+    CREATE TABLE IF NOT EXISTS usage_record_shards (
+          shard_key TEXT PRIMARY KEY,
+          bucket_date TEXT NOT NULL,
+          shard_id INTEGER NOT NULL,
+          file_path TEXT NOT NULL,
+          schema_version INTEGER NOT NULL DEFAULT 1,
+          status TEXT NOT NULL DEFAULT 'active',
+          first_seen_at TEXT NOT NULL,
+          last_write_at TEXT,
+          last_error_message TEXT,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        );
+
     CREATE INDEX IF NOT EXISTS idx_usage_records_created_at ON usage_records(created_at);
 
     CREATE INDEX IF NOT EXISTS idx_usage_records_system_account_created_at ON usage_records(system_account_id, created_at);
@@ -508,6 +522,8 @@ export function applyDatasetSchema(database: DatabaseSync): void {
     CREATE INDEX IF NOT EXISTS idx_runtime_log_event_facets_latest ON runtime_log_event_facets(latest_time DESC, event);
 
     CREATE INDEX IF NOT EXISTS idx_api_key_record_cleanup_targets_attempt ON api_key_record_cleanup_targets(COALESCE(last_attempt_at, created_at), created_at, api_key_id);
+
+    CREATE INDEX IF NOT EXISTS idx_usage_record_shards_bucket ON usage_record_shards(bucket_date, shard_id);
   `)
   addColumnIfMissing(database, 'usage_records', 'traffic_source', "TEXT NOT NULL DEFAULT 'gateway'")
   addColumnIfMissing(database, 'audit_logs', 'traffic_source', "TEXT NOT NULL DEFAULT 'gateway'")
