@@ -48,6 +48,7 @@
     "test:background-ipc-protected-queue": "tsx src/scripts/regression/background-ipc-protected-queue-regression.ts",
     "test:record-maintenance-queue": "tsx src/scripts/regression/record-maintenance-queue-regression.ts",
     "test:deleted-api-key-aggregation-cleanup": "tsx src/scripts/regression/deleted-api-key-aggregation-cleanup-regression.ts",
+    "test:deleted-account-related-cleanup": "tsx src/scripts/regression/deleted-account-related-cleanup-regression.ts",
     "test:usage-pricing": "tsx src/scripts/regression/usage-pricing-regression.ts",
     "test:cooldown-retest-recovery": "tsx src/scripts/regression/cooldown-retest-recovery-regression.ts",
     "test:usage-record-shard-routing": "tsx src/scripts/regression/usage-record-shard-routing-regression.ts",

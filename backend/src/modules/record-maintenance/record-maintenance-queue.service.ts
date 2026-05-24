@@ -4,6 +4,7 @@ import { fixedRetryPolicy, retryDelayMs } from '../../shared/retry-policy.js'
 import { cleanupProcessedUsageRecordsBeforeWithResult } from '../../storage/data-retention.repository.js'
 import { newId, nowIso } from '../../storage/database.js'
 import {
+  cleanupDeletedAccountRelatedRecordData,
   cleanupDeletedApiKeyRelatedRecordData,
   upsertAccountUsageSnapshots,
   type AccountUsageSnapshotUpsertInput
@@ -16,6 +17,15 @@ export type RecordMaintenanceJob =
     id?: string
     apiKeyId: string
     systemAccountId: string
+    createdAt?: string
+  }
+  | {
+    type: 'account_related_cleanup'
+    id?: string
+    accountId: string
+    systemAccountId: string
+    authorizationIds?: string[]
+    teamScopeIds?: string[]
     createdAt?: string
   }
   | {
@@ -241,6 +251,21 @@ function processRecordMaintenanceJob(job: RecordMaintenanceJob): void {
       }, deferred ? 'API Key 关联数据清理等待统计游标追平' : 'API Key 关联数据清理完成')
       return
     }
+    case 'account_related_cleanup': {
+      const result = cleanupDeletedAccountRelatedRecordData({
+        accountId: job.accountId,
+        systemAccountId: job.systemAccountId,
+        authorizationIds: job.authorizationIds,
+        teamScopeIds: job.teamScopeIds
+      })
+      const deferred = result.hasMore || Boolean(result.blockedReason)
+      logger.info({
+        event: deferred ? 'record_maintenance_account_cleanup_deferred' : 'record_maintenance_account_cleanup_completed',
+        jobId: job.id,
+        ...result
+      }, deferred ? 'AI 账户关联数据清理等待统计游标追平' : 'AI 账户关联数据清理完成')
+      return
+    }
     case 'usage_records_cleanup': {
       const result = cleanupUsageRecordsBefore({
         cutoffAt: job.cutoffAt,
@@ -371,6 +396,14 @@ export function isRecordMaintenanceJob(value: unknown): value is RecordMaintenan
       && (record.id === undefined || typeof record.id === 'string')
       && (record.createdAt === undefined || typeof record.createdAt === 'string')
   }
+  if (record.type === 'account_related_cleanup') {
+    return typeof record.accountId === 'string'
+      && typeof record.systemAccountId === 'string'
+      && (record.authorizationIds === undefined || isStringArray(record.authorizationIds))
+      && (record.teamScopeIds === undefined || isStringArray(record.teamScopeIds))
+      && (record.id === undefined || typeof record.id === 'string')
+      && (record.createdAt === undefined || typeof record.createdAt === 'string')
+  }
   if (record.type === 'usage_records_cleanup') {
     return typeof record.cutoffAt === 'string'
       && typeof record.batchSize === 'number'
@@ -421,6 +454,10 @@ function recordRecordMaintenanceDispatchFailure(error: unknown, job: RecordMaint
     jobId: job.id,
     droppedDispatchCount
   }), 'DB service 数据维护任务投递失败，已跳过投递')
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string')
 }
 
 function normalizeMaxBatches(value: number | undefined): number {

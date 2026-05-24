@@ -8,6 +8,7 @@ import { loadAccountCurrentConcurrencyByIds, sumAccountCurrentConcurrency } from
 import { notifyAuthorizationQuotaCacheInvalidation, notifyGatewayRuntimeCacheInvalidation } from '../shared/gateway-cache-invalidation.js'
 import { buildSystemAccountScopeClause, canAccessAll, currentSystemAccountId, includeSystemAccountFields, manageableSystemAccountId, scopedSystemAccountId, userVisibleSystemAccountId, type AccessScope } from './access-scope.js'
 import { accountStatusFilterValues, normalizeAccountListOptions, normalizeAccountOptionListOptions, type AccountListOptions } from './account-list-options.js'
+import { cleanupDeletedAccountDetachedStats, type DeletedAccountRecordCleanupTarget } from './account-record-cleanup.js'
 import { loadSupportedModelsByAccountIds, normalizeAccountSupportedModelsInput, replaceAccountSupportedModels } from './account-supported-models.repository.js'
 import { accountCredentialsForList, findAccountRowForAccess, hydrateAccountRowsFromRecordDatabase, listAccountRowsForAccess, listAccountRowsPageForAccess, loadAccountAuthorizationUsageSummaries } from './account-read.repository.js'
 import {
@@ -147,6 +148,17 @@ export {
   type AnnouncementReadResult,
   type AnnouncementInput
 } from './announcements.repository.js'
+export {
+  cleanupDeletedAccountDetachedStats,
+  cleanupDeletedAccountRelatedRecordData,
+  cleanupPendingDeletedAccountRecordTargets,
+  listDeletedAccountRecordCleanupTargets,
+  registerDeletedAccountRecordCleanupTarget,
+  type DeletedAccountDetachedStatsCleanupTarget,
+  type DeletedAccountRecordCleanupResult,
+  type DeletedAccountRecordCleanupTarget,
+  type PendingDeletedAccountRecordCleanupSummary
+} from './account-record-cleanup.js'
 export {
   cleanupDeletedApiKeyRelatedRecordData,
   cleanupPendingDeletedApiKeyRecordTargets,
@@ -1688,15 +1700,120 @@ export function updateAccount(id: string, input: Record<string, unknown>, access
 }
 
 export function deleteAccount(id: string, access?: AccessScope): boolean {
+  return deleteAccountWithRelatedCleanup(id, access).deleted
+}
+
+export interface AccountDeleteResult {
+  deleted: boolean
+  cleanupTarget?: DeletedAccountRecordCleanupTarget
+}
+
+interface AccountDeleteRow {
+  id: string
+  system_account_id: string
+}
+
+interface AccountDeleteAuthorizationRow {
+  id?: string | null
+  effective_source_team_id?: string | null
+}
+
+interface AccountDeleteAuthorizationTeamSourceRow {
+  source_team_id?: string | null
+}
+
+interface AccountDeleteAuthorizationGrantRow {
+  grantee_team_id?: string | null
+}
+
+export function deleteAccountWithRelatedCleanup(id: string, access?: AccessScope): AccountDeleteResult {
   const scope = buildSystemAccountScopeClause(access)
-  const result = getDatabase().prepare(`DELETE FROM accounts WHERE id = ?${scope.clause}`).run(id, ...scope.params)
-  if (Number(result.changes ?? 0) > 0) {
-    refreshGroupAccountStatsAfterWrite({ all: true, reason: 'account_deleted' })
-    invalidateAccountLookupCache(id)
-    invalidateGroupAccountIdsCache()
-    invalidateGatewayRuntimeAfterBusinessWrite('account_deleted')
+  const database = getDatabase()
+  const row = database
+    .prepare(`SELECT id, system_account_id FROM accounts WHERE id = ?${scope.clause}`)
+    .get(id, ...scope.params) as unknown as AccountDeleteRow | undefined
+  if (!row) {
+    return { deleted: false }
   }
-  return result.changes > 0
+  const cleanupTarget = buildDeletedAccountCleanupTarget(database, row)
+  const transactionStarted = beginDatabaseTransaction(database)
+  try {
+    const result = database.prepare('DELETE FROM accounts WHERE id = ? AND system_account_id = ?').run(row.id, row.system_account_id)
+    if (Number(result.changes ?? 0) > 0) {
+      database
+        .prepare("DELETE FROM resource_authorization_grants WHERE resource_type = 'account' AND resource_id = ? AND resource_owner_system_account_id = ?")
+        .run(row.id, row.system_account_id)
+      database
+        .prepare("DELETE FROM resource_authorizations WHERE resource_type = 'account' AND resource_id = ? AND resource_owner_system_account_id = ?")
+        .run(row.id, row.system_account_id)
+    }
+    commitDatabaseTransaction(database, transactionStarted)
+    if (Number(result.changes ?? 0) > 0) {
+      refreshGroupAccountStatsAfterWrite({ all: true, reason: 'account_deleted' })
+      invalidateAccountLookupCache(id)
+      invalidateGroupAccountIdsCache()
+      clearResourceAuthorizationLookupCaches()
+      invalidateGatewayRuntimeAfterBusinessWrite('account_deleted')
+      invalidateAuthorizationRuntimeAfterBusinessWrite('account_deleted')
+    }
+    return {
+      deleted: Number(result.changes ?? 0) > 0,
+      cleanupTarget: Number(result.changes ?? 0) > 0 ? cleanupTarget : undefined
+    }
+  } catch (error) {
+    rollbackDatabaseTransaction(database, transactionStarted)
+    throw error
+  }
+}
+
+function buildDeletedAccountCleanupTarget(database: DatabaseSync, row: AccountDeleteRow): DeletedAccountRecordCleanupTarget {
+  const authorizationRows = database
+    .prepare(`
+      SELECT id, effective_source_team_id
+      FROM resource_authorizations
+      WHERE resource_type = 'account'
+        AND resource_id = ?
+        AND resource_owner_system_account_id = ?
+    `)
+    .all(row.id, row.system_account_id) as unknown as AccountDeleteAuthorizationRow[]
+  const teamSourceRows = database
+    .prepare(`
+      SELECT DISTINCT ras.source_team_id
+      FROM resource_authorization_sources ras
+      INNER JOIN resource_authorizations ra ON ra.id = ras.authorization_id
+      WHERE ra.resource_type = 'account'
+        AND ra.resource_id = ?
+        AND ra.resource_owner_system_account_id = ?
+        AND ras.source_team_id IS NOT NULL
+    `)
+    .all(row.id, row.system_account_id) as unknown as AccountDeleteAuthorizationTeamSourceRow[]
+  const grantRows = database
+    .prepare(`
+      SELECT grantee_team_id
+      FROM resource_authorization_grants
+      WHERE resource_type = 'account'
+        AND resource_id = ?
+        AND resource_owner_system_account_id = ?
+        AND grantee_type = 'team'
+        AND grantee_team_id IS NOT NULL
+    `)
+    .all(row.id, row.system_account_id) as unknown as AccountDeleteAuthorizationGrantRow[]
+  const authorizationIds = uniqueAccountDeleteValues(authorizationRows.map((authorization) => String(authorization.id ?? '')))
+  const teamIds = uniqueAccountDeleteValues([
+    ...authorizationRows.map((authorization) => String(authorization.effective_source_team_id ?? '')),
+    ...teamSourceRows.map((source) => String(source.source_team_id ?? '')),
+    ...grantRows.map((grant) => String(grant.grantee_team_id ?? ''))
+  ])
+  return {
+    accountId: row.id,
+    systemAccountId: row.system_account_id,
+    authorizationIds,
+    teamScopeIds: teamIds.map((teamId) => `${row.id}:${teamId}`)
+  }
+}
+
+function uniqueAccountDeleteValues(values: string[]): string[] {
+  return [...new Set(values.map((value) => value.trim()).filter(Boolean))]
 }
 
 interface ClearAccountFailureStateOptions {

@@ -29,6 +29,7 @@ import { flushUsageRecordQueue, pendingUsageRecordCount } from '../gateway/usage
 import { clearGatewayRuntimeCache } from '../gateway/gateway-runtime-cache.service.js'
 import { flushRuntimeLogIndexQueue } from '../runtime-logs/runtime-log-index-queue.service.js'
 import { ensureRuntimeLogFacetSnapshots } from '../../storage/runtime-logs.repository.js'
+import { cleanupPendingDeletedAccountRecordTargets } from '../../storage/account-record-cleanup.js'
 import { cleanupPendingDeletedApiKeyRecordTargets } from '../../storage/api-key-record-cleanup.js'
 import { cleanupExpiredRetainedData } from './data-retention-cleanup.service.js'
 import { requestServerProcessEventLoopSamples } from './background-ipc.js'
@@ -52,6 +53,7 @@ export function startBackgroundJobs(): void {
   scheduler.schedule({ name: 'usage-rank-snapshots-refresh', intervalMs: 30 * 60 * 1000, task: runUsageRankSnapshotsRefresh })
   scheduler.schedule({ name: 'usage-stats-consistency-check', intervalMs: 60 * 60 * 1000, task: runUsageStatsConsistencyCheck })
   scheduler.schedule({ name: 'api-key-record-cleanup-retry', intervalMs: 60 * 1000, task: runApiKeyRecordCleanupRetry })
+  scheduler.schedule({ name: 'account-record-cleanup-retry', intervalMs: 60 * 1000, task: runAccountRecordCleanupRetry })
   scheduler.schedule({ name: 'resource-authorization-expiry-sweep', intervalMs: 60 * 1000, task: runResourceAuthorizationExpirySweep })
   scheduler.schedule({ name: 'system-metrics-sample', intervalMs: settingsNumber('systemMetricsSampleIntervalSeconds', 30, 5, 3600) * 1000, task: runSystemMetricsSample })
   scheduler.schedule({ name: 'table-storage-monitor', intervalMs: 10 * 60 * 1000, task: runTableStorageMonitor })
@@ -127,6 +129,21 @@ async function runApiKeyRecordCleanupRetry(): Promise<void> {
     }
   } catch (error) {
     logger.error(errorLogFields(error, { event: 'background_api_key_record_cleanup_retry_failed' }), '已删除 API Key 关联数据清理重试失败')
+    throw error
+  }
+}
+
+async function runAccountRecordCleanupRetry(): Promise<void> {
+  try {
+    const summary = cleanupPendingDeletedAccountRecordTargets(50)
+    if (summary.attempted > 0) {
+      logger.info({
+        event: 'background_account_record_cleanup_retry_completed',
+        ...summary
+      }, '已删除 AI 账户关联数据清理重试完成')
+    }
+  } catch (error) {
+    logger.error(errorLogFields(error, { event: 'background_account_record_cleanup_retry_failed' }), '已删除 AI 账户关联数据清理重试失败')
     throw error
   }
 }

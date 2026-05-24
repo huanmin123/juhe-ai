@@ -267,7 +267,7 @@ const DEFAULT_PROXY_TYPE = 'socks5h'
 const form = reactive({ name: '', description: '', type: DEFAULT_PROXY_TYPE, host: '', port: 7890, username: '', password: '', enabled: true })
 
 const columns = [
-  { title: '名称', dataIndex: 'name', key: 'name', width: 180 },
+  { title: '名称', dataIndex: 'name', key: 'name', width: 180, fixed: 'left' },
   { title: '类型', dataIndex: 'type', key: 'type', width: 100 },
   { title: '地址', dataIndex: 'host', key: 'host', width: 140 },
   { title: '端口', dataIndex: 'port', key: 'port', width: 80 },

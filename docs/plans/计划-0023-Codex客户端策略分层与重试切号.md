@@ -89,7 +89,7 @@ systemAccountId + apiKeyId + groupId + endpoint + codex.turn_id + rawBodyHash
 
 说明：
 
-- `systemAccountId + apiKeyId + groupId` 用于隔离本地调用方边界，避免不同 API Key 或授权分组共享重试状态。
+- `systemAccountId + apiKeyId + groupId` 用于隔离本地调用方边界，避免不同 API Key 或不同本地分组共享重试状态。
 - `endpoint` 用于区分 `/responses`、`/responses/compact` 或未来其他 endpoint。
 - `codex.turn_id` 是唯一允许驱动 Codex turn 策略的客户端行为标识。
 - `rawBodyHash` 用于防止同一个 `turn_id` 下请求体发生变化仍被当成同一轮重试。

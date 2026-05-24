@@ -14,11 +14,14 @@
         <template v-if="column.key === 'level'">
           <a-tag :color="announcementLevelColor(record.level)">{{ announcementLevelText(record.level) }}</a-tag>
         </template>
+        <template v-else-if="column.key === 'title'">
+          <span class="announcement-title-cell" :title="record.title">{{ record.title }}</span>
+        </template>
         <template v-else-if="column.key === 'status'">
           <a-tag :color="announcementStatusColor(record.status)">{{ announcementStatusText(record.status) }}</a-tag>
         </template>
         <template v-else-if="column.key === 'content'">
-          <span class="announcement-content-cell">{{ record.content }}</span>
+          <span class="announcement-content-cell" :title="record.content">{{ record.content }}</span>
         </template>
         <template v-else-if="column.key === 'publishedAt'">
           <span class="muted-cell">{{ formatDateTime(record.publishedAt) }}</span>
@@ -137,11 +140,42 @@ const statusOptions = [
   { label: '已下线', value: 'archived' }
 ]
 
+const titleColumnWidth = 220
+const contentColumnWidth = 300
+
+function fixedColumnCellProps(className: string, width: number) {
+  return {
+    class: className,
+    style: {
+      width: `${width}px`,
+      minWidth: `${width}px`,
+      maxWidth: `${width}px`
+    }
+  }
+}
+
 const columns = [
-  { title: '标题', dataIndex: 'title', key: 'title', width: 220 },
+  {
+    title: '标题',
+    dataIndex: 'title',
+    key: 'title',
+    width: titleColumnWidth,
+    minWidth: titleColumnWidth,
+    responsiveFlex: false,
+    customHeaderCell: () => fixedColumnCellProps('announcement-title-column', titleColumnWidth),
+    customCell: () => fixedColumnCellProps('announcement-title-column', titleColumnWidth)
+  },
   { title: '重要性', key: 'level', width: 100 },
   { title: '状态', key: 'status', width: 100 },
-  { title: '内容', key: 'content', width: 300, responsiveFlex: true },
+  {
+    title: '内容',
+    key: 'content',
+    width: contentColumnWidth,
+    minWidth: contentColumnWidth,
+    responsiveFlex: false,
+    customHeaderCell: () => fixedColumnCellProps('announcement-content-column', contentColumnWidth),
+    customCell: () => fixedColumnCellProps('announcement-content-column', contentColumnWidth)
+  },
   { title: '发布时间', key: 'publishedAt', width: 180 },
   { title: '更新人', key: 'updatedByName', width: 130 },
   { title: '更新时间', key: 'updatedAt', width: 180 },
@@ -293,15 +327,24 @@ onMounted(loadData)
   vertical-align: top;
 }
 
+.announcement-table :deep(.announcement-title-column) {
+  width: 220px;
+  min-width: 220px;
+  max-width: 220px;
+}
+
+.announcement-table :deep(.announcement-content-column) {
+  width: 300px;
+  min-width: 300px;
+  max-width: 300px;
+}
+
+.announcement-title-cell,
 .announcement-content-cell {
-  display: -webkit-box;
+  display: block;
   overflow: hidden;
-  color: #334155;
-  line-height: 22px;
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .mobile-list-card :deep(.mobile-list-meta-item strong) {

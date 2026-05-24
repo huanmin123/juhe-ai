@@ -96,7 +96,6 @@ const props = defineProps<{
 const emit = defineEmits<{
   (event: 'copyTraceId', traceId: string): void
   (event: 'openAuditLogs'): void
-  (event: 'openOperationLogs'): void
   (event: 'openRuntimeLogs'): void
 }>()
 
@@ -109,7 +108,6 @@ const traceMoreActions = computed<RowActionItem[]>(() => {
     actions.push({ key: 'open-runtime-logs', label: '运行日志', icon: 'detail', tone: 'info' })
     actions.push({ key: 'open-audit-logs', label: '审计日志', icon: 'detail', tone: 'info' })
   }
-  actions.push({ key: 'open-operation-logs', label: '操作日志', icon: 'detail', tone: 'info' })
   return actions
 })
 
@@ -124,10 +122,6 @@ function handleTraceAction(key: string): void {
   }
   if (key === 'open-audit-logs') {
     emit('openAuditLogs')
-    return
-  }
-  if (key === 'open-operation-logs') {
-    emit('openOperationLogs')
   }
 }
 </script>

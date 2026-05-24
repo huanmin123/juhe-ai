@@ -6,7 +6,7 @@ export type AccountTableSortOrderResolver = (field: AccountListSortField) => Tab
 
 export function buildAccountTableColumns(isManagementView: boolean, sortOrder: AccountTableSortOrderResolver): Array<Record<string, unknown>> {
   const baseColumns: Array<Record<string, unknown>> = [
-    sortableColumn({ title: '名称', dataIndex: 'name', key: 'name', width: 230 }, 'name', sortOrder),
+    sortableColumn({ title: '名称', dataIndex: 'name', key: 'name', width: 230, fixed: 'left' }, 'name', sortOrder),
     sortableColumn({ title: '账户类型', dataIndex: 'type', key: 'type', width: 120 }, 'type', sortOrder),
     sortableColumn({ title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 110 }, 'providerCode', sortOrder)
   ]

@@ -82,11 +82,6 @@
                   <template #icon><file-search-outlined /></template>
                 </a-button>
               </a-tooltip>
-              <a-tooltip title="查看操作日志">
-                <a-button size="small" type="text" @click.stop="openTraceTarget(record.traceId, 'operation')">
-                  <template #icon><profile-outlined /></template>
-                </a-button>
-              </a-tooltip>
             </span>
           </div>
         </template>
@@ -155,7 +150,6 @@
           :record="record"
           @copy-trace-id="copyTraceId"
           @open-audit-logs="openTraceTarget(record.traceId, 'audit')"
-          @open-operation-logs="openTraceTarget(record.traceId, 'operation')"
           @open-runtime-logs="openTraceTarget(record.traceId, 'runtime')"
         />
       </template>
@@ -164,7 +158,7 @@
 </template>
 
 <script setup lang="ts">
-import { CopyOutlined, FileSearchOutlined, ProfileOutlined, SearchOutlined } from '@ant-design/icons-vue'
+import { CopyOutlined, FileSearchOutlined, SearchOutlined } from '@ant-design/icons-vue'
 import { message } from '@/lib/antd'
 import type { Dayjs } from 'dayjs'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
@@ -207,7 +201,7 @@ import {
 
 type UsageRecordSortField = NonNullable<UsageRecordListParams['sortBy']>
 type TableSortOrder = 'ascend' | 'descend' | null
-type TraceTarget = 'audit' | 'operation' | 'runtime'
+type TraceTarget = 'audit' | 'runtime'
 type UsageRecordsPageState = {
   accountNameFilter: string
   dateRangeFilter?: [string, string]
@@ -344,7 +338,7 @@ const mobileRecords = computed(() => records.value)
 
 const rawColumns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
-    { title: 'AI账户名称', dataIndex: 'accountName', key: 'account', width: 170 }
+    { title: 'AI账户名称', dataIndex: 'accountName', key: 'account', width: 170, fixed: 'left' }
   ]
   if (isManagementView.value) {
     baseColumns.push({ title: '系统账户', key: 'systemAccount', width: 180 })
@@ -637,8 +631,7 @@ function openTraceTarget(traceId: string | undefined, target: TraceTarget): void
 
 function traceTargetPath(target: TraceTarget): string {
   if (target === 'runtime') return '/runtime-logs'
-  if (target === 'audit') return '/audit-logs'
-  return isManagementView.value ? '/operation-logs' : '/my-operation-logs'
+  return '/audit-logs'
 }
 
 function snapshotPageState(): UsageRecordsPageState {

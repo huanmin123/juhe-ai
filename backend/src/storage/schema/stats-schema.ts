@@ -685,6 +685,7 @@ export function applyStatsSchema(database: DatabaseSync): void {
     CREATE TABLE IF NOT EXISTS usage_record_cleanup_deductions (
           usage_id TEXT NOT NULL,
           api_key_id TEXT NOT NULL,
+          account_id TEXT,
           system_account_id TEXT NOT NULL,
           source_shard_key TEXT NOT NULL,
           record_json TEXT NOT NULL,
@@ -1003,4 +1004,17 @@ export function applyStatsSchema(database: DatabaseSync): void {
 
     CREATE INDEX IF NOT EXISTS idx_table_storage_snapshots_time ON table_storage_snapshots(sampled_at DESC);
   `)
+  addColumnIfMissing(database, 'usage_record_cleanup_deductions', 'account_id', 'TEXT')
+  database.exec(`
+    CREATE INDEX IF NOT EXISTS idx_usage_record_cleanup_deductions_account
+      ON usage_record_cleanup_deductions(account_id, shard_deleted_at);
+  `)
+}
+
+function addColumnIfMissing(database: DatabaseSync, tableName: string, columnName: string, definition: string): void {
+  const columns = database.prepare(`PRAGMA table_info(${tableName})`).all() as Array<{ name?: string }>
+  if (columns.some((column) => column.name === columnName)) {
+    return
+  }
+  database.exec(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`)
 }

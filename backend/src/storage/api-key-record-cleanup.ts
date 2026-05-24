@@ -407,40 +407,43 @@ function subtractApiKeyUsageRowsOnce(
   try {
     const insertDeductionStatement = database.prepare(`
       INSERT INTO usage_record_cleanup_deductions (
-        usage_id, api_key_id, system_account_id, source_shard_key, record_json,
+        usage_id, api_key_id, account_id, system_account_id, source_shard_key, record_json,
         stats_subtracted_at, shard_deleted_at, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, NULL, NULL, ?, ?)
-      ON CONFLICT(usage_id, source_shard_key) DO NOTHING
+      ) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, ?, ?)
+      ON CONFLICT(usage_id, source_shard_key) DO UPDATE SET
+        account_id = COALESCE(usage_record_cleanup_deductions.account_id, excluded.account_id),
+        updated_at = excluded.updated_at
     `)
     const findDeductionStatement = database.prepare(`
       SELECT stats_subtracted_at
       FROM usage_record_cleanup_deductions
-      WHERE usage_id = ? AND source_shard_key = ? AND api_key_id = ? AND system_account_id = ?
+      WHERE usage_id = ? AND source_shard_key = ?
       LIMIT 1
     `)
     const markSubtractedStatement = database.prepare(`
       UPDATE usage_record_cleanup_deductions
       SET stats_subtracted_at = COALESCE(stats_subtracted_at, ?),
           updated_at = ?
-      WHERE usage_id = ? AND source_shard_key = ? AND api_key_id = ? AND system_account_id = ?
+      WHERE usage_id = ? AND source_shard_key = ?
     `)
 
     for (const row of rows) {
       insertDeductionStatement.run(
         row.id,
         input.apiKeyId,
+        row.account_id ?? null,
         input.systemAccountId,
         row.source_shard_key,
         JSON.stringify(usageStatsRecordForCleanup(row)),
         updatedAt,
         updatedAt
       )
-      const deduction = findDeductionStatement.get(row.id, row.source_shard_key, input.apiKeyId, input.systemAccountId) as UsageRecordCleanupDeductionRow | undefined
+      const deduction = findDeductionStatement.get(row.id, row.source_shard_key) as UsageRecordCleanupDeductionRow | undefined
       if (deduction?.stats_subtracted_at) {
         continue
       }
       subtractUsageStatsRecord(database, usageStatsRecordForCleanup(row), updatedAt)
-      markSubtractedStatement.run(updatedAt, updatedAt, row.id, row.source_shard_key, input.apiKeyId, input.systemAccountId)
+      markSubtractedStatement.run(updatedAt, updatedAt, row.id, row.source_shard_key)
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {
@@ -485,10 +488,10 @@ function markApiKeyUsageCleanupRowsDeleted(
       UPDATE usage_record_cleanup_deductions
       SET shard_deleted_at = COALESCE(shard_deleted_at, ?),
           updated_at = ?
-      WHERE usage_id = ? AND source_shard_key = ? AND api_key_id = ? AND system_account_id = ?
+      WHERE usage_id = ? AND source_shard_key = ?
     `)
     for (const row of rows) {
-      statement.run(updatedAt, updatedAt, row.id, row.source_shard_key, input.apiKeyId, input.systemAccountId)
+      statement.run(updatedAt, updatedAt, row.id, row.source_shard_key)
     }
     commitDatabaseTransaction(database, transactionStarted)
   } catch (error) {

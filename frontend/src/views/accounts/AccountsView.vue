@@ -531,6 +531,7 @@ const proxyByIdMapRef = computed(() => proxyByIdMap(proxies.value))
 
 const rowSelection = computed(() => ({
   columnWidth: accountSelectionColumnWidth,
+  fixed: true,
   selectedRowKeys: selectedAccountIds.value,
   onChange: (selectedRowKeys: Array<string | number>) => {
     selectedAccountIds.value = selectedRowKeys.map((key) => String(key))

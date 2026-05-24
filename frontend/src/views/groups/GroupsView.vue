@@ -335,7 +335,7 @@ const {
 
 const rawColumns = computed(() => {
   const baseColumns: Array<Record<string, unknown>> = [
-    { title: '分组名称', dataIndex: 'name', key: 'name', width: 240 },
+    { title: '分组名称', dataIndex: 'name', key: 'name', width: 240, fixed: 'left' },
     { title: '供应商', dataIndex: 'providerCode', key: 'providerCode', width: 120 },
     { title: '类型', dataIndex: 'groupType', key: 'groupType', width: 130 }
   ]
